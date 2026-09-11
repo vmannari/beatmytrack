@@ -9,7 +9,7 @@ Open `game/project.godot` using Godot 4.7.2, then F5. The car spawns pointing al
 1. Select **2 / Balanced**, hold W for about two seconds, then steer with A/D. Steering is relative to the car's nose; the camera never turns with it.
 2. Press Space or S to brake before a circle. Compare against releasing W without braking. Stopping should visibly take less distance with the brake.
 3. At roughly 60–80 km/h, hold a turn long enough to begin sliding. Release throttle and briefly steer against the slide, then unwind the steering. Look for recovery you can cause deliberately, not a random snap.
-4. R restores the start instantly. Repeat with **1 / Stable** and **3 / Loose**. Stable has more rear grip/recovery/assistance; Loose rotates more under power and needs more correction. No profile is claimed approved yet.
+4. R restores the start instantly. Repeat with **1 / Stable** and **3 / Loose**. Stable has more rear grip; Loose has less lateral/rear grip and needs more correction. No profile is claimed approved yet.
 5. Stop, hold S for 0.35 seconds, and reverse away. W brakes backward movement before driving forward. When both pedals are held, brake takes precedence; there is no hidden boost.
 6. F1 toggles telemetry. F2 opens tuning. Change one setting at a time, repeat the maneuver, then F6 to reload the saved preset. Changes/reset cancel an unsaved capture. Escape or focus loss pauses; resuming requires fresh input.
 
@@ -19,7 +19,7 @@ Please report preferred preset, approximate speed, input sequence, and one of: d
 
 `VehicleSimulation` and `VehicleState` are RefCounted, independent of nodes, render callbacks, input devices and persistence. Each step consumes a quantized `DriveFrame` at 120 Hz. Steering is signed [-127,127]; pedals [0,255]. Simulation (x,y) maps to Godot (x,0,-y); zero heading points along simulation +Y/world -Z, and positive heading turns right. Visual interpolation and camera smoothing never feed back into simulation.
 
-The car retains world velocity while its heading changes. A speed-dependent steering angle produces a target yaw rate, with a mass/inertia response and front/rear grip balance. Lateral correction is capped by available grip; exceeding the slip threshold reduces grip gradually. Power adds yaw and reduces grip while cornering; lifting restores it. Countersteer assistance modestly aligns heading toward travel direction. Acceleration/braking share a traction budget with cornering. This is a compact arcade approximation, not a tire/load-transfer simulator.
+The car retains world velocity while its heading changes. A speed-dependent steering angle produces a target yaw rate, with a mass/inertia response and front/rear grip balance. Lateral correction is capped by available grip; exceeding the slip threshold reduces grip gradually. Default presets disable added throttle yaw/grip loss and automatic countersteer assistance. Throttle adds velocity along the nose; manual countersteering changes the heading relative to momentum. Acceleration/braking share a traction budget with cornering. This is a compact arcade approximation, not a tire/load-transfer simulator.
 
 All important handling parameters live in `vehicle/handling_config.gd` as exported Resource fields with ranges and units. `resources/{stable,balanced,loose}.tres` are editable configurations. The live panel exposes engine force, lateral grip, rear grip, steering response, assistance and throttle rotation; the Inspector exposes mass, brake force, drag, rolling resistance, speed caps, steering angle/reduction, wheelbase, longitudinal grip, slip threshold, sliding grip, recovery, inertia, collision loss and the remaining parameters.
 
@@ -49,11 +49,11 @@ Use Godot's Project → Open User Data Folder to find the file (`%APPDATA%\Circu
 
 Measured on Windows, Godot `4.7.2.stable.official.ed1daf0bf`:
 
-- 54 checks pass.
+- 56 checks pass.
 - From rest: 36.54 m/s after three seconds of full throttle.
 - From 24 m/s: 16.35 m braking versus 31.53 m coasting during the next 1.33 seconds.
 - Seeded 24-degree slide: below 0.04 radians after 1.5 seconds of released input, with grip recovered above 0.99.
-- Same 0.8-steering test: about -13.1 degrees slip under power, -4.7 degrees after lifting.
+- Same 0.8-steering test: about -10.0 degrees slip under power, -4.9 degrees after lifting.
 - 2,400 quantized inputs roundtripped through JSON reproduce identical final state at 1/2/4/8 ticks per render batch. This is not cross-platform proof, nor a frame pacing benchmark.
 
 An early wall-bound test found float32 rounding could place the center less than a micrometer outside the mathematical limit; collision placement was corrected with an inward separation rather than loosening the test. A graphical inspection found reversed winding on generated car panels; faces were corrected and recaptured.
@@ -91,3 +91,13 @@ G01: owner found retention excessive and sliding too strong. Reduced corner ener
 Actual `scripts/dev.ps1 Validate` passed import, 17 parses, startup and 54 checks. The 108 km/h one-second coasting turn now ends at 101.2 km/h, versus 103.7 in handling-0.5. With the new grip but retention disabled it ends at 97.4. Powered corner slip falls from 27.0 to 13.1 degrees; lifting yields 4.7 degrees. Tight-turn radii at initial 43/65/86 km/h are 8.63/11.66/16.27 m. Acceleration/top speed stay 2.13 seconds to 100 km/h and 165.6 km/h. The retention regression now requires both an improvement over disabled retention and at least 6 km/h speed scrub, explicitly reflecting the owner's corrected target. Added a powered-slip upper bound; recovery, no-energy-gain, braking and replay invariants still pass. Evidence: docs/evidence/driving-tests.txt.
 
 Restart F8/F5, select Balanced and repeat a sustained powered turn followed by lifting. Expect noticeable speed scrub and a more planted rear. Subjective acceptance and physical Android tests remain pending.
+
+## Speculative analysis tune (handling-0.7 / arcade-planar-0.4)
+
+G01: inspected the owner-supplied speculative analysis. Accepted fast input-to-heading response, slower trajectory response, nose-directed acceleration, natural countersteering and progressive grip. These are prototype hypotheses, not independently verified original-game physics. Existing world-space momentum, weak coast drag, explicit speed cap and decisive brakes already cover several recommendations.
+
+Changed steering response 12 -> 30 /s (full input in 33 ms) and yaw inertia 850 -> 500. Disabled added throttle rotation, throttle grip loss and automatic countersteer assistance in all three presets; optional tuning fields remain available. Replaced binary slip-threshold grip selection with a smooth interpolation over one to two times the configured slip threshold. Kept speed-sensitive steering, no stationary rotation, current grip strength and 50% corner-energy retention to preserve the owner's recent less-slide/moderate-scrub preference. Did not adopt the proposed 0.90?0.97 lateral retention per 60 Hz tick, which would greatly increase sliding versus this tune. Surface expansion and changing braking to act along the velocity vector are deferred; this pass targets steering and slide generation.
+
+Actual Validate: import, 17 parses, startup and 56 checks pass. New checks verify a 50 ms tap rotates the chassis before the trajectory catches up, and throttle pulls a seeded slide toward the nose without auto-yaw. Replaced the old test demanding throttle-induced rotation because that behavior is deliberately disabled. Powered corner slip is 10.0 degrees versus 13.1 previously; coasting turn from 108 km/h ends at 100.6. Acceleration/top speed remain 2.13 seconds to 100 km/h and 165.6 km/h. Recovery, brakes, no steering-generated energy, collisions and same-engine replay pass. Radius comparisons use legacy parameters under the current algorithm, not playback of the old physics version. Evidence: driving-tests.txt and inspected scripted Windows capture driving-momentum.png under docs/evidence.
+
+Restart F8/F5, select Balanced, tap steering briefly at 60?80 km/h, then try turn-in / lift / unwind / throttle. Expect the nose to respond quickly and the path to follow with a short delay. This still needs owner evaluation; no original-game handling equivalence or Android test is claimed.

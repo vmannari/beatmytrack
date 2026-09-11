@@ -153,7 +153,20 @@ func _run() -> void:
 	advance(powered, 100, 0.8, 1, 0)
 	advance(lifted, 100, 0.8, 0, 0)
 	print("METRIC: corner slip power %.1f°, lift %.1f°" % [rad_to_deg(powered.state.slip_angle()), rad_to_deg(lifted.state.slip_angle())])
-	check(absf(powered.state.slip_angle()) > absf(lifted.state.slip_angle()) + 0.03, "throttle materially increases corner rotation/slip")
+	# Speculative reference tune: throttle pulls toward the nose rather than
+	# artificially rotating the rear. Compare the same seeded slide, no steering.
+	var pull := VehicleSimulation.new(config)
+	var coast_slide := VehicleSimulation.new(config)
+	pull.state.velocity = Vector2(8, 18)
+	coast_slide.state.velocity = pull.state.velocity
+	advance(pull, 12, 0, 1, 0)
+	advance(coast_slide, 12, 0, 0, 0)
+	check(absf(pull.state.slip_angle()) < absf(coast_slide.state.slip_angle()) and pull.state.heading == 0, "throttle pulls a slide toward the nose without automatic rotation")
+	var tap := VehicleSimulation.new(config)
+	tap.state.velocity = Vector2(0, 18)
+	advance(tap, 6, 1, 0, 0)
+	check(tap.state.steering == 1.0 and tap.state.heading > 0.015, "50ms steering tap promptly rotates the chassis")
+	check(tap.state.heading > atan2(tap.state.velocity.x, tap.state.velocity.y) + 0.005, "trajectory lags behind chassis rotation")
 	check(absf(powered.state.slip_angle()) < deg_to_rad(18.0), "powered corner stays below 18 degrees slip instead of the previous 27")
 	var yard := PlaygroundData.new()
 	var hit := VehicleState.new()

@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.3"
+const PHYSICS_VERSION: String = "arcade-planar-0.4"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -48,8 +48,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	right = state.right()
 	longitudinal = state.velocity.dot(forward)
 	lateral = state.velocity.dot(right)
-	var sliding: bool = absf(slip) > config.slip_threshold and speed > 3.0
-	var target_grip: float = config.sliding_grip if sliding else 1.0
+	var slide_amount: float = smoothstep(config.slip_threshold, config.slip_threshold * 2.0, absf(slip)) if speed > 3.0 else 0.0
+	var target_grip: float = lerpf(1.0, config.sliding_grip, slide_amount)
 	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss

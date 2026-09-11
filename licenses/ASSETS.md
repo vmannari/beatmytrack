@@ -8,6 +8,11 @@
 | Matte toon materials and pooled skid marks | Original project code using Godot built-ins | Handling presentation baseline |
 | Default UI font | Bundled Godot font | Engine-bundled asset; include relevant engine third-party notices when distributing |
 | Blueprint PNGs, PDF/DOCX/XLSX and HTML crops | Owner-supplied specification, preserved unchanged | Design review only; outside `game/`, never exported |
+| Four native Slicks-derived layouts | Owner-supplied `slicks_codex_handoff.zip`, converted from FREEWAY/1WAY/66/OFFROAD `.SS` and DAT geometry masks | Internal handling fixtures only; source and output SHA-256 in `scripts/slicks/golden.json`; no original textures/sprites in runtime |
+| Slicks parser and corrected resource decoder | Supplied handoff's `tools/`, copied unchanged to `scripts/slicks/` | Development tooling outside export root; no upstream license was supplied and none is inferred |
+| Native track converter, meshes, surface materials and debug views | Original project implementation around supplied layout data | Flat project materials and geometric collision stand-ins; no imported vehicle identity or graphic assets |
+
+The original ZIP, DAT, SS files and corrected reference renders remain under ignored `build/slicks_handoff/`, outside the export root. Source track author/top-ten player records are not copied into native maps. Derived layouts are test adaptations, not licensed production content; shipping/distribution clearance remains unverified.
 
 No finished production car/environment, external shader, audio or purchased asset has been introduced. Reference-board branded vehicles are not licensed game assets.
 

@@ -11,6 +11,8 @@ var grip: float = 1.0
 var reverse_wait: float = 0.0
 var tick: int = 0
 var collision_count: int = 0
+var route_index: int = -1
+var track_elevated: bool = false
 
 
 func forward() -> Vector2:
@@ -30,4 +32,4 @@ func slip_angle() -> float:
 
 func snapshot() -> Array:
 	return [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
-		steering, grip, reverse_wait, tick, collision_count]
+		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated]

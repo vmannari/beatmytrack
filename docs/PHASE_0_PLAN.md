@@ -1,5 +1,11 @@
 # Phase 0: specification review and first slice
 
+## Owner-authorized handling fixture update, 2026-09-11
+
+The later explicit request for `slicks_codex_handoff.zip/CODEX_TASK.md` authorizes four native test circuits inside the handling gate, overriding the one-circuit quantity for these development fixtures only. Inspection preceded implementation: the yard had no native circuit/importer/surfaces/laps/AI. A small `PlaygroundData` subclass, practice lap session and diagnostic driver now provide those foundations; they do not complete the full Phase 5 countdown/PB/competition validator or imply handling approval. Three laps still applies. No store/backend/editor expansion occurred.
+
+Actual commands, source semantics, scale measurements, correction, full replay results, screenshots and manual checks are current in [SLICKS_IMPORT.md](../SLICKS_IMPORT.md). Validation passes 56 driving and 48 track checks plus four offline converter tests. The regular follow-camera calibration is still pending; F4's requested overview is a separate debug view. Android Doctor still fails missing prerequisites; no device test or export occurred.
+
 Reviewed 2026-09-11. The current owner request narrows the active work to proving driving on Windows and a physical Android phone. Phase numbers in that request (0–7) are implementation steps inside the blueprint's P0/P0-V gates; they are not permission to start the blueprint's later P1–P7 product expansion.
 
 ## Source review

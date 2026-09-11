@@ -1,6 +1,6 @@
 # CIRCUIT / 01 — handling laboratory
 
-Working title from the blueprint. **The driving playground is playable.** Open `game/project.godot` in Godot 4.7.2 and press **F5**. One original car, a flat handling yard, skid circles, braking markings and slalom cones let us evaluate steering and slide recovery. This is the handling gate, before a timed circuit or final art.
+Working title from the blueprint. **The driving playground and four handling-test circuits are playable.** Open `game/project.godot` in Godot 4.7.2 and run the project. One original car, the handling yard and four native Slicks-derived practice layouts let us evaluate steering and slide recovery. Handling approval and final art remain pending. See [Slicks import, results and captures](SLICKS_IMPORT.md).
 
 ## Drive and tune
 
@@ -16,6 +16,9 @@ Working title from the blueprint. **The driving playground is playable.** Open `
 | F2 / Tune button | Six live handling controls; changing a value resets the car |
 | F3 / Record button | Start from a fresh reset, then save quantized inputs and state checkpoints |
 | F6 | Reload current preset Resource from disk and reset |
+| F5 / Track button | Cycle FREEWAY, 1WAY, 66, OFFROAD and the yard |
+| F4 / F7 | Top-down track overview / original-data diagnostic overlays |
+| F9 | Toggle conservative AI practice driver and restart |
 
 Touch controls support separate left/right/brake/throttle fingers; mobile hardware testing remains outstanding. Mouse clicks operate the top buttons and tuning panel; the lower driving zones are touch inputs, not mouse pedals. In-game tweaks are temporary. For saved tuning, open `game/resources/balanced.tres` (or another preset) in the Inspector, change its exported fields, save and press F6 in the game. All parameter units and tuning advice are in [the driving guide](docs/DRIVING_PLAYGROUND.md).
 
@@ -28,11 +31,12 @@ Open `game/project.godot` with **Godot 4.7.2 standard**, build `4.7.2.stable.off
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Validate
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Run
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Run -Track slicks_freeway_test
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Editor
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Capture
 ```
 
-ExecutionPolicy Bypass applies to this invocation only; no machine policy change is needed. `Run`/`Editor` remain attached until the window closes. Override discovery with `-GodotPath 'D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe'` or `GODOT_BIN`. Validation imports the project, parses every GDScript, checks main-scene startup and runs the driving regression suite, failing on engine script errors even when the process exits zero. Logs and `playground.png` capture go to ignored `build/`.
+ExecutionPolicy Bypass applies to this invocation only; no machine policy change is needed. `Run`/`Editor` remain attached until the window closes. Override discovery with `-GodotPath 'D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe'` or `GODOT_BIN`. Validation imports the project, parses every GDScript, checks main-scene startup and runs the driving and track regression suites, failing on engine script errors even when the process exits zero. Logs and `playground.png` capture go to ignored `build/`.
 
 Compatibility rendering is the initial baseline. The project uses landscape, a 1280×720 logical UI with expanded wider viewports, a fixed 120 Hz simulation and independent input actions. A stable-yaw high-oblique orthographic camera follows the car with bounded look-ahead and separate visual interpolation. Camera extent uses the requested baseline / 1.15 factor; exact reference matching and physical-phone safe-area approval remain future checks. Matte toon materials and simple original geometry are handling stand-ins, not final art.
 

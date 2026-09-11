@@ -1,4 +1,7 @@
 extends SceneTree
+# Resolve the Resource subclass before simulation types. On the pinned engine,
+# recursive cold class resolution otherwise retains DriveFrame's script at exit.
+const _NATIVE_TRACK = preload("res://track/native_track.gd")
 ## Headless regression and integration checks; no framework/runtime dependency.
 
 var failures: int = 0

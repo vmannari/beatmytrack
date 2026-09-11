@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.4"
+const PHYSICS_VERSION: String = "arcade-planar-0.5"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -22,6 +22,7 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
 	state.steering = move_toward(state.steering, frame.steer / 127.0, config.steering_rate * STEP)
@@ -52,6 +53,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var target_grip: float = lerpf(1.0, config.sliding_grip, slide_amount)
 	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
+	grip_limit *= surface.x
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
 	var lateral_acceleration: float = clampf(-lateral * config.lateral_response, -grip_limit, grip_limit)
 	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
@@ -65,6 +67,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	# Combined traction budgets make braking and acceleration compete with cornering.
 	var lateral_usage: float = absf(lateral_acceleration) / maxf(grip_limit, 0.01)
 	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))
+	longitudinal_limit *= surface.x
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
 	var next_longitudinal: float = longitudinal + drive_acceleration * STEP
 	# Braking never crosses zero into reverse until the stopped hold delay elapses.
@@ -73,6 +76,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if throttle > 0.0 and longitudinal < 0.0 and next_longitudinal > 0.0:
 		next_longitudinal = 0.0
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
+	resistance += surface.y
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
 	next_longitudinal = clampf(next_longitudinal, -config.reverse_speed, config.maximum_speed)
 	state.velocity = forward * next_longitudinal + right * next_lateral

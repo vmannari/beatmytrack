@@ -1,10 +1,14 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Doctor', 'Validate', 'Run', 'Editor', 'Capture', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
-    [string]$AdbPath = $env:ADB_BIN
+    [string]$AdbPath = $env:ADB_BIN,
+    [string]$Track = '',
+    [switch]$Overview,
+    [switch]$AI,
+    [int]$CaptureTick = 0
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +19,11 @@ $buildRoot = Join-Path $repoRoot 'build'
 $expectedVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'godot-version.txt') -Raw).Trim()
 $apkPath = Join-Path $buildRoot 'android/circuit01-debug.apk'
 $packageId = 'org.circuit01.handlinglab'
+$trackArguments = @()
+if ($Track) { $trackArguments += "--track=$Track" }
+if ($Overview) { $trackArguments += '--overview' }
+if ($AI) { $trackArguments += '--ai' }
+if ($CaptureTick -gt 0) { $trackArguments += "--capture-tick=$CaptureTick" }
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
 function Find-Godot {
@@ -61,6 +70,7 @@ function Invoke-Validation {
         throw 'Main scene did not emit PLAYGROUND_READY.'
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_driving.gd') 'driving-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
     Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup and driving regression tests."
 }
 
@@ -153,11 +163,19 @@ try {
             Write-Host 'Tool prerequisites found. Device list is not proof of physical-phone acceptance.'
         }
         'Validate' { Invoke-Validation }
-        'Run' { Invoke-Checked $script:godot @('--path', $projectRoot) 'run.log' }
+        'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
+        'Snapshot' {
+            $captureName = if ($Track) { $Track } else { 'playground' }
+            Invoke-Checked $script:godot (@('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot "$captureName.png")") + $trackArguments) 'capture.log'
+            if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'capture.log') -SimpleMatch 'CAPTURE_SAVED:' -Quiet)) { throw 'Window closed before capture completed; do not use an older PNG. Keep delayed captures focused.' }
+        }
+        'Run' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--') + $trackArguments) 'run.log' }
         'Editor' { Invoke-Checked $script:godot @('--path', $projectRoot, '--editor') 'editor.log' }
         'Capture' {
             Invoke-Validation
-            Invoke-Checked $script:godot @('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot 'playground.png')") 'capture.log'
+            $captureName = if ($Track) { $Track } else { 'playground' }
+            Invoke-Checked $script:godot (@('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot "$captureName.png")") + $trackArguments) 'capture.log'
+            if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'capture.log') -SimpleMatch 'CAPTURE_SAVED:' -Quiet)) { throw 'Window closed before capture completed; do not use an older PNG. Keep delayed captures focused.' }
         }
         'ExportAndroid' { Export-Android }
         'InstallAndroid' { Install-Android }

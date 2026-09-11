@@ -1,6 +1,6 @@
 # Development status
 
-Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current implementation checkpoint: **Phase 2 playable driving playground**. The overall vertical slice is not complete. Windows driving is ready for owner evaluation; physical-phone handling has not been tested.
+Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current implementation checkpoint: **Phase 2 handling plus owner-authorized four-track practice fixtures**. The overall vertical slice is not complete. Windows driving is ready for owner evaluation; physical-phone handling has not been tested.
 
 ## Completed
 
@@ -22,7 +22,15 @@ Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current impleme
 - Added an arm64 Android Debug preset, SDK/template guidance and exact future device-test instructions. Android tooling setup and execution remain open.
 - Captured and inspected actual Windows startup: `docs/evidence/bootstrap-windows.png`.
 
-## Currently working
+## Four-track handling fixtures completed (2026-09-11)
+
+Implemented the explicit Slicks handoff request: `slicks_freeway_test`, `slicks_1way_test`, `slicks_66_test`, `slicks_offroad_test`. Development-only programmatic conversion produces native geometry at 0.25 m/source pixel (9 m reference road, five 1.8 m car widths). Source checkpoint order/start markers, layered crossings, native materials and deterministic surface/collision behavior are preserved or explicitly inferred. OFFROAD alone needed a data-driven post-pair spacing correction, 1 m outward per post. F5/Track selects fixtures; F4/F7 inspect geometry/source overlays; F9 runs diagnostic AI. The yard remains the default.
+
+Actual final validation: import, 23 parses, startup, 56 driving checks and 48 track checks passed; four converter tests passed. Every track completed three laps with zero AI contacts. Complete three-lap JSON replays exactly matched states and lap times in eight-tick batches on Windows. Both bridge levels were traversed on 1WAY, 66 and OFFROAD. Actual graphical overviews were inspected against all four references, plus a moving 1WAY capture. FREEWAY is the recommended first benchmark. Full results, commands, changed modules, widths, known assumptions and remaining manual checks: [SLICKS_IMPORT.md](SLICKS_IMPORT.md). Evidence: `docs/evidence/slicks-*` and `slicks_*`.
+
+This does not complete Phase 5: practice timing starts immediately; no countdown, persistent PB or competition-grade shortcut verification. Bridge presentation uses abrupt height transitions and simple collision stand-ins. Human playtesting, camera calibration and phone acceptance remain pending. Doctor actually failed missing templates/SDK/ADB/build-tools/JDK; attachment could not be enumerated and no physical-phone test or APK export occurred. Physics identity is now arcade-planar-0.5 for surface/layer support; diagnostic manifest schema 2 includes extended state and native content hash. Existing yard handling assertions remain unchanged and pass.
+
+## Previous handling iteration
 
 Inspected owner's speculative Slicks handling analysis and implemented a focused G01 pass: handling-0.7 / arcade-planar-0.4. Faster steering input/yaw response, progressive slip grip, and no preset throttle-induced yaw/grip loss or automatic countersteering. Retained moderate corner scrub and planted grip from prior feedback. Simulation/config/presets/HUD tuning range/tests changed; rationale and intentionally deferred suggestions documented in docs/DRIVING_PLAYGROUND.md. Validate passed import, 17 parses, startup and 56 checks. New tap/trajectory-lag and throttle-pull tests pass; powered slip 10.0 degrees, coasting turn ends at 100.6 from 108 km/h. Inspected scripted Windows capture docs/evidence/driving-momentum.png and updated test evidence. Restart F8/F5 and evaluate steering taps and turn-in/lift/unwind/throttle in Balanced. Original-game equivalence is not verified. Physical Android and owner acceptance remain pending.
 
@@ -30,7 +38,7 @@ Inspected owner's speculative Slicks handling analysis and implemented a focused
 
 1. Owner drives Balanced, Stable and Loose on Windows; adjust response and recovery based on a concrete maneuver and preferred preset. This is the immediate feedback request.
 2. Phase 3: precise reference-camera fixture/bounds measurement and comparison at 1672×941; evaluate every heading and wider screens.
-3. Phase 4/5: build the compact circuit, then directed swept checkpoints, three laps, countdown/timers/PB and race restart. No progression/store/backend.
+3. Phase 4/5: owner evaluates the four authorized practice circuits; complete countdown, persistent PB and full race validation separately after handling feedback. Native circuits, ordered practice checkpoints and three laps now exist. No progression/store/backend.
 4. Complete Android prerequisites and the actual APK/device loop, including safe areas and real simultaneous touch. Iterate phone feel before final art/content expansion.
 
 ## Unresolved decisions
@@ -46,7 +54,7 @@ Resolved override: **three laps**, per the current owner request, replaces the p
 
 ## Technical debt and limitations
 
-- No race circuit, lap/checkpoint/timer/PB systems yet. Handling yard has no lap-duration claim. No audio/haptics or final graphic-novel material/outline pipeline; default toon materials and simple geometry are stand-ins.
+- Four practice circuits, checkpoints and three-lap timing now exist; countdown, persistent PB and competition validation remain absent. Handling yard itself has no lap-duration claim. No audio/haptics or final graphic-novel material/outline pipeline; default toon materials and simple geometry are stand-ins.
 - Single circular car collision approximation does not match exact front/side body clearance. Cones are deliberately non-colliding. Real phone safe-insets/handedness/layout work remains.
 - Diagnostic replay JSON is capped but not compact, not a trusted competition record, and not an atomic progress save. A new save replaces the diagnostic file. R/tuning/profile change discards unsaved recording; pause saves it. Cross-device float equivalence remains unproved.
 - Android export preset and install/launch commands are prepared but cannot be end-to-end verified without matching templates, SDK/ADB and JDK. Minimum Android 10/arm64 is a prototype proposal, not a tested device-support claim.
@@ -72,7 +80,7 @@ Commands ran from `C:\Codes\Godot\Beat my track` with PowerShell `-NoProfile`:
 | Godot `--headless --path game --script res://tests/test_driving.gd` | Latest suite: 56 checks, zero failures; includes JSON replay/diagnostic save and scene integration |
 | Godot `--path game -- --demo --capture=.../build/driving-demo.png` | Exit 0: rendered 400 physics ticks of scripted acceleration/turn, screenshot inspected; synthetic demo, not human playtest |
 
-The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -10.0 degrees corner slip versus -4.9 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test, race test or driving-feel approval was performed.
+The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -10.0 degrees corner slip versus -4.9 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test or driving-feel approval was performed. Three-lap automated practice-circuit tests are recorded in the newer four-track section above.
 
 ## Manual tests needed from owner
 

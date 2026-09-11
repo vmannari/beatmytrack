@@ -6,6 +6,7 @@ signal pause_requested
 signal profile_requested(index: int)
 signal handling_edited
 signal record_requested
+signal track_requested
 
 var config: HandlingConfig
 var driver: DriverInput
@@ -18,6 +19,7 @@ var tune_fields: VBoxContainer
 var profile_label: Label
 var debug_enabled: bool = true
 var hud_elapsed: float = 0.0
+var title: Label
 
 
 func _ready() -> void:
@@ -35,12 +37,13 @@ func _ready() -> void:
 	top.offset_right = -24
 	top.add_theme_constant_override("separation", 12)
 	root.add_child(top)
-	var title := _label("CIRCUIT / 01   ·   HANDLING YARD", 19)
+	title = _label("CIRCUIT / 01   ·   HANDLING YARD", 19)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(title)
 	_button(top, "Restart  R", func() -> void: restart_requested.emit())
 	_button(top, "Pause  Esc", func() -> void: pause_requested.emit())
 	if OS.is_debug_build():
+		_button(top, "Track F5", func() -> void: track_requested.emit())
 		_button(top, "Tune  F2", toggle_tuning)
 		_button(top, "Record  F3", func() -> void: record_requested.emit())
 	var panel := PanelContainer.new()

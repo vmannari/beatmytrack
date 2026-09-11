@@ -10,6 +10,10 @@ extends Resource
 @export var islands: Array[Vector3] = [Vector3(-23.0, 10.0, 5.0), Vector3(23.0, 10.0, 5.0)]
 
 
+func surface_factors(_state: VehicleState) -> Vector2:
+	return Vector2(1.0, 0.0)
+
+
 func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void:
 	# Swept circle against circle: even injected high-speed steps cannot tunnel.
 	for island: Vector3 in islands:

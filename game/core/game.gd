@@ -18,6 +18,16 @@ var previous_position: Vector2
 var previous_heading: float = 0.0
 var demo_capture: bool = false
 var capture_path: String = ""
+var track_index: int = -1
+const TRACK_NAMES: Array[String] = ["slicks_freeway_test", "slicks_1way_test", "slicks_66_test", "slicks_offroad_test"]
+var native_track: NativeTrack
+var track_session: TrackSession
+var track_ground: Node3D
+var track_debug: TrackDebug
+var ai_enabled: bool = false
+var route_driver := RouteDriver.new()
+var overview: bool = false
+var capture_tick: int = 0
 
 
 func _ready() -> void:
@@ -27,10 +37,17 @@ func _ready() -> void:
 		return
 	handling = (load(PROFILE_PATHS[profile_index]) as HandlingConfig).duplicate() as HandlingConfig
 	sim = VehicleSimulation.new(handling)
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--track="):
+			track_index = TRACK_NAMES.find(argument.trim_prefix("--track="))
+		if argument == "--overview": overview = true
+		if argument == "--ai": ai_enabled = true
+		if argument.begins_with("--capture-tick="): capture_tick = int(argument.trim_prefix("--capture-tick="))
+	if track_index >= 0:
+		native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json")
+		yard = native_track
 	var world: Node3D = $World
-	var ground := PlaygroundVisual.new()
-	world.add_child(ground)
-	ground.build(yard)
+	_build_ground(world)
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-58, -35, 0)
 	light.light_color = Color("fff1d8")
@@ -62,6 +79,12 @@ func _ready() -> void:
 	hud.profile_requested.connect(select_profile)
 	hud.handling_edited.connect(restart)
 	hud.record_requested.connect(toggle_recording)
+	hud.track_requested.connect(cycle_track)
+	track_debug = TrackDebug.new()
+	var debug_layer := CanvasLayer.new()
+	debug_layer.layer = 5
+	add_child(debug_layer)
+	debug_layer.add_child(track_debug)
 	restart()
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
@@ -70,7 +93,7 @@ func _ready() -> void:
 				demo_capture = true
 			if argument.begins_with("--capture="):
 				capture_path = argument.trim_prefix("--capture=")
-		if not capture_path.is_empty() and not demo_capture:
+		if not capture_path.is_empty() and not demo_capture and capture_tick == 0:
 			_capture_frame()
 
 
@@ -80,15 +103,22 @@ func _physics_process(_delta: float) -> void:
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	frame = driver.sample()
+	if ai_enabled and native_track != null:
+		frame = route_driver.sample(sim.state, native_track, handling)
 	if demo_capture:
 		frame = DriveFrame.sample(0.7 if sim.state.tick > 190 else 0.0, 1.0, 0.0)
 	sim.step(frame, yard)
+	if native_track != null:
+		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
 	trails.sample(sim.state, frame)
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
 		_save_recording()
 	if demo_capture and sim.state.tick == 400:
 		demo_capture = false
+		paused = true
+		_capture_frame()
+	if capture_tick > 0 and sim.state.tick == capture_tick and not capture_path.is_empty():
 		paused = true
 		_capture_frame()
 
@@ -100,8 +130,18 @@ func _process(delta: float) -> void:
 	var point: Vector2 = previous_position.lerp(sim.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, sim.state.heading, weight)
 	car.present(point, heading, sim.state, frame)
+	if native_track != null and sim.state.track_elevated:
+		car.position.y = native_track.bridge_height
 	camera.follow(point, sim.state.velocity, heading, delta)
 	hud.update_values(sim.state, frame, delta, paused, recorder.active)
+	track_debug.visible = overview and native_track != null
+	if native_track != null:
+		track_debug.track = native_track
+		track_debug.state = sim.state
+		track_debug.queue_redraw()
+		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
+		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
+		hud.message_label.text = "%s | Lap %d/3 | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(3, track_session.completed_laps + 1), progress_text, track_session.elapsed_ticks / 120.0, status_text]
 
 
 func restart() -> void:
@@ -110,12 +150,17 @@ func restart() -> void:
 	frame = DriveFrame.new()
 	paused = false
 	sim.reset(yard.spawn, yard.spawn_heading)
+	track_session = TrackSession.new()
+	hud.title.text = "CIRCUIT / 01  ·  " + (TRACK_NAMES[track_index].trim_prefix("slicks_").trim_suffix("_test").to_upper() if native_track != null else "HANDLING YARD")
+	if native_track != null:
+		sim.state.route_index = native_track.nearest_route(sim.state.position)
+		sim.state.track_elevated = native_track.elevated_at(sim.state.position, sim.state.route_index)
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	trails.clear()
 	camera.follow(sim.state.position, Vector2.ZERO, sim.state.heading, 0.0, true)
 	hud.touch.enabled = true
-	hud.message_label.text = "Brake before the circle. Lift and countersteer to catch a slide."
+	hud.message_label.text = "Brake before the circle. Lift and countersteer. F5: handling test tracks."
 
 
 func select_profile(index: int) -> void:
@@ -170,6 +215,34 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_F2: hud.toggle_tuning()
 			KEY_F3: toggle_recording()
 			KEY_F6: select_profile(profile_index)
+			KEY_F4: overview = not overview
+			KEY_F7: track_debug.detail = (track_debug.detail + 1) % 3
+			KEY_F5: cycle_track()
+			KEY_F9:
+				ai_enabled = not ai_enabled
+				restart()
+
+
+func _build_ground(world: Node3D) -> void:
+	if native_track != null:
+		var visual := NativeTrackVisual.new()
+		world.add_child(visual)
+		visual.build(native_track)
+		track_ground = visual
+	else:
+		var visual := PlaygroundVisual.new()
+		world.add_child(visual)
+		visual.build(yard)
+		track_ground = visual
+
+
+func cycle_track() -> void:
+	track_index = (track_index + 1) % (TRACK_NAMES.size() + 1)
+	track_ground.queue_free()
+	native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json") if track_index < TRACK_NAMES.size() else null
+	yard = native_track if native_track != null else PlaygroundData.new()
+	_build_ground($World)
+	restart()
 
 
 func _notification(what: int) -> void:

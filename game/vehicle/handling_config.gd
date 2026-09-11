@@ -3,7 +3,7 @@ extends Resource
 ## SI units unless noted. Arcade forces, not a physical tire model.
 
 @export var profile_name: String = "Balanced"
-@export var version: String = "handling-0.5"
+@export var version: String = "handling-0.6"
 @export_range(500.0, 2000.0, 10.0) var mass: float = 1050.0
 @export_range(1000.0, 22000.0, 100.0) var engine_force: float = 16500.0
 @export_range(2000.0, 30000.0, 100.0) var braking_force: float = 18000.0
@@ -16,19 +16,19 @@ extends Resource
 @export_range(0.2, 0.8, 0.01) var steering_angle: float = 0.60 # radians
 @export_range(0.0, 0.95, 0.01) var high_speed_steering_reduction: float = 0.65
 @export_range(2.0, 3.5, 0.05) var wheelbase: float = 2.55
-@export_range(6.0, 60.0, 0.25) var lateral_grip: float = 45.0 # maximum lateral acceleration
+@export_range(6.0, 60.0, 0.25) var lateral_grip: float = 50.0 # maximum lateral acceleration
 @export_range(6.0, 30.0, 0.25) var longitudinal_grip: float = 19.0 # maximum longitudinal acceleration
 @export_range(0.6, 1.4, 0.01) var front_grip: float = 1.0
-@export_range(0.6, 1.4, 0.01) var rear_grip: float = 0.95
+@export_range(0.6, 1.4, 0.01) var rear_grip: float = 1.0
 @export_range(0.1, 0.6, 0.01) var slip_threshold: float = 0.26 # radians
-@export_range(0.4, 1.0, 0.01) var sliding_grip: float = 0.85 # fraction of lateral grip
+@export_range(0.4, 1.0, 0.01) var sliding_grip: float = 0.92 # fraction of lateral grip
 @export_range(1.0, 12.0, 0.1) var grip_recovery: float = 5.0 # response/s
-@export_range(2.0, 20.0, 0.1) var lateral_response: float = 14.0 # response/s
-@export_range(0.0, 1.0, 0.05) var corner_energy_retention: float = 0.85 # lateral energy redirected into travel
+@export_range(2.0, 20.0, 0.1) var lateral_response: float = 17.0 # response/s
+@export_range(0.0, 1.0, 0.05) var corner_energy_retention: float = 0.50 # lateral energy redirected into travel
 @export_range(400.0, 4000.0, 50.0) var rotational_inertia: float = 850.0 # kg m^2 approximation
 @export_range(0.0, 3.0, 0.05) var countersteer_assistance: float = 0.65
-@export_range(0.0, 1.5, 0.05) var throttle_rotation: float = 0.35
-@export_range(0.0, 0.4, 0.01) var throttle_grip_loss: float = 0.12
+@export_range(0.0, 1.5, 0.05) var throttle_rotation: float = 0.20
+@export_range(0.0, 0.4, 0.01) var throttle_grip_loss: float = 0.07
 @export_range(0.5, 4.0, 0.1) var maximum_yaw_rate: float = 2.2 # rad/s
 @export_range(0.0, 0.8, 0.01) var collision_energy_loss: float = 0.35
 @export_range(0.0, 0.5, 0.01) var restitution: float = 0.12

@@ -45,6 +45,9 @@ func _run() -> void:
 	legacy.engine_force = 10500.0
 	legacy.maximum_speed = 34.0
 	legacy.corner_energy_retention = 0.0
+	legacy.rear_grip = 0.95
+	legacy.throttle_rotation = 0.35
+	legacy.throttle_grip_loss = 0.12
 	legacy.steering_rate = 8.0
 	legacy.steering_angle = 0.52
 	legacy.high_speed_steering_reduction = 0.8
@@ -68,7 +71,8 @@ func _run() -> void:
 	advance(old_coast, 120, 0.6, 0, 0)
 	advance(new_coast, 120, 0.6, 0, 0)
 	print("METRIC: 108 km/h coasting turn after 1s: %.1f -> %.1f km/h" % [old_coast.state.velocity.length() * 3.6, new_coast.state.velocity.length() * 3.6])
-	check(new_coast.state.velocity.length() > old_coast.state.velocity.length() + 2.0, "cornering retains materially more travel speed")
+	# Owner requested a middle ground after the 85% retention iteration.
+	check(new_coast.state.velocity.length() > old_coast.state.velocity.length() + 1.0 and new_coast.state.velocity.length() < 28.3, "cornering retains some speed while still scrubbing at least 6 km/h")
 	check(new_coast.state.velocity.dot(new_coast.state.forward()) > old_coast.state.velocity.dot(old_coast.state.forward()), "corner retention improves forward speed as well as total speed")
 	var energy_run := VehicleSimulation.new(config)
 	energy_run.state.velocity = Vector2(8, 30)
@@ -150,6 +154,7 @@ func _run() -> void:
 	advance(lifted, 100, 0.8, 0, 0)
 	print("METRIC: corner slip power %.1f°, lift %.1f°" % [rad_to_deg(powered.state.slip_angle()), rad_to_deg(lifted.state.slip_angle())])
 	check(absf(powered.state.slip_angle()) > absf(lifted.state.slip_angle()) + 0.03, "throttle materially increases corner rotation/slip")
+	check(absf(powered.state.slip_angle()) < deg_to_rad(18.0), "powered corner stays below 18 degrees slip instead of the previous 27")
 	var yard := PlaygroundData.new()
 	var hit := VehicleState.new()
 	hit.position = Vector2(90, 0)

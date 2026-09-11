@@ -49,11 +49,11 @@ Use Godot's Project → Open User Data Folder to find the file (`%APPDATA%\Circu
 
 Measured on Windows, Godot `4.7.2.stable.official.ed1daf0bf`:
 
-- 53 checks pass.
+- 54 checks pass.
 - From rest: 36.54 m/s after three seconds of full throttle.
 - From 24 m/s: 16.35 m braking versus 31.53 m coasting during the next 1.33 seconds.
 - Seeded 24-degree slide: below 0.04 radians after 1.5 seconds of released input, with grip recovered above 0.99.
-- Same 0.8-steering test: about -27.0 degrees slip under power, -6.0 degrees after lifting.
+- Same 0.8-steering test: about -13.1 degrees slip under power, -4.7 degrees after lifting.
 - 2,400 quantized inputs roundtripped through JSON reproduce identical final state at 1/2/4/8 ticks per render batch. This is not cross-platform proof, nor a frame pacing benchmark.
 
 An early wall-bound test found float32 rounding could place the center less than a micrometer outside the mathematical limit; collision placement was corrected with an inward separation rather than loosening the test. A graphical inspection found reversed winding on generated car panels; faces were corrected and recaptured.
@@ -83,3 +83,11 @@ G01: `vehicle_simulation.gd` previously removed lateral velocity without redirec
 Actual Windows `scripts/dev.ps1 Validate`: import, 17 parses, startup and 53 checks pass. A 108 km/h start with 0.6 steering and no throttle for one second ends at 103.7 km/h versus 95.1 with retention disabled. Forward velocity also improves. A 1,200-tick steering/recovery check confirms no energy gain without throttle. Existing braking, speed caps, recovery, collisions and exact same-engine replay pass. Acceleration remains 2.13 seconds to 100 km/h and top speed 165.6 km/h. Half-throttle quarter-turn radii at initial 43/65/86 km/h become 8.75/12.71/19.58 m because the car carries more speed; all remain substantially tighter than the original handling. Evidence: `docs/evidence/driving-tests.txt`.
 
 Restart F8 then F5, select Balanced and compare a sustained turn under throttle against a lift through the same corner. Check that it carries speed without feeling like steering supplies a boost. Physical Android and subjective owner acceptance remain pending.
+
+## Owner balance correction (handling-0.6)
+
+G01: owner found retention excessive and sliding too strong. Reduced corner energy retention from 0.85 to 0.50; increased Balanced lateral grip 45 -> 50, rear grip 0.95 -> 1.0, slide grip 0.85 -> 0.92 and lateral response 14 -> 17. Reduced throttle rotation 0.35 -> 0.20 and throttle grip loss 0.12 -> 0.07. Stable/Loose also receive stronger grip, while Loose retains its more playful balance. Changes are in the handling Resource defaults and preset Resources; simulation algorithm stays arcade-planar-0.3.
+
+Actual `scripts/dev.ps1 Validate` passed import, 17 parses, startup and 54 checks. The 108 km/h one-second coasting turn now ends at 101.2 km/h, versus 103.7 in handling-0.5. With the new grip but retention disabled it ends at 97.4. Powered corner slip falls from 27.0 to 13.1 degrees; lifting yields 4.7 degrees. Tight-turn radii at initial 43/65/86 km/h are 8.63/11.66/16.27 m. Acceleration/top speed stay 2.13 seconds to 100 km/h and 165.6 km/h. The retention regression now requires both an improvement over disabled retention and at least 6 km/h speed scrub, explicitly reflecting the owner's corrected target. Added a powered-slip upper bound; recovery, no-energy-gain, braking and replay invariants still pass. Evidence: docs/evidence/driving-tests.txt.
+
+Restart F8/F5, select Balanced and repeat a sustained powered turn followed by lifting. Expect noticeable speed scrub and a more planted rear. Subjective acceptance and physical Android tests remain pending.

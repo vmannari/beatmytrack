@@ -49,11 +49,11 @@ Use Godot's Project → Open User Data Folder to find the file (`%APPDATA%\Circu
 
 Measured on Windows, Godot `4.7.2.stable.official.ed1daf0bf`:
 
-- 46 checks pass.
-- From rest: 23.99 m/s after three seconds of full throttle.
+- 50 checks pass.
+- From rest: 36.54 m/s after three seconds of full throttle.
 - From 24 m/s: 16.35 m braking versus 31.53 m coasting during the next 1.33 seconds.
 - Seeded 24-degree slide: below 0.04 radians after 1.5 seconds of released input, with grip recovered above 0.99.
-- Same 0.8-steering test: about -15.5 degrees slip under power, -6.3 degrees after lifting.
+- Same 0.8-steering test: about -23.9 degrees slip under power, -6.3 degrees after lifting.
 - 2,400 quantized inputs roundtripped through JSON reproduce identical final state at 1/2/4/8 ticks per render batch. This is not cross-platform proof, nor a frame pacing benchmark.
 
 An early wall-bound test found float32 rounding could place the center less than a micrometer outside the mathematical limit; collision placement was corrected with an inward separation rather than loosening the test. A graphical inspection found reversed winding on generated car panels; faces were corrected and recaptured.
@@ -67,3 +67,11 @@ Handling version `handling-0.3` responds to the owner's large-turning-radius fee
 A full-steering, half-throttle quarter-turn test measures travelled distance divided by the change in **velocity direction**, rather than body heading. Starting at 43/65/86 km/h, effective turn radius fell from 15.36/25.27/41.44 m to 7.56/10.66/15.61 m. Speed evolves during these maneuvers; these are not constant-speed circle radii. Three regression checks require at least 25% improvement against the preserved old configuration. All 46 checks pass, including replay and recovery. Acceleration and straight braking metrics remain unchanged.
 
 Restart the running project (F8 then F5) to load the revised script defaults. Select 2/Balanced and repeat a 60?80 km/h turn around an island, then try a quick left-right change and a lift/countersteer recovery. The owner still needs to judge whether it matches the desired feel. Windows scripted capture: `docs/evidence/driving-formula.png`; physical Android was not tested.
+
+## Owner acceleration/top-speed iteration (handling-0.4)
+
+G01: increased shared engine force from 10,500 to 16,500 N and maximum speed from 34 to 46 m/s (122.4 to 165.6 km/h) in `game/vehicle/handling_config.gd`. All three presets inherit the increase. Steering/grip tuning remains from handling-0.3. Stronger engine force also accelerates reverse faster, with the same delayed engagement and 7 m/s reverse cap.
+
+Actual Windows `scripts/dev.ps1 Validate` passed import, 17 script parses, startup and all 50 checks. Measured 0?100 km/h improves from 3.63 to 2.13 seconds; speed after three seconds is 36.54 m/s. Straight-line simulation reaches the 165.6 km/h cap. Quarter-turn effective radii are now 8.24/11.43/17.05 m at initial 43/65/86 km/h under half throttle; the extra acceleration widens these slightly from handling-0.3 but all retain the required improvement over the original handling. New top-speed steering/recovery checks pass, as do braking, collisions, all presets and exact replay. Camera visibility tests now use the configured maximum speed. Evidence: `docs/evidence/driving-tests.txt`.
+
+Restart with F8 then F5; try 2/Balanced, launch down the braking lane, then brake into a circle and accelerate out. The compact yard limits sustained top-speed driving; the top-speed measurement uses the isolated simulation without walls. Owner feel evaluation and physical Android testing remain pending.

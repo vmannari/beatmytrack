@@ -3,13 +3,13 @@ extends Resource
 ## SI units unless noted. Arcade forces, not a physical tire model.
 
 @export var profile_name: String = "Balanced"
-@export var version: String = "handling-0.3"
+@export var version: String = "handling-0.4"
 @export_range(500.0, 2000.0, 10.0) var mass: float = 1050.0
-@export_range(1000.0, 22000.0, 100.0) var engine_force: float = 10500.0
+@export_range(1000.0, 22000.0, 100.0) var engine_force: float = 16500.0
 @export_range(2000.0, 30000.0, 100.0) var braking_force: float = 18000.0
 @export_range(0.0, 4.0, 0.1) var drag: float = 0.65 # N per (m/s)^2
 @export_range(0.0, 800.0, 10.0) var rolling_resistance: float = 180.0 # N
-@export_range(10.0, 60.0, 1.0) var maximum_speed: float = 34.0 # m/s
+@export_range(10.0, 60.0, 1.0) var maximum_speed: float = 46.0 # m/s
 @export_range(2.0, 12.0, 0.5) var reverse_speed: float = 7.0
 @export_range(0.1, 1.0, 0.05) var reverse_delay: float = 0.35 # seconds stopped
 @export_range(1.0, 15.0, 0.1) var steering_rate: float = 12.0 # normalized input/s

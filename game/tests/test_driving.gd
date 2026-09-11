@@ -42,6 +42,8 @@ func corner_radius(config: HandlingConfig, speed: float) -> float:
 func _run() -> void:
 	var config := HandlingConfig.new()
 	var legacy := config.duplicate() as HandlingConfig
+	legacy.engine_force = 10500.0
+	legacy.maximum_speed = 34.0
 	legacy.steering_rate = 8.0
 	legacy.steering_angle = 0.52
 	legacy.high_speed_steering_reduction = 0.8
@@ -63,6 +65,22 @@ func _run() -> void:
 	check(sim.state.velocity.y > 20.0 and absf(sim.state.velocity.x) < 0.001, "throttle accelerates along car heading")
 	advance(sim, 3000, 0, 1, 0)
 	check(sim.state.velocity.length() <= config.maximum_speed + 0.001, "forward speed cap")
+	print("METRIC: achieved top speed = %.1f km/h" % (sim.state.velocity.length() * 3.6))
+	check(sim.state.velocity.length() >= 45.9, "full throttle reaches the increased top speed")
+	var acceleration_times: Array[float] = []
+	for setup: HandlingConfig in [legacy, config]:
+		var sprint := VehicleSimulation.new(setup)
+		while sprint.state.velocity.length() < 100.0 / 3.6 and sprint.state.tick < 1200:
+			sprint.step(DriveFrame.sample(0, 1, 0))
+		acceleration_times.append(sprint.state.tick * VehicleSimulation.STEP)
+	print("METRIC: 0-100 km/h %.2fs -> %.2fs" % [acceleration_times[0], acceleration_times[1]])
+	check(acceleration_times[1] < acceleration_times[0] * 0.75, "0-100 acceleration is at least 25% quicker")
+	var fast_turn := VehicleSimulation.new(config)
+	fast_turn.state.velocity = Vector2(0, config.maximum_speed)
+	advance(fast_turn, 120, 0.35, 0, 0)
+	check(fast_turn.state.velocity.x > 10.0 and fast_turn.state.position.is_finite(), "steering changes travel direction from the new top speed")
+	advance(fast_turn, 240, 0, 0, 0)
+	check(absf(fast_turn.state.slip_angle()) < 0.04, "high-speed turn recovers after lifting and centering")
 	var lighter := VehicleSimulation.new(config.duplicate() as HandlingConfig)
 	var heavier := VehicleSimulation.new(config.duplicate() as HandlingConfig)
 	heavier.config.mass *= 1.5
@@ -219,7 +237,7 @@ func _integration() -> void:
 	check(sim.config.lateral_grip == 18.5 and sim.state.tick == 0, "live tuning writes active handling and resets the run")
 	var camera: FollowCamera = scene.get("camera")
 	for heading: float in [0.0, PI * 0.5, PI, -PI * 0.5]:
-		camera.follow(Vector2.ZERO, Vector2(sin(heading), cos(heading)) * 34.0, heading, 0.0, true)
+		camera.follow(Vector2.ZERO, Vector2(sin(heading), cos(heading)) * sim.config.maximum_speed, heading, 0.0, true)
 		var screen: Vector2 = camera.unproject_position(Vector3.ZERO)
 		var viewport: Vector2 = root.get_visible_rect().size
 		check(screen.x > viewport.x * 0.15 and screen.x < viewport.x * 0.85 and screen.y > viewport.y * 0.15 and screen.y < viewport.y * 0.85, "camera retains player at heading %.0f degrees" % rad_to_deg(heading))

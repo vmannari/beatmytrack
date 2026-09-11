@@ -49,13 +49,21 @@ Use Godot's Project → Open User Data Folder to find the file (`%APPDATA%\Circu
 
 Measured on Windows, Godot `4.7.2.stable.official.ed1daf0bf`:
 
-- 43 checks pass.
+- 46 checks pass.
 - From rest: 23.99 m/s after three seconds of full throttle.
 - From 24 m/s: 16.35 m braking versus 31.53 m coasting during the next 1.33 seconds.
 - Seeded 24-degree slide: below 0.04 radians after 1.5 seconds of released input, with grip recovered above 0.99.
-- Same 0.8-steering test: about -18.3 degrees slip under power, -6.9 degrees after lifting.
+- Same 0.8-steering test: about -15.5 degrees slip under power, -6.3 degrees after lifting.
 - 2,400 quantized inputs roundtripped through JSON reproduce identical final state at 1/2/4/8 ticks per render batch. This is not cross-platform proof, nor a frame pacing benchmark.
 
 An early wall-bound test found float32 rounding could place the center less than a micrometer outside the mathematical limit; collision placement was corrected with an inward separation rather than loosening the test. A graphical inspection found reversed winding on generated car panels; faces were corrected and recaptured.
 
 Android SDK/JDK/templates remain unavailable at the configured paths; no APK/device run was performed. No timing/PB/checkpoint circuit yet, no audio/haptics yet, no final material/outline pipeline, no independent per-axle tire solver and no mobile thermal profiling. Do not expand into other product systems on the strength of automated checks alone.
+
+## Owner handling iteration: tighter Formula-inspired response
+
+Handling version `handling-0.3` responds to the owner's large-turning-radius feedback (G01). This is an original tuning pass toward the requested Slicks 'n' Slide Formula feel, not a reconstruction of its physics. Balanced remains the default. Steering reaches full input in 83 ms instead of 125 ms; reduced yaw inertia makes direction changes quicker. High-speed steering reduction is 65% instead of 80%, with a larger maximum steering angle. Stronger lateral grip and slip grip let the path follow the nose while preserving power-induced slip. Stable and Loose share the tighter steering with separate grip balances. The live grip slider now covers the new values.
+
+A full-steering, half-throttle quarter-turn test measures travelled distance divided by the change in **velocity direction**, rather than body heading. Starting at 43/65/86 km/h, effective turn radius fell from 15.36/25.27/41.44 m to 7.56/10.66/15.61 m. Speed evolves during these maneuvers; these are not constant-speed circle radii. Three regression checks require at least 25% improvement against the preserved old configuration. All 46 checks pass, including replay and recovery. Acceleration and straight braking metrics remain unchanged.
+
+Restart the running project (F8 then F5) to load the revised script defaults. Select 2/Balanced and repeat a 60?80 km/h turn around an island, then try a quick left-right change and a lift/countersteer recovery. The owner still needs to judge whether it matches the desired feel. Windows scripted capture: `docs/evidence/driving-formula.png`; physical Android was not tested.

@@ -10,7 +10,7 @@ Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current impleme
 - Added a high-oblique fixed-yaw camera, bounded look-ahead, render interpolation, original matte car geometry, steering wheels/brake lamps and a capped skid-trail pool. Initial framing uses baseline / 1.15; full reference calibration is pending.
 - Keyboard and simultaneous touch adapters work. Focus/background loss pauses and clears inputs. Added optional speed/longitudinal/lateral/slip/input/yaw/grip/FPS/tick telemetry.
 - F3 records up to two minutes of quantized controls with handling/physics metadata and periodic states, then saves a local diagnostic JSON. No backend/analytics.
-- Added 43 passing driving/replay/input/lifecycle/tuning/camera checks to the validation wrapper. Exact same-engine replay passed for 2,400 ticks at four render batch sizes; Android remains untested.
+- Added 46 passing driving/replay/input/lifecycle/tuning/camera checks to the validation wrapper. Exact same-engine replay passed for 2,400 ticks at four render batch sizes; Android remains untested.
 - Inspected real Windows driving captures. Guide: `docs/DRIVING_PLAYGROUND.md`; evidence: `docs/evidence/driving-playground.png` and `docs/evidence/driving-tests.txt`.
 
 - Reviewed the full blueprint package, all supplied visual references/UI screens, camera contracts, architecture, roadmap/backlog and nine-sheet financial model. The 71 manifest entries match their supplied SHA-256 hashes. Original package files are preserved unchanged.
@@ -24,7 +24,7 @@ Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current impleme
 
 ## Currently working
 
-The driving playground is ready for the first subjective steering/slide-recovery session. No owner approval is implied by the automated results. Android toolchain remains unavailable at the configured paths.
+Owner feedback: turning radius was too large; requested Slicks 'n' Slide Formula-like feel. Implemented handling-0.3 with quicker steering/yaw response and stronger cornering/sliding grip across all presets. Effective quarter-turn radii at initial 43/65/86 km/h improved from 15.36/25.27/41.44 m to 7.56/10.66/15.61 m. All 46 checks pass through Validate; inspected the Windows scripted driving capture in docs/evidence/driving-formula.png. Revised feel awaits owner evaluation. No owner approval is implied by the automated results. Android toolchain remains unavailable at the configured paths.
 
 ## Next
 
@@ -69,10 +69,10 @@ Commands ran from `C:\Codes\Godot\Beat my track` with PowerShell `-NoProfile`:
 | Temporary malformed GDScript through `Validate` | Expected exit 1: syntax error detected; probe removed afterward; evidence saved |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Validate` after removing the probe | Exit 0: clean import, one script parsed, main-scene startup passed |
 | Driving `scripts/dev.ps1 Capture` | Exit 0: import, 17 script parses, `PLAYGROUND_READY`, driving regression checks and graphical capture |
-| Godot `--headless --path game --script res://tests/test_driving.gd` | Latest suite: 43 checks, zero failures; includes JSON replay/diagnostic save and scene integration |
+| Godot `--headless --path game --script res://tests/test_driving.gd` | Latest suite: 46 checks, zero failures; includes JSON replay/diagnostic save and scene integration |
 | Godot `--path game -- --demo --capture=.../build/driving-demo.png` | Exit 0: rendered 400 physics ticks of scripted acceleration/turn, screenshot inspected; synthetic demo, not human playtest |
 
-The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -18.3 degrees corner slip versus -6.9 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test, race test or driving-feel approval was performed.
+The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -15.5 degrees corner slip versus -6.3 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test, race test or driving-feel approval was performed.
 
 ## Manual tests needed from owner
 

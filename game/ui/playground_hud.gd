@@ -100,7 +100,7 @@ func show_config(handling: HandlingConfig) -> void:
 		_button(profiles, ["1 Stable", "2 Balanced", "3 Loose"][i], func() -> void: profile_requested.emit(i))
 	var fields: Array[Array] = [
 		["Engine force · N", "engine_force", 5000.0, 18000.0, 500.0],
-		["Lateral grip · m/s²", "lateral_grip", 8.0, 24.0, 0.5],
+		["Lateral grip · m/s²", "lateral_grip", 8.0, 60.0, 0.5],
 		["Rear grip balance", "rear_grip", 0.65, 1.3, 0.05],
 		["Steering response · /s", "steering_rate", 2.0, 12.0, 0.5],
 		["Countersteer assist", "countersteer_assistance", 0.0, 2.0, 0.1],

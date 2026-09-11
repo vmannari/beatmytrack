@@ -24,8 +24,37 @@ func advance(sim: VehicleSimulation, count: int, steering: float, gas: float, br
 		sim.step(frame)
 
 
+## Distance travelled / velocity-direction change measures the path, not body yaw.
+func corner_radius(config: HandlingConfig, speed: float) -> float:
+	var car := VehicleSimulation.new(config)
+	car.state.velocity = Vector2(0, speed)
+	var distance: float = 0.0
+	for i: int in range(600):
+		var previous: Vector2 = car.state.position
+		car.step(DriveFrame.sample(1, 0.5, 0))
+		distance += car.state.position.distance_to(previous)
+		var direction: float = atan2(car.state.velocity.x, car.state.velocity.y)
+		if direction >= PI * 0.5:
+			return distance / direction
+	return INF
+
+
 func _run() -> void:
 	var config := HandlingConfig.new()
+	var legacy := config.duplicate() as HandlingConfig
+	legacy.steering_rate = 8.0
+	legacy.steering_angle = 0.52
+	legacy.high_speed_steering_reduction = 0.8
+	legacy.lateral_grip = 16.0
+	legacy.sliding_grip = 0.72
+	legacy.lateral_response = 9.0
+	legacy.rotational_inertia = 1300.0
+	legacy.maximum_yaw_rate = 2.6
+	for speed: float in [12.0, 18.0, 24.0]:
+		var old_radius: float = corner_radius(legacy, speed)
+		var new_radius: float = corner_radius(config, speed)
+		print("METRIC: quarter-turn at %.0f km/h, effective radius %.2fm -> %.2fm" % [speed * 3.6, old_radius, new_radius])
+		check(is_finite(new_radius) and new_radius < old_radius * 0.75, "actual turning path at %.0f km/h is at least 25%% tighter" % (speed * 3.6))
 	var sim := VehicleSimulation.new(config)
 	advance(sim, 600, 0, 0, 0)
 	check(sim.state.position == Vector2.ZERO and sim.state.heading == 0, "idle has no creep or stationary steering")

@@ -1,0 +1,170 @@
+[CmdletBinding()]
+param(
+    [ValidateSet('Doctor', 'Validate', 'Run', 'Editor', 'Capture', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [string]$Action = 'Validate',
+    [string]$GodotPath = $env:GODOT_BIN,
+    [string]$DeviceSerial = '',
+    [string]$AdbPath = $env:ADB_BIN
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Join-Path $repoRoot 'game'
+$buildRoot = Join-Path $repoRoot 'build'
+$expectedVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'godot-version.txt') -Raw).Trim()
+$apkPath = Join-Path $buildRoot 'android/circuit01-debug.apk'
+$packageId = 'org.circuit01.handlinglab'
+New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+
+function Find-Godot {
+    if ($GodotPath) {
+        if (-not (Test-Path -LiteralPath $GodotPath -PathType Leaf)) { throw "GODOT_BIN / -GodotPath does not exist: $GodotPath" }
+        return $GodotPath
+    }
+    $candidates = @('C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe')
+    $found = Get-Command 'Godot_v4.7.2-stable_win64_console.exe', 'godot.exe', 'godot.cmd' -ErrorAction SilentlyContinue
+    foreach ($item in $found) { $candidates += $item.Source }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    throw 'Godot not found. Set GODOT_BIN to the pinned standard console executable, or pass -GodotPath.'
+}
+
+function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogName) {
+    # Native Godot may report script errors while exiting 0; inspect output as well.
+    # Windows PowerShell 5 wraps stderr as NativeCommandError, even for benign
+    # editor diagnostics. Capture it, then classify the exit code and text.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& $Executable @Arguments 2>&1 | ForEach-Object { "$_" })
+        $nativeExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    $lines | Set-Content -LiteralPath (Join-Path $buildRoot $LogName) -Encoding UTF8
+    $lines | ForEach-Object { Write-Host $_ }
+    if ($nativeExit -ne 0 -or ($lines -match '(?i)SCRIPT ERROR:|(^|\s)ERROR:|Parse Error:')) {
+        throw "Command failed (exit $nativeExit); see build/$LogName."
+    }
+}
+
+function Invoke-Validation {
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log'
+    $scripts = @(Get-ChildItem -LiteralPath $projectRoot -Filter '*.gd' -Recurse | Where-Object { $_.FullName -notmatch '[\\/]\.godot[\\/]' })
+    foreach ($source in $scripts) {
+        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $source.FullName) 'parse.log'
+    }
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--quit-after', '8') 'startup.log'
+    if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'BOOTSTRAP_READY' -Quiet)) {
+        throw 'Main scene did not emit BOOTSTRAP_READY.'
+    }
+    Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup. No driving/race tests exist in bootstrap."
+}
+
+function Get-AndroidPaths {
+    $settingsFile = Join-Path $env:APPDATA 'Godot/editor_settings-4.7.tres'
+    $settingsText = if (Test-Path -LiteralPath $settingsFile) { Get-Content -LiteralPath $settingsFile -Raw } else { '' }
+    $sdk = ''; $jdk = ''
+    if ($settingsText -match 'export/android/android_sdk_path\s*=\s*"([^"]*)"') { $sdk = $Matches[1].Replace('\\', '\') }
+    if ($settingsText -match 'export/android/java_sdk_path\s*=\s*"([^"]*)"') { $jdk = $Matches[1].Replace('\\', '\') }
+    return @{
+        Sdk = $sdk
+        Jdk = $jdk
+        Templates = (Join-Path $env:APPDATA 'Godot/export_templates/4.7.2.stable')
+    }
+}
+
+function Get-Adb {
+    if ($AdbPath) {
+        if (-not (Test-Path -LiteralPath $AdbPath -PathType Leaf)) { throw "ADB_BIN / -AdbPath does not exist: $AdbPath" }
+        return $AdbPath
+    }
+    $android = Get-AndroidPaths
+    if ($android.Sdk) {
+        $configured = Join-Path $android.Sdk 'platform-tools/adb.exe'
+        if (Test-Path -LiteralPath $configured -PathType Leaf) { return $configured }
+    }
+    $command = Get-Command adb.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    throw 'ADB not found. Configure Android SDK Path in Godot 4.7.2 Editor Settings, or pass -AdbPath.'
+}
+
+function Test-AndroidTools {
+    $android = Get-AndroidPaths
+    $missing = @()
+    if (-not (Test-Path -LiteralPath (Join-Path $android.Templates 'android_debug.apk'))) { $missing += '4.7.2.stable Android debug export template' }
+    if (-not $android.Sdk -or -not (Test-Path -LiteralPath (Join-Path $android.Sdk 'platform-tools/adb.exe'))) { $missing += 'Android SDK with platform-tools/adb.exe in Godot Editor Settings' }
+    if (-not $android.Sdk -or -not (Test-Path -LiteralPath (Join-Path $android.Sdk 'build-tools'))) { $missing += 'Android SDK build-tools' }
+    if (-not $android.Jdk -or -not (Test-Path -LiteralPath (Join-Path $android.Jdk 'bin/jarsigner.exe'))) { $missing += 'JDK (17 recommended) in Godot Editor Settings' }
+    Write-Host "Android template directory: $($android.Templates)"
+    if ($missing.Count) { throw "Android prerequisites missing: $($missing -join '; '). See docs/ANDROID.md. No APK or device test produced." }
+}
+
+function Get-SelectedDevice([string]$AdbExecutable) {
+    $output = @(& $AdbExecutable devices 2>&1 | ForEach-Object { "$_" })
+    if ($LASTEXITCODE -ne 0) { throw "adb devices failed: $($output -join ' ')" }
+    $available = @($output | Where-Object { $_ -match '^\S+\s+device$' } | ForEach-Object { ($_ -split '\s+')[0] })
+    if ($DeviceSerial) {
+        if ($available -notcontains $DeviceSerial) { throw "Device '$DeviceSerial' is not authorized/online. Unlock the phone and accept its USB debugging prompt." }
+        return $DeviceSerial
+    }
+    if ($available.Count -ne 1) { throw "Expected one authorized device; found $($available.Count). Connect a phone, or specify -DeviceSerial. adb output: $($output -join ' ')" }
+    return $available[0]
+}
+
+function Export-Android {
+    Invoke-Validation
+    Test-AndroidTools
+    New-Item -ItemType Directory -Path (Split-Path -Parent $apkPath) -Force | Out-Null
+    # Export to a fresh name so a failed build can never deploy a stale APK.
+    $freshApk = Join-Path (Split-Path -Parent $apkPath) ('circuit01-' + [guid]::NewGuid().ToString('N') + '.apk')
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-debug', 'Android Debug', $freshApk) 'android-export.log'
+    if (-not (Test-Path -LiteralPath $freshApk -PathType Leaf)) { throw 'Export returned without an APK.' }
+    Move-Item -LiteralPath $freshApk -Destination $apkPath -Force
+    Write-Host "APK: $apkPath"
+}
+
+function Install-Android {
+    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw 'No debug APK. Run ExportAndroid first.' }
+    $adb = Get-Adb
+    $serial = Get-SelectedDevice $adb
+    Invoke-Checked $adb @('-s', $serial, 'install', '-r', $apkPath) 'adb-install.log'
+}
+
+function Launch-Android {
+    $adb = Get-Adb
+    $serial = Get-SelectedDevice $adb
+    Invoke-Checked $adb @('-s', $serial, 'shell', 'am', 'start', '-W', '-n', "$packageId/com.godot.game.GodotApp") 'adb-launch.log'
+}
+
+try {
+    $script:godot = Find-Godot
+    $version = (@(& $script:godot --version 2>&1 | ForEach-Object { "$_" }) -join "`n").Trim()
+    if ($LASTEXITCODE -ne 0 -or $version -ne $expectedVersion) { throw "Engine mismatch: expected $expectedVersion; got '$version' from $script:godot." }
+    Write-Host "Godot: $version ($script:godot)"
+    switch ($Action) {
+        'Doctor' {
+            Test-AndroidTools
+            $adb = Get-Adb
+            Invoke-Checked $adb @('devices', '-l') 'adb-devices.log'
+            Write-Host 'Tool prerequisites found. Device list is not proof of physical-phone acceptance.'
+        }
+        'Validate' { Invoke-Validation }
+        'Run' { Invoke-Checked $script:godot @('--path', $projectRoot) 'run.log' }
+        'Editor' { Invoke-Checked $script:godot @('--path', $projectRoot, '--editor') 'editor.log' }
+        'Capture' {
+            Invoke-Validation
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot 'bootstrap.png')") 'capture.log'
+        }
+        'ExportAndroid' { Export-Android }
+        'InstallAndroid' { Install-Android }
+        'LaunchAndroid' { Launch-Android }
+        'DeployAndroid' { Export-Android; Install-Android; Launch-Android }
+    }
+    exit 0
+} catch {
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    exit 1
+}

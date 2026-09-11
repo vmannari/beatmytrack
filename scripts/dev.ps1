@@ -57,10 +57,11 @@ function Invoke-Validation {
         Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $source.FullName) 'parse.log'
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--quit-after', '8') 'startup.log'
-    if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'BOOTSTRAP_READY' -Quiet)) {
-        throw 'Main scene did not emit BOOTSTRAP_READY.'
+    if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'PLAYGROUND_READY' -Quiet)) {
+        throw 'Main scene did not emit PLAYGROUND_READY.'
     }
-    Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup. No driving/race tests exist in bootstrap."
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_driving.gd') 'driving-tests.log'
+    Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup and driving regression tests."
 }
 
 function Get-AndroidPaths {
@@ -156,7 +157,7 @@ try {
         'Editor' { Invoke-Checked $script:godot @('--path', $projectRoot, '--editor') 'editor.log' }
         'Capture' {
             Invoke-Validation
-            Invoke-Checked $script:godot @('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot 'bootstrap.png')") 'capture.log'
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot 'playground.png')") 'capture.log'
         }
         'ExportAndroid' { Export-Android }
         'InstallAndroid' { Install-Android }

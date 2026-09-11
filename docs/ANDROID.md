@@ -41,9 +41,9 @@ Use the wrapper for validation before export and protection against deploying a 
 
 ## Manual tests, in order
 
-Bootstrap only: launch the Windows project; expect a charcoal screen saying “CIRCUIT / 01”, “Handling laboratory” and “Bootstrap ready. Driving prototype comes next.” Resize wider and close normally. On Android, once tools are installed, verify the same startup in landscape. There is no driving-feel question to answer on this screen.
+The driving playground is now available on Windows: open `game/project.godot`, press F5, and use WASD/arrows with Space for brake. See `DRIVING_PLAYGROUND.md` for the current controls and first handling session. On Android, once tools are installed, verify the same yard in landscape and all four touch zones. Synthetic desktop touch checks have passed; real finger/safe-area behavior is not yet validated.
 
-Once the physics playground is delivered, the first subjective session is:
+The first subjective session is:
 
 1. Hold throttle, release, then brake. Judge whether acceleration and stopping are immediate and predictable.
 2. At low and high speed, reverse steering. Judge whether heading responds promptly without losing readable momentum.

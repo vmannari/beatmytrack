@@ -10,7 +10,7 @@ Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current impleme
 - Added a high-oblique fixed-yaw camera, bounded look-ahead, render interpolation, original matte car geometry, steering wheels/brake lamps and a capped skid-trail pool. Initial framing uses baseline / 1.15; full reference calibration is pending.
 - Keyboard and simultaneous touch adapters work. Focus/background loss pauses and clears inputs. Added optional speed/longitudinal/lateral/slip/input/yaw/grip/FPS/tick telemetry.
 - F3 records up to two minutes of quantized controls with handling/physics metadata and periodic states, then saves a local diagnostic JSON. No backend/analytics.
-- Added 50 passing driving/replay/input/lifecycle/tuning/camera checks to the validation wrapper. Exact same-engine replay passed for 2,400 ticks at four render batch sizes; Android remains untested.
+- Added 53 passing driving/replay/input/lifecycle/tuning/camera checks to the validation wrapper. Exact same-engine replay passed for 2,400 ticks at four render batch sizes; Android remains untested.
 - Inspected real Windows driving captures. Guide: `docs/DRIVING_PLAYGROUND.md`; evidence: `docs/evidence/driving-playground.png` and `docs/evidence/driving-tests.txt`.
 
 - Reviewed the full blueprint package, all supplied visual references/UI screens, camera contracts, architecture, roadmap/backlog and nine-sheet financial model. The 71 manifest entries match their supplied SHA-256 hashes. Original package files are preserved unchanged.
@@ -24,7 +24,7 @@ Updated: 2026-09-11. Active product gate: **P0 handling proof**. Current impleme
 
 ## Currently working
 
-Owner requested faster acceleration and top speed after the tighter-steering iteration. Implemented handling-0.4 (G01): engine force 10,500 -> 16,500 N, speed cap 34 -> 46 m/s across all presets. Measured 0-100 km/h: 3.63 -> 2.13 seconds; achieved top speed 165.6 km/h. Steering/grip values remain from handling-0.3. Validate passed import, 17 parses, startup and 50 checks including new acceleration, achieved speed and high-speed turn/recovery checks; replay remains exact on this engine. Updated tests and docs/evidence/driving-tests.txt. Restart F8/F5 and evaluate launch, corner exit and braking in Balanced; the yard limits sustained top-speed runs. Physical Android was not tested and owner feel approval remains open.
+Owner requested less forward-speed loss when turning. Implemented handling-0.5 / arcade-planar-0.3 (G01): grip redirects most removed lateral energy into forward travel before braking/drag, with retention fading for broadside slides. Changed vehicle simulation/config and regression tests. A one-second coasting turn from 108 km/h now ends at 103.7 rather than 95.1 km/h; forward velocity improves too. Validate passed import, 17 parses, startup and 53 checks, including no steering-generated energy, braking, recovery, tighter-radius bounds and exact replay. Evidence updated in docs/evidence/driving-tests.txt; details in docs/DRIVING_PLAYGROUND.md. Restart F8/F5 and compare sustained powered turns with lifting. Physical Android was not tested; owner feel approval remains open.
 
 ## Next
 
@@ -69,10 +69,10 @@ Commands ran from `C:\Codes\Godot\Beat my track` with PowerShell `-NoProfile`:
 | Temporary malformed GDScript through `Validate` | Expected exit 1: syntax error detected; probe removed afterward; evidence saved |
 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Validate` after removing the probe | Exit 0: clean import, one script parsed, main-scene startup passed |
 | Driving `scripts/dev.ps1 Capture` | Exit 0: import, 17 script parses, `PLAYGROUND_READY`, driving regression checks and graphical capture |
-| Godot `--headless --path game --script res://tests/test_driving.gd` | Latest suite: 50 checks, zero failures; includes JSON replay/diagnostic save and scene integration |
+| Godot `--headless --path game --script res://tests/test_driving.gd` | Latest suite: 53 checks, zero failures; includes JSON replay/diagnostic save and scene integration |
 | Godot `--path game -- --demo --capture=.../build/driving-demo.png` | Exit 0: rendered 400 physics ticks of scripted acceleration/turn, screenshot inspected; synthetic demo, not human playtest |
 
-The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -23.9 degrees corner slip versus -6.3 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test, race test or driving-feel approval was performed.
+The Windows capture reports NVIDIA GeForce RTX 3090 / OpenGL 3.3.0. This is desktop rendering evidence, not a phone performance measurement. The braking test covered 16.35 m versus 31.53 m coasting over 1.33 s from 24 m/s. Power produced -27.0 degrees corner slip versus -6.0 degrees lifting. Same-engine JSON replay had zero final-state divergence for batches of 1/2/4/8 ticks. No APK export, ADB installation, Android launch, physical-phone test, race test or driving-feel approval was performed.
 
 ## Manual tests needed from owner
 

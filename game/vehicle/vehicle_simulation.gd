@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.2"
+const PHYSICS_VERSION: String = "arcade-planar-0.3"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -54,6 +54,13 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
 	var lateral_acceleration: float = clampf(-lateral * config.lateral_response, -grip_limit, grip_limit)
+	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
+	# Grip redirects most scrubbed lateral energy into travel instead of deleting it.
+	# Fade for broadside slides; retain direction in reverse. Apply before pedals so
+	# braking and drag still remove energy, and collisions never get compensated.
+	var removed_energy: float = maxf(0.0, lateral * lateral - next_lateral * next_lateral)
+	var alignment: float = clampf(absf(longitudinal) / maxf(absf(lateral), 0.01), 0.0, 1.0)
+	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment)
 	var drive_acceleration: float = _pedal_acceleration(longitudinal, throttle, brake)
 	# Combined traction budgets make braking and acceleration compete with cornering.
 	var lateral_usage: float = absf(lateral_acceleration) / maxf(grip_limit, 0.01)
@@ -68,7 +75,6 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
 	next_longitudinal = clampf(next_longitudinal, -config.reverse_speed, config.maximum_speed)
-	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
 	state.velocity = forward * next_longitudinal + right * next_lateral
 	state.velocity = state.velocity.limit_length(config.maximum_speed)
 	var previous_position: Vector2 = state.position

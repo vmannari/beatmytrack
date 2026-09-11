@@ -44,6 +44,7 @@ func _run() -> void:
 	var legacy := config.duplicate() as HandlingConfig
 	legacy.engine_force = 10500.0
 	legacy.maximum_speed = 34.0
+	legacy.corner_energy_retention = 0.0
 	legacy.steering_rate = 8.0
 	legacy.steering_angle = 0.52
 	legacy.high_speed_steering_reduction = 0.8
@@ -58,6 +59,25 @@ func _run() -> void:
 		print("METRIC: quarter-turn at %.0f km/h, effective radius %.2fm -> %.2fm" % [speed * 3.6, old_radius, new_radius])
 		check(is_finite(new_radius) and new_radius < old_radius * 0.75, "actual turning path at %.0f km/h is at least 25%% tighter" % (speed * 3.6))
 	var sim := VehicleSimulation.new(config)
+	var old_corner := config.duplicate() as HandlingConfig
+	old_corner.corner_energy_retention = 0.0
+	var old_coast := VehicleSimulation.new(old_corner)
+	var new_coast := VehicleSimulation.new(config)
+	old_coast.state.velocity = Vector2(0, 30)
+	new_coast.state.velocity = old_coast.state.velocity
+	advance(old_coast, 120, 0.6, 0, 0)
+	advance(new_coast, 120, 0.6, 0, 0)
+	print("METRIC: 108 km/h coasting turn after 1s: %.1f -> %.1f km/h" % [old_coast.state.velocity.length() * 3.6, new_coast.state.velocity.length() * 3.6])
+	check(new_coast.state.velocity.length() > old_coast.state.velocity.length() + 2.0, "cornering retains materially more travel speed")
+	check(new_coast.state.velocity.dot(new_coast.state.forward()) > old_coast.state.velocity.dot(old_coast.state.forward()), "corner retention improves forward speed as well as total speed")
+	var energy_run := VehicleSimulation.new(config)
+	energy_run.state.velocity = Vector2(8, 30)
+	var no_boost: bool = true
+	for i: int in range(1200):
+		var before: float = energy_run.state.velocity.length_squared()
+		energy_run.step(DriveFrame.sample(sin(i * 0.03), 0, 0))
+		no_boost = no_boost and energy_run.state.velocity.length_squared() <= before + 0.001
+	check(no_boost, "steering and slide recovery never create energy without throttle")
 	advance(sim, 600, 0, 0, 0)
 	check(sim.state.position == Vector2.ZERO and sim.state.heading == 0, "idle has no creep or stationary steering")
 	advance(sim, 360, 0, 1, 0)

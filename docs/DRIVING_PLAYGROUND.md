@@ -49,11 +49,11 @@ Use Godot's Project → Open User Data Folder to find the file (`%APPDATA%\Circu
 
 Measured on Windows, Godot `4.7.2.stable.official.ed1daf0bf`:
 
-- 50 checks pass.
+- 53 checks pass.
 - From rest: 36.54 m/s after three seconds of full throttle.
 - From 24 m/s: 16.35 m braking versus 31.53 m coasting during the next 1.33 seconds.
 - Seeded 24-degree slide: below 0.04 radians after 1.5 seconds of released input, with grip recovered above 0.99.
-- Same 0.8-steering test: about -23.9 degrees slip under power, -6.3 degrees after lifting.
+- Same 0.8-steering test: about -27.0 degrees slip under power, -6.0 degrees after lifting.
 - 2,400 quantized inputs roundtripped through JSON reproduce identical final state at 1/2/4/8 ticks per render batch. This is not cross-platform proof, nor a frame pacing benchmark.
 
 An early wall-bound test found float32 rounding could place the center less than a micrometer outside the mathematical limit; collision placement was corrected with an inward separation rather than loosening the test. A graphical inspection found reversed winding on generated car panels; faces were corrected and recaptured.
@@ -75,3 +75,11 @@ G01: increased shared engine force from 10,500 to 16,500 N and maximum speed fro
 Actual Windows `scripts/dev.ps1 Validate` passed import, 17 script parses, startup and all 50 checks. Measured 0?100 km/h improves from 3.63 to 2.13 seconds; speed after three seconds is 36.54 m/s. Straight-line simulation reaches the 165.6 km/h cap. Quarter-turn effective radii are now 8.24/11.43/17.05 m at initial 43/65/86 km/h under half throttle; the extra acceleration widens these slightly from handling-0.3 but all retain the required improvement over the original handling. New top-speed steering/recovery checks pass, as do braking, collisions, all presets and exact replay. Camera visibility tests now use the configured maximum speed. Evidence: `docs/evidence/driving-tests.txt`.
 
 Restart with F8 then F5; try 2/Balanced, launch down the braking lane, then brake into a circle and accelerate out. The compact yard limits sustained top-speed driving; the top-speed measurement uses the isolated simulation without walls. Owner feel evaluation and physical Android testing remain pending.
+
+## Owner corner-speed iteration (handling-0.5)
+
+G01: `vehicle_simulation.gd` previously removed lateral velocity without redirecting its energy, causing excessive corner scrub. Grip now redirects 85% of the removed lateral energy into signed longitudinal motion, before pedals and resistance. This is an arcade energy-retention rule, exposed as `corner_energy_retention` in `handling_config.gd`; zero reproduces the previous calculation. Retention fades for broadside slides and preserves reverse direction. Braking, drag and collision loss are not refunded. Physics identity is now `arcade-planar-0.3`; old physics captures are not equivalent to this build.
+
+Actual Windows `scripts/dev.ps1 Validate`: import, 17 parses, startup and 53 checks pass. A 108 km/h start with 0.6 steering and no throttle for one second ends at 103.7 km/h versus 95.1 with retention disabled. Forward velocity also improves. A 1,200-tick steering/recovery check confirms no energy gain without throttle. Existing braking, speed caps, recovery, collisions and exact same-engine replay pass. Acceleration remains 2.13 seconds to 100 km/h and top speed 165.6 km/h. Half-throttle quarter-turn radii at initial 43/65/86 km/h become 8.75/12.71/19.58 m because the car carries more speed; all remain substantially tighter than the original handling. Evidence: `docs/evidence/driving-tests.txt`.
+
+Restart F8 then F5, select Balanced and compare a sustained turn under throttle against a lift through the same corner. Check that it carries speed without feeling like steering supplies a boost. Physical Android and subjective owner acceptance remain pending.

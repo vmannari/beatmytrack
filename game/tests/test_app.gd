@@ -377,8 +377,32 @@ func _check_clean_result() -> void:
 	game.emit_signal("race_completed")
 	var records: LocalRecords = app.get("records")
 	check(records.best_for(track, game.get("handling")) == 109.0 and _button(app.get("root_ui"), "Choose track") != null, "a clean normal race result persists its local PB and exposes track selection")
+	check(((app.get("root_ui") as Node).find_child("ResultStatus",true,false) as Label).text == "FIRST TIME SET","a first normal finish is presented as the player's benchmark")
+	await _capture("normal-race-debrief")
+	# Controlled result fixtures exercise improvement feedback; they are not
+	# additional claims of AI-driven lap times.
+	completed.lap_times[4] = 20.816
+	completed.lap_start_time = 108.816
+	app.call("_results")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("0.184 s faster"),"the integrated PB screen uses the previous saved target")
+	await _capture("improved-race-debrief")
+	completed.lap_times[4] = 21.0
+	completed.lap_start_time = 109.0
+	app.call("_results")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("+0.184 s off"),"a slower integrated finish presents its exact gap without replacing the PB")
 	game.emit_signal("exit_requested")
 	await process_frame
+	await process_frame
+	var resumed: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
+	resumed.set("library",app.get("library"))
+	resumed.set("records",LocalRecords.new(records.path))
+	root.add_child(resumed)
+	await process_frame
+	await process_frame
+	check((resumed.get("selected_track") as NativeTrack).identity == track.identity,"relaunch resumes the last ordinary race circuit")
+	check(((resumed.get("root_ui") as Node).find_child("RaceTarget",true,false) as Label).text == "01:48.816","returning home presents the actual stored five-lap time to beat")
+	await _capture("returning-race-home")
+	resumed.queue_free()
 	await process_frame
 
 

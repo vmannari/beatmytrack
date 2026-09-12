@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-12 race presentation: car-led pit scene, first-run invitation, returning-player PB target and precise retry debrief replace the generic dashboard. Five laps, searchable circuits and favorites remain. See [Race presentation](docs/RACE_PRESENTATION.md) for requirements, reviewed screenshots, actual tests and prototype-asset/phone limitations.
+
 2026-09-12 free-form editor: the owner selected free-shaped roads, terrain, intersections and obstacles. Paint/Pan, round/square surface brushes, a separate lap route and native-track Remix replace the spline-only editing model. V3 creator format; five-lap crossing/replay and full regression checks pass. See [Free-form editor](docs/FREE_FORM_EDITOR.md) for commands, screenshots and unperformed phone acceptance.
 
 2026-09-12 track discovery follow-up: visual route cards, a dedicated Tracks tab, persistent favorites, combined name/creator search, theme filtering, natural sorting and filtered random selection replace sequential browsing. The paged metadata index is checked with 5,000 entries and builds no more than six track cards. All ordinary races and creator test drives now use **five laps**, with separate record rules preserving old three-lap partitions. Current evidence, commands and remaining acceptance: [Track library and five laps](docs/TRACK_LIBRARY.md).

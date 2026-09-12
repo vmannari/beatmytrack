@@ -138,7 +138,11 @@ static func _normalize(data: Variant) -> Dictionary:
 		return {}
 	var preferences: Dictionary = data.settings
 	for field: Variant in preferences:
-		if field == "favorites":
+		if field == "last_track":
+			if not preferences[field] is String or preferences[field].is_empty() or preferences[field].length() > 64: return {}
+			for character: String in preferences[field]:
+				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+		elif field == "favorites":
 			if not preferences[field] is Array: return {}
 			for id: Variant in preferences[field]:
 				if not id is String or id.length() > 64 or id.is_empty(): return {}

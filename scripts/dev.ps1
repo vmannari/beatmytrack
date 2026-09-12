@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestEditor', 'TestFreeEditor', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -82,6 +82,7 @@ function Invoke-Validation {
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_catalog.gd') 'catalog-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_menu_presentation.gd') 'menu-presentation-tests.log'
     Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup and all domain/UI regression tests."
 }
 
@@ -190,6 +191,7 @@ try {
         }
         'TestApp' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_app.gd') 'app-tests.log' }
         'TestRecords' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log' }
+        'TestMenus' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_menu_presentation.gd') 'menu-presentation-tests.log' }
         'TestCatalog' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_catalog.gd') 'catalog-tests.log' }
         'TestCorpus' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bulk_tracks.gd') 'bulk-track-tests.log' }
         'CaptureApp' {

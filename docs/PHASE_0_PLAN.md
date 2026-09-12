@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-12 V03/G03/R01/R04/R06/R07: owner requests stronger menu presentation and player motivation. Race invitation, persistent last circuit, explicit PB target and improvement debrief are implemented; see [RACE_PRESENTATION.md](RACE_PRESENTATION.md). No progression or online-service expansion.
+
 2026-09-12 T01–T04 / V05 / R01: owner rejects spline-only editing and selects free-shaped roads, terrain, intersections and obstacles. Independent painting/lap-route authoring and native remixes are implemented in v3; see [FREE_FORM_EDITOR.md](FREE_FORM_EDITOR.md) for actual checks, evidence and phone limitations. Existing handling and five-lap rules are preserved.
 
 2026-09-12 latest owner override: **five laps** for ordinary races and creator test drives, replacing the historical three-lap selection below. Track discovery now uses a visual library, favorites, name/creator search, theme/sort filters and random selection. See [TRACK_LIBRARY.md](TRACK_LIBRARY.md) for V03/R01/R04/R06/R07 coverage, actual validation and phone acceptance still outstanding. Historical diagnostic replay fixtures explicitly retain three laps.

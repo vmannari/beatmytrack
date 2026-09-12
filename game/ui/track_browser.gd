@@ -33,7 +33,7 @@ func _ready() -> void:
 	if catalog == null: catalog = TrackCatalog.new(library)
 	var title_row := HBoxContainer.new()
 	add_child(title_row)
-	var title := MenuStyle.label("Find your next circuit.",34)
+	var title := MenuStyle.label("CIRCUITS",40)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_row.add_child(title)
 	title_row.add_child(MenuStyle.button("Import track",func() -> void: import_requested.emit()))
@@ -216,7 +216,7 @@ func _show_detail() -> void:
 	var preview := TrackShowroom.new()
 	preview.track = selected_track
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview.custom_minimum_size.y = 90
+	preview.custom_minimum_size.y = 64
 	detail.add_child(preview)
 	var title := MenuStyle.label(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper()))),23)
 	title.custom_minimum_size.x = 300
@@ -229,6 +229,8 @@ func _show_detail() -> void:
 	byline.clip_text = true
 	detail.add_child(byline)
 	detail.add_child(MenuStyle.label("5 LAPS  /  "+str(selected_track.metadata.get("theme","pine")).to_upper(),15,true))
+	var personal_best: float = records.best_for(selected_track,load("res://resources/balanced.tres") as HandlingConfig)
+	detail.add_child(MenuStyle.label("YOUR BEST   "+MenuStyle.time_text(personal_best) if personal_best > 0.0 else "NO PERSONAL BEST YET",16,true))
 	var favorite: bool = selected_track.identity in records.settings.get("favorites",[])
 	var favorite_button: Button = MenuStyle.button("★ Saved favorite" if favorite else "☆ Save favorite",_favorite)
 	favorite_button.name = "ToggleFavorite"

@@ -24,9 +24,6 @@ func _draw() -> void:
 	frame.set_border_width_all(2 if selected or is_hovered() else 1)
 	draw_style_box(frame,Rect2(Vector2.ZERO,size))
 	draw_rect(Rect2(Vector2(2,2),Vector2(size.x-4,100)),base)
-	# Topographic stripes give each route a quiet motorsport-map backdrop.
-	for i: int in range(5):
-		draw_line(Vector2(size.x*0.48+i*25,2),Vector2(size.x*0.1+i*25,102),base.lightened(0.07),1)
 	var points := PackedVector2Array()
 	var low := Vector2(INF,INF)
 	var high := Vector2(-INF,-INF)
@@ -44,6 +41,6 @@ func _draw() -> void:
 		draw_polyline(points,Color("e1e7df"),3,true)
 		draw_circle(points[0],4,Color("172129"))
 	var font: Font = get_theme_default_font()
-	draw_string(font,Vector2(14,126),str(entry.name),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,19,MenuStyle.TEXT)
+	draw_string(MenuStyle.DISPLAY,Vector2(14,128),str(entry.name).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,26,MenuStyle.TEXT)
 	draw_string(font,Vector2(14,150),str(entry.creator),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
 	if favorite: draw_string(font,Vector2(size.x-29,26),"★",HORIZONTAL_ALIGNMENT_LEFT,22,19,MenuStyle.TEXT)

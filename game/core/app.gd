@@ -26,6 +26,7 @@ var editor_view: Dictionary = {}
 var editor_inspector: VBoxContainer
 var browser_state: Dictionary = {}
 var track_catalog: TrackCatalog
+var pending_menu_notice: String = ""
 
 func _ready() -> void:
 	var direct: bool = false
@@ -42,6 +43,14 @@ func _ready() -> void:
 	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
 	ui_left_handed = bool(records.settings.get("left_handed", false))
 	selected_track = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
+	var last: String = str(records.settings.get("last_track",""))
+	if last in BUILTIN_IDS:
+		selected_track = NativeTrack.read("res://resources/tracks/"+last+".json")
+	elif last.begins_with("creator_"):
+		var saved: Dictionary = library.load_document(last.trim_prefix("creator_"))
+		if not saved.is_empty():
+			var compiled: NativeTrack = TrackCompiler.compile(saved)
+			if compiled != null: selected_track = compiled
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 20
 	add_child(menu_layer)
@@ -67,6 +76,13 @@ func _show_screen(next: String) -> void:
 	var background := MenuBackdrop.new()
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
+	if screen in ["play","garage"]:
+		var stage := MenuStage.new()
+		MenuStyle.fill(stage)
+		root_ui.add_child(stage)
+		var scrim := MenuScrim.new()
+		MenuStyle.fill(scrim)
+		root_ui.add_child(scrim)
 	var margin := MarginContainer.new()
 	MenuStyle.fill(margin)
 	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 24)
@@ -82,15 +98,15 @@ func _show_screen(next: String) -> void:
 	margin.add_child(layout)
 	var nav := HBoxContainer.new()
 	layout.add_child(nav)
-	var logo := MenuStyle.label("CIRCUIT / 01", 24)
+	var logo := MenuStyle.label("BEAT MY TRACK", 30)
 	logo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	nav.add_child(logo)
-	nav.add_child(MenuStyle.button("Back to race" if screen == "settings" else "Settings", _show_screen.bind("play" if screen == "settings" else "settings")))
+	nav.add_child(MenuStyle.tab("Back to race" if screen == "settings" else "Settings", _show_screen.bind("play" if screen == "settings" else "settings")))
 	var tabs := HBoxContainer.new()
 	nav.add_child(tabs)
 	for item: Array in [["play","Race"],["tracks","Tracks"],["garage","Garage"],["create","Create"]]:
 		var id: String = item[0]
-		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id)
+		var button: Button = MenuStyle.tab(item[1], _show_screen.bind(id), screen == id)
 		button.name = "Tab_" + id
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
@@ -115,45 +131,67 @@ func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> v
 func _home() -> void:
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	row.add_theme_constant_override("separation", 24)
 	content.add_child(row)
-	var hero := VBoxContainer.new()
-	hero.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(hero)
-	_heading("YOUR GARAGE / 01", "COMPACT", hero)
-	var car := CarShowroom.new()
-	car.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	hero.add_child(car)
-	hero.add_child(MenuStyle.label("BALANCED   /   REAR-WHEEL DRIVE", 16, true))
-	var shortcuts := HBoxContainer.new()
-	hero.add_child(shortcuts)
-	for pair: Array in [["all","Explore tracks"],["favorites","★ Favorites"],["random","Random track ↗"]]:
-		var kind: String = pair[0]
-		var button: Button = MenuStyle.button(pair[1], _open_library.bind(kind))
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		shortcuts.add_child(button)
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 390
-	panel.add_theme_stylebox_override("panel", MenuStyle.box(MenuStyle.PANEL,20))
-	row.add_child(panel)
-	var event := VBoxContainer.new()
-	panel.add_child(event)
-	event.add_child(MenuStyle.label("ON THE GRID   /   05 LAPS", 16, true))
-	var title := MenuStyle.label(track_title(selected_track),32)
+	var invite := VBoxContainer.new()
+	invite.custom_minimum_size.x = 410
+	invite.add_theme_constant_override("separation",10)
+	row.add_child(invite)
+	invite.add_child(MenuStyle.label("TIME ATTACK",18,true))
+	var title := MenuStyle.label(track_title(selected_track).to_upper(),62)
 	title.clip_text = true
-	event.add_child(title)
-	var preview := TrackShowroom.new()
-	preview.track = selected_track
-	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	event.add_child(preview)
-	var best: float = records.best_for(selected_track, load("res://resources/balanced.tres") as HandlingConfig)
-	event.add_child(MenuStyle.label("LOCAL BEST   %.3f s" % best if best > 0.0 else "A fresh five-lap challenge",18,true))
-	var race: Button = MenuStyle.button("Race  →",_start_race.bind(selected_track,false),true)
+	invite.add_child(title)
+	invite.add_child(MenuStyle.label("5 LAPS   ·   STANDING START",18,true))
+	var spacer := Control.new()
+	spacer.custom_minimum_size.y = 8
+	invite.add_child(spacer)
+	var best: float = records.best_for(selected_track,load("res://resources/balanced.tres") as HandlingConfig)
+	invite.add_child(MenuStyle.label("YOUR TIME TO BEAT" if best > 0.0 else "YOUR FIRST RUN",16,true))
+	var target := MenuStyle.label(MenuStyle.time_text(best) if best > 0.0 else "NO TIME SET",46)
+	target.name = "RaceTarget"
+	invite.add_child(target)
+	var instruction := MenuStyle.label("Beat your best five-lap race." if best > 0.0 else "Finish five laps. Then beat your time.",18,true)
+	instruction.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	invite.add_child(instruction)
+	if best <= 0.0:
+		var controls := MenuStyle.label("Steer with the arrows or WASD. Space brakes." if not OS.has_feature("mobile") else "Use the steering and pedal buttons to drive.",16,true)
+		controls.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		invite.add_child(controls)
+	var space := Control.new()
+	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	invite.add_child(space)
+	var race: Button = MenuStyle.button("START RACE",_start_race.bind(selected_track,false),true)
 	race.name = "StartRace"
-	race.custom_minimum_size.y = 72
-	race.add_theme_font_size_override("font_size",26)
-	event.add_child(race)
-	event.add_child(MenuStyle.button("Change track",_open_library.bind("all")))
+	race.custom_minimum_size.y = 66
+	race.add_theme_font_size_override("font_size",30)
+	invite.add_child(race)
+	invite.add_child(MenuStyle.tab("Change circuit",_open_library.bind("all")))
+	var open_space := Control.new()
+	open_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(open_space)
+	var car_info := VBoxContainer.new()
+	car_info.custom_minimum_size.x = 270
+	row.add_child(car_info)
+	var outline := CircuitEmblem.new()
+	outline.track = selected_track
+	car_info.add_child(outline)
+	var above := Control.new()
+	above.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	car_info.add_child(above)
+	car_info.add_child(MenuStyle.label("COMPACT / 01",32))
+	car_info.add_child(MenuStyle.label("Balanced handling · Rear-wheel drive",16,true))
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation",24)
+	content.add_child(footer)
+	_feature(footer,"EXPLORE CIRCUITS","%d tracks · Name and creator search" % BUILTIN_IDS.size(),_open_library.bind("all"))
+	_feature(footer,"YOUR FAVORITES","%d saved · Pick a track or try a random one" % records.settings.get("favorites",[]).size(),_open_library.bind("favorites"))
+	_feature(footer,"CREATE & SHARE","Build a circuit. Let someone else beat it.",_show_screen.bind("create"))
+
+func _feature(parent: HBoxContainer, title: String, description: String, action: Callable) -> void:
+	var feature := MenuFeature.new()
+	feature.heading = title
+	feature.description = description
+	feature.pressed.connect(action)
+	parent.add_child(feature)
 
 func _open_library(section: String) -> void:
 	browser_state.section = "all" if section == "random" else section
@@ -184,13 +222,31 @@ func _tracks() -> void:
 	content.add_child(browser)
 
 func _garage() -> void:
-	_heading("GARAGE", "Compact / 01")
-	var car := CarShowroom.new()
-	car.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(car)
-	content.add_child(MenuStyle.label("Balanced handling  /  rear-wheel drive  /  original compact", 20))
-	content.add_child(MenuStyle.label("Your current car is ready for every circuit.", 18, true))
-	content.add_child(MenuStyle.button("Test drive", _start_race.bind(selected_track, false), true))
+	var row := HBoxContainer.new()
+	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_child(row)
+	var info := VBoxContainer.new()
+	info.custom_minimum_size.x = 410
+	row.add_child(info)
+	_heading("YOUR CAR", "COMPACT / 01",info)
+	info.add_child(MenuStyle.label("REAR-WHEEL DRIVE",18,true))
+	var description := MenuStyle.label("A compact built for short circuits. Brake before the corner, then accelerate through the exit.",20,true)
+	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info.add_child(description)
+	info.add_child(HSeparator.new())
+	var handling: HandlingConfig = load("res://resources/balanced.tres")
+	info.add_child(MenuStyle.label("HANDLING     "+handling.profile_name.to_upper(),22))
+	info.add_child(MenuStyle.label("MASS              %d kg" % roundi(handling.mass),22))
+	info.add_child(MenuStyle.label("SPEED LIMIT   %d km/h" % roundi(handling.maximum_speed*3.6),22))
+	var space := Control.new()
+	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	info.add_child(space)
+	info.add_child(MenuStyle.button("Test drive",_start_race.bind(selected_track,false),true))
+	info.add_child(MenuStyle.tab("Choose circuit",_open_library.bind("all")))
+	var footer := HBoxContainer.new()
+	content.add_child(footer)
+	_feature(footer,"ON THE GRID",track_title(selected_track)+" · Five laps",_show_screen.bind("play"))
+	_feature(footer,"DRIVING CONTROLS","Pedal layout and touch-button size",_show_screen.bind("settings"))
 
 func _settings() -> void:
 	_heading("SETTINGS", "Make yourself comfortable.")
@@ -672,6 +728,10 @@ func _own_dialog(dialog: AcceptDialog) -> void:
 
 func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	returning_to_editor = from_editor
+	if not from_editor:
+		records.settings["last_track"] = track.identity
+		if records.save_records() != OK:
+			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
 		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape}
@@ -694,6 +754,9 @@ func _leave_race() -> void:
 		game.queue_free()
 	game = null
 	_show_screen("create" if returning_to_editor else "tracks")
+	if not pending_menu_notice.is_empty():
+		_notice(pending_menu_notice)
+		pending_menu_notice = ""
 
 func _results() -> void:
 	var session: TrackSession = game.get("track_session")
@@ -714,25 +777,18 @@ func _results() -> void:
 	var center := CenterContainer.new()
 	MenuStyle.fill(center)
 	root_ui.add_child(center)
-	var panel := VBoxContainer.new()
-	panel.custom_minimum_size.x = 620
+	var panel := RaceResults.new()
+	panel.circuit = track_title(track)
+	panel.total = total
+	panel.previous = previous
+	panel.best = records.best_for(track,game.get("handling"))
+	panel.laps = session.lap_times.duplicate()
+	panel.clean = clean
+	panel.saved = saved
+	panel.editor = returning_to_editor
+	panel.retry_requested.connect(_retry_race)
+	panel.return_requested.connect(_leave_race)
 	center.add_child(panel)
-	_heading("TEST DRIVE COMPLETE" if returning_to_editor else "RACE COMPLETE", track_title(track), panel)
-	panel.add_child(MenuStyle.label("%02d:%06.3f" % [int(total) / 60, fmod(total,60.0)], 56))
-	var status: String = "Local personal best" if clean and (previous <= 0.0 or roundi(total*1000.0) < roundi(previous*1000.0)) else "Local race time"
-	if not clean: status = "Practice run" if not returning_to_editor else "Your circuit is ready for another iteration."
-	if not saved: status = "Time recorded on screen; storage failed. Personal best was not saved."
-	panel.add_child(MenuStyle.label(status, 20, true))
-	for i: int in range(session.lap_times.size()):
-		panel.add_child(MenuStyle.label("LAP %d%s       %.3f s" % [i+1, " / standing start" if i == 0 else "", session.lap_times[i]],20))
-	if clean and saved:
-		var best: Dictionary = records.records.get(records.key_for(track,game.get("handling")),{})
-		panel.add_child(MenuStyle.label("Personal best / %.3f s     Best flying lap / %.3f s" % [float(best.get("race_ms",0))/1000.0,float(best.get("flying_ms",0))/1000.0],18,true))
-	panel.add_child(MenuStyle.label("Local results are unverified. Online comparisons come later.",16,true))
-	var actions := HBoxContainer.new()
-	panel.add_child(actions)
-	actions.add_child(MenuStyle.button("Retry", _retry_race, true))
-	actions.add_child(MenuStyle.button("Back to editor" if returning_to_editor else "Choose track", _leave_race))
 
 func _retry_race() -> void:
 	root_ui.visible = false
@@ -754,6 +810,7 @@ func _capture() -> void:
 	var error: Error = get_viewport().get_texture().get_image().save_png(capture_path)
 	if error == OK: print("CAPTURE_SAVED: " + capture_path)
 	get_tree().quit(0 if error == OK else 1)
+
 
 func _build_paint_tools() -> void:
 	var materials := OptionButton.new()
@@ -806,7 +863,6 @@ func _build_paint_tools() -> void:
 		_save_draft()
 		_build_editor_tools()))
 	editor_inspector.add_child(help)
-
 
 func _lay_road() -> void:
 	_remember()

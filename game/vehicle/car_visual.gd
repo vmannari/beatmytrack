@@ -1,6 +1,6 @@
 class_name CarVisual
 extends Node3D
-## 4.25 x 1.8 m fictional compact; +Z rear, -Z nose. Presentation only.
+## Base 4.25 x 1.8 m compact scaled by HandlingConfig.BODY_SCALE; +Z rear, -Z nose. Presentation only.
 
 var front_wheels: Array[Node3D] = []
 var brake_lights: Array[MeshInstance3D] = []
@@ -9,6 +9,7 @@ var brake_material: StandardMaterial3D
 
 
 func _ready() -> void:
+	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	var paint := VisualGeometry.material(Color("adb8b4"))
 	var trim := VisualGeometry.material(Color("171e21"))
 	var glass := VisualGeometry.material(Color("293b43"))

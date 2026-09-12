@@ -59,6 +59,7 @@ func _run() -> void:
 	legacy.lateral_response = 9.0
 	legacy.rotational_inertia = 1300.0
 	legacy.maximum_yaw_rate = 2.6
+	legacy.wheelbase = 2.55
 	for speed: float in [12.0, 18.0, 24.0]:
 		var old_radius: float = corner_radius(legacy, speed)
 		var new_radius: float = corner_radius(config, speed)
@@ -187,7 +188,7 @@ func _run() -> void:
 	var embedded := VehicleState.new()
 	embedded.position = Vector2(-23, 10)
 	yard.resolve(embedded, embedded.position, config)
-	check(embedded.position.distance_to(Vector2(-23, 10)) >= 6.55, "overlap recovery remains finite at island centre")
+	check(embedded.position.distance_to(Vector2(-23, 10)) >= 5.0 + config.collision_radius, "overlap recovery remains finite at island centre")
 	var logs: Array[DriveFrame] = []
 	for i: int in range(2400):
 		logs.append(DriveFrame.sample(sin(i * 0.013), 0.8, 1.0 if i % 500 > 430 else 0.0))

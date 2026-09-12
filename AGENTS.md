@@ -16,6 +16,9 @@
 - Global comparisons use one verified PB per player per pinned rules key. Neighbourhood means adjacent performance, not location.
 - League points reward best performance, not raw attempts. Never silently modify these invariants.
 
+## Latest physical-size override
+- On 2026-09-12 the owner requested a slightly smaller car and quicker turning on the practice tracks. Handling-0.8 uses 88% physical body scale with matching collision, wheelbase and trails. This overrides car-size preservation for this handling adjustment only; the camera calibration contract and source package remain unchanged.
+
 ## Visual invariants / revision 2
 - Read `ui/UI_Art_Direction.md`, `ui/Camera_contract.json` and `technical/Rendering_and_camera.md` before any camera or art task.
 - Gameplay is high-oblique overhead with no horizon or rear chase view. The car/world framing is 1.15x the selected screenshot; never enlarge just the mesh or change track dimensions.

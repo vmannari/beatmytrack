@@ -13,7 +13,7 @@ var active: bool = false
 func _ready() -> void:
 	var surface := VisualGeometry.material(Color("303938"))
 	for i: int in range(CAPACITY):
-		var mark: MeshInstance3D = VisualGeometry.box(self, Vector3(0.16, 0.006, 1), Vector3.ZERO, surface)
+		var mark: MeshInstance3D = VisualGeometry.box(self, Vector3(0.16 * HandlingConfig.BODY_SCALE, 0.006, 1), Vector3.ZERO, surface)
 		mark.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		mark.visible = false
 		marks.append(mark)
@@ -30,9 +30,9 @@ func sample(state: VehicleState, frame: DriveFrame) -> void:
 	if not slipping or state.velocity.length() < 4.0:
 		active = false
 		return
-	var axle: Vector2 = state.position - state.forward() * 1.28
-	var left: Vector3 = VisualGeometry.world(axle - state.right() * 0.76) + Vector3(0, 0.028, 0)
-	var right: Vector3 = VisualGeometry.world(axle + state.right() * 0.76) + Vector3(0, 0.028, 0)
+	var axle: Vector2 = state.position - state.forward() * (1.28 * HandlingConfig.BODY_SCALE)
+	var left: Vector3 = VisualGeometry.world(axle - state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
+	var right: Vector3 = VisualGeometry.world(axle + state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
 	if active:
 		if left.distance_to(previous_left) < 0.22:
 			return

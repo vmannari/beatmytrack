@@ -110,3 +110,5 @@ Actual commands included ZIP extraction, `convert.py`, `test_convert.py`, `dev.p
 Owner-driven laps, recovery from deliberate off-route excursions, human handling approval, overtaking and phone performance are still untested. The practice counter is not the full competition validator: there is no persistent PB, countdown, anti-cheat verification, comprehensive shortcut proof or cross-platform determinism claim. The broad source checkpoint regions permit some off-road line choice.
 
 `Doctor` actually failed because matching Android templates, SDK/ADB/build-tools and JDK are missing. Device attachment could not be enumerated; no physical-phone test or APK export was performed. No release deployment or production asset clearance is claimed. See `licenses/ASSETS.md` for provenance.
+
+2026-09-12 handling update: owner requested a smaller car. Road/source scale stays 0.25 m/pixel; car body width is now 1.584 m (88%), so the 9 m reference road spans 5.68 body widths. All 48 track checks passed, including zero-contact three-lap runs on all four fixtures with handling-0.8. See docs/DRIVING_PLAYGROUND.md for scale/steering changes and limits.

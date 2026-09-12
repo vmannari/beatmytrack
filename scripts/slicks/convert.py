@@ -1,4 +1,4 @@
-"""Development-only SS -> native surface-grid-v1. No screenshots are traced.
+"""Development-only SS -> native surface-grid-v2. No screenshots are traced.
 
 Ordered DAT masks define geometry only. Native meshes use flat project materials.
 All compatibility assumptions live here/config.json; runtime needs neither source.
@@ -87,7 +87,7 @@ def convert(path, resources, config):
                 elif role=='rail':
                     deck[yy][xx]=4
                 elif role!='decoration':
-                    value={'grass':1,'dirt':2,'water':3,'solid':4,'wall':4,'curb':5,'ramp':2}[role]
+                    value={'finish':0,'grass':1,'dirt':2,'water':3,'solid':4,'wall':4,'curb':5,'ramp':2,'rough':7}[role]
                     grid[yy][xx]=value
     targets=[(q['target']['x'],q['target']['y']) for q in source['computer_points']]
     # Drop disconnected deck-shaped decorative signs when no route seed or
@@ -134,13 +134,14 @@ def convert(path, resources, config):
                 for nx,ny in [(xx-1,yy),(xx+1,yy),(xx,yy-1),(xx,yy+1)]:
                     if 0<=nx<W and 0<=ny<H and grid[ny][nx]==3:
                         grid[ny][nx]=6;pending.append((nx,ny))
-    # Conservative distance field for the actual 1.55 m circular collision model.
-    # Keep this car clearance configurable alongside mesh-width-derived scale.
+    # Conservative 1.55 m planning envelope (physical car radius is now 1.364 m).
+    # Rough ground is an AI avoidance hint, not a runtime collision surface.
+    # Keep this clearance configurable alongside mesh-width-derived scale.
     def distance_field():
         dist=[[999.0]*W for _ in range(H)]; heap=[]
         for y in range(H):
             for x in range(W):
-                if grid[y][x] in (3,4) or x in (0,W-1) or y in (0,H-1):
+                if grid[y][x] in (3,4,7) or x in (0,W-1) or y in (0,H-1):
                     dist[y][x]=0;heap.append((0,x,y))
         heapq.heapify(heap)
         while heap:
@@ -249,8 +250,8 @@ def convert(path, resources, config):
         finish_note='Centre of stored block-0 start/finish markings'
     else:
         finish=coord(source['start']);finish_note='No block-0 line: inferred transverse gate through stored start'
-    return {'schema':'surface-grid-v1','identity':'slicks_'+path.stem.lower()+'_test',
-            'version':'1','corrections':correction,'cell_size':scale,'grid_size':[W,H],'origin':world((0,0)),
+    return {'schema':'surface-grid-v2','identity':'slicks_'+path.stem.lower()+'_test',
+            'version':'2','corrections':correction,'cell_size':scale,'grid_size':[W,H],'origin':world((0,0)),
             'car_width_m':config['car_width_m'],'representative_width_m':config['representative_road_width_px']*scale,
             'surfaces':runs(grid),'deck':runs(deck) if bridges else [],'bridges':bridges,
             'spawn':coord(source['start']),'spawn_heading':math.pi/2+source['start']['direction']*math.tau/160,

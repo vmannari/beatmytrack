@@ -83,6 +83,7 @@ func run() -> void:
 		check(session.completed_laps == 3 and session.elapsed_ticks == frozen_time, name + " finish freezes at exactly three laps")
 		_check_gates(track)
 	_check_collision()
+	_check_soft_surfaces()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -133,3 +134,64 @@ func _check_collision() -> void:
 	state.position = Vector2(-5,0)
 	track.cells.fill(1)
 	check(track.surface_factors(state).x < 1 and track.surface_factors(state).y > 0, "grass uses reduced grip and additional resistance")
+
+
+func _check_soft_surfaces() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 160
+	track.grid_height = 160
+	track.half_extent = Vector2(20,20)
+	track.cells.resize(25600)
+	track.deck_cells.resize(25600)
+	track.deck_cells.fill(-1)
+	track.route = PackedVector2Array([Vector2(-15,0),Vector2(15,0),Vector2(15,15),Vector2(-15,15)])
+	var config := HandlingConfig.new()
+	var reference_speed: float = 0.0
+	for kind: int in [0,1,2,5,6,7]:
+		track.cells.fill(kind)
+		var sim := VehicleSimulation.new(config)
+		sim.reset(Vector2(-8,0), PI * 0.5)
+		sim.state.velocity = Vector2(20,0)
+		for tick: int in range(60): sim.step(DriveFrame.new(), track)
+		if kind == 0: reference_speed = sim.state.velocity.x
+		else:
+			check(sim.state.velocity.x < reference_speed and sim.state.velocity.x > 0.0, "surface %d slows without reversing travel" % kind)
+			check(sim.state.collision_count == 0 and sim.state.position.x > -8.0, "surface %d permits forward movement without bouncing" % kind)
+		if kind in [1,7]:
+			var powered := VehicleSimulation.new(config)
+			powered.reset(Vector2(-8,0), PI * 0.5)
+			powered.state.velocity = Vector2(20,0)
+			var throttle := DriveFrame.new()
+			throttle.throttle = 255
+			for tick: int in range(60): powered.step(throttle, track)
+			check(powered.state.velocity.x < 19.0 and powered.state.velocity.x > 0.0 and powered.state.collision_count == 0, "surface %d reduces entry speed even at full throttle" % kind)
+			print("POWERED_SURFACE %d: 72 -> %.2f km/h in 0.5s" % [kind,powered.state.velocity.x * 3.6])
+			powered.reset(Vector2.ZERO, PI * 0.5)
+			for tick: int in range(120): powered.step(throttle, track)
+			check(powered.state.velocity.x > 1.0 and powered.state.collision_count == 0, "surface %d allows accelerating away from rest" % kind)
+		if kind == 7:
+			print("ROUGH_RESULT: 0.5s coasting from 72 km/h: asphalt %.2f, rough %.2f km/h; contacts %d" % [reference_speed*3.6,sim.state.velocity.x*3.6,sim.state.collision_count])
+			check(reference_speed - sim.state.velocity.x > 3.5, "rough patch has a meaningful speed penalty")
+			var stopped := VehicleSimulation.new(config)
+			stopped.reset(Vector2.ZERO)
+			for tick: int in range(120): stopped.step(DriveFrame.new(), track)
+			check(stopped.state.velocity == Vector2.ZERO, "rough surface cannot propel a stopped car")
+			var reverse := VehicleSimulation.new(config)
+			reverse.reset(Vector2.ZERO, PI * 0.5)
+			reverse.state.velocity = Vector2(-6,0)
+			for tick: int in range(60): reverse.step(DriveFrame.new(), track)
+			check(reverse.state.velocity.x < 0.0 and reverse.state.velocity.x > -6.0 and reverse.state.collision_count == 0, "rough surface slows reverse without bouncing or changing direction")
+	# A finite six-metre rough patch: prove actual entry and exit as well as the
+	# uniform-surface speed test above. Traversal is not a minimum-speed rule.
+	track.cells.fill(0)
+	for y: int in range(track.grid_height):
+		for x: int in range(68,92): track.cells[y * track.grid_width + x] = 7
+	var crossing := VehicleSimulation.new(config)
+	crossing.reset(Vector2(-8,0), PI * 0.5)
+	crossing.state.velocity = Vector2(20,0)
+	for tick: int in range(120): crossing.step(DriveFrame.new(), track)
+	check(crossing.state.position.x > 3.0 and crossing.state.velocity.x > 0.0 and crossing.state.velocity.x < 18.0 and crossing.state.collision_count == 0, "car enters and exits six-metre rough patch with speed loss and no bounce")
+	track.cells.fill(0)
+	for y: int in range(track.grid_height): track.cells[y * track.grid_width + 80] = 3
+	check(track.collision_normal(Vector2(-1,0), config.collision_radius, false) != Vector2.ZERO, "deep water remains impassable")

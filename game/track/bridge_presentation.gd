@@ -123,7 +123,7 @@ func build(parent: Node3D) -> void:
 			surface.generate_normals()
 			var mesh := MeshInstance3D.new()
 			mesh.mesh = surface.commit()
-			var material := VisualGeometry.material(Color("a09f91") if kind == 4 else Color("626b67"))
+			var material := VisualGeometry.material(Color("9b9f94") if kind == 4 else Color("465154"))
 			material.cull_mode = BaseMaterial3D.CULL_DISABLED
 			mesh.material_override = material
 			parent.add_child(mesh)

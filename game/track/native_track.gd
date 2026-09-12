@@ -22,7 +22,7 @@ var finish_half_width: float = 0.0
 
 static func read(path: String) -> NativeTrack:
 	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if not data is Dictionary or data.get("schema", "") != "surface-grid-v1":
+	if not data is Dictionary or data.get("schema", "") not in ["surface-grid-v1", "surface-grid-v2"]:
 		push_error("Invalid native track: " + path)
 		return null
 	var track := NativeTrack.new()
@@ -98,11 +98,13 @@ func elevated_at(point: Vector2, route_index: int) -> bool:
 
 
 func surface_factors(state: VehicleState) -> Vector2:
+	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):
-		1: return Vector2(0.65, 4.0)
+		1: return Vector2(0.65, 2.0 + speed * 0.65)
 		2: return Vector2(0.8, 2.0)
 		5: return Vector2(0.95, 0.4)
 		6: return Vector2(0.7, 3.0)
+		7: return Vector2(0.65, 2.0 + speed * 0.9) # Slows even under power, but allows escape from rest.
 	return Vector2(1.0, 0.0)
 
 

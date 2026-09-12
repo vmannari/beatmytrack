@@ -17,3 +17,5 @@ The original ZIP, DAT, SS files and corrected reference renders remain under ign
 No finished production car/environment, external shader, audio or purchased asset has been introduced. Reference-board branded vehicles are not licensed game assets.
 
 Godot is MIT licensed. Before distributing an exported build, include the pinned engine's MIT text and applicable third-party notices. Use the engine distribution or [official license page](https://godotengine.org/license/) for the exact notices. No license is assigned here to owner-provided reference material or to the project's source code on the owner's behalf.
+
+Track-kit-2 (2026-09-12): terrain coverage shader, matte palette, curb/checkered finish paint, exposed barrier meshes and low grass/gravel geometry are original project code. Coverage textures are generated from native material IDs at load time, not imported legacy artwork. Source layouts retain the internal-test provenance above.

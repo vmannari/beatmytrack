@@ -2,6 +2,8 @@
 
 Implemented 2026-09-11 for the owner's explicit four-track handling-test request. Requirements: **G01** handling, **G02/R03** circuit and ordered lap foundations, **R06** immediate retry, **R01** native/offline boundaries; debug evidence supports **V01** inspection, not camera calibration approval. This is an internal practice fixture set, not the full Phase 5 competition/timing feature.
 
+Latest owner revision (2026-09-12): incidental obstacles now use soft surfaces, native content/schema are version 2, and the original matte track kit replaces pixel-mask extrusions. Current commands, lap results, screenshots and limitations: [docs/TRACK_SURFACES.md](docs/TRACK_SURFACES.md). Earlier measurements below are retained as implementation history.
+
 ## Run
 
 ```powershell

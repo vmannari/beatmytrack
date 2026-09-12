@@ -88,6 +88,7 @@ func run() -> void:
 	_check_rebound()
 	_check_impact_turn()
 	_check_wall_slide()
+	_check_tire_dirt()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -336,14 +337,88 @@ func _check_rebound() -> void:
 		distances.append(separation)
 		if not legacy:
 			print("BOUNCE_RESULT: powered head-on impact, rebound %.2f km/h, separation %.3f -> %.3f m" % [rebound_speed*3.6,distances[0],separation])
-			# Owner requested less recoil after evaluating the 3.736 m rebound.
-			check(separation > 1.5 and separation < 3.0 and separation > distances[0] * 2.0, "head-on recoil remains visible but is moderated under held throttle")
+			# Owner requested another reduction after evaluating the 2.658 m rebound.
+			check(separation > 0.5 and separation < 1.8 and separation > distances[0] * 2.0, "head-on recoil remains visible but is moderated under held throttle")
 	var config := HandlingConfig.new()
 	var glance := VehicleState.new()
 	glance.velocity = Vector2(8,18)
 	var energy: float = glance.velocity.length_squared()
 	track._bounce(glance, Vector2.LEFT, config)
 	check(glance.velocity.x < -2.0 and glance.velocity.y > 14.0 and glance.velocity.length_squared() < energy, "glancing collision rebounds and retains travel along the wall without adding energy")
+
+
+func _check_tire_dirt() -> void:
+	var config := HandlingConfig.new()
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 80
+	track.grid_height = 800
+	track.half_extent = Vector2(10,100)
+	track.cells.resize(64000)
+	track.deck_cells.resize(64000)
+	track.deck_cells.fill(-1)
+	track.route = PackedVector2Array([Vector2(0,-90),Vector2(0,90)])
+	for kind: int in [1,2]:
+		track.cells.fill(kind)
+		var sim := VehicleSimulation.new(config)
+		for tick: int in range(120): sim.step(DriveFrame.new(), track)
+		check(sim.state.tire_dirt == 0.0, "stationary tires do not accumulate dirt on surface %d" % kind)
+		sim.state.velocity = Vector2(0,20)
+		for tick: int in range(60): sim.step(DriveFrame.new(), track)
+		var short_exposure: float = sim.state.tire_dirt
+		var expected: float = sim.state.position.y * (0.5 if kind == 1 else 1.0) / config.tire_pickup_distance
+		check(short_exposure > 0.0 and is_equal_approx(short_exposure, expected), "surface %d pickup follows actual distance and material" % kind)
+		for tick: int in range(60): sim.step(DriveFrame.new(), track)
+		check(sim.state.tire_dirt > short_exposure and sim.state.tire_dirt <= 1.0, "longer exposure leaves more contamination")
+		track.cells.fill(0)
+		var before: float = sim.state.tire_dirt
+		sim.step(DriveFrame.new(), track)
+		check(sim.state.tire_dirt > 0.0 and sim.state.tire_dirt < before, "dirt persists onto asphalt and begins gradual cleaning")
+		sim.state.velocity = Vector2.ZERO
+		before = sim.state.tire_dirt
+		for tick: int in range(600): sim.step(DriveFrame.new(), track)
+		check(sim.state.tire_dirt == before, "waiting five seconds does not clean tires")
+		sim.reset(Vector2.ZERO)
+		check(sim.state.tire_dirt == 0.0, "restart clears contamination")
+	for speed: float in [10.0,20.0,-20.0]:
+		var sim := VehicleSimulation.new(config)
+		sim.state.tire_dirt = 1.0
+		var ticks: int = 0
+		while sim.state.tire_dirt > 0.0 and ticks < 1200:
+			# Controlled-speed fixture isolates distance from engine acceleration.
+			sim.state.velocity = Vector2(0,speed)
+			sim.step(DriveFrame.new())
+			ticks += 1
+		check(absf(absf(sim.state.position.y) - config.tire_clean_distance) < 0.2 and sim.state.tire_dirt == 0.0, "full coating cleans over 80 m independent of speed or reverse")
+		print("TIRE_CLEAN speed=",speed," seconds=",ticks * VehicleSimulation.STEP," metres=",absf(sim.state.position.y))
+	var clean := VehicleSimulation.new(config)
+	var dirty := VehicleSimulation.new(config)
+	clean.state.velocity = Vector2(8,20)
+	dirty.state.velocity = clean.state.velocity
+	dirty.state.tire_dirt = 1.0
+	clean.step(DriveFrame.new())
+	dirty.step(DriveFrame.new())
+	check(dirty.state.velocity.x > clean.state.velocity.x, "dirty tires have less lateral grip on clean asphalt")
+	clean.reset(Vector2.ZERO)
+	dirty.reset(Vector2.ZERO)
+	clean.state.velocity = Vector2(0,20)
+	dirty.state.velocity = clean.state.velocity
+	dirty.state.tire_dirt = 1.0
+	var brake := DriveFrame.new()
+	brake.brake = 255
+	clean.step(brake)
+	dirty.step(brake)
+	check(dirty.state.velocity.y > clean.state.velocity.y, "dirty tires reduce braking traction on clean asphalt")
+	var states: Array = []
+	for repeat: int in range(2):
+		var sim := VehicleSimulation.new(config)
+		var throttle := DriveFrame.new()
+		throttle.throttle = 255
+		for tick: int in range(600):
+			track.cells.fill(2 if tick < 120 else 0)
+			sim.step(throttle, track)
+		states.append(sim.state.snapshot())
+	check(states[0] == states[1] and states[0].size() == 14, "exposure and recovery replay exactly with contamination in state snapshot")
 
 
 func _check_wall_slide() -> void:

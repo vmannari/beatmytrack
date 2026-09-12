@@ -14,6 +14,10 @@ func surface_factors(_state: VehicleState) -> Vector2:
 	return Vector2(1.0, 0.0)
 
 
+func tire_pickup(_state: VehicleState) -> float:
+	return 0.0 # Clean paved yard; native surfaces override this material property.
+
+
 func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void:
 	# Swept circle against circle: even injected high-speed steps cannot tunnel.
 	for island: Vector3 in islands:

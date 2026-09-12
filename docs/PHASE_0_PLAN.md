@@ -112,3 +112,5 @@ Owner requests continued tangential travel and gradual alignment while pushing a
 Final full Validate passed import, 24 parses, startup and 171 checks (56 driving + 115 track). Evidence: docs/evidence/wall-slide-*.txt.
 
 2026-09-12 G01: owner requests less recoil; handling-0.12 tunes restitution to 0.45, preserving wall-slide algorithms. Full Validate passed 171 checks and measured 29% shorter rebound. Commands, changed files, revised owner balance target and evidence are in DRIVING_PLAYGROUND.md (Moderate recoil). Manual feel/phone acceptance remains pending.
+
+2026-09-12 G01: owner-authorized softer recoil and temporary dirty-tire grip loss implemented within the handling gate. Pickup/recovery follow distance, with grass depositing less than dirt/sand and full cleanup after 80 m. Handling-0.13, physics arcade-planar-0.10 and diagnostic schema 3 version the state extension. Validate passed all 189 checks, four three-lap AI runs, exact replay and ramp recovery. See DRIVING_PLAYGROUND.md (Tire contamination and softer recoil) for commands, files, evidence and pending owner/phone acceptance. No track format or content expansion.

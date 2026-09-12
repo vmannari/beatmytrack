@@ -97,6 +97,13 @@ func elevated_at(point: Vector2, route_index: int) -> bool:
 	return x >= 0 and y >= 0 and x < grid_width and y < grid_height and deck_cells[y * grid_width + x] >= 0 and absf(tangent.dot(bridge_axis)) > 0.75
 
 
+func tire_pickup(state: VehicleState) -> float:
+	match cell_at(state.position, state.track_elevated):
+		1: return 0.5 # Grass deposits less than loose dirt/sand.
+		2: return 1.0 # Native dirt includes the imported sand surface.
+	return 0.0
+
+
 func surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):

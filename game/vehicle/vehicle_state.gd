@@ -13,6 +13,7 @@ var tick: int = 0
 var collision_count: int = 0
 var route_index: int = -1
 var track_elevated: bool = false
+var tire_dirt: float = 0.0 # 0 clean, 1 fully coated; persists after leaving loose ground.
 
 
 func forward() -> Vector2:
@@ -32,4 +33,4 @@ func slip_angle() -> float:
 
 func snapshot() -> Array:
 	return [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
-		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated]
+		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]

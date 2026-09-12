@@ -30,7 +30,7 @@ var previous_heading: float = 0.0
 var demo_capture: bool = false
 var capture_path: String = ""
 var track_index: int = -1
-const TRACK_NAMES: Array[String] = ["slicks_freeway_test", "slicks_1way_test", "slicks_66_test", "slicks_offroad_test", "slicks_arto4_test", "slicks_hiekka_test", "slicks_ovaali3_test"]
+var TRACK_NAMES: Array[String] = BuiltinTracks.ids()
 var native_track: NativeTrack
 var track_session: TrackSession
 var track_ground: Node3D

@@ -45,11 +45,12 @@ def runs(grid):
     return result
 
 
-def convert(path, resources, config):
-    source = parse_ss(path)
-    if source['format_version'] != 2:
+def convert(path, resources, config, source_data=None):
+    source = source_data or parse_ss(path)
+    if source['format_version'] != 2 and source_data is None:
         raise ValueError('Only fully segmented v2 tracks supported')
     scale = config['car_width_m']*config['target_car_widths']/config['representative_road_width_px']
+    scale *= config.get('scale_overrides', {}).get(path.stem, 1.0)
     roles = {i:role for role,ids in config['semantic_blocks'].items() for i in ids}
     grid = [[0]*W for _ in range(H)] # asphalt, grass, dirt, water, solid, curb
     deck = [[-1]*W for _ in range(H)]
@@ -72,7 +73,7 @@ def convert(path, resources, config):
             if len(peers)==2:
                 b['x']+=correction['post_pair_spread_px']*(-1 if b['x']==min(peers) else 1)
         rid=b['block_id']
-        if rid not in roles or b['flags']:
+        if rid not in roles or b['flags'] not in config.get('allowed_flags', {}).get(str(rid), [0]):
             raise ValueError(f'Unreviewed block/flags: {b}')
         role=roles[rid]; w,h,pix=rotated(resources[rid],b['rotation'])
         if role=='water': water_bounds.append((b['x'],b['y'],b['x']+w,b['y']+h))
@@ -137,11 +138,11 @@ def convert(path, resources, config):
     # Conservative 1.55 m planning envelope (physical car radius is now 1.364 m).
     # Rough ground is an AI avoidance hint, not a runtime collision surface.
     # Keep this clearance configurable alongside mesh-width-derived scale.
-    def distance_field():
+    def distance_field(blocked=(3,4,7)):
         dist=[[999.0]*W for _ in range(H)]; heap=[]
         for y in range(H):
             for x in range(W):
-                if grid[y][x] in (3,4,7) or x in (0,W-1) or y in (0,H-1):
+                if grid[y][x] in blocked or x in (0,W-1) or y in (0,H-1):
                     dist[y][x]=0;heap.append((0,x,y))
         heapq.heapify(heap)
         while heap:
@@ -153,10 +154,13 @@ def convert(path, resources, config):
                     dist[ny][nx]=nd;heapq.heappush(heap,(nd,nx,ny))
         return dist
     distances=distance_field()
+    road_distances=distance_field((1,3,4)) if config.get('bulk_mode') else None
     margin=config.get('collision_radius_m',1.55)/scale+2
     # Match source target order, but move seeds towards local usable road clearance.
     # This is an intentionally conservative route, not an optimal racing line.
     def clearance(x,y):
+        if road_distances is not None:
+            return min(15.0,road_distances[y][x])
         best=15.0
         for dy in range(-14,15):
             for dx in range(-14,15):
@@ -181,6 +185,7 @@ def convert(path, resources, config):
         n=max(1,math.ceil(math.dist(a,b)))
         return all(safe((a[0]+(b[0]-a[0])*i/n,a[1]+(b[1]-a[1])*i/n)) for i in range(n+1))
     def connect(a,b):
+        if config.get('route_mode') == 'source_hints': return [a]
         if line_safe(a,b):return [a]
         heap=[(math.dist(a,b),0,a)]; costs={a:0}; parent={}
         while heap:
@@ -250,11 +255,34 @@ def convert(path, resources, config):
         finish_note='Centre of stored block-0 start/finish markings'
     else:
         finish=coord(source['start']);finish_note='No block-0 line: inferred transverse gate through stored start'
+    spawn = coord(source['start'])
+    if config.get('bulk_mode'):
+        # Some stored starts touch an obstacle at the new car's physical scale.
+        # Move only the spawn, not the source line/checkpoints or road geometry.
+        radius = config.get('physical_collision_radius_m',1.364)/scale
+        def spawn_clear(p):
+            for y in range(math.floor(p[1]-radius),math.ceil(p[1]+radius)+1):
+                for x in range(math.floor(p[0]-radius),math.ceil(p[0]+radius)+1):
+                    if 0<=x<W and 0<=y<H and grid[y][x] not in (3,4) and deck[y][x] not in (3,4): continue
+                    dx=p[0]-min(max(p[0],x),x+1);dy=p[1]-min(max(p[1],y),y+1)
+                    if dx*dx+dy*dy<radius*radius: return False
+            return True
+        original_start=(source['start']['x'],source['start']['y'])
+        if not spawn_clear(original_start):
+            search_radius=config.get('spawn_search_radius_px',{}).get(path.stem,24)
+            candidates=[(math.dist(original_start,(x+.5,y+.5)),(x+.5,y+.5))
+                        for y in range(max(0,original_start[1]-search_radius),min(H,original_start[1]+search_radius+1))
+                        for x in range(max(0,original_start[0]-search_radius),min(W,original_start[0]+search_radius+1))
+                        if grid[y][x] in (0,2,5,6) and spawn_clear((x+.5,y+.5))]
+            if not candidates: raise ValueError('No nearby car-clear spawn')
+            _,point=min(candidates)
+            spawn=world(point)
+            correction=dict(correction,spawn_shift_m=round(math.dist(point,original_start)*scale,5),spawn_basis='Nearest car-clear native road point; source finish and debug start preserved')
     result = {'schema':'surface-grid-v2','identity':'slicks_'+path.stem.lower()+'_test',
             'version':'2','corrections':correction,'cell_size':scale,'grid_size':[W,H],'origin':world((0,0)),
             'car_width_m':config['car_width_m'],'representative_width_m':config['representative_road_width_px']*scale,
             'surfaces':runs(grid),'deck':runs(deck) if bridges else [],'bridges':bridges,
-            'spawn':coord(source['start']),'spawn_heading':math.pi/2+source['start']['direction']*math.tau/160,
+            'spawn':spawn,'spawn_heading':math.pi/2+source['start']['direction']*math.tau/160,
             'finish':{'center':finish,'half_width':36*scale,'heading':math.pi/2+source['start']['direction']*math.tau/160,'basis':finish_note},
             'route':[world(p) for p in points],'checkpoints':gates,
             'debug':{'blocks':blocks,'computer_points':source['computer_points'],'checkpoints':source['checkpoints'],'start':source['start']},

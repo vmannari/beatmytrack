@@ -2,7 +2,7 @@ extends Node
 ## Local navigation and editor composition. Racing simulation stays in Game.
 
 const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
-const BUILTIN_IDS: Array[String] = ["slicks_freeway_test", "slicks_1way_test", "slicks_66_test", "slicks_offroad_test", "slicks_arto4_test", "slicks_hiekka_test", "slicks_ovaali3_test"]
+var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
 var screen: String = "play"
 var root_ui: Control
 var content: VBoxContainer

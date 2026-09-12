@@ -97,6 +97,7 @@ func height_at(p: Vector2, route_index: int) -> float:
 
 
 func build(parent: Node3D) -> void:
+	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 	for kind: int in [0,4]:
 		var surface := SurfaceTool.new()
 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -123,7 +124,7 @@ func build(parent: Node3D) -> void:
 			surface.generate_normals()
 			var mesh := MeshInstance3D.new()
 			mesh.mesh = surface.commit()
-			var material := VisualGeometry.material(Color("9b9f94") if kind == 4 else Color("465154"))
+			var material := VisualGeometry.material(palette[4].lightened(0.17) if kind == 4 else palette[0].lightened(0.06))
 			material.cull_mode = BaseMaterial3D.CULL_DISABLED
 			mesh.material_override = material
 			parent.add_child(mesh)

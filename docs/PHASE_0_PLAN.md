@@ -1,5 +1,11 @@
 # Phase 0: specification review and first slice
 
+## Current owner authorization: 2026-09-12
+
+The owner now accepts the car's handling and collisions and explicitly asks to advance to menus, several more Slicks circuits, a phone-friendly map creator and shared visual themes. This later request overrides the earlier editor/content restriction for one local slice. Implemented scope is the local Play/Garage/Tracks/Create/Settings/results flow, three more native circuits, bounded local authoring/sharing and Pine/Coast/Desert presentation. The initial creator uses simple draggable handles over a starter loop rather than exposing advanced spline tangents; this is the current phone-usability proposal under the owner's request.
+
+See [MENUS_AND_CREATOR.md](MENUS_AND_CREATOR.md) for changed files, requirements, actual commands/outcomes and screenshots. The history below remains the original inspection/order. It no longer means handling is unapproved. Physical-phone/camera/performance gates and competition-grade timing validation are still pending; backend, store, progression and hosted UGC are not part of this authorization.
+
 ## Owner-authorized handling fixture update, 2026-09-11
 
 The later explicit request for `slicks_codex_handoff.zip/CODEX_TASK.md` authorizes four native test circuits inside the handling gate, overriding the one-circuit quantity for these development fixtures only. Inspection preceded implementation: the yard had no native circuit/importer/surfaces/laps/AI. A small `PlaygroundData` subclass, practice lap session and diagnostic driver now provide those foundations; they do not complete the full Phase 5 countdown/PB/competition validator or imply handling approval. Three laps still applies. No store/backend/editor expansion occurred.

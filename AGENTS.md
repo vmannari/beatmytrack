@@ -1,6 +1,7 @@
 # Project agent instructions
 
 ## Current owner request and path mapping
+- On 2026-09-12 the owner accepted handling and collisions and explicitly authorized the next local slice: proper menus, three more Slicks circuits, a phone-friendly map creator and shared track themes. This overrides the earlier editor/content restriction for this slice. Phone handling, camera calibration and performance acceptance remain outstanding; online services, progression and commerce remain deferred.
 - The owner request dated 2026-09-11 explicitly selects **three laps** for this first slice, overriding the package's original four-lap brief. The supplied package itself remains unchanged.
 - The later 2026-09-11 Slicks handoff request explicitly authorizes four native handling-test fixtures (FREEWAY, 1WAY, 66, OFFROAD) within the handling gate. This overrides the one-circuit quantity for these fixtures only; see `SLICKS_IMPORT.md` for tested scope and inferred semantics.
 - Implement the owner's Phase 0–7 sequence inside the blueprint's P0/P0-V scope. Complete inspection and bootstrap before the physics playground. Handling approval precedes feature/content expansion.

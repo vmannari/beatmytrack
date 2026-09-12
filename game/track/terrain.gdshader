@@ -29,19 +29,34 @@ void fragment() {
 		if (weights[i] > best) { best = weights[i]; kind = i; }
 	}
 	vec3 base = colors[kind];
-	// Interpolated coverage gives crisp diagonal contours instead of blurring
-	// the old cell colours. Only narrow curb edges receive muted safety paint.
+	// Reconstruct the native material boundaries from coverage. Palette and
+	// shading are cosmetic; native cells remain the sole surface authority.
+	float boundary = 1.0 - smoothstep(0.51, 0.69, best);
+	base *= 1.0 - boundary * 0.12;
+	// Curb paint follows the supplied curb surface near asphalt. Broader paved
+	// areas remain concrete, and no road width / lane marking is invented.
 	if (kind == 5) {
 		float road = max(max(texture(surface_low,UV+map_texel*vec2(2.5,0)).r,
 			texture(surface_low,UV-map_texel*vec2(2.5,0)).r),
 			max(texture(surface_low,UV+map_texel*vec2(0,2.5)).r,
 			texture(surface_low,UV-map_texel*vec2(0,2.5)).r));
 		float stripe = mod(floor((world_position.x + world_position.z) * 0.8), 2.0);
-		if (road > 0.5 && stripe < 1.0) { base *= vec3(0.68,0.36,0.29); }
+		if (road > 0.5 && stripe < 1.0) { base *= vec3(0.69,0.40,0.32); }
 	}
-	// Quiet broad variation anchored to world metres. No imported art or shine.
-	float broad = sin(world_position.x * 0.83 + sin(world_position.z * 0.47))
-		* sin(world_position.z * 0.71 + world_position.x * 0.19);
-	ALBEDO = base * (0.98 + broad * 0.025);
+	// Broad, restrained tonal planes fit the matte car. Avoid speckled grass,
+	// animated noise and tiny triangles that shimmer in the follow camera.
+	float landform = sin(world_position.x * 0.18 + sin(world_position.z * 0.13))
+		+ sin(world_position.z * 0.21 + world_position.x * 0.07) * 0.5;
+	float tone = floor(landform * 1.5) * 0.018;
+	if (kind == 1 || kind == 2 || kind == 7) {
+		base *= 1.0 + tone;
+	}
+	if (kind == 3 || kind == 6) {
+		// Quiet horizontal water bands and a thin shoreline highlight.
+		float band = step(0.82, sin(world_position.z * 0.52 + sin(world_position.x * 0.18) * 0.4));
+		base *= 0.98 + band * 0.045;
+		base = mix(base, color_6.rgb, boundary * 0.35);
+	}
+	ALBEDO = base;
 	ROUGHNESS = 1.0;
 }

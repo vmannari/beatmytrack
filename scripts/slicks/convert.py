@@ -250,7 +250,7 @@ def convert(path, resources, config):
         finish_note='Centre of stored block-0 start/finish markings'
     else:
         finish=coord(source['start']);finish_note='No block-0 line: inferred transverse gate through stored start'
-    return {'schema':'surface-grid-v2','identity':'slicks_'+path.stem.lower()+'_test',
+    result = {'schema':'surface-grid-v2','identity':'slicks_'+path.stem.lower()+'_test',
             'version':'2','corrections':correction,'cell_size':scale,'grid_size':[W,H],'origin':world((0,0)),
             'car_width_m':config['car_width_m'],'representative_width_m':config['representative_road_width_px']*scale,
             'surfaces':runs(grid),'deck':runs(deck) if bridges else [],'bridges':bridges,
@@ -259,6 +259,12 @@ def convert(path, resources, config):
             'route':[world(p) for p in points],'checkpoints':gates,
             'debug':{'blocks':blocks,'computer_points':source['computer_points'],'checkpoints':source['checkpoints'],'start':source['start']},
             'provenance':{'source':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'use':'owner supplied handling test reference; redistribution clearance unverified'}}
+    # Presentation metadata is opt-in; original fixture bytes remain unchanged.
+    metadata = config.get('track_metadata', {}).get(path.stem, {})
+    for key in ('title', 'description', 'theme'):
+        if key in metadata:
+            result[key] = metadata[key]
+    return result
 
 
 def main():

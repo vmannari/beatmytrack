@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCreator', 'TestApp', 'TestRecords', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
     [string]$AdbPath = $env:ADB_BIN,
     [string]$Track = '',
+    [string]$Screen = '',
     [switch]$Overview,
     [switch]$AI,
     [int]$CaptureTick = 0
@@ -21,6 +22,7 @@ $apkPath = Join-Path $buildRoot 'android/circuit01-debug.apk'
 $packageId = 'org.circuit01.handlinglab'
 $trackArguments = @()
 if ($Track) { $trackArguments += "--track=$Track" }
+if ($Screen) { $trackArguments += "--screen=$Screen" }
 if ($Overview) { $trackArguments += '--overview' }
 if ($AI) { $trackArguments += '--ai' }
 if ($CaptureTick -gt 0) { $trackArguments += "--capture-tick=$CaptureTick" }
@@ -66,12 +68,18 @@ function Invoke-Validation {
         Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $source.FullName) 'parse.log'
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--quit-after', '8') 'startup.log'
-    if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'PLAYGROUND_READY' -Quiet)) {
-        throw 'Main scene did not emit PLAYGROUND_READY.'
+    if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'APP_READY' -Quiet)) {
+        throw 'Main scene did not emit APP_READY.'
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_driving.gd') 'driving-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
-    Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup and driving regression tests."
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log'
+    if (Test-Path -LiteralPath (Join-Path $projectRoot 'tests/test_app.gd')) {
+        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_app.gd') 'app-tests.log'
+    }
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log'
+    Write-Host "PASS: import, $($scripts.Count) script parse(s), main-scene startup and all domain/UI regression tests."
 }
 
 function Get-AndroidPaths {
@@ -164,8 +172,16 @@ try {
         }
         'Validate' { Invoke-Validation }
         'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
+        'TestCreator' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log' }
+        'TestApp' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_app.gd') 'app-tests.log' }
+        'TestRecords' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log' }
+        'CaptureApp' {
+            $evidencePath = Join-Path $buildRoot 'app-evidence'
+            New-Item -ItemType Directory -Path $evidencePath -Force | Out-Null
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_app.gd', '--', "--capture-app-flow=$evidencePath") 'app-capture.log'
+        }
         'Snapshot' {
-            $captureName = if ($Track) { $Track } else { 'playground' }
+            $captureName = if ($Track) { $Track } elseif ($Screen) { "menu-$Screen" } else { 'menu-play' }
             Invoke-Checked $script:godot (@('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot "$captureName.png")") + $trackArguments) 'capture.log'
             if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'capture.log') -SimpleMatch 'CAPTURE_SAVED:' -Quiet)) { throw 'Window closed before capture completed; do not use an older PNG. Keep delayed captures focused.' }
         }
@@ -173,7 +189,7 @@ try {
         'Editor' { Invoke-Checked $script:godot @('--path', $projectRoot, '--editor') 'editor.log' }
         'Capture' {
             Invoke-Validation
-            $captureName = if ($Track) { $Track } else { 'playground' }
+            $captureName = if ($Track) { $Track } elseif ($Screen) { "menu-$Screen" } else { 'menu-play' }
             Invoke-Checked $script:godot (@('--path', $projectRoot, '--', "--capture=$(Join-Path $buildRoot "$captureName.png")") + $trackArguments) 'capture.log'
             if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'capture.log') -SimpleMatch 'CAPTURE_SAVED:' -Quiet)) { throw 'Window closed before capture completed; do not use an older PNG. Keep delayed captures focused.' }
         }

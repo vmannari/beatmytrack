@@ -1,6 +1,18 @@
 # Development status
 
-Updated: 2026-09-12. Active product gate: **P0 handling proof**. Current implementation checkpoint: **Phase 2 handling plus owner-authorized four-track practice fixtures**. The overall vertical slice is not complete. Windows driving is ready for owner evaluation; physical-phone handling has not been tested.
+Updated: 2026-09-12. The owner has **accepted car handling and collisions** and explicitly authorized **local menus, additional Slicks circuits, a phone-friendly creator and shared track themes**. This is the active slice, covering selected P1/P3 local features. Physical-phone handling, camera calibration and performance acceptance remain open; this does not complete all blueprint gates.
+
+## Current slice: menus and track studio
+
+The project now opens a vehicle-led Play menu with Garage, Tracks, Create and Settings. Seven Slicks-derived circuits are selectable, including Pine Loop, Dune Run and Coast Oval. The creator starts from a valid smooth loop: drag/add/remove large handles, move the start, choose Pine/Coast/Desert, asphalt/dirt and 8–14 m road width, undo/redo, pan/pinch/zoom, view native 3D scenery, test drive, save and import/export/share locally. All three themes use the same native cells and art kit in previews and driving. No power/progression sale or racing gate was added.
+
+Production menu races use a separate three-second countdown, three laps, results, immediate retry and recoverable local PBs with a separate flying-lap record. They remain explicitly unverified local times using the current ordered practice checkpoints; competition-grade shortcut validation remains unfinished. Existing developer handling/replay tools remain available through explicit `-Track` launches.
+
+Full implementation details, actual final validation, screenshots and remaining manual acceptance are recorded in [docs/MENUS_AND_CREATOR.md](docs/MENUS_AND_CREATOR.md), [creator format](docs/CREATOR_FORMAT.md), [additional Slicks conversions](docs/MORE_SLICKS.md), [shared themes](docs/TRACK_THEMES.md) and [local records](docs/LOCAL_RECORDS.md). Earlier sections below are historical checkpoints; their requests to approve handling are superseded by the owner's acceptance above.
+
+Android Doctor was rerun: matching templates, SDK/ADB/build-tools and JDK remain missing. Device attachment could not be enumerated; **no physical-phone test or APK export was performed**.
+
+Next acceptance: try the complete create → preview → test drive → return → save/share/import flow; evaluate the new track art and extra circuits. Then complete Android setup and the actual phone usability/thermal session. Online leagues, progression, commerce and hosted publication remain deferred.
 
 ## Completed
 

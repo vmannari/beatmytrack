@@ -7,6 +7,12 @@ signal profile_requested(index: int)
 signal handling_edited
 signal record_requested
 signal track_requested
+signal exit_requested
+
+var production_mode: bool = false
+var editor_test: bool = false
+var race_timer: Label
+var pause_button: Button
 
 var config: HandlingConfig
 var driver: DriverInput
@@ -39,10 +45,18 @@ func _ready() -> void:
 	root.add_child(top)
 	title = _label("CIRCUIT / 01   ·   HANDLING YARD", 19)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	title.custom_minimum_size.x = 100
 	top.add_child(title)
+	race_timer = _label("00:00.00", 28)
+	race_timer.visible = production_mode
+	top.add_child(race_timer)
 	_button(top, "Restart  R", func() -> void: restart_requested.emit())
 	_button(top, "Pause  Esc", func() -> void: pause_requested.emit())
-	if OS.is_debug_build():
+	pause_button = top.get_child(top.get_child_count()-1) as Button
+	if production_mode:
+		_button(top, "Back to editor" if editor_test else "Tracks", func() -> void: exit_requested.emit())
+	if OS.is_debug_build() and not production_mode:
 		_button(top, "Track F5", func() -> void: track_requested.emit())
 		_button(top, "Tune  F2", toggle_tuning)
 		_button(top, "Record  F3", func() -> void: record_requested.emit())
@@ -61,7 +75,7 @@ func _ready() -> void:
 	info.add_child(profile_label)
 	debug_label = _label("", 15)
 	info.add_child(debug_label)
-	debug_enabled = OS.is_debug_build()
+	debug_enabled = OS.is_debug_build() and not production_mode
 	var footer := VBoxContainer.new()
 	footer.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	footer.offset_left = 24
@@ -73,7 +87,7 @@ func _ready() -> void:
 	footer.add_child(message_label)
 	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3: handling", 14)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	help.visible = OS.is_debug_build() and not OS.has_feature("mobile")
+	help.visible = OS.is_debug_build() and not OS.has_feature("mobile") and not production_mode
 	footer.add_child(help)
 	tune_panel = PanelContainer.new()
 	tune_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
@@ -141,6 +155,7 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 	if hud_elapsed < 0.08:
 		return
 	hud_elapsed = 0.0
+	pause_button.text = "Resume" if paused else ("Pause" if production_mode else "Pause  Esc")
 	speed_label.text = "%3.0f km/h" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
 	debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
@@ -167,7 +182,7 @@ func _label(text: String, font_size: int) -> Label:
 func _button(parent: Control, text: String, callback: Callable) -> void:
 	var button := Button.new()
 	button.text = text
-	button.custom_minimum_size.y = 44
+	button.custom_minimum_size.y = 54
 	button.focus_mode = Control.FOCUS_NONE
 	button.add_theme_font_size_override("font_size", 15)
 	button.add_theme_stylebox_override("normal", _panel_style())

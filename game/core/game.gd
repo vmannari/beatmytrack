@@ -1,6 +1,17 @@
 extends Node
 ## Composition and lifecycle; canonical dynamics live in VehicleSimulation.
 
+signal exit_requested
+signal race_completed
+signal retry_requested
+
+var initial_track: NativeTrack
+var production_mode: bool = false
+var editor_test: bool = false
+var attempt_practice: bool = false
+var countdown_ticks: int = 0
+var countdown_label: Label
+
 const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres"]
 var profile_index: int = 1
 var handling: HandlingConfig
@@ -19,7 +30,7 @@ var previous_heading: float = 0.0
 var demo_capture: bool = false
 var capture_path: String = ""
 var track_index: int = -1
-const TRACK_NAMES: Array[String] = ["slicks_freeway_test", "slicks_1way_test", "slicks_66_test", "slicks_offroad_test"]
+const TRACK_NAMES: Array[String] = ["slicks_freeway_test", "slicks_1way_test", "slicks_66_test", "slicks_offroad_test", "slicks_arto4_test", "slicks_hiekka_test", "slicks_ovaali3_test"]
 var native_track: NativeTrack
 var track_session: TrackSession
 var track_ground: Node3D
@@ -47,6 +58,9 @@ func _ready() -> void:
 	if track_index >= 0:
 		native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json")
 		yard = native_track
+	if initial_track != null:
+		native_track = initial_track
+		yard = native_track
 	var world: Node3D = $World
 	_build_ground(world)
 	var light := DirectionalLight3D.new()
@@ -72,6 +86,8 @@ func _ready() -> void:
 	world.add_child(camera)
 	camera.current = true
 	hud = PlaygroundHUD.new()
+	hud.production_mode = production_mode
+	hud.editor_test = editor_test
 	hud.config = handling
 	hud.driver = driver
 	add_child(hud)
@@ -81,11 +97,23 @@ func _ready() -> void:
 	hud.handling_edited.connect(restart)
 	hud.record_requested.connect(toggle_recording)
 	hud.track_requested.connect(cycle_track)
+	hud.exit_requested.connect(func() -> void: exit_requested.emit())
 	track_debug = TrackDebug.new()
 	var debug_layer := CanvasLayer.new()
 	debug_layer.layer = 5
 	add_child(debug_layer)
 	debug_layer.add_child(track_debug)
+	countdown_label = Label.new()
+	countdown_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	countdown_label.offset_left = -160
+	countdown_label.offset_right = 160
+	countdown_label.offset_top = -60
+	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	countdown_label.add_theme_font_size_override("font_size",72)
+	countdown_label.add_theme_color_override("font_outline_color",Color("172129"))
+	countdown_label.add_theme_constant_override("outline_size",12)
+	countdown_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	debug_layer.add_child(countdown_label)
 	restart()
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
@@ -101,6 +129,11 @@ func _ready() -> void:
 func _physics_process(_delta: float) -> void:
 	if sim == null or paused:
 		return
+	if countdown_ticks > 0:
+		countdown_label.text = str(ceili(countdown_ticks / 120.0))
+		countdown_ticks -= 1
+		return
+	countdown_label.text = "GO" if production_mode and sim.state.tick < 60 else ""
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	frame = driver.sample()
@@ -111,6 +144,11 @@ func _physics_process(_delta: float) -> void:
 	sim.step(frame, yard)
 	if native_track != null:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
+		if production_mode and track_session.finished:
+			paused = true
+			driver.clear()
+			hud.touch.enabled = false
+			race_completed.emit()
 	trails.sample(sim.state, frame, bridge_presentation)
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
@@ -147,7 +185,12 @@ func _process(delta: float) -> void:
 		track_debug.queue_redraw()
 		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
 		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
-		hud.message_label.text = "%s | Lap %d/3 | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(3, track_session.completed_laps + 1), progress_text, track_session.elapsed_ticks / 120.0, status_text]
+		if production_mode:
+			hud.title.text = "%s  /  LAP %d OF 3" % [str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper()))), mini(3, track_session.completed_laps + 1)]
+			hud.race_timer.text = "%02d:%05.2f" % [int(track_session.elapsed_ticks / 120.0) / 60, fmod(track_session.elapsed_ticks / 120.0,60.0)]
+			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Test drive" if editor_test else ("Practice run" if attempt_practice else ""))
+		else:
+			hud.message_label.text = "%s | Lap %d/3 | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(3, track_session.completed_laps + 1), progress_text, track_session.elapsed_ticks / 120.0, status_text]
 
 
 func restart() -> void:
@@ -155,9 +198,11 @@ func restart() -> void:
 	driver.clear()
 	frame = DriveFrame.new()
 	paused = false
+	attempt_practice = false
+	countdown_ticks = 360 if production_mode else 0
 	sim.reset(yard.spawn, yard.spawn_heading)
 	track_session = TrackSession.new()
-	hud.title.text = "CIRCUIT / 01  ·  " + (TRACK_NAMES[track_index].trim_prefix("slicks_").trim_suffix("_test").to_upper() if native_track != null else "HANDLING YARD")
+	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper() if native_track != null else "HANDLING YARD")
 	if native_track != null:
 		sim.state.route_index = native_track.nearest_route(sim.state.position)
 		sim.state.track_elevated = native_track.elevated_at(sim.state.position, sim.state.route_index)
@@ -178,7 +223,9 @@ func select_profile(index: int) -> void:
 
 
 func toggle_pause() -> void:
+	if production_mode and track_session.finished: return
 	paused = not paused
+	if paused and production_mode: attempt_practice = true
 	driver.clear()
 	frame = DriveFrame.new()
 	hud.touch.enabled = not paused
@@ -207,13 +254,16 @@ func _save_recording() -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.is_pressed() or event.is_echo():
 		return
+	if production_mode and track_session.finished and event.is_action_pressed("restart"):
+		retry_requested.emit()
+		return
 	if event.is_action_pressed("restart"):
 		restart()
 	elif event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("debug_hud"):
 		hud.debug_enabled = not hud.debug_enabled
-	elif OS.is_debug_build() and event is InputEventKey:
+	elif OS.is_debug_build() and not production_mode and event is InputEventKey:
 		match event.physical_keycode:
 			KEY_1: select_profile(0)
 			KEY_2: select_profile(1)

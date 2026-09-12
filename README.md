@@ -1,8 +1,14 @@
-# CIRCUIT / 01 — handling laboratory
+# CIRCUIT / 01 — local racing and track studio
 
-Working title from the blueprint. **The driving playground and four handling-test circuits are playable.** Open `game/project.godot` in Godot 4.7.2 and run the project. One original car, the handling yard and four native Slicks-derived practice layouts let us evaluate steering and slide recovery. Handling approval and final art remain pending. See [Slicks import, results and captures](SLICKS_IMPORT.md).
+Working title from the blueprint. **Handling and collisions are owner-approved. The project opens the new Play menu.** Open `game/project.godot` in Godot 4.7.2 and run the project. Race seven native Slicks-derived layouts or open **Create** to shape, theme, preview, test-drive and share your own circuit. See [menus and creator guide](docs/MENUS_AND_CREATOR.md), [three additional circuits](docs/MORE_SLICKS.md) and [track themes](docs/TRACK_THEMES.md). Physical-phone acceptance remains pending.
 
-## Drive and tune
+Create starts with a complete circuit. Drag its large handles; use Add bend, Remove or Set start to change the route. Theme, road surface and width sit beside the map. Fit/+/- and pinch/pan change the planning view. Valid edits autosave; Undo recovers mistakes. **3D preview** shows the same track kit as driving. **Test drive** and **Back to editor** preserve your draft and view. Tracks lists local circuits for racing or editing; Share offers clipboard/file exchange, and Import creates a new local copy.
+
+Menu races have a standing countdown, three laps, local results/PBs and Retry. These times are unverified; no online ranking or hosted publication is implied. There is no local draft count quota or paid racing gate.
+
+## Drive and tune (development tools)
+
+The table below describes the retained diagnostic mode: launch with `scripts/dev.ps1 Run -Track slicks_freeway_test`. Normal menu races hide these debug controls. F5 now cycles all seven imported circuits and the yard.
 
 | Control | Action |
 |---|---|

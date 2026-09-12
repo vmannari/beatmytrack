@@ -5,6 +5,8 @@ const ACTIONS: Array[StringName] = [&"steer_left", &"steer_right", &"brake", &"a
 const LABELS: Array[String] = ["LEFT", "RIGHT", "BRAKE", "THROTTLE"]
 var driver: DriverInput
 var enabled: bool = true
+var control_scale: float = 1.0
+var left_handed: bool = false
 
 
 func _ready() -> void:
@@ -14,8 +16,16 @@ func _ready() -> void:
 
 
 func zones() -> Array[Rect2]:
-	return [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
+	var result: Array[Rect2] = [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
 		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120)]
+	for i: int in range(result.size()):
+		var rect: Rect2 = result[i]
+		var anchor: Vector2 = Vector2(24 if i < 2 else size.x - 24, size.y - 64)
+		rect.position = anchor + (rect.position - anchor) * control_scale
+		rect.size *= control_scale
+		if left_handed: rect.position.x = size.x - rect.end.x
+		result[i] = rect
+	return result
 
 
 func action_at(point: Vector2) -> StringName:

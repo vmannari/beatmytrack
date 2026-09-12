@@ -25,9 +25,14 @@ static func read(path: String) -> NativeTrack:
 	if not data is Dictionary or data.get("schema", "") not in ["surface-grid-v1", "surface-grid-v2"]:
 		push_error("Invalid native track: " + path)
 		return null
+	return from_data(data, FileAccess.get_sha256(path))
+
+
+static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
+	# Trusted native data only. Creator imports are validated and compiled first.
 	var track := NativeTrack.new()
 	track.metadata = data
-	track.content_hash = FileAccess.get_sha256(path)
+	track.content_hash = hash_value
 	track.identity = data.identity
 	track.cell_size = float(data.cell_size)
 	track.grid_width = int(data.grid_size[0])

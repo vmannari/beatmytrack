@@ -86,6 +86,7 @@ func run() -> void:
 	_check_soft_surfaces()
 	_check_ramp_recovery()
 	_check_rebound()
+	_check_impact_turn()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -334,10 +335,50 @@ func _check_rebound() -> void:
 		distances.append(separation)
 		if not legacy:
 			print("BOUNCE_RESULT: powered head-on impact, rebound %.2f km/h, separation %.3f -> %.3f m" % [rebound_speed*3.6,distances[0],separation])
-			check(separation > 0.6 and separation > distances[0] * 2.0, "head-on collision visibly rebounds even with throttle held")
+			check(separation > 2.5 and separation > distances[0] * 2.0, "head-on collision has a larger rebound even with throttle held")
 	var config := HandlingConfig.new()
 	var glance := VehicleState.new()
 	glance.velocity = Vector2(8,18)
 	var energy: float = glance.velocity.length_squared()
 	track._bounce(glance, Vector2.LEFT, config)
 	check(glance.velocity.x < -2.0 and glance.velocity.y > 14.0 and glance.velocity.length_squared() < energy, "glancing collision rebounds and retains travel along the wall without adding energy")
+
+
+func _check_impact_turn() -> void:
+	var config := HandlingConfig.new()
+	var ground := PlaygroundData.new()
+	var turns: Array[float] = []
+	for side: float in [-1.0,1.0]:
+		var sim := VehicleSimulation.new(config)
+		var initial_heading: float = side * PI * 0.25
+		sim.reset(Vector2.ZERO, initial_heading)
+		sim.state.velocity = sim.state.forward() * 20.0
+		var before_energy: float = config.mass * sim.state.velocity.length_squared()
+		ground._bounce(sim.state, Vector2(-side,0), config)
+		var after_energy: float = config.mass * sim.state.velocity.length_squared() + config.rotational_inertia * sim.state.yaw_rate * sim.state.yaw_rate
+		check(after_energy < before_energy and absf(sim.state.yaw_rate) <= config.maximum_yaw_rate, "angled impact turn is bounded and loses total kinetic energy")
+		check(sim.state.yaw_rate * side < 0.0, "angled impact turns the nose away from the wall")
+		for tick: int in range(24): sim.step(DriveFrame.new())
+		var turn: float = sim.state.heading - initial_heading
+		turns.append(turn)
+		check(absf(turn) > deg_to_rad(5.0) and absf(turn) < deg_to_rad(20.0), "impact rotates actual car heading visibly over the following 0.2 seconds")
+		print("IMPACT_TURN side=", side, " heading_change_degrees=", rad_to_deg(turn))
+	check(is_equal_approx(turns[0], -turns[1]), "left and right impacts have mirrored turning response")
+	var centered := VehicleState.new()
+	centered.velocity = Vector2(0,20)
+	ground._bounce(centered, Vector2(0,-1), config)
+	check(centered.yaw_rate == 0.0 and centered.heading == 0.0 and centered.velocity.y < 0.0 and centered.collision_count == 1, "centered head-on collision rebounds without arbitrary spin")
+	var outgoing := VehicleState.new()
+	outgoing.velocity = Vector2(-10,0)
+	ground._bounce(outgoing, Vector2.LEFT, config)
+	check(outgoing.yaw_rate == 0.0 and outgoing.collision_count == 0, "moving away from a wall does not add collision rotation")
+	var recoil := VehicleSimulation.new(config)
+	recoil.reset(Vector2.ZERO)
+	recoil.state.velocity = Vector2(0,-12)
+	var brake := DriveFrame.new()
+	brake.brake = 255
+	recoil.step(brake)
+	check(recoil.state.velocity.y < -11.0 and recoil.state.velocity.y > -12.0, "reverse pedal does not clip, accelerate or sustain hard-impact recoil")
+	var powered_reverse := VehicleSimulation.new(config)
+	for tick: int in range(1200): powered_reverse.step(brake)
+	check(powered_reverse.state.velocity.y >= -config.reverse_speed and powered_reverse.state.velocity.y < -config.reverse_speed + 0.1, "powered reverse still respects its normal speed limit")

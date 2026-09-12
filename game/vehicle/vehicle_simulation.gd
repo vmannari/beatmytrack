@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.7"
+const PHYSICS_VERSION: String = "arcade-planar-0.8"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -69,6 +69,10 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))
 	longitudinal_limit *= surface.x
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
+	# Impact recoil may exceed powered reverse speed. Preserve that momentum,
+	# but the reverse pedal cannot sustain or increase an overspeed recoil.
+	if longitudinal < -config.reverse_speed:
+		drive_acceleration = maxf(0.0, drive_acceleration)
 	var next_longitudinal: float = longitudinal + drive_acceleration * STEP
 	# Braking never crosses zero into reverse until the stopped hold delay elapses.
 	if brake > 0.0 and longitudinal > 0.0 and next_longitudinal < 0.0:
@@ -78,7 +82,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
 	resistance += surface.y
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
-	next_longitudinal = clampf(next_longitudinal, -config.reverse_speed, config.maximum_speed)
+	next_longitudinal = clampf(next_longitudinal, -maxf(config.reverse_speed, -longitudinal), config.maximum_speed)
 	state.velocity = forward * next_longitudinal + right * next_lateral
 	state.velocity = state.velocity.limit_length(config.maximum_speed)
 	var previous_position: Vector2 = state.position

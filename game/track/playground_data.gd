@@ -57,7 +57,13 @@ func _bounce(state: VehicleState, normal: Vector2, config: HandlingConfig) -> vo
 	var inward_speed: float = state.velocity.dot(normal)
 	if inward_speed >= 0.0:
 		return
+	var energy: float = config.mass * state.velocity.length_squared() + config.rotational_inertia * state.yaw_rate * state.yaw_rate
+	# The circle collider has no contact lever arm. Approximate front/rear
+	# leverage from the body axes: oblique hits turn it, centred hits do not.
+	var turn: float = -normal.dot(state.forward()) * normal.dot(state.right()) * -inward_speed * config.collision_turn_strength
 	var tangent: Vector2 = state.velocity - normal * inward_speed
 	state.velocity = tangent * sqrt(1.0 - config.collision_energy_loss) - normal * inward_speed * config.restitution
-	state.yaw_rate *= 1.0 - config.collision_energy_loss
+	var rotation_budget: float = maxf(0.0, energy - config.mass * state.velocity.length_squared())
+	var yaw_limit: float = minf(config.maximum_yaw_rate, sqrt(rotation_budget / config.rotational_inertia))
+	state.yaw_rate = clampf(state.yaw_rate * (1.0 - config.collision_energy_loss) + turn, -yaw_limit, yaw_limit)
 	state.collision_count += 1

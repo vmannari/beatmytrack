@@ -136,6 +136,20 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 			if not escaping:
 				state.position = accepted
 				_bounce(state, blocking_normal, config)
+				# Consume the remaining tangential displacement instead of discarding
+				# the whole step. Sweep it too, so sliding cannot tunnel past corners.
+				var remaining: Vector2 = from + movement - accepted
+				var slide: Vector2 = remaining - blocking_normal * remaining.dot(blocking_normal)
+				var slide_steps: int = maxi(1, ceili(slide.length() / (cell_size * 0.45)))
+				var slide_from: Vector2 = accepted
+				for i: int in range(1, slide_steps + 1):
+					var candidate: Vector2 = slide_from + slide * (float(i) / slide_steps)
+					var candidate_route: int = nearest_route(candidate, state.route_index)
+					var candidate_layer: bool = elevated_at(candidate, candidate_route)
+					if candidate_layer != state.track_elevated or _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
+						break
+					state.position = candidate
+					state.route_index = candidate_route
 				return
 		accepted = point
 		contact = next_contact

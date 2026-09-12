@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.8"
+const PHYSICS_VERSION: String = "arcade-planar-0.9"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 

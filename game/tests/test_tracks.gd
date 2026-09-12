@@ -87,6 +87,7 @@ func run() -> void:
 	_check_ramp_recovery()
 	_check_rebound()
 	_check_impact_turn()
+	_check_wall_slide()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -342,6 +343,38 @@ func _check_rebound() -> void:
 	var energy: float = glance.velocity.length_squared()
 	track._bounce(glance, Vector2.LEFT, config)
 	check(glance.velocity.x < -2.0 and glance.velocity.y > 14.0 and glance.velocity.length_squared() < energy, "glancing collision rebounds and retains travel along the wall without adding energy")
+
+
+func _check_wall_slide() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 80
+	track.grid_height = 800
+	track.half_extent = Vector2(10,100)
+	track.cells.resize(64000)
+	track.deck_cells.resize(64000)
+	track.deck_cells.fill(-1)
+	track.route = PackedVector2Array([Vector2(-5,-90),Vector2(-5,90),Vector2(5,90),Vector2(5,-90)])
+	for y: int in range(800): track.cells[y * 80 + 40] = 4
+	var config := HandlingConfig.new()
+	var throttle := DriveFrame.new()
+	throttle.throttle = 255
+	for direction: float in [-1.0,1.0]:
+		var sim := VehicleSimulation.new(config)
+		var initial: float = PI * 0.5 - direction * PI * 0.25
+		sim.reset(Vector2(-config.collision_radius - 0.002,0), initial)
+		var clear: bool = true
+		for tick: int in range(360):
+			sim.step(throttle, track)
+			clear = clear and sim.state.position.x <= -config.collision_radius
+		print("WALL_SLIDE direction=",direction," distance=",absf(sim.state.position.y)," angle=",rad_to_deg(acos(clampf(absf(sim.state.forward().y),0,1))))
+		check(clear, "powered wall sliding never enters the barrier")
+		check(sim.state.position.y * direction > 5.0, "car starts from rest and keeps moving along the wall under throttle")
+		check(absf(sim.state.forward().x) < sin(deg_to_rad(15.0)), "sustained rubbing gradually aligns the nose parallel in either direction")
+		var replay := VehicleSimulation.new(config)
+		replay.reset(Vector2(-config.collision_radius - 0.002,0), initial)
+		for tick: int in range(360): replay.step(throttle, track)
+		check(replay.state.snapshot() == sim.state.snapshot(), "wall slide and alignment replay exactly")
 
 
 func _check_impact_turn() -> void:

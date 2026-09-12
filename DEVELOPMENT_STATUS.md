@@ -124,3 +124,8 @@ G01 owner feedback: handling-0.9 increases shared restitution from 0.12 to 0.38.
 ## Collision direction and larger bounce - 2026-09-12
 
 G01 owner feedback: handling-0.10 / physics arcade-planar-0.8 adds a bounded, energy-budgeted impact yaw impulse and raises restitution to 0.55. Reverse-speed limiting preserves impact recoil while still capping powered reverse. Angled test hits rotate heading by 9.369 degrees in 0.2 s; powered head-on separation is 3.736 m versus the prior 1.443 m. Validate passed import, 24 parses, startup, 56 driving + 107 track checks, including full lap/replay, ramp escape, energy and reverse-limit tests. Changed files, actual commands, test-fixture correction and remaining manual/phone acceptance: [docs/DRIVING_PLAYGROUND.md](docs/DRIVING_PLAYGROUND.md#impact-rotation-and-stronger-recoil---2026-09-12). No phone test or APK export occurred.
+
+## Sustained wall contact - 2026-09-12
+
+G01: native barriers now preserve checked tangential movement; low-speed rubbing gently aligns the car while hard impacts keep their bounce. Handling-0.11 / arcade-planar-0.9. The mirrored standstill test travels 8.918 m in 3 seconds and aligns within 0.934 degrees without penetration. TestTracks passes 115 checks, including all four three-lap AI/replay and ramp-recovery fixtures. Details and remaining manual acceptance: docs/DRIVING_PLAYGROUND.md, Sustained wall sliding. Phone testing remains unperformed.
+Final full Validate passed import, 24 parses, startup and 171 checks (56 driving + 115 track). Evidence: docs/evidence/wall-slide-*.txt.

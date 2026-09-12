@@ -5,7 +5,7 @@ extends Resource
 const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared with visuals/trails.
 
 @export var profile_name: String = "Balanced"
-@export var version: String = "handling-0.10"
+@export var version: String = "handling-0.11"
 @export_range(500.0, 2000.0, 10.0) var mass: float = 1050.0
 @export_range(1000.0, 22000.0, 100.0) var engine_force: float = 16500.0
 @export_range(2000.0, 30000.0, 100.0) var braking_force: float = 18000.0
@@ -35,6 +35,8 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export_range(0.0, 0.8, 0.01) var collision_energy_loss: float = 0.35
 @export_range(0.0, 0.7, 0.01) var restitution: float = 0.55 # Fraction of impact-normal speed returned as recoil.
 @export_range(0.0, 1.0, 0.01) var collision_turn_strength: float = 0.45 # Angular impulse per impact speed, weighted by angle.
+@export_range(0.5, 4.0, 0.1) var wall_slide_speed: float = 2.0 # Inward m/s blending rubbing into impact.
+@export_range(0.0, 4.0, 0.1) var wall_alignment_rate: float = 2.4 # Gradual chassis alignment during rubbing.
 @export_range(1.0, 2.5, 0.05) var collision_radius: float = 1.55 * BODY_SCALE # planar circle approximation
 
 

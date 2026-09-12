@@ -62,8 +62,13 @@ func _bounce(state: VehicleState, normal: Vector2, config: HandlingConfig) -> vo
 	# leverage from the body axes: oblique hits turn it, centred hits do not.
 	var turn: float = -normal.dot(state.forward()) * normal.dot(state.right()) * -inward_speed * config.collision_turn_strength
 	var tangent: Vector2 = state.velocity - normal * inward_speed
-	state.velocity = tangent * sqrt(1.0 - config.collision_energy_loss) - normal * inward_speed * config.restitution
+	# Small inward speeds are sustained rubbing, not a fresh crash. Preserve
+	# tangential travel and gently steer the chassis parallel to the barrier.
+	var impact: float = smoothstep(0.0, config.wall_slide_speed, -inward_speed)
+	state.velocity = tangent * sqrt(1.0 - config.collision_energy_loss * impact) - normal * inward_speed * config.restitution * impact
+	var alignment_yaw: float = -normal.dot(state.forward()) * normal.dot(state.right()) * config.wall_alignment_rate
+	var contact_yaw: float = lerpf(state.yaw_rate, alignment_yaw, 0.25)
 	var rotation_budget: float = maxf(0.0, energy - config.mass * state.velocity.length_squared())
 	var yaw_limit: float = minf(config.maximum_yaw_rate, sqrt(rotation_budget / config.rotational_inertia))
-	state.yaw_rate = clampf(state.yaw_rate * (1.0 - config.collision_energy_loss) + turn, -yaw_limit, yaw_limit)
+	state.yaw_rate = clampf(lerpf(contact_yaw, state.yaw_rate * (1.0 - config.collision_energy_loss) + turn, impact), -yaw_limit, yaw_limit)
 	state.collision_count += 1

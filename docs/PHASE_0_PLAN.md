@@ -105,3 +105,8 @@ The first subjective question is whether steering, braking and catching a slide 
 2026-09-12: G01 owner-requested collision rebound tuning is implemented as a shared parameter change (handling-0.9, restitution 0.38). No architecture/content expansion. Validate passed 56 driving + 96 track checks, including visible-separation metrics, energy loss, ramp recovery and full replays. See [DRIVING_PLAYGROUND.md](DRIVING_PLAYGROUND.md#collision-rebound---2026-09-12) for actual commands and remaining feel/phone acceptance; no phone test was performed.
 
 2026-09-12: G01 impact tuning now rotates the car after oblique collisions and increases rebound, per both owner requests. Handling-0.10 / physics 0.8 passed 56 driving + 107 track checks with replay, ramp recovery, bounded energy and powered-reverse safeguards. Existing track/art scope is unchanged. Details and manual/phone acceptance remain in [DRIVING_PLAYGROUND.md](DRIVING_PLAYGROUND.md#impact-rotation-and-stronger-recoil---2026-09-12); no phone test was performed.
+
+## G01 wall-slide iteration - 2026-09-12
+
+Owner requests continued tangential travel and gradual alignment while pushing against a barrier. Implemented within the handling gate using the existing native collision resolver and shared response; no architectural expansion or track format changes. TestTracks passes 115 checks; measured mirrored powered wall starts travel 8.918 m in 3 seconds and align within 0.934 degrees. See docs/DRIVING_PLAYGROUND.md (Sustained wall sliding) for changed files, commands and limitations. Windows owner feel and physical-phone acceptance remain pending.
+Final full Validate passed import, 24 parses, startup and 171 checks (56 driving + 115 track). Evidence: docs/evidence/wall-slide-*.txt.

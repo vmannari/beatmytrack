@@ -38,7 +38,7 @@ func run() -> void:
 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
 		if theme == "pine":
-			check(track.content_hash == "1bf2455d3421862d7f4eb68feb7a9253defbc6361b15ec3394d7f057c1aa8303","compiler-v1 canonical identity matches golden hash")
+			check(track.content_hash == "68ca60634e3e4c1645d6c5ec7b105d59514f95b74dc9a1477ac66f0f8629aaec","compiler-v2 canonical identity matches golden hash")
 		var route_on_road: bool = true
 		for point: Vector2 in track.route:
 			route_on_road = route_on_road and track.cell_at(point) == expected
@@ -61,7 +61,7 @@ func _check_import_boundary() -> void:
 		{"schema":"creator-track-v999"}, {"id":"../outside"}, {"id":"con"}, {"id":"C:/outside"},
 		{"name":"Bad\nname"}, {"name":""}, {"name":"a".repeat(41)}, {"name":123},
 		{"theme":"https://example.test/a.png"}, {"surface":"res://bad.gd"}, {"script":"res://bad.gd"},
-		{"width":7.9}, {"width":14.1}, {"width":true}, {"width":INF}, {"points":[]},
+		{"width":5.9}, {"width":20.1}, {"width":true}, {"width":INF}, {"points":[]},
 		{"points":[[0,0],[40,0],[40,40],[0,NAN]]},
 		{"points":[[0,0],[40,0],[40,40],[0,121]]},
 		{"points":[[0,0],[40,0],[40,40],[0,{"script":"run"}]]},
@@ -79,14 +79,15 @@ func _check_import_boundary() -> void:
 	check(not TrackDocument.validate(oversized).is_empty(),"per-document point bound enforced")
 	var sharp: Dictionary = base.duplicate(true)
 	sharp.points = [[-40,-30],[40,-30],[40,30],[32,32],[30,-15],[-30,30]]
-	check(not TrackDocument.validate(sharp).is_empty(),"sharp folded route rejected")
-	check(TrackCompiler.compile(sharp) == null,"compiler fails closed on invalid geometry")
+	check(TrackDocument.validate(sharp).is_empty(),"owner-approved tight bend is no longer blocked by minimum-radius policy")
+	check(TrackCompiler.compile(sharp) != null,"tight bend compiles for human test driving")
 	var overlap: Dictionary = base.duplicate(true)
 	overlap.points = [[-45,-25],[20,-25],[35,-8],[20,8],[-25,8],[-35,-2],[15,-2],[30,28],[-40,28]]
-	check(not TrackDocument.validate(overlap).is_empty(),"nearby overlapping road branches rejected")
-	for width: float in [8.0,14.0]:
+	check(not TrackDocument.validate(overlap).is_empty(),"changed node count without matching property arrays rejected")
+	for width: float in [6.0,20.0]:
 		var wide: Dictionary = base.duplicate(true)
 		wide.width = width
+		wide.widths.fill(width)
 		check(TrackDocument.validate(wide).is_empty(),"legal boundary width %.0f metres accepted" % width)
 
 
@@ -144,7 +145,7 @@ func _drive_and_replay(track: NativeTrack, label: String) -> void:
 	simulation.reset(track.spawn,track.spawn_heading)
 	simulation.state.route_index = track.nearest_route(track.spawn)
 	check(track.collision_normal(track.spawn,config.collision_radius,false) == Vector2.ZERO,label+" spawn has body clearance")
-	var session := TrackSession.new()
+	var session := TrackSession.new(120, 3)
 	var driver := RouteDriver.new()
 	var frames: Array[Array] = []
 	for tick: int in range(120*240):
@@ -161,7 +162,7 @@ func _drive_and_replay(track: NativeTrack, label: String) -> void:
 	var replay := VehicleSimulation.new(config)
 	replay.reset(track.spawn,track.spawn_heading)
 	replay.state.route_index = track.nearest_route(track.spawn)
-	var replay_session := TrackSession.new()
+	var replay_session := TrackSession.new(120, 3)
 	var parsed_frames: Array = JSON.parse_string(JSON.stringify(frames))
 	for batch: int in range(0,parsed_frames.size(),8):
 		for index: int in range(batch,mini(batch+8,parsed_frames.size())):

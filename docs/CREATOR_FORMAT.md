@@ -1,5 +1,7 @@
 # Local creator format
 
+Current format: **creator-track-v2**, with per-node widths, sharp/smooth corners and built-in objects. See [EDITOR_V2.md](EDITOR_V2.md) and the [v2 schema](schemas/creator-track-v2.schema.json). The owner explicitly waives backward compatibility for user tracks; v1 is unsupported. The following records the historical first implementation.
+
 2026-09-12 owner-authorized local creator slice. Requirements: T01 (bounded non-scriptable format), T02 (closed route and geometry validation), T03 foundations (version identity), T04 (unlimited local drafts and free file exchange), V05 (shared editor/driving geometry). Public publishing, hosted challenges, accounts and competition verification are outside this slice.
 
 `game/editor/track_document.gd` owns `creator-track-v1`. The structural schema is [creator-track-v1.schema.json](schemas/creator-track-v1.schema.json). The original blueprint package/schema remains unchanged. A document contains exactly `schema`, `id`, `name`, `theme`, `surface`, `width` and `points`; all unknown properties are rejected. The three built-in themes are `pine`, `coast`, `desert`, and the road surface is `asphalt` or `dirt`. Theme selection does not alter surface semantics. No URLs, scripts, images, Resource files or arbitrary scene objects are loaded.

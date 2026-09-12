@@ -39,3 +39,6 @@ Do not hardcode real credentials, release-signing secrets or player data. Do not
 Each task must identify requirement IDs, changed files, actual commands run, actual test outcomes, known limitations and remaining acceptance checks. Include screenshots/video for visible UI changes. State explicitly when no phone is attached or a device test was not performed. Never report planned tests as passed. Do not remove or weaken a failing invariant to make a test green. Ask for a decision when two approved requirements conflict.
 
 One vertical slice and one reviewable Git checkpoint at a time. Update schemas, golden fixtures and docs when contracts change. Run quick tests before export and full replay/regression tests before merging a physics change. No unrequested scope expansion.
+## Creator follow-up override (2026-09-12)
+
+The owner accepted handling and authorized menus/editor/content. Sharp turns, per-node widths and built-in objects supersede initial creator minimum bend-radius and shoulder-clearance proposals. The owner explicitly waives backward compatibility for user-created tracks: support creator-track-v2 without deleting existing files.

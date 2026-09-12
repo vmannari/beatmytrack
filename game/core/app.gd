@@ -23,6 +23,7 @@ var ui_touch_scale: float = 1.0
 var ui_left_handed: bool = false
 var records := LocalRecords.new()
 var editor_view: Dictionary = {}
+var editor_inspector: VBoxContainer
 
 func _ready() -> void:
 	var direct: bool = false
@@ -48,7 +49,7 @@ func _ready() -> void:
 
 func _show_screen(next: String) -> void:
 	if is_instance_valid(canvas):
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind}
 	screen = next
 	canvas = null
 	editor_status = null
@@ -85,13 +86,15 @@ func _show_screen(next: String) -> void:
 	nav.add_child(logo)
 	nav.add_child(MenuStyle.button("Back to race" if screen == "settings" else "Settings", _show_screen.bind("play" if screen == "settings" else "settings")))
 	var tabs := HBoxContainer.new()
-	layout.add_child(tabs)
+	if screen == "create": nav.add_child(tabs)
+	else: layout.add_child(tabs)
 	for item: Array in [["play","Race"],["garage","Garage"],["create","Create"]]:
 		var id: String = item[0]
 		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id or (id == "play" and screen == "tracks"))
 		button.name = "Tab_" + id
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
+	if screen == "create": nav.move_child(nav.get_child(1),nav.get_child_count()-1)
 	var separator := HSeparator.new()
 	layout.add_child(separator)
 	content = VBoxContainer.new()
@@ -283,6 +286,18 @@ func _editor() -> void:
 		_refresh_editor()
 		name_save.start())
 	name_field.focus_exited.connect(_save_draft)
+	var theme_choice := OptionButton.new()
+	theme_choice.custom_minimum_size = Vector2(155,54)
+	for id: String in ["pine","coast","desert"]: theme_choice.add_item("Theme / "+id.capitalize())
+	theme_choice.selected = ["pine","coast","desert"].find(document.theme)
+	theme_choice.item_selected.connect(func(index: int) -> void: _set_document_value("theme",["pine","coast","desert"][index]))
+	heading.add_child(theme_choice)
+	var road_choice := OptionButton.new()
+	road_choice.custom_minimum_size = Vector2(160,54)
+	for id: String in ["asphalt","dirt"]: road_choice.add_item("Road / "+id.capitalize())
+	road_choice.selected = ["asphalt","dirt"].find(document.surface)
+	road_choice.item_selected.connect(func(index: int) -> void: _set_document_value("surface",["asphalt","dirt"][index]))
+	heading.add_child(road_choice)
 	heading.add_child(MenuStyle.button("New", _new_document))
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -293,6 +308,9 @@ func _editor() -> void:
 		canvas.zoom = editor_view.zoom
 		canvas.pan = editor_view.pan
 		canvas.mode = editor_view.mode
+		canvas.selected = mini(int(editor_view.get("selected",-1)),document.points.size()-1)
+		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
+		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
 		canvas.fitted = true
 	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(canvas)
@@ -308,46 +326,12 @@ func _editor() -> void:
 	sidebar_scroll.custom_minimum_size.x = 264
 	sidebar_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	row.add_child(sidebar_scroll)
-	var sidebar := VBoxContainer.new()
-	sidebar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sidebar_scroll.add_child(sidebar)
-	sidebar.add_child(MenuStyle.label("SHAPE THE ROUTE", 15, true))
-	var modes := GridContainer.new()
-	modes.columns = 2
-	modes.add_theme_constant_override("h_separation", 8)
-	modes.add_theme_constant_override("v_separation", 8)
-	sidebar.add_child(modes)
-	var mode_group := ButtonGroup.new()
-	for pair: Array in [["move","Move"],["add","Add bend"],["remove","Remove"],["start","Set start"]]:
-		var mode: String = pair[0]
-		var button: Button = MenuStyle.button(pair[1], func() -> void:
-			canvas.mode = mode
-			editor_status.text = {"move":"Drag a handle. The road follows.","add":"Tap beside the road to add a bend.","remove":"Tap a handle to remove it.","start":"Tap a handle to move the start."}[mode])
-		button.toggle_mode = true
-		button.button_group = mode_group
-		button.button_pressed = mode == canvas.mode
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		modes.add_child(button)
-	var themes := OptionButton.new()
-	themes.custom_minimum_size.y = 54
-	for id: String in ["pine","coast","desert"]:
-		themes.add_item("Theme / " + id.capitalize())
-	themes.selected = ["pine","coast","desert"].find(document.theme)
-	themes.item_selected.connect(func(index: int) -> void: _set_document_value("theme",["pine","coast","desert"][index]))
-	sidebar.add_child(themes)
-	var surfaces := OptionButton.new()
-	surfaces.custom_minimum_size.y = 54
-	for id: String in ["asphalt","dirt"]:
-		surfaces.add_item("Road / " + id.capitalize())
-	surfaces.selected = ["asphalt","dirt"].find(document.surface)
-	surfaces.item_selected.connect(func(index: int) -> void: _set_document_value("surface",["asphalt","dirt"][index]))
-	sidebar.add_child(surfaces)
-	var widths := OptionButton.new()
-	widths.custom_minimum_size.y = 54
-	for width: int in [8,10,12,14]: widths.add_item("Width / %d m" % width)
-	widths.selected = [8,10,12,14].find(int(document.width))
-	widths.item_selected.connect(func(index: int) -> void: _set_document_value("width",[8,10,12,14][index]))
-	sidebar.add_child(widths)
+	editor_inspector = VBoxContainer.new()
+	editor_inspector.add_theme_constant_override("separation",8)
+	editor_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sidebar_scroll.add_child(editor_inspector)
+	canvas.selection_changed.connect(_build_editor_tools)
+	_build_editor_tools()
 	var zooms := HBoxContainer.new()
 	canvas.add_child(zooms)
 	zooms.position = Vector2(12,12)
@@ -378,6 +362,148 @@ func _editor() -> void:
 	_refresh_editor()
 	if editor_view.is_empty(): canvas.call_deferred("fit")
 	if TrackDocument.validate(document).is_empty(): canvas.show_native(TrackCompiler.compile(document))
+
+func _build_editor_tools() -> void:
+	if not is_instance_valid(editor_inspector) or not is_instance_valid(canvas): return
+	for child: Node in editor_inspector.get_children():
+		editor_inspector.remove_child(child)
+		child.queue_free()
+	var objects_mode: bool = canvas.mode in ["objects","place"]
+	var tabs := HBoxContainer.new()
+	editor_inspector.add_child(tabs)
+	for pair: Array in [["move","Road"],["objects","Objects"]]:
+		var value: String = pair[0]
+		var button: Button = MenuStyle.button(pair[1],func() -> void:
+			canvas.mode = value
+			_build_editor_tools(), objects_mode == (value == "objects"))
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tabs.add_child(button)
+	if objects_mode:
+		var palette := OptionButton.new()
+		palette.custom_minimum_size.y = 54
+		for id: String in CreatorObjects.KINDS: palette.add_item(id.capitalize())
+		palette.selected = CreatorObjects.KINDS.find(canvas.stamp_kind)
+		palette.item_selected.connect(func(index: int) -> void:
+			canvas.stamp_kind = CreatorObjects.KINDS[index]
+			canvas.mode = "place"
+			_build_editor_tools())
+		editor_inspector.add_child(palette)
+		var actions := HBoxContainer.new()
+		editor_inspector.add_child(actions)
+		actions.add_child(MenuStyle.button("Stamp",func() -> void:
+			canvas.mode = "place"
+			_build_editor_tools(),canvas.mode == "place"))
+		actions.add_child(MenuStyle.button("Select / move",func() -> void:
+			canvas.mode = "objects"
+			_build_editor_tools(),canvas.mode == "objects"))
+		var message := MenuStyle.label(CreatorObjects.description(canvas.stamp_kind),16,true)
+		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		editor_inspector.add_child(message)
+		var chosen: int = canvas.selected_object
+		editor_inspector.add_child(MenuStyle.label("Object %d / %s" % [chosen+1,document.objects[chosen].kind.capitalize()] if chosen >= 0 else "Tap to stamp; drag empty space to pan.",16))
+		var operations := HBoxContainer.new()
+		editor_inspector.add_child(operations)
+		operations.add_child(MenuStyle.button("Rotate",_rotate_object))
+		var duplicate: Button = MenuStyle.button("Copy",_duplicate_object)
+		duplicate.disabled = chosen < 0
+		operations.add_child(duplicate)
+		var delete: Button = MenuStyle.button("Delete",_delete_selection)
+		delete.disabled = chosen < 0
+		operations.add_child(delete)
+		editor_inspector.add_child(MenuStyle.label("%d / 96 objects   |   %.1f deg" % [document.objects.size(),canvas.stamp_rotation],15,true))
+	else:
+		var actions := HBoxContainer.new()
+		editor_inspector.add_child(actions)
+		for pair: Array in [["move","Move"],["add","Add bend"]]:
+			var value: String = pair[0]
+			actions.add_child(MenuStyle.button(pair[1],func() -> void:
+				canvas.mode = value
+				_build_editor_tools(),canvas.mode == value))
+		var chosen: int = canvas.selected
+		editor_inspector.add_child(MenuStyle.label("Node %d / road width" % [chosen+1] if chosen >= 0 else "Tap a road node to adjust it.",18))
+		var widths := HBoxContainer.new()
+		editor_inspector.add_child(widths)
+		var minus: Button = MenuStyle.button("-",_change_node_width.bind(-1.0))
+		minus.disabled = chosen < 0 or float(document.widths[chosen]) <= 6.0
+		widths.add_child(minus)
+		var width_label := MenuStyle.label("%.1f m" % float(document.widths[chosen]) if chosen >= 0 else "6 - 20 m",24)
+		width_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		width_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		widths.add_child(width_label)
+		var plus: Button = MenuStyle.button("+",_change_node_width.bind(1.0))
+		plus.disabled = chosen < 0 or float(document.widths[chosen]) >= 20.0
+		widths.add_child(plus)
+		var corner := OptionButton.new()
+		corner.custom_minimum_size.y = 54
+		corner.add_item("Smooth corner")
+		corner.add_item("Sharp corner")
+		corner.disabled = chosen < 0
+		if chosen >= 0: corner.selected = 1 if document.corners[chosen] == "sharp" else 0
+		corner.item_selected.connect(func(index: int) -> void:
+			_remember()
+			document.corners[canvas.selected] = "sharp" if index == 1 else "smooth"
+			_commit_selection())
+		editor_inspector.add_child(corner)
+		var operations := HBoxContainer.new()
+		editor_inspector.add_child(operations)
+		var delete: Button = MenuStyle.button("Remove",_delete_selection)
+		delete.disabled = chosen < 0 or document.points.size() <= 4
+		operations.add_child(delete)
+		var start: Button = MenuStyle.button("Set start",_set_start_node)
+		start.disabled = chosen < 0
+		operations.add_child(start)
+
+func _commit_selection() -> void:
+	canvas.refresh()
+	_save_draft()
+	_build_editor_tools()
+
+func _change_node_width(change: float) -> void:
+	if canvas.selected < 0: return
+	_remember()
+	document.widths[canvas.selected] = clampf(float(document.widths[canvas.selected])+change,6,20)
+	_commit_selection()
+
+func _delete_selection() -> void:
+	if canvas.mode in ["objects","place"]:
+		if canvas.selected_object < 0: return
+		_remember()
+		document.objects.remove_at(canvas.selected_object)
+		canvas.selected_object = -1
+	else:
+		if canvas.selected < 0 or document.points.size() <= 4: return
+		_remember()
+		for key: String in ["points","widths","corners"]: document[key].remove_at(canvas.selected)
+		canvas.selected = -1
+	_commit_selection()
+
+func _set_start_node() -> void:
+	if canvas.selected < 0: return
+	_remember()
+	for key: String in ["points","widths","corners"]:
+		var values: Array = []
+		for i: int in range(document.points.size()): values.append(document[key][(canvas.selected+i)%document.points.size()])
+		document[key] = values
+	canvas.selected = 0
+	_commit_selection()
+
+func _rotate_object() -> void:
+	canvas.stamp_rotation = fposmod(canvas.stamp_rotation+45,360)
+	if canvas.selected_object >= 0:
+		_remember()
+		document.objects[canvas.selected_object].rotation = fposmod(float(document.objects[canvas.selected_object].rotation)+45,360)
+		_commit_selection()
+	else: _build_editor_tools()
+
+func _duplicate_object() -> void:
+	if canvas.selected_object < 0 or document.objects.size() >= 96: return
+	_remember()
+	var object: Dictionary = document.objects[canvas.selected_object].duplicate(true)
+	object.position = [clampf(float(object.position[0])+4,-110,110),clampf(float(object.position[1])+4,-110,110)]
+	document.objects.append(object)
+	canvas.selected_object = document.objects.size()-1
+	canvas.mode = "objects"
+	_commit_selection()
 
 func _remember() -> void:
 	history.append(document.duplicate(true))
@@ -548,7 +674,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	returning_to_editor = from_editor
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind}
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)

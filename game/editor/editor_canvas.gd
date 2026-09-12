@@ -6,12 +6,21 @@ signal edit_started
 signal document_changed
 signal edit_finished
 signal hint_changed(text: String)
+signal selection_changed
 
 var document: Dictionary
 var mode: String = "move"
 var zoom: float = 1.0
 var pan := Vector2.ZERO
 var selected: int = -1
+var selected_object: int = -1
+var stamp_kind: String = "tree"
+var stamp_rotation: float = 0.0
+var pending_stamp: bool = false
+var press_position := Vector2.ZERO
+var drag_origin := Vector2.ZERO
+var pointer_origin := Vector2.ZERO
+var changed_in_gesture: bool = false
 var active_pointer: int = -99
 var touches: Dictionary = {}
 var dragging: bool = false
@@ -68,7 +77,8 @@ func show_native(track: NativeTrack) -> void:
 	queue_redraw()
 
 func cancel_gesture() -> void:
-	if dragging: edit_finished.emit()
+	if dragging and changed_in_gesture: edit_finished.emit()
+	pending_stamp = false
 	dragging = false
 	panning = false
 	active_pointer = -99
@@ -93,11 +103,13 @@ func _gui_input(event: InputEvent) -> void:
 		if event.pressed and not event.canceled:
 			touches[event.index] = event.position
 			if touches.size() == 1: _begin(event.position, event.index)
-			elif dragging:
+			else:
+				pending_stamp = false
+				if dragging and changed_in_gesture: edit_finished.emit()
 				dragging = false
-				edit_finished.emit()
 		else:
 			touches.erase(event.index)
+			if event.canceled: pending_stamp = false
 			_end(event.index)
 	elif event is InputEventScreenDrag:
 		if not touches.has(event.index): return
@@ -119,70 +131,95 @@ func _gui_input(event: InputEvent) -> void:
 func _begin(point: Vector2, pointer: int) -> void:
 	active_pointer = pointer
 	previous_pointer = point
+	press_position = point
+	pointer_origin = to_world(point)
+	changed_in_gesture = false
+	pending_stamp = mode in ["add","place"]
+	if pending_stamp: return
 	selected = -1
+	selected_object = -1
 	var nearest: float = 30.0
-	for i: int in range(document.points.size()):
-		var p: Array = document.points[i]
-		var distance: float = to_screen(Vector2(p[0], p[1])).distance_to(point)
-		if distance < nearest:
-			nearest = distance
-			selected = i
-	if mode == "add":
-		if document.points.size() >= 24:
-			hint_changed.emit("A circuit can have up to 24 handles.")
+	if mode == "objects":
+		for i: int in range(document.objects.size()-1,-1,-1):
+			var object: Dictionary = document.objects[i]
+			var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
+			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
+				selected_object = i
+				break
+	else:
+		for i: int in range(document.points.size()):
+			var p: Array = document.points[i]
+			var distance: float = to_screen(Vector2(p[0],p[1])).distance_to(point)
+			if distance < nearest:
+				nearest = distance
+				selected = i
+	selection_changed.emit()
+	if selected >= 0 or selected_object >= 0:
+		var value: Array = document.points[selected] if selected >= 0 else document.objects[selected_object].position
+		drag_origin = Vector2(value[0],value[1])
+		dragging = true
+	else: panning = true
+	queue_redraw()
+
+func _move(point: Vector2) -> void:
+	if pending_stamp:
+		if press_position.distance_to(point) > 12:
+			pending_stamp = false
+			panning = true
+	if dragging:
+		var position: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
+		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
+			edit_started.emit()
+			changed_in_gesture = true
+		if changed_in_gesture:
+			if selected >= 0: document.points[selected] = [position.x,position.y]
+			elif selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
+			document_changed.emit()
+	elif panning: pan += point-previous_pointer
+	previous_pointer = point
+	queue_redraw()
+
+func _place(point: Vector2) -> void:
+	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
+	if mode == "place":
+		if document.objects.size() >= 96:
+			hint_changed.emit("Use up to 96 objects. Select one to move or remove it.")
+			return
+		edit_started.emit()
+		document.objects.append({"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation})
+		selected_object = document.objects.size()-1
+		selected = -1
+	else:
+		if document.points.size() >= TrackDocument.MAX_POINTS:
+			hint_changed.emit("Use up to 24 road nodes.")
 			return
 		var index: int = 0
 		var distance: float = INF
 		for i: int in range(document.points.size()):
 			var a: Array = document.points[i]
-			var b: Array = document.points[(i + 1) % document.points.size()]
-			var closest: Vector2 = Geometry2D.get_closest_point_to_segment(point, to_screen(Vector2(a[0],a[1])), to_screen(Vector2(b[0],b[1])))
+			var b: Array = document.points[(i+1)%document.points.size()]
+			var closest: Vector2 = Geometry2D.get_closest_point_to_segment(point,to_screen(Vector2(a[0],a[1])),to_screen(Vector2(b[0],b[1])))
 			if closest.distance_to(point) < distance:
 				distance = closest.distance_to(point)
-				index = i + 1
+				index = i+1
 		edit_started.emit()
-		var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-115,-115),Vector2(115,115))
-		document.points.insert(index, [position.x, position.y])
+		var width: float = (float(document.widths[index-1])+float(document.widths[index%document.widths.size()]))*0.5
+		document.points.insert(index,[position.x,position.y])
+		document.widths.insert(index,width)
+		document.corners.insert(index,"sharp")
 		selected = index
-		document_changed.emit()
-		edit_finished.emit()
-	elif mode == "remove" and selected >= 0:
-		if document.points.size() <= 4:
-			hint_changed.emit("Keep at least four handles to form a circuit.")
-			return
-		edit_started.emit()
-		document.points.remove_at(selected)
-		selected = -1
-		document_changed.emit()
-		edit_finished.emit()
-	elif mode == "start" and selected >= 0:
-		edit_started.emit()
-		var reordered: Array = []
-		for i: int in range(document.points.size()): reordered.append(document.points[(selected + i) % document.points.size()])
-		document.points = reordered
-		selected = 0
-		document_changed.emit()
-		edit_finished.emit()
-	elif mode == "move" and selected >= 0:
-		edit_started.emit()
-		dragging = true
-	else:
-		panning = true
-	queue_redraw()
-
-func _move(point: Vector2) -> void:
-	if dragging and selected >= 0:
-		var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-115,-115),Vector2(115,115))
-		document.points[selected] = [position.x, position.y]
-		document_changed.emit()
-	elif panning:
-		pan += point - previous_pointer
-	previous_pointer = point
+		selected_object = -1
+		mode = "move" # New node is immediately ready to drag and adjust.
+	document_changed.emit()
+	edit_finished.emit()
+	selection_changed.emit()
 	queue_redraw()
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
-	if dragging: edit_finished.emit()
+	if pending_stamp: _place(press_position)
+	if dragging and changed_in_gesture: edit_finished.emit()
+	pending_stamp = false
 	dragging = false
 	panning = false
 	active_pointer = -99
@@ -210,16 +247,25 @@ func _draw() -> void:
 	for y: float in range(ceili(size.y / spacing) + 1):
 		var yy: float = fposmod(origin.y, spacing) + y * spacing
 		draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
-	var route: PackedVector2Array = TrackDocument.smooth_points(document)
-	var points := PackedVector2Array()
-	for p: Vector2 in route: points.append(to_screen(p))
-	if points.size() > 1 and native_preview == null:
-		points.append(points[0])
-		draw_polyline(points, palette[5].darkened(0.15), (float(document.width) + 1.2) * scale_factor(), true)
-		draw_polyline(points, palette[2] if document.surface == "dirt" else palette[0], float(document.width) * scale_factor(), true)
+	var sampled: Dictionary = TrackDocument.route_data(document)
+	var route: PackedVector2Array = sampled.points
+	if native_preview == null:
+		for i: int in range(route.size()):
+			var a: Vector2 = to_screen(route[i])
+			var b: Vector2 = to_screen(route[(i+1)%route.size()])
+			var width: float = float(sampled.widths[i])*scale_factor()
+			draw_line(a,b,palette[5],width+2*scale_factor(),true)
+			draw_circle(a,width*0.5+scale_factor(),palette[5])
+		for i: int in range(route.size()):
+			var a: Vector2 = to_screen(route[i])
+			var b: Vector2 = to_screen(route[(i+1)%route.size()])
+			var width: float = float(sampled.widths[i])*scale_factor()
+			var color: Color = palette[2] if document.surface == "dirt" else palette[0]
+			draw_line(a,b,color,width,true)
+			draw_circle(a,width*0.5,color)
 	if route.size() > 1:
 		var start: Vector2 = to_screen(route[0])
-		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * float(document.width) * scale_factor() * 0.5
+		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * TrackDocument.node_width(document,0) * scale_factor() * 0.5
 		draw_line(start-across,start+across,Color("e0e7dd"),3,true)
 		var direction: Vector2 = (to_screen(route[1])-start).normalized()
 		var arrow: Vector2 = start + direction * 24
@@ -230,7 +276,19 @@ func _draw() -> void:
 		var center: Vector2 = to_screen(Vector2(p[0],p[1]))
 		draw_circle(center, 25, Color(0.07,0.11,0.13,0.75))
 		draw_arc(center, 24, 0, TAU, 32, Color("d9e3e2") if selected == i else Color("90a59d"), 2, true)
-		draw_circle(center, 5, Color("edf1f3"))
+		draw_string(ThemeDB.fallback_font,center+Vector2(-6,6),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color("edf1f3"))
+		if i == selected:
+			draw_string(ThemeDB.fallback_font,center+Vector2(30,6),"%.1f m" % TrackDocument.node_width(document,i),HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color("edf1f3"))
 		if i == 0:
 			draw_string(ThemeDB.fallback_font, center + Vector2(-23,-34), "START", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("edf1f3"))
+	for i: int in range(document.get("objects",[]).size()):
+		var object: Dictionary = document.objects[i]
+		var outline := PackedVector2Array()
+		for point: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(point))
+		var color: Color = palette[CreatorObjects.surface(object.kind)]
+		draw_colored_polygon(outline,color.lightened(0.12))
+		outline.append(outline[0])
+		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
+		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
+		draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
 	draw_string(ThemeDB.fallback_font, Vector2(18,size.y-18), "10 m grid  /  %d handles" % document.points.size(), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("d0d9d4"))

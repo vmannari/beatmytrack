@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-12 editor follow-up: sharp/smooth corners, 6–20 m per-node widths, touch object stamping/moving/rotation/copy/delete, stable JSON identity and v2-only creator files are implemented. Full validation and 42 graphical editor checks passed. [Editor revision 2](docs/EDITOR_V2.md) records behavior, Slicks research, evidence and remaining phone acceptance.
+
 2026-09-12 menu follow-up: adapted Hill Climb Racing 2's selected-event/Race structure into a direct circuit-and-car race hub with Race/Garage/Create tabs and separate Settings. Graphical integration passed 86 checks; screenshot and commands: [HCR2 menu review](docs/HCR2_MENU_REVIEW.md). Full validation passed driving/original/extra tracks but encountered six creator failures during concurrent creator-format work. No phone test performed; owner menu acceptance remains open.
 
 Updated: 2026-09-12. The owner has **accepted car handling and collisions** and explicitly authorized **local menus, additional Slicks circuits, a phone-friendly creator and shared track themes**. This is the active slice, covering selected P1/P3 local features. Physical-phone handling, camera calibration and performance acceptance remain open; this does not complete all blueprint gates.

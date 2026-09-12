@@ -17,6 +17,7 @@ func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	_build_terrain(track)
 	_build_barriers(track)
 	_build_low_cover(track)
+	_build_placed_objects(track)
 	bridge.build(self)
 	_build_finish(track)
 
@@ -126,6 +127,9 @@ func _build_low_cover(track: NativeTrack) -> void:
 
 
 func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
+	var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
+		if point.distance_to(Vector2(object.position[0],object.position[1])) < radius+3.0: return false
 	# Check the whole square footprint, including bridges. A tree must never
 	# hide a corner, gate, ramp or native barrier. Low cover remains passable.
 	var extent: int = ceili(radius / track.cell_size)
@@ -137,6 +141,29 @@ func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
 			if track.cells[index] not in [1, 7] or track.deck_cells[index] >= 0:
 				return false
 	return true
+
+
+func _build_placed_objects(track: NativeTrack) -> void:
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var count: int = 0
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
+		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
+		if object.kind == "tree":
+			_pine(tool,center,0.65,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
+		elif object.kind == "rock":
+			_mound(tool,center,Vector3(0.95,0.5,0.9),-deg_to_rad(float(object.rotation)),TrackTheme.stone(theme_id))
+		else: continue # Barrier/water/dirt already rendered from exact native cells.
+		count += 1
+	if count > 0:
+		tool.generate_normals()
+		var mesh := MeshInstance3D.new()
+		mesh.mesh = tool.commit()
+		var material := VisualGeometry.material(Color.WHITE)
+		material.vertex_color_use_as_albedo = true
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mesh.material_override = material
+		add_child(mesh)
 
 
 func _mound(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float, color: Color) -> void:

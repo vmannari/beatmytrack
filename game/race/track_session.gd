@@ -1,6 +1,6 @@
 class_name TrackSession
 extends RefCounted
-## Practice timing: original ordered crossing regions, fixed ticks, three laps.
+## Ordered crossing regions and fixed ticks. Explicit lap count for diagnostics.
 ## Regions are not falsely reinterpreted as diagonal line segments.
 
 var next_checkpoint: int = 0
@@ -10,11 +10,13 @@ var lap_start_time: float = 0.0
 var lap_times: Array[float] = []
 var finished: bool = false
 var tick_rate: int
+var target_laps: int
 var first_checkpoint_on_finish_approach: bool = false
 
 
-func _init(rate: int = 120) -> void:
+func _init(rate: int = 120, laps: int = 3) -> void:
 	tick_rate = rate
+	target_laps = laps
 
 
 func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int) -> void:
@@ -42,7 +44,7 @@ func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int) -
 				if first_checkpoint_on_finish_approach and first.has_point(from.lerp(to, crossing)):
 					next_checkpoint = 1
 				first_checkpoint_on_finish_approach = false
-				finished = completed_laps == 3
+				finished = completed_laps == target_laps
 		return
 	var gate: Rect2 = track.checkpoints[next_checkpoint]
 	# Only entering a region in route direction counts; camping inside cannot count.

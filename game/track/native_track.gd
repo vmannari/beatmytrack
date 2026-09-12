@@ -152,12 +152,12 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 		var next_contact: Vector3 = _contact(point, config.collision_radius, next_elevated)
 		if next_contact.z > 0.0:
 			# A pre-existing overlap must not freeze outward movement. Require
-			# strictly decreasing overlap against the same geometry at each step.
+			# non-increasing penetration against the same wall at each step.
 			# New or deeper contacts still stop at the last accepted position.
 			# Compare penetration on the candidate layer. An existing rail
 			# overlap can straddle a layer boundary during outward recovery.
 			var previous_contact: Vector3 = contact if next_elevated == state.track_elevated else _contact(accepted, config.collision_radius, next_elevated)
-			var escaping: bool = previous_contact.z > 0.0 and next_contact.z < previous_contact.z
+			var escaping: bool = previous_contact.z > 0.0
 			var blocking_normal := Vector2(next_contact.x, next_contact.y)
 			if escaping:
 				var blocker: Vector2 = _escape_blocker(accepted, point, config.collision_radius, next_elevated)
@@ -177,10 +177,24 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 					var candidate: Vector2 = slide_from + slide * (float(i) / slide_steps)
 					var candidate_route: int = nearest_route(candidate, state.route_index)
 					var candidate_layer: bool = collision_elevated_at(candidate, candidate_route, config.collision_radius)
-					if candidate_layer != state.track_elevated or _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
-						break
+					if _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
+						# Shallow flat-wall overlap can rub along its face. Do not
+						# project an embedded corner contact around a rail tip.
+						var flat_face: bool = absf(blocking_normal.x) > 0.99999 or absf(blocking_normal.y) > 0.99999
+						if not flat_face or _contact(state.position, config.collision_radius, candidate_layer).z <= 0.0 or _escape_blocker(state.position, candidate, config.collision_radius, candidate_layer) != Vector2.ZERO:
+							# A second obstacle can block the tangent. Do not bank
+							# the rejected speed and release it after alignment.
+							var tangent: Vector2 = slide.normalized()
+							var completed: float = clampf(state.position.distance_to(slide_from) / maxf(slide.length(), 0.000001), 0.0, 1.0)
+							state.velocity -= tangent * state.velocity.dot(tangent) * (1.0 - completed)
+							var probe: Vector2 = state.position + state.velocity * VehicleSimulation.STEP
+							var probe_layer: bool = collision_elevated_at(probe, nearest_route(probe, state.route_index), config.collision_radius)
+							if _contact(probe, config.collision_radius, probe_layer).z > 0.0 and (_contact(state.position, config.collision_radius, probe_layer).z <= 0.0 or _escape_blocker(state.position, probe, config.collision_radius, probe_layer) != Vector2.ZERO):
+								state.velocity = Vector2.ZERO
+							break
 					state.position = candidate
 					state.route_index = candidate_route
+					state.track_elevated = candidate_layer
 				return
 		accepted = point
 		contact = next_contact
@@ -196,10 +210,13 @@ func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:
 
 func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: bool) -> Vector2:
 	# Reducing total overlap must not hide entry into another cell/barrier.
-	# Every affected cell must keep or reduce its own penetration (1 um tolerance).
+	# Each obstacle must keep/reduce penetration (1 um tolerance); coplanar
+	# neighboring wall cells share one plane rather than separate corner contacts.
 	var cx: int = floori((point.x + half_extent.x) / cell_size)
 	var cy: int = floori((half_extent.y - point.y) / cell_size)
 	var reach: int = ceili(radius / cell_size) + 1
+	var support: Vector3 = _support_plane(from, radius, elevated)
+	var support_normal := Vector2(support.x, support.y)
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
@@ -210,8 +227,39 @@ func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: boo
 			var before: float = maxf(0.0, radius - from.distance_to(from.clamp(low, high)))
 			var after: float = maxf(0.0, radius - offset.length())
 			if after > before + 0.000001:
-				return offset.normalized() if offset != Vector2.ZERO else (from - center).normalized()
+				# Adjacent cells on one flat wall are one contact surface. Sliding
+				# transfers overlap between cells without going deeper into it.
+				var nearest: Vector2 = point.clamp(low, high)
+				if support_normal != Vector2.ZERO and absf(nearest.dot(support_normal) - support.z) < 0.000001:
+					if point.dot(support_normal) >= from.dot(support_normal) - 0.000001:
+						continue
+					return support_normal
+				var normal: Vector2 = offset.normalized() if offset != Vector2.ZERO else (from - center).normalized()
+				# At a cell corner the destination normal can already be tangent
+				# to incoming motion; use the entry normal to reject that motion.
+				if normal.dot(point - from) >= 0.0:
+					normal = (from - from.clamp(low, high)).normalized()
+				return normal
 	return Vector2.ZERO
+
+
+func _support_plane(point: Vector2, radius: float, elevated: bool) -> Vector3:
+	var cx: int = floori((point.x + half_extent.x) / cell_size)
+	var cy: int = floori((half_extent.y - point.y) / cell_size)
+	var reach: int = ceili(radius / cell_size) + 1
+	var distance: float = radius
+	var result := Vector3.ZERO
+	for y: int in range(cy - reach, cy + reach + 1):
+		for x: int in range(cx - reach, cx + reach + 1):
+			var center := Vector2((x+0.5)*cell_size-half_extent.x, half_extent.y-(y+0.5)*cell_size)
+			if cell_at(center, elevated) not in [3,4]: continue
+			var nearest: Vector2 = point.clamp(center - Vector2.ONE*cell_size*0.5, center + Vector2.ONE*cell_size*0.5)
+			var offset: Vector2 = point - nearest
+			if offset.length() < distance and offset.length_squared() > 0.000001:
+				distance = offset.length()
+				var normal: Vector2 = offset / distance
+				result = Vector3(normal.x, normal.y, nearest.dot(normal))
+	return result
 
 
 func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:

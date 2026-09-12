@@ -89,6 +89,7 @@ func run() -> void:
 	_check_rebound()
 	_check_impact_turn()
 	_check_wall_slide()
+	_check_blocked_speed()
 	_check_tire_dirt()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
@@ -461,6 +462,41 @@ func _check_tire_dirt() -> void:
 			sim.step(throttle, track)
 		states.append(sim.state.snapshot())
 	check(states[0] == states[1] and states[0].size() == 14, "exposure and recovery replay exactly with contamination in state snapshot")
+
+
+func _check_blocked_speed() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 80
+	track.grid_height = 800
+	track.half_extent = Vector2(10,100)
+	track.cells.resize(64000)
+	track.deck_cells.resize(64000)
+	track.deck_cells.fill(-1)
+	track.route = PackedVector2Array([Vector2(-5,-90),Vector2(-5,90),Vector2(5,90),Vector2(5,-90)])
+	for y: int in range(800): track.cells[y * 80 + 40] = 4
+	var config := HandlingConfig.new()
+	var throttle := DriveFrame.new()
+	throttle.throttle = 255
+	for angle: float in [0.0,15.0,45.0,75.0]:
+		var sim := VehicleSimulation.new(config)
+		sim.reset(Vector2(-config.collision_radius + 0.02,0), deg_to_rad(angle))
+		var hidden_speed: float = 0.0
+		var surge: float = 0.0
+		var previous_travel_speed: float = 0.0
+		for tick: int in range(360):
+			var before: Vector2 = sim.state.position
+			sim.step(throttle, track)
+			# Measure travel along the wall. Outward recoil is an intentional
+			# collision impulse, covered separately by the rebound tests.
+			var travel_speed: float = absf(sim.state.position.y - before.y) / VehicleSimulation.STEP
+			if travel_speed < 0.01: hidden_speed = maxf(hidden_speed, absf(sim.state.velocity.y))
+			surge = maxf(surge, travel_speed - previous_travel_speed)
+			previous_travel_speed = travel_speed
+		print("BLOCKED_SPEED angle=",angle," hidden=",hidden_speed," surge=",surge," distance=",sim.state.position.y)
+		check(hidden_speed < 0.25, "blocked wall scrape cannot store speed while position is stationary")
+		check(surge < config.longitudinal_grip * VehicleSimulation.STEP + 0.1, "wall release cannot exceed one tick of normal acceleration")
+		check(sim.state.position.y > 1.0, "slight initial wall overlap still permits powered tangential progress")
 
 
 func _check_wall_slide() -> void:

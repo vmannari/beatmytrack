@@ -115,22 +115,69 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 	# Stable row order and bounded path sampling prevent thin-wall tunnelling.
 	var movement: Vector2 = state.position - from
 	var steps: int = maxi(1, ceili(movement.length() / (cell_size * 0.45)))
+	var accepted: Vector2 = from
+	var contact: Vector3 = _contact(from, config.collision_radius, state.track_elevated)
 	for step_index: int in range(1, steps + 1):
 		var point: Vector2 = from + movement * (float(step_index) / steps)
-		var normal: Vector2 = collision_normal(point, config.collision_radius, state.track_elevated)
-		if normal != Vector2.ZERO:
-			state.position = from + movement * (float(step_index - 1) / steps)
-			_bounce(state, normal, config)
-			return
-	state.route_index = nearest_route(state.position, state.route_index)
-	state.track_elevated = elevated_at(state.position, state.route_index)
+		var next_route: int = nearest_route(point, state.route_index)
+		var next_elevated: bool = elevated_at(point, next_route)
+		var next_contact: Vector3 = _contact(point, config.collision_radius, next_elevated)
+		if next_contact.z > 0.0:
+			# A pre-existing overlap must not freeze outward movement. Require
+			# strictly decreasing overlap on the same layer, at every substep.
+			# New contacts/layer changes still stop at the last accepted position.
+			var escaping: bool = next_elevated == state.track_elevated and contact.z > 0.0 and next_contact.z < contact.z
+			var blocking_normal := Vector2(next_contact.x, next_contact.y)
+			if escaping:
+				var blocker: Vector2 = _escape_blocker(accepted, point, config.collision_radius, next_elevated)
+				if blocker != Vector2.ZERO:
+					escaping = false
+					blocking_normal = blocker
+			if not escaping:
+				state.position = accepted
+				_bounce(state, blocking_normal, config)
+				return
+		accepted = point
+		contact = next_contact
+		state.route_index = next_route
+		state.track_elevated = next_elevated
+	state.position = accepted
 
 
 func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:
+	var contact: Vector3 = _contact(point, radius, elevated)
+	return Vector2(contact.x, contact.y)
+
+
+func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: bool) -> Vector2:
+	# Reducing total overlap must not hide entry into another cell/barrier.
+	# Every affected cell must keep or reduce its own penetration (1 um tolerance).
+	var cx: int = floori((point.x + half_extent.x) / cell_size)
+	var cy: int = floori((half_extent.y - point.y) / cell_size)
+	var reach: int = ceili(radius / cell_size) + 1
+	for y: int in range(cy - reach, cy + reach + 1):
+		for x: int in range(cx - reach, cx + reach + 1):
+			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
+			if cell_at(center, elevated) not in [3,4]: continue
+			var low: Vector2 = center - Vector2.ONE * cell_size * 0.5
+			var high: Vector2 = center + Vector2.ONE * cell_size * 0.5
+			var offset: Vector2 = point - point.clamp(low, high)
+			var before: float = maxf(0.0, radius - from.distance_to(from.clamp(low, high)))
+			var after: float = maxf(0.0, radius - offset.length())
+			if after > before + 0.000001:
+				return offset.normalized() if offset != Vector2.ZERO else (from - center).normalized()
+	return Vector2.ZERO
+
+
+func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
+	# XY is the outward normal; Z is summed squared cell penetration. The latter
+	# stays positive even where opposing cell normals cancel (inside a solid).
 	var cx: int = floori((point.x + half_extent.x) / cell_size)
 	var cy: int = floori((half_extent.y - point.y) / cell_size)
 	var reach: int = ceili(radius / cell_size) + 1
 	var total := Vector2.ZERO
+	var overlap: float = 0.0
+	var fallback := Vector2.RIGHT
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
@@ -139,5 +186,10 @@ func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
 			var offset: Vector2 = point - nearest
 			if offset.length_squared() < radius * radius:
-				total += offset.normalized() * (radius - offset.length()) if offset.length_squared() > 0.000001 else (point - center).normalized()
-	return total.normalized()
+				var depth: float = radius - offset.length()
+				overlap += depth * depth
+				var outward: Vector2 = offset.normalized() if offset.length_squared() > 0.000001 else (point - center).normalized()
+				total += outward * depth
+				if outward != Vector2.ZERO: fallback = outward
+	var normal: Vector2 = total.normalized() if total.length_squared() > 0.00000001 else (fallback if overlap > 0.0 else Vector2.ZERO)
+	return Vector3(normal.x, normal.y, overlap)

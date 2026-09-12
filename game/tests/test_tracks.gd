@@ -84,6 +84,7 @@ func run() -> void:
 		_check_gates(track)
 	_check_collision()
 	_check_soft_surfaces()
+	_check_ramp_recovery()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -195,3 +196,106 @@ func _check_soft_surfaces() -> void:
 	track.cells.fill(0)
 	for y: int in range(track.grid_height): track.cells[y * track.grid_width + 80] = 3
 	check(track.collision_normal(Vector2(-1,0), config.collision_radius, false) != Vector2.ZERO, "deep water remains impassable")
+
+
+func _check_ramp_recovery() -> void:
+	# Off-line entry can enable an upper rail while the car circle already
+	# overlaps its end. Reproduce escape from that state on real native decks.
+	for name: String in ["1way", "66", "offroad"]:
+		var track := NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var config := HandlingConfig.new()
+		var found: bool = false
+		for y: int in range(track.grid_height):
+			if found: break
+			for x: int in range(track.grid_width):
+				if track.deck_cells[y * track.grid_width + x] != 0: continue
+				var point := Vector2((x + 0.5) * track.cell_size - track.half_extent.x, track.half_extent.y - (y + 0.5) * track.cell_size)
+				var index: int = track.nearest_route(point)
+				if not track.elevated_at(point, index): continue
+				var normal: Vector2 = track.collision_normal(point, config.collision_radius, true)
+				if normal == Vector2.ZERO: continue
+				var clear: Vector2 = point + normal * config.collision_radius * 2.0
+				if track.collision_normal(clear, config.collision_radius, true) != Vector2.ZERO: continue
+				# Require an open exit on the lower road as well. Some rail ends
+				# sit above a separate solid footprint; recovery must not cross it.
+				var exit_open: bool = true
+				for sample_index: int in range(25):
+					var sample_point: Vector2 = point.lerp(clear, sample_index / 24.0)
+					if track.collision_normal(sample_point, config.collision_radius, false) != Vector2.ZERO:
+						exit_open = false
+						break
+				if not exit_open: continue
+				var state := VehicleState.new()
+				state.position = point + normal * 0.02
+				state.velocity = normal * 2.0
+				state.route_index = index
+				state.track_elevated = true
+				track.resolve(state, point, config)
+				print("RAMP_ESCAPE ", name, " point=", point, " route=", index, " normal=", normal, " moved=", state.position.distance_to(point))
+				check(state.position.distance_to(point) > 0.01, name + " overlapping ramp rail permits outward escape")
+				state.position = point - normal * config.collision_radius * 3.0
+				state.velocity = -normal * 20.0
+				track.resolve(state, point, config)
+				check(state.position.distance_to(point) < 0.001 and state.collision_count == 1, name + " overlap recovery cannot drive through the rail")
+				var sim := VehicleSimulation.new(config)
+				var heading: float = atan2(-normal.x, -normal.y)
+				sim.reset(point, heading)
+				sim.state.route_index = index
+				sim.state.track_elevated = true
+				var reverse := DriveFrame.new()
+				reverse.brake = 255
+				for tick: int in range(240):
+					sim.step(reverse, track)
+					if track.collision_normal(sim.state.position, config.collision_radius, true) == Vector2.ZERO and track.collision_normal(sim.state.position, config.collision_radius, sim.state.track_elevated) == Vector2.ZERO: break
+				check(sim.state.position.distance_to(point) > 0.1 and track.collision_normal(sim.state.position, config.collision_radius, true) == Vector2.ZERO and track.collision_normal(sim.state.position, config.collision_radius, sim.state.track_elevated) == Vector2.ZERO and sim.state.collision_count == 0, name + " held brake engages reverse and fully clears the ramp rail")
+				var replay := VehicleSimulation.new(config)
+				replay.reset(point, heading)
+				replay.state.route_index = index
+				replay.state.track_elevated = true
+				for batch: int in range(0, sim.state.tick, 8):
+					for tick: int in range(batch, mini(batch + 8, sim.state.tick)): replay.step(reverse, track)
+				check(replay.state.snapshot() == sim.state.snapshot(), name + " ramp escape replays exactly in batches of eight")
+				print("RAMP_REVERSE ", name, " ticks=", sim.state.tick, " distance=", sim.state.position.distance_to(point), " contacts=", sim.state.collision_count)
+				found = true
+				break
+		check(found, name + " native ramp overlap fixture found")
+	_check_layer_entry()
+
+
+func _check_layer_entry() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 80
+	track.grid_height = 80
+	track.half_extent = Vector2(10,10)
+	track.cells.resize(6400)
+	track.deck_cells.resize(6400)
+	track.deck_cells.fill(-1)
+	track.bridge_axis = Vector2.RIGHT
+	track.bridge_height = 3.2
+	track.route = PackedVector2Array([Vector2(-5,3.5),Vector2(-1,3.5),Vector2(1,3.5),Vector2(5,3.5),Vector2(5,-5),Vector2(-5,-5)])
+	for y: int in range(24,56):
+		for x: int in range(40,80): track.deck_cells[y * 80 + x] = 4 if y == 24 else 0
+	var config := HandlingConfig.new()
+	var start := Vector2(-0.05,3.5)
+	var state := VehicleState.new()
+	state.position = Vector2(0.05,3.5)
+	state.velocity = Vector2(4,0)
+	state.route_index = 0
+	track.resolve(state, start, config)
+	check(state.position.x < 0.0 and not state.track_elevated and state.collision_count == 1, "ramp entry checks upper rail before committing the layer switch")
+	var blocked: Vector2 = state.position
+	state.position -= Vector2(0.05,0)
+	state.velocity = Vector2(-2,0)
+	track.resolve(state, blocked, config)
+	check(state.position.x < blocked.x and state.collision_count == 1, "rejected ramp entry can immediately back away")
+	track.bridge_height = 0.0
+	track.deck_cells.fill(-1)
+	for y: int in range(80):
+		track.cells[y * 80 + 40] = 4
+		track.cells[y * 80 + 50] = 4
+	state = VehicleState.new()
+	state.position = Vector2(1.3,0)
+	state.velocity = Vector2(2,0)
+	track.resolve(state, Vector2(1.05,0), config)
+	check(state.position.x <= 2.5 - config.collision_radius and state.collision_count == 1, "escaping one overlap cannot enter a second barrier")

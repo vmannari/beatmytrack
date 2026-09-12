@@ -336,7 +336,8 @@ func _check_rebound() -> void:
 		distances.append(separation)
 		if not legacy:
 			print("BOUNCE_RESULT: powered head-on impact, rebound %.2f km/h, separation %.3f -> %.3f m" % [rebound_speed*3.6,distances[0],separation])
-			check(separation > 2.5 and separation > distances[0] * 2.0, "head-on collision has a larger rebound even with throttle held")
+			# Owner requested less recoil after evaluating the 3.736 m rebound.
+			check(separation > 1.5 and separation < 3.0 and separation > distances[0] * 2.0, "head-on recoil remains visible but is moderated under held throttle")
 	var config := HandlingConfig.new()
 	var glance := VehicleState.new()
 	glance.velocity = Vector2(8,18)

@@ -110,3 +110,5 @@ The first subjective question is whether steering, braking and catching a slide 
 
 Owner requests continued tangential travel and gradual alignment while pushing against a barrier. Implemented within the handling gate using the existing native collision resolver and shared response; no architectural expansion or track format changes. TestTracks passes 115 checks; measured mirrored powered wall starts travel 8.918 m in 3 seconds and align within 0.934 degrees. See docs/DRIVING_PLAYGROUND.md (Sustained wall sliding) for changed files, commands and limitations. Windows owner feel and physical-phone acceptance remain pending.
 Final full Validate passed import, 24 parses, startup and 171 checks (56 driving + 115 track). Evidence: docs/evidence/wall-slide-*.txt.
+
+2026-09-12 G01: owner requests less recoil; handling-0.12 tunes restitution to 0.45, preserving wall-slide algorithms. Full Validate passed 171 checks and measured 29% shorter rebound. Commands, changed files, revised owner balance target and evidence are in DRIVING_PLAYGROUND.md (Moderate recoil). Manual feel/phone acceptance remains pending.

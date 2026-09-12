@@ -104,6 +104,27 @@ func tire_pickup(state: VehicleState) -> float:
 	return 0.0
 
 
+func collision_elevated_at(point: Vector2, route_index: int, radius: float) -> bool:
+	if elevated_at(point, route_index):
+		return true
+	if bridge_height == 0.0:
+		return false
+	var tangent: Vector2 = (route[(route_index + 1) % route.size()] - route[route_index]).normalized()
+	if absf(tangent.dot(bridge_axis)) <= 0.75:
+		return false
+	# The upper branch must see a rail tip as soon as the car's footprint
+	# touches it. Waiting for the centre to enter the deck enables a rail
+	# inside the car. Route progression still separates the lower crossing.
+	# Extend only along the bridge axis, preserving the native transverse
+	# outline so a car beneath a side edge does not collide with upper rails.
+	var steps: int = ceili(radius / (cell_size * 0.5))
+	for i: int in range(1, steps + 1):
+		var offset: Vector2 = bridge_axis * minf(radius, i * cell_size * 0.5)
+		if elevated_at(point + offset, route_index) or elevated_at(point - offset, route_index):
+			return _contact(point, radius, true).z > 0.0
+	return false
+
+
 func surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):
@@ -117,7 +138,7 @@ func surface_factors(state: VehicleState) -> Vector2:
 
 func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void:
 	state.route_index = nearest_route(from, state.route_index)
-	state.track_elevated = elevated_at(from, state.route_index)
+	state.track_elevated = collision_elevated_at(from, state.route_index, config.collision_radius)
 	# Circle against native occupied cells, substeps shorter than half a cell.
 	# Stable row order and bounded path sampling prevent thin-wall tunnelling.
 	var movement: Vector2 = state.position - from
@@ -127,13 +148,16 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 	for step_index: int in range(1, steps + 1):
 		var point: Vector2 = from + movement * (float(step_index) / steps)
 		var next_route: int = nearest_route(point, state.route_index)
-		var next_elevated: bool = elevated_at(point, next_route)
+		var next_elevated: bool = collision_elevated_at(point, next_route, config.collision_radius)
 		var next_contact: Vector3 = _contact(point, config.collision_radius, next_elevated)
 		if next_contact.z > 0.0:
 			# A pre-existing overlap must not freeze outward movement. Require
-			# strictly decreasing overlap on the same layer, at every substep.
-			# New contacts/layer changes still stop at the last accepted position.
-			var escaping: bool = next_elevated == state.track_elevated and contact.z > 0.0 and next_contact.z < contact.z
+			# strictly decreasing overlap against the same geometry at each step.
+			# New or deeper contacts still stop at the last accepted position.
+			# Compare penetration on the candidate layer. An existing rail
+			# overlap can straddle a layer boundary during outward recovery.
+			var previous_contact: Vector3 = contact if next_elevated == state.track_elevated else _contact(accepted, config.collision_radius, next_elevated)
+			var escaping: bool = previous_contact.z > 0.0 and next_contact.z < previous_contact.z
 			var blocking_normal := Vector2(next_contact.x, next_contact.y)
 			if escaping:
 				var blocker: Vector2 = _escape_blocker(accepted, point, config.collision_radius, next_elevated)
@@ -152,7 +176,7 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 				for i: int in range(1, slide_steps + 1):
 					var candidate: Vector2 = slide_from + slide * (float(i) / slide_steps)
 					var candidate_route: int = nearest_route(candidate, state.route_index)
-					var candidate_layer: bool = elevated_at(candidate, candidate_route)
+					var candidate_layer: bool = collision_elevated_at(candidate, candidate_route, config.collision_radius)
 					if candidate_layer != state.track_elevated or _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
 						break
 					state.position = candidate

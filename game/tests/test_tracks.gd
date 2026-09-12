@@ -85,6 +85,7 @@ func run() -> void:
 	_check_collision()
 	_check_soft_surfaces()
 	_check_ramp_recovery()
+	_check_ramp_rail_tips()
 	_check_rebound()
 	_check_impact_turn()
 	_check_wall_slide()
@@ -202,6 +203,47 @@ func _check_soft_surfaces() -> void:
 	check(track.collision_normal(Vector2(-1,0), config.collision_radius, false) != Vector2.ZERO, "deep water remains impassable")
 
 
+func _check_ramp_rail_tips() -> void:
+	for name: String in ["1way", "66", "offroad"]:
+		var track := NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		# Isolate native upper rails from ground walls under the diagonal ends.
+		# Full-track lap/layer/escape tests above retain all original geometry.
+		track.cells.fill(0)
+		var config := HandlingConfig.new()
+		for direction: float in [-1.0,1.0]:
+			var outward: Vector2 = track.bridge_axis * direction
+			var tip := Vector2.ZERO
+			var furthest: float = -INF
+			for y: int in range(track.grid_height):
+				for x: int in range(track.grid_width):
+					if track.deck_cells[y * track.grid_width + x] != 4: continue
+					var p := Vector2((x+0.5)*track.cell_size-track.half_extent.x, track.half_extent.y-(y+0.5)*track.cell_size)
+					if p.dot(outward) > furthest:
+						var candidate_face: Vector2 = p + outward * track.cell_size * 0.5
+						var candidate_start: Vector2 = candidate_face + outward * (config.collision_radius + 0.5)
+						if track.collision_normal(candidate_start, config.collision_radius, true) != Vector2.ZERO:
+							continue
+						tip = p
+						furthest = p.dot(outward)
+			check(furthest > -INF, name + " has a rail-tip fixture with an unobstructed approach and retreat")
+			var face: Vector2 = tip + outward * track.cell_size * 0.5
+			var start: Vector2 = face + outward * (config.collision_radius + 0.5)
+			var destination: Vector2 = face + outward * (config.collision_radius * 0.5)
+			var state := VehicleState.new()
+			state.route_index = track.nearest_route(start)
+			state.position = destination
+			state.velocity = -outward * 10.0
+			track.resolve(state, start, config)
+			print("RAIL_TIP ",name," side=",direction," start=",start," destination=",destination," actual=",state.position," route=",state.route_index," contacts=",state.collision_count)
+			check(state.collision_count == 1 and track.collision_normal(state.position, config.collision_radius, true) == Vector2.ZERO, name + " rail tip blocks the car footprint before its centre enters the deck")
+			var blocked: Vector2 = state.position
+			var contacts: int = state.collision_count
+			state.position += outward * 0.1
+			state.velocity = outward * 2.0
+			track.resolve(state, blocked, config)
+			check(state.position.distance_to(blocked) > 0.09 and state.collision_count == contacts, name + " rail-tip contact permits immediate retreat without repeated impacts")
+
+
 func _check_ramp_recovery() -> void:
 	# Off-line entry can enable an upper rail while the car circle already
 	# overlaps its end. Reproduce escape from that state on real native decks.
@@ -287,7 +329,7 @@ func _check_layer_entry() -> void:
 	state.velocity = Vector2(4,0)
 	state.route_index = 0
 	track.resolve(state, start, config)
-	check(state.position.x < 0.0 and not state.track_elevated and state.collision_count == 1, "ramp entry checks upper rail before committing the layer switch")
+	check(state.position.x < 0.0 and state.track_elevated and state.collision_count == 1, "ramp entry detects the already-overlapping upper rail before the centre enters the deck")
 	var blocked: Vector2 = state.position
 	state.position -= Vector2(0.05,0)
 	state.velocity = Vector2(-2,0)

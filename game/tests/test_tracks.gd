@@ -85,6 +85,7 @@ func run() -> void:
 	_check_collision()
 	_check_soft_surfaces()
 	_check_ramp_recovery()
+	_check_rebound()
 	var rect := Rect2(0,0,2,10)
 	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
 	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
@@ -299,3 +300,44 @@ func _check_layer_entry() -> void:
 	state.velocity = Vector2(2,0)
 	track.resolve(state, Vector2(1.05,0), config)
 	check(state.position.x <= 2.5 - config.collision_radius and state.collision_count == 1, "escaping one overlap cannot enter a second barrier")
+
+
+func _check_rebound() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 0.25
+	track.grid_width = 80
+	track.grid_height = 80
+	track.half_extent = Vector2(10,10)
+	track.cells.resize(6400)
+	track.deck_cells.resize(6400)
+	track.deck_cells.fill(-1)
+	track.route = PackedVector2Array([Vector2(-5,0),Vector2(5,0),Vector2(5,5),Vector2(-5,5)])
+	for y: int in range(80): track.cells[y * 80 + 40] = 4
+	var distances: Array[float] = []
+	for legacy: bool in [true,false]:
+		var config := HandlingConfig.new()
+		if legacy: config.restitution = 0.12
+		var sim := VehicleSimulation.new(config)
+		sim.reset(Vector2(-4,0), PI * 0.5)
+		sim.state.velocity = Vector2(20,0)
+		var throttle := DriveFrame.new()
+		throttle.throttle = 255
+		for tick: int in range(120):
+			sim.step(throttle, track)
+			if sim.state.collision_count > 0: break
+		var impact_position: Vector2 = sim.state.position
+		var rebound_speed: float = -sim.state.velocity.x
+		var separation: float = 0.0
+		for tick: int in range(60):
+			sim.step(throttle, track)
+			separation = maxf(separation, impact_position.x - sim.state.position.x)
+		distances.append(separation)
+		if not legacy:
+			print("BOUNCE_RESULT: powered head-on impact, rebound %.2f km/h, separation %.3f -> %.3f m" % [rebound_speed*3.6,distances[0],separation])
+			check(separation > 0.6 and separation > distances[0] * 2.0, "head-on collision visibly rebounds even with throttle held")
+	var config := HandlingConfig.new()
+	var glance := VehicleState.new()
+	glance.velocity = Vector2(8,18)
+	var energy: float = glance.velocity.length_squared()
+	track._bounce(glance, Vector2.LEFT, config)
+	check(glance.velocity.x < -2.0 and glance.velocity.y > 14.0 and glance.velocity.length_squared() < energy, "glancing collision rebounds and retains travel along the wall without adding energy")

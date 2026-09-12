@@ -158,3 +158,5 @@ Final full Validate passed import, 24 parses, startup and 171 checks (56 driving
 
 2026-09-12 G02/R03/R01: owner-authorized bulk Slicks corpus adds 187 native tracks (194 total), native manifest discovery and 71 searchable author names. Five blank-author tracks have explicitly fictional attribution. Offline legacy normalization and source/hash provenance remain outside runtime. Commands, evidence and bulk QA limitations: docs/SLICKS_CORPUS.md. No phone test performed.
 Final bulk verification: 194 conversions, zero failures; 781 runtime/search checks and 3 Python corpus tests pass; TestApp passes 80 checks. Three automatic spawn corrections and one uniform scale exception are recorded in SLICKS_CORPUS.md.
+
+2026-09-12 G02/R03/R01: corrected YLIKULKU's wrong bridge axis using rail direction for parallel straight bridges. Regenerated 33 affected native tracks; original seven fixtures unchanged. TestCorpus passes 793 checks, YLIKULKU three ordered AI laps with zero contacts, and TestTracks passes 163 lap/replay/ramp checks. Evidence and remaining mixed-bridge/device limitations: docs/SLICKS_CORPUS.md (Bridge-direction correction). No phone test performed.

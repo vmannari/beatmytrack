@@ -228,6 +228,19 @@ def convert(path, resources, config, source_data=None):
         cx=sum(p[0] for p in covered)/len(covered); cy=sum(p[1] for p in covered)/len(covered)
         xx=sum((x-cx)**2 for x,y in covered); yy=sum((y-cy)**2 for x,y in covered); xy=sum((x-cx)*(y-cy) for x,y in covered)
         angle=.5*math.atan2(2*xy,xx-yy); axis=(math.cos(angle),math.sin(angle))
+        deck_blocks=[b for b in source['blocks'] if roles[b['block_id']]=='deck']
+        parallel_straight_decks=(bool(deck_blocks) and all(b['block_id'] in (39,40) for b in deck_blocks)
+                                and len({b['rotation']%2 for b in deck_blocks})==1)
+        if config.get('bulk_mode') and parallel_straight_decks:
+            # A short/wide deck's bounding shape does not identify its travel
+            # direction. Rail runs do: traffic travels parallel to side rails.
+            # Count local neighbours so separated bridges do not bias the axis.
+            # Mixed-direction/curved crossings need a per-bridge contract;
+            # do not force them onto one global rail direction here.
+            horizontal=sum(deck[y][x]==4 and deck[y][x+1]==4 for y in range(H) for x in range(W-1))
+            vertical=sum(deck[y][x]==4 and deck[y+1][x]==4 for y in range(H-1) for x in range(W))
+            if horizontal != vertical:
+                axis=(1.0,0.0) if horizontal>vertical else (0.0,1.0)
         # Opposing east-west ramp pairs state deck orientation more reliably
         # than the principal axis of several parallel short bridges together.
         if any(left['rotation']==0 and right['rotation']==2 and left['y']==right['y'] and 17<right['x']-left['x']<80 for left in ramps for right in ramps):
@@ -237,7 +250,7 @@ def convert(path, resources, config, source_data=None):
             q=points[(i+1)%len(points)]; length=math.dist(p,q)
             x,y=round(p[0]),round(p[1])
             used.append(0<=x<W and 0<=y<H and deck[y][x]>=0 and length>0 and abs(((q[0]-p[0])*axis[0]+(q[1]-p[1])*axis[1])/length)>.75)
-        if any(used):
+        if any(used) or (config.get('bulk_mode') and parallel_straight_decks):
             bridges=[{'axis':[axis[0],-axis[1]],'height':3.2}]
         else:
             deck=[[-1]*W for _ in range(H)]

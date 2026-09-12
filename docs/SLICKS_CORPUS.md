@@ -1,5 +1,15 @@
 # Slicks native test corpus — 2026-09-12
 
+## Bridge-direction correction — 2026-09-12
+
+G02/R03/R01: YLIKULKU's nearly square deck was assigned an east-west principal axis, although its side rails run north-south. This elevated the wrong route branch and made the underpass hit upper rails. Bulk conversion now derives travel direction from rail adjacency for parallel straight 39/40 bridge pieces. Mixed orientations and curved decks keep their existing inference pending a per-bridge representation; no physics architecture changed. Source-derived deck geometry is retained even when imperfect AI hints do not align with its upper branch.
+
+Reconversion updates 33 native track files and their manifest hashes; the seven original reviewed fixtures remain unchanged. The exact affected list and before/after bridge metadata are in `evidence/bridge-axis-changes.json`. No bridges are removed. This fixes the shared straight-bridge inference; it is not an all-tracks drivability certification.
+
+Actual commands: the bulk conversion and Python corpus commands below; `scripts/dev.ps1 TestCorpus`; `scripts/dev.ps1 TestTracks`; `scripts/dev.ps1 Snapshot -Track slicks_ylikulku_test -Overview`; original `test_convert.py`. Results: 194 conversions, zero failures; 793 corpus/runtime checks pass; 163 original track/lap/replay/ramp checks pass; 4 original converter tests pass. YLIKULKU completes three ordered AI laps in 27.446 / 26.627 / 26.623 seconds with zero collisions. Full collision sweeps in both directions verify upper/lower clearance and matching presentation heights, while the upper side rail remains solid. No failing invariant was weakened. Evidence: `evidence/bridge-axis-runtime.txt` and `evidence/ylikulku-bridge-overview.png`.
+
+Changed implementation: `scripts/slicks/convert.py`, regenerated native track JSON/catalog and `game/tests/test_bulk_tracks.gd`. No phone test performed. Remaining acceptance: owner driving feel, mixed-direction bridges and individual bulk-track lap review. Restart the game to load corrected native content.
+
 Owner request: convert every locally supplied track and provide author names for search. This extends G02/R03 native track content and R01 isolated offline conversion; it does not change handling or race rules.
 
 ## Delivered content

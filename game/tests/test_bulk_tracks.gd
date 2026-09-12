@@ -13,6 +13,7 @@ func _initialize() -> void:
 	call_deferred("run")
 
 func run() -> void:
+	check_ylikulku_crossing()
 	var catalog := TrackCatalog.new(TrackLibrary.new())
 	var config := HandlingConfig.new()
 	check(BuiltinTracks.ids().size() == 194, "all 194 distinct supplied names are in the native catalog")
@@ -41,3 +42,43 @@ func run() -> void:
 	output.store_string(JSON.stringify(rows,"\t"))
 	print("BULK_TRACK_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func check_ylikulku_crossing() -> void:
+	var track := NativeTrack.read("res://resources/tracks/slicks_ylikulku_test.json")
+	var config := HandlingConfig.new()
+	check(absf(track.bridge_axis.dot(Vector2.UP)) > 0.99, "YLIKULKU bridge follows its north-south rails")
+	# Source-derived passages: north/south goes above, east/west below.
+	for passage: Array in [[Vector2(144,87),Vector2(144,31),true], [Vector2(144,31),Vector2(144,87),true], [Vector2(113,60),Vector2(186,60),false], [Vector2(186,60),Vector2(113,60),false]]:
+		var start: Vector2 = Vector2(passage[0].x-160,100-passage[0].y)*track.cell_size
+		var end: Vector2 = Vector2(passage[1].x-160,100-passage[1].y)*track.cell_size
+		var state := VehicleState.new()
+		state.position = start
+		state.route_index = track.nearest_route(start)
+		var bridge := BridgePresentation.new(track)
+		var max_height: float = 0.0
+		var blocked: bool = false
+		for i: int in range(1,201):
+			var before: Vector2 = state.position
+			var target: Vector2 = start.lerp(end,float(i)/200.0)
+			state.velocity = (end-start).normalized()*8.0
+			state.position = target
+			track.resolve(state,before,config)
+			blocked = blocked or state.position.distance_to(target)>0.001
+			max_height = maxf(max_height,bridge.height_at(state.position,state.route_index))
+		check(not blocked and state.collision_count==0, "YLIKULKU entire passage clears rails on correct layer: upper="+str(passage[2]))
+		check(max_height>3.0 if passage[2] else max_height<0.001, "YLIKULKU passage presentation matches collision layer: upper="+str(passage[2]))
+	var rail := Vector2(129-160,100-60)*track.cell_size
+	check(track.collision_normal(rail,config.collision_radius,true)!=Vector2.ZERO, "YLIKULKU upper side rail remains collidable")
+	check(track.collision_normal(rail,config.collision_radius,false)==Vector2.ZERO, "YLIKULKU side rail does not obstruct underpass")
+	var sim := VehicleSimulation.new(config)
+	sim.reset(track.spawn,track.spawn_heading)
+	sim.state.route_index = track.nearest_route(track.spawn)
+	var driver := RouteDriver.new()
+	var session := TrackSession.new(120,3)
+	for tick: int in range(21600):
+		var before: Vector2 = sim.state.position
+		sim.step(driver.sample(sim.state,track,config),track)
+		session.advance(track,before,sim.state.position,sim.state.route_index)
+		if session.finished: break
+	print("YLIKULKU_LAPS: ",session.completed_laps," contacts=",sim.state.collision_count," times=",session.lap_times)
+	check(session.finished,"YLIKULKU AI completes three ordered laps through both crossing layers")

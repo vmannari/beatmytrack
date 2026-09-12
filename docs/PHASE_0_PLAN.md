@@ -133,3 +133,5 @@ Final full Validate passed import, 24 parses, startup and 171 checks (56 driving
 Owner authorizes sharp bends, per-node widths and built-in object editing (T01–T04 / V05 / R01), explicitly waiving backward compatibility for user tracks. The v2 contract and revised bend rules supersede initial creator limits. See [EDITOR_V2.md](EDITOR_V2.md) for actual commands, passing validation, screenshots and unperformed phone acceptance.
 
 2026-09-12 G02/R03/R01: owner extends native test content to all 194 distinct locally supplied Slicks tracks. Author search uses retained source attribution or flagged deterministic fictional names. See SLICKS_CORPUS.md for actual commands/results, eight unresolved route-planner cases and remaining individual lap/bridge/device checks.
+
+2026-09-12 G02/R03/R01: bulk straight-bridge axis correction fixes YLIKULKU overpass/underpass layering. Actual validation: 793 corpus checks, 163 original track checks, three YLIKULKU AI laps with zero contacts. See SLICKS_CORPUS.md and bridge-axis evidence; mixed-orientation bridges remain a separate limitation.

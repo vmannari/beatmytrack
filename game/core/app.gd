@@ -83,10 +83,15 @@ func _show_screen(next: String) -> void:
 	var logo := MenuStyle.label("CIRCUIT / 01", 24)
 	logo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	nav.add_child(logo)
-	for item: Array in [["play","Play"],["garage","Garage"],["tracks","Tracks"],["create","Create"],["settings","Settings"]]:
+	nav.add_child(MenuStyle.button("Back to race" if screen == "settings" else "Settings", _show_screen.bind("play" if screen == "settings" else "settings")))
+	var tabs := HBoxContainer.new()
+	layout.add_child(tabs)
+	for item: Array in [["play","Race"],["garage","Garage"],["create","Create"]]:
 		var id: String = item[0]
-		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id)
-		nav.add_child(button)
+		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id or (id == "play" and screen == "tracks"))
+		button.name = "Tab_" + id
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tabs.add_child(button)
 	var separator := HSeparator.new()
 	layout.add_child(separator)
 	content = VBoxContainer.new()
@@ -110,31 +115,55 @@ func _home() -> void:
 	row.add_theme_constant_override("separation", 32)
 	content.add_child(row)
 	var left := VBoxContainer.new()
-	left.custom_minimum_size.x = 340
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(left)
-	_heading("LOCAL RACING", "Find your next line.", left)
-	left.add_child(MenuStyle.label("One car. Every corner counts.", 18, true))
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.add_child(spacer)
-	left.add_child(MenuStyle.label(track_title(selected_track), 26))
-	left.add_child(MenuStyle.label("3 laps  /  standing start", 18, true))
-	left.add_child(MenuStyle.button("Race", _start_race.bind(selected_track, false), true))
+	var selector := HBoxContainer.new()
+	left.add_child(selector)
+	var previous_button: Button = MenuStyle.button("<", _cycle_track.bind(-1))
+	previous_button.custom_minimum_size.x = 60
+	previous_button.tooltip_text = "Previous circuit"
+	selector.add_child(previous_button)
+	var title := MenuStyle.label(track_title(selected_track), 28)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	selector.add_child(title)
+	var next_button: Button = MenuStyle.button(">", _cycle_track.bind(1))
+	next_button.custom_minimum_size.x = 60
+	next_button.tooltip_text = "Next circuit"
+	selector.add_child(next_button)
+	var preview := TrackShowroom.new()
+	preview.track = selected_track
+	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	left.add_child(preview)
 	left.add_child(MenuStyle.button("Choose a track", _show_screen.bind("tracks")))
-	left.add_child(MenuStyle.button("Make a circuit", _show_screen.bind("create")))
 	var right := VBoxContainer.new()
-	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.custom_minimum_size.x = 340
 	row.add_child(right)
+	right.add_child(MenuStyle.label("YOUR CAR", 15, true))
 	var showroom := CarShowroom.new()
 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_child(showroom)
-	var caption := HBoxContainer.new()
-	right.add_child(caption)
-	var car_name := MenuStyle.label("COMPACT / 01", 20)
-	car_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	caption.add_child(car_name)
-	caption.add_child(MenuStyle.label("Balanced  /  ready to drive", 16, true))
-	content.add_child(MenuStyle.label("Drive freely. Create locally. Share your circuits.", 16, true))
+	right.add_child(MenuStyle.label("COMPACT / 01", 24))
+	right.add_child(MenuStyle.label("Balanced  /  3 laps", 18, true))
+	var best: float = records.best_for(selected_track, load("res://resources/balanced.tres") as HandlingConfig)
+	right.add_child(MenuStyle.label("Local best  /  %.3f s" % best if best > 0.0 else "Set your first local best", 18, true))
+	var race_button: Button = MenuStyle.button("Race", _start_race.bind(selected_track, false), true)
+	race_button.name = "StartRace"
+	race_button.custom_minimum_size.y = 76
+	race_button.add_theme_font_size_override("font_size", 28)
+	right.add_child(race_button)
+
+func _cycle_track(direction: int) -> void:
+	var choices: Array[NativeTrack] = []
+	for id: String in BUILTIN_IDS:
+		choices.append(NativeTrack.read("res://resources/tracks/" + id + ".json"))
+	for doc: Dictionary in library.list_documents():
+		choices.append(TrackCompiler.compile(doc))
+	var index: int = 0
+	for i: int in range(choices.size()):
+		if choices[i].identity == selected_track.identity: index = i
+	selected_track = choices[posmod(index + direction, choices.size())]
+	_show_screen("play")
 
 func _tracks() -> void:
 	_heading("TRACK LIBRARY", "Choose your next circuit.")

@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-12 V03/G03/R01/R06 menu follow-up: owner explicitly selected Hill Climb Racing 2 as navigation reference. Direct race hub and simplified tabs implemented; 86 graphical app checks pass. Full validation has six creator failures during concurrent format work; phone and owner acceptance remain pending. See [HCR2_MENU_REVIEW.md](HCR2_MENU_REVIEW.md) for actual commands, scope and screenshot.
+
 ## Current owner authorization: 2026-09-12
 
 The owner now accepts the car's handling and collisions and explicitly asks to advance to menus, several more Slicks circuits, a phone-friendly map creator and shared visual themes. This later request overrides the earlier editor/content restriction for one local slice. Implemented scope is the local Play/Garage/Tracks/Create/Settings/results flow, three more native circuits, bounded local authoring/sharing and Pine/Coast/Desert presentation. The initial creator uses simple draggable handles over a starter loop rather than exposing advanced spline tangents; this is the current phone-usability proposal under the owner's request.

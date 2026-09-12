@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-12 menu follow-up: adapted Hill Climb Racing 2's selected-event/Race structure into a direct circuit-and-car race hub with Race/Garage/Create tabs and separate Settings. Graphical integration passed 86 checks; screenshot and commands: [HCR2 menu review](docs/HCR2_MENU_REVIEW.md). Full validation passed driving/original/extra tracks but encountered six creator failures during concurrent creator-format work. No phone test performed; owner menu acceptance remains open.
+
 Updated: 2026-09-12. The owner has **accepted car handling and collisions** and explicitly authorized **local menus, additional Slicks circuits, a phone-friendly creator and shared track themes**. This is the active slice, covering selected P1/P3 local features. Physical-phone handling, camera calibration and performance acceptance remain open; this does not complete all blueprint gates.
 
 ## Current slice: menus and track studio

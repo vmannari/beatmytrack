@@ -51,10 +51,26 @@ func run() -> void:
 	await process_frame
 	await process_frame
 	check(app.get("screen") == "play" and app.get("game") == null, "startup opens Play with no running simulation")
-	check(_button(app.get("root_ui"), "Race") != null, "Play exposes the primary Race action")
-	check(_button(app.get("root_ui"), "Make a circuit") != null, "Play exposes creator navigation")
+	check((app.get("root_ui") as Node).find_child("StartRace", true, false) != null, "Play exposes the primary Race action")
+	check(_button(app.get("root_ui"), "Create") != null, "Play exposes creator navigation")
+	var first_track: NativeTrack = app.get("selected_track")
+	_button(app.get("root_ui"), ">").pressed.emit()
+	await process_frame
+	await process_frame
+	check((app.get("selected_track") as NativeTrack).identity != first_track.identity, "next circuit changes the race destination")
+	(app.get("root_ui") as Node).find_child("StartRace", true, false).emit_signal("pressed")
+	await process_frame
+	check((app.get("game").get("native_track") as NativeTrack).identity == (app.get("selected_track") as NativeTrack).identity, "home Race launches the displayed circuit")
+	app.call("_leave_race")
+	app.call("_show_screen", "play")
+	await process_frame
+	await process_frame
+	_button(app.get("root_ui"), "<").pressed.emit()
+	await process_frame
+	await process_frame
+	check((app.get("selected_track") as NativeTrack).identity == first_track.identity, "previous circuit restores the original race destination")
 	await _capture("app-home")
-	var create_button: Button = _button(app.get("root_ui"), "Make a circuit")
+	var create_button: Button = _button(app.get("root_ui"), "Create")
 	await _viewport_tap(create_button.get_global_rect().get_center())
 	await process_frame
 	await process_frame

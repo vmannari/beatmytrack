@@ -1,5 +1,8 @@
 # Project agent instructions
 
+## Free-form editor override (2026-09-12)
+The owner rejected spline-only editing and explicitly prioritized free-shaped roads, terrain, intersections and obstacles. The map and lap route are separate in creator-track-v3; at-grade route crossings are permitted. This supersedes v2-only and no-crossing authoring rules below. No user-track backward compatibility is required. Existing bridge geometry may be retained in native remixes; new bridge tooling is outside this ground-editing slice.
+
 ## Current owner request and path mapping
 - On 2026-09-12 the owner requested conversion of all locally supplied Slicks tracks, with artificial names for missing authors to exercise author search. This authorizes the 194-track native test corpus; see `docs/SLICKS_CORPUS.md` for provenance, conversion assumptions and validation limits.
 - On 2026-09-12 the owner requested **five laps** and a visually stronger track library with favorites, name/creator search and random selection. Five laps supersede the earlier three-lap production rule. Historical replay/handling fixtures may explicitly run three laps to preserve their diagnostic corpus; all ordinary races and creator test drives use five.

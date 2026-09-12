@@ -149,6 +149,7 @@ func _check_library() -> void:
 
 
 func _check_input_and_history() -> void:
+	_button(app.get("root_ui"), "Route").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	var start: Vector2 = canvas.to_screen(Vector2(original.points[0][0], original.points[0][1]))

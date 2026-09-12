@@ -9,7 +9,11 @@ signal hint_changed(text: String)
 signal selection_changed
 
 var document: Dictionary
-var mode: String = "move"
+var mode: String = "paint"
+var brush_surface: int = 0
+var brush_width: float = 10.0
+var brush_shape: String = "round"
+var paint_points: Array = []
 var zoom: float = 1.0
 var pan := Vector2.ZERO
 var selected: int = -1
@@ -58,6 +62,7 @@ func fit() -> void:
 	if not document.is_empty():
 		var bounds := Rect2(Vector2(document.points[0][0], document.points[0][1]), Vector2.ZERO)
 		for p: Array in document.points: bounds = bounds.expand(Vector2(p[0], p[1]))
+		if document.base_track != "" and native_preview != null: bounds = Rect2(-native_preview.half_extent,native_preview.half_extent*2)
 		var base: float = scale_factor()
 		zoom = clampf(minf(size.x / (bounds.size.x + 24), size.y / (bounds.size.y + 24)) / base, 0.4, 3.0)
 		pan = -Vector2(bounds.get_center().x, -bounds.get_center().y) * scale_factor()
@@ -68,7 +73,6 @@ func zoom_by(factor: float) -> void:
 	queue_redraw()
 
 func refresh() -> void:
-	native_preview = null
 	queue_redraw()
 
 func show_native(track: NativeTrack) -> void:
@@ -78,6 +82,7 @@ func show_native(track: NativeTrack) -> void:
 
 func cancel_gesture() -> void:
 	if dragging and changed_in_gesture: edit_finished.emit()
+	paint_points.clear()
 	pending_stamp = false
 	dragging = false
 	panning = false
@@ -104,12 +109,15 @@ func _gui_input(event: InputEvent) -> void:
 			touches[event.index] = event.position
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
+				paint_points.clear()
 				pending_stamp = false
 				if dragging and changed_in_gesture: edit_finished.emit()
 				dragging = false
 		else:
 			touches.erase(event.index)
-			if event.canceled: pending_stamp = false
+			if event.canceled:
+				pending_stamp = false
+				paint_points.clear()
 			_end(event.index)
 	elif event is InputEventScreenDrag:
 		if not touches.has(event.index): return
@@ -134,6 +142,13 @@ func _begin(point: Vector2, pointer: int) -> void:
 	press_position = point
 	pointer_origin = to_world(point)
 	changed_in_gesture = false
+	if mode == "paint":
+		paint_points = [_paint_position(point)]
+		queue_redraw()
+		return
+	if mode == "pan":
+		panning = true
+		return
 	pending_stamp = mode in ["add","place"]
 	if pending_stamp: return
 	selected = -1
@@ -162,6 +177,12 @@ func _begin(point: Vector2, pointer: int) -> void:
 	queue_redraw()
 
 func _move(point: Vector2) -> void:
+	if not paint_points.is_empty():
+		var p: Array = _paint_position(point)
+		if Vector2(p[0],p[1]).distance_to(Vector2(paint_points[-1][0],paint_points[-1][1])) >= 0.5 and paint_points.size() < 512:
+			paint_points.append(p)
+		queue_redraw()
+		return
 	if pending_stamp:
 		if press_position.distance_to(point) > 12:
 			pending_stamp = false
@@ -191,7 +212,7 @@ func _place(point: Vector2) -> void:
 		selected = -1
 	else:
 		if document.points.size() >= TrackDocument.MAX_POINTS:
-			hint_changed.emit("Use up to 24 road nodes.")
+			hint_changed.emit("Use up to 96 route nodes.")
 			return
 		var index: int = 0
 		var distance: float = INF
@@ -217,6 +238,14 @@ func _place(point: Vector2) -> void:
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
+	if not paint_points.is_empty():
+		if document.paint.size() < 256:
+			edit_started.emit()
+			document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true)})
+			document_changed.emit()
+			edit_finished.emit()
+		else: hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
+		paint_points.clear()
 	if pending_stamp: _place(press_position)
 	if dragging and changed_in_gesture: edit_finished.emit()
 	pending_stamp = false
@@ -263,6 +292,11 @@ func _draw() -> void:
 			var color: Color = palette[2] if document.surface == "dirt" else palette[0]
 			draw_line(a,b,color,width,true)
 			draw_circle(a,width*0.5,color)
+	if mode in ["move","add"]:
+		var line := PackedVector2Array()
+		for p: Vector2 in route: line.append(to_screen(p))
+		line.append(line[0])
+		draw_polyline(line,Color(1,0.85,0.35,0.9),2,true)
 	if route.size() > 1:
 		var start: Vector2 = to_screen(route[0])
 		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * TrackDocument.node_width(document,0) * scale_factor() * 0.5
@@ -271,7 +305,7 @@ func _draw() -> void:
 		var arrow: Vector2 = start + direction * 24
 		draw_line(arrow-direction.rotated(0.65)*12,arrow,Color("edf1f3"),3,true)
 		draw_line(arrow-direction.rotated(-0.65)*12,arrow,Color("edf1f3"),3,true)
-	for i: int in range(document.points.size()):
+	for i: int in range(document.points.size() if mode in ["move","add"] else 0):
 		var p: Array = document.points[i]
 		var center: Vector2 = to_screen(Vector2(p[0],p[1]))
 		draw_circle(center, 25, Color(0.07,0.11,0.13,0.75))
@@ -291,4 +325,19 @@ func _draw() -> void:
 		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
 		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
 		draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
+	if not paint_points.is_empty():
+		var color: Color = palette[brush_surface]
+		for i: int in range(paint_points.size()):
+			var a: Vector2 = to_screen(Vector2(paint_points[i][0],paint_points[i][1]))
+			var b: Vector2 = to_screen(Vector2(paint_points[maxi(0,i-1)][0],paint_points[maxi(0,i-1)][1]))
+			var width: float = brush_width*scale_factor()
+			draw_line(a,b,color,width,true)
+			if brush_shape == "round": draw_circle(a,width*0.5,color)
+			else: draw_rect(Rect2(a-Vector2.ONE*width*0.5,Vector2.ONE*width),color)
 	draw_string(ThemeDB.fallback_font, Vector2(18,size.y-18), "10 m grid  /  %d handles" % document.points.size(), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("d0d9d4"))
+
+
+func _paint_position(point: Vector2) -> Array:
+	var p: Vector2 = to_world(point).snapped(Vector2.ONE*0.5).clamp(Vector2(-110,-110),Vector2(110,110))
+	if document.base_track != "" and native_preview != null: p = p.clamp(-native_preview.half_extent+Vector2.ONE,native_preview.half_extent-Vector2.ONE)
+	return [p.x,p.y]

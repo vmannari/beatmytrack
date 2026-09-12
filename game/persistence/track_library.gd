@@ -83,7 +83,7 @@ func _read(path: String) -> Dictionary:
 		last_error = "Could not open the track file."
 		return {}
 	if file.get_length() > TrackDocument.MAX_BYTES:
-		last_error = "This file is too large; creator tracks are at most 16 KB."
+		last_error = "This file is too large; creator tracks are at most 512 KB."
 		file.close()
 		return {}
 	var text: String = file.get_as_text()
@@ -103,7 +103,7 @@ func _read(path: String) -> Dictionary:
 func _atomic_write(document: Dictionary, path: String) -> Error:
 	var content: String = JSON.stringify(document,"\t",true)
 	if content.to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
-		last_error = "This creator track exceeds 16 KB."
+		last_error = "This creator track exceeds 512 KB."
 		return ERR_INVALID_DATA
 	var temporary: String = path+".tmp"
 	var backup: String = path+".bak"

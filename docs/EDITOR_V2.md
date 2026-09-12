@@ -1,5 +1,7 @@
 # Track editor revision 2
 
+Historical checkpoint: the owner subsequently requested free-shaped roads/terrain/intersections/obstacles. The current editor uses [v3 independent map painting and lap routes](FREE_FORM_EDITOR.md).
+
 2026-09-12 owner-requested sharp corners, independent road widths and mobile object editing. Requirements: T01 bounded plain-data authoring; T02 route validation; T03 content identity foundations; T04 free local drafts/exchange; V05 shared editor/race geometry; R01 touch interaction. No simulation algorithm changes.
 
 Select a numbered road node to set its width (6–20 m) and choose Smooth or Sharp. Add bend inserts a sharp node on the closest road section and selects it for dragging. Selecting near a node preserves its position; dragging preserves the finger offset. Set start keeps width and corner properties together. Undo/redo includes these properties.

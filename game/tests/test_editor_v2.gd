@@ -22,6 +22,7 @@ func run() -> void:
 	doc.points = [[-35,-25],[35,-25],[35,25],[-35,25]]
 	doc.widths = [8.0,8.0,16.0,16.0]
 	doc.corners = ["sharp","sharp","sharp","sharp"]
+	doc.layout = TrackDocument.road_layout(doc)
 	check(TrackDocument.validate(doc).is_empty(),"90-degree nodes with mixed widths are valid")
 	var track: NativeTrack = TrackCompiler.compile(doc)
 	var exact_corners: bool = true
@@ -31,6 +32,7 @@ func run() -> void:
 	check(track.cell_at(Vector2(0,32.5)) == 0 and track.cell_at(Vector2(0,34.5)) != 0,"16 m road has the requested footprint")
 	var wider: Dictionary = doc.duplicate(true)
 	wider.widths[0] = 14.0
+	wider.layout = TrackDocument.road_layout(wider)
 	var revised: NativeTrack = TrackCompiler.compile(wider)
 	check(revised.content_hash != track.content_hash and revised.cells != track.cells,"one node width changes content and physical road")
 	check(revised.cell_at(Vector2(0,32.5)) == track.cell_at(Vector2(0,32.5)),"distant segment retains its independent width")
@@ -44,7 +46,7 @@ func run() -> void:
 		check(not TrackDocument.validate(bad).is_empty(),"hostile v2 property rejected: "+str(patch.keys()))
 	var crossing: Dictionary = doc.duplicate(true)
 	crossing.points = [[-35,-25],[35,25],[-35,25],[35,-25]]
-	check(not TrackDocument.validate(crossing).is_empty(),"actual centreline crossings still rejected")
+	check(TrackDocument.validate(crossing).is_empty(),"at-grade route crossings are now supported")
 	doc.objects = [{"kind":"barrier","position":[0,0],"rotation":0},{"kind":"tree","position":[-15,0],"rotation":0},{"kind":"rock","position":[15,0],"rotation":0},{"kind":"water","position":[0,25],"rotation":0},{"kind":"dirt","position":[0,-10],"rotation":45}]
 	var stamped: NativeTrack = TrackCompiler.compile(doc)
 	check(stamped.cell_at(Vector2.ZERO) == 4 and stamped.cell_at(Vector2(2,0)) == 4 and stamped.cell_at(Vector2(0,2)) != 4,"barrier cells match the long footprint")
@@ -105,6 +107,7 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
+	canvas.mode = "move"
 	var start: Vector2 = canvas.to_screen(Vector2(-35,-25))
 	var down := InputEventScreenTouch.new()
 	down.pressed = true; down.position = start+Vector2(10,0); down.index = 1

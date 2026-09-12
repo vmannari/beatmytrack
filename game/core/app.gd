@@ -51,7 +51,7 @@ func _ready() -> void:
 
 func _show_screen(next: String) -> void:
 	if is_instance_valid(canvas):
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape}
 	screen = next
 	canvas = null
 	editor_status = null
@@ -265,7 +265,7 @@ func _editor() -> void:
 	heading.add_child(theme_choice)
 	var road_choice := OptionButton.new()
 	road_choice.custom_minimum_size = Vector2(160,54)
-	for id: String in ["asphalt","dirt"]: road_choice.add_item("Road / "+id.capitalize())
+	for id: String in ["asphalt","dirt"]: road_choice.add_item("Helper / "+id.capitalize())
 	road_choice.selected = ["asphalt","dirt"].find(document.surface)
 	road_choice.item_selected.connect(func(index: int) -> void: _set_document_value("surface",["asphalt","dirt"][index]))
 	heading.add_child(road_choice)
@@ -283,10 +283,15 @@ func _editor() -> void:
 		canvas.selected = mini(int(editor_view.get("selected",-1)),document.points.size()-1)
 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
+		canvas.brush_surface = int(editor_view.get("brush_surface",0))
+		canvas.brush_width = float(editor_view.get("brush_width",10))
+		canvas.brush_shape = str(editor_view.get("brush_shape","round"))
 		canvas.fitted = true
 	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(canvas)
-	canvas.edit_started.connect(_remember)
+	canvas.edit_started.connect(func() -> void:
+		_remember()
+		if canvas.mode in ["move","add"]: document.route_override = true)
 	canvas.document_changed.connect(func() -> void:
 		canvas.refresh()
 		test_button.disabled = true
@@ -299,7 +304,7 @@ func _editor() -> void:
 	sidebar_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	row.add_child(sidebar_scroll)
 	editor_inspector = VBoxContainer.new()
-	editor_inspector.add_theme_constant_override("separation",8)
+	editor_inspector.add_theme_constant_override("separation",6)
 	editor_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sidebar_scroll.add_child(editor_inspector)
 	canvas.selection_changed.connect(_build_editor_tools)
@@ -343,14 +348,16 @@ func _build_editor_tools() -> void:
 	var objects_mode: bool = canvas.mode in ["objects","place"]
 	var tabs := HBoxContainer.new()
 	editor_inspector.add_child(tabs)
-	for pair: Array in [["move","Road"],["objects","Objects"]]:
+	for pair: Array in [["paint","Paint"],["move","Route"],["objects","Props"]]:
 		var value: String = pair[0]
 		var button: Button = MenuStyle.button(pair[1],func() -> void:
 			canvas.mode = value
-			_build_editor_tools(), objects_mode == (value == "objects"))
+			_build_editor_tools(), (canvas.mode == "paint" or canvas.mode == "pan") if value == "paint" else objects_mode if value == "objects" else canvas.mode in ["move","add"])
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
-	if objects_mode:
+	if canvas.mode in ["paint","pan"]:
+		_build_paint_tools()
+	elif objects_mode:
 		var palette := OptionButton.new()
 		palette.custom_minimum_size.y = 54
 		for id: String in CreatorObjects.KINDS: palette.add_item(id.capitalize())
@@ -392,7 +399,7 @@ func _build_editor_tools() -> void:
 				canvas.mode = value
 				_build_editor_tools(),canvas.mode == value))
 		var chosen: int = canvas.selected
-		editor_inspector.add_child(MenuStyle.label("Node %d / road width" % [chosen+1] if chosen >= 0 else "Tap a road node to adjust it.",18))
+		editor_inspector.add_child(MenuStyle.label("Node %d / helper width" % [chosen+1] if chosen >= 0 else "Route and map edit separately.",18))
 		var widths := HBoxContainer.new()
 		editor_inspector.add_child(widths)
 		var minus: Button = MenuStyle.button("-",_change_node_width.bind(-1.0))
@@ -424,8 +431,10 @@ func _build_editor_tools() -> void:
 		var start: Button = MenuStyle.button("Set start",_set_start_node)
 		start.disabled = chosen < 0
 		operations.add_child(start)
+		editor_inspector.add_child(MenuStyle.button("Lay road along route",_lay_road))
 
 func _commit_selection() -> void:
+	if canvas.mode in ["move","add"]: document.route_override = true
 	canvas.refresh()
 	_save_draft()
 	_build_editor_tools()
@@ -524,7 +533,7 @@ func _redo() -> void:
 func _refresh_editor() -> void:
 	if not is_instance_valid(editor_status): return
 	var errors: Array[String] = TrackDocument.validate(document)
-	editor_status.text = "Drag the large handles to shape your circuit. Changes save automatically." if errors.is_empty() else errors[0]
+	editor_status.text = "Paint the map freely. Edit Route to set the lap. Changes save automatically." if errors.is_empty() else errors[0]
 	test_button.disabled = not errors.is_empty()
 	share_button.disabled = not errors.is_empty()
 	if is_instance_valid(canvas): canvas.refresh()
@@ -665,7 +674,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	returning_to_editor = from_editor
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape}
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
@@ -745,3 +754,61 @@ func _capture() -> void:
 	var error: Error = get_viewport().get_texture().get_image().save_png(capture_path)
 	if error == OK: print("CAPTURE_SAVED: " + capture_path)
 	get_tree().quit(0 if error == OK else 1)
+
+func _build_paint_tools() -> void:
+	var materials := OptionButton.new()
+	materials.custom_minimum_size.y = 54
+	for label: String in ["Asphalt","Grass / erase","Dirt / sand","Water","Barrier","Kerb","Rough ground","Low obstacles"]: materials.add_item(label)
+	materials.selected = canvas.brush_surface
+	materials.item_selected.connect(func(index: int) -> void:
+		canvas.brush_surface = index
+		canvas.mode = "paint"
+		_build_editor_tools())
+	editor_inspector.add_child(materials)
+	var actions := HBoxContainer.new()
+	editor_inspector.add_child(actions)
+	for entry: Array in [["paint","Paint"],["pan","Pan"]]:
+		var value: String = entry[0]
+		actions.add_child(MenuStyle.button(entry[1],func() -> void:
+			canvas.mode = value
+			_build_editor_tools(),canvas.mode == value))
+	var sizes := HBoxContainer.new()
+	editor_inspector.add_child(sizes)
+	sizes.add_child(MenuStyle.button("-",func() -> void:
+		canvas.brush_width = maxf(2,canvas.brush_width-2)
+		_build_editor_tools()))
+	var label := MenuStyle.label("%.0f m brush" % canvas.brush_width,20)
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sizes.add_child(label)
+	sizes.add_child(MenuStyle.button("+",func() -> void:
+		canvas.brush_width = minf(40,canvas.brush_width+2)
+		_build_editor_tools()))
+	var shapes := OptionButton.new()
+	shapes.custom_minimum_size.y = 54
+	shapes.add_item("Round brush")
+	shapes.add_item("Square brush")
+	shapes.selected = 1 if canvas.brush_shape == "square" else 0
+	shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
+	editor_inspector.add_child(shapes)
+	var help := MenuStyle.label("Paint freely. Pinch to zoom.\nRoute sets lap order.",16,true)
+	if document.base_track != "": help.text += " Remix paints ground only."
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	editor_inspector.add_child(MenuStyle.button("Clear map",func() -> void:
+		_remember()
+		document.layout = {}
+		document.paint = []
+		document.objects = []
+		canvas.selected_object = -1
+		canvas.selected = -1
+		document.base_track = ""
+		document.route_override = true
+		_save_draft()
+		_build_editor_tools()))
+	editor_inspector.add_child(help)
+
+
+func _lay_road() -> void:
+	_remember()
+	document.layout = TrackDocument.road_layout(document)
+	_commit_selection()

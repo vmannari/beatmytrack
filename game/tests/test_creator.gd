@@ -25,6 +25,7 @@ func run() -> void:
 		document.theme = theme
 		if theme == "desert":
 			document.surface = "dirt"
+			document.layout.surface = "dirt"
 		var issues: Array[String] = TrackDocument.validate(document)
 		check(issues.is_empty(),theme+" starter route validates: "+str(issues))
 		var track: NativeTrack = TrackCompiler.compile(document)
@@ -38,7 +39,7 @@ func run() -> void:
 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
 		if theme == "pine":
-			check(track.content_hash == "68ca60634e3e4c1645d6c5ec7b105d59514f95b74dc9a1477ac66f0f8629aaec","compiler-v2 canonical identity matches golden hash")
+			check(track.content_hash == "ccc1d98fc71975a5d72507036304f9a8dd63f7370670f289a751ef6c7871564f","compiler-v3 canonical identity matches golden hash")
 		var route_on_road: bool = true
 		for point: Vector2 in track.route:
 			route_on_road = route_on_road and track.cell_at(point) == expected
@@ -74,8 +75,8 @@ func _check_import_boundary() -> void:
 		check(not TrackDocument.validate(changed).is_empty(),"hostile or invalid document rejected: "+str(patch.keys()))
 	var oversized: Dictionary = base.duplicate(true)
 	oversized.points = []
-	for i: int in range(25):
-		oversized.points.append([cos(TAU*i/25)*40,sin(TAU*i/25)*40])
+	for i: int in range(97):
+		oversized.points.append([cos(TAU*i/97)*40,sin(TAU*i/97)*40])
 	check(not TrackDocument.validate(oversized).is_empty(),"per-document point bound enforced")
 	var sharp: Dictionary = base.duplicate(true)
 	sharp.points = [[-40,-30],[40,-30],[40,30],[32,32],[30,-15],[-30,30]]

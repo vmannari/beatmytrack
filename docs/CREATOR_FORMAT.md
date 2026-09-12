@@ -1,5 +1,7 @@
 # Local creator format
 
+Superseded by **creator-track-v3**: separate map painting, optional road helper, lap route and native remixes. [Current contract and verification](FREE_FORM_EDITOR.md). V1/V2 descriptions below are historical; no backward compatibility is maintained.
+
 Current format: **creator-track-v2**, with per-node widths, sharp/smooth corners and built-in objects. See [EDITOR_V2.md](EDITOR_V2.md) and the [v2 schema](schemas/creator-track-v2.schema.json). The owner explicitly waives backward compatibility for user tracks; v1 is unsupported. The following records the historical first implementation.
 
 2026-09-12 owner-authorized local creator slice. Requirements: T01 (bounded non-scriptable format), T02 (closed route and geometry validation), T03 foundations (version identity), T04 (unlimited local drafts and free file exchange), V05 (shared editor/driving geometry). Public publishing, hosted challenges, accounts and competition verification are outside this slice.

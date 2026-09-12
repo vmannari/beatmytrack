@@ -242,6 +242,11 @@ func _show_detail() -> void:
 	if selected_track.metadata.has("creator_document"):
 		actions.add_child(MenuStyle.button("Edit",func() -> void: edit_requested.emit(selected_track.metadata.creator_document.duplicate(true))))
 
+	else:
+		var remix: Button = MenuStyle.button("Remix",func() -> void: edit_requested.emit(TrackDocument.from_builtin(selected_track)))
+		remix.name = "RemixTrack"
+		actions.add_child(remix)
+
 func _favorite() -> void:
 	var favorites: Array = records.settings.get("favorites",[]).duplicate()
 	if selected_track.identity in favorites: favorites.erase(selected_track.identity)

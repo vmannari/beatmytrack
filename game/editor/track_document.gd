@@ -2,18 +2,20 @@ class_name TrackDocument
 extends RefCounted
 ## Bounded JSON authoring contract. No scripts, images, paths or engine objects.
 
-const SCHEMA: String = "creator-track-v2"
+const SCHEMA: String = "creator-track-v3"
 const THEMES: Array[String] = ["pine", "coast", "desert"]
-const MAX_POINTS: int = 24
-const MAX_BYTES: int = 16384
+const MAX_POINTS: int = 96
+const MAX_BYTES: int = 524288
 const MAX_COORD: float = 120.0
-const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects"]
+const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override"]
 
 
 static func create_default() -> Dictionary:
-	return {"schema": SCHEMA, "id": "my_track", "name": "My circuit", "theme": "pine", "width": 10.0,
+	var doc: Dictionary = {"schema": SCHEMA, "id": "my_track", "name": "My circuit", "theme": "pine", "width": 10.0,
 		"surface": "asphalt", "points": [[-38.0,-12.0],[-25.0,22.0],[12.0,28.0],[39.0,9.0],[25.0,-25.0],[-10.0,-28.0]],
-		"widths":[10.0,10.0,10.0,10.0,10.0,10.0], "corners":["smooth","smooth","smooth","smooth","smooth","smooth"], "objects":[]}
+		"widths":[10.0,10.0,10.0,10.0,10.0,10.0], "corners":["smooth","smooth","smooth","smooth","smooth","smooth"], "objects":[], "layout":{}, "paint":[], "base_track":"", "route_override":true}
+	doc.layout = road_layout(doc)
+	return doc
 
 
 static func valid_id(value: Variant) -> bool:
@@ -51,7 +53,7 @@ static func validate(data: Variant) -> Array[String]:
 			errors.append("Use a creator name of 1 to 40 characters.")
 		elif _has_control(creator):
 			errors.append("The creator name cannot contain control characters.")
-	if data.get("theme") not in THEMES:
+	if not data.get("theme") is String or data.theme not in THEMES:
 		errors.append("Choose Pine, Coast or Desert.")
 	if data.get("surface") not in ["asphalt", "dirt"]:
 		errors.append("Choose asphalt or dirt for the road.")
@@ -60,7 +62,7 @@ static func validate(data: Variant) -> Array[String]:
 		errors.append("Road width must be between 6 and 20 metres.")
 	var points: Variant = data.get("points")
 	if not points is Array or points.size() < 4 or points.size() > MAX_POINTS:
-		errors.append("Use 4 to 24 route points.")
+		errors.append("Use 4 to 96 route points.")
 		return errors
 	for point: Variant in points:
 		if not point is Array or point.size() != 2 or not _number(point[0]) or not _number(point[1]):
@@ -81,7 +83,7 @@ static func validate(data: Variant) -> Array[String]:
 		if not data.get("objects") is Array or data.objects.size() > 96:
 			return ["Use up to 96 placed objects."]
 		for object: Variant in data.objects:
-			if not object is Dictionary or object.size() != 3 or object.get("kind") not in CreatorObjects.KINDS:
+			if not object is Dictionary or object.size() != 3 or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
 				return ["Choose an object from the built-in palette."]
 			if not object.get("position") is Array or object.position.size() != 2:
 				return ["Object positions need two coordinates."]
@@ -89,27 +91,43 @@ static func validate(data: Variant) -> Array[String]:
 				if not _number(value) or absf(float(value)) > 110.0: return ["Keep objects inside the editing area."]
 			if not _number(object.get("rotation")) or float(object.rotation) < 0 or float(object.rotation) >= 360:
 				return ["Object rotation must be between 0 and 359 degrees."]
+	if not data.get("route_override") is bool or not data.get("base_track") is String:
+		return ["Choose a built-in base and route mode."]
+	if data.base_track != "" and BuiltinTracks.metadata(data.base_track).is_empty():
+		return ["This built-in base is not available."]
+	if not data.get("layout") is Dictionary: return ["The road layout is invalid."]
+	if not data.layout.is_empty():
+		if data.layout.size() != 4 or not data.layout.has_all(["points","widths","corners","surface"]): return ["The road layout is invalid."]
+		var road: Dictionary = data.duplicate(true)
+		road.merge(data.layout,true)
+		road.layout = {}
+		road.paint = []
+		road.base_track = ""
+		road.route_override = true
+		var road_errors: Array[String] = validate(road)
+		if not road_errors.is_empty(): return road_errors
+	if not data.get("paint") is Array or data.paint.size() > 256: return ["Use up to 256 paint strokes; undo a stroke or start a new map."]
+	var painted_points: int = 0
+	for stroke: Variant in data.paint:
+		if not stroke is Dictionary or stroke.size() != 4 or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
+		if not _number(stroke.surface) or float(stroke.surface) != floorf(float(stroke.surface)) or int(stroke.surface) not in range(8): return ["Choose a built-in surface."]
+		if not _number(stroke.width) or float(stroke.width) < 2 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 2 to 40 metres wide."]
+		if not stroke.points is Array or stroke.points.is_empty() or stroke.points.size() > 512: return ["Paint stroke is too long."]
+		painted_points += stroke.points.size()
+		for point: Variant in stroke.points:
+			if not point is Array or point.size() != 2: return ["Invalid paint position."]
+			for value: Variant in point:
+				if not _number(value) or absf(float(value)) > 110: return ["Keep paint inside the editing area."]
+	if painted_points > 16384: return ["The map has too many paint points."]
 	if not errors.is_empty():
 		return errors
 	for i: int in range(points.size()):
 		if _point(points[i]).distance_to(_point(points[(i+1) % points.size()])) < 2.0:
 			return ["Move neighbouring points at least 2 metres apart."]
-		for j: int in range(i+2,points.size()):
-			if i == 0 and j == points.size()-1:
-				continue
-			if Geometry2D.segment_intersects_segment(_point(points[i]),_point(points[(i+1)%points.size()]),_point(points[j]),_point(points[(j+1)%points.size()])) != null:
-				return ["Separate nearby road sections; crossings and overlapping roads are not supported."]
 	var route: PackedVector2Array = smooth_points(data)
 	var length: float = route_length(route)
-	if length < 40.0 or length > 750.0:
-		return ["Keep the complete route between 40 and 750 metres."]
-	# Tight turns and touching shoulders are legitimate authoring choices.
-	# Reject a genuinely crossing centreline, including spline overshoot.
-	for i: int in range(route.size()):
-		for j: int in range(i+2,route.size()):
-			if i == 0 and j == route.size()-1: continue
-			if Geometry2D.segment_intersects_segment(route[i],route[(i+1)%route.size()],route[j],route[(j+1)%route.size()]) != null:
-				return ["The road crosses itself. Move a node or make that corner sharp."]
+	if length < 40.0 or length > 1600.0:
+		return ["Keep the complete route between 40 and 1600 metres."]
 	return errors
 
 
@@ -193,3 +211,30 @@ static func _has_control(value: String) -> bool:
 		if value.unicode_at(i) < 32 or value.unicode_at(i) == 127:
 			return true
 	return false
+
+
+static func road_layout(doc: Dictionary) -> Dictionary:
+	return {"points":doc.points.duplicate(true),"widths":doc.widths.duplicate(),"corners":doc.corners.duplicate(),"surface":doc.surface}
+
+static func from_builtin(track: NativeTrack) -> Dictionary:
+	var doc: Dictionary = create_default()
+	doc.id = TrackLibrary.unique_id()
+	doc.name = (str(track.metadata.get("title",BuiltinTracks.metadata(track.identity).get("name","Circuit")))+" remix").left(40)
+	doc.theme = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+	doc.base_track = track.identity
+	doc.route_override = false
+	doc.layout = {}
+	doc.points = []
+	doc.widths = []
+	doc.corners = []
+	var step: int = maxi(1,ceili(track.route.size()/48.0))
+	for i: int in range(0,track.route.size(),step):
+		if not doc.points.is_empty() and _point(doc.points[-1]).distance_to(track.route[i]) < 2.0: continue
+		doc.points.append([track.route[i].x,track.route[i].y])
+		doc.widths.append(10.0)
+		doc.corners.append("sharp")
+	while doc.points.size() > 4 and _point(doc.points[-1]).distance_to(_point(doc.points[0])) < 2.0:
+		doc.points.pop_back()
+		doc.widths.pop_back()
+		doc.corners.pop_back()
+	return doc

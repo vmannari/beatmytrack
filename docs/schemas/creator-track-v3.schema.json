@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Free-form creator track v3",
+  "description": "At most 524288 UTF-8 bytes. Domain validation checks matching route/helper arrays, finite values, 16384 total paint points and bundled base identifiers. At-grade crossings are allowed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "name",
+    "theme",
+    "width",
+    "surface",
+    "points",
+    "widths",
+    "corners",
+    "objects",
+    "layout",
+    "paint",
+    "base_track",
+    "route_override"
+  ],
+  "properties": {
+    "schema": {
+      "const": "creator-track-v3"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[a-z0-9_]+$",
+      "not": {
+        "pattern": "^(con|prn|aux|nul|com[1-9]|lpt[1-9])$"
+      }
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "theme": {
+      "enum": [
+        "pine",
+        "coast",
+        "desert"
+      ]
+    },
+    "width": {
+      "type": "number",
+      "minimum": 6,
+      "maximum": 20
+    },
+    "surface": {
+      "enum": [
+        "asphalt",
+        "dirt"
+      ]
+    },
+    "points": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "number",
+          "minimum": -120,
+          "maximum": 120
+        }
+      }
+    },
+    "widths": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "type": "number",
+        "minimum": 6,
+        "maximum": 20
+      }
+    },
+    "corners": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "enum": [
+          "sharp",
+          "smooth"
+        ]
+      }
+    },
+    "objects": {
+      "type": "array",
+      "maxItems": 96,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "position",
+          "rotation"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "tree",
+              "rock",
+              "barrier",
+              "dirt",
+              "water"
+            ]
+          },
+          "position": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number",
+              "minimum": -110,
+              "maximum": 110
+            }
+          },
+          "rotation": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 360
+          }
+        }
+      }
+    },
+    "creator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "layout": {
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "points",
+            "widths",
+            "corners",
+            "surface"
+          ],
+          "properties": {
+            "points": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number",
+                  "minimum": -120,
+                  "maximum": 120
+                }
+              }
+            },
+            "widths": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "type": "number",
+                "minimum": 6,
+                "maximum": 20
+              }
+            },
+            "corners": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "enum": [
+                  "sharp",
+                  "smooth"
+                ]
+              }
+            },
+            "surface": {
+              "enum": [
+                "asphalt",
+                "dirt"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "base_track": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(|slicks_[a-z0-9_-]+_test)$"
+    },
+    "route_override": {
+      "type": "boolean"
+    },
+    "paint": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "surface",
+          "width",
+          "shape",
+          "points"
+        ],
+        "properties": {
+          "surface": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "width": {
+            "type": "number",
+            "minimum": 2,
+            "maximum": 40
+          },
+          "shape": {
+            "enum": [
+              "round",
+              "square"
+            ]
+          },
+          "points": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 512,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": -110,
+                "maximum": 110
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

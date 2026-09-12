@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestEditor', 'TestFreeEditor', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -76,6 +76,7 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_free_editor.gd') 'free-editor-tests.log'
     if (Test-Path -LiteralPath (Join-Path $projectRoot 'tests/test_app.gd')) {
         Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_app.gd') 'app-tests.log'
     }
@@ -176,6 +177,12 @@ try {
         'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
         'TestCreator' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log' }
         'TestEditor' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log' }
+        'TestFreeEditor' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_free_editor.gd') 'free-editor-tests.log' }
+        'CaptureFreeEditor' {
+            $evidencePath = Join-Path $buildRoot 'free-editor-evidence'
+            New-Item -ItemType Directory -Path $evidencePath -Force | Out-Null
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_free_editor.gd', '--', "--capture-free-editor=$evidencePath") 'free-editor-capture.log'
+        }
         'CaptureEditor' {
             $evidencePath = Join-Path $buildRoot 'editor-v2-evidence'
             New-Item -ItemType Directory -Path $evidencePath -Force | Out-Null

@@ -38,17 +38,17 @@ func run() -> void:
 func _check_records() -> void:
 	var store := LocalRecords.new(folder.path_join("records.json"))
 	check(store.best_for(track,handling) == 0.0,"new partition has no personal best")
-	var laps: Array[float] = [10.0004,21.2346,23.004]
-	check(store.record(track,handling,54.239,laps) == OK,"complete race persists")
+	var laps: Array[float] = [10.0004,21.2346,23.004,30.0,30.0]
+	check(store.record(track,handling,114.239,laps) == OK,"complete race persists")
 	var key: String = store.key_for(track,handling)
-	check(store.records[key].race_ms is int and store.records[key].race_ms == 54239,"race persisted in rounded integer milliseconds")
+	check(store.records[key].race_ms is int and store.records[key].race_ms == 114239,"race persisted in rounded integer milliseconds")
 	check(store.records[key].flying_ms is int and store.records[key].flying_ms == 21235,"first standing lap excluded from flying PB")
-	check(is_equal_approx(store.best_for(track,handling),54.239),"best_for exposes seconds API from milliseconds")
+	check(is_equal_approx(store.best_for(track,handling),114.239),"best_for exposes seconds API from milliseconds")
 	var serialized: String = FileAccess.get_file_as_string(store.path)
-	check('"race_ms":54239' in serialized and '"flying_ms":21235' in serialized and '"schema":2' in serialized,"JSON uses integer millisecond fields and schema 2")
-	laps = [20.5,19.5,20.0]
-	check(store.record(track,handling,60.0,laps) == OK,"slower race can still improve flying lap")
-	check(store.records[key].race_ms == 54239 and store.records[key].flying_ms == 19500,"whole-race and flying PB improve independently")
+	check('"race_ms":114239' in serialized and '"flying_ms":21235' in serialized and '"schema":2' in serialized,"JSON uses integer millisecond fields and schema 2")
+	laps = [20.5,19.5,20.0,30.0,30.0]
+	check(store.record(track,handling,120.0,laps) == OK,"slower race can still improve flying lap")
+	check(store.records[key].race_ms == 114239 and store.records[key].flying_ms == 19500,"whole-race and flying PB improve independently")
 	var revised: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
 	revised.content_hash += "_revision"
 	check(store.key_for(revised,handling) != key and store.best_for(revised,handling) == 0.0,"track-content revisions have separate PBs")
@@ -65,21 +65,31 @@ func _check_records() -> void:
 	check(reloaded.records == store.records and reloaded.settings == store.settings,"new instance restores both PBs and settings")
 	check(reloaded.records[key].race_ms is int,"JSON float parsing normalized back to integer milliseconds")
 	var before: Dictionary = store.records.duplicate(true)
-	for invalid: Array in [[1.0,2.0],[0.0,2.0,3.0],[1.0,NAN,3.0],[1.0,INF,3.0]]:
+	for invalid: Array in [[1.0,2.0],[1.0,2.0,3.0],[0.0,2.0,3.0,4.0,5.0],[1.0,NAN,3.0,4.0,5.0],[1.0,INF,3.0,4.0,5.0]]:
 		var invalid_laps: Array[float] = []
 		invalid_laps.assign(invalid)
 		check(store.record(track,handling,6.0,invalid_laps) == ERR_INVALID_DATA and store.records == before,"invalid or incomplete lap result cannot alter PB")
-	laps = [1.0,2.0,3.0]
-	check(store.record(track,handling,5.0,laps) == ERR_INVALID_DATA,"race total must agree with its three laps")
+	laps = [1.0,2.0,3.0,4.0,5.0]
+	check(store.record(track,handling,5.0,laps) == ERR_INVALID_DATA,"race total must agree with its five laps")
 	check(store.record(track,handling,NAN,laps) == ERR_INVALID_DATA,"nonfinite race total rejected")
+	var old_key: String = (track.content_hash+VehicleSimulation.PHYSICS_VERSION+JSON.stringify(handling.snapshot(),"",true)+"standing-3-local-v1").sha256_text()
+	var old_store := LocalRecords.new(folder.path_join("old_laps.json"))
+	old_store.records[old_key] = {"race_ms":50000,"flying_ms":15000}
+	old_store.settings.favorites = [track.identity]
+	check(old_store.save_records() == OK,"old record partitions and favorites can be preserved together")
+	old_store.load_records()
+	check(old_store.best_for(track,handling) == 0.0 and old_store.records.has(old_key),"three-lap PBs are retained but never compared with five-lap races")
+	laps = [30.0,29.0,28.0,27.0,18.0]
+	check(old_store.record(track,handling,132.0,laps) == OK and old_store.records[key].flying_ms == 18000,"fifth lap participates in the flying-lap best")
+	check(track.identity in old_store.settings.favorites,"record updates preserve favorites")
 
 
 func _check_recovery() -> void:
 	var store := LocalRecords.new(folder.path_join("recover.json"))
-	var laps: Array[float] = [10.0,21.0,23.0]
-	store.record(track,handling,54.0,laps)
-	laps = [10.0,20.0,22.0]
-	store.record(track,handling,52.0,laps)
+	var laps: Array[float] = [10.0,21.0,23.0,30.0,30.0]
+	store.record(track,handling,114.0,laps)
+	laps = [10.0,20.0,22.0,30.0,30.0]
+	store.record(track,handling,112.0,laps)
 	var key: String = store.key_for(track,handling)
 	for corrupt: Variant in [[], {"schema":2,"records":{},"settings":[]},
 		{"schema":true,"records":{},"settings":{}},
@@ -94,17 +104,17 @@ func _check_recovery() -> void:
 		{"schema":2,"records":{},"settings":{},"unexpected":"ignored?"}]:
 		_write(store.path,JSON.stringify(corrupt))
 		store.load_records()
-		check(store.best_for(track,handling) == 54.0,"wrong-shaped primary recovers strict valid backup")
+		check(store.best_for(track,handling) == 114.0,"wrong-shaped primary recovers strict valid backup")
 	var preserved_backup: String = FileAccess.get_file_as_string(store.path+".bak")
-	laps = [10.0,19.0,21.0]
-	check(store.record(track,handling,50.0,laps) == OK,"new record commits after corrupt-primary recovery")
+	laps = [10.0,19.0,21.0,30.0,30.0]
+	check(store.record(track,handling,110.0,laps) == OK,"new record commits after corrupt-primary recovery")
 	check(FileAccess.get_file_as_string(store.path+".bak") == preserved_backup,"corrupt primary cannot replace known-good backup")
 	_write(store.path,"not JSON")
 	store.load_records()
-	check(store.best_for(track,handling) == 54.0,"backup remains recoverable after a subsequent primary corruption")
+	check(store.best_for(track,handling) == 114.0,"backup remains recoverable after a subsequent primary corruption")
 	DirAccess.remove_absolute(store.path)
 	store.load_records()
-	check(store.best_for(track,handling) == 54.0,"missing primary recovers interrupted commit backup")
+	check(store.best_for(track,handling) == 114.0,"missing primary recovers interrupted commit backup")
 	_write(store.path+".bak","[]")
 	store.load_records()
 	check(store.records.is_empty() and store.settings.is_empty(),"two invalid files clear stale in-memory data")
@@ -125,8 +135,8 @@ func _check_migration() -> void:
 
 func _check_failures() -> void:
 	var store := LocalRecords.new(folder.path_join("failure.json"))
-	var laps: Array[float] = [10.0,21.0,23.0]
-	store.record(track,handling,54.0,laps)
+	var laps: Array[float] = [10.0,21.0,23.0,30.0,30.0]
+	store.record(track,handling,114.0,laps)
 	var before: Dictionary = store.records.duplicate(true)
 	var committed_path: String = store.path
 	# A regular file as parent makes write failure deterministic with any
@@ -134,13 +144,13 @@ func _check_failures() -> void:
 	var blocker: String = folder.path_join("not_a_directory")
 	_write(blocker,"blocker")
 	store.path = blocker.path_join("cannot_save.json")
-	laps = [10.0,19.0,21.0]
-	check(store.record(track,handling,50.0,laps) != OK,"unwritable destination reports failure")
-	check(store.records == before and store.best_for(track,handling) == 54.0,"failed improved PB rolls back memory")
+	laps = [10.0,19.0,21.0,30.0,30.0]
+	check(store.record(track,handling,110.0,laps) != OK,"unwritable destination reports failure")
+	check(store.records == before and store.best_for(track,handling) == 114.0,"failed improved PB rolls back memory")
 	store.settings = {"touch_scale":1.2,"left_handed":true}
 	check(store.save_records() != OK and store.settings.is_empty(),"failed settings save restores last committed preferences")
 	var empty := LocalRecords.new(store.path)
-	check(empty.record(track,handling,50.0,laps) != OK and empty.best_for(track,handling) == 0.0,"failed first record never appears as a phantom PB")
+	check(empty.record(track,handling,110.0,laps) != OK and empty.best_for(track,handling) == 0.0,"failed first record never appears as a phantom PB")
 	var reload := LocalRecords.new(committed_path)
 	reload.load_records()
 	check(reload.records == before,"failed write cannot change original committed file")

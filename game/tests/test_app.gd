@@ -53,22 +53,7 @@ func run() -> void:
 	check(app.get("screen") == "play" and app.get("game") == null, "startup opens Play with no running simulation")
 	check((app.get("root_ui") as Node).find_child("StartRace", true, false) != null, "Play exposes the primary Race action")
 	check(_button(app.get("root_ui"), "Create") != null, "Play exposes creator navigation")
-	var first_track: NativeTrack = app.get("selected_track")
-	_button(app.get("root_ui"), ">").pressed.emit()
-	await process_frame
-	await process_frame
-	check((app.get("selected_track") as NativeTrack).identity != first_track.identity, "next circuit changes the race destination")
-	(app.get("root_ui") as Node).find_child("StartRace", true, false).emit_signal("pressed")
-	await process_frame
-	check((app.get("game").get("native_track") as NativeTrack).identity == (app.get("selected_track") as NativeTrack).identity, "home Race launches the displayed circuit")
-	app.call("_leave_race")
-	app.call("_show_screen", "play")
-	await process_frame
-	await process_frame
-	_button(app.get("root_ui"), "<").pressed.emit()
-	await process_frame
-	await process_frame
-	check((app.get("selected_track") as NativeTrack).identity == first_track.identity, "previous circuit restores the original race destination")
+	await _check_library()
 	await _capture("app-home")
 	var create_button: Button = _button(app.get("root_ui"), "Create")
 	await _viewport_tap(create_button.get_global_rect().get_center())
@@ -109,6 +94,58 @@ func _set_records_path(records: RefCounted, path: String) -> bool:
 			records.set(property.name, path)
 			return true
 	return false
+
+
+func _check_library() -> void:
+	_button(app.get("root_ui"),"Tracks").pressed.emit()
+	await process_frame
+	await process_frame
+	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
+	while browser.loading: await process_frame
+	check(browser.matches.size() == browser.builtin_ids.size() and browser.grid.get_child_count() == 6,"track library pages the complete built-in collection into six visual cards")
+	await _capture("track-library")
+	var search: LineEdit = browser.find_child("Search_name",true,false)
+	search.text = "1wAy"
+	search.text_changed.emit(search.text)
+	check(browser.matches.size() == 1,"name search is case insensitive and filters the full catalog")
+	var creator_search: LineEdit = browser.find_child("Search_creator",true,false)
+	creator_search.text = str(browser.matches[0].creator).to_lower()
+	creator_search.text_changed.emit(creator_search.text)
+	check(browser.matches.size() == 1,"creator and name search combine in the live browser")
+	await process_frame
+	await process_frame
+	await _viewport_tap((browser.grid.get_child(0) as Button).get_global_rect().get_center())
+	var chosen: NativeTrack = app.get("selected_track")
+	check(chosen.identity == "slicks_1way_test","a route card selects its exact circuit")
+	(browser.find_child("ToggleFavorite",true,false) as Button).pressed.emit()
+	var store: LocalRecords = app.get("records")
+	var reloaded := LocalRecords.new(store.path)
+	reloaded.load_records()
+	check(chosen.identity in reloaded.settings.get("favorites",[]),"favorites persist across store instances")
+	(browser.find_child("Filter_favorites",true,false) as Button).pressed.emit()
+	check(browser.matches.size() == 1,"Favorites intersects the current name filter")
+	search.text = "no such track"
+	search.text_changed.emit(search.text)
+	check(browser.matches.is_empty() and browser.random_button.disabled,"empty results disable random choice and expose a recovery message")
+	search.text = ""
+	search.text_changed.emit("")
+	browser.random_button.pressed.emit()
+	check((app.get("selected_track") as NativeTrack).identity == chosen.identity,"random favorite respects both collection and search filters")
+	await process_frame
+	await _capture("track-favorites")
+	(browser.find_child("LibraryRace",true,false) as Button).pressed.emit()
+	await process_frame
+	check((app.get("game").get("native_track") as NativeTrack).identity == chosen.identity,"library Race starts the selected favorite")
+	check((app.get("game").get("track_session") as TrackSession).target_laps == 5,"production menu starts a five-lap race")
+	app.call("_leave_race")
+	await process_frame
+	await process_frame
+	browser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
+	while browser.loading: await process_frame
+	check(browser.state.get("section") == "favorites" and browser.matches.size() == 1,"return from racing preserves library filters")
+	app.call("_show_screen","play")
+	await process_frame
+	await process_frame
 
 
 func _check_input_and_history() -> void:
@@ -211,12 +248,14 @@ func _check_import_copy() -> void:
 	var saved: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	var imported: Dictionary = saved.duplicate(true)
 	imported.name = "Willow Circuit"
+	imported["creator"] = "Mira"
 	var library: TrackLibrary = app.get("library")
 	app.call("_accept_import", imported)
 	await process_frame
 	await process_frame
 	var copy: Dictionary = app.get("document")
 	check(copy.id != saved.id and copy.name == imported.name, "import opens a separately identified local draft")
+	check(copy.creator == "Mira", "import preserves the shared creator attribution for search")
 	check(library.load_document(saved.id) == saved, "importing an existing identifier cannot overwrite the original draft")
 	check(library.load_document(copy.id) == copy, "the imported copy is persisted independently")
 	check(imported.id == saved.id, "import does not mutate the supplied document")
@@ -277,14 +316,18 @@ func _check_test_drive() -> void:
 	check(not bool(game.get("paused")), "Escape resumes the production race")
 	game.set("ai_enabled", true)
 	var session: TrackSession = game.get("track_session")
+	var observed_fourth_lap: bool = false
 	for tick: int in range(120 * 180):
 		game.call("_physics_process", 1.0 / 120.0)
+		if session.completed_laps == 4 and not observed_fourth_lap:
+			observed_fourth_lap = true
+			check(not session.finished, "the fourth lap cannot finish a five-lap production race")
 		if sim.state.tick == 1200:
 			await _capture("creator-test-drive", 30)
 		if session.finished:
 			break
 	print("APP_DRIVE_RESULT laps=", session.completed_laps, " times=", session.lap_times, " collisions=", sim.state.collision_count)
-	check(session.finished and session.completed_laps == 3, "production editor drive completes three ordered laps")
+	check(session.finished and session.completed_laps == 5, "production editor drive completes five ordered laps")
 	check((app.get("root_ui") as Control).visible and _button(app.get("root_ui"), "Back to editor") != null, "production completion opens editor-specific results")
 	await _capture("creator-results")
 	var retry: Button = _button(app.get("root_ui"), "Retry")
@@ -322,17 +365,17 @@ func _check_clean_result() -> void:
 	var game: Node = app.get("game")
 	game.set_physics_process(false)
 	var completed := TrackSession.new()
-	completed.completed_laps = 3
-	completed.elapsed_ticks = 120 * 66
-	completed.lap_start_time = 66.0
-	completed.lap_times.assign([22.0, 21.0, 23.0])
+	completed.completed_laps = 5
+	completed.elapsed_ticks = 120 * 109
+	completed.lap_start_time = 109.0
+	completed.lap_times.assign([22.0, 21.0, 23.0, 22.0, 21.0])
 	completed.finished = true
 	game.set("track_session", completed)
 	game.set("paused", true)
 	game.set("attempt_practice", false)
 	game.emit_signal("race_completed")
 	var records: LocalRecords = app.get("records")
-	check(records.best_for(track, game.get("handling")) == 66.0 and _button(app.get("root_ui"), "Choose track") != null, "a clean normal race result persists its local PB and exposes track selection")
+	check(records.best_for(track, game.get("handling")) == 109.0 and _button(app.get("root_ui"), "Choose track") != null, "a clean normal race result persists its local PB and exposes track selection")
 	game.emit_signal("exit_requested")
 	await process_frame
 	await process_frame
@@ -343,15 +386,15 @@ func _check_records() -> void:
 	records.path = test_directory.path_join("record_fixture.json")
 	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
 	var handling: HandlingConfig = load("res://resources/balanced.tres")
-	var laps: Array[float] = [10.0, 21.0, 23.0]
-	var first_save: Error = records.record(track, handling, 54.0, laps)
+	var laps: Array[float] = [10.0, 21.0, 23.0,30.0,30.0]
+	var first_save: Error = records.record(track, handling, 114.0, laps)
 	print("APP_RECORD_SAVE error=", error_string(first_save), " entries=", records.records.size())
 	check(first_save == OK, "local result persists atomically in isolated storage")
 	var key: String = records.key_for(track, handling)
-	check(records.best_for(track, handling) == 54.0 and int(records.records[key].flying_ms) == 21000, "local result distinguishes whole race from flying laps and excludes standing lap")
-	laps = [20.5, 19.5, 20.0]
-	check(records.record(track, handling, 60.0, laps) == OK, "a later slower race can still persist a better flying lap")
-	check(records.best_for(track, handling) == 54.0 and int(records.records[key].flying_ms) == 19500, "slower attempt preserves race PB while improving flying PB")
+	check(records.best_for(track, handling) == 114.0 and int(records.records[key].flying_ms) == 21000, "local result distinguishes whole race from flying laps and excludes standing lap")
+	laps = [20.5, 19.5, 20.0,30.0,30.0]
+	check(records.record(track, handling, 120.0, laps) == OK, "a later slower race can still persist a better flying lap")
+	check(records.best_for(track, handling) == 114.0 and int(records.records[key].flying_ms) == 19500, "slower attempt preserves race PB while improving flying PB")
 	var changed_track: NativeTrack = track.duplicate() as NativeTrack
 	changed_track.content_hash += "_revision"
 	check(records.key_for(changed_track, handling) != key and records.best_for(changed_track, handling) == 0.0, "track content revision partitions local comparisons")
@@ -368,7 +411,7 @@ func _check_records() -> void:
 	file.close()
 	reloaded.records.clear()
 	reloaded.load_records()
-	check(reloaded.best_for(track, handling) == 54.0 and int(reloaded.records.get(key, {}).get("flying_ms", 0)) == 21000, "corrupt primary recovers the previous committed backup")
+	check(reloaded.best_for(track, handling) == 114.0 and int(reloaded.records.get(key, {}).get("flying_ms", 0)) == 21000, "corrupt primary recovers the previous committed backup")
 
 
 func _capture_editor_themes() -> void:

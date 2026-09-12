@@ -34,7 +34,7 @@ func load_records() -> void:
 
 
 func key_for(track: NativeTrack, handling: HandlingConfig) -> String:
-	return (track.content_hash + VehicleSimulation.PHYSICS_VERSION + JSON.stringify(handling.snapshot(),"",true) + "standing-3-local-v1").sha256_text()
+	return (track.content_hash + VehicleSimulation.PHYSICS_VERSION + JSON.stringify(handling.snapshot(),"",true) + RaceRules.KEY).sha256_text()
 
 
 func best_for(track: NativeTrack, handling: HandlingConfig) -> float:
@@ -42,7 +42,7 @@ func best_for(track: NativeTrack, handling: HandlingConfig) -> float:
 
 
 func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps: Array[float]) -> Error:
-	if not _positive_seconds(race_time) or laps.size() != 3:
+	if not _positive_seconds(race_time) or laps.size() != RaceRules.LAPS:
 		return ERR_INVALID_DATA
 	var total: float = 0.0
 	for lap: float in laps:
@@ -54,7 +54,9 @@ func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps
 	var key: String = key_for(track,handling)
 	var value: Dictionary = records.get(key,{}).duplicate(true)
 	var race_ms: int = roundi(race_time*1000.0)
-	var flying_ms: int = mini(roundi(laps[1]*1000.0),roundi(laps[2]*1000.0))
+	var flying_ms: int = roundi(laps[1]*1000.0)
+	for index: int in range(2, laps.size()):
+		flying_ms = mini(flying_ms, roundi(laps[index]*1000.0))
 	value.race_ms = mini(int(value.get("race_ms",race_ms)),race_ms)
 	value.flying_ms = mini(int(value.get("flying_ms",flying_ms)),flying_ms)
 	records[key] = value
@@ -136,7 +138,13 @@ static func _normalize(data: Variant) -> Dictionary:
 		return {}
 	var preferences: Dictionary = data.settings
 	for field: Variant in preferences:
-		if field == "left_handed":
+		if field == "favorites":
+			if not preferences[field] is Array: return {}
+			for id: Variant in preferences[field]:
+				if not id is String or id.length() > 64 or id.is_empty(): return {}
+				for character: String in id:
+					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+		elif field == "left_handed":
 			if not preferences[field] is bool:
 				return {}
 		elif field == "touch_scale":

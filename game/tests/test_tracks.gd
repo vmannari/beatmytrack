@@ -25,7 +25,7 @@ func run() -> void:
 		sim.reset(track.spawn, track.spawn_heading)
 		sim.state.route_index = track.nearest_route(track.spawn)
 		check(track.collision_normal(track.spawn, config.collision_radius, false) == Vector2.ZERO, name + " spawn has collision clearance")
-		var session := TrackSession.new()
+		var session := TrackSession.new(120, 3)
 		var bridge := BridgePresentation.new(track)
 		var previous_height: float = 0.0
 		var maximum_height_step: float = 0.0
@@ -68,7 +68,7 @@ func run() -> void:
 		var replay := VehicleSimulation.new(config)
 		replay.reset(track.spawn, track.spawn_heading)
 		replay.state.route_index = track.nearest_route(track.spawn)
-		var replay_session := TrackSession.new()
+		var replay_session := TrackSession.new(120, 3)
 		var packed_frames: Array = JSON.parse_string(JSON.stringify(frames))
 		for batch_start: int in range(0, packed_frames.size(), 8):
 			for i: int in range(batch_start, mini(batch_start + 8, packed_frames.size())):
@@ -104,7 +104,7 @@ func _check_gates(track: NativeTrack) -> void:
 	var tangent: Vector2 = (track.route[(index + 1) % track.route.size()] - track.route[index]).normalized()
 	var start: Vector2 = gate.get_center() - tangent * 30
 	var end: Vector2 = gate.get_center() + tangent * 30
-	var session := TrackSession.new()
+	var session := TrackSession.new(120, 3)
 	session.advance(track, end, start, index)
 	check(session.next_checkpoint == 0, track.identity + " reverse entry rejected")
 	session.advance(track, gate.get_center(), gate.get_center(), index)
@@ -113,7 +113,7 @@ func _check_gates(track: NativeTrack) -> void:
 	check(session.next_checkpoint == 1 and session.completed_laps == 0, track.identity + " swept CP entry counts once, never a whole lap")
 	var before_finish: Vector2 = track.finish_center - track.finish_forward
 	var after_finish: Vector2 = track.finish_center + track.finish_forward
-	session = TrackSession.new()
+	session = TrackSession.new(120, 3)
 	session.advance(track, before_finish, after_finish, track.nearest_route(track.finish_center))
 	check(session.completed_laps == 0, track.identity + " finish without ordered checkpoints rejected")
 

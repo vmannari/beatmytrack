@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-12 latest owner override: **five laps** for ordinary races and creator test drives, replacing the historical three-lap selection below. Track discovery now uses a visual library, favorites, name/creator search, theme/sort filters and random selection. See [TRACK_LIBRARY.md](TRACK_LIBRARY.md) for V03/R01/R04/R06/R07 coverage, actual validation and phone acceptance still outstanding. Historical diagnostic replay fixtures explicitly retain three laps.
+
 2026-09-12 V03/G03/R01/R06 menu follow-up: owner explicitly selected Hill Climb Racing 2 as navigation reference. Direct race hub and simplified tabs implemented; 86 graphical app checks pass. Full validation has six creator failures during concurrent format work; phone and owner acceptance remain pending. See [HCR2_MENU_REVIEW.md](HCR2_MENU_REVIEW.md) for actual commands, scope and screenshot.
 
 ## Current owner authorization: 2026-09-12

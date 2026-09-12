@@ -4,6 +4,7 @@ extends RefCounted
 
 var directory: String
 var last_error: String = ""
+var revision: int = 0
 
 
 func _init(root: String = "user://tracks") -> void:
@@ -44,7 +45,9 @@ func save_document(document: Dictionary) -> Error:
 	if error != OK:
 		last_error = "Could not open the local track folder."
 		return error
-	return _atomic_write(document,directory.path_join(document.id+".json"))
+	error = _atomic_write(document,directory.path_join(document.id+".json"))
+	if error == OK: revision += 1
+	return error
 
 
 func load_document(id: String) -> Dictionary:

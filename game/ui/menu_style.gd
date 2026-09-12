@@ -7,10 +7,10 @@ const PANEL := Color("24333e")
 const TEXT := Color("edf1f3")
 const MUTED := Color("a6b1b8")
 
-static func box(color: Color, padding: int = 16) -> StyleBoxFlat:
+static func box(color: Color, padding: int = 12) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = color
-	style.set_corner_radius_all(6)
+	style.set_corner_radius_all(4)
 	style.set_content_margin_all(padding)
 	return style
 

@@ -3,6 +3,7 @@ extends SubViewportContainer
 ## Scenic menu/editor view of the exact native geometry and shared theme kit.
 
 var track: NativeTrack
+var camera: Camera3D
 
 func _ready() -> void:
 	stretch = true
@@ -31,7 +32,7 @@ func _ready() -> void:
 	var visual := NativeTrackVisual.new()
 	world.add_child(visual)
 	visual.build(track,BridgePresentation.new(track))
-	var camera := Camera3D.new()
+	camera = Camera3D.new()
 	world.add_child(camera)
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
@@ -40,3 +41,11 @@ func _ready() -> void:
 	camera.position = Vector3(0,150,90)
 	camera.look_at(Vector3.ZERO,Vector3.UP)
 	camera.current = true
+	resized.connect(_fit_preview)
+	_fit_preview()
+
+func _fit_preview() -> void:
+	if camera == null: return
+	var aspect: float = maxf(0.25,size.x/maxf(1.0,size.y))
+	# Menu-only framing: preserve full circuit width in tall selection cards too.
+	camera.size = maxf(track.half_extent.y*2.1,track.half_extent.x*2.1/aspect)

@@ -34,7 +34,7 @@ func run() -> void:
 		var sim := VehicleSimulation.new(config)
 		sim.reset(track.spawn, track.spawn_heading)
 		sim.state.route_index = track.nearest_route(track.spawn)
-		var session := TrackSession.new()
+		var session := TrackSession.new(120, 3)
 		var frames: Array[Array] = []
 		for tick: int in range(120 * 240):
 			var previous: Vector2 = sim.state.position
@@ -50,7 +50,7 @@ func run() -> void:
 		var replay := VehicleSimulation.new(config)
 		replay.reset(track.spawn, track.spawn_heading)
 		replay.state.route_index = track.nearest_route(track.spawn)
-		var replay_session := TrackSession.new()
+		var replay_session := TrackSession.new(120, 3)
 		var packed_frames: Array = JSON.parse_string(JSON.stringify(frames))
 		for batch_start: int in range(0, packed_frames.size(), 8):
 			for i: int in range(batch_start, mini(batch_start + 8, packed_frames.size())):

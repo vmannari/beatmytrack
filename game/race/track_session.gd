@@ -14,7 +14,7 @@ var target_laps: int
 var first_checkpoint_on_finish_approach: bool = false
 
 
-func _init(rate: int = 120, laps: int = 3) -> void:
+func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
 	tick_rate = rate
 	target_laps = laps
 

@@ -186,11 +186,11 @@ func _process(delta: float) -> void:
 		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
 		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
 		if production_mode:
-			hud.title.text = "%s  /  LAP %d OF 3" % [str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper()))), mini(3, track_session.completed_laps + 1)]
+			hud.title.text = "%s  /  LAP %d OF %d" % [str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper()))), mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
 			hud.race_timer.text = "%02d:%05.2f" % [int(track_session.elapsed_ticks / 120.0) / 60, fmod(track_session.elapsed_ticks / 120.0,60.0)]
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Test drive" if editor_test else ("Practice run" if attempt_practice else ""))
 		else:
-			hud.message_label.text = "%s | Lap %d/3 | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(3, track_session.completed_laps + 1), progress_text, track_session.elapsed_ticks / 120.0, status_text]
+			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
 
 
 func restart() -> void:

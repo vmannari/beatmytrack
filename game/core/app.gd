@@ -24,6 +24,8 @@ var ui_left_handed: bool = false
 var records := LocalRecords.new()
 var editor_view: Dictionary = {}
 var editor_inspector: VBoxContainer
+var browser_state: Dictionary = {}
+var track_catalog: TrackCatalog
 
 func _ready() -> void:
 	var direct: bool = false
@@ -62,8 +64,7 @@ func _show_screen(next: String) -> void:
 	MenuStyle.fill(root_ui)
 	root_ui.theme = MenuStyle.theme()
 	menu_layer.add_child(root_ui)
-	var background := ColorRect.new()
-	background.color = MenuStyle.INK
+	var background := MenuBackdrop.new()
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
 	var margin := MarginContainer.new()
@@ -77,7 +78,7 @@ func _show_screen(next: String) -> void:
 		margin.add_theme_constant_override("margin_right", maxi(24, ceili((window.x - safe.end.x) * factor)))
 	root_ui.add_child(margin)
 	var layout := VBoxContainer.new()
-	layout.add_theme_constant_override("separation", 20)
+	layout.add_theme_constant_override("separation", 12)
 	margin.add_child(layout)
 	var nav := HBoxContainer.new()
 	layout.add_child(nav)
@@ -86,15 +87,14 @@ func _show_screen(next: String) -> void:
 	nav.add_child(logo)
 	nav.add_child(MenuStyle.button("Back to race" if screen == "settings" else "Settings", _show_screen.bind("play" if screen == "settings" else "settings")))
 	var tabs := HBoxContainer.new()
-	if screen == "create": nav.add_child(tabs)
-	else: layout.add_child(tabs)
-	for item: Array in [["play","Race"],["garage","Garage"],["create","Create"]]:
+	nav.add_child(tabs)
+	for item: Array in [["play","Race"],["tracks","Tracks"],["garage","Garage"],["create","Create"]]:
 		var id: String = item[0]
-		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id or (id == "play" and screen == "tracks"))
+		var button: Button = MenuStyle.button(item[1], _show_screen.bind(id), screen == id)
 		button.name = "Tab_" + id
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
-	if screen == "create": nav.move_child(nav.get_child(1),nav.get_child_count()-1)
+	nav.move_child(nav.get_child(1),nav.get_child_count()-1)
 	var separator := HSeparator.new()
 	layout.add_child(separator)
 	content = VBoxContainer.new()
@@ -115,103 +115,73 @@ func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> v
 func _home() -> void:
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	row.add_theme_constant_override("separation", 32)
+	row.add_theme_constant_override("separation", 24)
 	content.add_child(row)
-	var left := VBoxContainer.new()
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(left)
-	var selector := HBoxContainer.new()
-	left.add_child(selector)
-	var previous_button: Button = MenuStyle.button("<", _cycle_track.bind(-1))
-	previous_button.custom_minimum_size.x = 60
-	previous_button.tooltip_text = "Previous circuit"
-	selector.add_child(previous_button)
-	var title := MenuStyle.label(track_title(selected_track), 28)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	selector.add_child(title)
-	var next_button: Button = MenuStyle.button(">", _cycle_track.bind(1))
-	next_button.custom_minimum_size.x = 60
-	next_button.tooltip_text = "Next circuit"
-	selector.add_child(next_button)
+	var hero := VBoxContainer.new()
+	hero.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(hero)
+	_heading("YOUR GARAGE / 01", "COMPACT", hero)
+	var car := CarShowroom.new()
+	car.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hero.add_child(car)
+	hero.add_child(MenuStyle.label("BALANCED   /   REAR-WHEEL DRIVE", 16, true))
+	var shortcuts := HBoxContainer.new()
+	hero.add_child(shortcuts)
+	for pair: Array in [["all","Explore tracks"],["favorites","★ Favorites"],["random","Random track ↗"]]:
+		var kind: String = pair[0]
+		var button: Button = MenuStyle.button(pair[1], _open_library.bind(kind))
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		shortcuts.add_child(button)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size.x = 390
+	panel.add_theme_stylebox_override("panel", MenuStyle.box(MenuStyle.PANEL,20))
+	row.add_child(panel)
+	var event := VBoxContainer.new()
+	panel.add_child(event)
+	event.add_child(MenuStyle.label("ON THE GRID   /   05 LAPS", 16, true))
+	var title := MenuStyle.label(track_title(selected_track),32)
+	title.clip_text = true
+	event.add_child(title)
 	var preview := TrackShowroom.new()
 	preview.track = selected_track
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.add_child(preview)
-	left.add_child(MenuStyle.button("Choose a track", _show_screen.bind("tracks")))
-	var right := VBoxContainer.new()
-	right.custom_minimum_size.x = 340
-	row.add_child(right)
-	right.add_child(MenuStyle.label("YOUR CAR", 15, true))
-	var showroom := CarShowroom.new()
-	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.add_child(showroom)
-	right.add_child(MenuStyle.label("COMPACT / 01", 24))
-	right.add_child(MenuStyle.label("Balanced  /  3 laps", 18, true))
+	event.add_child(preview)
 	var best: float = records.best_for(selected_track, load("res://resources/balanced.tres") as HandlingConfig)
-	right.add_child(MenuStyle.label("Local best  /  %.3f s" % best if best > 0.0 else "Set your first local best", 18, true))
-	var race_button: Button = MenuStyle.button("Race", _start_race.bind(selected_track, false), true)
-	race_button.name = "StartRace"
-	race_button.custom_minimum_size.y = 76
-	race_button.add_theme_font_size_override("font_size", 28)
-	right.add_child(race_button)
+	event.add_child(MenuStyle.label("LOCAL BEST   %.3f s" % best if best > 0.0 else "A fresh five-lap challenge",18,true))
+	var race: Button = MenuStyle.button("Race  →",_start_race.bind(selected_track,false),true)
+	race.name = "StartRace"
+	race.custom_minimum_size.y = 72
+	race.add_theme_font_size_override("font_size",26)
+	event.add_child(race)
+	event.add_child(MenuStyle.button("Change track",_open_library.bind("all")))
 
-func _cycle_track(direction: int) -> void:
-	var choices: Array[NativeTrack] = []
-	for id: String in BUILTIN_IDS:
-		choices.append(NativeTrack.read("res://resources/tracks/" + id + ".json"))
-	for doc: Dictionary in library.list_documents():
-		choices.append(TrackCompiler.compile(doc))
-	var index: int = 0
-	for i: int in range(choices.size()):
-		if choices[i].identity == selected_track.identity: index = i
-	selected_track = choices[posmod(index + direction, choices.size())]
-	_show_screen("play")
+func _open_library(section: String) -> void:
+	browser_state.section = "all" if section == "random" else section
+	browser_state.page = 0
+	if section == "random": browser_state.random_on_open = true
+	_show_screen("tracks")
 
 func _tracks() -> void:
-	_heading("TRACK LIBRARY", "Choose your next circuit.")
-	var row := HBoxContainer.new()
-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	row.add_theme_constant_override("separation", 24)
-	content.add_child(row)
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size.x = 350
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	row.add_child(scroll)
-	var list := VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
-	list.add_child(MenuStyle.label("SLICKS COLLECTION", 15, true))
-	for id: String in BUILTIN_IDS:
-		var track: NativeTrack = NativeTrack.read("res://resources/tracks/" + id + ".json")
-		list.add_child(MenuStyle.button(track_title(track), func() -> void:
-			selected_track = track
-			_show_screen("tracks"), selected_track.identity == id))
-	list.add_child(MenuStyle.label("MY CIRCUITS", 15, true))
-	for doc: Dictionary in library.list_documents():
-		list.add_child(MenuStyle.button(str(doc.name), func() -> void:
-			selected_track = TrackCompiler.compile(doc)
-			_show_screen("tracks"), selected_track.identity == "creator_" + str(doc.id)))
-	list.add_child(MenuStyle.button("+ New circuit", _new_document))
-	list.add_child(MenuStyle.button("Import a circuit", _import_dialog))
-	var detail := VBoxContainer.new()
-	detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(detail)
-	var map := TrackShowroom.new()
-	map.track = selected_track
-	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	detail.add_child(map)
-	detail.add_child(MenuStyle.label(track_title(selected_track), 28))
-	detail.add_child(MenuStyle.label(str(selected_track.metadata.get("description", "A classic layout rebuilt for the Compact / 01.")), 17, true))
-	detail.add_child(MenuStyle.label("3 laps  /  " + TrackTheme.title(str(selected_track.metadata.get("theme","pine")))))
-	detail.add_child(MenuStyle.button("Race this circuit", _start_race.bind(selected_track, false), true))
-	if selected_track.metadata.has("creator_document"):
-		detail.add_child(MenuStyle.button("Edit circuit", func() -> void:
-			document = selected_track.metadata.creator_document.duplicate(true)
-			editor_view.clear()
-			history.clear()
-			redo_history.clear()
-			_show_screen("create")))
+	var browser := TrackBrowser.new()
+	browser.name = "TrackBrowser"
+	browser.library = library
+	if track_catalog == null: track_catalog = TrackCatalog.new(library)
+	browser.catalog = track_catalog
+	browser.records = records
+	browser.builtin_ids = BUILTIN_IDS
+	browser.selected_track = selected_track
+	browser.state = browser_state
+	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
+	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
+	browser.import_requested.connect(_import_dialog)
+	browser.notice.connect(_notice)
+	browser.edit_requested.connect(func(doc: Dictionary) -> void:
+		document = doc.duplicate(true)
+		editor_view.clear()
+		history.clear()
+		redo_history.clear()
+		_show_screen("create"))
+	content.add_child(browser)
 
 func _garage() -> void:
 	_heading("GARAGE", "Compact / 01")
@@ -246,7 +216,8 @@ func _settings() -> void:
 	content.add_child(MenuStyle.label("Editor: drag a handle; drag the background to pan. Pinch or use + / - to zoom.", 18, true))
 
 func _save_settings() -> void:
-	records.settings = {"touch_scale":ui_touch_scale,"left_handed":ui_left_handed}
+	records.settings.touch_scale = ui_touch_scale
+	records.settings.left_handed = ui_left_handed
 	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
 
 func _new_document() -> void:
@@ -298,6 +269,7 @@ func _editor() -> void:
 	road_choice.selected = ["asphalt","dirt"].find(document.surface)
 	road_choice.item_selected.connect(func(index: int) -> void: _set_document_value("surface",["asphalt","dirt"][index]))
 	heading.add_child(road_choice)
+	heading.add_child(MenuStyle.button("Creator", _creator_name))
 	heading.add_child(MenuStyle.button("New", _new_document))
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -504,6 +476,25 @@ func _duplicate_object() -> void:
 	canvas.selected_object = document.objects.size()-1
 	canvas.mode = "objects"
 	_commit_selection()
+
+func _creator_name() -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "Track creator"
+	var input := LineEdit.new()
+	input.placeholder_text = "Creator name (shown in track search)"
+	input.text = str(document.get("creator",""))
+	input.max_length = 40
+	input.custom_minimum_size = Vector2(450,60)
+	dialog.add_child(input)
+	dialog.confirmed.connect(func() -> void:
+		var value: String = input.text.strip_edges()
+		if not value.is_empty():
+			_remember()
+			document["creator"] = value
+			_save_draft())
+	_own_dialog(dialog)
+	dialog.popup_centered()
+	input.grab_focus()
 
 func _remember() -> void:
 	history.append(document.duplicate(true))
@@ -743,6 +734,12 @@ static func track_title(track: NativeTrack) -> String:
 
 func _capture() -> void:
 	await get_tree().process_frame
+	for child: Node in content.get_children():
+		if child is TrackBrowser:
+			while child.loading: await get_tree().process_frame
+	if screen == "tracks":
+		var browser: TrackBrowser = root_ui.find_child("TrackBrowser",true,false)
+		while browser != null and browser.loading: await get_tree().process_frame
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var error: Error = get_viewport().get_texture().get_image().save_png(capture_path)

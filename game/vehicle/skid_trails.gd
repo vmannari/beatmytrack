@@ -25,7 +25,7 @@ func clear() -> void:
 		mark.visible = false
 
 
-func sample(state: VehicleState, frame: DriveFrame) -> void:
+func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null) -> void:
 	var slipping: bool = absf(state.slip_angle()) > 0.16 or frame.brake > 200
 	if not slipping or state.velocity.length() < 4.0:
 		active = false
@@ -33,6 +33,9 @@ func sample(state: VehicleState, frame: DriveFrame) -> void:
 	var axle: Vector2 = state.position - state.forward() * (1.28 * HandlingConfig.BODY_SCALE)
 	var left: Vector3 = VisualGeometry.world(axle - state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
 	var right: Vector3 = VisualGeometry.world(axle + state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
+	if bridge != null:
+		left.y += bridge.height_at(Vector2(left.x, -left.z), state.route_index)
+		right.y += bridge.height_at(Vector2(right.x, -right.z), state.route_index)
 	if active:
 		if left.distance_to(previous_left) < 0.22:
 			return
@@ -50,3 +53,4 @@ func _mark(a: Vector3, b: Vector3) -> void:
 	mark.position = (a + b) * 0.5
 	mark.scale.z = a.distance_to(b) + 0.04
 	mark.rotation.y = atan2(b.x - a.x, b.z - a.z)
+	mark.rotation.x = -atan2(b.y - a.y, Vector2(b.x-a.x, b.z-a.z).length())

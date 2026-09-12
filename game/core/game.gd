@@ -28,6 +28,7 @@ var ai_enabled: bool = false
 var route_driver := RouteDriver.new()
 var overview: bool = false
 var capture_tick: int = 0
+var bridge_presentation: BridgePresentation
 
 
 func _ready() -> void:
@@ -110,7 +111,7 @@ func _physics_process(_delta: float) -> void:
 	sim.step(frame, yard)
 	if native_track != null:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
-	trails.sample(sim.state, frame)
+	trails.sample(sim.state, frame, bridge_presentation)
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
 		_save_recording()
@@ -130,8 +131,13 @@ func _process(delta: float) -> void:
 	var point: Vector2 = previous_position.lerp(sim.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, sim.state.heading, weight)
 	car.present(point, heading, sim.state, frame)
-	if native_track != null and sim.state.track_elevated:
-		car.position.y = native_track.bridge_height
+	car.rotation.x = 0.0
+	if native_track != null:
+		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
+		var front: float = bridge_presentation.height_at(point + axle, sim.state.route_index)
+		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index)
+		car.position.y = (front + rear) * 0.5
+		car.rotation.x = atan2(front - rear, handling.wheelbase)
 	camera.follow(point, sim.state.velocity, heading, delta)
 	hud.update_values(sim.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
@@ -226,10 +232,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _build_ground(world: Node3D) -> void:
 	if native_track != null:
 		var visual := NativeTrackVisual.new()
+		bridge_presentation = BridgePresentation.new(native_track)
 		world.add_child(visual)
-		visual.build(native_track)
+		visual.build(native_track, bridge_presentation)
 		track_ground = visual
 	else:
+		bridge_presentation = null
 		var visual := PlaygroundVisual.new()
 		world.add_child(visual)
 		visual.build(yard)

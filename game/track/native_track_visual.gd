@@ -4,10 +4,10 @@ extends Node3D
 const COLORS: Array[Color] = [Color("545c5a"), Color("56634a"), Color("8b7755"), Color("47717b"), Color("a09f91"), Color("b8b6a1"), Color("689095")]
 
 
-func build(track: NativeTrack) -> void:
+func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), VisualGeometry.material(COLORS[1]))
 	_build_rectangles(track, track.rectangles, 0.0)
-	_build_rectangles(track, track.deck_rectangles, track.bridge_height)
+	bridge.build(self)
 	var side := Vector2(track.finish_forward.y, -track.finish_forward.x)
 	var paint := VisualGeometry.material(Color("ddd8bf"))
 	for i: int in range(ceili(track.finish_half_width * 2 / track.cell_size)):

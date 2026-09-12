@@ -95,3 +95,5 @@ Online work later consumes versioned run manifests through adapters, without cha
 | 8 | Phase 7 initial material pipeline after handling approval; one representative car/corner and renderer comparison | V02, V04 | Matte stepped shading/selected contours, matched engine capture, moving full lap and device profile; no full art/content production |
 
 The first subjective question is whether steering, braking and catching a slide feel immediate and learnable. It is not whether a boot screen looks polished. Full visual P0-V, garage compositions and external test recruitment follow owner handling approval; do not contact testers automatically.
+
+2026-09-12, current handling gate: corrected bridge approach presentation on the authorized fixtures without extending the canonical simulation. Shared ramp geometry, car pitch and skid height passed Windows validation (24 parses, 56 driving + 57 track checks); three AI laps per fixture and exact replays passed. See [RAMP_FIX.md](RAMP_FIX.md) for commands, screenshots and remaining off-route/manual/phone acceptance. No phone test was performed.

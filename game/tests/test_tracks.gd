@@ -26,6 +26,12 @@ func run() -> void:
 		sim.state.route_index = track.nearest_route(track.spawn)
 		check(track.collision_normal(track.spawn, config.collision_radius, false) == Vector2.ZERO, name + " spawn has collision clearance")
 		var session := TrackSession.new()
+		var bridge := BridgePresentation.new(track)
+		var previous_height: float = 0.0
+		var maximum_height_step: float = 0.0
+		var ramp_ticks: int = 0
+		var lower_height: float = 0.0
+		var first_ramp_tick: int = 0
 		var elevated_ticks: int = 0
 		var underpass_ticks: int = 0
 		var frames: Array[Array] = []
@@ -35,17 +41,30 @@ func run() -> void:
 			frames.append(input.packed())
 			sim.step(input, track)
 			session.advance(track, previous, sim.state.position, sim.state.route_index)
+			var axle: Vector2 = sim.state.forward() * config.wheelbase * 0.5
+			var height: float = (bridge.height_at(sim.state.position + axle, sim.state.route_index) + bridge.height_at(sim.state.position - axle, sim.state.route_index)) * 0.5
+			maximum_height_step = maxf(maximum_height_step, absf(height - previous_height))
+			previous_height = height
+			if first_ramp_tick == 0 and height > 1.1 and height < 1.3:
+				first_ramp_tick = sim.state.tick
+			if height > 0.1 and height < track.bridge_height - 0.1: ramp_ticks += 1
 			if sim.state.track_elevated: elevated_ticks += 1
 			var cell: Vector2 = (sim.state.position + track.half_extent) / track.cell_size
 			var x: int = clampi(floori(cell.x), 0, track.grid_width - 1)
 			var y: int = clampi(floori((track.half_extent.y - sim.state.position.y) / track.cell_size), 0, track.grid_height - 1)
-			if track.deck_cells[y * track.grid_width + x] >= 0 and not sim.state.track_elevated: underpass_ticks += 1
+			if track.deck_cells[y * track.grid_width + x] >= 0 and not sim.state.track_elevated:
+				underpass_ticks += 1
+				lower_height = maxf(lower_height, height)
 			if session.finished: break
 		print("TRACK_RESULT ", name, " laps=", session.completed_laps, " next_cp=", session.next_checkpoint, " times=", session.lap_times, " collisions=", sim.state.collision_count, " elevated_ticks=", elevated_ticks, " underpass_ticks=", underpass_ticks)
 		check(session.finished, name + " AI completes three ordered laps")
 		check(sim.state.collision_count == 0, name + " conservative AI avoids barriers")
 		if track.bridge_height > 0:
 			check(elevated_ticks > 0 and underpass_ticks > 0, name + " both crossing branches retain their layers")
+			print("RAMP_RESULT ", name, " intermediate_ticks=", ramp_ticks, " maximum_height_step=", maximum_height_step, " lower_height=", lower_height, " capture_tick=", first_ramp_tick)
+			check(ramp_ticks > 100, name + " climbs and descends through intermediate ramp heights")
+			check(maximum_height_step < 0.15, name + " no vertical teleport during complete driven laps")
+			check(lower_height == 0.0, name + " lower passage stays at ground height")
 		var replay := VehicleSimulation.new(config)
 		replay.reset(track.spawn, track.spawn_heading)
 		replay.state.route_index = track.nearest_route(track.spawn)

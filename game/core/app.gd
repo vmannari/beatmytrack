@@ -23,6 +23,12 @@ var ui_touch_scale: float = 1.0
 var ui_left_handed: bool = false
 var records := LocalRecords.new()
 var editor_view: Dictionary = {}
+var editor_mode_buttons: Dictionary = {}
+var editor_tools_open: bool = false
+var editor_tools_panel: PanelContainer
+var editor_map_panel: PanelContainer
+var editor_undo: Button
+var editor_redo: Button
 var editor_inspector: VBoxContainer
 var browser_state: Dictionary = {}
 var track_catalog: TrackCatalog
@@ -73,6 +79,9 @@ func _show_screen(next: String) -> void:
 	MenuStyle.fill(root_ui)
 	root_ui.theme = MenuStyle.theme()
 	menu_layer.add_child(root_ui)
+	if screen == "create":
+		_editor()
+		return
 	var background := MenuBackdrop.new()
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
@@ -293,43 +302,6 @@ func _editor() -> void:
 	if document.is_empty():
 		document = TrackDocument.create_default()
 		document.id = TrackLibrary.unique_id()
-	var heading := HBoxContainer.new()
-	content.add_child(heading)
-	var title := MenuStyle.label("TRACK STUDIO", 16, true)
-	heading.add_child(title)
-	var name_field := LineEdit.new()
-	name_field.text = str(document.name)
-	name_field.max_length = 40
-	name_field.custom_minimum_size = Vector2(220, 52)
-	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	heading.add_child(name_field)
-	var name_save := Timer.new()
-	name_save.one_shot = true
-	name_save.wait_time = 0.6
-	name_field.add_child(name_save)
-	name_save.timeout.connect(_save_draft)
-	name_field.text_changed.connect(func(value: String) -> void:
-		document.name = value
-		_refresh_editor()
-		name_save.start())
-	name_field.focus_exited.connect(_save_draft)
-	var theme_choice := OptionButton.new()
-	theme_choice.custom_minimum_size = Vector2(155,54)
-	for id: String in ["pine","coast","desert"]: theme_choice.add_item("Theme / "+id.capitalize())
-	theme_choice.selected = ["pine","coast","desert"].find(document.theme)
-	theme_choice.item_selected.connect(func(index: int) -> void: _set_document_value("theme",["pine","coast","desert"][index]))
-	heading.add_child(theme_choice)
-	var road_choice := OptionButton.new()
-	road_choice.custom_minimum_size = Vector2(160,54)
-	for id: String in ["asphalt","dirt"]: road_choice.add_item("Helper / "+id.capitalize())
-	road_choice.selected = ["asphalt","dirt"].find(document.surface)
-	road_choice.item_selected.connect(func(index: int) -> void: _set_document_value("surface",["asphalt","dirt"][index]))
-	heading.add_child(road_choice)
-	heading.add_child(MenuStyle.button("Creator", _creator_name))
-	heading.add_child(MenuStyle.button("New", _new_document))
-	var row := HBoxContainer.new()
-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(row)
 	canvas = EditorCanvas.new()
 	canvas.document = document
 	if not editor_view.is_empty():
@@ -343,8 +315,8 @@ func _editor() -> void:
 		canvas.brush_width = float(editor_view.get("brush_width",10))
 		canvas.brush_shape = str(editor_view.get("brush_shape","round"))
 		canvas.fitted = true
-	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(canvas)
+	root_ui.add_child(canvas)
+	MenuStyle.fill(canvas)
 	canvas.edit_started.connect(func() -> void:
 		_remember()
 		if canvas.mode in ["move","add"]: document.route_override = true)
@@ -355,49 +327,140 @@ func _editor() -> void:
 		editor_status.text = "Release to check and save your route.")
 	canvas.edit_finished.connect(_save_draft)
 	canvas.hint_changed.connect(func(value: String) -> void: editor_status.text = value)
-	var sidebar_scroll := ScrollContainer.new()
-	sidebar_scroll.custom_minimum_size.x = 264
-	sidebar_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	row.add_child(sidebar_scroll)
+	# The editing canvas owns the entire viewport; chrome is an overlay.
+	var overlay := Control.new()
+	overlay.name = "EditorOverlay"
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root_ui.add_child(overlay)
+	MenuStyle.fill(overlay)
+	var top := HBoxContainer.new()
+	top.name = "EditorToolbar"
+	overlay.add_child(top)
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	top.offset_left = 12; top.offset_right = -12; top.offset_top = 12
+	top.add_theme_constant_override("separation",6)
+	top.add_child(MenuStyle.button("Exit",func() -> void:
+		_save_draft()
+		_show_screen("play")))
+	editor_mode_buttons.clear()
+	for pair: Array in [["paint","Paint"],["move","Route"],["objects","Props"],["pan","Pan"]]:
+		var mode: String = pair[0]
+		var button: Button = MenuStyle.button(pair[1],func() -> void:
+			canvas.cancel_gesture()
+			canvas.mode = mode
+			_build_editor_tools())
+		button.toggle_mode = true
+		editor_mode_buttons[mode] = button
+		top.add_child(button)
+	top.add_child(MenuStyle.button("Tools",func() -> void:
+		canvas.cancel_gesture()
+		editor_tools_open = not editor_tools_open
+		editor_tools_panel.visible = editor_tools_open
+		editor_map_panel.hide()))
+	top.add_child(MenuStyle.button("Map",func() -> void:
+		canvas.cancel_gesture()
+		editor_map_panel.visible = not editor_map_panel.visible
+		editor_tools_open = false
+		editor_tools_panel.hide()))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(spacer)
+	test_button = MenuStyle.button("Test drive",_test_document,true)
+	top.add_child(test_button)
+	editor_tools_panel = _editor_panel(overlay,"EditorTools")
+	editor_tools_panel.visible = editor_tools_open
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	editor_tools_panel.add_child(scroll)
 	editor_inspector = VBoxContainer.new()
 	editor_inspector.add_theme_constant_override("separation",6)
 	editor_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sidebar_scroll.add_child(editor_inspector)
+	scroll.add_child(editor_inspector)
 	canvas.selection_changed.connect(_build_editor_tools)
 	_build_editor_tools()
-	var zooms := HBoxContainer.new()
-	canvas.add_child(zooms)
-	zooms.position = Vector2(12,12)
-	zooms.add_child(MenuStyle.button("-", func() -> void: canvas.zoom_by(1.0 / 1.2)))
-	zooms.add_child(MenuStyle.button("Fit", func() -> void: canvas.fit()))
-	zooms.add_child(MenuStyle.button("+", func() -> void: canvas.zoom_by(1.2)))
-	editor_status = MenuStyle.label("", 16, true)
-	editor_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	editor_status.custom_minimum_size.y = 40
-	content.add_child(editor_status)
-	var footer := HBoxContainer.new()
-	content.add_child(footer)
-	var undo_button: Button = MenuStyle.button("Undo", _undo)
-	undo_button.disabled = history.is_empty()
-	footer.add_child(undo_button)
-	var redo_button: Button = MenuStyle.button("Redo", _redo)
-	redo_button.disabled = redo_history.is_empty()
-	footer.add_child(redo_button)
-	footer.add_child(MenuStyle.button("My circuits", _show_screen.bind("tracks")))
-	footer.add_child(MenuStyle.button("3D preview", _preview_document))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
-	share_button = MenuStyle.button("Share", _share_dialog)
-	footer.add_child(share_button)
-	test_button = MenuStyle.button("Test drive", _test_document, true)
-	footer.add_child(test_button)
+	editor_map_panel = _editor_panel(overlay,"EditorMap")
+	var map_scroll := ScrollContainer.new()
+	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	editor_map_panel.add_child(map_scroll)
+	var settings := VBoxContainer.new()
+	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	map_scroll.add_child(settings)
+	settings.add_child(MenuStyle.label("TRACK SETTINGS",20))
+	var name_field := LineEdit.new()
+	name_field.text = str(document.name)
+	name_field.max_length = 40
+	name_field.custom_minimum_size.y = 54
+	settings.add_child(name_field)
+	name_field.text_changed.connect(func(value: String) -> void: document.name = value)
+	name_field.focus_exited.connect(_save_draft)
+	for field: String in ["theme","surface"]:
+		var options: Array = ["pine","coast","desert"] if field == "theme" else ["asphalt","dirt"]
+		var choice := OptionButton.new()
+		choice.custom_minimum_size.y = 54
+		for value: String in options: choice.add_item(("Theme / " if field == "theme" else "Road tool / ")+value.capitalize())
+		choice.selected = options.find(document[field])
+		choice.item_selected.connect(func(index: int) -> void:
+			_remember()
+			document[field] = options[index]
+			_save_draft())
+		settings.add_child(choice)
+	settings.add_child(MenuStyle.button("Creator",_creator_name))
+	settings.add_child(MenuStyle.button("New",_new_document))
+	settings.add_child(MenuStyle.button("My circuits",_show_screen.bind("tracks")))
+	settings.add_child(MenuStyle.button("3D preview",_preview_document))
+	share_button = MenuStyle.button("Share",_share_dialog)
+	settings.add_child(share_button)
+	var bottom := HBoxContainer.new()
+	bottom.name = "EditorHistory"
+	overlay.add_child(bottom)
+	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom.offset_left = 12; bottom.offset_right = -12; bottom.offset_top = -66; bottom.offset_bottom = -12
+	bottom.add_theme_constant_override("separation",6)
+	editor_undo = MenuStyle.button("Undo",_undo)
+	editor_undo.disabled = history.is_empty()
+	bottom.add_child(editor_undo)
+	editor_redo = MenuStyle.button("Redo",_redo)
+	editor_redo.disabled = redo_history.is_empty()
+	bottom.add_child(editor_redo)
+	bottom.add_child(MenuStyle.button("-",func() -> void: canvas.zoom_by(1.0/1.5)))
+	bottom.add_child(MenuStyle.button("Fit",func() -> void: canvas.fit()))
+	bottom.add_child(MenuStyle.button("+",func() -> void: canvas.zoom_by(1.5)))
+	editor_status = MenuStyle.label("",16,true)
+	editor_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	editor_status.clip_text = true
+	bottom.add_child(editor_status)
 	_refresh_editor()
-	if editor_view.is_empty(): canvas.call_deferred("fit")
 	if TrackDocument.validate(document).is_empty(): canvas.show_native(TrackCompiler.compile(document))
+	if editor_view.is_empty(): canvas.call_deferred("fit")
+	_apply_editor_safe_area(overlay)
+	root_ui.resized.connect(_apply_editor_safe_area.bind(overlay))
+
+func _editor_panel(parent: Control, node_name: String) -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.name = node_name
+	parent.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
+	panel.offset_left = -320; panel.offset_right = -12
+	panel.offset_top = 78; panel.offset_bottom = -78
+	panel.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.INK,10))
+	panel.hide()
+	return panel
+
+func _apply_editor_safe_area(overlay: Control) -> void:
+	if not OS.has_feature("mobile"): return
+	var safe: Rect2i = DisplayServer.get_display_safe_area()
+	var window: Vector2i = DisplayServer.window_get_size()
+	var factor: float = get_viewport().get_visible_rect().size.y/maxf(1,window.y)
+	overlay.offset_left = maxf(0,safe.position.x*factor)
+	overlay.offset_top = maxf(0,safe.position.y*factor)
+	overlay.offset_right = -maxf(0,(window.x-safe.end.x)*factor)
+	overlay.offset_bottom = -maxf(0,(window.y-safe.end.y)*factor)
 
 func _build_editor_tools() -> void:
 	if not is_instance_valid(editor_inspector) or not is_instance_valid(canvas): return
+	for key: String in editor_mode_buttons:
+		var selected_mode: String = "move" if canvas.mode == "add" else "objects" if canvas.mode == "place" else canvas.mode
+		(editor_mode_buttons[key] as Button).set_pressed_no_signal(key == selected_mode)
 	for child: Node in editor_inspector.get_children():
 		editor_inspector.remove_child(child)
 		child.queue_free()
@@ -607,9 +670,8 @@ func _save_draft() -> void:
 		share_button.disabled = not errors.is_empty()
 	# Refresh action availability after each edit, without rebuilding under a finger.
 	if is_instance_valid(canvas):
-		var footer: HBoxContainer = content.get_child(content.get_child_count()-1) as HBoxContainer
-		(footer.get_child(0) as Button).disabled = history.is_empty()
-		(footer.get_child(1) as Button).disabled = redo_history.is_empty()
+		if is_instance_valid(editor_undo): editor_undo.disabled = history.is_empty()
+		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
 		if errors.is_empty(): canvas.show_native(TrackCompiler.compile(document))
 
 func _test_document() -> void:
@@ -832,14 +894,14 @@ func _build_paint_tools() -> void:
 	var sizes := HBoxContainer.new()
 	editor_inspector.add_child(sizes)
 	sizes.add_child(MenuStyle.button("-",func() -> void:
-		canvas.brush_width = maxf(2,canvas.brush_width-2)
+		canvas.brush_width = maxf(0.5,canvas.brush_width-(0.5 if canvas.brush_width <= 4 else 2))
 		_build_editor_tools()))
-	var label := MenuStyle.label("%.0f m brush" % canvas.brush_width,20)
+	var label := MenuStyle.label("%.1f m brush" % canvas.brush_width,20)
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sizes.add_child(label)
 	sizes.add_child(MenuStyle.button("+",func() -> void:
-		canvas.brush_width = minf(40,canvas.brush_width+2)
+		canvas.brush_width = minf(40,canvas.brush_width+(0.5 if canvas.brush_width < 4 else 2))
 		_build_editor_tools()))
 	var shapes := OptionButton.new()
 	shapes.custom_minimum_size.y = 54

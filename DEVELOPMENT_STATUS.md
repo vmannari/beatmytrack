@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-13 full-screen creator: Create now fills the viewport, with collapsible tool/settings overlays, anchored 16× zoom, crisp adaptive grid and 0.5 m detail brushes. Targeted UI/creator/replay checks pass; physical-phone acceptance remains open. [Full-screen editor evidence](docs/FULLSCREEN_EDITOR.md).
+
 2026-09-12 race presentation: car-led pit scene, first-run invitation, returning-player PB target and precise retry debrief replace the generic dashboard. Five laps, searchable circuits and favorites remain. See [Race presentation](docs/RACE_PRESENTATION.md) for requirements, reviewed screenshots, actual tests and prototype-asset/phone limitations.
 
 2026-09-12 free-form editor: the owner selected free-shaped roads, terrain, intersections and obstacles. Paint/Pan, round/square surface brushes, a separate lap route and native-track Remix replace the spline-only editing model. V3 creator format; five-lap crossing/replay and full regression checks pass. See [Free-form editor](docs/FREE_FORM_EDITOR.md) for commands, screenshots and unperformed phone acceptance.

@@ -100,6 +100,37 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
 	check(canvas.mode == "paint","creator opens in free painting mode")
+	check(canvas.get_global_rect() == root.get_visible_rect(),"editor canvas fills the entire viewport")
+	check(not (app.get("editor_tools_panel") as Control).visible and not (app.get("editor_map_panel") as Control).visible,"tools and map settings start collapsed")
+	check((app.get("root_ui") as Node).find_child("Tab_Create",true,false) == null,"full-screen creator has no menu navigation header")
+	var anchor := Vector2(350,250)
+	var world: Vector2 = canvas.to_world(anchor)
+	canvas.zoom_by(100,anchor)
+	check(canvas.zoom == 16 and canvas.to_world(anchor).distance_to(world) < 0.001,"16x detail zoom preserves its anchor")
+	canvas.brush_width = 0.5
+	check(canvas.brush_width*canvas.scale_factor() >= 40,"half-metre detail covers at least 40 pixels at maximum zoom")
+	var detail_doc: Dictionary = canvas.document.duplicate(true)
+	detail_doc.paint.append(stroke(6,0.5,[canvas._paint_position(anchor)]))
+	var precise: NativeTrack = TrackCompiler.compile(detail_doc)
+	check(precise.cells.count(6) == 1,"smallest round brush paints exactly one native cell")
+	var previous_preview: NativeTrack = canvas.native_preview
+	canvas.show_native(precise)
+	await _capture("fullscreen-detail")
+	canvas.show_native(previous_preview)
+	canvas.fit()
+	canvas.document.paint.append(stroke(0,4,[[100,80]]))
+	canvas.fit()
+	check(Rect2(Vector2(12,78),canvas.size-Vector2(24,156)).has_point(canvas.to_screen(Vector2(100,80))),"Fit includes paint beyond the lap route")
+	canvas.document.paint.pop_back()
+	canvas.fit()
+	var tools_panel: Control = app.get("editor_tools_panel")
+	tools_panel.show()
+	await process_frame
+	check(canvas.get_global_rect() == root.get_visible_rect(),"opening tools does not shrink or reframe canvas")
+	check(root.get_visible_rect().encloses(tools_panel.get_global_rect()),"tool overlay fits viewport")
+	await _capture("fullscreen-tools")
+	tools_panel.hide()
+
 	canvas.brush_surface = 2; canvas.brush_width = 8
 	var touch := InputEventScreenTouch.new()
 	touch.index = 1; touch.pressed = true; touch.position = canvas.to_screen(Vector2(-25,-5))

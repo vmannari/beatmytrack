@@ -1,5 +1,7 @@
 # Free-form track editor
 
+2026-09-13 presentation override: the creator now uses a [full-screen workspace](FULLSCREEN_EDITOR.md), collapsible tools and up to 16× zoom. Minimum paint brush width is 0.5 m, superseding the original 2 m value below.
+
 2026-09-12. The owner rejected the spline-only authoring model and selected **free-shaped roads, terrain, intersections and obstacles** as the priority. This replaces the previous requirement that the race route also define the road. Requirements: T01 bounded authoring data; T02 editable geometry/route; T03 content identity; T04 free local creation/exchange; V05 matching editor/race geometry; R01 touch interaction. Handling and production five-lap rules are unchanged.
 
 ## Using it

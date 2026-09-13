@@ -36,6 +36,7 @@ var native_preview: NativeTrack
 
 func _ready() -> void:
 	clip_contents = true
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	resized.connect(func() -> void:
 		if not fitted: fit()
@@ -62,14 +63,25 @@ func fit() -> void:
 	if not document.is_empty():
 		var bounds := Rect2(Vector2(document.points[0][0], document.points[0][1]), Vector2.ZERO)
 		for p: Array in document.points: bounds = bounds.expand(Vector2(p[0], p[1]))
+		for p: Array in document.layout.get("points",[]): bounds = bounds.expand(Vector2(p[0],p[1]))
+		for stroke: Dictionary in document.paint:
+			for p: Array in stroke.points:
+				var center := Vector2(p[0],p[1])
+				var radius: Vector2 = Vector2.ONE*float(stroke.width)*0.5
+				bounds = bounds.expand(center-radius).expand(center+radius)
+		for object: Dictionary in document.objects:
+			for p: Vector2 in CreatorObjects.outline(object): bounds = bounds.expand(p)
 		if document.base_track != "" and native_preview != null: bounds = Rect2(-native_preview.half_extent,native_preview.half_extent*2)
 		var base: float = scale_factor()
-		zoom = clampf(minf(size.x / (bounds.size.x + 24), size.y / (bounds.size.y + 24)) / base, 0.4, 3.0)
+		zoom = clampf(minf((size.x-24) / (bounds.size.x + 24), (size.y-156) / (bounds.size.y + 24)) / base, 0.25, 16.0)
 		pan = -Vector2(bounds.get_center().x, -bounds.get_center().y) * scale_factor()
 	queue_redraw()
 
-func zoom_by(factor: float) -> void:
-	zoom = clampf(zoom * factor, 0.4, 3.0)
+func zoom_by(factor: float, anchor: Vector2 = Vector2.INF) -> void:
+	if anchor == Vector2.INF: anchor = size*0.5
+	var before: Vector2 = to_world(anchor)
+	zoom = clampf(zoom * factor, 0.25, 16.0)
+	pan += anchor-to_screen(before)
 	queue_redraw()
 
 func refresh() -> void:
@@ -97,8 +109,8 @@ func _gui_input(event: InputEvent) -> void:
 		accept_event()
 		return
 	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed: zoom_by(1.15)
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed: zoom_by(1.0 / 1.15)
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed: zoom_by(1.15,event.position)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed: zoom_by(1.0 / 1.15,event.position)
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed: _begin(event.position, -1)
 			else: _end(-1)
@@ -129,7 +141,7 @@ func _gui_input(event: InputEvent) -> void:
 			var next_a: Vector2 = touches[keys[0]]
 			var next_b: Vector2 = touches[keys[1]]
 			pan += (next_a + next_b - a - b) * 0.5
-			zoom_by(next_a.distance_to(next_b) / maxf(20.0, a.distance_to(b)))
+			zoom_by(next_a.distance_to(next_b) / maxf(20.0, a.distance_to(b)),(next_a+next_b)*0.5)
 			if touches.has(active_pointer): previous_pointer = touches[active_pointer]
 		else:
 			touches[event.index] = event.position
@@ -268,7 +280,8 @@ func _draw() -> void:
 	if native_preview != null and preview.surface_texture != null:
 		var corner: Vector2 = to_screen(Vector2(-native_preview.half_extent.x,native_preview.half_extent.y))
 		draw_texture_rect(preview.surface_texture, Rect2(corner,native_preview.half_extent * 2.0 * scale_factor()), false)
-	var spacing: float = 10.0 * scale_factor()
+	var grid_metres: float = 0.5 if scale_factor() > 40 else 1.0 if scale_factor() > 14 else 5.0 if scale_factor() > 6 else 10.0
+	var spacing: float = grid_metres * scale_factor()
 	var origin: Vector2 = to_screen(Vector2.ZERO)
 	for x: float in range(ceili(size.x / spacing) + 1):
 		var xx: float = fposmod(origin.x, spacing) + x * spacing
@@ -334,10 +347,15 @@ func _draw() -> void:
 			draw_line(a,b,color,width,true)
 			if brush_shape == "round": draw_circle(a,width*0.5,color)
 			else: draw_rect(Rect2(a-Vector2.ONE*width*0.5,Vector2.ONE*width),color)
-	draw_string(ThemeDB.fallback_font, Vector2(18,size.y-18), "10 m grid  /  %d handles" % document.points.size(), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("d0d9d4"))
+	draw_string(ThemeDB.fallback_font, Vector2(18,size.y-82), "%.1f m grid  /  %.1fx" % [grid_metres,zoom], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("d0d9d4"))
 
 
 func _paint_position(point: Vector2) -> Array:
 	var p: Vector2 = to_world(point).snapped(Vector2.ONE*0.5).clamp(Vector2(-110,-110),Vector2(110,110))
 	if document.base_track != "" and native_preview != null: p = p.clamp(-native_preview.half_extent+Vector2.ONE,native_preview.half_extent-Vector2.ONE)
+	if native_preview != null and brush_width <= native_preview.cell_size:
+		var cell: float = native_preview.cell_size
+		var extent: Vector2 = native_preview.half_extent
+		p.x = (floorf((p.x+extent.x)/cell)+0.5)*cell-extent.x
+		p.y = extent.y-(floorf((extent.y-p.y)/cell)+0.5)*cell
 	return [p.x,p.y]

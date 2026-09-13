@@ -70,12 +70,15 @@ func run() -> void:
 	check(not (app.get("test_button") as Button).disabled and not (app.get("share_button") as Button).disabled, "valid starter enables Test drive and Share")
 	var initial_canvas: EditorCanvas = app.get("canvas")
 	check(initial_canvas.size.x > 0.0 and initial_canvas.size.y > 0.0 and is_finite(initial_canvas.zoom) and initial_canvas.pan.is_finite() and initial_canvas.to_screen(Vector2.ZERO).is_finite(), "first layout has a finite, usable editor transform")
+	await _viewport_tap(_button(app.get("root_ui"),"Map").get_global_rect().get_center())
+	await process_frame
 	var name_field: LineEdit = _line_edit(app.get("root_ui"))
 	check(name_field != null, "editor exposes a native editable circuit name")
 	if name_field != null:
 		await _viewport_tap(name_field.get_global_rect().get_center())
 		check(name_field.has_focus(), "viewport-dispatched touch focuses the native circuit-name field")
 		name_field.release_focus()
+	await _viewport_tap(_button(app.get("root_ui"),"Map").get_global_rect().get_center())
 	await _check_input_and_history()
 	await _check_view_retention()
 	await _capture_editor_themes()

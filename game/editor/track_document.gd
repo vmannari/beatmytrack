@@ -111,7 +111,7 @@ static func validate(data: Variant) -> Array[String]:
 	for stroke: Variant in data.paint:
 		if not stroke is Dictionary or stroke.size() != 4 or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
 		if not _number(stroke.surface) or float(stroke.surface) != floorf(float(stroke.surface)) or int(stroke.surface) not in range(8): return ["Choose a built-in surface."]
-		if not _number(stroke.width) or float(stroke.width) < 2 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 2 to 40 metres wide."]
+		if not _number(stroke.width) or float(stroke.width) < 0.5 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 0.5 to 40 metres wide."]
 		if not stroke.points is Array or stroke.points.is_empty() or stroke.points.size() > 512: return ["Paint stroke is too long."]
 		painted_points += stroke.points.size()
 		for point: Variant in stroke.points:

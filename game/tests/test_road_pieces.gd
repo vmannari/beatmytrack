@@ -56,7 +56,7 @@ func _snapping() -> void:
 	var result: Dictionary = RoadPieces.snap(next,[base])
 	check(result.matched,"nearby piece snaps to a free endpoint")
 	check(Vector2(result.piece.position[0],result.piece.position[1]).is_equal_approx(RoadPieces.end_pose(base).position),"snap aligns section start exactly")
-	check(result.piece.width == 14.0 and result.piece.heading == 0.0,"snap matches tangent and width")
+	check(result.piece.width == 8.0 and result.piece.heading == 0.0,"snap matches tangent and preserves authored width")
 	check(next.heading == 30.0 and next.width == 8.0,"snap does not mutate author input")
 	var far: Dictionary = RoadPieces.create("straight",Vector2(60,60))
 	check(not RoadPieces.snap(far,[base]).matched,"far sections remain freely placeable")
@@ -77,7 +77,7 @@ func _snapping() -> void:
 
 func _contract() -> void:
 	var doc: Dictionary = TrackDocument.create_default()
-	check(doc.schema == "creator-track-v4" and doc.pieces.is_empty(),"v4 defaults include independent road sections")
+	check(doc.schema == "creator-track-v5" and doc.pieces.is_empty(),"v5 defaults include independent road sections")
 	for invalid: Variant in [null,[],{}, {"kind":"straight"}]:
 		check(not RoadPieces.validate(invalid).is_empty(),"incomplete pieces rejected")
 	for field: String in ["heading","length","radius","width"]:

@@ -17,6 +17,10 @@ var inset: float = 0.0
 func _init(data: NativeTrack) -> void:
 	track = data
 	roles = track.deck_cells.duplicate()
+	if track.metadata.has("legacy_deck"):
+		roles.fill(-1)
+		track._expand(track.metadata.legacy_deck,roles)
+	var legacy_roles: PackedInt32Array = roles.duplicate()
 	upper_route.resize(track.route.size())
 	if track.bridge_height == 0.0:
 		return
@@ -44,7 +48,7 @@ func _init(data: NativeTrack) -> void:
 				var sample_point: Vector2 = p + direction * step * track.cell_size
 				var cell: Vector2i = cell_for(sample_point)
 				if inside(cell):
-					var kind: int = track.deck_cells[cell.y * track.grid_width + cell.x]
+					var kind: int = legacy_roles[cell.y * track.grid_width + cell.x]
 					if kind >= 0:
 						# New approaches are road only. Keep rail geometry confined
 						# to the existing canonical rail cells, where it collides.
@@ -53,6 +57,8 @@ func _init(data: NativeTrack) -> void:
 	# Extend each upper route branch far enough to cover its approaches. Local
 	# progression, rather than heading, keeps the underpass at ground height.
 	for i: int in range(track.route.size()):
+		var route_cell: Vector2i = cell_for(track.route[i])
+		if not inside(route_cell) or legacy_roles[route_cell.y*track.grid_width+route_cell.x] < 0: continue
 		if not track.elevated_at(track.route[i], i):
 			continue
 		upper_route[i] = 1
@@ -87,7 +93,11 @@ func profile_height(p: Vector2) -> float:
 	return track.bridge_height * minf(smoothstep(minimum - APPROACH, minimum + inset, u), 1.0 - smoothstep(maximum - inset, maximum + APPROACH, u))
 
 
-func height_at(p: Vector2, route_index: int) -> float:
+func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
+	for span: Dictionary in track.creator_bridges:
+		if CreatorBridges.contains(span,p):
+			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
+			return CreatorBridges.height(span,p) if elevated else 0.0
 	if route_index < 0 or upper_route[route_index] == 0:
 		return 0.0
 	var cell: Vector2i = cell_for(p)
@@ -97,6 +107,7 @@ func height_at(p: Vector2, route_index: int) -> float:
 
 
 func build(parent: Node3D) -> void:
+	CreatorBridgeVisual.build(parent,track.creator_bridges)
 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 	for kind: int in [0,4]:
 		var surface := SurfaceTool.new()

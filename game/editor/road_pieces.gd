@@ -3,7 +3,7 @@ extends RefCounted
 ## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
 ## Road pieces are geometry; race routing is an explicit, separate operation.
 
-const KINDS: Array[String] = ["straight", "curve", "s_bend", "hairpin"]
+const KINDS: Array[String] = ["straight", "curve", "s_bend", "hairpin", "bridge"]
 const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
 const MAX_PIECES: int = 96
 const SNAP_DISTANCE: float = 8.0
@@ -13,7 +13,7 @@ const JOIN_ANGLE: float = 2.0
 
 static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
 	return {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
-		"length":28.0 if kind == "straight" else 8.0, "radius":12.0 if kind == "hairpin" else 16.0,
+		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 8.0, "radius":12.0 if kind == "hairpin" else 16.0,
 		"width":clampf(width,6.0,20.0), "flip":false}
 
 
@@ -27,6 +27,7 @@ static func validate(piece: Variant) -> Array[String]:
 	for key: String in ["heading", "length", "radius", "width"]:
 		if not _number(piece[key]): return ["Road section dimensions must be finite numbers."]
 	if float(piece.heading) < 0.0 or float(piece.heading) >= 360.0: return ["Road heading must be between 0 and 359 degrees."]
+	if piece.kind == "bridge" and float(piece.length) < 24.0: return ["A bridge needs at least 24 m for its two ramps."]
 	if float(piece.length) < (2.0 if piece.kind == "straight" else 0.0) or float(piece.length) > 120.0:
 		return ["Use a straight length of 2–120 m or a lead-in of 0–120 m."]
 	if float(piece.radius) < 3.0 or float(piece.radius) > 60.0: return ["Use a bend radius of 3–60 m."]
@@ -99,7 +100,6 @@ static func snap(piece: Dictionary, pieces: Array, exclude: int = -1) -> Diction
 				var fitted: Dictionary = piece.duplicate(true)
 				var delta: float = wrapf(float(target.heading)+180.0-float(pose.heading),-180.0,180.0)
 				fitted.heading = fposmod(float(piece.heading)+delta,360.0)
-				fitted.width = pieces[index].width
 				var moved: Dictionary = _pose(fitted,endpoint)
 				var shift: Vector2 = Vector2(target.position)-Vector2(moved.position)
 				fitted.position = [float(fitted.position[0])+shift.x,float(fitted.position[1])+shift.y]
@@ -116,10 +116,39 @@ static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1
 		for other_end: int in range(2):
 			var candidate: Dictionary = _pose(pieces[other],other_end)
 			if Vector2(pose.position).distance_to(candidate.position) > JOIN_DISTANCE: continue
-			if absf(wrapf(float(pose.heading)-float(candidate.heading)-180.0,-180.0,180.0)) > JOIN_ANGLE: continue
-			if absf(float(pieces[index].width)-float(pieces[other].width)) > 0.1: continue
+			# Touching endpoints connect even at a sharp angle or width change.
 			matches.append([other,other_end])
 	return matches
+
+
+static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> Dictionary:
+	var result: Dictionary = piece.duplicate(true)
+	var start := Vector2(piece.position[0],piece.position[1])
+	var end: Vector2 = end_pose(piece).position
+	var old_chord: Vector2 = end-start
+	var chord: Vector2 = target-start if endpoint == 1 else end-target
+	if chord.length() < 0.01 or old_chord.length() < 0.01: return {}
+	var factor: float = chord.length()/old_chord.length()
+	result.heading = fposmod(float(piece.heading)+rad_to_deg(old_chord.angle_to(chord)),360.0)
+	result.length = float(piece.length)*factor
+	if piece.kind not in ["straight","bridge"]: result.radius = float(piece.radius)*factor
+	if endpoint == 0: result.position = [target.x,target.y]
+	return result if validate(result).is_empty() else {}
+
+
+static func snap_endpoint(target: Vector2, pieces: Array, exclude: int) -> Vector2:
+	var best: float = SNAP_DISTANCE
+	var result: Vector2 = target
+	for i: int in range(pieces.size()):
+		if i == exclude: continue
+		for endpoint: int in range(2):
+			if not _partner(pieces,i,endpoint,exclude).is_empty(): continue
+			var position: Vector2 = _pose(pieces[i],endpoint).position
+			var distance: float = target.distance_to(position)
+			if distance < best:
+				best = distance
+				result = position
+	return result
 
 
 static func joins(pieces: Array) -> Array[Dictionary]:

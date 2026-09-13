@@ -16,6 +16,7 @@ static func make(label: String, icon: String, action: Callable, chosen: bool = f
 	button.toggle_mode = chosen
 	button.button_pressed = chosen
 	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	button.focus_mode = Control.FOCUS_NONE
 	button.add_theme_font_size_override("font_size",16)
 	for state: String in ["normal","hover","pressed","disabled","focus"]:
 		var box := StyleBoxFlat.new()
@@ -37,7 +38,7 @@ func _draw() -> void:
 	var center := Vector2(size.x*0.5,26 if not caption.is_empty() else size.y*0.5)
 	var ink := Color(0.94,0.97,0.97,0.35 if disabled else 1.0)
 	var path := PackedVector2Array()
-	if glyph in ["straight","curve","s_bend","hairpin","road"]:
+	if glyph in ["straight","curve","s_bend","hairpin","road","bridge"]:
 		for i: int in range(25):
 			var t: float = float(i)/24
 			var p := Vector2(lerpf(-23,23,t),0)
@@ -49,6 +50,8 @@ func _draw() -> void:
 		draw_polyline(path,ink,12,true)
 		draw_polyline(path,Color("64797d"),8,true)
 		draw_polyline(path,ink,1,true)
+		if glyph == "bridge":
+			for x: int in [-15,15]: draw_line(center+Vector2(x,6),center+Vector2(x,15),ink,3,true)
 	elif glyph == "surface":
 		for y: int in [5,-2,-9]: draw_polyline(PackedVector2Array([center+Vector2(-13,y),center+Vector2(0,y-6),center+Vector2(13,y),center+Vector2(0,y+6),center+Vector2(-13,y)]),ink,2,true)
 	elif glyph in ["tree","objects"]:

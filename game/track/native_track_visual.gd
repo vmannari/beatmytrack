@@ -68,6 +68,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
+		if pieces[index].kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
 		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,float(pieces[index].width)*0.5,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
 			var bounds := Rect2(polygon[0],Vector2.ZERO)
@@ -75,6 +76,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
 	for index: int in range(pieces.size()):
 		var piece: Dictionary = pieces[index]
+		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
 		var half: float = float(piece.width)*0.5
 		var joined_start: bool = _piece_end_joined(pieces,index,points[0])

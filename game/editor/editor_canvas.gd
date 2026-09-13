@@ -20,6 +20,10 @@ var snap_matched: bool = false
 var road_action: String = "move"
 var geometry_drag: String = ""
 var geometry_origin: float = 0.0
+var endpoint_drag: int = -1
+var piece_before_drag: Dictionary = {}
+var desktop_pan: bool = false
+var pending_road_tap: bool = false
 var run_start := Vector2.INF
 var run_preview: Array = []
 var issue_marker := Vector2.INF
@@ -118,9 +122,12 @@ func cancel_gesture() -> void:
 	panning = false
 	active_pointer = -99
 	touches.clear()
+	desktop_pan = false
+	pending_road_tap = false
 
 func _gui_input(event: InputEvent) -> void:
 	if document.is_empty(): return
+	if event is InputEventKey: return
 	# Menus/text fields use Godot mouse emulation; this canvas handles every
 	# native finger itself, so ignore the duplicate synthesized mouse stream.
 	if event is InputEventMouse and event.device == -1:
@@ -129,16 +136,26 @@ func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed: zoom_by(1.15,event.position)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed: zoom_by(1.0 / 1.15,event.position)
+		elif event.button_index in [MOUSE_BUTTON_MIDDLE,MOUSE_BUTTON_RIGHT] or (event.button_index == MOUSE_BUTTON_LEFT and (desktop_pan or Input.is_physical_key_pressed(KEY_SPACE))):
+			if event.pressed:
+				cancel_gesture()
+				desktop_pan = true
+				active_pointer = -int(event.button_index)
+				previous_pointer = event.position
+			else:
+				desktop_pan = false
+				active_pointer = -99
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed: _begin(event.position, -1)
 			else: _end(-1)
-	elif event is InputEventMouseMotion and active_pointer == -1:
+	elif event is InputEventMouseMotion and active_pointer < 0 and active_pointer != -99:
 		_move(event.position)
 	elif event is InputEventScreenTouch:
 		if event.pressed and not event.canceled:
 			touches[event.index] = event.position
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
+				pending_road_tap = false
 				paint_points.clear()
 				pending_stamp = false
 				if dragging and changed_in_gesture: edit_finished.emit()
@@ -147,6 +164,7 @@ func _gui_input(event: InputEvent) -> void:
 			var was_pinching: bool = touches.size() >= 2
 			touches.erase(event.index)
 			if event.canceled:
+				pending_road_tap = false
 				pending_stamp = false
 				paint_points.clear()
 			_end(event.index)
@@ -221,6 +239,14 @@ func _begin(point: Vector2, pointer: int) -> void:
 	queue_redraw()
 
 func _move(point: Vector2) -> void:
+	if desktop_pan:
+		pan += point-previous_pointer
+		previous_pointer = point
+		queue_redraw()
+		return
+	if pending_road_tap and press_position.distance_to(point) > 8:
+		pending_road_tap = false
+		panning = true
 	if mode == "road" and dragging:
 		_move_road(point)
 		previous_pointer = point
@@ -331,6 +357,15 @@ func _place(point: Vector2) -> void:
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
+	if pending_road_tap and not ghost.is_empty():
+		var target: Vector2 = to_world(press_position)
+		var trial: Dictionary = ghost.duplicate(true)
+		trial.position = [target.x,target.y]
+		if RoadPieces.validate(trial).is_empty():
+			ghost = trial
+			_snap_ghost()
+		selection_changed.emit()
+	pending_road_tap = false
 	if not paint_points.is_empty():
 		if document.paint.size() < 256:
 			edit_started.emit()
@@ -485,8 +520,9 @@ func _snap_ghost() -> void:
 	snap_matched = false
 	if snap_enabled:
 		var match_result: Dictionary = RoadPieces.snap(ghost,document.pieces,selected_piece)
-		ghost = match_result.piece
-		snap_matched = match_result.matched
+		if RoadPieces.validate(match_result.piece).is_empty() and _valid_bridge_edit(match_result.piece,selected_piece):
+			ghost = match_result.piece
+			snap_matched = match_result.matched
 
 func confirm_piece() -> void:
 	if ghost.is_empty():
@@ -497,6 +533,7 @@ func confirm_piece() -> void:
 			hint_changed.emit(errors[0])
 			return
 		if document.pieces.size() >= RoadPieces.MAX_PIECES: return
+		if not _valid_bridge_edit(ghost,-1): return
 		edit_started.emit()
 		document.pieces.append(ghost.duplicate(true))
 		ghost.clear()
@@ -508,7 +545,17 @@ func confirm_piece() -> void:
 
 func _begin_road(point: Vector2) -> void:
 	geometry_drag = ""
+	endpoint_drag = -1
+	pending_road_tap = false
 	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
+	if not current.is_empty() and road_action == "move":
+		for end: int in range(2):
+			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
+			if to_screen(handle).distance_to(point) <= 26:
+				endpoint_drag = end
+				piece_before_drag = current.duplicate(true)
+				dragging = true
+				return
 	if not current.is_empty() and road_action in ["width","radius","length"] and to_screen(_geometry_handle(current,road_action)).distance_to(point) <= 32:
 		geometry_drag = road_action
 		geometry_origin = float(current[geometry_drag])
@@ -520,14 +567,17 @@ func _begin_road(point: Vector2) -> void:
 		for p: Vector2 in samples:
 			if to_screen(p).distance_to(point) < maxf(28,float(ghost.width)*scale_factor()*0.5): hit = true
 		if not hit:
-			var target: Vector2 = to_world(point)
-			ghost.position = [target.x,target.y]
-			_snap_ghost()
+			pending_road_tap = true
+			return
 		drag_origin = Vector2(ghost.position[0],ghost.position[1])
 		dragging = true
 	else:
-		selected_piece = -1
+		var candidates: Array[int] = []
+		if selected_piece >= 0: candidates.append(selected_piece)
 		for i: int in range(document.pieces.size()-1,-1,-1):
+			if i != selected_piece: candidates.append(i)
+		selected_piece = -1
+		for i: int in candidates:
 			for p: Vector2 in RoadPieces.samples(document.pieces[i]):
 				if to_screen(p).distance_to(point) < maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
 					selected_piece = i
@@ -535,6 +585,10 @@ func _begin_road(point: Vector2) -> void:
 			if selected_piece >= 0: break
 		if selected_piece >= 0:
 			var piece: Dictionary = document.pieces[selected_piece]
+			piece_before_drag = piece.duplicate(true)
+			for end: int in range(2):
+				var handle: Vector2 = Vector2(piece.position[0],piece.position[1]) if end == 0 else RoadPieces.end_pose(piece).position
+				if to_screen(handle).distance_to(point) <= 26: endpoint_drag = end
 			drag_origin = Vector2(piece.position[0],piece.position[1])
 			dragging = true
 		else: panning = true
@@ -544,6 +598,23 @@ func _begin_road(point: Vector2) -> void:
 func _move_road(point: Vector2) -> void:
 	var piece: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece]
 	if press_position.distance_to(point) < 3 and not changed_in_gesture: return
+	if endpoint_drag >= 0:
+		var target: Vector2 = to_world(point)
+		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece)
+		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,endpoint_drag,target)
+		if trial.is_empty():
+			hint_changed.emit("Keep the section inside the map and within its size limits.")
+			return
+		if not _valid_bridge_edit(trial,selected_piece): return
+		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+		changed_in_gesture = true
+		if ghost.is_empty():
+			document.pieces[selected_piece] = trial
+			document_changed.emit()
+		else: ghost = trial
+		snap_matched = false
+		queue_redraw()
+		return
 	if geometry_drag != "":
 		var increased: Dictionary = piece.duplicate(true)
 		increased[geometry_drag] = float(piece[geometry_drag])+1.0
@@ -552,6 +623,7 @@ func _move_road(point: Vector2) -> void:
 		var trial: Dictionary = piece.duplicate(true)
 		trial[geometry_drag] = snappedf(geometry_origin+delta,0.5)
 		if not RoadPieces.validate(trial).is_empty(): return
+		if not _valid_bridge_edit(trial,selected_piece): return
 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 		changed_in_gesture = true
 		piece[geometry_drag] = trial[geometry_drag]
@@ -559,15 +631,24 @@ func _move_road(point: Vector2) -> void:
 		if ghost.is_empty(): document_changed.emit()
 		queue_redraw()
 		return
+	var target: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE*0.5)
+	var moved: Dictionary = piece.duplicate(true)
+	moved.position = [target.x,target.y]
+	if not RoadPieces.validate(moved).is_empty():
+		hint_changed.emit("Keep the whole section inside the map.")
+		return
+	if not _valid_bridge_edit(moved,selected_piece): return
 	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 	changed_in_gesture = true
-	var target: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE*0.5)
-	piece.position = [target.x,target.y]
-	if not ghost.is_empty(): _snap_ghost()
+	if not ghost.is_empty():
+		ghost = moved
+		_snap_ghost()
 	else:
+		document.pieces[selected_piece] = moved
 		if snap_enabled:
-			var result: Dictionary = RoadPieces.snap(piece,document.pieces,selected_piece)
-			document.pieces[selected_piece] = result.piece
+			var result: Dictionary = RoadPieces.snap(moved,document.pieces,selected_piece)
+			if RoadPieces.validate(result.piece).is_empty() and _valid_bridge_edit(result.piece,selected_piece):
+				document.pieces[selected_piece] = result.piece
 		document_changed.emit()
 	queue_redraw()
 
@@ -592,8 +673,8 @@ func _draw_piece(piece: Dictionary, is_ghost: bool) -> void:
 	draw_polyline(right,Color("b9faff"),2,true)
 	for endpoint: int in [0,points.size()-1]:
 		draw_line(left[endpoint],right[endpoint],Color.WHITE,2,true)
-		draw_circle(line[endpoint],9,Color("16c2cf"))
-		draw_circle(line[endpoint],9,Color.WHITE,false,2,true)
+		draw_circle(line[endpoint],13,Color("16c2cf"))
+		draw_circle(line[endpoint],13,Color.WHITE,false,2,true)
 	var label: String = "Join aligned" if is_ghost and snap_matched else ("Tap to place · drag to position" if is_ghost else "Selected section")
 	if not is_ghost: label += "  /  %.1f m wide" % float(piece.width)
 	var anchor: Vector2 = line[line.size()/2]+Vector2(0,-float(piece.width)*scale_factor()*0.5-24)
@@ -616,6 +697,29 @@ func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
 	var middle: int = points.size()/2
 	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
 	return points[middle]+Vector2(-direction.y,direction.x)*float(piece.width)*0.5
+
+func cycle_piece() -> void:
+	var hits: Array[int] = []
+	for i: int in range(document.pieces.size()):
+		for p: Vector2 in RoadPieces.samples(document.pieces[i]):
+			if to_screen(p).distance_to(press_position) <= maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
+				hits.append(i)
+				break
+	if hits.is_empty(): return
+	selected_piece = hits[(hits.find(selected_piece)+1)%hits.size()]
+	ghost.clear()
+	mode = "road"
+	selection_changed.emit()
+	queue_redraw()
+
+func _valid_bridge_edit(piece: Dictionary, index: int) -> bool:
+	var pieces: Array = document.pieces.duplicate(true)
+	if index >= 0 and ghost.is_empty(): pieces[index] = piece
+	else: pieces.append(piece)
+	var errors: Array[String] = CreatorBridges.validate(pieces,document.base_track)
+	if errors.is_empty(): return true
+	hint_changed.emit(errors[0])
+	return false
 
 
 func _paint_position(point: Vector2) -> Array:

@@ -474,6 +474,7 @@ func _editor() -> void:
 	metadata.add_child(MenuStyle.button("New",_new_document))
 	metadata.add_child(MenuStyle.button("My circuits",_show_screen.bind("tracks")))
 	metadata.add_child(MenuStyle.button("3D preview",_preview_document))
+	metadata.add_child(MenuStyle.button("Controls",_editor_help))
 	share_button = MenuStyle.button("Share",_share_dialog)
 	metadata.add_child(share_button)
 	canvas.selection_changed.connect(_build_editor_tools)
@@ -537,6 +538,7 @@ func _context_button(label: String, glyph: String, action: Callable, chosen: boo
 
 func _build_editor_tools() -> void:
 	if not is_instance_valid(editor_context) or not is_instance_valid(canvas): return
+	_update_test_access()
 	canvas.road_action = editor_geometry if editor_geometry != "" else "move"
 	for child: Node in editor_context.get_children():
 		editor_context.remove_child(child)
@@ -549,7 +551,7 @@ func _build_editor_tools() -> void:
 	if category == "road":
 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
 		if piece.is_empty():
-			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"]]:
+			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"]]:
 				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
 			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
 		elif editor_geometry != "":
@@ -558,15 +560,15 @@ func _build_editor_tools() -> void:
 				_build_editor_tools())
 			var key: String = editor_geometry
 			_context_button("− 1 m","minus",_change_piece.bind(key,-1.0))
-			_context_button(("Lead-in" if key == "length" and piece.kind != "straight" else key.capitalize())+" %.1f m" % float(piece[key]),"width",func() -> void: pass)
+			_context_button(("Lead-in" if key == "length" and piece.kind not in ["straight","bridge"] else key.capitalize())+" %.1f m" % float(piece[key]),"width",func() -> void: pass)
 			_context_button("+ 1 m","plus",_change_piece.bind(key,1.0))
-			if key != "width": _context_button("Radius" if key == "length" else "Lead-in","curve",func() -> void:
+			if key != "width" and piece.kind not in ["straight","bridge"]: _context_button("Radius" if key == "length" else "Lead-in","curve",func() -> void:
 				editor_geometry = "radius" if key == "length" else "length"
 				_build_editor_tools())
 			editor_status.text = "Only this section changes. Reconnect any open ends afterwards."
 		else:
 			_context_button("Shape",piece.kind,func() -> void:
-				editor_geometry = "length" if piece.kind == "straight" else "radius"
+				editor_geometry = "length" if piece.kind in ["straight","bridge"] else "radius"
 				_build_editor_tools())
 			_context_button("Width","width",func() -> void:
 				editor_geometry = "width"
@@ -578,7 +580,9 @@ func _build_editor_tools() -> void:
 				canvas.snap_matched = false
 				_build_editor_tools(),canvas.snap_enabled)
 			_context_button("Cancel" if not canvas.ghost.is_empty() else "Delete","delete",_delete_piece)
-			editor_status.text = "Drag the section to position it · ✓ to place" if not canvas.ghost.is_empty() else "Drag to move · shape and width affect this section"
+			if canvas.ghost.is_empty(): _context_button("Layer","surface",canvas.cycle_piece)
+			editor_status.text = "Drag inside to move · end dots resize and turn · ✓ to place" if not canvas.ghost.is_empty() else "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
+			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends · ground road passes beneath the middle"
 	elif category == "paint":
 		for pair: Array in [[0,"Road"],[1,"Grass"],[2,"Dirt"],[3,"Water"]]:
 			_context_button(pair[1],"surface",func() -> void:
@@ -650,13 +654,14 @@ func _change_piece(key: String, delta: float) -> void:
 	if key == "flip": piece.flip = not piece.flip
 	elif key == "heading": piece.heading = fposmod(float(piece.heading)+delta,360.0)
 	else:
-		var lower: float = 6.0 if key == "width" else 3.0 if key == "radius" else 2.0 if piece.kind == "straight" else 0.0
+		var lower: float = 6.0 if key == "width" else 3.0 if key == "radius" else 24.0 if piece.kind == "bridge" else 2.0 if piece.kind == "straight" else 0.0
 		var upper: float = 20.0 if key == "width" else 60.0 if key == "radius" else 120.0
 		piece[key] = clampf(float(piece[key])+delta,lower,upper)
 	var errors: Array[String] = RoadPieces.validate(piece)
 	if not errors.is_empty():
 		editor_status.text = errors[0]
 		return
+	if not canvas._valid_bridge_edit(piece,canvas.selected_piece): return
 	if is_ghost:
 		canvas.ghost = piece
 		canvas.snap_matched = false
@@ -730,10 +735,14 @@ func _update_editor_issues() -> void:
 		editor_issues.append({"message":join.message,"position":join.position,"object":-1,"index":join.index})
 	editor_issue_button.text = "%d issue%s" % [editor_issues.size(),"s" if editor_issues.size() != 1 else ""]
 	editor_issue_button.visible = not editor_issues.is_empty()
-	var has_road: bool = not document.pieces.is_empty() or not document.layout.is_empty() or not document.paint.is_empty() or document.base_track != ""
-	test_button.disabled = not TrackDocument.validate(document).is_empty() or not has_road
-	if not editor_issues.is_empty() and int(editor_issues[0].object) != -1: test_button.disabled = true
+	_update_test_access()
 	canvas.queue_redraw()
+
+func _update_test_access() -> void:
+	if not is_instance_valid(test_button) or not is_instance_valid(canvas): return
+	var has_road: bool = not document.pieces.is_empty() or not document.layout.is_empty() or not document.paint.is_empty() or document.base_track != ""
+	test_button.disabled = not TrackDocument.validate(document).is_empty() or not has_road or not canvas.ghost.is_empty()
+	if not editor_issues.is_empty() and int(editor_issues[0].object) != -1: test_button.disabled = true
 
 func _focus_issue() -> void:
 	if editor_issues.is_empty(): return
@@ -873,6 +882,9 @@ func _save_draft() -> void:
 		_update_editor_issues()
 
 func _test_document() -> void:
+	if not canvas.ghost.is_empty():
+		editor_status.text = "Confirm or cancel the preview before testing."
+		return
 	_save_draft()
 	var track: NativeTrack = TrackCompiler.compile(document)
 	if track != null and not test_button.disabled:
@@ -1139,3 +1151,55 @@ func _lay_road() -> void:
 	_remember()
 	document.layout = TrackDocument.road_layout(document)
 	_commit_selection()
+
+func _editor_help() -> void:
+	_notice("Drag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
+
+func _input(event: InputEvent) -> void:
+	# Tab is a GUI navigation key and never reaches unhandled_key_input.
+	if event is InputEventKey and event.pressed and (event.physical_keycode == KEY_TAB or event.keycode == KEY_TAB):
+		if is_instance_valid(editor_map_panel) and editor_map_panel.visible: return
+		_unhandled_key_input(event)
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if screen != "create" or is_instance_valid(game) or not event is InputEventKey or not event.pressed: return
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus is LineEdit or focus is TextEdit: return
+	var key: Key = event.physical_keycode if event.physical_keycode != 0 else event.keycode
+	var handled: bool = true
+	if event.ctrl_pressed or event.meta_pressed:
+		match key:
+			KEY_Z:
+				if event.shift_pressed: _redo()
+				elif not canvas.ghost.is_empty(): _delete_piece()
+				else: _undo()
+			KEY_Y: _redo()
+			KEY_S: _save_draft()
+			_: handled = false
+	else:
+		match key:
+			KEY_F: canvas.fit()
+			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD: canvas.zoom_by(1.15)
+			KEY_MINUS, KEY_KP_SUBTRACT: canvas.zoom_by(1.0/1.15)
+			KEY_ENTER, KEY_KP_ENTER:
+				if canvas.mode == "road": canvas.confirm_piece()
+			KEY_ESCAPE:
+				canvas.cancel_gesture()
+				canvas.ghost.clear()
+				canvas.selected_piece = -1
+				editor_geometry = ""
+				editor_tools_panel.hide()
+				editor_map_panel.hide()
+				_build_editor_tools()
+			KEY_DELETE, KEY_BACKSPACE:
+				if canvas.mode == "road": _delete_piece()
+				else: _delete_selection()
+			KEY_1: _editor_category("road")
+			KEY_2: _editor_category("paint")
+			KEY_3: _editor_category("objects")
+			KEY_4: _editor_category("move")
+			KEY_Q: _change_piece("heading",-15.0)
+			KEY_E: _change_piece("heading",15.0)
+			KEY_TAB: canvas.cycle_piece()
+			_: handled = false
+	if handled: get_viewport().set_input_as_handled()

@@ -34,8 +34,8 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	var left: Vector3 = VisualGeometry.world(axle - state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
 	var right: Vector3 = VisualGeometry.world(axle + state.right() * (0.76 * HandlingConfig.BODY_SCALE)) + Vector3(0, 0.028, 0)
 	if bridge != null:
-		left.y += bridge.height_at(Vector2(left.x, -left.z), state.route_index)
-		right.y += bridge.height_at(Vector2(right.x, -right.z), state.route_index)
+		left.y += bridge.height_at(Vector2(left.x, -left.z), state.route_index,1 if state.track_elevated else 0)
+		right.y += bridge.height_at(Vector2(right.x, -right.z), state.route_index,1 if state.track_elevated else 0)
 	if active:
 		if left.distance_to(previous_left) < 0.22:
 			return

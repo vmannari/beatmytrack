@@ -39,7 +39,7 @@ func run() -> void:
 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
 		if theme == "pine":
-			check(track.content_hash == "791add04ea14825c6b163a2f42692c6fbe8c27b7d49fd8c514df9d365d537e87","compiler-v4 canonical identity matches golden hash")
+			check(track.content_hash == "937933293b3304a5240810da867dc1878e2e41393c9da7d1f3509f4d1171ecfe","compiler-v5 canonical identity matches golden hash")
 		var route_on_road: bool = true
 		for point: Vector2 in track.route:
 			route_on_road = route_on_road and track.cell_at(point) == expected

@@ -2,7 +2,7 @@ class_name TrackDocument
 extends RefCounted
 ## Bounded JSON authoring contract. No scripts, images, paths or engine objects.
 
-const SCHEMA: String = "creator-track-v4"
+const SCHEMA: String = "creator-track-v5"
 const THEMES: Array[String] = ["pine", "coast", "desert"]
 const MAX_POINTS: int = 96
 const MAX_BYTES: int = 524288
@@ -66,6 +66,8 @@ static func validate(data: Variant) -> Array[String]:
 		var section: PackedVector2Array = RoadPieces.samples(piece)
 		for i: int in range(1,section.size()): piece_length += section[i-1].distance_to(section[i])
 	if piece_length > 4000.0: return ["Use up to 4000 metres of road sections."]
+	var bridge_errors: Array[String] = CreatorBridges.validate(data.pieces,data.get("base_track", "") if data.get("base_track") is String else "")
+	if not bridge_errors.is_empty(): return bridge_errors
 	if not valid_id(data.get("id")):
 		errors.append("The track identifier is invalid.")
 	var title: Variant = data.get("name")

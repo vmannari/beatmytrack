@@ -18,6 +18,7 @@ var content_hash: String
 var finish_center := Vector2.ZERO
 var finish_forward := Vector2.ZERO
 var finish_half_width: float = 0.0
+var creator_bridges: Array = []
 
 
 static func read(path: String) -> NativeTrack:
@@ -32,6 +33,7 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	# Trusted native data only. Creator imports are validated and compiled first.
 	var track := NativeTrack.new()
 	track.metadata = data
+	track.creator_bridges = data.get("creator_bridges",[])
 	track.content_hash = hash_value
 	track.identity = data.identity
 	track.cell_size = float(data.cell_size)
@@ -94,6 +96,9 @@ func nearest_route(point: Vector2, previous: int = -1) -> int:
 
 
 func elevated_at(point: Vector2, route_index: int) -> bool:
+	if CreatorBridges.at_any(creator_bridges,point):
+		var forward: Vector2 = route[(route_index+1)%route.size()]-route[route_index]
+		return CreatorBridges.initial_layer(creator_bridges,point,atan2(forward.x,forward.y))
 	if bridge_height == 0.0:
 		return false
 	var tangent: Vector2 = (route[(route_index + 1) % route.size()] - route[route_index]).normalized()
@@ -109,7 +114,10 @@ func tire_pickup(state: VehicleState) -> float:
 	return 0.0
 
 
-func collision_elevated_at(point: Vector2, route_index: int, radius: float) -> bool:
+func collision_elevated_at(point: Vector2, route_index: int, radius: float, previous_layer: int = -1) -> bool:
+	if CreatorBridges.at_any(creator_bridges,point,radius):
+		if previous_layer >= 0: return CreatorBridges.layer_at(creator_bridges,point,previous_layer == 1,radius)
+		return elevated_at(point,route_index)
 	if elevated_at(point, route_index):
 		return true
 	if bridge_height == 0.0:
@@ -143,7 +151,7 @@ func surface_factors(state: VehicleState) -> Vector2:
 
 func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void:
 	state.route_index = nearest_route(from, state.route_index)
-	state.track_elevated = collision_elevated_at(from, state.route_index, config.collision_radius)
+	state.track_elevated = collision_elevated_at(from, state.route_index, config.collision_radius,1 if state.track_elevated else 0)
 	# Circle against native occupied cells, substeps shorter than half a cell.
 	# Stable row order and bounded path sampling prevent thin-wall tunnelling.
 	var movement: Vector2 = state.position - from
@@ -153,7 +161,7 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 	for step_index: int in range(1, steps + 1):
 		var point: Vector2 = from + movement * (float(step_index) / steps)
 		var next_route: int = nearest_route(point, state.route_index)
-		var next_elevated: bool = collision_elevated_at(point, next_route, config.collision_radius)
+		var next_elevated: bool = collision_elevated_at(point, next_route, config.collision_radius,1 if state.track_elevated else 0)
 		var next_contact: Vector3 = _contact(point, config.collision_radius, next_elevated)
 		if next_contact.z > 0.0:
 			# A pre-existing overlap must not freeze outward movement. Require
@@ -181,7 +189,7 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 				for i: int in range(1, slide_steps + 1):
 					var candidate: Vector2 = slide_from + slide * (float(i) / slide_steps)
 					var candidate_route: int = nearest_route(candidate, state.route_index)
-					var candidate_layer: bool = collision_elevated_at(candidate, candidate_route, config.collision_radius)
+					var candidate_layer: bool = collision_elevated_at(candidate, candidate_route, config.collision_radius,1 if state.track_elevated else 0)
 					if _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
 						# Shallow flat-wall overlap can rub along its face. Do not
 						# project an embedded corner contact around a rail tip.
@@ -193,7 +201,7 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 							var completed: float = clampf(state.position.distance_to(slide_from) / maxf(slide.length(), 0.000001), 0.0, 1.0)
 							state.velocity -= tangent * state.velocity.dot(tangent) * (1.0 - completed)
 							var probe: Vector2 = state.position + state.velocity * VehicleSimulation.STEP
-							var probe_layer: bool = collision_elevated_at(probe, nearest_route(probe, state.route_index), config.collision_radius)
+							var probe_layer: bool = collision_elevated_at(probe, nearest_route(probe, state.route_index), config.collision_radius,1 if state.track_elevated else 0)
 							if _contact(probe, config.collision_radius, probe_layer).z > 0.0 and (_contact(state.position, config.collision_radius, probe_layer).z <= 0.0 or _escape_blocker(state.position, probe, config.collision_radius, probe_layer) != Vector2.ZERO):
 								state.velocity = Vector2.ZERO
 							break

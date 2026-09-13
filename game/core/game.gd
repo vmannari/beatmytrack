@@ -174,8 +174,8 @@ func _process(delta: float) -> void:
 	car.rotation.x = 0.0
 	if native_track != null:
 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
-		var front: float = bridge_presentation.height_at(point + axle, sim.state.route_index)
-		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index)
+		var front: float = bridge_presentation.height_at(point + axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
+		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
 	camera.follow(point, sim.state.velocity, heading, delta)
@@ -212,6 +212,8 @@ func restart() -> void:
 	if native_track != null:
 		sim.state.route_index = native_track.nearest_route(sim.state.position)
 		sim.state.track_elevated = native_track.elevated_at(sim.state.position, sim.state.route_index)
+		if CreatorBridges.at_any(native_track.creator_bridges,sim.state.position):
+			sim.state.track_elevated = CreatorBridges.initial_layer(native_track.creator_bridges,sim.state.position,sim.state.heading)
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	trails.clear()

@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-4"
+const VERSION: String = "creator-compiler-5"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -30,8 +30,10 @@ static func compile(document: Dictionary) -> NativeTrack:
 	var road_route: PackedVector2Array = road_samples.points
 	var road_widths: PackedFloat32Array = road_samples.widths
 	var sections: Array[Dictionary] = []
+	var bridges: Array = []
 	for piece: Dictionary in document.pieces:
-		sections.append({"points":RoadPieces.samples(piece),"width":float(piece.width)})
+		sections.append({"points":RoadPieces.samples(piece),"width":float(piece.width),"bridge":piece.kind == "bridge"})
+		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
 	var radius: float = widths[0] * 0.5
 	var extent := Vector2.ZERO
 	for point: Vector2 in route + road_route:
@@ -55,12 +57,18 @@ static func compile(document: Dictionary) -> NativeTrack:
 	var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
 	_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
 	for section: Dictionary in sections:
+		if section.bridge: continue
 		var section_widths := PackedFloat32Array()
 		section_widths.resize(section.points.size())
 		section_widths.fill(section.width)
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
 	_paint(document.paint,cells,grid,extent,cell_size)
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
+	var deck := PackedInt32Array()
+	deck.resize(cells.size())
+	deck.fill(-1)
+	if base != null: deck = base.deck_cells.duplicate()
+	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
 	# A distant perimeter makes the finite authoring area explicit and keeps
 	# accidental off-course driving recoverable with the ordinary restart.
 	for y: int in range(grid.y):
@@ -99,6 +107,10 @@ static func compile(document: Dictionary) -> NativeTrack:
 		data.bridges = base.metadata.bridges.duplicate(true)
 		if not document.route_override:
 			for key: String in ["route","checkpoints","spawn","spawn_heading","finish"]: data[key] = base.metadata[key]
+	if not bridges.is_empty():
+		data["creator_bridges"] = bridges
+		data["legacy_deck"] = base.metadata.deck.duplicate(true) if base != null else []
+		data.deck = CreatorBridges.rectangles(deck,grid)
 	data.provenance["base_track"] = document.base_track
 	data.provenance["base_hash"] = base.content_hash if base != null else ""
 	return NativeTrack.from_data(data,(VERSION+"\n"+str(data.provenance.base_hash)+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text())

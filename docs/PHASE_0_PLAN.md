@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-13 R01/T01–T04/V05 review: owner requests a usability review after accepting the improved editor direction. [CREATOR_USABILITY_REVIEW.md](CREATOR_USABILITY_REVIEW.md) records eight reproduced findings and proposes edit protection, race readiness and connected editing as the next slice. This checkpoint changes review tooling/documentation only; implementation decisions remain outstanding.
+
 2026-09-13 R01/T01–T04/V03/V05: owner wireframe directs compact overlays over the full-screen track, place-and-connect road pieces, local geometry controls, roadside props and visual issue recovery. Implemented in creator-track-v4 with retained free painting and independent lap route. Wireframe untimed practice overrides editor-only five-lap runs; regular races stay five laps. [WIREFRAME_EDITOR.md](WIREFRAME_EDITOR.md) records commands, captures and remaining phone/visual acceptance.
 
 2026-09-13 R01/T02/V03/V05: owner requests full-screen creator and usable detail editing. Dedicated canvas with overlay tools, anchored close zoom and fine brushes implemented; actual commands, checks and unperformed phone acceptance are in [FULLSCREEN_EDITOR.md](FULLSCREEN_EDITOR.md). No physics/camera/content expansion.

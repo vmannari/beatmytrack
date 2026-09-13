@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-13 creator usability review: eight reproducible issues recorded, led by race-route readiness, variable-width connections and invalid-drag persistence. Existing 96 workflow checks pass; new isolated review scenarios reproduce the gaps. No application fixes in this checkpoint. [Findings and proposed order](docs/CREATOR_USABILITY_REVIEW.md).
+
 2026-09-13 wireframe creator revision: full-screen shared 3D scenery, Road/Surface/Objects/Race rail, contextual palettes, place-and-snap road sections, direct radius/lead-in/width handles, roadside barrier/tyre/fence runs, start-obstruction recovery and untimed practice with Edit here. V4 drafts retain free painting and separate lap routing. Ordinary races remain five laps. [Implementation and actual evidence](docs/WIREFRAME_EDITOR.md). Desktop acceptance checks pass; phone reach, safe areas and performance remain untested. Android prerequisites are missing.
 
 2026-09-13 full-screen creator: Create now fills the viewport, with collapsible tool/settings overlays, anchored 16× zoom, crisp adaptive grid and 0.5 m detail brushes. Targeted UI/creator/replay checks pass; physical-phone acceptance remains open. [Full-screen editor evidence](docs/FULLSCREEN_EDITOR.md).

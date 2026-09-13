@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-3"
+const VERSION: String = "creator-compiler-4"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -29,11 +29,16 @@ static func compile(document: Dictionary) -> NativeTrack:
 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
 	var road_route: PackedVector2Array = road_samples.points
 	var road_widths: PackedFloat32Array = road_samples.widths
+	var sections: Array[Dictionary] = []
+	for piece: Dictionary in document.pieces:
+		sections.append({"points":RoadPieces.samples(piece),"width":float(piece.width)})
 	var radius: float = widths[0] * 0.5
 	var extent := Vector2.ZERO
 	for point: Vector2 in route + road_route:
 		extent.x = maxf(extent.x, absf(point.x))
 		extent.y = maxf(extent.y, absf(point.y))
+	for section: Dictionary in sections:
+		for point: Vector2 in section.points: extent = extent.max(point.abs()+Vector2.ONE*float(section.width)*0.5)
 	for object: Dictionary in document.get("objects",[]):
 		var point := Vector2(object.position[0],object.position[1])
 		extent = extent.max(point.abs()+CreatorObjects.dimensions(object.kind))
@@ -48,27 +53,12 @@ static func compile(document: Dictionary) -> NativeTrack:
 	if base != null: cells = base.cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,true)
 	var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
-	for i: int in range(road_route.size()):
-		var a: Vector2 = road_route[i]
-		var b: Vector2 = road_route[(i+1) % road_route.size()]
-		var radius_a: float = road_widths[i]*0.5
-		var radius_b: float = road_widths[(i+1)%road_widths.size()]*0.5
-		var margin: float = maxf(radius_a,radius_b) + 1.0
-		var x0: int = maxi(0, floori((minf(a.x,b.x)-margin+extent.x)/cell_size))
-		var x1: int = mini(grid.x-1, ceili((maxf(a.x,b.x)+margin+extent.x)/cell_size))
-		var y0: int = maxi(0, floori((extent.y-maxf(a.y,b.y)-margin)/cell_size))
-		var y1: int = mini(grid.y-1, ceili((extent.y-minf(a.y,b.y)+margin)/cell_size))
-		for y: int in range(y0,y1+1):
-			for x: int in range(x0,x1+1):
-				var p := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
-				var closest: Vector2 = Geometry2D.get_closest_point_to_segment(p,a,b)
-				var distance: float = p.distance_squared_to(closest)
-				var local_radius: float = lerpf(radius_a,radius_b,clampf((closest-a).dot(b-a)/maxf(0.0001,a.distance_squared_to(b)),0,1))
-				var at: int = y*grid.x+x
-				if distance <= local_radius*local_radius:
-					cells[at] = road_kind
-				elif distance <= (local_radius+1.0)*(local_radius+1.0) and cells[at] in [1,2,3] and cells[at] != road_kind:
-					cells[at] = 5
+	_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
+	for section: Dictionary in sections:
+		var section_widths := PackedFloat32Array()
+		section_widths.resize(section.points.size())
+		section_widths.fill(section.width)
+		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
 	_paint(document.paint,cells,grid,extent,cell_size)
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	# A distant perimeter makes the finite authoring area explicit and keeps
@@ -141,3 +131,28 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
 					if hit: cells[y*grid.x+x] = int(stroke.surface)
+
+
+static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool) -> void:
+	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
+	for i: int in range(segment_count):
+		var a: Vector2 = road_route[i]
+		var b: Vector2 = road_route[(i+1) % road_route.size()]
+		var radius_a: float = road_widths[i]*0.5
+		var radius_b: float = road_widths[(i+1)%road_widths.size()]*0.5
+		var margin: float = maxf(radius_a,radius_b) + 1.0
+		var x0: int = maxi(0, floori((minf(a.x,b.x)-margin+extent.x)/cell_size))
+		var x1: int = mini(grid.x-1, ceili((maxf(a.x,b.x)+margin+extent.x)/cell_size))
+		var y0: int = maxi(0, floori((extent.y-maxf(a.y,b.y)-margin)/cell_size))
+		var y1: int = mini(grid.y-1, ceili((extent.y-minf(a.y,b.y)+margin)/cell_size))
+		for y: int in range(y0,y1+1):
+			for x: int in range(x0,x1+1):
+				var p := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
+				var closest: Vector2 = Geometry2D.get_closest_point_to_segment(p,a,b)
+				var distance: float = p.distance_squared_to(closest)
+				var local_radius: float = lerpf(radius_a,radius_b,clampf((closest-a).dot(b-a)/maxf(0.0001,a.distance_squared_to(b)),0,1))
+				var at: int = y*grid.x+x
+				if distance <= local_radius*local_radius:
+					cells[at] = road_kind
+				elif distance <= (local_radius+1.0)*(local_radius+1.0) and cells[at] in [1,2,3] and cells[at] != road_kind:
+					cells[at] = 5

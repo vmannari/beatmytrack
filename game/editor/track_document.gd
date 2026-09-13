@@ -2,19 +2,25 @@ class_name TrackDocument
 extends RefCounted
 ## Bounded JSON authoring contract. No scripts, images, paths or engine objects.
 
-const SCHEMA: String = "creator-track-v3"
+const SCHEMA: String = "creator-track-v4"
 const THEMES: Array[String] = ["pine", "coast", "desert"]
 const MAX_POINTS: int = 96
 const MAX_BYTES: int = 524288
 const MAX_COORD: float = 120.0
-const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override"]
+const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start"]
 
 
 static func create_default() -> Dictionary:
 	var doc: Dictionary = {"schema": SCHEMA, "id": "my_track", "name": "My circuit", "theme": "pine", "width": 10.0,
 		"surface": "asphalt", "points": [[-38.0,-12.0],[-25.0,22.0],[12.0,28.0],[39.0,9.0],[25.0,-25.0],[-10.0,-28.0]],
-		"widths":[10.0,10.0,10.0,10.0,10.0,10.0], "corners":["smooth","smooth","smooth","smooth","smooth","smooth"], "objects":[], "layout":{}, "paint":[], "base_track":"", "route_override":true}
+		"widths":[10.0,10.0,10.0,10.0,10.0,10.0], "corners":["smooth","smooth","smooth","smooth","smooth","smooth"], "objects":[], "layout":{}, "paint":[], "base_track":"", "route_override":true, "pieces":[]}
 	doc.layout = road_layout(doc)
+	return doc
+
+
+static func create_blank() -> Dictionary:
+	var doc: Dictionary = create_default()
+	doc.layout = {}
 	return doc
 
 
@@ -40,6 +46,26 @@ static func validate(data: Variant) -> Array[String]:
 			return ["This file contains unsupported track data."]
 	if data.get("schema") != SCHEMA:
 		errors.append("This track format is not supported.")
+	if data.has("practice_start"):
+		var start: Variant = data.practice_start
+		if not start is Dictionary or start.size() != 2 or not start.has_all(["position","heading"]):
+			return ["The practice start needs a position and heading."]
+		if not start.position is Array or start.position.size() != 2:
+			return ["The practice start needs two coordinates."]
+		for value: Variant in start.position:
+			if not _number(value) or absf(float(value)) > 110.0:
+				return ["Keep the practice start inside the editing area."]
+		if not _number(start.heading) or float(start.heading) < 0.0 or float(start.heading) >= 360.0:
+			return ["Practice heading must be between 0 and 359 degrees."]
+	if not data.get("pieces") is Array or data.pieces.size() > RoadPieces.MAX_PIECES:
+		return ["Use up to 96 road sections."]
+	var piece_length: float = 0.0
+	for piece: Variant in data.pieces:
+		var piece_errors: Array[String] = RoadPieces.validate(piece)
+		if not piece_errors.is_empty(): return piece_errors
+		var section: PackedVector2Array = RoadPieces.samples(piece)
+		for i: int in range(1,section.size()): piece_length += section[i-1].distance_to(section[i])
+	if piece_length > 4000.0: return ["Use up to 4000 metres of road sections."]
 	if not valid_id(data.get("id")):
 		errors.append("The track identifier is invalid.")
 	var title: Variant = data.get("name")

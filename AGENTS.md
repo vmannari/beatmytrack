@@ -1,5 +1,8 @@
 # Project agent instructions
 
+## Wireframe editor override (2026-09-13)
+The owner supplied a phone-editor wireframe directing a full-screen world, Road/Surface/Objects/Race rail, contextual bottom palette, directly placed road sections, local geometry handles, roadside object runs and actionable issues. Creator-track-v4 adds independent road pieces alongside free paint and the separate lap route; older user formats need not be maintained. The wireframe's **Practice (untimed)** and **Edit here** supersede five-lap creator test drives only. Ordinary races remain five laps. Practice-start placement is independent of the timed lap start. See `docs/WIREFRAME_EDITOR.md` for implemented behavior and acceptance limits.
+
 ## Free-form editor override (2026-09-12)
 The owner rejected spline-only editing and explicitly prioritized free-shaped roads, terrain, intersections and obstacles. The map and lap route are separate in creator-track-v3; at-grade route crossings are permitted. This supersedes v2-only and no-crossing authoring rules below. No user-track backward compatibility is required. Existing bridge geometry may be retained in native remixes; new bridge tooling is outside this ground-editing slice.
 

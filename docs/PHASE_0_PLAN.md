@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-13 R01/T01–T04/V03/V05: owner wireframe directs compact overlays over the full-screen track, place-and-connect road pieces, local geometry controls, roadside props and visual issue recovery. Implemented in creator-track-v4 with retained free painting and independent lap route. Wireframe untimed practice overrides editor-only five-lap runs; regular races stay five laps. [WIREFRAME_EDITOR.md](WIREFRAME_EDITOR.md) records commands, captures and remaining phone/visual acceptance.
+
 2026-09-13 R01/T02/V03/V05: owner requests full-screen creator and usable detail editing. Dedicated canvas with overlay tools, anchored close zoom and fine brushes implemented; actual commands, checks and unperformed phone acceptance are in [FULLSCREEN_EDITOR.md](FULLSCREEN_EDITOR.md). No physics/camera/content expansion.
 
 2026-09-12 V03/G03/R01/R04/R06/R07: owner requests stronger menu presentation and player motivation. Race invitation, persistent last circuit, explicit PB target and improvement debrief are implemented; see [RACE_PRESENTATION.md](RACE_PRESENTATION.md). No progression or online-service expansion.

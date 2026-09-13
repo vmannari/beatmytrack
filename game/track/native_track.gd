@@ -213,6 +213,11 @@ func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:
 	return Vector2(contact.x, contact.y)
 
 
+func overlaps_obstacle(point: Vector2, radius: float, elevated: bool) -> bool:
+	# A symmetric overlap may have a zero normal; depth is authoritative.
+	return _contact(point,radius,elevated).z > 0.0
+
+
 func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: bool) -> Vector2:
 	# Reducing total overlap must not hide entry into another cell/barrier.
 	# Each obstacle must keep/reduce penetration (1 um tolerance); coplanar

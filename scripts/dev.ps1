@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -77,6 +77,9 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_free_editor.gd') 'free-editor-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
     if (Test-Path -LiteralPath (Join-Path $projectRoot 'tests/test_app.gd')) {
         Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_app.gd') 'app-tests.log'
     }
@@ -168,6 +171,11 @@ try {
     if ($LASTEXITCODE -ne 0 -or $version -ne $expectedVersion) { throw "Engine mismatch: expected $expectedVersion; got '$version' from $script:godot." }
     Write-Host "Godot: $version ($script:godot)"
     switch ($Action) {
+        'TestPractice' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log' }
+        'CapturePractice' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd', '--', "--capture-practice=$buildRoot/editor-practice.png") 'editor-practice-capture.log' }
+        'TestPieces' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log' }
+        'TestWorkflow' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log' }
+        'CaptureWorkflow' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd', '--', '--capture-workflow') 'editor-workflow-capture.log' }
         'Doctor' {
             Test-AndroidTools
             $adb = Get-Adb

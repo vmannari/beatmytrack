@@ -29,6 +29,12 @@ var editor_tools_panel: PanelContainer
 var editor_map_panel: PanelContainer
 var editor_undo: Button
 var editor_redo: Button
+var editor_world: EditorWorld
+var editor_context: HBoxContainer
+var editor_confirm: Button
+var editor_issue_button: Button
+var editor_issues: Array[Dictionary] = []
+var editor_geometry: String = ""
 var editor_inspector: VBoxContainer
 var browser_state: Dictionary = {}
 var track_catalog: TrackCatalog
@@ -66,7 +72,7 @@ func _ready() -> void:
 
 func _show_screen(next: String) -> void:
 	if is_instance_valid(canvas):
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	screen = next
 	canvas = null
 	editor_status = null
@@ -292,7 +298,7 @@ func _new_document() -> void:
 	_save_draft()
 	editor_view.clear()
 	canvas = null
-	document = TrackDocument.create_default()
+	document = TrackDocument.create_blank()
 	document.id = TrackLibrary.unique_id()
 	history.clear()
 	redo_history.clear()
@@ -300,16 +306,21 @@ func _new_document() -> void:
 
 func _editor() -> void:
 	if document.is_empty():
-		document = TrackDocument.create_default()
+		document = TrackDocument.create_blank()
 		document.id = TrackLibrary.unique_id()
+	editor_world = EditorWorld.new()
+	root_ui.add_child(editor_world)
+	MenuStyle.fill(editor_world)
 	canvas = EditorCanvas.new()
 	canvas.document = document
+	canvas.world_backdrop = true
 	if not editor_view.is_empty():
 		canvas.zoom = editor_view.zoom
 		canvas.pan = editor_view.pan
 		canvas.mode = editor_view.mode
 		canvas.selected = mini(int(editor_view.get("selected",-1)),document.points.size()-1)
 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
+		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
 		canvas.brush_surface = int(editor_view.get("brush_surface",0))
 		canvas.brush_width = float(editor_view.get("brush_width",10))
@@ -317,132 +328,180 @@ func _editor() -> void:
 		canvas.fitted = true
 	root_ui.add_child(canvas)
 	MenuStyle.fill(canvas)
+	editor_world.follow_canvas(canvas)
+	canvas.native_changed.connect(editor_world.show_track)
 	canvas.edit_started.connect(func() -> void:
 		_remember()
 		if canvas.mode in ["move","add"]: document.route_override = true)
 	canvas.document_changed.connect(func() -> void:
 		canvas.refresh()
 		test_button.disabled = true
-		share_button.disabled = true
-		editor_status.text = "Release to check and save your route.")
+		share_button.disabled = true)
 	canvas.edit_finished.connect(_save_draft)
 	canvas.hint_changed.connect(func(value: String) -> void: editor_status.text = value)
-	# The editing canvas owns the entire viewport; chrome is an overlay.
 	var overlay := Control.new()
 	overlay.name = "EditorOverlay"
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root_ui.add_child(overlay)
 	MenuStyle.fill(overlay)
-	var top := HBoxContainer.new()
-	top.name = "EditorToolbar"
-	overlay.add_child(top)
-	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	top.offset_left = 12; top.offset_right = -12; top.offset_top = 12
-	top.add_theme_constant_override("separation",6)
-	top.add_child(MenuStyle.button("Exit",func() -> void:
+	var back: Button = EditorButton.make("","back",func() -> void:
 		_save_draft()
-		_show_screen("play")))
-	editor_mode_buttons.clear()
-	for pair: Array in [["paint","Paint"],["move","Route"],["objects","Props"],["pan","Pan"]]:
-		var mode: String = pair[0]
-		var button: Button = MenuStyle.button(pair[1],func() -> void:
-			canvas.cancel_gesture()
-			canvas.mode = mode
-			_build_editor_tools())
-		button.toggle_mode = true
-		editor_mode_buttons[mode] = button
-		top.add_child(button)
-	top.add_child(MenuStyle.button("Tools",func() -> void:
-		canvas.cancel_gesture()
-		editor_tools_open = not editor_tools_open
-		editor_tools_panel.visible = editor_tools_open
-		editor_map_panel.hide()))
-	top.add_child(MenuStyle.button("Map",func() -> void:
+		_show_screen("play"))
+	back.tooltip_text = "Back"
+	overlay.add_child(back)
+	back.position = Vector2(16,16)
+	editor_undo = EditorButton.make("","undo",_undo)
+	editor_undo.text = "Undo"
+	editor_undo.tooltip_text = "Undo"
+	overlay.add_child(editor_undo)
+	editor_undo.position = Vector2(78,16)
+	editor_redo = EditorButton.make("","redo",_redo)
+	editor_redo.text = "Redo"
+	editor_redo.tooltip_text = "Redo"
+	overlay.add_child(editor_redo)
+	editor_redo.position = Vector2(140,16)
+	var top := HBoxContainer.new()
+	top.alignment = BoxContainer.ALIGNMENT_END
+	overlay.add_child(top)
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	top.offset_left = -298; top.offset_right = -16; top.offset_top = 16
+	top.add_theme_constant_override("separation",8)
+	editor_issue_button = MenuStyle.button("",_focus_issue)
+	editor_issue_button.custom_minimum_size = Vector2(112,52)
+	top.add_child(editor_issue_button)
+	var settings: Button = EditorButton.make("","more",func() -> void:
 		canvas.cancel_gesture()
 		editor_map_panel.visible = not editor_map_panel.visible
-		editor_tools_open = false
-		editor_tools_panel.hide()))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(spacer)
-	test_button = MenuStyle.button("Test drive",_test_document,true)
+		editor_tools_panel.hide())
+	settings.text = "Map"
+	settings.tooltip_text = "Map settings"
+	top.add_child(settings)
+	test_button = MenuStyle.button("▶  Test",_test_document,true)
+	test_button.custom_minimum_size = Vector2(100,52)
+	var test_style: StyleBoxFlat = _editor_box()
+	test_style.bg_color = Color("075562")
+	test_style.border_color = EditorButton.CYAN
+	test_button.add_theme_stylebox_override("normal",test_style)
+	test_button.add_theme_color_override("font_color",Color.WHITE)
 	top.add_child(test_button)
-	editor_tools_panel = _editor_panel(overlay,"EditorTools")
-	editor_tools_panel.visible = editor_tools_open
+	var rail := VBoxContainer.new()
+	rail.name = "EditorRail"
+	overlay.add_child(rail)
+	rail.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
+	rail.offset_left = 16; rail.offset_top = -142
+	rail.add_theme_constant_override("separation",4)
+	editor_mode_buttons.clear()
+	for pair: Array in [["road","Road","road"],["paint","Surface","surface"],["objects","Objects","objects"],["move","Race","race"]]:
+		var value: String = pair[0]
+		var button: Button = EditorButton.make(pair[1],pair[2],_editor_category.bind(value))
+		button.name = "Editor"+pair[1]
+		button.toggle_mode = true
+		editor_mode_buttons[value] = button
+		rail.add_child(button)
+	var bottom := CenterContainer.new()
+	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(bottom)
+	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom.offset_left = 108; bottom.offset_right = -112; bottom.offset_top = -98; bottom.offset_bottom = -16
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel",_editor_box())
+	bottom.add_child(panel)
 	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	editor_tools_panel.add_child(scroll)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(360,76)
+	panel.add_child(scroll)
+	editor_context = HBoxContainer.new()
+	editor_context.add_theme_constant_override("separation",4)
+	scroll.add_child(editor_context)
+	editor_confirm = EditorButton.make("","confirm",func() -> void:
+		if canvas.mode == "road": canvas.confirm_piece()
+		else:
+			canvas.selected_object = -1
+			canvas.selected = -1
+			canvas.mode = "objects" if canvas.mode in ["place","run"] else canvas.mode
+			editor_tools_panel.hide()
+			_build_editor_tools())
+	editor_confirm.name = "ConfirmPiece"
+	editor_confirm.custom_minimum_size = Vector2(64,64)
+	editor_confirm.toggle_mode = true
+	editor_confirm.button_pressed = true
+	overlay.add_child(editor_confirm)
+	editor_confirm.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	editor_confirm.offset_left = -92; editor_confirm.offset_right = -28; editor_confirm.offset_top = -110; editor_confirm.offset_bottom = -46
+	var fit_button: Button = EditorButton.make("","fit",func() -> void: canvas.fit())
+	fit_button.text = "Fit"
+	fit_button.tooltip_text = "Fit track · pinch or wheel to zoom"
+	overlay.add_child(fit_button)
+	fit_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	fit_button.offset_left = 28; fit_button.offset_top = -80; fit_button.offset_bottom = -28
+	editor_status = MenuStyle.label("",17)
+	editor_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(editor_status)
+	editor_status.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	editor_status.offset_left = 118; editor_status.offset_right = -118; editor_status.offset_top = -132; editor_status.offset_bottom = -103
+	editor_status.add_theme_color_override("font_shadow_color",Color.BLACK)
+	editor_status.add_theme_constant_override("shadow_outline_size",5)
+	editor_status.clip_text = true
+	editor_tools_panel = _editor_panel(overlay,"EditorTools")
 	editor_inspector = VBoxContainer.new()
-	editor_inspector.add_theme_constant_override("separation",6)
-	editor_inspector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(editor_inspector)
-	canvas.selection_changed.connect(_build_editor_tools)
-	_build_editor_tools()
+	editor_tools_panel.add_child(editor_inspector)
 	editor_map_panel = _editor_panel(overlay,"EditorMap")
 	var map_scroll := ScrollContainer.new()
 	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	editor_map_panel.add_child(map_scroll)
-	var settings := VBoxContainer.new()
-	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	map_scroll.add_child(settings)
-	settings.add_child(MenuStyle.label("TRACK SETTINGS",20))
+	var metadata := VBoxContainer.new()
+	metadata.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	map_scroll.add_child(metadata)
+	metadata.add_child(MenuStyle.label("TRACK SETTINGS",20))
 	var name_field := LineEdit.new()
 	name_field.text = str(document.name)
 	name_field.max_length = 40
-	name_field.custom_minimum_size.y = 54
-	settings.add_child(name_field)
+	name_field.custom_minimum_size.y = 52
+	metadata.add_child(name_field)
 	name_field.text_changed.connect(func(value: String) -> void: document.name = value)
 	name_field.focus_exited.connect(_save_draft)
-	for field: String in ["theme","surface"]:
-		var options: Array = ["pine","coast","desert"] if field == "theme" else ["asphalt","dirt"]
-		var choice := OptionButton.new()
-		choice.custom_minimum_size.y = 54
-		for value: String in options: choice.add_item(("Theme / " if field == "theme" else "Road tool / ")+value.capitalize())
-		choice.selected = options.find(document[field])
-		choice.item_selected.connect(func(index: int) -> void:
-			_remember()
-			document[field] = options[index]
-			_save_draft())
-		settings.add_child(choice)
-	settings.add_child(MenuStyle.button("Creator",_creator_name))
-	settings.add_child(MenuStyle.button("New",_new_document))
-	settings.add_child(MenuStyle.button("My circuits",_show_screen.bind("tracks")))
-	settings.add_child(MenuStyle.button("3D preview",_preview_document))
+	var theme_picker := OptionButton.new()
+	theme_picker.custom_minimum_size.y = 52
+	for value: String in TrackDocument.THEMES: theme_picker.add_item(value.capitalize())
+	theme_picker.selected = TrackDocument.THEMES.find(document.theme)
+	theme_picker.item_selected.connect(func(index: int) -> void:
+		_remember()
+		document.theme = TrackDocument.THEMES[index]
+		_save_draft())
+	metadata.add_child(theme_picker)
+	metadata.add_child(MenuStyle.button("Creator",_creator_name))
+	metadata.add_child(MenuStyle.button("New",_new_document))
+	metadata.add_child(MenuStyle.button("My circuits",_show_screen.bind("tracks")))
+	metadata.add_child(MenuStyle.button("3D preview",_preview_document))
 	share_button = MenuStyle.button("Share",_share_dialog)
-	settings.add_child(share_button)
-	var bottom := HBoxContainer.new()
-	bottom.name = "EditorHistory"
-	overlay.add_child(bottom)
-	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom.offset_left = 12; bottom.offset_right = -12; bottom.offset_top = -66; bottom.offset_bottom = -12
-	bottom.add_theme_constant_override("separation",6)
-	editor_undo = MenuStyle.button("Undo",_undo)
-	editor_undo.disabled = history.is_empty()
-	bottom.add_child(editor_undo)
-	editor_redo = MenuStyle.button("Redo",_redo)
-	editor_redo.disabled = redo_history.is_empty()
-	bottom.add_child(editor_redo)
-	bottom.add_child(MenuStyle.button("-",func() -> void: canvas.zoom_by(1.0/1.5)))
-	bottom.add_child(MenuStyle.button("Fit",func() -> void: canvas.fit()))
-	bottom.add_child(MenuStyle.button("+",func() -> void: canvas.zoom_by(1.5)))
-	editor_status = MenuStyle.label("",16,true)
-	editor_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	editor_status.clip_text = true
-	bottom.add_child(editor_status)
+	metadata.add_child(share_button)
+	canvas.selection_changed.connect(_build_editor_tools)
+	_build_editor_tools()
 	_refresh_editor()
 	if TrackDocument.validate(document).is_empty(): canvas.show_native(TrackCompiler.compile(document))
+	_update_editor_issues()
 	if editor_view.is_empty(): canvas.call_deferred("fit")
 	_apply_editor_safe_area(overlay)
 	root_ui.resized.connect(_apply_editor_safe_area.bind(overlay))
+
+func _editor_box() -> StyleBoxFlat:
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0.04,0.075,0.09,0.94)
+	box.border_color = Color(0.5,0.68,0.7,0.5)
+	box.set_border_width_all(1)
+	box.set_corner_radius_all(12)
+	box.set_content_margin_all(6)
+	return box
 
 func _editor_panel(parent: Control, node_name: String) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.name = node_name
 	parent.add_child(panel)
 	panel.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
-	panel.offset_left = -320; panel.offset_right = -12
-	panel.offset_top = 78; panel.offset_bottom = -78
-	panel.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.INK,10))
+	panel.offset_left = -322; panel.offset_right = -16
+	panel.offset_top = 82; panel.offset_bottom = -146
+	panel.add_theme_stylebox_override("panel",_editor_box())
 	panel.hide()
 	return panel
 
@@ -456,101 +515,239 @@ func _apply_editor_safe_area(overlay: Control) -> void:
 	overlay.offset_right = -maxf(0,(window.x-safe.end.x)*factor)
 	overlay.offset_bottom = -maxf(0,(window.y-safe.end.y)*factor)
 
+func _editor_category(value: String) -> void:
+	canvas.cancel_gesture()
+	canvas.ghost.clear()
+	canvas.run_start = Vector2.INF
+	canvas.run_preview.clear()
+	canvas.mode = value
+	canvas.selected_piece = -1
+	canvas.selected_object = -1
+	canvas.selected = -1
+	editor_geometry = ""
+	editor_tools_panel.hide()
+	editor_map_panel.hide()
+	_build_editor_tools()
+	canvas.queue_redraw()
+
+func _context_button(label: String, glyph: String, action: Callable, chosen: bool = false) -> Button:
+	var button: Button = EditorButton.make(label,glyph,action,chosen)
+	editor_context.add_child(button)
+	return button
+
 func _build_editor_tools() -> void:
-	if not is_instance_valid(editor_inspector) or not is_instance_valid(canvas): return
-	for key: String in editor_mode_buttons:
-		var selected_mode: String = "move" if canvas.mode == "add" else "objects" if canvas.mode == "place" else canvas.mode
-		(editor_mode_buttons[key] as Button).set_pressed_no_signal(key == selected_mode)
+	if not is_instance_valid(editor_context) or not is_instance_valid(canvas): return
+	canvas.road_action = editor_geometry if editor_geometry != "" else "move"
+	for child: Node in editor_context.get_children():
+		editor_context.remove_child(child)
+		child.queue_free()
 	for child: Node in editor_inspector.get_children():
 		editor_inspector.remove_child(child)
 		child.queue_free()
-	var objects_mode: bool = canvas.mode in ["objects","place"]
-	var tabs := HBoxContainer.new()
-	editor_inspector.add_child(tabs)
-	for pair: Array in [["paint","Paint"],["move","Route"],["objects","Props"]]:
-		var value: String = pair[0]
-		var button: Button = MenuStyle.button(pair[1],func() -> void:
-			canvas.mode = value
-			_build_editor_tools(), (canvas.mode == "paint" or canvas.mode == "pan") if value == "paint" else objects_mode if value == "objects" else canvas.mode in ["move","add"])
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		tabs.add_child(button)
-	if canvas.mode in ["paint","pan"]:
+	var category: String = "objects" if canvas.mode in ["objects","place","run"] else "move" if canvas.mode in ["move","add","start"] else "paint" if canvas.mode in ["paint","pan"] else "road"
+	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
+	if category == "road":
+		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
+		if piece.is_empty():
+			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"]]:
+				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
+			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
+		elif editor_geometry != "":
+			_context_button("Back","back",func() -> void:
+				editor_geometry = ""
+				_build_editor_tools())
+			var key: String = editor_geometry
+			_context_button("− 1 m","minus",_change_piece.bind(key,-1.0))
+			_context_button(("Lead-in" if key == "length" and piece.kind != "straight" else key.capitalize())+" %.1f m" % float(piece[key]),"width",func() -> void: pass)
+			_context_button("+ 1 m","plus",_change_piece.bind(key,1.0))
+			if key != "width": _context_button("Radius" if key == "length" else "Lead-in","curve",func() -> void:
+				editor_geometry = "radius" if key == "length" else "length"
+				_build_editor_tools())
+			editor_status.text = "Only this section changes. Reconnect any open ends afterwards."
+		else:
+			_context_button("Shape",piece.kind,func() -> void:
+				editor_geometry = "length" if piece.kind == "straight" else "radius"
+				_build_editor_tools())
+			_context_button("Width","width",func() -> void:
+				editor_geometry = "width"
+				_build_editor_tools())
+			_context_button("Rotate","rotate",_change_piece.bind("heading",15.0))
+			_context_button("Flip","flip",_change_piece.bind("flip",1.0))
+			_context_button("Snap on" if canvas.snap_enabled else "Snap off","snap",func() -> void:
+				canvas.snap_enabled = not canvas.snap_enabled
+				canvas.snap_matched = false
+				_build_editor_tools(),canvas.snap_enabled)
+			_context_button("Cancel" if not canvas.ghost.is_empty() else "Delete","delete",_delete_piece)
+			editor_status.text = "Drag the section to position it · ✓ to place" if not canvas.ghost.is_empty() else "Drag to move · shape and width affect this section"
+	elif category == "paint":
+		for pair: Array in [[0,"Road"],[1,"Grass"],[2,"Dirt"],[3,"Water"]]:
+			_context_button(pair[1],"surface",func() -> void:
+				canvas.brush_surface = pair[0]
+				canvas.mode = "paint"
+				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
+		_context_button("Brush","width",func() -> void:
+			editor_tools_panel.visible = not editor_tools_panel.visible)
+		_context_button("Pan","move",func() -> void:
+			canvas.mode = "pan" if canvas.mode == "paint" else "paint"
+			_build_editor_tools(),canvas.mode == "pan")
 		_build_paint_tools()
-	elif objects_mode:
-		var palette := OptionButton.new()
-		palette.custom_minimum_size.y = 54
-		for id: String in CreatorObjects.KINDS: palette.add_item(id.capitalize())
-		palette.selected = CreatorObjects.KINDS.find(canvas.stamp_kind)
-		palette.item_selected.connect(func(index: int) -> void:
-			canvas.stamp_kind = CreatorObjects.KINDS[index]
-			canvas.mode = "place"
-			_build_editor_tools())
-		editor_inspector.add_child(palette)
-		var actions := HBoxContainer.new()
-		editor_inspector.add_child(actions)
-		actions.add_child(MenuStyle.button("Stamp",func() -> void:
-			canvas.mode = "place"
-			_build_editor_tools(),canvas.mode == "place"))
-		actions.add_child(MenuStyle.button("Select / move",func() -> void:
-			canvas.mode = "objects"
-			_build_editor_tools(),canvas.mode == "objects"))
-		var message := MenuStyle.label(CreatorObjects.description(canvas.stamp_kind),16,true)
-		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		editor_inspector.add_child(message)
-		var chosen: int = canvas.selected_object
-		editor_inspector.add_child(MenuStyle.label("Object %d / %s" % [chosen+1,document.objects[chosen].kind.capitalize()] if chosen >= 0 else "Tap to stamp; drag empty space to pan.",16))
-		var operations := HBoxContainer.new()
-		editor_inspector.add_child(operations)
-		operations.add_child(MenuStyle.button("Rotate",_rotate_object))
-		var duplicate: Button = MenuStyle.button("Copy",_duplicate_object)
-		duplicate.disabled = chosen < 0
-		operations.add_child(duplicate)
-		var delete: Button = MenuStyle.button("Delete",_delete_selection)
-		delete.disabled = chosen < 0
-		operations.add_child(delete)
-		editor_inspector.add_child(MenuStyle.label("%d / 96 objects   |   %.1f deg" % [document.objects.size(),canvas.stamp_rotation],15,true))
+		editor_status.text = "Paint any road shape, terrain or intersection · %.1f m %s brush" % [canvas.brush_width,canvas.brush_shape]
+	elif category == "objects":
+		if canvas.selected_object >= 0 and canvas.mode == "objects":
+			_context_button("Rotate","rotate",_rotate_object)
+			_context_button("Copy","objects",_duplicate_object)
+			_context_button("Delete","delete",_delete_selection)
+			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",_move_practice_start)
+			_context_button("Palette","more",func() -> void:
+				canvas.selected_object = -1
+				_build_editor_tools())
+		else:
+			for pair: Array in [["barrier","Barrier"],["tyre_wall","Tyre wall"],["fence","Fence"],["tree","Tree"],["rock","Rock"]]:
+				_context_button(pair[1],pair[0],func() -> void:
+					canvas.stamp_kind = pair[0]
+					canvas.mode = "run" if pair[0] in ["barrier","tyre_wall","fence"] else "place"
+					canvas.run_start = Vector2.INF
+					_build_editor_tools(),canvas.stamp_kind == pair[0] and canvas.mode in ["run","place"])
+			_context_button("Select","move",func() -> void:
+				canvas.mode = "objects"
+				_build_editor_tools(),canvas.mode == "objects")
+			editor_status.text = "Two taps: start and end of a run along the road" if canvas.mode == "run" else "Tap to place · Select to move or remove objects"
 	else:
-		var actions := HBoxContainer.new()
-		editor_inspector.add_child(actions)
-		for pair: Array in [["move","Move"],["add","Add bend"]]:
-			var value: String = pair[0]
-			actions.add_child(MenuStyle.button(pair[1],func() -> void:
-				canvas.mode = value
-				_build_editor_tools(),canvas.mode == value))
-		var chosen: int = canvas.selected
-		editor_inspector.add_child(MenuStyle.label("Node %d / helper width" % [chosen+1] if chosen >= 0 else "Route and map edit separately.",18))
-		var widths := HBoxContainer.new()
-		editor_inspector.add_child(widths)
-		var minus: Button = MenuStyle.button("-",_change_node_width.bind(-1.0))
-		minus.disabled = chosen < 0 or float(document.widths[chosen]) <= 6.0
-		widths.add_child(minus)
-		var width_label := MenuStyle.label("%.1f m" % float(document.widths[chosen]) if chosen >= 0 else "6 - 20 m",24)
-		width_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		width_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		widths.add_child(width_label)
-		var plus: Button = MenuStyle.button("+",_change_node_width.bind(1.0))
-		plus.disabled = chosen < 0 or float(document.widths[chosen]) >= 20.0
-		widths.add_child(plus)
-		var corner := OptionButton.new()
-		corner.custom_minimum_size.y = 54
-		corner.add_item("Smooth corner")
-		corner.add_item("Sharp corner")
-		corner.disabled = chosen < 0
-		if chosen >= 0: corner.selected = 1 if document.corners[chosen] == "sharp" else 0
-		corner.item_selected.connect(func(index: int) -> void:
-			_remember()
-			document.corners[canvas.selected] = "sharp" if index == 1 else "smooth"
-			_commit_selection())
-		editor_inspector.add_child(corner)
-		var operations := HBoxContainer.new()
-		editor_inspector.add_child(operations)
-		var delete: Button = MenuStyle.button("Remove",_delete_selection)
-		delete.disabled = chosen < 0 or document.points.size() <= 4
-		operations.add_child(delete)
-		var start: Button = MenuStyle.button("Set start",_set_start_node)
-		start.disabled = chosen < 0
-		operations.add_child(start)
+		_context_button("Move","move",func() -> void:
+			canvas.mode = "move"
+			_build_editor_tools(),canvas.mode == "move")
+		_context_button("Add bend","plus",func() -> void:
+			canvas.mode = "add"
+			_build_editor_tools(),canvas.mode == "add")
+		_context_button("Set start","race",_set_start_node)
+		_context_button("Use roads","road",_route_from_roads)
+		_context_button("More","more",func() -> void: editor_tools_panel.visible = not editor_tools_panel.visible)
+		var row := HBoxContainer.new()
+		editor_inspector.add_child(MenuStyle.label("SELECTED ROUTE NODE",18))
+		editor_inspector.add_child(row)
+		row.add_child(MenuStyle.button("−",_change_node_width.bind(-1.0)))
+		row.add_child(MenuStyle.label("%.1f m" % document.widths[canvas.selected] if canvas.selected >= 0 else "Width",20))
+		row.add_child(MenuStyle.button("+",_change_node_width.bind(1.0)))
+		for corner: String in ["sharp","smooth"]:
+			editor_inspector.add_child(MenuStyle.button(corner.capitalize(),func() -> void:
+				if canvas.selected >= 0:
+					_remember()
+					document.corners[canvas.selected] = corner
+					_commit_selection()))
+		editor_inspector.add_child(MenuStyle.button("Remove",_delete_selection))
+		editor_inspector.add_child(MenuStyle.button("Practice start",_move_practice_start))
 		editor_inspector.add_child(MenuStyle.button("Lay road along route",_lay_road))
+		editor_status.text = "Numbered route sets lap order · Use roads traces a connected loop"
+	var context_width: float = 0
+	for child: Control in editor_context.get_children(): context_width += child.get_combined_minimum_size().x+4
+	(editor_context.get_parent() as ScrollContainer).custom_minimum_size.x = clampf(context_width,320,maxf(320,canvas.size.x-260))
+	canvas.refresh()
+
+func _change_piece(key: String, delta: float) -> void:
+	var is_ghost: bool = not canvas.ghost.is_empty()
+	if not is_ghost and canvas.selected_piece < 0: return
+	var piece: Dictionary = (canvas.ghost if is_ghost else document.pieces[canvas.selected_piece]).duplicate(true)
+	if key == "flip": piece.flip = not piece.flip
+	elif key == "heading": piece.heading = fposmod(float(piece.heading)+delta,360.0)
+	else:
+		var lower: float = 6.0 if key == "width" else 3.0 if key == "radius" else 2.0 if piece.kind == "straight" else 0.0
+		var upper: float = 20.0 if key == "width" else 60.0 if key == "radius" else 120.0
+		piece[key] = clampf(float(piece[key])+delta,lower,upper)
+	var errors: Array[String] = RoadPieces.validate(piece)
+	if not errors.is_empty():
+		editor_status.text = errors[0]
+		return
+	if is_ghost:
+		canvas.ghost = piece
+		canvas.snap_matched = false
+	else:
+		_remember()
+		document.pieces[canvas.selected_piece] = piece
+		_save_draft()
+	_build_editor_tools()
+
+func _delete_piece() -> void:
+	if not canvas.ghost.is_empty(): canvas.ghost.clear()
+	elif canvas.selected_piece >= 0:
+		_remember()
+		document.pieces.remove_at(canvas.selected_piece)
+		canvas.selected_piece = -1
+		_save_draft()
+	editor_geometry = ""
+	_build_editor_tools()
+
+func _route_from_roads() -> void:
+	var result: Dictionary = RoadPieces.route_from_pieces(document)
+	if not result.ok:
+		editor_status.text = str(result.errors[0])
+		return
+	_remember()
+	for key: String in ["points","widths","corners","route_override"]: document[key] = result.document[key]
+	canvas.selected = 0
+	_commit_selection()
+
+func _practice_start(track: NativeTrack) -> Vector2:
+	if document.has("practice_start"): return Vector2(document.practice_start.position[0],document.practice_start.position[1])
+	if document.pieces.is_empty(): return track.spawn
+	var samples: PackedVector2Array = RoadPieces.samples(document.pieces[0])
+	return samples[mini(6,samples.size()-1)]
+
+func _practice_heading(track: NativeTrack) -> float:
+	if document.has("practice_start"): return PI*0.5-deg_to_rad(float(document.practice_start.heading))
+	if document.pieces.is_empty(): return track.spawn_heading
+	var samples: PackedVector2Array = RoadPieces.samples(document.pieces[0])
+	var index: int = mini(6,samples.size()-1)
+	var tangent: Vector2 = samples[mini(index+1,samples.size()-1)]-samples[maxi(0,index-1)]
+	return atan2(tangent.x,tangent.y)
+
+func _move_practice_start() -> void:
+	canvas.cancel_gesture()
+	canvas.mode = "start"
+	editor_tools_panel.hide()
+	_build_editor_tools()
+	editor_status.text = "Tap a clear road to place the practice start"
+
+func _update_editor_issues() -> void:
+	if not is_instance_valid(canvas) or not is_instance_valid(editor_issue_button): return
+	editor_issues.clear()
+	canvas.issue_marker = Vector2.INF
+	var track: NativeTrack = canvas.native_preview
+	if track != null:
+		var start: Vector2 = _practice_start(track)
+		var config: HandlingConfig = load("res://resources/balanced.tres")
+		var radius: float = config.collision_radius
+		var elevated: bool = track.collision_elevated_at(start,track.nearest_route(start),radius)
+		if track.overlaps_obstacle(start,radius,elevated):
+			for i: int in range(document.objects.size()):
+				var object: Dictionary = document.objects[i]
+				if CreatorObjects.surface(object.kind) not in [3,4]: continue
+				var local: Vector2 = (start-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
+				var half: Vector2 = CreatorObjects.dimensions(object.kind)*0.5
+				if local.distance_to(local.clamp(-half,half)) <= radius+track.cell_size*0.71:
+					editor_issues.append({"message":"%s blocks the start" % str(object.kind).capitalize(),"position":start,"object":i})
+			if editor_issues.is_empty(): editor_issues.append({"message":"Obstacle overlaps the starting car","position":start,"object":-2})
+	for join: Dictionary in RoadPieces.joins(document.pieces):
+		editor_issues.append({"message":join.message,"position":join.position,"object":-1,"index":join.index})
+	editor_issue_button.text = "%d issue%s" % [editor_issues.size(),"s" if editor_issues.size() != 1 else ""]
+	editor_issue_button.visible = not editor_issues.is_empty()
+	var has_road: bool = not document.pieces.is_empty() or not document.layout.is_empty() or not document.paint.is_empty() or document.base_track != ""
+	test_button.disabled = not TrackDocument.validate(document).is_empty() or not has_road
+	if not editor_issues.is_empty() and int(editor_issues[0].object) != -1: test_button.disabled = true
+	canvas.queue_redraw()
+
+func _focus_issue() -> void:
+	if editor_issues.is_empty(): return
+	var issue: Dictionary = editor_issues[0]
+	_editor_category("objects" if int(issue.object) >= 0 else "paint" if int(issue.object) == -2 else "road")
+	canvas.issue_marker = issue.position
+	canvas.issue_text = issue.message
+	canvas.pan = -Vector2(issue.position.x,-issue.position.y)*canvas.scale_factor()
+	if int(issue.object) >= 0: canvas.selected_object = issue.object
+	elif int(issue.object) == -1: canvas.selected_piece = issue.index
+	_build_editor_tools()
+	editor_status.text = issue.message+" · drag to move, or delete the selection"
+	if int(issue.object) == -2: editor_status.text = issue.message+" · paint Road over the obstacle, or move the practice start in Race"
+	canvas.refresh()
 
 func _commit_selection() -> void:
 	if canvas.mode in ["move","add"]: document.route_override = true
@@ -565,7 +762,7 @@ func _change_node_width(change: float) -> void:
 	_commit_selection()
 
 func _delete_selection() -> void:
-	if canvas.mode in ["objects","place"]:
+	if canvas.mode in ["objects","place","run"]:
 		if canvas.selected_object < 0: return
 		_remember()
 		document.objects.remove_at(canvas.selected_object)
@@ -673,11 +870,15 @@ func _save_draft() -> void:
 		if is_instance_valid(editor_undo): editor_undo.disabled = history.is_empty()
 		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
 		if errors.is_empty(): canvas.show_native(TrackCompiler.compile(document))
+		_update_editor_issues()
 
 func _test_document() -> void:
 	_save_draft()
 	var track: NativeTrack = TrackCompiler.compile(document)
-	if track != null: _start_race(track, true)
+	if track != null and not test_button.disabled:
+		track.spawn = _practice_start(track)
+		track.spawn_heading = _practice_heading(track)
+		_start_race(track, true)
 
 func _share_dialog() -> void:
 	_save_draft()
@@ -736,7 +937,7 @@ func _import_dialog() -> void:
 	layout.add_child(text)
 	layout.add_child(MenuStyle.button("Paste from clipboard", func() -> void:
 		var copied: String = DisplayServer.clipboard_get()
-		if copied.to_utf8_buffer().size() <= 16384: text.text = copied
+		if copied.to_utf8_buffer().size() <= TrackDocument.MAX_BYTES: text.text = copied
 		else: _notice("That circuit is too large to import.")))
 	layout.add_child(MenuStyle.button("Choose file", func() -> void:
 		var picker := FileDialog.new()
@@ -750,7 +951,7 @@ func _import_dialog() -> void:
 		_own_dialog(picker)
 		picker.popup_centered_ratio(0.8)))
 	dialog.confirmed.connect(func() -> void:
-		if text.text.to_utf8_buffer().size() > 16384:
+		if text.text.to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
 			_notice("That circuit is too large to import.")
 			return
 		var parsed: Variant = JSON.parse_string(text.text)
@@ -796,19 +997,26 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
 	game.set("production_mode", true)
 	game.set("editor_test", from_editor)
 	game.connect("exit_requested", _leave_race)
+	game.connect("edit_here_requested", _edit_here)
 	game.connect("race_completed", _results)
 	game.connect("retry_requested", _retry_race)
 	add_child(game)
 	var hud: PlaygroundHUD = game.get("hud")
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
+
+func _edit_here(position: Vector2) -> void:
+	_leave_race()
+	if is_instance_valid(canvas):
+		canvas.pan = -Vector2(position.x,-position.y)*canvas.scale_factor()
+		canvas.refresh()
 
 func _leave_race() -> void:
 	if is_instance_valid(game):
@@ -917,6 +1125,7 @@ func _build_paint_tools() -> void:
 		_remember()
 		document.layout = {}
 		document.paint = []
+		document.pieces = []
 		document.objects = []
 		canvas.selected_object = -1
 		canvas.selected = -1

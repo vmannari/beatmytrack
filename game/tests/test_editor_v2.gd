@@ -175,7 +175,7 @@ func _ui(doc: Dictionary) -> void:
 	check(JSON.stringify(saved,"",true) == JSON.stringify(JSON.parse_string(JSON.stringify(app.get("document"))),"",true),"widths, corners, objects and transforms persist together")
 	var local: TrackLibrary = app.get("library")
 	check(local.export_document(saved,folder+"/export.json") == OK,"v2 object track exports")
-	check(TrackCompiler.compile(local.import_document(folder+"/export.json")).content_hash == canvas.native_preview.content_hash,"v2 export/import retains exact physical identity")
+	check(TrackCompiler.compile(local.import_document(folder+"/export.json")).content_hash == canvas.native_preview.content_hash,"v4 export/import retains exact physical identity")
 	var exact: NativeTrack = TrackCompiler.compile(saved)
 	check(exact.content_hash == canvas.native_preview.content_hash,"saved object track retains immutable compiled identity")
 	app.queue_free()

@@ -99,7 +99,9 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
-	check(canvas.mode == "paint","creator opens in free painting mode")
+	check(canvas.mode == "road","creator opens with the compact road palette")
+	app.call("_editor_category","paint")
+	check(canvas.mode == "paint","Surface opens free painting independently of road sections")
 	check(canvas.get_global_rect() == root.get_visible_rect(),"editor canvas fills the entire viewport")
 	check(not (app.get("editor_tools_panel") as Control).visible and not (app.get("editor_map_panel") as Control).visible,"tools and map settings start collapsed")
 	check((app.get("root_ui") as Node).find_child("Tab_Create",true,false) == null,"full-screen creator has no menu navigation header")

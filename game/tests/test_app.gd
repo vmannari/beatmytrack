@@ -67,7 +67,14 @@ func run() -> void:
 		await process_frame
 	var document: Dictionary = app.get("document")
 	check(TrackDocument.validate(document).is_empty(), "first editor opens a valid starter circuit")
-	check(not (app.get("test_button") as Button).disabled and not (app.get("share_button") as Button).disabled, "valid starter enables Test drive and Share")
+	check((app.get("test_button") as Button).disabled and not (app.get("share_button") as Button).disabled, "blank draft can be shared but needs road before practice")
+	# The general route/history regression uses the existing valid loop fixture.
+	var fixture: Dictionary = TrackDocument.create_default()
+	fixture.id = document.id
+	app.set("document",fixture)
+	app.call("_show_screen","create")
+	await process_frame
+	await process_frame
 	var initial_canvas: EditorCanvas = app.get("canvas")
 	check(initial_canvas.size.x > 0.0 and initial_canvas.size.y > 0.0 and is_finite(initial_canvas.zoom) and initial_canvas.pan.is_finite() and initial_canvas.to_screen(Vector2.ZERO).is_finite(), "first layout has a finite, usable editor transform")
 	await _viewport_tap(_button(app.get("root_ui"),"Map").get_global_rect().get_center())
@@ -152,7 +159,7 @@ func _check_library() -> void:
 
 
 func _check_input_and_history() -> void:
-	_button(app.get("root_ui"), "Route").pressed.emit()
+	_button(app.get("root_ui"), "Race").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	var start: Vector2 = canvas.to_screen(Vector2(original.points[0][0], original.points[0][1]))
@@ -290,75 +297,58 @@ func _check_view_retention() -> void:
 func _check_test_drive() -> void:
 	var before: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	var compiled: NativeTrack = TrackCompiler.compile(before)
+	var zoom_before: float = (app.get("canvas") as EditorCanvas).zoom
 	(app.get("test_button") as Button).pressed.emit()
 	await process_frame
 	var game: Node = app.get("game")
-	check(game != null and bool(game.get("production_mode")) and bool(game.get("editor_test")), "Test drive launches the production game in editor mode")
+	check(game != null and bool(game.get("production_mode")) and bool(game.get("editor_test")), "Test launches the real gameplay scene in untimed editor practice")
 	if game == null:
 		return
 	game.set_physics_process(false)
 	var driven: NativeTrack = game.get("native_track")
-	check(driven != null and driven.content_hash == compiled.content_hash and driven.cells == compiled.cells and driven.route == compiled.route, "test drive uses exactly the compiled draft content, surfaces and route")
-	check(not (app.get("root_ui") as Control).visible, "the editor is hidden during production test drive")
+	check(driven != null and driven.content_hash == compiled.content_hash and driven.cells == compiled.cells and driven.route == compiled.route, "practice uses exactly the compiled draft content, surfaces and route")
+	check(not (app.get("root_ui") as Control).visible, "the editor is hidden during practice")
 	var sim: VehicleSimulation = game.get("sim")
-	check(sim.state.tick == 0, "production countdown has not advanced canonical race time")
+	check(int(game.get("countdown_ticks")) == 0 and bool(game.get("attempt_practice")), "creator practice begins immediately and is always unscored")
 	game.call("_physics_process", 1.0 / 120.0)
 	var countdown: Label = game.get("countdown_label")
-	print("APP_COUNTDOWN_RECT ", countdown.get_global_rect(), " text=", countdown.text)
-	check(countdown.text == "3" and countdown.is_visible_in_tree() and root.get_visible_rect().has_point(countdown.get_global_rect().get_center()), "countdown number is visible inside the production viewport")
-	await _capture("creator-countdown")
+	check(countdown.text.is_empty(), "untimed editor driving has no racing countdown or GO announcement")
 	var pause_key := InputEventKey.new()
 	pause_key.physical_keycode = KEY_ESCAPE
 	pause_key.keycode = KEY_ESCAPE
 	pause_key.pressed = true
 	game.call("_unhandled_key_input", pause_key)
-	check(bool(game.get("paused")), "Escape pauses the production race")
+	check(bool(game.get("paused")), "Escape pauses editor practice")
 	var paused_tick: int = sim.state.tick
 	game.call("_physics_process", 1.0 / 120.0)
-	check(sim.state.tick == paused_tick, "paused production game cannot advance canonical simulation")
+	check(sim.state.tick == paused_tick, "paused editor practice cannot advance canonical simulation")
 	game.call("_unhandled_key_input", pause_key)
-	check(not bool(game.get("paused")), "Escape resumes the production race")
+	check(not bool(game.get("paused")), "Escape resumes editor practice")
 	game.set("ai_enabled", true)
 	var session: TrackSession = game.get("track_session")
-	var observed_fourth_lap: bool = false
-	for tick: int in range(120 * 180):
+	for tick: int in range(1800):
 		game.call("_physics_process", 1.0 / 120.0)
-		if session.completed_laps == 4 and not observed_fourth_lap:
-			observed_fourth_lap = true
-			check(not session.finished, "the fourth lap cannot finish a five-lap production race")
-		if sim.state.tick == 1200:
-			await _capture("creator-test-drive", 30)
-		if session.finished:
-			break
-	print("APP_DRIVE_RESULT laps=", session.completed_laps, " times=", session.lap_times, " collisions=", sim.state.collision_count)
-	check(session.finished and session.completed_laps == 5, "production editor drive completes five ordered laps")
-	check((app.get("root_ui") as Control).visible and _button(app.get("root_ui"), "Back to editor") != null, "production completion opens editor-specific results")
-	await _capture("creator-results")
-	var retry: Button = _button(app.get("root_ui"), "Retry")
-	check(retry != null, "results exposes immediate Retry")
-	if retry != null:
-		retry.pressed.emit()
-		check(not (app.get("root_ui") as Control).visible and not (game.get("track_session") as TrackSession).finished and sim.state.tick == 0, "Retry immediately resets the same compiled production race")
-		# Replay the already completed result presentation, retaining its real
-		# driven session, to exercise the separate keyboard entry path.
-		game.set("track_session", session)
-		game.set("paused", true)
-		app.call("_results")
-		var restart_key := InputEventKey.new()
-		restart_key.physical_keycode = KEY_R
-		restart_key.keycode = KEY_R
-		restart_key.pressed = true
-		game.call("_unhandled_key_input", restart_key)
-		check(not (app.get("root_ui") as Control).visible and not (game.get("track_session") as TrackSession).finished and sim.state.tick == 0 and int(game.get("countdown_ticks")) == 360, "R from results hides the overlay and starts the same fresh countdown as Retry")
-	game.emit_signal("exit_requested")
+	check(sim.state.position.distance_to(driven.spawn) > 1.0, "practice actually drives the authored map")
+	check(not session.finished and session.elapsed_ticks == 0 and session.lap_times.is_empty(), "practice creates no scored lap times or race result")
+	check(not (app.get("root_ui") as Control).visible, "ongoing practice never opens a result overlay")
+	await _capture("creator-test-drive", 30)
+	var hud: PlaygroundHUD = game.get("hud")
+	(hud.find_child("PracticeRestart", true, false) as Button).pressed.emit()
+	check(sim.state.tick == 0 and sim.state.position == driven.spawn and int(game.get("countdown_ticks")) == 0, "Restart immediately resets the same draft without a countdown")
+	for tick: int in range(300):
+		game.call("_physics_process", 1.0 / 120.0)
+	var edit_position: Vector2 = sim.state.position
+	(hud.find_child("EditHere", true, false) as Button).pressed.emit()
 	await process_frame
 	await process_frame
-	check(app.get("game") == null and app.get("screen") == "create", "race exit returns to the editor and releases the running game")
-	check(app.get("document") == before, "test drive and results preserve the editable draft exactly")
-	check(TrackCompiler.compile(app.get("document")).content_hash == compiled.content_hash, "returning from test drive preserves the circuit content hash")
+	check(app.get("game") == null and app.get("screen") == "create", "Edit here returns directly to the editor and releases the running game")
+	check(app.get("document") == before, "practice and returning preserve the editable draft exactly")
+	check(TrackCompiler.compile(app.get("document")).content_hash == compiled.content_hash, "returning from practice preserves the circuit content hash")
+	var returned_canvas: EditorCanvas = app.get("canvas")
+	check(is_equal_approx(returned_canvas.zoom, zoom_before) and returned_canvas.to_screen(edit_position).distance_to(returned_canvas.size * 0.5) < 2.0, "Edit here retains editor zoom and centers the actual driven location")
 	await _capture("creator-returned")
 	var records: RefCounted = app.get("records")
-	check((records.get("records") as Dictionary).is_empty(), "editor diagnostic laps never write a local personal best")
+	check((records.get("records") as Dictionary).is_empty(), "editor practice never writes a local personal best")
 
 
 func _check_clean_result() -> void:

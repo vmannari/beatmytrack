@@ -8,6 +8,7 @@ signal handling_edited
 signal record_requested
 signal track_requested
 signal exit_requested
+signal edit_here_requested
 
 var production_mode: bool = false
 var editor_test: bool = false
@@ -49,13 +50,35 @@ func _ready() -> void:
 	title.custom_minimum_size.x = 100
 	top.add_child(title)
 	race_timer = _label("00:00.00", 28)
-	race_timer.visible = production_mode
+	race_timer.visible = production_mode and not editor_test
 	top.add_child(race_timer)
-	_button(top, "Restart  R", func() -> void: restart_requested.emit())
-	_button(top, "Pause  Esc", func() -> void: pause_requested.emit())
-	pause_button = top.get_child(top.get_child_count()-1) as Button
-	if production_mode:
-		_button(top, "Back to editor" if editor_test else "Tracks", func() -> void: exit_requested.emit())
+	if editor_test:
+		title.visible = false
+		_button(top, "Practice (untimed)", func() -> void: pause_requested.emit())
+		pause_button = top.get_child(top.get_child_count() - 1) as Button
+		pause_button.name = "PracticeStatus"
+		pause_button.tooltip_text = "Pause practice"
+		var spacer := Control.new()
+		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		top.add_child(spacer)
+		_button(top, "Restart", func() -> void: restart_requested.emit())
+		top.get_child(top.get_child_count() - 1).name = "PracticeRestart"
+		_button(top, "Edit here", func() -> void: edit_here_requested.emit())
+		var edit_button: Button = top.get_child(top.get_child_count() - 1) as Button
+		edit_button.name = "EditHere"
+		edit_button.custom_minimum_size.x = 124
+		var accent: StyleBoxFlat = _panel_style()
+		accent.bg_color = Color("006e82")
+		accent.border_color = Color("71d0d8")
+		accent.set_border_width_all(1)
+		edit_button.add_theme_stylebox_override("normal", accent)
+	else:
+		_button(top, "Restart  R", func() -> void: restart_requested.emit())
+		_button(top, "Pause  Esc", func() -> void: pause_requested.emit())
+		pause_button = top.get_child(top.get_child_count()-1) as Button
+		if production_mode:
+			_button(top, "Tracks", func() -> void: exit_requested.emit())
 	if OS.is_debug_build() and not production_mode:
 		_button(top, "Track F5", func() -> void: track_requested.emit())
 		_button(top, "Tune  F2", toggle_tuning)
@@ -65,6 +88,7 @@ func _ready() -> void:
 	panel.custom_minimum_size = Vector2(265, 0)
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.visible = not editor_test
 	root.add_child(panel)
 	var info := VBoxContainer.new()
 	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -155,7 +179,7 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 	if hud_elapsed < 0.08:
 		return
 	hud_elapsed = 0.0
-	pause_button.text = "Resume" if paused else ("Pause" if production_mode else "Pause  Esc")
+	pause_button.text = ("Paused · Resume" if paused else "Practice (untimed)") if editor_test else ("Resume" if paused else ("Pause" if production_mode else "Pause  Esc"))
 	speed_label.text = "%3.0f km/h" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
 	debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [

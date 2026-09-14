@@ -358,31 +358,29 @@ func _editor() -> void:
 		_show_screen("play"))
 	close.name="CloseEditor"
 	close.tooltip_text="Close editor"
+	EditorStyle.transparent_button(close)
 	overlay.add_child(close)
 	close.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	close.offset_left=-68; close.offset_right=-16; close.offset_top=16; close.offset_bottom=68
 	var title := HBoxContainer.new()
 	title.position=Vector2(16,16)
 	overlay.add_child(title)
-	var track_name := LineEdit.new()
-	track_name.name="CircuitName"
+	var track_name := Label.new()
+	track_name.name="TrackName"
 	track_name.text=str(document.name)
-	track_name.editable=false
-	track_name.max_length=40
 	track_name.custom_minimum_size=Vector2(220,52)
-	EditorStyle.apply(track_name)
-	track_name.add_theme_color_override("font_uneditable_color",EditorStyle.INK)
-	track_name.add_theme_stylebox_override("read_only",EditorStyle.box())
+	track_name.clip_text=true
+	track_name.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
+	track_name.vertical_alignment=VERTICAL_ALIGNMENT_CENTER
+	track_name.add_theme_font_override("font",EditorStyle.FONT)
 	track_name.add_theme_font_size_override("font_size",22)
+	track_name.add_theme_color_override("font_color",EditorStyle.INK)
 	title.add_child(track_name)
-	var pencil: Button=EditorButton.make("","pencil",func() -> void:
-		track_name.editable=true; track_name.grab_focus(); track_name.select_all())
+	var pencil: Button=EditorButton.make("","pencil",_rename_track)
+	EditorStyle.transparent_button(pencil)
 	pencil.name="RenameTrack"
 	pencil.tooltip_text="Rename track"
 	title.add_child(pencil)
-	track_name.text_changed.connect(func(value: String) -> void: document.name=value)
-	track_name.focus_exited.connect(func() -> void: track_name.editable=false; _save_draft())
-	track_name.text_submitted.connect(func(_value: String) -> void: track_name.release_focus())
 	editor_undo=EditorButton.make("","undo",_undo)
 	editor_undo.text="Undo"
 	title.add_child(editor_undo)
@@ -413,6 +411,7 @@ func _editor() -> void:
 		var test_style: StyleBoxFlat=EditorStyle.box()
 		test_style.border_color=Color("b4ed69")
 		test_style.bg_color=Color("203526") if state=="hover" else Color("101e19")
+		if state=="disabled": test_style.bg_color=Color("252d30"); test_style.border_color=Color("586369")
 		test_button.add_theme_stylebox_override(state,test_style)
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
@@ -431,7 +430,7 @@ func _editor() -> void:
 		var value: String = pair[0]
 		var button: Button = EditorButton.make(pair[1],pair[2],_editor_category.bind(value))
 		button.name = "Editor"+({"road":"Road","paint":"Surface"}.get(value,pair[1]))
-		button.custom_minimum_size=Vector2(86,60)
+		button.custom_minimum_size=Vector2(86,76)
 		button.toggle_mode = true
 		editor_mode_buttons[value] = button
 		rail.add_child(button)
@@ -504,16 +503,9 @@ func _editor() -> void:
 	share_button=EditorStyle.button("Share",_share_dialog)
 	metadata.add_child(share_button)
 	metadata.add_child(EditorStyle.button("Help",_editor_help))
-	var biome_menu := PopupMenu.new()
-	biome_menu.name="BiomeMenu"
-	overlay.add_child(biome_menu)
-	for value: String in TrackDocument.THEMES: biome_menu.add_item(value.capitalize())
-	biome_menu.id_pressed.connect(func(index: int) -> void: _set_document_value("theme",TrackDocument.THEMES[index]))
-	var biome_button: Button=EditorButton.make("Biome","biome",func() -> void:
-		biome_menu.position=Vector2i(rail_panel.get_global_rect().end.x+8,rail_panel.get_global_rect().position.y)
-		biome_menu.popup())
+	var biome_button: Button=EditorButton.make("Biome","biome",_choose_biome)
 	biome_button.name="EditorBiome"
-	biome_button.custom_minimum_size=Vector2(86,60)
+	biome_button.custom_minimum_size=Vector2(86,76)
 	rail.add_child(biome_button)
 	canvas.selection_changed.connect(_build_editor_tools)
 	_build_editor_tools()
@@ -1434,3 +1426,85 @@ func _choose_hazard(kind: String) -> void:
 	canvas.mode="place"
 	_build_editor_tools()
 	editor_status.text=CreatorObjects.description(kind)+" / tap to place; Objects > Select to adjust"
+
+
+func _choose_biome() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.name="BiomeDialog"
+	dialog.borderless=true
+	dialog.title="Choose a biome"
+	dialog.ok_button_text="Done"
+	dialog.add_theme_stylebox_override("panel",EditorStyle.box())
+	var list := VBoxContainer.new()
+	list.custom_minimum_size=Vector2(500,260)
+	list.add_theme_constant_override("separation",12)
+	dialog.add_child(list)
+	list.add_child(MenuStyle.label("Choose a biome",24))
+	EditorStyle.apply(dialog.get_ok_button())
+	dialog.get_ok_button().custom_minimum_size=Vector2(110,44)
+	for biome: String in TrackDocument.THEMES:
+		var description: String={"pine":"Pine forest - cool greens and woodland","coast":"Coast - grass, sand and blue water","desert":"Desert - warm sand and dry ground"}[biome]
+		var choice: Button=EditorStyle.button(description,func() -> void:
+			dialog.hide()
+			_set_document_value("theme",biome),document.theme==biome)
+		choice.custom_minimum_size=Vector2(480,68)
+		list.add_child(choice)
+	_own_dialog(dialog)
+	dialog.popup_centered_clamped(Vector2i(540,330))
+
+func _rename_track() -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.name="RenameDialog"
+	dialog.borderless=true
+	dialog.title="Name your track"
+	dialog.ok_button_text="Apply name"
+	dialog.add_theme_stylebox_override("panel",EditorStyle.box())
+	EditorStyle.apply(dialog.get_ok_button())
+	EditorStyle.apply(dialog.get_cancel_button())
+	dialog.get_ok_button().custom_minimum_size=Vector2(130,44)
+	dialog.get_cancel_button().custom_minimum_size=Vector2(110,44)
+	var column := VBoxContainer.new()
+	column.custom_minimum_size=Vector2(460,116)
+	column.add_theme_constant_override("separation",12)
+	dialog.add_child(column)
+	column.add_child(MenuStyle.label("Give your track a name",22))
+	var field := LineEdit.new()
+	field.name="CircuitName"
+	field.text=str(document.name)
+	field.max_length=40
+	field.custom_minimum_size=Vector2(440,52)
+	field.virtual_keyboard_enabled=true
+	EditorStyle.apply(field)
+	field.add_theme_font_size_override("font_size",20)
+	column.add_child(field)
+	field.text_changed.connect(func(value: String) -> void: dialog.get_ok_button().disabled=value.strip_edges().is_empty())
+	var apply_name: Callable=func() -> void:
+		if field.text.strip_edges().is_empty(): return
+		document.name=field.text.strip_edges()
+		(root_ui.find_child("TrackName",true,false) as Label).text=document.name
+		_save_draft()
+		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+		dialog.hide(); dialog.queue_free()
+	dialog.confirmed.connect(apply_name)
+	field.text_submitted.connect(func(_value: String) -> void: apply_name.call())
+	dialog.canceled.connect(func() -> void:
+		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+		dialog.queue_free())
+	root_ui.add_child(dialog)
+	dialog.popup_centered_clamped(Vector2i(500,220))
+	var keyboard_timer := Timer.new()
+	keyboard_timer.wait_time=0.1
+	dialog.add_child(keyboard_timer)
+	keyboard_timer.timeout.connect(func() -> void:
+		var visible_size: Vector2=get_viewport().get_visible_rect().size
+		var keyboard: float=0
+		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): keyboard=DisplayServer.virtual_keyboard_get_height()*visible_size.y/maxf(1.0,DisplayServer.window_get_size().y)
+		dialog.position=Vector2i(_rename_dialog_position(visible_size,Vector2(dialog.size),keyboard)))
+	keyboard_timer.start()
+	field.grab_focus()
+	field.select_all()
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		DisplayServer.virtual_keyboard_show(field.text,field.get_viewport().get_screen_transform()*field.get_global_rect(),DisplayServer.KEYBOARD_TYPE_DEFAULT,40,0,field.text.length())
+
+static func _rename_dialog_position(view: Vector2, dialog_size: Vector2, keyboard_height: float) -> Vector2:
+	return Vector2(maxf(8,(view.x-dialog_size.x)*0.5),maxf(8,(view.y-keyboard_height-dialog_size.y)*0.5))

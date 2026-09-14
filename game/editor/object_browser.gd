@@ -46,6 +46,8 @@ func _ready() -> void:
 	previous.custom_minimum_size=Vector2(44,88)
 	paging.add_child(previous)
 	tiles = _scroll_row(paging)
+	tiles.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	tiles.alignment=BoxContainer.ALIGNMENT_CENTER
 	next=EditorButton.make("","next",func() -> void: page+=1; _tiles())
 	next.name="NextObjects"
 	next.tooltip_text="Next objects"
@@ -96,8 +98,8 @@ func _tiles() -> void:
 		EditorStyle.apply(button,button.text==category)
 	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
-	previous.disabled=page==0
-	next.disabled=(page+1)*page_size>=entries.size()
+	previous.visible=page>0
+	next.visible=(page+1)*page_size<entries.size()
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
 		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],choose.bind(asset[0])))

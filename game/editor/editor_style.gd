@@ -38,3 +38,8 @@ static func button(text: String, action: Callable, selected: bool = false) -> Bu
 	apply(result,selected)
 	result.pressed.connect(action)
 	return result
+
+
+static func transparent_button(control: Control) -> void:
+	for state: String in ["normal","hover","pressed","hover_pressed","disabled","focus"]:
+		control.add_theme_stylebox_override(state,StyleBoxEmpty.new())

@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 R01/T01-T04/V02/V04/V05: centred biome/rename dialogs, keyboard-aware rename placement, taller rail, transparent header and grey disabled Test. [Checks and captures](docs/EDITOR_WIP_WORKFLOW.md).
+
 2026-09-14 R01/T01-T04/V02/V04/V05: centred editor rail, simplified header/menu, biome and waypoint tools, fixed object paging and independent WIP autosave. [Actual checks and captures](docs/EDITOR_WIP_WORKFLOW.md).
 
 2026-09-14 R01/T01-T04/V02/V04/V05: Curvy follow-up removes folded marking tails and cap-directed kerb spikes. [Actual checks and closer captures](docs/KERB_JOIN_FIXES.md).

@@ -33,7 +33,7 @@ static func make(label: String, icon: String, action: Callable, chosen: bool = f
 func _draw() -> void:
 	var center := Vector2(24,size.y*0.5) if horizontal else Vector2(size.x*0.5,26 if not caption.is_empty() else size.y*0.5)
 	var ink := Color(0.94,0.97,0.97,0.35 if disabled else 1.0)
-	if glyph=="play": ink=Color("b4ed69"); ink.a=0.45 if disabled else 1.0
+	if glyph=="play": ink=Color("859095") if disabled else Color("b4ed69")
 	var path := PackedVector2Array()
 	if glyph in ["straight","curve","s_bend","hairpin","road","bridge"]:
 		for i: int in range(25):

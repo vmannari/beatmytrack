@@ -101,7 +101,8 @@ func run() -> void:
 	check(reopened.load_document(doc.id)==original_saved,"autosave cannot overwrite saved original")
 	check(reopened.load_wip(doc.id).name==wip.name,"WIP survives reopening the library")
 	check(browser.find_child("ObjectSearch",true,false)==null,"object search removed")
-	check(browser.previous.visible and browser.next.visible,"both paging slots always remain visible")
+	browser.category="Barriers"; browser.page=0; browser.refresh()
+	check(not browser.previous.visible and not browser.next.visible,"single page hides unnecessary paging controls")
 	var test_action: Button=app.get("test_button")
 	check(root.get_visible_rect().encloses(test_action.get_global_rect()),"Test action stays inside screen")
 	check(not CreatorCatalog.family("jump").is_empty(),"Jump is available in Objects")
@@ -144,6 +145,36 @@ func run() -> void:
 		(app.get("editor_map_panel") as Control).show()
 		for tick: int in range(4): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-overflow.png"))==OK,"overflow capture")
+	(app.get("editor_map_panel") as Control).hide()
+	app.call("_choose_biome")
+	await process_frame; await process_frame
+	var biome_dialog: AcceptDialog=app.get("root_ui").find_child("BiomeDialog",true,false)
+	check(biome_dialog.visible and biome_dialog.size.x>=500,"biomes use a large centred dialog")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		for tick: int in range(3): await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-biomes-dialog.png"))
+	biome_dialog.hide(); biome_dialog.queue_free()
+	await process_frame
+	app.call("_rename_track")
+	await process_frame; await process_frame
+	var rename_dialog: ConfirmationDialog=app.get("root_ui").find_child("RenameDialog",true,false)
+	var name_field: LineEdit=rename_dialog.find_child("CircuitName",true,false)
+	check(name_field.has_focus() and name_field.virtual_keyboard_enabled,"rename field accepts focused native keyboard input")
+	var keyboard_position: Vector2=app.call("_rename_dialog_position",Vector2(1280,720),Vector2(500,220),320.0)
+	check(keyboard_position.y+220<=400,"rename dialog stays above simulated onscreen keyboard")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		for tick: int in range(3): await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-rename-dialog.png"))
+	name_field.text="New track name"
+	rename_dialog.confirmed.emit()
+	await process_frame
+	check(app.get("document").name=="New track name","Apply name updates the document")
+	(app.get("test_button") as Button).disabled=true
+	var disabled_style: StyleBoxFlat=(app.get("test_button") as Button).get_theme_stylebox("disabled")
+	check(disabled_style.border_color==Color("586369"),"disabled Test uses grey treatment")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		for tick: int in range(3): await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-test-disabled.png"))
 	print("OBJECT_BROWSER_TESTS: %d checks, %d failures" % [checks,failures])
 	app.queue_free(); await process_frame
 	quit(1 if failures else 0)

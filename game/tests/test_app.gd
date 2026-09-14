@@ -85,6 +85,9 @@ func run() -> void:
 		await _viewport_tap(name_field.get_global_rect().get_center())
 		check(name_field.has_focus(), "viewport-dispatched touch focuses the native circuit-name field")
 		name_field.release_focus()
+	var rename: Window=app.get("root_ui").find_child("RenameDialog",true,false)
+	rename.hide(); rename.queue_free()
+	await process_frame
 	await _check_input_and_history()
 	await _check_view_retention()
 	await _capture_editor_themes()

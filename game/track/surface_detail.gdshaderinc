@@ -20,6 +20,14 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	if (road) {
 		return base * (0.96 + broad * 0.08 + (fine-0.5)*0.055*visibility);
 	}
-	float patches = floor(pigment(p*2.2)*4.0)/3.0;
-	return base * (0.89 + broad*0.14 + patches*0.075*visibility);
+	// Sparse short blade strokes rather than circular noise clouds.
+	vec2 cell = floor(p * 2.4);
+	float seed = fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);
+	float other = fract(sin(dot(cell,vec2(269.5,183.3)))*43758.5453);
+	vec2 local = fract(p * 2.4) - vec2(0.25+seed*0.5,0.25+other*0.5);
+	float blade = (1.0-smoothstep(0.025,0.09,abs(local.x + local.y*(seed-0.5)*1.5)))
+		* smoothstep(-0.35,-0.1,local.y) * (1.0-smoothstep(0.05,0.32,local.y));
+	blade *= step(0.72,seed) * visibility;
+	float plane = smoothstep(0.35,0.65,pigment(p*0.12));
+	return base * (0.97 + plane*0.055 - blade*0.09);
 }

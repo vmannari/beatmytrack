@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 V02/V04/V05 follow-up: corrected grass, branch shapes, decorative stone scale, grey tree footprints and creator roadside shoulders/inner kerbs. Track-kit-6 actual Silmukka screenshot and checks are recorded in VISUAL_STYLE.md.
+
 2026-09-14 V02/V04/V03/R01/V05: reference-led woodland visual revision, shared textured materials, irregular pines, selective outlines and driving-control icons. See [VISUAL_STYLE.md](VISUAL_STYLE.md) for actual evidence and acceptance limits.
 
 2026-09-14 G01: owner requests stronger initial tyre impacts, pushable individual stacks and torque-limited piles. [TYRE_PUSHING.md](TYRE_PUSHING.md) records implementation and actual validation.

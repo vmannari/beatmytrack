@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-5"
+const VERSION: String = "track-kit-6"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
@@ -35,9 +35,12 @@ func _build_terrain(track: NativeTrack) -> void:
 	low.fill(Color(0,0,0,0))
 	high.fill(Color(0,0,0,0))
 	var hide_boundary: bool = _hide_creator_boundary(track)
+	var object_ground: PackedByteArray = _authored_barrier_cells(track)
 	for y: int in range(track.grid_height):
 		for x: int in range(track.grid_width):
 			var kind: int = track.cells[y * track.grid_width + x]
+			# Object collision footprints are not concrete paving beneath foliage.
+			if kind == 4 and not object_ground.is_empty() and object_ground[y*track.grid_width+x] == 1: kind = 1
 			if hide_boundary and _boundary_cell(track,x,y): kind = 1
 			var weights := Color(0,0,0,0)
 			weights[kind % 4] = 1.0
@@ -68,6 +71,11 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var shoulders := SurfaceTool.new()
 	var asphalt := SurfaceTool.new()
 	var markings := SurfaceTool.new()
+	var red_kerbs := SurfaceTool.new()
+	var pale_kerbs := SurfaceTool.new()
+	red_kerbs.begin(Mesh.PRIMITIVE_TRIANGLES)
+	pale_kerbs.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var kerb_counts: Array[int] = [0,0]
 	for tool: SurfaceTool in [shoulders,asphalt,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
@@ -109,12 +117,41 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines): continue
+					var bend_distance: float = _inner_bend_distance(midpoint,points)
+					if bend_distance >= 0.0:
+						var stripe: int = int(floor(bend_distance/1.5))%2
+						var curb: SurfaceTool = red_kerbs if stripe == 0 else pale_kerbs
+						var lip: Vector2 = outward.normalized()*0.75
+						_quad(curb,VisualGeometry.world(p)+Vector3.UP*0.025,VisualGeometry.world(q)+Vector3.UP*0.025,
+							VisualGeometry.world(q+lip)+Vector3.UP*0.025,VisualGeometry.world(p+lip)+Vector3.UP*0.025)
+						kerb_counts[stripe] += 1
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
-	if counts[0]: _commit_creator_road(shoulders,colors[5].darkened(0.12),texture,track.half_extent)
+	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,track.half_extent)
 	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
+	if kerb_counts[0]: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent)
+	if kerb_counts[1]: _commit_creator_road(pale_kerbs,Color("c8c2aa"),texture,track.half_extent)
+
+
+func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
+	# Curbs only on the inside of locally curved sections, never straight ends.
+	var nearest: int = 0
+	var best: float = INF
+	var distance: float = 0.0
+	var nearest_distance: float = 0.0
+	for i: int in range(points.size()):
+		if i > 0: distance += points[i-1].distance_to(points[i])
+		var squared: float = point.distance_squared_to(points[i])
+		if squared < best:
+			best = squared
+			nearest = i
+			nearest_distance = distance
+	if nearest == 0 or nearest == points.size()-1: return -1.0
+	var inward: Vector2 = (points[nearest+1]-points[nearest]).normalized()-(points[nearest]-points[nearest-1]).normalized()
+	if inward.length_squared() < 0.0001 or (point-points[nearest]).dot(inward) <= 0.0: return -1.0
+	return nearest_distance
 
 
 func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float) -> int:
@@ -166,7 +203,7 @@ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 	return mask
 
 
-func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2) -> void:
+func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false) -> void:
 	tool.generate_normals()
 	var instance := MeshInstance3D.new()
 	instance.mesh = tool.commit()
@@ -175,6 +212,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
+	material.set_shader_parameter("gravel",gravel)
 	instance.material_override = material
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(instance)
@@ -285,9 +323,9 @@ func _build_low_cover(track: NativeTrack) -> void:
 			_pine(scenery, center, scale_value, turn, foliage)
 		else:
 			var color: Color = stone if seed_value % 4 == 0 else foliage
-			var height: float = 0.34 if seed_value % 4 == 0 else 0.58
-			_mound(scenery, center, Vector3(0.67, height, 0.48) * scale_value, turn, color)
-			_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.42, height * 0.6, 0.35), turn+1.2, color.darkened(0.08))
+			var height: float = 0.08 if seed_value % 4 == 0 else 0.22
+			_mound(scenery, center, Vector3(0.18 if seed_value % 4 == 0 else 0.4, height, 0.14 if seed_value % 4 == 0 else 0.3) * scale_value, turn, color)
+			_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
 		scenic_count += 1
 	if scenic_count:
 		scenery.generate_normals()
@@ -437,20 +475,17 @@ func _mound(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float
 
 
 func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
-	_mound(tool, center, Vector3(0.12, 1.25, 0.12) * scale_value, turn, Color("554e40"))
+	# Layered branch masses with blunt, uneven ends, not repeated star cones.
+	_mound(tool, center, Vector3(0.12, 1.65, 0.12) * scale_value, turn, Color("514533"))
 	for tier: int in range(5):
-		var base: Vector3 = center + Vector3(0.07*tier, 0.50 + tier*0.48, 0.03*tier)*scale_value
-		var radius: float = (1.1 - tier*0.17) * scale_value
-		var tip: Vector3 = base + Vector3(-0.12, 1.55 - tier*0.1, 0.05)*scale_value
-		for i: int in range(14):
-			var a: float = turn + tier*0.6 + TAU*i/14.0
-			var b: float = turn + tier*0.6 + TAU*(i+1)/14.0
-			var p: Vector3 = base + Vector3(cos(a), 0.07*(i%2), sin(a))*radius*(1.0 if i%2 == 0 else 0.66)
-			var q: Vector3 = base + Vector3(cos(b), 0.07*((i+1)%2), sin(b))*radius*(0.66 if i%2 == 0 else 1.0)
-			tool.set_color(color.lightened(tier*0.035).darkened(0.07 if i%3 == 0 else 0.0))
-			for v: Vector3 in [p, tip, q]: tool.add_vertex(v)
-			tool.set_color(color.darkened(0.22))
-			for v: Vector3 in [p, q, base]: tool.add_vertex(v)
+		var y: float = 0.65 + tier*0.48
+		var radius: float = 0.75 - tier*0.12
+		for branch: int in range(4):
+			var angle: float = turn + branch*TAU/4.0 + tier*1.7
+			var offset := Vector3(cos(angle)*radius*0.8,y+sin(angle*3.0)*0.12,sin(angle)*radius*0.8)
+			var shade: Color = color.lightened(0.025*tier).darkened(0.10 if branch%3 == 0 else 0.0)
+			_mound(tool,center+offset*scale_value,Vector3(radius*0.70,0.40,radius*0.48)*scale_value,angle,shade)
+	_mound(tool,center+Vector3(0,2.8,0)*scale_value,Vector3(0.20,0.40,0.18)*scale_value,turn,color.lightened(0.08))
 
 
 func _build_finish(track: NativeTrack) -> void:

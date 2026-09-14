@@ -28,3 +28,21 @@ Evidence: [before](evidence/style-before.png), [after](evidence/style-after.png)
 This moves the existing procedural kit toward the example, rather than reproducing its hand-painted asset quality. Native raster-derived curb silhouettes remain visibly stepped; scenery is simpler and sparser than the reference. Fixed world-unit contours need further review at different zoom levels. No added collision is implied by decorative scenery.
 
 Desktop captures are 1280?720 on the NVIDIA Compatibility renderer. No physical-phone test, Android export, thermal test or Mobile renderer comparison was performed; device attachment was not enumerated. Import still reports missing Android build-tools. Phone readability, contour stability in motion, GPU cost of the additional pass/scenery, and owner visual acceptance remain open. Camera calibration remains its separate existing gate.
+
+
+## Owner correction ? 2026-09-14, track-kit-6
+
+V02/V04/V05: owner rejected mottled grass, sharp repeated tree shapes, large automatically scattered stones and broad cream road shoulders.
+
+Changed `native_track_visual.gd`, `surface_detail.gdshaderinc` and `creator_road.gdshader`: sparse jittered grass strokes replace cloud noise; layered blunt branch masses replace star-cone foliage; automatically scattered stones are now low pebbles (placed solid rock objects retain their footprint). Creator shoulders now use a separate sandy gravel material. White road lines remain and inside bends receive alternating 1.5 m red/off-white kerb segments. Existing exposed-edge and junction checks also govern kerb placement. Scenery collision footprints now display grass beneath their meshes instead of concrete-grey ground. Canonical cells remain unchanged.
+
+Added read-only `game/tests/capture_style.gd` and `scripts/dev.ps1 CaptureStyle -StyleDocument <absolute creator JSON>` for review of saved tracks, without saving the track or records. Reviewed the owner's local Silmukka document at 1494?1009: [actual updated capture](evidence/style-roadside.png). Its document is not copied into the repository.
+
+Actual commands (all via PowerShell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1):
+- `CapturePractice`: passed 32 checks, six laps and zero contacts; intermediate foliage review.
+- `TestPieces`: passed 106 checks, golden geometry and five laps with zero contacts.
+- `TestRefinement`: passed 29 checks, including solid objects and movable tyres.
+- `CaptureStyle -StyleDocument <local Silmukka JSON>`: final capture passed; assertion confirms native cells preserved. First version of the preservation assertion used the wrong packed-array type and failed parsing; corrected to PackedInt32Array, then reran successfully.
+- `git diff --check`: passed.
+
+This is still procedural artwork, with further owner visual acceptance required. Native raster-derived road contours remain an existing limitation; new inside-curve kerbs apply to creator road pieces. Decorative rocks were reduced, not owner-placed solid obstacles. No new guardrails, tyre barriers or collision geometry are inferred from the reference. Phone readability, motion shimmer and GPU performance remain untested. No physical phone test or Android export was performed; device attachment was not enumerated.

@@ -5,6 +5,7 @@ render_mode diffuse_toon, specular_disabled, cull_disabled;
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
 uniform vec2 map_extent;
 uniform vec4 road_color : source_color;
+uniform bool gravel = false;
 varying vec3 world_position;
 
 void vertex() {
@@ -18,5 +19,10 @@ void fragment() {
 	if (any(lessThan(map_uv, vec2(0.0))) || any(greaterThan(map_uv, vec2(1.0)))
 			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, true);
+	if (gravel) {
+		float grain = pigment(world_position.xz*14.0);
+		ALBEDO = road_color.rgb*(0.94+pigment(world_position.xz*1.5)*0.10);
+		ALBEDO *= 1.0-smoothstep(0.70,0.87,grain)*0.16;
+	}
 	ROUGHNESS = 1.0;
 }

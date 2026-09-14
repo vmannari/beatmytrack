@@ -27,7 +27,7 @@ func clear() -> void:
 
 func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null) -> void:
 	var slipping: bool = absf(state.slip_angle()) > 0.16 or frame.brake > 200
-	if not slipping or state.velocity.length() < 4.0:
+	if state.jump_height > 0.0 or not slipping or state.velocity.length() < 4.0:
 		active = false
 		return
 	var axle: Vector2 = state.position - state.forward() * (1.28 * HandlingConfig.BODY_SCALE)

@@ -225,6 +225,17 @@ func _begin(point: Vector2, pointer: int) -> void:
 			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
 				selected_object = i
 				break
+		if selected_object < 0 and native_preview != null and document.objects.size() < 96:
+			for object: Dictionary in native_preview.metadata.get("scenery_objects",[]):
+				if CreatorObjects.contains(object,to_world(point)) or to_screen(Vector2(object.position[0],object.position[1])).distance_to(point) < 24:
+					edit_started.emit()
+					if not document.has("hidden_scenery"): document["hidden_scenery"] = []
+					document.hidden_scenery.append(CreatorScenery.key(object))
+					document.objects.append(object.duplicate(true))
+					changed_in_gesture = true
+					selected_object = document.objects.size()-1
+					document_changed.emit()
+					break
 	else:
 		for i: int in range(document.points.size()):
 			var p: Array = document.points[i]

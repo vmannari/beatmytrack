@@ -1,3 +1,7 @@
+# Current object extension (2026-09-14)
+
+Creator-track-v5 now accepts optional object `scale` (0.5-3, default 1; tyre walls remain 1) and optional `hidden_scenery` (up to 256 coordinate keys, each at most 40 characters). New kinds: `boulder`, `slate`, `cliff`, `oil`, `puddle`, `jump`. Existing v5 documents remain valid. Compiler-7 includes deterministic solid woodland scenery; saved deletions suppress regeneration. See [CREATOR_HAZARDS.md](CREATOR_HAZARDS.md) and [current schema](schemas/creator-track-v5.schema.json). The sections below retain historical compiler evidence.
+
 # Local creator format
 
 Superseded by **creator-track-v3**: separate map painting, optional road helper, lap route and native remixes. [Current contract and verification](FREE_FORM_EDITOR.md). V1/V2 descriptions below are historical; no backward compatibility is maintained.

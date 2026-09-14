@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 V02/V04/V05/R01/T01-T04/G01: tapered kerb tips, solid/selectable scenery trees, scalable rock/cliff variants, matching bridge asphalt/guardrails and deterministic ramps/oil/shallow water. Physics 0.16 / compiler-7 / track-kit-11. [Behavior, actual checks, screenshots and limits](docs/CREATOR_HAZARDS.md).
+
 2026-09-14 V02/V04/V05: track-kit-10 gives each kerb run complete equal blocks with white beginnings/endings. Actual screenshot and 138 passing checks: docs/VISUAL_STYLE.md.
 
 2026-09-14 V02/V04/V05: track-kit-9 integrates original painted grass, mipmapped detail, broad colour variation and a broken grass/gravel blend from the new texture direction. See docs/VISUAL_STYLE.md for actual captures/checks and PAINTED_GRASS_PROMPT.md for generation provenance.

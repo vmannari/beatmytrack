@@ -617,13 +617,17 @@ func _build_editor_tools() -> void:
 		if canvas.selected_object >= 0 and canvas.mode == "objects":
 			_context_button("Rotate","rotate",_rotate_object)
 			_context_button("Copy","objects",_duplicate_object)
+			if document.objects[canvas.selected_object].kind != "tyre_wall":
+				_context_button("Size -","minus",func() -> void: _scale_object(-0.25))
+				_context_button("Size +","plus",func() -> void: _scale_object(0.25))
+				editor_status.text = "%s / %.2fx" % [CreatorObjects.description(document.objects[canvas.selected_object].kind),float(document.objects[canvas.selected_object].get("scale",1.0))]
 			_context_button("Delete","delete",_delete_selection)
 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",_move_practice_start)
 			_context_button("Palette","more",func() -> void:
 				canvas.selected_object = -1
 				_build_editor_tools())
 		else:
-			for pair: Array in [["barrier","Barrier"],["tyre_wall","Tyre wall"],["fence","Fence"],["tree","Tree"],["rock","Rock"]]:
+			for pair: Array in [["barrier","Barrier"],["tyre_wall","Tyre wall"],["fence","Fence"],["tree","Tree"],["rock","Rock"],["boulder","Boulder"],["slate","Slate"],["cliff","Cliff"],["jump","Jump"],["oil","Oil"],["puddle","Shallow water"],["water","Pond"]]:
 				_context_button(pair[1],pair[0],func() -> void:
 					canvas.stamp_kind = pair[0]
 					canvas.mode = "run" if pair[0] in ["barrier","fence"] else "place"
@@ -756,7 +760,7 @@ func _update_editor_issues() -> void:
 				var object: Dictionary = document.objects[i]
 				if CreatorObjects.surface(object.kind) not in [3,4]: continue
 				var local: Vector2 = (start-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
-				var half: Vector2 = CreatorObjects.dimensions(object.kind)*0.5
+				var half: Vector2 = CreatorObjects.size_of(object)*0.5
 				if local.distance_to(local.clamp(-half,half)) <= radius+track.cell_size*0.71:
 					editor_issues.append({"message":"%s blocks the start" % str(object.kind).capitalize(),"position":start,"object":i})
 			if editor_issues.is_empty(): editor_issues.append({"message":"Obstacle overlaps the starting car","position":start,"object":-2})
@@ -829,6 +833,14 @@ func _rotate_object() -> void:
 		document.objects[canvas.selected_object].rotation = fposmod(float(document.objects[canvas.selected_object].rotation)+45,360)
 		_commit_selection()
 	else: _build_editor_tools()
+
+func _scale_object(delta: float) -> void:
+	if canvas.selected_object < 0: return
+	_remember()
+	var object: Dictionary = document.objects[canvas.selected_object]
+	object.scale = clampf(float(object.get("scale",1.0))+delta,0.5,3.0)
+	_commit_selection()
+
 
 func _duplicate_object() -> void:
 	if canvas.selected_object < 0 or document.objects.size() >= 96: return

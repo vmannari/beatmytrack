@@ -7,7 +7,7 @@ const THEMES: Array[String] = ["pine", "coast", "desert"]
 const MAX_POINTS: int = 96
 const MAX_BYTES: int = 524288
 const MAX_COORD: float = 120.0
-const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start"]
+const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "hidden_scenery"]
 
 
 static func create_default() -> Dictionary:
@@ -46,6 +46,10 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 			return ["This file contains unsupported track data."]
 	if data.get("schema") != SCHEMA:
 		errors.append("This track format is not supported.")
+	if data.has("hidden_scenery"):
+		if not data.hidden_scenery is Array or data.hidden_scenery.size() > 256: return ["Too many removed scenery trees."]
+		for key: Variant in data.hidden_scenery:
+			if not key is String or key.length() > 40: return ["Invalid scenery identifier."]
 	if data.has("practice_start"):
 		var start: Variant = data.practice_start
 		if not start is Dictionary or start.size() != 2 or not start.has_all(["position","heading"]):
@@ -111,8 +115,11 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		if not data.get("objects") is Array or data.objects.size() > 96:
 			return ["Use up to 96 placed objects."]
 		for object: Variant in data.objects:
-			if not object is Dictionary or object.size() != 3 or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
+			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
 				return ["Choose an object from the built-in palette."]
+			if object.has("scale"):
+				if not _number(object.scale) or float(object.scale) < 0.5 or float(object.scale) > 3.0: return ["Object scale must be 0.5 to 3 times."]
+				if object.kind == "tyre_wall" and float(object.scale) != 1.0: return ["Tyre stacks use their physical size; extend the line instead."]
 			if not object.get("position") is Array or object.position.size() != 2:
 				return ["Object positions need two coordinates."]
 			for value: Variant in object.position:

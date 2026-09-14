@@ -29,6 +29,8 @@ void fragment() {
 		// and ends white; no arbitrary half-red slivers at curve boundaries.
 		float count = max(1.0,2.0*floor(UV.y/3.0)+1.0);
 		float block_length = max(UV.y/count,0.001);
+		float tip = smoothstep(0.0, min(block_length,1.8), min(UV.x,UV.y-UV.x));
+		if (UV2.x > mix(0.12,1.0,tip)) { discard; }
 		float phase = mod(UV.x+block_length,block_length*2.0);
 		float aa = max(fwidth(UV.x),0.001);
 		float pale = smoothstep(block_length-aa,block_length+aa,phase);

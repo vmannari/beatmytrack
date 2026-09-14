@@ -178,6 +178,9 @@ func _process(delta: float) -> void:
 		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
+		car.position.y += sim.state.jump_height if sim.state.jump_height > 0.0 else (0.0 if sim.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
+		if sim.state.jump_height > 0.0: car.rotation.x = atan2(sim.state.jump_velocity,maxf(5.0,sim.state.velocity.length()))
+		elif not sim.state.track_elevated: car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	if track_ground is NativeTrackVisual: track_ground.update_tyres(sim.state,native_track.tyre_origins)
 	camera.follow(point, sim.state.velocity, heading, delta)
 	hud.update_values(sim.state, frame, delta, paused, recorder.active)

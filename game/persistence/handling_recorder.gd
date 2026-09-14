@@ -12,7 +12,7 @@ var header: Dictionary = {}
 func start(sim: VehicleSimulation, yard: PlaygroundData) -> void:
 	frames.clear()
 	checkpoints.clear()
-	header = {"schema_version": 3, "physics_version": VehicleSimulation.PHYSICS_VERSION,
+	header = {"schema_version": 4, "physics_version": VehicleSimulation.PHYSICS_VERSION,
 		"tick_rate": VehicleSimulation.TICK_RATE, "engine": Engine.get_version_info().string,
 		"handling": sim.config.snapshot(), "yard": yard.identity, "initial_state": sim.state.snapshot()}
 	if yard is NativeTrack:

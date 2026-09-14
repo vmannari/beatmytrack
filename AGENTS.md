@@ -53,3 +53,6 @@ The owner accepted handling and authorized menus/editor/content. Sharp turns, pe
 
 ## Creator construction override (2026-09-13)
 The owner explicitly requested inside-area whole-piece dragging, endpoint-dot editing, desktop alternatives to touch gestures, and bridge authoring for overpasses. This authorizes new bridge tooling and supersedes the earlier exclusion. Current creator documents use creator-track-v5; backward compatibility is not required and existing files must not be deleted.
+
+## Creator scenery and hazards override (2026-09-14)
+The owner explicitly requested tapered kerbs, solid/deletable trees, visually consistent bridges, scalable rock/cliff variants and gameplay-affecting jumps, oil and water. This authorizes the local creator-object and deterministic hazard slice; online services and unrelated progression remain deferred. See docs/CREATOR_HAZARDS.md for bounds and acceptance.

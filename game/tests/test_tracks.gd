@@ -461,7 +461,7 @@ func _check_tire_dirt() -> void:
 			track.cells.fill(2 if tick < 120 else 0)
 			sim.step(throttle, track)
 		states.append(sim.state.snapshot())
-	check(states[0] == states[1] and states[0].size() == 14, "exposure and recovery replay exactly with contamination in state snapshot")
+	check(states[0] == states[1] and states[0].size() == 16 and states[0][14] == [] and states[0][15] == [0.0,0.0,0], "exposure and recovery replay exactly with contamination in state snapshot")
 
 
 func _check_blocked_speed() -> void:

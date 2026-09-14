@@ -20,6 +20,7 @@ var finish_forward := Vector2.ZERO
 var finish_half_width: float = 0.0
 var tyre_origins := PackedVector2Array()
 var creator_bridges: Array = []
+var hazard_objects: Array = []
 
 
 static func read(path: String) -> NativeTrack:
@@ -36,6 +37,7 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	track.metadata = data
 	track.tyre_origins = LooseTyres.positions(data.get("creator_document",{}))
 	track.creator_bridges = data.get("creator_bridges",[])
+	track.hazard_objects = data.get("creator_document",{}).get("objects",[])
 	track.content_hash = hash_value
 	track.identity = data.identity
 	track.cell_size = float(data.cell_size)
@@ -141,6 +143,12 @@ func collision_elevated_at(point: Vector2, route_index: int, radius: float, prev
 
 
 func surface_factors(state: VehicleState) -> Vector2:
+	var base: Vector2 = _native_surface_factors(state)
+	var effects: Vector2 = TrackHazards.factors(state,hazard_objects)
+	return Vector2(base.x*effects.x,base.y+effects.y)
+
+
+func _native_surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):
 		1: return Vector2(0.65, 2.0 + speed * 0.65)
@@ -313,3 +321,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 
 func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
 	LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)
+
+
+func launch_jump(state: VehicleState, previous: Vector2) -> void:
+	TrackHazards.launch(state,previous,hazard_objects)

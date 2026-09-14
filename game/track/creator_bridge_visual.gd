@@ -6,20 +6,30 @@ static func build(parent: Node3D, bridges: Array) -> void:
 	if bridges.is_empty(): return
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var deck := SurfaceTool.new()
+	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for span: Dictionary in bridges:
 		var count: int = ceili(float(span.length)/0.5)
 		var half: float = float(span.width)*0.5
 		for i: int in range(count):
 			var a: float = float(span.length)*i/count
 			var b: float = float(span.length)*(i+1)/count
-			strip(tool,span,a,b,-half,half,0.025,Color("3d494b"))
+			strip(deck,span,a,b,-half,half,0.025,Color("343638"))
 			for side: float in [-1.0,1.0]:
 				var inner: float = half*side
 				var outer: float = (half+CreatorBridges.RAIL)*side
-				strip(tool,span,a,b,inner,outer,0.65,Color("c3c8bd"))
-				quad(tool,vertex(span,a,inner,0.0),vertex(span,b,inner,0.0),vertex(span,b,inner,0.65),vertex(span,a,inner,0.65),Color("868e88"))
-				quad(tool,vertex(span,a,outer,-0.2),vertex(span,b,outer,-0.2),vertex(span,b,outer,0.65),vertex(span,a,outer,0.65),Color("868e88"))
-				strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("ececdf"))
+				strip(tool,span,a,b,inner,outer,0.65,Color("8d9492"))
+				quad(tool,vertex(span,a,inner,0.38),vertex(span,b,inner,0.38),vertex(span,b,inner,0.65),vertex(span,a,inner,0.65),Color("686e6d"))
+				quad(tool,vertex(span,a,outer,0.38),vertex(span,b,outer,0.38),vertex(span,b,outer,0.65),vertex(span,a,outer,0.65),Color("686e6d"))
+				# Open metal guardrail with discrete posts instead of a concrete slab.
+				if i%4 == 0:
+					var middle: float = (inner+outer)*0.5
+					var left: float = middle-0.065
+					var right: float = middle+0.065
+					quad(tool,vertex(span,a,left,-0.10),vertex(span,a+0.13,left,-0.10),vertex(span,a+0.13,left,0.65),vertex(span,a,left,0.65),Color("646b68"))
+					quad(tool,vertex(span,a,right,-0.10),vertex(span,a+0.13,right,-0.10),vertex(span,a+0.13,right,0.65),vertex(span,a,right,0.65),Color("646b68"))
+					quad(tool,vertex(span,a,left,-0.10),vertex(span,a,right,-0.10),vertex(span,a,right,0.65),vertex(span,a,left,0.65),Color("535b57"))
+				strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
 			# The underside gives the span a readable thickness from racing.
 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.2,Color("626b69"))
 		# Small approach markings explain which ends can be driven onto.
@@ -33,6 +43,13 @@ static func build(parent: Node3D, bridges: Array) -> void:
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = material
 	parent.add_child(mesh)
+	deck.generate_normals()
+	var road := MeshInstance3D.new()
+	road.mesh = deck.commit()
+	var asphalt := ShaderMaterial.new()
+	asphalt.shader = preload("res://track/bridge_road.gdshader")
+	road.material_override = asphalt
+	parent.add_child(road)
 
 static func vertex(span: Dictionary, along: float, across: float, offset: float) -> Vector3:
 	var p: Vector2 = Vector2(span.position[0],span.position[1])+Vector2(along,across).rotated(deg_to_rad(float(span.heading)))

@@ -80,3 +80,7 @@ func _bounce(state: VehicleState, normal: Vector2, config: HandlingConfig) -> vo
 
 func step_props(_state: VehicleState, _from: Vector2, _config: HandlingConfig, _step_seconds: float) -> void:
 	pass
+
+
+func launch_jump(_state: VehicleState, _previous: Vector2) -> void:
+	pass

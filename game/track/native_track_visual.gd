@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-10"
+const VERSION: String = "track-kit-11"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -214,8 +214,10 @@ func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, out
 	# road centerline or its sample index. Shared miters close segment seams.
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var distances: Array[float] = [start,end,end,start,start,end]
+	var across: Array[float] = [0,1,0,0,1,1]
 	for i: int in range(6):
 		tool.set_uv(Vector2(distances[i],run_length))
+		tool.set_uv2(Vector2(across[i],0))
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.025)
 
 
@@ -296,6 +298,8 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var uv := PackedVector2Array()
 	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+	var uv2 := PackedVector2Array()
+	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
 	var flat := SurfaceTool.new()
 	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: int in range(0,vertices.size(),3):
@@ -305,6 +309,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 		for index: int in order:
 			flat.set_normal(Vector3.UP)
 			if not uv.is_empty(): flat.set_uv(uv[index])
+			if not uv2.is_empty(): flat.set_uv2(uv2[index])
 			flat.add_vertex(vertices[index])
 	var instance := MeshInstance3D.new()
 	instance.mesh = flat.commit()
@@ -332,11 +337,11 @@ func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
 		for y: int in range(track.grid_height):
 			for x: int in range(track.grid_width):
 				if _boundary_cell(track,x,y): mask[y*track.grid_width+x] = 1
-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
-		if object.kind not in ["tree","rock","tyre_wall","fence"]: continue
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+		if object.kind not in ["tree","rock","boulder","slate","cliff","tyre_wall","fence"]: continue
 		if mask.is_empty(): mask.resize(track.cells.size())
 		var center := Vector2(object.position[0],object.position[1])
-		var reach: float = CreatorObjects.dimensions(object.kind).length()*0.5
+		var reach: float = CreatorObjects.size_of(object).length()*0.5
 		for y: int in range(maxi(0,floori((track.half_extent.y-center.y-reach)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-center.y+reach)/track.cell_size))):
 			for x: int in range(maxi(0,floori((center.x-reach+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((center.x+reach+track.half_extent.x)/track.cell_size))):
 				var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
@@ -423,14 +428,11 @@ func _build_low_cover(track: NativeTrack) -> void:
 		var center := Vector3((cell.x+0.5)*track.cell_size-track.half_extent.x, 0.014, (cell.y+0.5)*track.cell_size-track.half_extent.y)
 		var scale_value: float = 0.8 + (seed_value % 11) * 0.035
 		var turn: float = (seed_value % 37) * 0.17
-		if theme_id == "pine" and seed_value % 3 == 1 and _cover_clear(track, cell, 4.4):
-			# Mature narrow pines, safely beyond their projected road envelope.
-			_pine(scenery, center, scale_value, turn, foliage)
-		else:
-			var color: Color = stone if seed_value % 4 == 0 else foliage
-			var height: float = 0.08 if seed_value % 4 == 0 else 0.22
-			_mound(scenery, center, Vector3(0.18 if seed_value % 4 == 0 else 0.4, height, 0.14 if seed_value % 4 == 0 else 0.3) * scale_value, turn, color)
-			_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
+		# Trees are exclusively compiled solid objects; tiny cover is decorative.
+		var color: Color = stone if seed_value % 4 == 0 else foliage
+		var height: float = 0.08 if seed_value % 4 == 0 else 0.22
+		_mound(scenery, center, Vector3(0.18 if seed_value % 4 == 0 else 0.4, height, 0.14 if seed_value % 4 == 0 else 0.3) * scale_value, turn, color)
+		_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
 		scenic_count += 1
 	if scenic_count:
 		scenery.generate_normals()
@@ -464,7 +466,7 @@ func _scenery_sites(track: NativeTrack, stride: int) -> Array[Vector2i]:
 
 func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
 	var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
 		if point.distance_to(Vector2(object.position[0],object.position[1])) < radius+3.0: return false
 	# Check the whole square footprint, including bridges. A tree must never
 	# hide a corner, gate, ramp or native barrier. Low cover remains passable.
@@ -483,19 +485,31 @@ func _build_placed_objects(track: NativeTrack) -> void:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var count: int = 0
-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
+		var object_scale: float = float(object.get("scale",1.0))
 		if object.kind == "tree":
-			_pine(tool,center,0.65,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
+			_pine(tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
 		elif object.kind == "rock":
-			_mound(tool,center,Vector3(0.95,0.5,0.9),-deg_to_rad(float(object.rotation)),TrackTheme.stone(theme_id))
+			_mound(tool,center,Vector3(0.95,0.5,0.9)*object_scale,deg_to_rad(float(object.rotation)),TrackTheme.stone(theme_id))
+		elif object.kind in ["boulder","slate","cliff"]:
+			var size: Vector2 = CreatorObjects.size_of(object)
+			var height: float = {"boulder":2.0,"slate":0.65,"cliff":3.4}[object.kind]*object_scale
+			var turn: float = deg_to_rad(float(object.rotation))
+			_mound(tool,center,Vector3(size.x*0.5,height,size.y*0.5),turn,TrackTheme.stone(theme_id))
+			if object.kind == "cliff":
+				for x: float in [-0.3,0.1,0.35]:
+					_mound(tool,center+Vector3(size.x*x,0,0).rotated(Vector3.UP,turn),Vector3(size.x*0.19,height*(0.8+x),size.y*0.47),turn+x,TrackTheme.stone(theme_id).darkened(0.08))
+		elif object.kind in ["oil","puddle","jump"]:
+			HazardVisual.build(self,object)
+			continue
 		elif object.kind == "tyre_wall": continue # Shared instanced mesh below.
 		elif object.kind == "fence":
 			var turn: float = deg_to_rad(float(object.rotation))
 			for x: float in [-2.8,0.0,2.8]:
-				_colored_box(tool,center+Vector3(x,0.64,0).rotated(Vector3.UP,turn),Vector3(0.20,1.28,0.20),turn,Color("706b5b"))
+				_colored_box(tool,center+(Vector3(x,0.64,0)*object_scale).rotated(Vector3.UP,turn),Vector3(0.20,1.28,0.20)*object_scale,turn,Color("706b5b"))
 			for height: float in [0.42,1.02]:
-				_colored_box(tool,center+Vector3(0,height,0),Vector3(6,0.16,0.16),turn,Color("898373"))
+				_colored_box(tool,center+Vector3(0,height*object_scale,0),Vector3(6,0.16,0.16)*object_scale,turn,Color("898373"))
 		else: continue # Barrier/water/dirt already rendered from exact native cells.
 		count += 1
 	if count > 0:
@@ -566,17 +580,17 @@ func _mound(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float
 	var lower := PackedVector3Array()
 	var upper := PackedVector3Array()
 	for i: int in range(7):
-		var angle: float = turn + TAU * i / 7.0
-		var radial := Vector3(cos(angle) * dimensions.x, 0, sin(angle) * dimensions.z)
+		var angle: float = TAU * i / 7.0
+		var radial: Vector3 = Vector3(cos(angle) * dimensions.x, 0, sin(angle) * dimensions.z).rotated(Vector3.UP,turn)
 		lower.append(center + radial * (0.91 + (i%3)*0.06))
 		upper.append(center + radial * 0.57 + Vector3(0.06, dimensions.y * (0.7+(i%2)*0.14), 0.03))
 	var top: Vector3 = center + Vector3(0.1, dimensions.y, -0.03)
 	for i: int in range(7):
 		var j: int = (i+1)%7
 		tool.set_color(color.darkened(0.08 if i%3 == 0 else 0.0))
-		_quad(tool, lower[i], lower[j], upper[j], upper[i])
+		_quad(tool, lower[j], lower[i], upper[i], upper[j])
 		tool.set_color(color.lightened(0.045))
-		for v: Vector3 in [upper[i], top, upper[j]]: tool.add_vertex(v)
+		for v: Vector3 in [upper[j], top, upper[i]]: tool.add_vertex(v)
 
 
 func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
@@ -589,7 +603,7 @@ func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, 
 			var angle: float = turn + branch*TAU/4.0 + tier*1.7
 			var offset := Vector3(cos(angle)*radius*0.8,y+sin(angle*3.0)*0.12,sin(angle)*radius*0.8)
 			var shade: Color = color.lightened(0.025*tier).darkened(0.10 if branch%3 == 0 else 0.0)
-			_mound(tool,center+offset*scale_value,Vector3(radius*0.70,0.40,radius*0.48)*scale_value,angle,shade)
+			_mound(tool,center+offset*scale_value,Vector3(radius*0.70,0.40,radius*0.48)*scale_value,-angle,shade)
 	_mound(tool,center+Vector3(0,2.8,0)*scale_value,Vector3(0.20,0.40,0.18)*scale_value,turn,color.lightened(0.08))
 
 

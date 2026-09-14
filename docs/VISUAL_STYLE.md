@@ -117,3 +117,10 @@ Actual commands through the pinned `scripts/dev.ps1` PowerShell entry point:
 - `git diff --check`: passed.
 
 Run grouping stops at road-piece boundaries or hidden junction edges. Paint masks may still clip a run where the owner explicitly paints over the road; this does not remove those edits. No physical-phone or continuous-motion test performed, no APK exported, and device attachment was not enumerated. Owner visual acceptance remains open.
+
+
+## Tapered kerbs, solid scenery and bridges - 2026-09-14
+
+Track-kit-11 adds white tips that widen over the first complete kerb block, preserving equal red/white body spacing and avoiding sand behind the kerb. UV2 is preserved during flat-normal/winding normalization. Rock/branch mound winding is corrected to stop the inverted ink pass from striping broad facets. Trees are drawn only for solid authored/compiled objects; canopies fit the nominal footprint. Bridges share road asphalt and use open metal guardrails/posts; original procedural spill and ramp meshes use the same restrained material language.
+
+[Kerb taper capture](evidence/kerb-tapers.png), [editor scale controls](evidence/hazards-editor.png), [ramp/oil/water/rock types](evidence/hazards-jump.png), [bridge](evidence/hazards-bridge.png). Actual behavior, test outcomes, physics bounds, native-remix preservation and unperformed phone tests: [CREATOR_HAZARDS.md](CREATOR_HAZARDS.md).

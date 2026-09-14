@@ -283,6 +283,7 @@ func _roadside_visuals() -> void:
 			var closed_seams: bool = true
 			var upward: bool = true
 			var bounded_runs: bool = true
+			var taper_coordinates: bool = true
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
 				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
@@ -293,6 +294,9 @@ func _roadside_visuals() -> void:
 				measured = true
 				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 				var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+				var across: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV2]
+				taper_coordinates = taper_coordinates and across.size() == vertices.size()
+				for value: Vector2 in across: taper_coordinates = taper_coordinates and value.x in [0.0,1.0]
 				for coordinate: Vector2 in uv:
 					bounded_runs = bounded_runs and coordinate.y > 0.0 and coordinate.x >= -0.0001 and coordinate.x <= coordinate.y+0.0001
 				var indices := PackedInt32Array()
@@ -325,6 +329,7 @@ func _roadside_visuals() -> void:
 					previous_u = high
 					previous_end = end
 			check(upward,"all road/grass/sand/paint triangles use upward normals")
+			check(taper_coordinates,"kerb taper coordinates survive mesh winding normalization")
 			check(bounded_runs,"kerb coordinates restart per run and stay within the declared complete-block length")
 			check(measured and correct,"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
 			check(closed_seams,"kerb adjacent quads share inside and outside corners")

@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-6"
+const VERSION: String = "creator-compiler-7"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -43,7 +43,7 @@ static func compile(document: Dictionary) -> NativeTrack:
 		for point: Vector2 in section.points: extent = extent.max(point.abs()+Vector2.ONE*float(section.width)*0.5)
 	for object: Dictionary in document.get("objects",[]):
 		var point := Vector2(object.position[0],object.position[1])
-		extent = extent.max(point.abs()+CreatorObjects.dimensions(object.kind))
+		extent = extent.max(point.abs()+CreatorObjects.size_of(object))
 	for stroke: Dictionary in document.paint:
 		for p: Array in stroke.points: extent = extent.max(Vector2(p[0],p[1]).abs()+Vector2.ONE*float(stroke.width)*0.5)
 	extent = (extent + Vector2.ONE * (float(Array(widths).max())*0.5 + 12.0)).ceil()
@@ -66,12 +66,15 @@ static func compile(document: Dictionary) -> NativeTrack:
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
 	_paint(document.paint,cells,grid,extent,cell_size,road_mask)
+	var scenery_cells: PackedInt32Array = cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	var deck := PackedInt32Array()
 	deck.resize(cells.size())
 	deck.fill(-1)
 	if base != null: deck = base.deck_cells.duplicate()
 	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
+	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
+	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
 	# A distant perimeter makes the finite authoring area explicit and keeps
 	# accidental off-course driving recoverable with the ordinary restart.
 	for y: int in range(grid.y):
@@ -99,7 +102,7 @@ static func compile(document: Dictionary) -> NativeTrack:
 	var forward: Vector2 = (route[1]-route[0]).normalized()
 	var heading: float = atan2(forward.x,forward.y)
 	var data: Dictionary = {"schema":"surface-grid-v2", "identity":"creator_"+document.id, "name":document.name, "title":document.name, "version":VERSION,
-		"theme":document.theme, "creator_document":document.duplicate(true), "cell_size":cell_size, "grid_size":[grid.x,grid.y],
+		"scenery_objects":scenery, "theme":document.theme, "creator_document":document.duplicate(true), "cell_size":cell_size, "grid_size":[grid.x,grid.y],
 		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
 		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
 		"finish":{"center":route_data[0],"half_width":radius,"heading":heading,"basis":"creator route origin"},
@@ -121,10 +124,10 @@ static func compile(document: Dictionary) -> NativeTrack:
 
 static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
 	for object: Dictionary in document.get("objects",[]):
-		if object.kind == "tyre_wall": continue # Loose stacks are simulated, never baked into a wall.
+		if object.kind in ["tyre_wall","oil","jump"]: continue # Loose stacks are simulated, never baked into a wall.
 		if (object.kind in ["dirt","water"]) != terrain: continue
 		var center := Vector2(object.position[0],object.position[1])
-		var reach: float = CreatorObjects.dimensions(object.kind).length()*0.5
+		var reach: float = CreatorObjects.size_of(object).length()*0.5
 		for y: int in range(maxi(0,floori((extent.y-center.y-reach)/cell_size)),mini(grid.y,ceili((extent.y-center.y+reach)/cell_size))):
 			for x: int in range(maxi(0,floori((center.x-reach+extent.x)/cell_size)),mini(grid.x,ceili((center.x+reach+extent.x)/cell_size))):
 				var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)

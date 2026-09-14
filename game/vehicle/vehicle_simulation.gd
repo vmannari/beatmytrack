@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.15"
+const PHYSICS_VERSION: String = "arcade-planar-0.16"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -22,6 +22,20 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
+	if state.jump_height > 0.0:
+		var previous: Vector2 = state.position
+		state.position += state.velocity*STEP
+		state.jump_velocity -= 9.81*STEP
+		state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
+		if ground != null:
+			ground.resolve(state,previous,config)
+			ground.step_props(state,previous,config,STEP)
+		if state.jump_height == 0.0:
+			state.jump_velocity = 0.0
+			state.velocity *= 0.88
+		state.tick += 1
+		return
 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
 	var tire_grip: float = 1.0 - state.tire_dirt * config.dirty_tire_grip_loss
@@ -92,6 +106,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if ground != null:
 		ground.resolve(state, previous_position, config)
 		ground.step_props(state,previous_position,config,STEP)
+		ground.launch_jump(state,previous_position)
 	# Only actual resolved travel coats/cleans tires. Waiting or pushing a wall
 	# cannot clean them, and reverse travel counts just like forward travel.
 	var distance: float = state.position.distance_to(previous_position)

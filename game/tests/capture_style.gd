@@ -41,8 +41,8 @@ func run() -> void:
 	if error == OK:
 		var sim: VehicleSimulation = game.get("sim")
 		var camera: FollowCamera = game.get("camera")
-		for sample: int in range(6):
-			var point: Vector2 = track.route[sample*track.route.size()/6]
+		for sample: int in range(12):
+			var point: Vector2 = track.route[sample*track.route.size()/12]
 			sim.reset(point,track.spawn_heading)
 			game.set("previous_position",point)
 			camera.follow(point,Vector2.ZERO,track.spawn_heading,0.0,true)

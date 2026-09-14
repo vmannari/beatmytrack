@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-13"
+const VERSION: String = "track-kit-14"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -97,25 +97,24 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var piece: Dictionary = pieces[index]
 		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
-		var joined_start: bool = _piece_end_joined(pieces,index,points[0])
-		var joined_end: bool = _piece_end_joined(pieces,index,points[-1])
+		var cuts: Array[Dictionary] = _join_cuts(pieces,index)
+		var road_outline: PackedVector2Array = _trim_join_outline(RoadPieces.section_outline(pieces,index),cuts)
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
-		for polygon: PackedVector2Array in Geometry2D.offset_polygon(RoadPieces.section_outline(pieces,index),1.8,Geometry2D.JOIN_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
-		for polygon: PackedVector2Array in Geometry2D.offset_polygon(RoadPieces.section_outline(pieces,index),0.36,Geometry2D.JOIN_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.36,Geometry2D.JOIN_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
-		for raw_polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index,-0.20)]:
+		for raw_polygon: PackedVector2Array in [_trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)]:
 			var polygon: PackedVector2Array = raw_polygon
 			var kerb_distance: float = 0.0
 			for edge: int in range(polygon.size()):
 				var a: Vector2 = polygon[edge]
-				if joined_end and edge == points.size()-1: continue
-				if joined_start and edge == polygon.size()-1: continue
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
-				var normal_a: Vector2 = _edge_miter(polygon,edge)
-				var normal_b: Vector2 = _edge_miter(polygon,(edge+1)%polygon.size())
+				if _on_join_cut(a,b,cuts): continue
+				var normal_a: Vector2 = _roadside_miter(polygon,edge,cuts)
+				var normal_b: Vector2 = _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
 				for step: int in range(steps):
 					var p: Vector2 = a.lerp(b,float(step)/steps)
@@ -133,7 +132,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
-					var is_kerb: bool = not dirt and _inner_bend_distance(midpoint,points) >= 0.0
+					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
 					if is_kerb:
 						kerb_segments.append({"a":p,"b":q,"outer_a":p+normal_p*0.75,"outer_b":q+normal_q*0.75,"start":distance_start,"end":kerb_distance,"piece":index})
 						kerb_count += 1
@@ -153,6 +152,78 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
 	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,track.half_extent,false,true)
 	if kerb_count: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent,false,false,true)
+
+
+func _join_cuts(pieces: Array, index: int) -> Array[Dictionary]:
+	var cuts: Array[Dictionary] = []
+	var outline: PackedVector2Array = RoadPieces.section_outline(pieces,index)
+	var count: int = outline.size()/2
+	for endpoint: int in range(2):
+		if RoadPieces._partner(pieces,index,endpoint).size() != 1: continue
+		var a: Vector2 = outline[0 if endpoint == 0 else count-1]
+		var b: Vector2 = outline[-1 if endpoint == 0 else count]
+		var normal: Vector2 = (b-a).normalized().orthogonal()
+		var inward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(RoadPieces._pose(pieces[index],endpoint).heading)))
+		if normal.dot(inward) < 0.0: normal = -normal
+		cuts.append({"point":(a+b)*0.5,"normal":normal,"endpoint":endpoint,"span":a.distance_to(b)})
+	return cuts
+
+
+func _trim_join_outline(source: PackedVector2Array, cuts: Array[Dictionary]) -> PackedVector2Array:
+	# Only trim the contiguous folded tip. An infinite half-plane clip would
+	# also remove distant sections of a hairpin that return across that plane.
+	var count: int = source.size()/2
+	var left: PackedVector2Array = source.slice(0,count)
+	var right: PackedVector2Array = source.slice(count)
+	right.reverse()
+	for cut: Dictionary in cuts:
+		if int(cut.endpoint) == 1:
+			left.reverse()
+			right.reverse()
+		left = _trim_side_tip(left,cut)
+		right = _trim_side_tip(right,cut)
+		if int(cut.endpoint) == 1:
+			left.reverse()
+			right.reverse()
+	right.reverse()
+	return _clean_outline(left+right)
+
+
+func _trim_side_tip(side: PackedVector2Array, cut: Dictionary) -> PackedVector2Array:
+	var index: int = 1
+	while index < side.size()-1 and (side[index]-Vector2(cut.point)).dot(cut.normal) < -0.00001: index += 1
+	if index == 1: return side
+	var a: Vector2 = side[index-1]
+	var b: Vector2 = side[index]
+	var da: float = (a-Vector2(cut.point)).dot(cut.normal)
+	var db: float = (b-Vector2(cut.point)).dot(cut.normal)
+	return PackedVector2Array([side[0],a.lerp(b,da/(da-db))])+side.slice(index)
+
+
+func _on_join_cut(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
+	for cut: Dictionary in cuts:
+		if a.distance_to(b) > float(cut.span)*0.5 and absf((a-Vector2(cut.point)).dot(cut.normal)) < 0.001 and absf((b-Vector2(cut.point)).dot(cut.normal)) < 0.001: return true
+	return false
+
+
+func _on_join_plane(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
+	for cut: Dictionary in cuts:
+		if absf((a-Vector2(cut.point)).dot(cut.normal)) < 0.001 and absf((b-Vector2(cut.point)).dot(cut.normal)) < 0.001: return true
+	return false
+
+
+func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictionary]) -> Vector2:
+	var point: Vector2 = polygon[index]
+	var before: Vector2 = polygon[(index+polygon.size()-1)%polygon.size()]
+	var after: Vector2 = polygon[(index+1)%polygon.size()]
+	var tangent := Vector2.ZERO
+	if _on_join_cut(before,point,cuts): tangent = after-point
+	elif _on_join_cut(point,after,cuts): tangent = point-before
+	else: return _edge_miter(polygon,index)
+	var normal: Vector2 = tangent.normalized().orthogonal()
+	var area: float = 0.0
+	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
+	return -normal if area < 0.0 else normal
 
 
 func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:

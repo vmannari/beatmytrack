@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 R01/T01-T04/V02/V04/V05: Curvy follow-up removes folded marking tails and cap-directed kerb spikes. [Actual checks and closer captures](docs/KERB_JOIN_FIXES.md).
+
 2026-09-14 R01/T01-T04/V02/V04/V05: reference layout follow-up: grouped raised rail, green text-only Test, track name, charcoal tiles, road glyphs and Jump in Objects. [Actual checks and captures](docs/EDITOR_PRESENTATION_REFINEMENT.md).
 
 2026-09-14 G01/R01/V02/V04/V05: traversable water with gradual car submersion and separate long-lived oil / short-lived water tire coatings. [Behavior, actual verification and device limits](docs/SURFACE_RESPONSE.md).

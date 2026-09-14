@@ -19,6 +19,7 @@ func run() -> void:
 	_join_geometry()
 	_geometry()
 	_roadside_visuals()
+	_join_tip_visuals()
 	_snapping()
 	_contract()
 	_compiler()
@@ -355,3 +356,33 @@ func _join_geometry() -> void:
 	check(outline_a[first.points.size()].distance_to(outline_b[-1]) < 0.001,"angled join shares right marking endpoint")
 	var frame: Dictionary = RoadPieces.road_frame(pieces,Vector2(10,3),Vector2.RIGHT)
 	check(absf(Vector2(frame.tangent).cross(Vector2.RIGHT.rotated(deg_to_rad(17)))) < 0.001,"start uses local road direction despite a different route heading")
+
+
+func _join_tip_visuals() -> void:
+	var visual := NativeTrackVisual.new()
+	var cut: Dictionary = {"point":Vector2.ZERO,"normal":Vector2.RIGHT,"endpoint":0,"span":10.0}
+	# A miter can extend past the first few curve samples. Keep the far end
+	# returning across this plane: it belongs to another part of the hairpin.
+	var folded := PackedVector2Array([Vector2(0,5),Vector2(-0.6,4.9),Vector2(-0.2,4.8),Vector2(0.5,4.7),Vector2(8,8),Vector2(-3,15)])
+	var trimmed: PackedVector2Array = visual.call("_trim_side_tip",folded,cut)
+	check(trimmed.size() < folded.size() and trimmed[1].x >= -0.00001,"folded join samples are trimmed instead of painting a backwards spur")
+	check(trimmed[-1] == folded[-1],"trimming a join preserves the distant returning hairpin")
+	var cuts: Array[Dictionary] = [cut]
+	check(not visual.call("_on_join_cut",Vector2(0,5),Vector2(0,4.8),cuts),"short connector between trimmed edge and shared miter stays painted")
+	check(visual.call("_on_join_cut",Vector2(0,5),Vector2(0,-5),cuts),"full-width internal end cap remains unpainted")
+	var rectangle := PackedVector2Array([Vector2(0,5),Vector2(10,5),Vector2(10,-5),Vector2(0,-5)])
+	var normal: Vector2 = visual.call("_roadside_miter",rectangle,0,cuts)
+	check(absf(normal.x) < 0.00001 and normal.y > 0.99,"kerb endpoint extrusion follows the roadside instead of the hidden cap")
+	for flipped: bool in [false,true]:
+		var a: Dictionary = RoadPieces.create("straight",Vector2(-28,0),0,10)
+		var b: Dictionary = RoadPieces.create("hairpin",Vector2.ZERO,30 if not flipped else 330,10)
+		b.length = 0.0
+		b.radius = 9.0
+		b.flip = flipped
+		var pieces: Array = [a,b]
+		var raw: PackedVector2Array = RoadPieces.section_outline(pieces,1,-0.2)
+		var join_cuts: Array[Dictionary] = visual.call("_join_cuts",pieces,1)
+		var outline: PackedVector2Array = visual.call("_trim_join_outline",raw,join_cuts)
+		check(outline.size() >= 4 and not Geometry2D.triangulate_polygon(outline).is_empty(),"trimmed mirrored hairpin remains a renderable polygon")
+		check(outline.has(raw[raw.size()/2-1]) and outline.has(raw[raw.size()/2]),"both distant hairpin endpoints survive local join trimming")
+	visual.free()

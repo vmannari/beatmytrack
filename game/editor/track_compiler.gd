@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-8"
+const VERSION: String = "creator-compiler-9"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -31,8 +31,10 @@ static func compile(document: Dictionary) -> NativeTrack:
 	var road_widths: PackedFloat32Array = road_samples.widths
 	var sections: Array[Dictionary] = []
 	var bridges: Array = []
-	for piece: Dictionary in document.pieces:
-		sections.append({"points":RoadPieces.samples(piece),"width":float(piece.width),"bridge":piece.kind == "bridge"})
+	for piece_index: int in range(document.pieces.size()):
+		var piece: Dictionary = document.pieces[piece_index]
+		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index)
+		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
 		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
 	var radius: float = widths[0] * 0.5
 	var extent := Vector2.ZERO
@@ -60,9 +62,7 @@ static func compile(document: Dictionary) -> NativeTrack:
 	_raster_road(road_route,road_widths,road_kind,road_mask,grid,extent,cell_size,true)
 	for section: Dictionary in sections:
 		if section.bridge: continue
-		var section_widths := PackedFloat32Array()
-		section_widths.resize(section.points.size())
-		section_widths.fill(section.width)
+		var section_widths: PackedFloat32Array = section.widths
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
 	_paint(document.paint,cells,grid,extent,cell_size,road_mask)
@@ -100,12 +100,18 @@ static func compile(document: Dictionary) -> NativeTrack:
 		var half: Vector2 = side.abs() * widths[index]*0.5 + tangent.abs() * 1.5
 		checkpoints.append([center.x-half.x,center.y-half.y,half.x*2.0,half.y*2.0])
 	var forward: Vector2 = (route[1]-route[0]).normalized()
+	var finish_center: Vector2 = route[0]
+	var frame: Dictionary = RoadPieces.road_frame(document.pieces,finish_center,forward)
+	if not frame.is_empty():
+		forward = frame.tangent
+		finish_center = frame.point
+		radius = float(frame.width)*0.5
 	var heading: float = atan2(forward.x,forward.y)
 	var data: Dictionary = {"schema":"surface-grid-v2", "identity":"creator_"+document.id, "name":document.name, "title":document.name, "version":VERSION,
 		"scenery_objects":scenery, "theme":document.theme, "creator_document":document.duplicate(true), "cell_size":cell_size, "grid_size":[grid.x,grid.y],
 		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
 		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
-		"finish":{"center":route_data[0],"half_width":radius,"heading":heading,"basis":"creator route origin"},
+		"finish":{"center":[finish_center.x,finish_center.y],"half_width":radius,"heading":heading,"basis":"creator route origin"},
 		"route":route_data,"checkpoints":checkpoints, "debug":{"blocks":[]},
 		"provenance":{"source":"local creator","use":"original route with built-in track kit"}}
 	if base != null:

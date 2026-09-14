@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 R01/T01-T04/V02/V04/V05: shared road joins, gradual connected widths and road-aligned full-width start line. [Implementation, checks and Curvy/Blind spot captures](ROAD_JOIN_FIXES.md).
+
 2026-09-14 R01/T01-T04/V02/V04/V05/G01: owner supplied category/asset references, confirmed movable tyres and requested movable light props with future biome-specific palettes. [OBJECT_BROWSER.md](OBJECT_BROWSER.md) records this local slice.
 
 2026-09-14 R01/T01-T04: editor Load now shows all saved tracks immediately; empty search no longer hides the list. [Fix, actual checks and screenshot](EDITOR_LOAD_LIST.md).

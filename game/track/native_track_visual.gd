@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-12"
+const VERSION: String = "track-kit-13"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -89,8 +89,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
-		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
-		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,float(pieces[index].width)*0.5,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+		for polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index)]:
 			var bounds := Rect2(polygon[0],Vector2.ZERO)
 			for point: Vector2 in polygon: bounds = bounds.expand(point)
 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
@@ -98,21 +97,22 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var piece: Dictionary = pieces[index]
 		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
-		var half: float = float(piece.width)*0.5
 		var joined_start: bool = _piece_end_joined(pieces,index,points[0])
 		var joined_end: bool = _piece_end_joined(pieces,index,points[-1])
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
-		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+1.8,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(RoadPieces.section_outline(pieces,index),1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
-		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+0.36,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(RoadPieces.section_outline(pieces,index),0.36,Geometry2D.JOIN_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
-		for raw_polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half-0.20,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
-			var polygon: PackedVector2Array = _clean_outline(raw_polygon)
+		for raw_polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index,-0.20)]:
+			var polygon: PackedVector2Array = raw_polygon
 			var kerb_distance: float = 0.0
 			for edge: int in range(polygon.size()):
 				var a: Vector2 = polygon[edge]
+				if joined_end and edge == points.size()-1: continue
+				if joined_start and edge == polygon.size()-1: continue
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
 				var normal_a: Vector2 = _edge_miter(polygon,edge)
 				var normal_b: Vector2 = _edge_miter(polygon,(edge+1)%polygon.size())
@@ -128,13 +128,11 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					kerb_distance += center_p.distance_to(center_q)
 					var across: Vector2 = (q-p).normalized().orthogonal()*0.085
 					var midpoint: Vector2 = (p+q)*0.5
-					if joined_start and midpoint.distance_to(points[0]) <= half+0.5 and (midpoint-points[0]).dot(points[1]-points[0]) < -0.001: continue
-					if joined_end and midpoint.distance_to(points[-1]) <= half+0.5 and (midpoint-points[-1]).dot(points[-1]-points[-2]) > 0.001: continue
 					var outward: Vector2 = across*5.0
 					if Geometry2D.is_point_in_polygon(midpoint+outward,polygon): outward = -outward
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
-					if not _road_edge_exposed(midpoint+outward,index,outlines): continue
+					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
 					var is_kerb: bool = not dirt and _inner_bend_distance(midpoint,points) >= 0.0
 					if is_kerb:
 						kerb_segments.append({"a":p,"b":q,"outer_a":p+normal_p*0.75,"outer_b":q+normal_q*0.75,"start":distance_start,"end":kerb_distance,"piece":index})
@@ -247,10 +245,17 @@ func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float
 	return indices.size()/3
 
 
-func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary]) -> bool:
+func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary], pieces: Array = []) -> bool:
 	for outline: Dictionary in outlines:
 		if int(outline.index) == index or not Rect2(outline.bounds).has_point(point): continue
-		if Geometry2D.is_point_in_polygon(point,outline.polygon): return false
+		var joined_neighbor: bool = false
+		if not pieces.is_empty():
+			for endpoint: int in range(2):
+				var matches: Array = RoadPieces._partner(pieces,index,endpoint)
+				if matches.size() == 1 and int(matches[0][0]) == int(outline.index):
+					var pose: Dictionary = RoadPieces._pose(pieces[index],endpoint)
+					if point.distance_to(pose.position) < float(pieces[index].width): joined_neighbor = true
+		if not joined_neighbor and Geometry2D.is_point_in_polygon(point,outline.polygon): return false
 	return true
 
 
@@ -640,16 +645,20 @@ func _build_finish(track: NativeTrack) -> void:
 			if track.cell_at(track.finish_center + side * distance * direction) != road_kind:
 				break
 			widths[0 if direction < 0 else 1] = distance
+	var authored: bool = not RoadPieces.road_frame(track.metadata.get("creator_document",{}).get("pieces",[]),track.finish_center,track.finish_forward).is_empty()
+	if authored: widths = Vector2.ONE*track.finish_half_width
 	for row: int in range(2):
 		for i: int in range(ceili(track.finish_half_width * 2 / size)):
 			var offset: float = -track.finish_half_width + (i + 0.5) * size
-			if offset - size * 0.5 < -widths.x or offset + size * 0.5 > widths.y:
+			if not authored and (offset - size * 0.5 < -widths.x or offset + size * 0.5 > widths.y):
 				continue
-			var point: Vector2 = track.finish_center + side * offset + track.finish_forward * (row - 0.5) * size
-			if track.cell_at(point) not in [0, 2, 5, 6]:
+			var low: float = maxf(-widths.x,offset-size*0.5)
+			var high: float = minf(widths.y,offset+size*0.5)
+			var point: Vector2 = track.finish_center + side * ((low+high)*0.5) + track.finish_forward * (row - 0.5) * size
+			if not authored and track.cell_at(point) not in [0, 2, 5, 6]:
 				continue
 			var center: Vector3 = VisualGeometry.world(point) + Vector3.UP * 0.024
-			var across: Vector3 = VisualGeometry.world(side) * size * 0.5
+			var across: Vector3 = VisualGeometry.world(side) * (high-low) * 0.5
 			var along: Vector3 = VisualGeometry.world(track.finish_forward) * size * 0.5
 			var parity: int = (row+i)%2
 			_quad(light if parity == 0 else dark, center-across-along, center+across-along, center+across+along, center-across+along)

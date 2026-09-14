@@ -16,6 +16,7 @@ func check(condition: bool, message: String) -> void:
 
 
 func run() -> void:
+	_join_geometry()
 	_geometry()
 	_roadside_visuals()
 	_snapping()
@@ -335,3 +336,22 @@ func _roadside_visuals() -> void:
 			check(closed_seams,"kerb adjacent quads share inside and outside corners")
 			check(track.cells == original,"roadside presentation preserves collision/surface cells")
 			visual.free()
+
+
+func _join_geometry() -> void:
+	var a: Dictionary = RoadPieces.create("straight",Vector2.ZERO,17.0,8.0)
+	var pose: Dictionary = RoadPieces.end_pose(a)
+	var b: Dictionary = RoadPieces.create("curve",pose.position,42.0,16.0)
+	var pieces: Array = [a,b]
+	var first: Dictionary = RoadPieces.section_geometry(pieces,0)
+	var second: Dictionary = RoadPieces.section_geometry(pieces,1)
+	check(is_equal_approx(first.widths[-1],second.widths[0]),"unequal widths share the same join width")
+	var maximum_step: float = 0.0
+	for i: int in range(1,first.widths.size()): maximum_step = maxf(maximum_step,absf(first.widths[i]-first.widths[i-1]))
+	check(maximum_step < 0.6,"width transition spreads across metres rather than one sample")
+	var outline_a: PackedVector2Array = RoadPieces.section_outline(pieces,0,-0.2)
+	var outline_b: PackedVector2Array = RoadPieces.section_outline(pieces,1,-0.2)
+	check(outline_a[first.points.size()-1].distance_to(outline_b[0]) < 0.001,"angled join shares left marking endpoint")
+	check(outline_a[first.points.size()].distance_to(outline_b[-1]) < 0.001,"angled join shares right marking endpoint")
+	var frame: Dictionary = RoadPieces.road_frame(pieces,Vector2(10,3),Vector2.RIGHT)
+	check(absf(Vector2(frame.tangent).cross(Vector2.RIGHT.rotated(deg_to_rad(17)))) < 0.001,"start uses local road direction despite a different route heading")

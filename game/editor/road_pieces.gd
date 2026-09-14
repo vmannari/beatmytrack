@@ -351,3 +351,67 @@ static func _at(path: Dictionary, along: float) -> Dictionary:
 			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend)}
 		traveled += span
 	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0]}
+
+
+## Shared width samples for surface compilation and presentation.
+static func section_geometry(pieces: Array, index: int) -> Dictionary:
+	var piece: Dictionary = pieces[index]
+	var points: PackedVector2Array = samples(piece)
+	var widths := PackedFloat32Array()
+	var distances := PackedFloat32Array([0.0])
+	for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
+	var total: float = distances[-1]
+	var ends: Array[float] = [float(piece.width),float(piece.width)]
+	for endpoint: int in range(2):
+		var matches: Array = _partner(pieces,index,endpoint)
+		if matches.size() == 1:
+			ends[endpoint] = (float(piece.width)+float(pieces[int(matches[0][0])].width))*0.5
+	var reach: float = minf(total*0.5,maxf(8.0,absf(ends[1]-ends[0])*4.0))
+	for distance: float in distances:
+		var width: float = float(piece.width)
+		width += (ends[0]-float(piece.width))*(1.0-smoothstep(0.0,reach,distance))
+		width += (ends[1]-float(piece.width))*(1.0-smoothstep(0.0,reach,total-distance))
+		widths.append(width)
+	return {"points":points,"widths":widths}
+
+
+## Both sides of a join use the same cross-section, even for reversed pieces.
+static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> PackedVector2Array:
+	var geometry: Dictionary = section_geometry(pieces,index)
+	var points: PackedVector2Array = geometry.points
+	var left := PackedVector2Array()
+	var right := PackedVector2Array()
+	for i: int in range(points.size()):
+		var tangent: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(0,i-1)]).normalized()
+		if i == 0: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
+		if i == points.size()-1: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(end_pose(pieces[index]).heading)))
+		var normal := Vector2(-tangent.y,tangent.x)
+		var center: Vector2 = points[i]
+		if i == 0 or i == points.size()-1:
+			var endpoint: int = 0 if i == 0 else 1
+			var matches: Array = _partner(pieces,index,endpoint)
+			if matches.size() == 1:
+				var pose: Dictionary = _pose(pieces[int(matches[0][0])],int(matches[0][1]))
+				var other: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading))) * (-1.0 if endpoint == 0 else 1.0)
+				var shared: Vector2 = (normal+Vector2(-other.y,other.x)).normalized()
+				normal = shared/maxf(0.25,shared.dot(normal))
+				center = center.lerp(pose.position,0.5)
+		left.append(center+normal*(float(geometry.widths[i])*0.5+margin))
+		right.append(center-normal*(float(geometry.widths[i])*0.5+margin))
+	right.reverse()
+	return left+right
+
+
+## Resolve road geometry independently from the authored lap-route direction.
+static func road_frame(pieces: Array, point: Vector2, forward: Vector2) -> Dictionary:
+	var best: Dictionary = {}
+	var distance: float = INF
+	for index: int in range(pieces.size()):
+		var geometry: Dictionary = section_geometry(pieces,index)
+		var path: Dictionary = {"points":geometry.points,"widths":geometry.widths,"closed":false}
+		var nearest: Dictionary = _nearest(path,point)
+		if float(nearest.distance) >= distance: continue
+		distance = nearest.distance
+		best = _at(path,nearest.along)
+		if Vector2(best.tangent).dot(forward) < 0.0: best.tangent = -Vector2(best.tangent)
+	return best if distance <= float(best.get("width",0.0))*0.5 else {}

@@ -34,7 +34,8 @@ void fragment() {
 	if (gravel) {
 		float grain = pigment(world_position.xz*14.0);
 		ALBEDO = road_color.rgb*(0.94+pigment(world_position.xz*1.5)*0.10);
-		ALBEDO *= 1.0-smoothstep(0.70,0.87,grain)*0.16;
+		float grain_visibility = 1.0-smoothstep(0.35,1.0,length(fwidth(world_position.xz*14.0)));
+		ALBEDO *= 1.0-mix(0.04,smoothstep(0.70,0.87,grain),grain_visibility)*0.16;
 	}
 	ROUGHNESS = 1.0;
 }

@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-7"
+const VERSION: String = "track-kit-8"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
@@ -57,6 +57,8 @@ func _build_terrain(track: NativeTrack) -> void:
 	var ground := MeshInstance3D.new()
 	ground.mesh = plane
 	ground.material_override = surface
+	if not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty():
+		ground.position.y = -0.06
 	# The flat coverage sheet must not cast a rectangular map-border shadow.
 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ground)
@@ -97,11 +99,12 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
 		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+1.8,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
-			ground_count += _road_polygon(ground_skirt,polygon,0.006)
+			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
 		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+0.36,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
-		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half-0.20,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+		for raw_polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half-0.20,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+			var polygon: PackedVector2Array = _clean_outline(raw_polygon)
 			var kerb_distance: float = 0.0
 			for edge: int in range(polygon.size()):
 				var a: Vector2 = polygon[edge]
@@ -135,8 +138,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_quad(shoulders,VisualGeometry.world(p)+Vector3.UP*0.009,VisualGeometry.world(q)+Vector3.UP*0.009,
-							VisualGeometry.world(outer_q)+Vector3.UP*0.009,VisualGeometry.world(outer_p)+Vector3.UP*0.009)
+						_quad(shoulders,VisualGeometry.world(p)+Vector3.UP*-0.02,VisualGeometry.world(q)+Vector3.UP*-0.02,
+							VisualGeometry.world(outer_q)+Vector3.UP*-0.02,VisualGeometry.world(outer_p)+Vector3.UP*-0.02)
 						counts[0] += 1
 					if dirt: continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
@@ -149,12 +152,26 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if kerb_count: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent,false,false,true)
 
 
+func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:
+	# Offset operations can retain microscopic segments along rotated straights.
+	# Their unstable tangent produces long triangular spikes when extruded.
+	var result := PackedVector2Array()
+	for point: Vector2 in source:
+		if result.is_empty() or result[-1].distance_to(point) > 0.01: result.append(point)
+	if result.size() > 3 and result[0].distance_to(result[-1]) < 0.01: result.remove_at(result.size()-1)
+	return result
+
+
 func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
 	var point: Vector2 = polygon[index]
 	var before: Vector2 = (point-polygon[(index+polygon.size()-1)%polygon.size()]).normalized().orthogonal()
 	var after: Vector2 = (polygon[(index+1)%polygon.size()]-point).normalized().orthogonal()
 	var normal: Vector2 = (before+after).normalized()
-	if Geometry2D.is_point_in_polygon(point+normal*0.05,polygon): normal = -normal
+	# A tiny containment probe at a nearly-collinear boundary is unstable.
+	# Use the whole polygon's winding so consecutive normals cannot flip.
+	var area: float = 0.0
+	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
+	if area < 0.0: normal = -normal
 	return normal / maxf(absf(normal.dot(after)),0.5)
 
 
@@ -242,9 +259,26 @@ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 
 
 func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false) -> void:
-	tool.generate_normals()
+	# Polygon triangulation and edge strips can have opposite winding. All
+	# these surfaces are horizontal: normalize clockwise top faces and use
+	# explicit up normals instead of inferring lighting from polygon order.
+	var source: ArrayMesh = tool.commit()
+	var arrays: Array = source.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var uv := PackedVector2Array()
+	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+	var flat := SurfaceTool.new()
+	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for triangle: int in range(0,vertices.size(),3):
+		var order: Array[int] = [triangle,triangle+1,triangle+2]
+		if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+			order = [triangle,triangle+2,triangle+1]
+		for index: int in order:
+			flat.set_normal(Vector3.UP)
+			if not uv.is_empty(): flat.set_uv(uv[index])
+			flat.add_vertex(vertices[index])
 	var instance := MeshInstance3D.new()
-	instance.mesh = tool.commit()
+	instance.mesh = flat.commit()
 	var material := ShaderMaterial.new()
 	material.shader = CREATOR_ROAD_SHADER
 	material.set_shader_parameter("overlay_mask",mask)

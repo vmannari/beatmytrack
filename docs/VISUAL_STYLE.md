@@ -66,3 +66,22 @@ Actual commands, through `powershell -NoProfile -ExecutionPolicy Bypass -File sc
 - `git diff --check`: passed (line-ending normalization notices only).
 
 Existing native raster-only kerbs are outside this creator-piece correction. Phone motion/aliasing and GPU performance remain untested; no physical-phone test or Android export was performed, and device attachment was not enumerated. Further owner acceptance remains open.
+
+
+## Triangle artifacts and sand shimmer ? 2026-09-14, track-kit-8
+
+V02/V04/V05 owner reports black road triangles and flickering sand. Inspection found mixed inferred normals in flat meshes: the Silmukka audit initially counted 5,425/5,448 asphalt vertices and 24,282/25,128 shoulder vertices outside the upward-normal tolerance. These are mesh diagnostics, not a claim that every such vertex was visibly black. `native_track_visual.gd` now normalizes triangle winding and assigns explicit UP normals to all flat creator-road materials. Final audit reports zero bad normals across all five material batches.
+
+The six-view review additionally reproduced large sawtooth sand spikes on a rotated straight. Microscopic offset segments had unstable extrusion tangents. Removing successive points less than 1 cm apart fixes the visible spikes in the same bend capture. Miter orientation now follows polygon winding rather than a tiny boundary containment probe. This cleanup affects only cosmetic edge meshes.
+
+Creator raster terrain/grass skirt/sand are now at -0.06/-0.04/-0.02 m, providing explicit layer separation beneath the unchanged asphalt, markings, finish and car presentation. `creator_road.gdshader` derivative-filters subpixel gravel grain to address texture shimmer. Canonical collision/surface cells, camera framing, physics and saved documents remain unchanged.
+
+Changed runtime: `native_track_visual.gd`, `creator_road.gdshader`. Verification: `tests/test_road_pieces.gd`, `tests/capture_style.gd` (adds normal audit and six read-only route-position captures). Status and this document updated. No external asset or dependency added.
+
+Actual commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+- `TestPieces`: final 132 checks, zero failures. Includes upward normals, rotated microscopic-edge cleanup, finite miters, existing UV metre-spacing/seam checks, canonical golden cells and five-lap witness with zero contacts. Initial new UP-normal assertion was too strict for packed mesh normals; the final 0.0001-vector-distance tolerance accounts for mesh normal quantization, rather than accepting downward normals.
+- `CaptureStyle -StyleDocument <local Silmukka JSON>`: passed, zero bad normals, unchanged-cell assertion and six route-position captures. Reviewed all six intermediate views, then recaptured and inspected the corrected sawtooth bend: [final capture](evidence/style-glitch-fix.png). [Audit](evidence/style-glitch-capture.txt), [tests](evidence/style-glitch-tests.txt).
+- `TestWorkflow`: final 96 checks, zero failures.
+- `git diff --check`: passed.
+
+Desktop Compatibility captures establish the corrected static geometry. Continuous-motion flicker on the owner's display still needs owner confirmation; these six views are not a video or phone test. No physical-phone test or Android export was performed; attachment was not enumerated. A newly attached close-up was not present in this user turn, so no claim of matching an exact supplied black-triangle pixel is made.

@@ -27,6 +27,7 @@ func run() -> void:
 	root.add_child(game)
 	game.set_physics_process(false)
 	game.set("paused",true)
+	_audit_road_normals(game)
 	for frame: int in range(4):
 		game.call("_process",0.1)
 		await RenderingServer.frame_post_draw
@@ -37,4 +38,31 @@ func run() -> void:
 	print("STYLE_CHECK: native cells preserved")
 	var error: Error = root.get_texture().get_image().save_png(output)
 	print("STYLE_CAPTURE: ",error_string(error))
+	if error == OK:
+		var sim: VehicleSimulation = game.get("sim")
+		var camera: FollowCamera = game.get("camera")
+		for sample: int in range(6):
+			var point: Vector2 = track.route[sample*track.route.size()/6]
+			sim.reset(point,track.spawn_heading)
+			game.set("previous_position",point)
+			camera.follow(point,Vector2.ZERO,track.spawn_heading,0.0,true)
+			for frame: int in range(3):
+				game.call("_process",0.1)
+				await RenderingServer.frame_post_draw
+			var view_error: Error = root.get_texture().get_image().save_png(output.get_basename()+"-view-%d.png" % sample)
+			if view_error != OK: error = view_error
+		print("STYLE_ROUTE_VIEWS: ",error_string(error))
 	quit(0 if error == OK else 1)
+
+
+func _audit_road_normals(node: Node) -> void:
+	if node is MeshInstance3D and node.material_override is ShaderMaterial:
+		var material: ShaderMaterial = node.material_override
+		if material.shader.resource_path == "res://track/creator_road.gdshader":
+			var arrays: Array = node.mesh.surface_get_arrays(0)
+			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+			var down: int = 0
+			for normal: Vector3 in normals:
+				if normal.y < 0.99: down += 1
+			print("ROAD_NORMALS gravel=",material.get_shader_parameter("gravel")," grass=",material.get_shader_parameter("grass")," bad=",down," total=",normals.size())
+	for child: Node in node.get_children(): _audit_road_normals(child)

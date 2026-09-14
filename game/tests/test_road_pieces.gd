@@ -254,6 +254,17 @@ func _practice_start() -> void:
 
 
 func _roadside_visuals() -> void:
+	var cleanup := NativeTrackVisual.new()
+	var rotated := PackedVector2Array([Vector2(0,0),Vector2(10,0),Vector2(10.00001,0.00001),Vector2(10,4),Vector2(0,4)])
+	for i: int in range(rotated.size()): rotated[i] = rotated[i].rotated(deg_to_rad(179.464))
+	var clean: PackedVector2Array = cleanup.call("_clean_outline",rotated)
+	check(clean.size() == 4,"microscopic offset edges on rotated straights are removed before extrusion")
+	var stable: bool = true
+	for i: int in range(clean.size()):
+		var normal: Vector2 = cleanup.call("_edge_miter",clean,i)
+		stable = stable and normal.is_finite() and normal.length() <= 2.0
+	check(stable,"cleaned rotated outline produces bounded finite miters")
+	cleanup.free()
 	for radius: float in [8.0,16.0,30.0]:
 		for flipped: bool in [false,true]:
 			var document: Dictionary = TrackDocument.create_blank()
@@ -270,12 +281,15 @@ func _roadside_visuals() -> void:
 			var measured: bool = false
 			var correct: bool = true
 			var closed_seams: bool = true
+			var upward: bool = true
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
 				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
+				var arrays: Array = mesh.mesh.surface_get_arrays(0)
+				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+				for normal: Vector3 in normals: upward = upward and normal.distance_to(Vector3.UP) < 0.0001 # Packed mesh normals have quantization error.
 				if not material.get_shader_parameter("kerb"): continue
 				measured = true
-				var arrays: Array = mesh.mesh.surface_get_arrays(0)
 				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 				var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
 				var indices := PackedInt32Array()
@@ -283,15 +297,31 @@ func _roadside_visuals() -> void:
 					indices = arrays[Mesh.ARRAY_INDEX]
 				else:
 					for vertex: int in range(vertices.size()): indices.append(vertex)
+				var previous_end := PackedVector3Array()
+				var previous_u: float = -1.0
 				for i: int in range(0,indices.size(),6):
-					var a: int = indices[i]
-					var b: int = indices[i+2]
-					var outside_a: int = indices[i+4]
-					var outside_b: int = indices[i+1]
-					var length: float = ((vertices[a]+vertices[outside_a])*0.5).distance_to((vertices[b]+vertices[outside_b])*0.5)
-					correct = correct and absf(uv[b].x-uv[a].x-length) < 0.0001
-					if i > 0 and absf(uv[indices[i-4]].x-uv[a].x) < 0.0001:
-						closed_seams = closed_seams and vertices[indices[i-4]].distance_to(vertices[a]) < 0.0001 and vertices[indices[i-5]].distance_to(vertices[outside_a]) < 0.0001
+					var low: float = INF
+					var high: float = -INF
+					for j: int in range(6):
+						low = minf(low,uv[indices[i+j]].x)
+						high = maxf(high,uv[indices[i+j]].x)
+					var start := PackedVector3Array()
+					var end := PackedVector3Array()
+					for j: int in range(6):
+						var vertex: int = indices[i+j]
+						if absf(uv[vertex].x-low) < 0.00001 and not start.has(vertices[vertex]): start.append(vertices[vertex])
+						if absf(uv[vertex].x-high) < 0.00001 and not end.has(vertices[vertex]): end.append(vertices[vertex])
+					if start.size() != 2 or end.size() != 2:
+						correct = false
+						continue
+					var length: float = ((start[0]+start[1])*0.5).distance_to((end[0]+end[1])*0.5)
+					correct = correct and absf(high-low-length) < 0.0001
+					if absf(previous_u-low) < 0.0001:
+						for vertex: Vector3 in start:
+							closed_seams = closed_seams and minf(vertex.distance_to(previous_end[0]),vertex.distance_to(previous_end[1])) < 0.0001
+					previous_u = high
+					previous_end = end
+			check(upward,"all road/grass/sand/paint triangles use upward normals")
 			check(measured and correct,"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
 			check(closed_seams,"kerb adjacent quads share inside and outside corners")
 			check(track.cells == original,"roadside presentation preserves collision/surface cells")

@@ -1,5 +1,7 @@
 # Deliberate rotation and recovery — 2026-09-14
 
+**Owner follow-up:** Original is now the default; comparison is available in normal races and creator practice. See [HANDLING_SELECTOR.md](HANDLING_SELECTOR.md). The implementation/testing history below describes the initial iteration.
+
 Requirements: **G01** (responsive steering, momentum, recoverable slip and collision losses), **R01** (digital/touch controls), replay/rules identity foundations of **R03/R07**. The owner's supplied handling notes reopen a focused handling iteration. Balanced is the default in ordinary races and creator practice. Ordinary races still use five laps; creator practice remains untimed.
 
 ## Implemented behavior

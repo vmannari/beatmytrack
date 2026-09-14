@@ -4,6 +4,8 @@ extends CanvasLayer
 signal restart_requested
 signal pause_requested
 signal profile_requested(index: int)
+signal handling_menu_opened
+signal handling_menu_closed
 signal handling_edited
 signal record_requested
 signal track_requested
@@ -14,6 +16,7 @@ var production_mode: bool = false
 var editor_test: bool = false
 var race_timer: Label
 var pause_button: Button
+var handling_button: MenuButton
 
 var config: HandlingConfig
 var driver: DriverInput
@@ -79,6 +82,22 @@ func _ready() -> void:
 		pause_button = top.get_child(top.get_child_count()-1) as Button
 		if production_mode:
 			_button(top, "Tracks", func() -> void: exit_requested.emit())
+	handling_button = MenuButton.new()
+	handling_button.name = "HandlingSelector"
+	handling_button.flat = false
+	handling_button.text = "Handling"
+	handling_button.custom_minimum_size = Vector2(110, 54)
+	handling_button.add_theme_stylebox_override("normal", _panel_style())
+	handling_button.tooltip_text = "Compare handling; selecting a preset restarts this drive"
+	top.add_child(handling_button)
+	var choices: PopupMenu = handling_button.get_popup()
+	choices.add_theme_constant_override("v_separation", 16)
+	for entry: Array in [["Original (previous handling)", 3], ["Planted", 0], ["Balanced", 1], ["Playful", 2]]:
+		choices.add_radio_check_item(entry[0], entry[1])
+	choices.add_separator("Selecting restarts the drive")
+	choices.id_pressed.connect(func(index: int) -> void: profile_requested.emit(index))
+	choices.about_to_popup.connect(func() -> void: handling_menu_opened.emit())
+	choices.popup_hide.connect(func() -> void: handling_menu_closed.emit())
 	if OS.is_debug_build() and not production_mode:
 		_button(top, "Track F5", func() -> void: track_requested.emit())
 		_button(top, "Tune  F2", toggle_tuning)
@@ -134,6 +153,11 @@ func show_config(handling: HandlingConfig) -> void:
 	if tune_fields == null:
 		return
 	profile_label.text = config.profile_name
+	if handling_button != null:
+		handling_button.text = "Handling: " + config.profile_name + " ▾"
+		var choices: PopupMenu = handling_button.get_popup()
+		for index: int in range(4):
+			choices.set_item_checked(index, choices.get_item_id(index) == HandlingConfig.selected_profile)
 	for child: Node in tune_fields.get_children():
 		tune_fields.remove_child(child)
 		child.queue_free()
@@ -142,7 +166,7 @@ func show_config(handling: HandlingConfig) -> void:
 	profiles.columns = 2
 	tune_fields.add_child(profiles)
 	for i: int in range(4):
-		_button(profiles, ["1 Planted", "2 Balanced", "3 Playful", "4 Baseline"][i], func() -> void: profile_requested.emit(i))
+		_button(profiles, ["1 Planted", "2 Balanced", "3 Playful", "4 Original"][i], func() -> void: profile_requested.emit(i))
 	var fields: Array[Array] = [
 		["Engine force · N", "engine_force", 5000.0, 18000.0, 500.0],
 		["Lateral grip · m/s²", "lateral_grip", 8.0, 60.0, 0.5],

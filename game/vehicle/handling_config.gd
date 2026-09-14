@@ -3,6 +3,11 @@ extends Resource
 ## SI units unless noted. Arcade forces, not a physical tire model.
 
 const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared with visuals/trails.
+const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres", "res://resources/baseline.tres"]
+static var selected_profile: int = 3 # Owner prefers the original; session comparisons are optional.
+
+static func selected_config() -> HandlingConfig:
+	return load(PROFILE_PATHS[selected_profile]) as HandlingConfig
 
 @export var profile_name: String = "Balanced"
 @export var version: String = "handling-0.14"

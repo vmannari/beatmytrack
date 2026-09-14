@@ -229,8 +229,37 @@ func _run() -> void:
 			preset.step(input, yard)
 		check(preset.state.position.is_finite() and preset.state.velocity.length() <= preset.config.maximum_speed + 0.01, "bounded mixed-input run: " + preset.config.profile_name)
 	await _integration()
+	await _production_profiles()
 	print("DRIVING_TESTS: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures else 0)
+
+
+func _production_profiles() -> void:
+	HandlingConfig.selected_profile = 3
+	for practice: bool in [false, true]:
+		var scene: Node = load("res://core/game.tscn").instantiate()
+		scene.set("production_mode", true)
+		scene.set("editor_test", practice)
+		root.add_child(scene)
+		await process_frame
+		var sim: VehicleSimulation = scene.get("sim")
+		var hud: PlaygroundHUD = scene.get("hud")
+		check(hud.handling_button.is_visible_in_tree(), "handling selector visible in production, practice=%s" % practice)
+		check(sim.config.profile_name == "Original" and not sim.config.progressive_handling, "normal drive defaults to the original physics")
+		var popup: PopupMenu = hud.handling_button.get_popup()
+		popup.about_to_popup.emit()
+		check(scene.get("paused") and not hud.touch.enabled, "opening comparison pauses and releases driving controls")
+		popup.id_pressed.emit(1)
+		popup.popup_hide.emit()
+		check(sim.config.profile_name == "Balanced" and sim.state.tick == 0 and not scene.get("paused"), "visible menu switches handling and restarts the drive")
+		check(HandlingConfig.selected_config().profile_name == "Balanced", "menus and subsequent tracks use the chosen session preset")
+		popup.about_to_popup.emit()
+		popup.popup_hide.emit()
+		check(not scene.get("paused") and sim.config.profile_name == "Balanced", "dismissing the selector resumes without changing handling")
+		popup.id_pressed.emit(3)
+		check(sim.config.profile_name == "Original", "visible Original option restores previous handling")
+		scene.queue_free()
+		await process_frame
 
 
 func _integration() -> void:

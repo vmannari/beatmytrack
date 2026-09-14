@@ -13,8 +13,9 @@ var attempt_practice: bool = false
 var countdown_ticks: int = 0
 var countdown_label: Label
 
-const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres", "res://resources/baseline.tres"]
-var profile_index: int = 1
+const PROFILE_PATHS: Array[String] = HandlingConfig.PROFILE_PATHS
+var profile_index: int = HandlingConfig.selected_profile
+var resume_after_handling: bool = false
 var handling: HandlingConfig
 var sim: VehicleSimulation
 var yard := PlaygroundData.new()
@@ -98,6 +99,8 @@ func _ready() -> void:
 	hud.restart_requested.connect(restart)
 	hud.pause_requested.connect(toggle_pause)
 	hud.profile_requested.connect(select_profile)
+	hud.handling_menu_opened.connect(_open_handling_menu)
+	hud.handling_menu_closed.connect(_close_handling_menu)
 	hud.handling_edited.connect(restart)
 	hud.record_requested.connect(toggle_recording)
 	hud.track_requested.connect(cycle_track)
@@ -237,10 +240,23 @@ func restart() -> void:
 
 func select_profile(index: int) -> void:
 	profile_index = clampi(index, 0, PROFILE_PATHS.size() - 1)
+	HandlingConfig.selected_profile = profile_index
 	handling = (ResourceLoader.load(PROFILE_PATHS[profile_index], "", ResourceLoader.CACHE_MODE_IGNORE) as HandlingConfig).duplicate() as HandlingConfig
 	sim.config = handling
 	hud.show_config(handling)
 	restart()
+
+
+func _open_handling_menu() -> void:
+	resume_after_handling = not paused
+	if resume_after_handling:
+		toggle_pause()
+
+
+func _close_handling_menu() -> void:
+	if resume_after_handling and paused:
+		toggle_pause()
+	resume_after_handling = false
 
 
 func toggle_pause() -> void:

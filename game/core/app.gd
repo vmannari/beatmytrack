@@ -164,7 +164,7 @@ func _home() -> void:
 	var spacer := Control.new()
 	spacer.custom_minimum_size.y = 8
 	invite.add_child(spacer)
-	var best: float = records.best_for(selected_track,load("res://resources/balanced.tres") as HandlingConfig)
+	var best: float = records.best_for(selected_track,HandlingConfig.selected_config())
 	invite.add_child(MenuStyle.label("YOUR TIME TO BEAT" if best > 0.0 else "YOUR FIRST RUN",16,true))
 	var target := MenuStyle.label(MenuStyle.time_text(best) if best > 0.0 else "NO TIME SET",46)
 	target.name = "RaceTarget"
@@ -255,7 +255,7 @@ func _garage() -> void:
 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info.add_child(description)
 	info.add_child(HSeparator.new())
-	var handling: HandlingConfig = load("res://resources/balanced.tres")
+	var handling: HandlingConfig = HandlingConfig.selected_config()
 	info.add_child(MenuStyle.label("HANDLING     "+handling.profile_name.to_upper(),22))
 	info.add_child(MenuStyle.label("MASS              %d kg" % roundi(handling.mass),22))
 	info.add_child(MenuStyle.label("SPEED LIMIT   %d km/h" % roundi(handling.maximum_speed*3.6),22))
@@ -768,7 +768,7 @@ func _update_editor_issues() -> void:
 	var track: NativeTrack = canvas.native_preview
 	if track != null:
 		var start: Vector2 = _practice_start(track)
-		var config: HandlingConfig = load("res://resources/balanced.tres")
+		var config: HandlingConfig = HandlingConfig.selected_config()
 		var radius: float = config.collision_radius
 		var elevated: bool = track.collision_elevated_at(start,track.nearest_route(start),radius)
 		if track.overlaps_obstacle(start,radius,elevated):

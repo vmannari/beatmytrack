@@ -235,8 +235,8 @@ func _run() -> void:
 
 
 func _production_profiles() -> void:
-	HandlingConfig.selected_profile = 3
 	for practice: bool in [false, true]:
+		HandlingSelection.index = 4
 		var scene: Node = load("res://core/game.tscn").instantiate()
 		scene.set("production_mode", true)
 		scene.set("editor_test", practice)
@@ -245,14 +245,14 @@ func _production_profiles() -> void:
 		var sim: VehicleSimulation = scene.get("sim")
 		var hud: PlaygroundHUD = scene.get("hud")
 		check(hud.handling_button.is_visible_in_tree(), "handling selector visible in production, practice=%s" % practice)
-		check(sim.config.profile_name == "Original" and not sim.config.progressive_handling, "normal drive defaults to the original physics")
+		check(sim.config.profile_name == "Original+" and not sim.config.progressive_handling, "normal drive defaults to the original-based slide tune")
 		var popup: PopupMenu = hud.handling_button.get_popup()
 		popup.about_to_popup.emit()
 		check(scene.get("paused") and not hud.touch.enabled, "opening comparison pauses and releases driving controls")
 		popup.id_pressed.emit(1)
 		popup.popup_hide.emit()
 		check(sim.config.profile_name == "Balanced" and sim.state.tick == 0 and not scene.get("paused"), "visible menu switches handling and restarts the drive")
-		check(HandlingConfig.selected_config().profile_name == "Balanced", "menus and subsequent tracks use the chosen session preset")
+		check(HandlingSelection.config().profile_name == "Balanced", "menus and subsequent tracks use the chosen session preset")
 		popup.about_to_popup.emit()
 		popup.popup_hide.emit()
 		check(not scene.get("paused") and sim.config.profile_name == "Balanced", "dismissing the selector resumes without changing handling")

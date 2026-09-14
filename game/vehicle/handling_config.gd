@@ -3,15 +3,9 @@ extends Resource
 ## SI units unless noted. Arcade forces, not a physical tire model.
 
 const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared with visuals/trails.
-const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres", "res://resources/baseline.tres"]
-static var selected_profile: int = 3 # Owner prefers the original; session comparisons are optional.
-
-static func selected_config() -> HandlingConfig:
-	return load(PROFILE_PATHS[selected_profile]) as HandlingConfig
-
 @export var profile_name: String = "Balanced"
 @export var version: String = "handling-0.14"
-@export var progressive_handling: bool = true # False only for the frozen comparison preset.
+@export var progressive_handling: bool = true # Original and Original+ use the original steering model.
 @export_range(500.0, 2000.0, 10.0) var mass: float = 1050.0
 @export_range(1000.0, 22000.0, 100.0) var engine_force: float = 16500.0
 @export_range(2000.0, 30000.0, 100.0) var braking_force: float = 18000.0
@@ -39,6 +33,7 @@ static func selected_config() -> HandlingConfig:
 @export_range(0.0, 1.5, 0.05) var brake_rotation: float = 0.65 # rad/s at full brake and steer; fades below 12 m/s.
 @export_range(0.0, 0.4, 0.01) var brake_grip_loss: float = 0.18 # Rear unloading while trail braking.
 @export_range(0.0, 0.8, 0.01) var slide_drive_loss: float = 0.45 # Engine traction sacrificed in broad slides.
+@export_range(0.0, 1.0, 0.05) var slide_power_recovery: float = 0.0 # Fraction of speed-related engine falloff restored during a slide.
 @export_range(0.0, 1.5, 0.05) var throttle_rotation: float = 0.0
 @export_range(0.0, 0.4, 0.01) var throttle_grip_loss: float = 0.06
 @export_range(0.5, 4.0, 0.1) var maximum_yaw_rate: float = 2.7 # rad/s

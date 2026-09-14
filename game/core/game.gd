@@ -13,8 +13,8 @@ var attempt_practice: bool = false
 var countdown_ticks: int = 0
 var countdown_label: Label
 
-const PROFILE_PATHS: Array[String] = HandlingConfig.PROFILE_PATHS
-var profile_index: int = HandlingConfig.selected_profile
+const PROFILE_PATHS: Array[String] = HandlingSelection.PROFILE_PATHS
+var profile_index: int = HandlingSelection.index
 var resume_after_handling: bool = false
 var handling: HandlingConfig
 var sim: VehicleSimulation
@@ -240,7 +240,7 @@ func restart() -> void:
 
 func select_profile(index: int) -> void:
 	profile_index = clampi(index, 0, PROFILE_PATHS.size() - 1)
-	HandlingConfig.selected_profile = profile_index
+	HandlingSelection.index = profile_index
 	handling = (ResourceLoader.load(PROFILE_PATHS[profile_index], "", ResourceLoader.CACHE_MODE_IGNORE) as HandlingConfig).duplicate() as HandlingConfig
 	sim.config = handling
 	hud.show_config(handling)
@@ -306,6 +306,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_2: select_profile(1)
 			KEY_3: select_profile(2)
 			KEY_4: select_profile(3)
+			KEY_5: select_profile(4)
 			KEY_F2: hud.toggle_tuning()
 			KEY_F3: toggle_recording()
 			KEY_F6: select_profile(profile_index)

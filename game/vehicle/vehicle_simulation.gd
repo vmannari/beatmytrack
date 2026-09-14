@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.19"
+const PHYSICS_VERSION: String = "arcade-planar-0.20"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -158,4 +158,10 @@ func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
 	if speed < -0.15 and throttle > 0.0:
 		return config.braking_force / config.mass * throttle
 	var power_falloff: float = 1.0 - 0.45 * clampf(speed / config.maximum_speed, 0.0, 1.0)
+	if config.slide_power_recovery > 0.0 and speed > 0.0:
+		# Optional original-based tune: retain more of the engine's normal force
+		# while sideways. It still acts only along the chassis, requires throttle,
+		# and remains below full engine force and the surface traction budget.
+		var slide: float = smoothstep(0.06, 0.30, absf(state.slip_angle()))
+		power_falloff += (1.0 - power_falloff) * config.slide_power_recovery * slide
 	return config.engine_force / config.mass * throttle * power_falloff

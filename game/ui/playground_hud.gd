@@ -92,7 +92,7 @@ func _ready() -> void:
 	top.add_child(handling_button)
 	var choices: PopupMenu = handling_button.get_popup()
 	choices.add_theme_constant_override("v_separation", 16)
-	for entry: Array in [["Original (previous handling)", 3], ["Planted", 0], ["Balanced", 1], ["Playful", 2]]:
+	for entry: Array in [["Original+ (slide and drive)", 4], ["Original (unchanged)", 3], ["Planted", 0], ["Balanced", 1], ["Playful", 2]]:
 		choices.add_radio_check_item(entry[0], entry[1])
 	choices.add_separator("Selecting restarts the drive")
 	choices.id_pressed.connect(func(index: int) -> void: profile_requested.emit(index))
@@ -131,7 +131,7 @@ func _ready() -> void:
 	message_label = _label("Brake before the circle. Lift and countersteer to catch a slide.", 16)
 	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.add_child(message_label)
-	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3 / 4: handling", 14)
+	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3 / 4 / 5: handling", 14)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	help.visible = OS.is_debug_build() and not OS.has_feature("mobile") and not production_mode
 	footer.add_child(help)
@@ -156,8 +156,8 @@ func show_config(handling: HandlingConfig) -> void:
 	if handling_button != null:
 		handling_button.text = "Handling: " + config.profile_name + " ▾"
 		var choices: PopupMenu = handling_button.get_popup()
-		for index: int in range(4):
-			choices.set_item_checked(index, choices.get_item_id(index) == HandlingConfig.selected_profile)
+		for index: int in range(HandlingSelection.PROFILE_PATHS.size()):
+			choices.set_item_checked(index, choices.get_item_id(index) == HandlingSelection.index)
 	for child: Node in tune_fields.get_children():
 		tune_fields.remove_child(child)
 		child.queue_free()
@@ -165,8 +165,8 @@ func show_config(handling: HandlingConfig) -> void:
 	var profiles := GridContainer.new()
 	profiles.columns = 2
 	tune_fields.add_child(profiles)
-	for i: int in range(4):
-		_button(profiles, ["1 Planted", "2 Balanced", "3 Playful", "4 Original"][i], func() -> void: profile_requested.emit(i))
+	for i: int in range(HandlingSelection.PROFILE_PATHS.size()):
+		_button(profiles, ["1 Planted", "2 Balanced", "3 Playful", "4 Original", "5 Original+"][i], func() -> void: profile_requested.emit(i))
 	var fields: Array[Array] = [
 		["Engine force · N", "engine_force", 5000.0, 18000.0, 500.0],
 		["Lateral grip · m/s²", "lateral_grip", 8.0, 60.0, 0.5],

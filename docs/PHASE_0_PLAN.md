@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 G01/R01/R03/R07: owner prefers Original and requests more slip plus strong forward drive while sliding. Original+ is the focused tune; unchanged Original remains selectable. [ORIGINAL_SLIDE.md](ORIGINAL_SLIDE.md) records configuration, bounded power recovery, measured behavior and actual verification.
+
 2026-09-14 G01/R01/R03/R07: owner reopens focused handling iteration with supplied fun-handling notes. Progressive steering, brake rotation and recovery are implemented with an old-physics comparison preset. See [HANDLING_FUN.md](HANDLING_FUN.md) for actual checks, identity changes and pending human/phone acceptance.
 
 2026-09-14 R01/T01-T04/V02/V04/V05: centred biome/rename dialogs, keyboard-aware rename placement, taller rail, transparent header and grey disabled Test. [Checks and captures](EDITOR_WIP_WORKFLOW.md).

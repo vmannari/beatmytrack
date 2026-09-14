@@ -89,8 +89,109 @@ func _run() -> void:
 	_baseline()
 	_replays()
 	_recovery_and_feedback()
+	_original_slide()
+	_original_laps()
 	print("HANDLING_TESTS: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures else 0)
+
+func _original_slide() -> void:
+	var original: HandlingConfig = load("res://resources/baseline.tres")
+	var tune: HandlingConfig = load("res://resources/original_slide.tres")
+	var slides: Array[float] = []
+	var push: Array[float] = []
+	for config: HandlingConfig in [original, tune]:
+		var corner := car(config)
+		advance(corner, 100, 0.8, 1, 0)
+		slides.append(absf(rad_to_deg(corner.state.slip_angle())))
+		var gas := car(config)
+		var coast := car(config)
+		gas.state.velocity = Vector2(8, 18)
+		coast.state.velocity = gas.state.velocity
+		advance(gas, 1, 0, 1, 0)
+		advance(coast, 1, 0, 0, 0)
+		var engine_delta: Vector2 = (gas.state.velocity - coast.state.velocity) / VehicleSimulation.STEP
+		push.append(engine_delta.y)
+		check(absf(engine_delta.x) < 0.0001 and gas.state.heading == 0.0, config.profile_name + " throttle adds acceleration along the nose without snapping momentum")
+	print("ORIGINAL_SLIDE_METRIC powered corner slip old/new degrees=", slides, " nose-directed engine acceleration old/new=", push)
+	check(slides[1] > slides[0] * 1.10 and slides[1] < slides[0] * 1.65, "Original+ adds a modest 10-65% slip increase in the same powered bend")
+	check(push[1] > push[0] * 1.20, "Original+ has at least 20% stronger nose-directed engine traction during a slide")
+	var old_sprint := car(original, 0)
+	var new_sprint := car(tune, 0)
+	advance(old_sprint, 1200, 0, 1, 0)
+	advance(new_sprint, 1200, 0, 1, 0)
+	check(old_sprint.state.snapshot() == new_sprint.state.snapshot(), "straight-line acceleration and top speed remain exactly Original")
+	var gas := car(tune)
+	var coast := car(tune)
+	var brake := car(tune)
+	for sim: VehicleSimulation in [gas, coast, brake]:
+		sim.state.velocity = Vector2(8, 18)
+	advance(gas, 30, 0, 1, 0)
+	advance(coast, 30, 0, 0, 0)
+	advance(brake, 30, 0, 0, 1)
+	check(gas.state.velocity.y > coast.state.velocity.y and coast.state.velocity.y > brake.state.velocity.y, "nose pull requires throttle; lifting and braking reduce drive")
+	check(absf(gas.state.slip_angle()) < absf(coast.state.slip_angle()), "throttle progressively pulls a slide toward the nose")
+	var abuse := car(tune, 36)
+	var no_boost: bool = true
+	for tick: int in range(1800):
+		var before: float = abuse.state.velocity.length_squared()
+		abuse.step(DriveFrame.sample(sin(tick * 0.03), 0, 1.0 if tick % 60 < 6 else 0.0))
+		no_boost = no_boost and abuse.state.velocity.length_squared() <= before + 0.001
+	check(no_boost, "Original+ steering and brake tapping cannot create coasting energy")
+	var both := car(tune, 0)
+	advance(both, 300, 1, 1, 1)
+	check(both.state.position == Vector2.ZERO, "Original+ simultaneous pedals at rest still brake without a boost")
+	var locked := car(tune)
+	advance(locked, 1200, 1, 1, 0)
+	print("ORIGINAL_SLIDE_METRIC full-lock speed=", locked.state.velocity.length(), " slip=", rad_to_deg(locked.state.slip_angle()))
+	check(locked.state.position.is_finite() and locked.state.velocity.length() < tune.maximum_speed * 0.8 and absf(locked.state.slip_angle()) < deg_to_rad(30), "Original+ held power/full lock remains bounded and costs speed")
+	advance(locked, 180, 0, 0.6, 0)
+	check(absf(locked.state.slip_angle()) < 0.02, "Original+ settles after unwinding and driving out")
+	for angle: float in [-PI * 0.5, PI * 0.5, PI]:
+		var directed := car(tune)
+		var unpowered := car(tune)
+		for sim: VehicleSimulation in [directed, unpowered]:
+			sim.state.heading = angle
+			sim.state.velocity = sim.state.forward() * 18.0 + sim.state.right() * 8.0
+		advance(directed, 1, 0, 1, 0)
+		advance(unpowered, 1, 0, 0, 0)
+		var force: Vector2 = (directed.state.velocity - unpowered.state.velocity) / VehicleSimulation.STEP
+		check(force.dot(directed.state.forward()) > 13.0 and absf(force.dot(directed.state.right())) < 0.001 and force.length() <= tune.engine_force / tune.mass, "slide thrust follows the rotated chassis and stays inside engine force at heading %.0f" % rad_to_deg(angle))
+
+func _original_laps() -> void:
+	var config: HandlingConfig = load("res://resources/original_slide.tres")
+	for name: String in ["freeway", "1way", "66", "offroad"]:
+		var track: NativeTrack = NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var sim := VehicleSimulation.new(config)
+		sim.reset(track.spawn, track.spawn_heading)
+		sim.state.route_index = track.nearest_route(track.spawn)
+		var session := TrackSession.new(120, 3)
+		var driver := RouteDriver.new()
+		var frames: Array = []
+		for tick: int in range(24000):
+			var frame: DriveFrame = driver.sample(sim.state, track, config)
+			var previous: Vector2 = sim.state.position
+			sim.step(frame, track)
+			session.advance(track, previous, sim.state.position, sim.state.route_index)
+			frames.append(frame.packed())
+			if session.finished:
+				break
+		check(session.completed_laps == 3, "Original+ " + name + " completes three ordered diagnostic laps")
+		check(sim.state.collision_count == 0, "Original+ " + name + " conservative driver avoids barriers")
+		var replay := VehicleSimulation.new(config)
+		replay.reset(track.spawn, track.spawn_heading)
+		replay.state.route_index = track.nearest_route(track.spawn)
+		var replay_session := TrackSession.new(120, 3)
+		var decoded: Array = JSON.parse_string(JSON.stringify(frames))
+		for packed: Array in decoded:
+			var frame := DriveFrame.new()
+			frame.steer = int(packed[0])
+			frame.throttle = int(packed[1])
+			frame.brake = int(packed[2])
+			var previous: Vector2 = replay.state.position
+			replay.step(frame, track)
+			replay_session.advance(track, previous, replay.state.position, replay.state.route_index)
+		check(replay.state.snapshot() == sim.state.snapshot() and replay_session.lap_times == session.lap_times, "Original+ " + name + " full race JSON replay is exact")
+		print("ORIGINAL_SLIDE_LAPS ", name, " times=", session.lap_times, " contacts=", sim.state.collision_count)
 
 func _recovery_and_feedback() -> void:
 	var config := HandlingConfig.new()
@@ -152,7 +253,7 @@ func _baseline() -> void:
 	check(largest_error < 0.00001, "Baseline reproduces pre-change recorded checkpoints within JSON precision")
 
 func _replays() -> void:
-	for name: String in ["stable", "balanced", "loose", "baseline"]:
+	for name: String in ["stable", "balanced", "loose", "baseline", "original_slide"]:
 		var config: HandlingConfig = load("res://resources/" + name + ".tres")
 		var frames: Array = []
 		var reference := car(config)

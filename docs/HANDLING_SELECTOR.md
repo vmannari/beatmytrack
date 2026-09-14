@@ -1,5 +1,7 @@
 # Original default and accessible comparison — 2026-09-14
 
+**Latest owner follow-up:** [Original+](ORIGINAL_SLIDE.md) now defaults to the requested original-based slide/forward-drive tune. Unchanged Original remains selectable beside it. The history below describes the selector's initial release.
+
 **G01/R01/R03/R07:** the owner prefers the previous handling and could not access the comparison controls during normal play. Original (the frozen pre-iteration Baseline resource) is now the default at application startup. The experimental Planted, Balanced and Playful presets remain optional. This supersedes the Balanced-default and debug-only comparison statements in HANDLING_FUN.md. The canonical physics solver and its version are unchanged.
 
 A visible **Handling: Original ▾** button in the top bar opens the same four choices in ordinary races and creator practice, including non-debug builds. The menu pauses the drive and releases touch/keyboard input. Selecting a preset restarts the drive, including the normal race countdown. Cancelling resumes without changing the preset. As with the existing Pause action, pausing an ongoing timed attempt marks it practice; restarting starts a fresh attempt. Selecting Original restores the previous handling. The selection carries to subsequent tracks and menus for the current application session; reopening the application defaults to Original again.

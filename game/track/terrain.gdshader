@@ -48,7 +48,10 @@ void fragment() {
 		// Quiet horizontal water bands and a thin shoreline highlight.
 		float band = step(0.82, sin(world_position.z * 0.52 + sin(world_position.x * 0.18) * 0.4));
 		base *= 0.98 + band * 0.045;
-		base = mix(base, color_6.rgb, boundary * 0.35);
+		float shoal = pigment(world_position.xz * 0.35);
+		base = mix(base * 0.88, color_6.rgb * 1.15, shoal * 0.22 + boundary * 0.6);
+		float ripple = smoothstep(0.92, 1.0, sin(world_position.z * 7.0 + pigment(world_position.xz * 0.7) * 5.0));
+		base += vec3(0.025,0.035,0.035) * ripple * (1.0 - smoothstep(0.08,0.3,length(fwidth(world_position.xz))));
 	}
 	if (kind == 0 || kind == 1 || kind == 2 || kind == 7) {
 		base = surface_detail(base, world_position.xz, kind == 0);

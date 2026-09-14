@@ -43,6 +43,8 @@ func _ready() -> void:
 	sunlight.light_color = Color("fff1d8")
 	sunlight.light_energy = 1.0
 	sunlight.shadow_enabled = true
+	sunlight.shadow_bias=0.15
+	sunlight.shadow_normal_bias=2.0
 	sunlight.directional_shadow_max_distance = 400.0
 	world.add_child(sunlight)
 	# Continue natural ground beyond the native map, including while panning.
@@ -62,7 +64,7 @@ func _ready() -> void:
 	camera.near = 0.1
 	camera.far = 500.0
 	camera.position = Vector3(0, 200, 0)
-	camera.rotation = Vector3(-PI * 0.5, 0, 0)
+	camera.rotation = Vector3(-deg_to_rad(EditorCanvas.PLANNING_PITCH), 0, 0)
 	world.add_child(camera)
 	camera.current = true
 	resized.connect(_sync_camera)
@@ -111,10 +113,10 @@ func _sync_camera() -> void:
 	_last_size = canvas.size
 	_last_pan = canvas.pan
 	_last_scale = canvas.scale_factor()
-	# Native (x, y) is world (x, height, -y). With no camera tilt, object
-	# height does not displace the selection footprint from its map position.
+	# Native ground projection matches the canvas; a restrained planning tilt
+	# exposes object volume while retaining accurate ground placement.
 	var center: Vector2 = canvas.to_world(canvas.size * 0.5)
-	camera.position = Vector3(center.x, 200.0, -center.y)
+	camera.position = Vector3(center.x, 200.0, -center.y+200.0/tan(deg_to_rad(EditorCanvas.PLANNING_PITCH)))
 	camera.size = canvas.size.y / _last_scale
 	ground.position = Vector3(center.x, -0.21, -center.y)
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE

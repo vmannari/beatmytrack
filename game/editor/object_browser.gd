@@ -12,17 +12,14 @@ var placement: String = "single"
 var stamp_scale: float = 1.0
 var recent: Array[String] = []
 var tiles: HBoxContainer
-var details: HBoxContainer
+var details: VBoxContainer
+var options: PopupPanel
 var categories: HBoxContainer
 var page: int = 0
 
 func _ready() -> void:
 	name = "ObjectBrowser"
-	var box := StyleBoxFlat.new()
-	box.bg_color = Color(0.035,0.065,0.075,0.96)
-	box.set_corner_radius_all(12)
-	box.set_content_margin_all(8)
-	add_theme_stylebox_override("panel",box)
+	add_theme_stylebox_override("panel",EditorStyle.box())
 	var column := VBoxContainer.new()
 	add_child(column)
 	var top := HBoxContainer.new()
@@ -31,7 +28,8 @@ func _ready() -> void:
 	search.name = "ObjectSearch"
 	search.placeholder_text = "Search objects..."
 	search.text=query
-	search.custom_minimum_size = Vector2(180,40)
+	search.custom_minimum_size = Vector2(190,38)
+	EditorStyle.apply(search)
 	top.add_child(search)
 	search.text_changed.connect(func(value: String) -> void:
 		query = value; page = 0; _tiles())
@@ -41,14 +39,26 @@ func _ready() -> void:
 			category = value; page = 0; _tiles())
 		button.name = "Category_"+value
 		categories.add_child(button)
+	var settings: Button=EditorButton.make("","options",func() -> void:
+		options.popup(Rect2i(Vector2i(get_global_rect().end-Vector2(330,360)),Vector2i(320,250))))
+	settings.name="ObjectOptions"
+	settings.tooltip_text="Object variants and placement"
+	settings.custom_minimum_size=Vector2(40,38)
+	top.add_child(settings)
 	tiles = _scroll_row(column)
-	details = _scroll_row(column)
+	options=PopupPanel.new()
+	options.name="ObjectOptionsPopup"
+	options.add_theme_stylebox_override("panel",EditorStyle.box())
+	add_child(options)
+	details=VBoxContainer.new()
+	details.add_theme_constant_override("separation",8)
+	options.add_child(details)
 	refresh()
 
 func _scroll_row(parent: Node) -> HBoxContainer:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	parent.add_child(scroll)
 	var row := HBoxContainer.new()
@@ -57,10 +67,7 @@ func _scroll_row(parent: Node) -> HBoxContainer:
 	return row
 
 func _button(text: String, action: Callable) -> Button:
-	var button: Button = MenuStyle.button(text,action)
-	button.custom_minimum_size = Vector2(64,40)
-	button.add_theme_font_size_override("font_size",15)
-	return button
+	return EditorStyle.button(text,action)
 
 func _clear(row: Node) -> void:
 	for child: Node in row.get_children():
@@ -78,21 +85,20 @@ func _tiles() -> void:
 	if tiles == null: return
 	_clear(tiles)
 	for button: Button in categories.get_children():
-		button.modulate = EditorButton.CYAN if button.text == category else Color.WHITE
+		EditorStyle.apply(button,button.text==category)
 	var entries: Array = CreatorCatalog.filtered(category,query,recent,biome)
 	page = clampi(page,0,maxi(0,(entries.size()-1)/8))
-	if page>0: tiles.add_child(_button("<",func() -> void: page-=1; _tiles()))
+	if page>0: tiles.add_child(EditorButton.make("","back",func() -> void: page-=1; _tiles()))
 	for index: int in range(page*8,mini(entries.size(),page*8+8)):
 		var asset: Array = entries[index]
 		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],choose.bind(asset[0])))
-	if (page+1)*8<entries.size(): tiles.add_child(_button("More >",func() -> void: page+=1; _tiles()))
+	if (page+1)*8<entries.size(): tiles.add_child(EditorButton.make("","next",func() -> void: page+=1; _tiles()))
 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
 
 func refresh() -> void:
 	if details == null: return
 	_tiles()
 	_clear(details)
-	details.add_child(_button("Select / move",func() -> void: select_requested.emit()))
 	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
 	behavior.name = "ObjectBehavior"
 	details.add_child(behavior)
@@ -100,6 +106,7 @@ func refresh() -> void:
 	if not family.is_empty() and family[3].size()>1:
 		var variants := OptionButton.new()
 		variants.name = "ObjectVariant"
+		EditorStyle.apply(variants)
 		variants.custom_minimum_size = Vector2(125,40)
 		for kind: String in family[3]: variants.add_item(CreatorCatalog.label(kind))
 		variants.select(family[3].find(current))
@@ -108,6 +115,7 @@ func refresh() -> void:
 	if current not in CreatorCatalog.LINES:
 		var sizes := OptionButton.new()
 		sizes.name = "ObjectSize"
+		EditorStyle.apply(sizes)
 		sizes.custom_minimum_size = Vector2(95,40)
 		for title: String in ["Small","Medium","Large"]: sizes.add_item(title)
 		sizes.select(0 if stamp_scale<1 else 2 if stamp_scale>1 else 1)
@@ -119,5 +127,5 @@ func refresh() -> void:
 			var button: Button = _button(mode.capitalize(),func() -> void:
 				placement=mode; mode_chosen.emit(mode); refresh())
 			button.name="Placement_"+mode.replace(" ","_")
-			button.modulate = EditorButton.CYAN if placement==mode else Color.WHITE
+			EditorStyle.apply(button,placement==mode)
 			details.add_child(button)

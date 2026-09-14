@@ -375,7 +375,7 @@ func _editor() -> void:
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	top.offset_left = -506; top.offset_right = -16; top.offset_top = 16
 	top.add_theme_constant_override("separation",8)
-	editor_issue_button = MenuStyle.button("",_focus_issue)
+	editor_issue_button = EditorStyle.button("",_focus_issue)
 	editor_issue_button.custom_minimum_size = Vector2(112,52)
 	top.add_child(editor_issue_button)
 	var settings: Button = EditorButton.make("","more",func() -> void:
@@ -385,20 +385,12 @@ func _editor() -> void:
 	settings.text = "Map"
 	settings.tooltip_text = "Map settings"
 	top.add_child(settings)
-	test_button = MenuStyle.button("▶  Test",_test_document,true)
-	test_button.custom_minimum_size = Vector2(100,52)
-	var test_style: StyleBoxFlat = _editor_box()
-	test_style.bg_color = Color("075562")
-	test_style.border_color = EditorButton.CYAN
-	test_button.add_theme_stylebox_override("normal",test_style)
-	test_button.add_theme_color_override("font_color",Color.WHITE)
-	var load_button: Button = MenuStyle.button("Load",_load_track_dialog)
+	test_button = EditorButton.action("Test","test",_test_document,true)
+	var load_button: Button = EditorButton.action("Load","load",_load_track_dialog)
 	load_button.name = "LoadTrack"
-	load_button.custom_minimum_size = Vector2(90,52)
 	top.add_child(load_button)
-	var save_button: Button = MenuStyle.button("Save",_save_track_explicit)
+	var save_button: Button = EditorButton.action("Save","save",_save_track_explicit)
 	save_button.name = "SaveTrack"
-	save_button.custom_minimum_size = Vector2(90,52)
 	top.add_child(save_button)
 	top.add_child(test_button)
 	var rail := VBoxContainer.new()
@@ -467,7 +459,7 @@ func _editor() -> void:
 	overlay.add_child(object_browser)
 	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	object_browser.offset_left = 108; object_browser.offset_right = -112
-	object_browser.offset_top = -222; object_browser.offset_bottom = -16
+	object_browser.offset_top = -166; object_browser.offset_bottom = -16
 	object_browser.hide()
 	object_browser.asset_chosen.connect(_choose_object)
 	object_browser.mode_chosen.connect(_object_placement)
@@ -502,12 +494,12 @@ func _editor() -> void:
 		document.theme = TrackDocument.THEMES[index]
 		_save_draft())
 	metadata.add_child(theme_picker)
-	metadata.add_child(MenuStyle.button("Creator",_creator_name))
-	metadata.add_child(MenuStyle.button("New",_new_document))
-	metadata.add_child(MenuStyle.button("My circuits",_open_saved_tracks))
-	metadata.add_child(MenuStyle.button("3D preview",_preview_document))
-	metadata.add_child(MenuStyle.button("Controls",_editor_help))
-	share_button = MenuStyle.button("Share",_share_dialog)
+	metadata.add_child(EditorStyle.button("Creator",_creator_name))
+	metadata.add_child(EditorStyle.button("New",_new_document))
+	metadata.add_child(EditorStyle.button("My circuits",_open_saved_tracks))
+	metadata.add_child(EditorStyle.button("3D preview",_preview_document))
+	metadata.add_child(EditorStyle.button("Controls",_editor_help))
+	share_button = EditorStyle.button("Share",_share_dialog)
 	metadata.add_child(share_button)
 	canvas.selection_changed.connect(_build_editor_tools)
 	_build_editor_tools()
@@ -589,8 +581,8 @@ func _build_editor_tools() -> void:
 	var browsing: bool = category=="objects" and not (canvas.selected_object>=0 and canvas.mode=="objects")
 	object_browser.visible = browsing
 	editor_palette.visible = not browsing
-	editor_status.offset_top = -252 if browsing else -132
-	editor_status.offset_bottom = -223 if browsing else -103
+	editor_status.offset_top = -196 if browsing else -132
+	editor_status.offset_bottom = -167 if browsing else -103
 	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
 	if category == "road":
 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
@@ -666,7 +658,8 @@ func _build_editor_tools() -> void:
 				canvas.selected_object = -1
 				_build_editor_tools())
 		else:
-			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap to place / Select / move to adjust existing objects")
+			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+			if canvas.mode=="objects": editor_status.text="Tap an object to move, rotate or delete"
 
 	else:
 		_context_button("Move","move",func() -> void:
@@ -802,7 +795,7 @@ func _focus_issue() -> void:
 	_editor_category("objects" if int(issue.object) >= 0 else "paint" if int(issue.object) == -2 else "road")
 	canvas.issue_marker = issue.position
 	canvas.issue_text = issue.message
-	canvas.pan = -Vector2(issue.position.x,-issue.position.y)*canvas.scale_factor()
+	canvas.pan += canvas.size*0.5-canvas.to_screen(issue.position)
 	if int(issue.object) >= 0: canvas.selected_object = issue.object
 	elif int(issue.object) == -1: canvas.selected_piece = issue.index
 	_build_editor_tools()
@@ -1090,7 +1083,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 func _edit_here(position: Vector2) -> void:
 	_leave_race()
 	if is_instance_valid(canvas):
-		canvas.pan = -Vector2(position.x,-position.y)*canvas.scale_factor()
+		canvas.pan += canvas.size*0.5-canvas.to_screen(position)
 		canvas.refresh()
 
 func _leave_race() -> void:

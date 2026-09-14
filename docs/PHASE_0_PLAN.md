@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 R01/T01-T04/V02-V05: owner rejects inconsistent editor controls and blockout graphics. [EDITOR_PRESENTATION_REFINEMENT.md](EDITOR_PRESENTATION_REFINEMENT.md) records this presentation/input slice and its uncompleted AAA art target.
+
 2026-09-14 R01/T01-T04/V02/V04/V05: shared road joins, gradual connected widths and road-aligned full-width start line. [Implementation, checks and Curvy/Blind spot captures](ROAD_JOIN_FIXES.md).
 
 2026-09-14 R01/T01-T04/V02/V04/V05/G01: owner supplied category/asset references, confirmed movable tyres and requested movable light props with future biome-specific palettes. [OBJECT_BROWSER.md](OBJECT_BROWSER.md) records this local slice.

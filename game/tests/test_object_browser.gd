@@ -84,13 +84,32 @@ func run() -> void:
 	browser=app.get("object_browser")
 	browser.category="Barriers"; browser.choose("tyre_stack"); app.call("_object_placement","curve"); browser.refresh()
 	await process_frame; await process_frame
-	check(browser.get_global_rect().end.x<=1280 and browser.size.y<240,"browser fits desktop landscape and preserves most world height")
+	check(browser.get_global_rect().end.x<=1280 and browser.size.y<170,"browser fits desktop landscape and preserves most world height")
 	if "--capture-objects" in OS.get_cmdline_user_args():
 		for tick: int in range(5): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-browser.png"))==OK,"object browser screenshot")
 		browser.category="Nature"; browser.refresh()
 		for tick: int in range(5): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-nature.png"))==OK,"nature screenshot")
+	check(not browser.options.visible,"object options do not reserve a permanent row")
+	var target: Vector2=Vector2(doc.objects[0].position[0],doc.objects[0].position[1])
+	canvas.mode="place"; canvas._begin(canvas.to_screen(target),-1)
+	canvas._move(canvas.to_screen(target+Vector2(4,0))); canvas._end(-1)
+	check(Vector2(doc.objects[0].position[0],doc.objects[0].position[1]).distance_to(target+Vector2(4,0))<0.01,"direct selection also drags the object in one gesture")
+	check(canvas.mode=="objects" and canvas.selected_object>=0,"existing objects are selected directly without Select / move")
+	app.call("_editor_category","objects")
+	browser=app.get("object_browser")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		canvas.zoom*=2.2; canvas.pan=Vector2(0,40); canvas.queue_redraw()
+		browser.category="Buildings"; browser.refresh()
+		for tick: int in range(5): await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-props-detail.png"))==OK,"refined prop detail capture")
+		browser.choose("tyre_stack")
+		(browser.find_child("ObjectOptions",true,false) as Button).pressed.emit()
+		for tick: int in range(4): await RenderingServer.frame_post_draw
+		check(browser.options.visible,"variant and mode popover opens")
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-object-options.png"))==OK,"object options capture")
+		browser.options.hide()
 	root.size=Vector2i(1280,576)
 	await process_frame; await process_frame
 	check(root.get_visible_rect().encloses(browser.get_global_rect()) and browser.position.y>root.get_visible_rect().size.y*0.4,"wide phone aspect keeps the browser in bounds and world exposed")

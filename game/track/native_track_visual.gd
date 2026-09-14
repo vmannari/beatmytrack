@@ -538,7 +538,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		mesh.mesh = tool.commit()
 		var material := VisualGeometry.material(Color.WHITE)
 		material.vertex_color_use_as_albedo = true
-		VisualGeometry.ink(material)
+		# Small roof seams and foliage use their silhouettes, not intersecting ink hulls.
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mesh.material_override = material
 		add_child(mesh)

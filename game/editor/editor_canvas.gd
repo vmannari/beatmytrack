@@ -9,6 +9,8 @@ signal hint_changed(text: String)
 signal selection_changed
 signal native_changed(track: NativeTrack)
 
+const PLANNING_PITCH: float = 70.0
+
 var document: Dictionary
 var mode: String = "road"
 var world_backdrop: bool = false
@@ -73,11 +75,11 @@ func scale_factor() -> float:
 	return maxf(0.01, minf(size.x / 110.0, size.y / 90.0)) * zoom
 
 func to_screen(point: Vector2) -> Vector2:
-	return size * 0.5 + pan + Vector2(point.x, -point.y) * scale_factor()
+	return size * 0.5 + pan + Vector2(point.x, -point.y*(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0)) * scale_factor()
 
 func to_world(point: Vector2) -> Vector2:
 	var local: Vector2 = (point - size * 0.5 - pan) / scale_factor()
-	return Vector2(local.x, -local.y)
+	return Vector2(local.x, -local.y/(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0))
 
 func fit() -> void:
 	if size.x < 10 or size.y < 10: return
@@ -101,7 +103,7 @@ func fit() -> void:
 		if document.base_track != "" and native_preview != null: bounds = Rect2(-native_preview.half_extent,native_preview.half_extent*2)
 		var base: float = scale_factor()
 		zoom = clampf(minf((size.x-24) / (bounds.size.x + 24), (size.y-156) / (bounds.size.y + 24)) / base, 0.25, 16.0)
-		pan = -Vector2(bounds.get_center().x, -bounds.get_center().y) * scale_factor()
+		pan += size*0.5-to_screen(bounds.get_center())
 	queue_redraw()
 
 func zoom_by(factor: float, anchor: Vector2 = Vector2.INF) -> void:
@@ -214,6 +216,11 @@ func _begin(point: Vector2, pointer: int) -> void:
 	press_position = point
 	pointer_origin = to_world(point)
 	changed_in_gesture = false
+	if mode=="place":
+		for object: Dictionary in document.objects:
+			if CreatorObjects.contains(object,to_world(point)):
+				mode="objects"
+				break
 	if mode == "road":
 		_begin_road(point)
 		return
@@ -456,12 +463,13 @@ func _draw() -> void:
 	var grid_metres: float = 0.5 if scale_factor() > 40 else 1.0 if scale_factor() > 14 else 5.0 if scale_factor() > 6 else 10.0
 	var spacing: float = grid_metres * scale_factor()
 	var origin: Vector2 = to_screen(Vector2.ZERO)
-	for x: float in range(ceili(size.x / spacing) + 1):
-		var xx: float = fposmod(origin.x, spacing) + x * spacing
-		draw_line(Vector2(xx,0),Vector2(xx,size.y),Color(1,1,1,0.035))
-	for y: float in range(ceili(size.y / spacing) + 1):
-		var yy: float = fposmod(origin.y, spacing) + y * spacing
-		draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
+	if mode=="road":
+		for x: float in range(ceili(size.x / spacing) + 1):
+			var xx: float = fposmod(origin.x, spacing) + x * spacing
+			draw_line(Vector2(xx,0),Vector2(xx,size.y),Color(1,1,1,0.035))
+		for y: float in range(ceili(size.y / spacing) + 1):
+			var yy: float = fposmod(origin.y, spacing) + y * spacing
+			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
 	var sampled: Dictionary = TrackDocument.route_data(document)
 	var route: PackedVector2Array = sampled.points
 	if native_preview == null:
@@ -511,7 +519,7 @@ func _draw() -> void:
 		outline.append(outline[0])
 		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
 		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
-		draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
+		if not world_backdrop: draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
 	if not paint_points.is_empty():
 		var color: Color = palette[brush_surface]
 		for i: int in range(paint_points.size()):

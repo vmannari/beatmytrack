@@ -9,18 +9,10 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	button.toggle_mode = true
 	button.button_pressed = chosen
 	button.pressed.connect(action)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color("253438")
-	style.set_corner_radius_all(7)
-	style.set_border_width_all(1)
-	style.border_color = Color("536466")
-	button.add_theme_stylebox_override("normal",style)
-	var selected: StyleBoxFlat = style.duplicate()
-	selected.border_color = EditorButton.CYAN
-	selected.set_border_width_all(2)
-	button.add_theme_stylebox_override("pressed",selected)
+	EditorStyle.apply(button,chosen)
 	var viewport := SubViewport.new()
-	viewport.size = Vector2i(104,64)
+	viewport.size = Vector2i(208,128)
+	viewport.msaa_3d=Viewport.MSAA_4X
 	viewport.own_world_3d = true
 	viewport.transparent_bg = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -46,13 +38,14 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	var camera := Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.size = maxf(2.0,CreatorObjects.dimensions(kind).length()*0.85)
-	if kind in ["tree","broadleaf","light","flag","gantry"]: camera.size=maxf(5.0,camera.size)
+	if kind in ["tree","broadleaf","light","flag","gantry","hut","shed"]: camera.size=maxf(6.0,camera.size)
 	camera.position = Vector3(7,8,10)
 	viewport.add_child(camera)
-	camera.look_at_from_position(camera.position,Vector3(0,1.5 if kind in ["tree","broadleaf","light","flag","gantry"] else 0.45,0))
+	camera.look_at_from_position(camera.position,Vector3(0,1.5 if kind in ["tree","broadleaf","light","flag","gantry","hut","shed"] else 0.45,0))
 	camera.current = true
 	var image := TextureRect.new()
 	image.texture = viewport.get_texture()
+	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
 	image.position = Vector2(2,2)
 	image.size = Vector2(100,62)
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -61,6 +54,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	label.text = title
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size",14)
+	label.add_theme_font_override("font",EditorStyle.FONT)
 	label.position = Vector2(0,65)
 	label.size = Vector2(104,20)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE

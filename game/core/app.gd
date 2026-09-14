@@ -363,17 +363,31 @@ func _editor() -> void:
 	editor_undo.text = "Undo"
 	editor_undo.tooltip_text = "Undo"
 	overlay.add_child(editor_undo)
-	editor_undo.position = Vector2(78,16)
+	editor_undo.position = Vector2(270,16)
 	editor_redo = EditorButton.make("","redo",_redo)
 	editor_redo.text = "Redo"
 	editor_redo.tooltip_text = "Redo"
 	overlay.add_child(editor_redo)
-	editor_redo.position = Vector2(140,16)
+	editor_redo.position = Vector2(332,16)
+	var title := VBoxContainer.new()
+	title.position = Vector2(82,16)
+	overlay.add_child(title)
+	title.add_child(MenuStyle.label("Track Editor",22))
+	var track_name := LineEdit.new()
+	track_name.name = "EditorTrackName"
+	track_name.text = str(document.name)
+	track_name.custom_minimum_size = Vector2(176,28)
+	track_name.max_length = 40
+	EditorStyle.apply(track_name)
+	title.add_child(track_name)
+	track_name.text_changed.connect(func(value: String) -> void: document.name=value)
+	track_name.focus_exited.connect(_save_draft)
 	var top := HBoxContainer.new()
 	top.alignment = BoxContainer.ALIGNMENT_END
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -506; top.offset_right = -16; top.offset_top = 16
+	top.offset_left = -452; top.offset_right = -16; top.offset_top = 16
+	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = EditorStyle.button("",_focus_issue)
 	editor_issue_button.custom_minimum_size = Vector2(112,52)
@@ -385,20 +399,31 @@ func _editor() -> void:
 	settings.text = "Map"
 	settings.tooltip_text = "Map settings"
 	top.add_child(settings)
-	test_button = EditorButton.action("Test","test",_test_document,true)
-	var load_button: Button = EditorButton.action("Load","load",_load_track_dialog)
+	test_button = EditorStyle.button("Test",_test_document)
+	var load_button: Button = EditorStyle.button("Load",_load_track_dialog)
 	load_button.name = "LoadTrack"
 	top.add_child(load_button)
-	var save_button: Button = EditorButton.action("Save","save",_save_track_explicit)
+	var save_button: Button = EditorStyle.button("Save",_save_track_explicit)
 	save_button.name = "SaveTrack"
 	top.add_child(save_button)
 	top.add_child(test_button)
+	for action_button: Button in [load_button,save_button,test_button]: action_button.custom_minimum_size=Vector2(82,52)
+	for state: String in ["normal","hover","pressed","hover_pressed","disabled","focus"]:
+		var test_style: StyleBoxFlat=EditorStyle.box()
+		test_style.border_color=Color("b4ed69")
+		test_style.bg_color=Color("203526") if state=="hover" else Color("101e19")
+		test_button.add_theme_stylebox_override(state,test_style)
+		test_button.add_theme_color_override("font_"+state+"_color",Color("b4ed69"))
+	test_button.add_theme_color_override("font_color",Color("b4ed69"))
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
-	overlay.add_child(rail)
-	rail.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
-	rail.offset_left = 16; rail.offset_top = -142
-	rail.add_theme_constant_override("separation",4)
+	var rail_panel := PanelContainer.new()
+	rail_panel.name = "EditorRailPanel"
+	rail_panel.position=Vector2(16,94)
+	rail_panel.add_theme_stylebox_override("panel",EditorStyle.box())
+	overlay.add_child(rail_panel)
+	rail_panel.add_child(rail)
+	rail.add_theme_constant_override("separation",2)
 	editor_mode_buttons.clear()
 	for pair: Array in [["road","Track","road"],["paint","Surfaces","surface"],["objects","Objects","objects"],["move","Race","race"]]:
 		var value: String = pair[0]
@@ -439,12 +464,6 @@ func _editor() -> void:
 	overlay.add_child(editor_confirm)
 	editor_confirm.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
 	editor_confirm.offset_left = -92; editor_confirm.offset_right = -28; editor_confirm.offset_top = -110; editor_confirm.offset_bottom = -46
-	var fit_button: Button = EditorButton.make("","fit",func() -> void: canvas.fit())
-	fit_button.text = "Fit"
-	fit_button.tooltip_text = "Fit track · pinch or wheel to zoom"
-	overlay.add_child(fit_button)
-	fit_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-	fit_button.offset_left = 28; fit_button.offset_top = -80; fit_button.offset_bottom = -28
 	editor_status = MenuStyle.label("",17)
 	editor_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(editor_status)
@@ -483,7 +502,7 @@ func _editor() -> void:
 	name_field.max_length = 40
 	name_field.custom_minimum_size.y = 52
 	metadata.add_child(name_field)
-	name_field.text_changed.connect(func(value: String) -> void: document.name = value)
+	name_field.text_changed.connect(func(value: String) -> void: document.name = value; track_name.text=value)
 	name_field.focus_exited.connect(_save_draft)
 	var theme_picker := OptionButton.new()
 	theme_picker.custom_minimum_size.y = 52
@@ -573,7 +592,6 @@ func _build_editor_tools() -> void:
 		child.queue_free()
 	var category: String = "objects" if canvas.mode in ["objects","place","run"] else "move" if canvas.mode in ["move","add","start"] else "paint" if canvas.mode in ["paint","pan"] else "road"
 	if canvas.mode == "place" and canvas.stamp_kind in ["oil","puddle","water","dirt"]: category="paint"
-	if canvas.mode == "place" and canvas.stamp_kind == "jump": category="road"
 	var biome: String = str(document.get("biome",document.theme))
 	if object_browser.biome!=biome:
 		object_browser.biome=biome
@@ -589,7 +607,6 @@ func _build_editor_tools() -> void:
 		if piece.is_empty():
 			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"]]:
 				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
-			_context_button("Jump","bridge",_choose_hazard.bind("jump"))
 			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
 		elif editor_geometry != "":
 			_context_button("Back","back",func() -> void:

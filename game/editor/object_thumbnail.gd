@@ -10,6 +10,11 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	button.button_pressed = chosen
 	button.pressed.connect(action)
 	EditorStyle.apply(button,chosen)
+	for state: String in ["normal","hover","disabled"]:
+		var tile: StyleBoxFlat=EditorStyle.box(chosen,state=="hover")
+		if not chosen: tile.bg_color=Color("293c40") if state=="hover" else Color("203034")
+		tile.border_color=EditorStyle.ACCENT if chosen else Color("34464a")
+		button.add_theme_stylebox_override(state,tile)
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(208,128)
 	viewport.msaa_3d=Viewport.MSAA_4X

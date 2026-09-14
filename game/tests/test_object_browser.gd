@@ -91,6 +91,12 @@ func run() -> void:
 		browser.category="Nature"; browser.refresh()
 		for tick: int in range(5): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-nature.png"))==OK,"nature screenshot")
+	var test_action: Button=app.get("test_button")
+	check(root.get_visible_rect().encloses(test_action.get_global_rect()),"Test action stays inside screen")
+	check(not CreatorCatalog.family("jump").is_empty(),"Jump is available in Objects")
+	browser.choose("jump")
+	app.call("_build_editor_tools")
+	check(browser.visible and canvas.stamp_kind=="jump","Jump selection keeps Objects browser open")
 	check(not browser.options.visible,"object options do not reserve a permanent row")
 	var target: Vector2=Vector2(doc.objects[0].position[0],doc.objects[0].position[1])
 	canvas.mode="place"; canvas._begin(canvas.to_screen(target),-1)
@@ -116,6 +122,10 @@ func run() -> void:
 	if "--capture-objects" in OS.get_cmdline_user_args():
 		for tick: int in range(4): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-wide.png"))==OK,"wide landscape screenshot")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		app.call("_editor_category","road")
+		for tick: int in range(4): await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-road-toolbar.png"))==OK,"road toolbar capture")
 	print("OBJECT_BROWSER_TESTS: %d checks, %d failures" % [checks,failures])
 	app.queue_free(); await process_frame
 	quit(1 if failures else 0)

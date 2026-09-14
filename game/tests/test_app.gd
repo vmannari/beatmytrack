@@ -201,7 +201,7 @@ func _check_input_and_history() -> void:
 	_touch(canvas, 8, start, true)
 	canvas.notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
 	check(not canvas.dragging and canvas.touches.is_empty() and canvas.active_pointer == -99, "focus loss cancels active touch capture")
-	canvas.fit()
+	(app.get("canvas") as EditorCanvas).fit()
 	var background := Vector2(20, 20)
 	var second := Vector2(180, 20)
 	var route_before: Array = (app.get("document") as Dictionary).points.duplicate(true)
@@ -246,7 +246,7 @@ func _check_input_and_history() -> void:
 	check(canvas.panning and canvas.active_pointer == 21 and canvas.pan.distance_to(pan_before + Vector2(5, 0)) < 0.1, "lifting the first pinch finger hands smooth panning to the second")
 	_touch(canvas, 21, second + Vector2(35, 10), false)
 	check(canvas.touches.is_empty() and not canvas.dragging and not canvas.panning and canvas.active_pointer == -99, "both pinch release orders leave no captured gesture")
-	_button(app.get("root_ui"), "Fit").pressed.emit()
+	(app.get("canvas") as EditorCanvas).fit()
 	var handles_visible: bool = true
 	for point: Array in (app.get("document") as Dictionary).points:
 		handles_visible = handles_visible and Rect2(Vector2(26, 26), canvas.size - Vector2(52, 52)).has_point(canvas.to_screen(Vector2(point[0], point[1])))
@@ -291,7 +291,7 @@ func _check_view_retention() -> void:
 	canvas = app.get("canvas")
 	check(canvas.mode == "add" and canvas.pan == saved_pan and is_equal_approx(canvas.zoom, saved_zoom), "Undo preserves the current editor view and tool")
 	_button(app.get("root_ui"), "Move").pressed.emit()
-	_button(app.get("root_ui"), "Fit").pressed.emit()
+	(app.get("canvas") as EditorCanvas).fit()
 
 
 func _check_test_drive() -> void:
@@ -440,7 +440,7 @@ func _capture_editor_themes() -> void:
 		app.call("_set_document_value", "theme", theme)
 		await process_frame
 		await process_frame
-		_button(app.get("root_ui"), "Fit").pressed.emit()
+		(app.get("canvas") as EditorCanvas).fit()
 		await _capture("creator-theme-" + theme)
 		_button(app.get("root_ui"), "3D preview").pressed.emit()
 		await _capture("creator-preview-" + theme)

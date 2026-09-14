@@ -43,9 +43,10 @@ func _draw() -> void:
 			if glyph == "hairpin": p = Vector2(-cos(t*PI)*20,10-sin(t*PI)*22)
 			if glyph == "road": p = Vector2(lerpf(-5,5,t),lerpf(13,-13,t))
 			path.append(center+p)
-		draw_polyline(path,ink,12,true)
-		draw_polyline(path,Color("64797d"),8,true)
-		draw_polyline(path,ink,1,true)
+		draw_polyline(path,ink,16,true)
+		draw_polyline(path,Color("58656a"),12,true)
+		for segment: int in range(0,path.size()-1,4):
+			draw_polyline(path.slice(segment,mini(segment+3,path.size())),ink,1.4,true)
 		if glyph == "bridge":
 			for x: int in [-15,15]: draw_line(center+Vector2(x,6),center+Vector2(x,15),ink,3,true)
 	elif glyph in ["load","save","next","options"]:

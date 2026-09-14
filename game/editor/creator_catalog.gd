@@ -25,6 +25,7 @@ const ASSETS: Array = [
  ["flag","Flag","Trackside",["flag"]],
  ["light","Light pole","Trackside",["light"]],
  ["gantry","Start gantry","Trackside",["gantry"]],
+ ["jump","Jump","Props",["jump"]],
  ["crate","Crate","Props",["crate"]],
  ["barrel","Barrel","Props",["barrel"]],
  ["pallet","Pallet","Props",["pallet"]],
@@ -47,6 +48,7 @@ static func label(kind: String) -> String:
 	return {"tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Rock formation","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
 
 static func behavior(kind: String) -> String:
+	if kind == "jump": return "Ramp / launches the car in its facing direction"
 	if kind in DECORATIVE: return "Decorative / no collision"
 	if kind in SOFT: return "Light / moves on impact; small speed loss"
 	if kind in ["tree","broadleaf"]: return "Solid / trunk collision"

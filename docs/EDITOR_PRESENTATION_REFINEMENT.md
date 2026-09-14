@@ -38,3 +38,12 @@ All commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/de
 The object kit is still procedural prototype art and remains below the supplied AAA reference. More substantial mesh/material authoring, foliage silhouette variety, asset-specific weathering and a coherent finished environment are still needed. This pass improves readability and removes obvious blockout traits; it does not claim to complete that art target. The captured circuit is a test-authored editor fixture, not a replacement for the owner's tracks.
 
 No physical-phone test or Android export was performed; device attachment was not enumerated. Phone touch reach, selection of tall-object silhouettes, popover use, shadows, thermal/frame pacing and final visual acceptance remain to be checked on a device. Ground mapping is verified; the editor continues to select planar footprints, with the existing touch tolerance around object centers.
+
+
+## Reference layout follow-up (2026-09-14)
+
+Requirements R01/T01-T04/V02/V04/V05: removed the #/Fit overlay control; raised and grouped the four main tools in a shared panel; lighter charcoal object tiles; text-only Load/Save/Test with a green action treatment and left-growing header container so content cannot expand past the right edge. Added an editable track name below Track Editor. Road glyphs now have contrasting shoulders, asphalt and dashed centre markings. Jump moved from Track to Objects > Props with a ramp-specific behavior description; its simulation is unchanged.
+
+Changed app.gd, editor_button.gd, object_thumbnail.gd, creator_catalog.gd and the app/browser checks. Actual commands: scripts/dev.ps1 -Action CaptureObjects (55 checks, zero failures), TestWorkflow (94, zero), TestApp (84, zero). Initial App run referenced the intentionally removed Fit button; the test now calls the same fit operation directly while preserving its viewport assertions. An intermediate test edit had an out-of-scope variable and was corrected before the successful rerun. No simulation changes or full physics regression in this presentation slice.
+
+Reviewed engine captures: [Objects](evidence/editor-layout-objects.png), [Road tools](evidence/editor-layout-road.png). Desktop and wide landscape captures were performed; no physical phone test or Android export was performed. The overall art remains below the AAA reference; this follow-up addresses the requested controls and catalogue placement.

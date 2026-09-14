@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 G01/R01/R03/R07: focused fun-handling iteration adds progressive steering/front traction, deliberate brake rotation, faster countersteer recovery, tyre scrub audio and Planted/Balanced/Playful/Baseline comparison. Handling-0.14 / physics 0.19. [Actual checks, controls, evidence and remaining human/phone acceptance](docs/HANDLING_FUN.md).
+
 2026-09-14 R01/T01-T04/V02/V04/V05: centred biome/rename dialogs, keyboard-aware rename placement, taller rail, transparent header and grey disabled Test. [Checks and captures](docs/EDITOR_WIP_WORKFLOW.md).
 
 2026-09-14 R01/T01-T04/V02/V04/V05: centred editor rail, simplified header/menu, biome and waypoint tools, fixed object paging and independent WIP autosave. [Actual checks and captures](docs/EDITOR_WIP_WORKFLOW.md).

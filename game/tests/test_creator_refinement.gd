@@ -113,11 +113,16 @@ func run() -> void:
 	canvas.choose_piece("curve")
 	app.call("_save_track_explicit")
 	check(canvas.ghost.is_empty() and library.load_document(str(canvas.document.id)).pieces.size()==3,"explicit Save includes the pending road preview")
-	for node: Node in root.get_children():
-		if node is AcceptDialog: node.queue_free()
+	for node: Node in app.find_children("*", "AcceptDialog", true, false):
+		node.queue_free()
 	await process_frame
 	app.set("document",road); canvas.document=road
-	app.call("_save_draft")
+	# WIP autosave no longer overwrites the saved original. This scenario races
+	# the edited saved circuit, so use the current explicit Save action.
+	app.call("_save_track_explicit")
+	for node: Node in app.find_children("*", "AcceptDialog", true, false):
+		node.queue_free()
+	await process_frame
 	app.call("_open_saved_tracks")
 	for i: int in range(40): await process_frame
 	check(app.get("browser_state").section=="saved","My circuits opens the saved-only library")

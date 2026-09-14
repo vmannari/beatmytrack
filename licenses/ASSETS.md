@@ -1,5 +1,7 @@
 # Asset provenance
 
+Handling audio (2026-09-14): `game/vehicle/tire_audio.gd` synthesizes an original filtered-noise/harmonic tyre-scrub loop in memory. No third-party recording, downloaded asset, AI audio service or external dependency is used. Presentation-only prototype pending human listening and phone acceptance.
+
 | Asset | Origin | Use |
 |---|---|---|
 | Bootstrap scene/layout/text | Original project work, 2026-09-11 | Development startup screen |

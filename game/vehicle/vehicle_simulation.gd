@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.18"
+const PHYSICS_VERSION: String = "arcade-planar-0.19"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -42,7 +42,13 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
-	state.steering = move_toward(state.steering, frame.steer / 127.0, config.steering_rate * STEP)
+	if config.progressive_handling and brake > 0.0:
+		throttle = 0.0
+	var requested_steering: float = frame.steer / 127.0
+	var steering_response: float = config.steering_rate
+	if config.progressive_handling and state.steering != 0.0 and (signf(requested_steering) != signf(state.steering) or absf(requested_steering) < absf(state.steering)):
+		steering_response = maxf(steering_response, config.countersteering_rate)
+	state.steering = move_toward(state.steering, requested_steering, steering_response * STEP)
 	var forward: Vector2 = state.forward()
 	var right: Vector2 = state.right()
 	var longitudinal: float = state.velocity.dot(forward)
@@ -53,12 +59,24 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var steer_angle: float = state.steering * config.steering_angle * (1.0 - config.high_speed_steering_reduction * speed_fraction)
 	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
 	target_yaw *= config.front_grip / config.rear_grip
+	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
+	if config.progressive_handling:
+		# Front traction saturates smoothly: excess entry speed widens the path
+		# instead of continuing to rotate the chassis into an involuntary drift.
+		var grip_yaw: float = config.lateral_grip * config.front_grip * surface.x * tire_grip / maxf(speed, 1.0)
+		var demand: float = absf(target_yaw) / maxf(grip_yaw, 0.01)
+		target_yaw /= pow(1.0 + pow(demand, 6.0), 1.0 / 6.0)
+		# Sustained, bounded weight transfer; repeated taps cannot stack impulses.
+		target_yaw += signf(state.steering) * brake_turn * config.brake_rotation
 	# Power rotates the rear; lifting restores rear grip and reduces rotation.
 	target_yaw += state.steering * throttle * config.throttle_rotation * speed_fraction * signf(longitudinal)
-	if longitudinal > 1.0:
+	if longitudinal > 1.0 and not config.progressive_handling:
 		target_yaw += slip * config.countersteer_assistance
 	target_yaw = clampf(target_yaw, -config.maximum_yaw_rate, config.maximum_yaw_rate)
 	var yaw_response: float = config.mass / config.rotational_inertia * 7.0
+	if config.progressive_handling and requested_steering * state.yaw_rate < 0.0:
+		# Follow the player's correction sooner; no road/heading target or speed gift.
+		yaw_response *= 1.0 + config.countersteer_assistance * smoothstep(0.04, 0.3, absf(slip))
 	state.yaw_rate = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
 	state.heading = wrapf(state.heading + state.yaw_rate * STEP, -PI, PI)
 	# Use the newly turned chassis frame while retaining world-space momentum.
@@ -72,6 +90,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= surface.x * tire_grip
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
+	if config.progressive_handling:
+		grip_limit *= 1.0 - brake_turn * config.brake_grip_loss
 	var lateral_acceleration: float = clampf(-lateral * config.lateral_response * tire_grip, -grip_limit, grip_limit)
 	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
 	# Grip redirects most scrubbed lateral energy into travel instead of deleting it.
@@ -80,7 +100,9 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var removed_energy: float = maxf(0.0, lateral * lateral - next_lateral * next_lateral)
 	var alignment: float = clampf(absf(longitudinal) / maxf(absf(lateral), 0.01), 0.0, 1.0)
 	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment)
-	var drive_acceleration: float = _pedal_acceleration(longitudinal, throttle, brake)
+	var drive_acceleration: float = _pedal_acceleration(longitudinal, frame.throttle / 255.0, brake)
+	if config.progressive_handling and throttle > 0.0 and longitudinal > 0.0:
+		drive_acceleration *= 1.0 - config.slide_drive_loss * smoothstep(0.10, 0.55, absf(slip))
 	# Combined traction budgets make braking and acceleration compete with cornering.
 	var lateral_usage: float = absf(lateral_acceleration) / maxf(grip_limit, 0.01)
 	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))

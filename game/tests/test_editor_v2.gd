@@ -169,8 +169,9 @@ func _ui(doc: Dictionary) -> void:
 	down.pressed = false; canvas._gui_input(down)
 	check(Vector2(canvas.document.objects[-1].position[0],canvas.document.objects[-1].position[1]).x > -20,"touch dragging moves selected object")
 	await _capture("editor-v2-objects")
-	app.call("_preview_document")
-	await _capture("editor-v2-preview")
+	# The current editor saves explicitly; its old preview dialog was removed.
+	app.call("_save_track_explicit")
+	await _capture("editor-v2-saved")
 	var saved: Dictionary = (app.get("library") as TrackLibrary).load_document(doc.id)
 	check(JSON.stringify(saved,"",true) == JSON.stringify(JSON.parse_string(JSON.stringify(app.get("document"))),"",true),"widths, corners, objects and transforms persist together")
 	var local: TrackLibrary = app.get("library")

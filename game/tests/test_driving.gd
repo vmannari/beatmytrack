@@ -45,6 +45,8 @@ func corner_radius(config: HandlingConfig, speed: float) -> float:
 func _run() -> void:
 	var config := HandlingConfig.new()
 	var legacy := config.duplicate() as HandlingConfig
+	legacy.progressive_handling = false
+	legacy.countersteer_assistance = 0.0
 	legacy.engine_force = 10500.0
 	legacy.maximum_speed = 34.0
 	legacy.corner_energy_retention = 0.0
@@ -169,7 +171,8 @@ func _run() -> void:
 	var tap := VehicleSimulation.new(config)
 	tap.state.velocity = Vector2(0, 18)
 	advance(tap, 6, 1, 0, 0)
-	check(tap.state.steering == 1.0 and tap.state.heading > 0.015, "50ms steering tap promptly rotates the chassis")
+	# Owner's 2026-09-14 direction replaces instant full lock with a 100-150 ms ramp.
+	check(tap.state.steering > 0.3 and tap.state.steering < 0.6 and tap.state.heading > 0.005, "50ms steering tap begins turning during the progressive steering ramp")
 	check(tap.state.heading > atan2(tap.state.velocity.x, tap.state.velocity.y) + 0.005, "trajectory lags behind chassis rotation")
 	check(absf(powered.state.slip_angle()) < deg_to_rad(18.0), "powered corner stays below 18 degrees slip instead of the previous 27")
 	var yard := PlaygroundData.new()
@@ -271,10 +274,10 @@ func _integration() -> void:
 	scene.call("restart")
 	check(sim.state.tick == 0 and sim.state.velocity == Vector2.ZERO and sim.state.position == Vector2(0, -35), "restart restores identical initial state immediately")
 	scene.call("select_profile", 2)
-	check(sim.config.profile_name == "Loose" and sim.state.tick == 0, "profile switch updates simulation and resets")
+	check(sim.config.profile_name == "Playful" and sim.state.tick == 0, "profile switch updates simulation and resets")
 	var profile_buttons: Node = hud.tune_fields.get_child(1)
 	profile_buttons.get_child(0).emit_signal("pressed")
-	check(sim.config.profile_name == "Stable", "on-screen preset button selects its own bound index")
+	check(sim.config.profile_name == "Planted", "on-screen preset button selects its own bound index")
 	hud._change_setting(18.5, "lateral_grip")
 	check(sim.config.lateral_grip == 18.5 and sim.state.tick == 0, "live tuning writes active handling and resets the run")
 	var camera: FollowCamera = scene.get("camera")

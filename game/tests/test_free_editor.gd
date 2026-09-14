@@ -168,8 +168,8 @@ func _ui(doc: Dictionary) -> void:
 	var library: TrackLibrary = app.get("library")
 	check(library.export_document(canvas.document,folder+"/exchange.json") == OK,"free-painted map exports")
 	check(TrackCompiler.compile(library.import_document(folder+"/exchange.json")).content_hash == canvas.native_preview.content_hash,"export/import preserves physical painted map")
-	app.call("_preview_document")
-	await _capture("free-editor-preview")
+	app.call("_save_track_explicit")
+	await _capture("free-editor-saved")
 	app.call("_show_screen","tracks")
 	await process_frame
 	await process_frame

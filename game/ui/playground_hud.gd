@@ -112,7 +112,7 @@ func _ready() -> void:
 	message_label = _label("Brake before the circle. Lift and countersteer to catch a slide.", 16)
 	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.add_child(message_label)
-	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3: handling", 14)
+	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3 / 4: handling", 14)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	help.visible = OS.is_debug_build() and not OS.has_feature("mobile") and not production_mode
 	footer.add_child(help)
@@ -138,17 +138,18 @@ func show_config(handling: HandlingConfig) -> void:
 		tune_fields.remove_child(child)
 		child.queue_free()
 	tune_fields.add_child(_label("HANDLING · changes reset the car", 17))
-	var profiles := HBoxContainer.new()
+	var profiles := GridContainer.new()
+	profiles.columns = 2
 	tune_fields.add_child(profiles)
-	for i: int in range(3):
-		_button(profiles, ["1 Stable", "2 Balanced", "3 Loose"][i], func() -> void: profile_requested.emit(i))
+	for i: int in range(4):
+		_button(profiles, ["1 Planted", "2 Balanced", "3 Playful", "4 Baseline"][i], func() -> void: profile_requested.emit(i))
 	var fields: Array[Array] = [
 		["Engine force · N", "engine_force", 5000.0, 18000.0, 500.0],
 		["Lateral grip · m/s²", "lateral_grip", 8.0, 60.0, 0.5],
 		["Rear grip balance", "rear_grip", 0.65, 1.3, 0.05],
 		["Steering response · /s", "steering_rate", 2.0, 40.0, 0.5],
 		["Countersteer assist", "countersteer_assistance", 0.0, 2.0, 0.1],
-		["Throttle rotation", "throttle_rotation", 0.0, 1.2, 0.05]]
+		["Brake rotation", "brake_rotation", 0.0, 1.5, 0.05]]
 	for field: Array in fields:
 		var row := HBoxContainer.new()
 		tune_fields.add_child(row)

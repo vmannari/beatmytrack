@@ -13,7 +13,7 @@ var attempt_practice: bool = false
 var countdown_ticks: int = 0
 var countdown_label: Label
 
-const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres"]
+const PROFILE_PATHS: Array[String] = ["res://resources/stable.tres", "res://resources/balanced.tres", "res://resources/loose.tres", "res://resources/baseline.tres"]
 var profile_index: int = 1
 var handling: HandlingConfig
 var sim: VehicleSimulation
@@ -24,6 +24,7 @@ var recorder := HandlingRecorder.new()
 var car: CarVisual
 var camera: FollowCamera
 var trails: SkidTrails
+var tire_audio: TireAudio
 var hud: PlaygroundHUD
 var paused: bool = false
 var previous_position: Vector2
@@ -83,6 +84,8 @@ func _ready() -> void:
 	world.add_child(car)
 	trails = SkidTrails.new()
 	world.add_child(trails)
+	tire_audio = TireAudio.new()
+	add_child(tire_audio)
 	camera = FollowCamera.new()
 	world.add_child(camera)
 	camera.current = true
@@ -171,6 +174,7 @@ func _process(delta: float) -> void:
 	var point: Vector2 = previous_position.lerp(sim.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, sim.state.heading, weight)
 	car.present(point, heading, sim.state, frame)
+	tire_audio.present(sim.state, delta, paused or countdown_ticks > 0)
 	car.rotation.x = 0.0
 	if native_track != null:
 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
@@ -285,6 +289,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_1: select_profile(0)
 			KEY_2: select_profile(1)
 			KEY_3: select_profile(2)
+			KEY_4: select_profile(3)
 			KEY_F2: hud.toggle_tuning()
 			KEY_F3: toggle_recording()
 			KEY_F6: select_profile(profile_index)

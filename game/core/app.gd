@@ -1276,25 +1276,32 @@ func _open_saved_tracks() -> void:
 	browser_state.theme = "all"
 	_open_library("saved")
 
-func _load_track_dialog() -> void:
+func _prepare_editor_load() -> bool:
 	if not canvas.ghost.is_empty():
 		canvas.confirm_piece()
 		if not canvas.ghost.is_empty():
 			_notice("Move or cancel the preview before loading another track.")
-			return
+			return false
 	if _save_draft() != OK:
 		_notice("Could not save the current track: "+library.last_error)
-		return
+		return false
+	return true
+
+func _load_track_dialog() -> void:
 	var saved: Array[Dictionary] = library.list_documents()
-	var dialog := AcceptDialog.new()
+	saved.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.name).naturalnocasecmp_to(str(b.name)) < 0)
+	var dialog := ConfirmationDialog.new()
 	dialog.name = "LoadTrackDialog"
-	dialog.title = "Load track for editing"
+	dialog.title = "Saved tracks"
+	dialog.dialog_hide_on_ok = false
 	dialog.ok_button_text = "Load for editing"
 	var box := VBoxContainer.new()
 	box.custom_minimum_size = Vector2(500,300)
 	box.add_theme_constant_override("separation",12)
 	dialog.add_child(box)
-	box.add_child(MenuStyle.label("Local drafts stay editable. Choose a track to continue.",18,true))
+	var summary := MenuStyle.label("Choose a saved track to edit.",18,true)
+	summary.name = "SavedTrackCount"
+	box.add_child(summary)
 	var search := LineEdit.new()
 	search.name = "LoadSearch"
 	search.placeholder_text = "Search saved tracks"
@@ -1309,24 +1316,27 @@ func _load_track_dialog() -> void:
 	var filter: Callable = func(query: String) -> void:
 		choices.clear()
 		for draft: Dictionary in saved:
-			if not (str(draft.name)+" "+str(draft.get("creator",""))).to_lower().contains(query.to_lower()): continue
+			if not query.is_empty() and not (str(draft.name)+" "+str(draft.get("creator",""))).to_lower().contains(query.to_lower()): continue
 			var label: String = str(draft.name)
 			if not TrackDocument.validate(draft).is_empty(): label += " (draft)"
 			var index: int = choices.add_item(label)
 			choices.set_item_metadata(index,str(draft.id))
 		if choices.item_count > 0: choices.select(0)
 		dialog.get_ok_button().disabled = choices.item_count == 0
+		summary.text = "%d saved tracks" % choices.item_count if choices.item_count > 0 else ("No saved tracks yet." if saved.is_empty() else "No tracks match your search.")
 	search.text_changed.connect(filter)
 	filter.call("")
 	var open_selected: Callable = func() -> void:
 		var selected: PackedInt32Array = choices.get_selected_items()
 		if selected.is_empty(): return
+		if not _prepare_editor_load(): return
 		_load_saved_document(str(choices.get_item_metadata(selected[0])))
 	choices.item_activated.connect(func(_index: int) -> void: open_selected.call())
 	dialog.confirmed.connect(open_selected)
-	_own_dialog(dialog)
+	root_ui.add_child(dialog)
+	dialog.canceled.connect(dialog.queue_free)
 	dialog.popup_centered(Vector2i(540,400))
-	search.grab_focus()
+	choices.grab_focus()
 
 func _load_saved_document(id: String) -> void:
 	var loaded: Dictionary = library.load_document(id)

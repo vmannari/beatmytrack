@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 R01/T01-T04: editor Load now shows all saved tracks immediately; empty search no longer hides the list. [Fix, actual checks and screenshot](docs/EDITOR_LOAD_LIST.md).
+
 2026-09-14 R01/T01-T04: saved tracks and unfinished drafts now have confirmed deletion, including recovery-file cleanup and library/selection refresh. [Actual checks, screenshots and limits](docs/USER_TRACK_DELETION.md).
 
 2026-09-14 V02/V04/V05/R01/T01-T04/G01: tapered kerb tips, solid/selectable scenery trees, scalable rock/cliff variants, matching bridge asphalt/guardrails and deterministic ramps/oil/shallow water. Physics 0.16 / compiler-7 / track-kit-11. [Behavior, actual checks, screenshots and limits](docs/CREATOR_HAZARDS.md).

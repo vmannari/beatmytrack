@@ -89,12 +89,20 @@ func _load_ui() -> void:
 	await process_frame
 	var load_button: Button = (app.get("root_ui") as Node).find_child("LoadTrack",true,false)
 	check(load_button!=null,"Load is visible directly in the editor")
+	var editing: EditorCanvas = app.get("canvas")
+	editing.ghost = RoadPieces.create("straight",Vector2(200,0))
 	load_button.pressed.emit()
 	await process_frame
 	var dialog: AcceptDialog = (app.get("root_ui") as Node).find_child("LoadTrackDialog",true,false)
-	check(dialog!=null and library.load_document("current").name=="Current work","opening Load preserves current work")
+	check(dialog!=null and app.get("document").name=="Current work","opening Load preserves current work")
+	check(not editing.ghost.is_empty(),"opening saved list leaves the pending road preview intact")
+	editing.ghost.clear()
 	var search: LineEdit = dialog.find_child("LoadSearch",true,false)
 	var choices: ItemList = dialog.find_child("SavedDrafts",true,false)
+	check(choices.item_count>=2 and search.text.is_empty(),"Load immediately lists saved tracks without a search")
+	if "--capture" in OS.get_cmdline_user_args():
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/load-all-tracks.png"))==OK,"all saved tracks screenshot")
 	search.text = "missing"; search.text_changed.emit(search.text)
 	check(choices.item_count==0 and dialog.get_ok_button().disabled,"empty search disables Load")
 	search.text = "saved curve"; search.text_changed.emit(search.text)
@@ -106,6 +114,7 @@ func _load_ui() -> void:
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
+	check(library.load_document("current").name=="Current work","choosing a track saves outgoing work before replacement")
 	check(app.get("document").id=="saved_curve" and canvas.document.pieces[0].angle==120.0,"Load restores authored geometry with the same track ID")
 	check(canvas.selected_piece==-1 and app.get("history").is_empty(),"loaded track starts without the previous document selection or undo history")
 	canvas.selected_piece=0

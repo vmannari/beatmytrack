@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 R01/T01-T04: editor Load now shows all saved tracks immediately; empty search no longer hides the list. [Fix, actual checks and screenshot](EDITOR_LOAD_LIST.md).
+
 2026-09-14 R01/T01-T04: saved tracks and unfinished drafts now have confirmed deletion, including recovery-file cleanup and library/selection refresh. [Actual checks, screenshots and limits](USER_TRACK_DELETION.md).
 
 2026-09-14 V02/V04/V05/R01/T01-T04/G01: owner-authorized scenery, scaling and hazard slice. [CREATOR_HAZARDS.md](CREATOR_HAZARDS.md) records tapered kerbs, solid editable trees, shared bridge style and deterministic jump/oil/water behavior, with actual checks and remaining phone acceptance.

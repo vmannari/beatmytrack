@@ -4,6 +4,7 @@ extends VBoxContainer
 signal race_requested(track: NativeTrack)
 signal track_selected(track: NativeTrack)
 signal edit_requested(document: Dictionary)
+signal delete_requested(id: String, title: String)
 signal import_requested
 signal notice(message: String)
 
@@ -211,6 +212,7 @@ func _select(entry: Dictionary) -> void:
 			var errors: Array[String] = TrackDocument.validate(draft)
 			detail.add_child(MenuStyle.label(errors[0] if not errors.is_empty() else "Track needs repair before driving.",18,true))
 			detail.add_child(MenuStyle.button("Edit draft",func() -> void: edit_requested.emit(draft)))
+			_delete_button(draft)
 			return
 		notice.emit("This track could not be opened. Its saved route may need repair or reimporting.")
 		return
@@ -252,6 +254,7 @@ func _show_detail() -> void:
 	if selected_track.metadata.has("creator_document"):
 		actions.add_child(MenuStyle.button("Edit",func() -> void: edit_requested.emit(selected_track.metadata.creator_document.duplicate(true))))
 
+		_delete_button(selected_track.metadata.creator_document)
 	else:
 		var remix: Button = MenuStyle.button("Remix",func() -> void: edit_requested.emit(TrackDocument.from_builtin(selected_track)))
 		remix.name = "RemixTrack"
@@ -265,3 +268,9 @@ func _favorite() -> void:
 	if records.save_records() != OK: notice.emit("Favorite could not be saved. Check available storage.")
 	_show_detail()
 	_refresh()
+
+
+func _delete_button(draft: Dictionary) -> void:
+	var button: Button = MenuStyle.button("Delete track",func() -> void: delete_requested.emit(str(draft.id),str(draft.name)))
+	button.name = "DeleteUserTrack"
+	detail.add_child(button)

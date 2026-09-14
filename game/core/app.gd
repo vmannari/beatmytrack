@@ -227,6 +227,7 @@ func _tracks() -> void:
 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
 	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
 	browser.import_requested.connect(_import_dialog)
+	browser.delete_requested.connect(_confirm_delete_track)
 	browser.notice.connect(_notice)
 	browser.edit_requested.connect(func(doc: Dictionary) -> void:
 		document = doc.duplicate(true)
@@ -1351,3 +1352,35 @@ func _editor_track_preview() -> NativeTrack:
 	for key: String in ["points","widths","corners"]: preview_document[key] = fallback[key]
 	preview_document.route_override = true
 	return TrackCompiler.compile(preview_document)
+
+
+func _confirm_delete_track(id: String, title: String) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.name = "DeleteTrackDialog"
+	dialog.title = "Delete saved track?"
+	dialog.dialog_text = 'Delete "%s" from this device?\nThis cannot be undone.' % title
+	dialog.ok_button_text = "Delete track"
+	dialog.confirmed.connect(_delete_user_track.bind(id))
+	_own_dialog(dialog)
+	dialog.popup_centered(Vector2i(480,190))
+	dialog.get_cancel_button().grab_focus()
+
+func _delete_user_track(id: String) -> void:
+	if library.delete_document(id) != OK:
+		_notice(library.last_error)
+		return
+	var identity: String = "creator_"+id
+	if document.get("id","") == id:
+		document = {}
+		history.clear()
+		redo_history.clear()
+		editor_view.clear()
+	if selected_track != null and selected_track.identity == identity:
+		selected_track = NativeTrack.read("res://resources/tracks/"+BUILTIN_IDS[0]+".json")
+	var favorites: Array = records.settings.get("favorites",[]).duplicate()
+	favorites.erase(identity)
+	records.settings["favorites"] = favorites
+	if records.settings.get("last_track","") == identity: records.settings["last_track"] = selected_track.identity
+	var settings_error: Error = records.save_records()
+	_show_screen("tracks")
+	if settings_error != OK: _notice("Track deleted, but favorite settings could not be saved.")

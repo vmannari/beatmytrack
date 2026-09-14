@@ -135,3 +135,21 @@ func _atomic_write(document: Dictionary, path: String) -> Error:
 	error = DirAccess.rename_absolute(temporary,path)
 	last_error = "" if error == OK else "Could not finish saving; the previous track is recoverable."
 	return error
+
+
+func delete_document(id: String) -> Error:
+	if not TrackDocument.valid_id(id):
+		last_error = "The track identifier is invalid."
+		return ERR_INVALID_PARAMETER
+	# Remove recovery files before the primary so a successful deletion cannot
+	# reappear through backup recovery. Never enumerate or delete directories.
+	for suffix: String in [".json.tmp",".json.bak",".json"]:
+		var path: String = directory.path_join(id+suffix)
+		if not FileAccess.file_exists(path): continue
+		var error: Error = DirAccess.remove_absolute(path)
+		if error != OK:
+			last_error = "Could not delete the track. Check storage permissions."
+			return error
+	revision += 1
+	last_error = ""
+	return OK

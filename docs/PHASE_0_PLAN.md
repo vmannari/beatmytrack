@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 G01/R01/T02-T04: owner requests more resistant tyres and direct loading for continued local editing. Shared-version immutability is recorded for the later publication lifecycle. [TYRE_RESISTANCE_AND_LOADING.md](TYRE_RESISTANCE_AND_LOADING.md) records implementation and actual validation.
+
 2026-09-14 R01/T01-T04/V05/G01: owner requests practical creator refinements and moving tyres. Implemented with compiler-6 / arcade-planar-0.13 and bounded optional v5 fields. [CREATOR_REFINEMENT.md](CREATOR_REFINEMENT.md) records actual commands and outstanding device acceptance.
 
 2026-09-13 R01/T01?T04/V05: owner authorizes direct body/end-dot editing, PC controls and bridge authoring, superseding the ground-only bridge restriction. [CREATOR_CONSTRUCTION.md](CREATOR_CONSTRUCTION.md) records implementation and actual evidence.

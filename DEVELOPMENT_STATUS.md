@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 tyre/load follow-up: stronger tyre sliding resistance and car impact (physics 0.14), searchable editor Load, same-ID resaving and correct unfinished-draft map previews. [Measured before/after response, checks and future shared-version lock policy](docs/TYRE_RESISTANCE_AND_LOADING.md).
+
 2026-09-14 creator follow-up: solid placed trees/rocks, road-safe terrain painting, free tyre lines and deterministic movable stacks, explicit endpoint connection, variable curve angles, visible Save and recoverable local drafts/racing. [Implementation, tests and acceptance limits](docs/CREATOR_REFINEMENT.md).
 
 2026-09-13 direct construction: body dragging, anchored endpoint dots, desktop pan/zoom/shortcuts and authorable two-level bridges implemented in creator-track-v5. [Behavior, validation and remaining acceptance](docs/CREATOR_CONSTRUCTION.md).

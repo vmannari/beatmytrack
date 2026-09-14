@@ -2,7 +2,8 @@ class_name LooseTyres
 extends RefCounted
 ## Deterministic planar tyre stacks. State belongs to each run, never to track data.
 const RADIUS: float = 0.5
-const MASS: float = 65.0
+const MASS: float = 260.0 # Effective contact mass for a resistant tyre stack.
+const SLIDING_DECELERATION: float = 24.0
 
 static func positions(document: Dictionary) -> PackedVector2Array:
 	var result := PackedVector2Array()
@@ -31,7 +32,7 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 					state.velocity -= normal*impulse/config.mass
 					velocity += normal*impulse/MASS
 					state.collision_count += 1
-		velocity = velocity.limit_length(30).move_toward(Vector2.ZERO,6.0*step_seconds)
+		velocity = velocity.limit_length(30).move_toward(Vector2.ZERO,SLIDING_DECELERATION*step_seconds)
 		var motion: Vector2 = velocity*step_seconds
 		var steps: int = maxi(1,ceili(motion.length()/0.2))
 		for i: int in range(steps):

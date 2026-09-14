@@ -364,7 +364,7 @@ func _editor() -> void:
 	top.alignment = BoxContainer.ALIGNMENT_END
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -410; top.offset_right = -16; top.offset_top = 16
+	top.offset_left = -506; top.offset_right = -16; top.offset_top = 16
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = MenuStyle.button("",_focus_issue)
 	editor_issue_button.custom_minimum_size = Vector2(112,52)
@@ -383,6 +383,10 @@ func _editor() -> void:
 	test_style.border_color = EditorButton.CYAN
 	test_button.add_theme_stylebox_override("normal",test_style)
 	test_button.add_theme_color_override("font_color",Color.WHITE)
+	var load_button: Button = MenuStyle.button("Load",_load_track_dialog)
+	load_button.name = "LoadTrack"
+	load_button.custom_minimum_size = Vector2(90,52)
+	top.add_child(load_button)
 	var save_button: Button = MenuStyle.button("Save",_save_track_explicit)
 	save_button.name = "SaveTrack"
 	save_button.custom_minimum_size = Vector2(90,52)
@@ -484,7 +488,8 @@ func _editor() -> void:
 	canvas.selection_changed.connect(_build_editor_tools)
 	_build_editor_tools()
 	_refresh_editor()
-	if TrackDocument.validate(document).is_empty(): canvas.show_native(TrackCompiler.compile(document))
+	var preview_track: NativeTrack = _editor_track_preview()
+	if preview_track != null: canvas.show_native(preview_track)
 	_update_editor_issues()
 	if editor_view.is_empty(): canvas.call_deferred("fit")
 	_apply_editor_safe_area(overlay)
@@ -903,7 +908,8 @@ func _save_draft() -> Error:
 	if is_instance_valid(canvas):
 		if is_instance_valid(editor_undo): editor_undo.disabled = history.is_empty()
 		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
-		if errors.is_empty(): canvas.show_native(TrackCompiler.compile(document))
+		var preview_track: NativeTrack = _editor_track_preview()
+		if preview_track != null: canvas.show_native(preview_track)
 		_update_editor_issues()
 	return save_error
 
@@ -1256,3 +1262,80 @@ func _open_saved_tracks() -> void:
 	browser_state.creator = ""
 	browser_state.theme = "all"
 	_open_library("saved")
+
+func _load_track_dialog() -> void:
+	if not canvas.ghost.is_empty():
+		canvas.confirm_piece()
+		if not canvas.ghost.is_empty():
+			_notice("Move or cancel the preview before loading another track.")
+			return
+	if _save_draft() != OK:
+		_notice("Could not save the current track: "+library.last_error)
+		return
+	var saved: Array[Dictionary] = library.list_documents()
+	var dialog := AcceptDialog.new()
+	dialog.name = "LoadTrackDialog"
+	dialog.title = "Load track for editing"
+	dialog.ok_button_text = "Load for editing"
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(500,300)
+	box.add_theme_constant_override("separation",12)
+	dialog.add_child(box)
+	box.add_child(MenuStyle.label("Local drafts stay editable. Choose a track to continue.",18,true))
+	var search := LineEdit.new()
+	search.name = "LoadSearch"
+	search.placeholder_text = "Search saved tracks"
+	search.custom_minimum_size.y = 48
+	box.add_child(search)
+	var choices := ItemList.new()
+	choices.name = "SavedDrafts"
+	choices.custom_minimum_size = Vector2(500,224)
+	choices.add_theme_font_size_override("font_size",20)
+	choices.add_theme_constant_override("v_separation",18)
+	box.add_child(choices)
+	var filter: Callable = func(query: String) -> void:
+		choices.clear()
+		for draft: Dictionary in saved:
+			if not (str(draft.name)+" "+str(draft.get("creator",""))).to_lower().contains(query.to_lower()): continue
+			var label: String = str(draft.name)
+			if not TrackDocument.validate(draft).is_empty(): label += " (draft)"
+			var index: int = choices.add_item(label)
+			choices.set_item_metadata(index,str(draft.id))
+		if choices.item_count > 0: choices.select(0)
+		dialog.get_ok_button().disabled = choices.item_count == 0
+	search.text_changed.connect(filter)
+	filter.call("")
+	var open_selected: Callable = func() -> void:
+		var selected: PackedInt32Array = choices.get_selected_items()
+		if selected.is_empty(): return
+		_load_saved_document(str(choices.get_item_metadata(selected[0])))
+	choices.item_activated.connect(func(_index: int) -> void: open_selected.call())
+	dialog.confirmed.connect(open_selected)
+	_own_dialog(dialog)
+	dialog.popup_centered(Vector2i(540,400))
+	search.grab_focus()
+
+func _load_saved_document(id: String) -> void:
+	var loaded: Dictionary = library.load_document(id)
+	if loaded.is_empty():
+		_notice("Could not load this track: "+library.last_error)
+		return
+	document = loaded
+	canvas = null # Loading a different document must not capture the outgoing view.
+	editor_view.clear()
+	history.clear()
+	redo_history.clear()
+	editor_geometry = ""
+	_show_screen("create")
+	editor_status.text = "Loaded "+str(document.name)+" for editing."
+
+func _editor_track_preview() -> NativeTrack:
+	if TrackDocument.validate(document).is_empty(): return TrackCompiler.compile(document)
+	if not TrackDocument.validate(document,false).is_empty(): return null
+	# A draft may have an unfinished lap. Render its actual map using a safe
+	# preview-only route; never change the saved route or permit racing it.
+	var preview_document: Dictionary = document.duplicate(true)
+	var fallback: Dictionary = TrackDocument.create_default()
+	for key: String in ["points","widths","corners"]: preview_document[key] = fallback[key]
+	preview_document.route_override = true
+	return TrackCompiler.compile(preview_document)

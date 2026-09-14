@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-5"
+const VERSION: String = "creator-compiler-6"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -53,16 +53,19 @@ static func compile(document: Dictionary) -> NativeTrack:
 	cells.resize(grid.x * grid.y)
 	cells.fill(1)
 	if base != null: cells = base.cells.duplicate()
+	var road_mask: PackedInt32Array = cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,true)
 	var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
 	_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
+	_raster_road(road_route,road_widths,road_kind,road_mask,grid,extent,cell_size,true)
 	for section: Dictionary in sections:
 		if section.bridge: continue
 		var section_widths := PackedFloat32Array()
 		section_widths.resize(section.points.size())
 		section_widths.fill(section.width)
 		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
-	_paint(document.paint,cells,grid,extent,cell_size)
+		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
+	_paint(document.paint,cells,grid,extent,cell_size,road_mask)
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	var deck := PackedInt32Array()
 	deck.resize(cells.size())
@@ -118,6 +121,7 @@ static func compile(document: Dictionary) -> NativeTrack:
 
 static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
 	for object: Dictionary in document.get("objects",[]):
+		if object.kind == "tyre_wall": continue # Loose stacks are simulated, never baked into a wall.
 		if (object.kind in ["dirt","water"]) != terrain: continue
 		var center := Vector2(object.position[0],object.position[1])
 		var reach: float = CreatorObjects.dimensions(object.kind).length()*0.5
@@ -127,7 +131,7 @@ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: 
 				if CreatorObjects.contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
 
 
-static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float) -> void:
+static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:
 	for stroke: Dictionary in strokes:
 		var radius: float = float(stroke.width)*0.5
 		for i: int in range(stroke.points.size()):
@@ -142,7 +146,9 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
-					if hit: cells[y*grid.x+x] = int(stroke.surface)
+					if hit and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
+						cells[y*grid.x+x] = int(stroke.surface)
+						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
 
 
 static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool) -> void:

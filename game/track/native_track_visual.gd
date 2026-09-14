@@ -9,6 +9,7 @@ const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
 var theme_id: String = "pine"
 var editor_preview: bool = false
 var colors: Array[Color] = []
+var tyre_instances: MultiMeshInstance3D
 var scenic_count: int = 0
 
 
@@ -144,6 +145,7 @@ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 	# Match the compiler's painted-cell coverage, including square stamps.
 	# This also removes edge paint through newly painted junctions.
 	for stroke: Dictionary in paint:
+		if stroke.get("protect_road",false): continue
 		var radius: float = float(stroke.width)*0.5
 		for index: int in range(stroke.points.size()):
 			var p: Array = stroke.points[index]
@@ -185,7 +187,7 @@ func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
 			for x: int in range(track.grid_width):
 				if _boundary_cell(track,x,y): mask[y*track.grid_width+x] = 1
 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]):
-		if object.kind not in ["tyre_wall","fence"]: continue
+		if object.kind not in ["tree","rock","tyre_wall","fence"]: continue
 		if mask.is_empty(): mask.resize(track.cells.size())
 		var center := Vector2(object.position[0],object.position[1])
 		var reach: float = CreatorObjects.dimensions(object.kind).length()*0.5
@@ -340,12 +342,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			_pine(tool,center,0.65,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
 		elif object.kind == "rock":
 			_mound(tool,center,Vector3(0.95,0.5,0.9),-deg_to_rad(float(object.rotation)),TrackTheme.stone(theme_id))
-		elif object.kind == "tyre_wall":
-			var turn: float = deg_to_rad(float(object.rotation))
-			for column: int in range(6):
-				for row: int in range(2):
-					var offset := Vector3(column-2.5,row*0.30,0)
-					_tyre(tool,center+offset.rotated(Vector3.UP,turn))
+		elif object.kind == "tyre_wall": continue # Shared instanced mesh below.
 		elif object.kind == "fence":
 			var turn: float = deg_to_rad(float(object.rotation))
 			for x: float in [-2.8,0.0,2.8]:
@@ -363,6 +360,25 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mesh.material_override = material
 		add_child(mesh)
+
+	if not track.tyre_origins.is_empty():
+		var stack := SurfaceTool.new()
+		stack.begin(Mesh.PRIMITIVE_TRIANGLES)
+		_tyre(stack,Vector3.ZERO)
+		_tyre(stack,Vector3.UP*0.30)
+		stack.generate_normals()
+		tyre_instances = MultiMeshInstance3D.new()
+		var instances := MultiMesh.new()
+		instances.transform_format = MultiMesh.TRANSFORM_3D
+		instances.mesh = stack.commit()
+		instances.instance_count = track.tyre_origins.size()
+		tyre_instances.multimesh = instances
+		var rubber := VisualGeometry.material(Color.WHITE)
+		rubber.vertex_color_use_as_albedo = true
+		rubber.cull_mode = BaseMaterial3D.CULL_DISABLED
+		tyre_instances.material_override = rubber
+		add_child(tyre_instances)
+		update_tyres(VehicleState.new(),track.tyre_origins)
 
 
 func _tyre(tool: SurfaceTool, center: Vector3) -> void:
@@ -480,3 +496,14 @@ func _commit(tool: SurfaceTool, color: Color) -> void:
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	instance.material_override = material
 	add_child(instance)
+
+func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
+	if tyre_instances == null: return
+	for i: int in range(origins.size()):
+		var p: Vector2 = origins[i]
+		var spin: float = 0.0
+		if i < state.loose_tyres.size():
+			var tyre: Array = state.loose_tyres[i]
+			p = Vector2(tyre[0],tyre[1])
+			spin = tyre[4]
+		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*0.014))

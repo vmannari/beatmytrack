@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 R01/T01-T04/V05/G01: owner requests practical creator refinements and moving tyres. Implemented with compiler-6 / arcade-planar-0.13 and bounded optional v5 fields. [CREATOR_REFINEMENT.md](CREATOR_REFINEMENT.md) records actual commands and outstanding device acceptance.
+
 2026-09-13 R01/T01?T04/V05: owner authorizes direct body/end-dot editing, PC controls and bridge authoring, superseding the ground-only bridge restriction. [CREATOR_CONSTRUCTION.md](CREATOR_CONSTRUCTION.md) records implementation and actual evidence.
 
 2026-09-13 R01/T01–T04/V05 review: owner requests a usability review after accepting the improved editor direction. [CREATOR_USABILITY_REVIEW.md](CREATOR_USABILITY_REVIEW.md) records eight reproduced findings and proposes edit protection, race readiness and connected editing as the next slice. This checkpoint changes review tooling/documentation only; implementation decisions remain outstanding.

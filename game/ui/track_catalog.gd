@@ -63,7 +63,7 @@ static func local_metadata(data: Dictionary) -> Dictionary:
 		for value: Variant in point:
 			if not TrackDocument._number(value) or absf(float(value)) > TrackDocument.MAX_COORD: return {}
 	return {"id":"creator_"+str(data.id),"local_id":str(data.id),"name":str(data.name),
-		"creator":str(data.get("creator","Unknown creator")),"theme":str(data.theme),"source":"saved","points":points}
+		"creator":str(data.get("creator","Unknown creator")),"theme":str(data.theme),"source":"saved","points":points,"pieces":data.get("pieces",[])}
 
 func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []

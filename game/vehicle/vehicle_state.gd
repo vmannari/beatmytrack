@@ -2,6 +2,7 @@ class_name VehicleState
 extends RefCounted
 ## Planar (x,y) -> world (x,0,-y). Heading 0 is +y; positive turns right.
 
+var loose_tyres: Array = []
 var position: Vector2 = Vector2.ZERO
 var velocity: Vector2 = Vector2.ZERO
 var heading: float = 0.0
@@ -32,5 +33,7 @@ func slip_angle() -> float:
 
 
 func snapshot() -> Array:
-	return [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
+	var result: Array = [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
 		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]
+	if not loose_tyres.is_empty(): result.append(loose_tyres.duplicate(true))
+	return result

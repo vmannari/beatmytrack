@@ -18,6 +18,7 @@ var content_hash: String
 var finish_center := Vector2.ZERO
 var finish_forward := Vector2.ZERO
 var finish_half_width: float = 0.0
+var tyre_origins := PackedVector2Array()
 var creator_bridges: Array = []
 
 
@@ -33,6 +34,7 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	# Trusted native data only. Creator imports are validated and compiled first.
 	var track := NativeTrack.new()
 	track.metadata = data
+	track.tyre_origins = LooseTyres.positions(data.get("creator_document",{}))
 	track.creator_bridges = data.get("creator_bridges",[])
 	track.content_hash = hash_value
 	track.identity = data.identity
@@ -222,6 +224,9 @@ func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:
 
 
 func overlaps_obstacle(point: Vector2, radius: float, elevated: bool) -> bool:
+	if not elevated:
+		for p: Vector2 in tyre_origins:
+			if point.distance_to(p) < radius+LooseTyres.RADIUS: return true
 	# A symmetric overlap may have a zero normal; depth is authoritative.
 	return _contact(point,radius,elevated).z > 0.0
 
@@ -304,3 +309,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 				if outward != Vector2.ZERO: fallback = outward
 	var normal: Vector2 = total.normalized() if total.length_squared() > 0.00000001 else (fallback if overlap > 0.0 else Vector2.ZERO)
 	return Vector3(normal.x, normal.y, overlap)
+
+
+func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
+	LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)

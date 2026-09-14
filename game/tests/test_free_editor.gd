@@ -133,6 +133,7 @@ func _ui(doc: Dictionary) -> void:
 	await _capture("fullscreen-tools")
 	tools_panel.hide()
 
+	canvas.protect_road = false # This scenario deliberately paints over the existing road.
 	canvas.brush_surface = 2; canvas.brush_width = 8
 	var touch := InputEventScreenTouch.new()
 	touch.index = 1; touch.pressed = true; touch.position = canvas.to_screen(Vector2(-25,-5))

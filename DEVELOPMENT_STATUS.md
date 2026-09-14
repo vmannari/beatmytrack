@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 creator follow-up: solid placed trees/rocks, road-safe terrain painting, free tyre lines and deterministic movable stacks, explicit endpoint connection, variable curve angles, visible Save and recoverable local drafts/racing. [Implementation, tests and acceptance limits](docs/CREATOR_REFINEMENT.md).
+
 2026-09-13 direct construction: body dragging, anchored endpoint dots, desktop pan/zoom/shortcuts and authorable two-level bridges implemented in creator-track-v5. [Behavior, validation and remaining acceptance](docs/CREATOR_CONSTRUCTION.md).
 
 2026-09-13 creator usability review: eight reproducible issues recorded, led by race-route readiness, variable-width connections and invalid-drag persistence. Existing 96 workflow checks pass; new isolated review scenarios reproduce the gaps. No application fixes in this checkpoint. [Findings and proposed order](docs/CREATOR_USABILITY_REVIEW.md).

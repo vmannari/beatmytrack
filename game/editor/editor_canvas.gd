@@ -24,6 +24,8 @@ var endpoint_drag: int = -1
 var piece_before_drag: Dictionary = {}
 var desktop_pan: bool = false
 var pending_road_tap: bool = false
+var protect_road: bool = true
+var free_run: bool = false
 var run_start := Vector2.INF
 var run_preview: Array = []
 var issue_marker := Vector2.INF
@@ -252,7 +254,7 @@ func _move(point: Vector2) -> void:
 		previous_pointer = point
 		return
 	if mode == "run" and run_start != Vector2.INF:
-		run_preview = RoadPieces.barrier_run(document,run_start,to_world(point),stamp_kind)
+		run_preview = _object_run(run_start,to_world(point))
 	if not paint_points.is_empty():
 		var p: Array = _paint_position(point)
 		if Vector2(p[0],p[1]).distance_to(Vector2(paint_points[-1][0],paint_points[-1][1])) >= 0.5 and paint_points.size() < 512:
@@ -308,15 +310,15 @@ func _place(point: Vector2) -> void:
 	if mode == "run":
 		if run_start == Vector2.INF:
 			run_start = position
-			hint_changed.emit("Tap the end of the run. Barriers follow the nearest road edge.")
+			hint_changed.emit("Tap the end of the free wall line." if free_run else "Tap the end of the run. Barriers follow the nearest road edge.")
 		else:
-			run_preview = RoadPieces.barrier_run(document,run_start,position,stamp_kind)
+			run_preview = _object_run(run_start,position)
 			if not run_preview.is_empty():
 				edit_started.emit()
 				document.objects.append_array(run_preview)
 				document_changed.emit()
 				edit_finished.emit()
-				hint_changed.emit("%d objects placed along the road." % run_preview.size())
+				hint_changed.emit("%d objects placed." % run_preview.size())
 			run_start = Vector2.INF
 			run_preview.clear()
 		queue_redraw()
@@ -369,7 +371,7 @@ func _end(pointer: int) -> void:
 	if not paint_points.is_empty():
 		if document.paint.size() < 256:
 			edit_started.emit()
-			document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true)})
+			document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0})
 			document_changed.emit()
 			edit_finished.emit()
 		else: hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
@@ -556,9 +558,9 @@ func _begin_road(point: Vector2) -> void:
 				piece_before_drag = current.duplicate(true)
 				dragging = true
 				return
-	if not current.is_empty() and road_action in ["width","radius","length"] and to_screen(_geometry_handle(current,road_action)).distance_to(point) <= 32:
+	if not current.is_empty() and road_action in ["width","radius","length","angle"] and to_screen(_geometry_handle(current,road_action)).distance_to(point) <= 32:
 		geometry_drag = road_action
-		geometry_origin = float(current[geometry_drag])
+		geometry_origin = float(current.get(geometry_drag,90.0))
 		dragging = true
 		return
 	if not ghost.is_empty():
@@ -617,7 +619,7 @@ func _move_road(point: Vector2) -> void:
 		return
 	if geometry_drag != "":
 		var increased: Dictionary = piece.duplicate(true)
-		increased[geometry_drag] = float(piece[geometry_drag])+1.0
+		increased[geometry_drag] = float(piece.get(geometry_drag,90.0))+1.0
 		var axis: Vector2 = _geometry_handle(increased,geometry_drag)-_geometry_handle(piece,geometry_drag)
 		var delta: float = (to_world(point)-pointer_origin).dot(axis)/maxf(0.01,axis.length_squared())
 		var trial: Dictionary = piece.duplicate(true)
@@ -681,19 +683,19 @@ func _draw_piece(piece: Dictionary, is_ghost: bool) -> void:
 	anchor = anchor.clamp(Vector2(110,90),size-Vector2(280,120))
 	draw_style_box(MenuStyle.box(Color(0.035,0.09,0.11,0.94),8),Rect2(anchor-Vector2(10,22),Vector2(260,34)))
 	draw_string(ThemeDB.fallback_font,anchor,label,HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE)
-	if road_action in ["width","radius","length"]:
+	if road_action in ["width","radius","length","angle"]:
 		var handle: Vector2 = to_screen(_geometry_handle(piece,road_action))
 		draw_circle(handle,16,Color("16c2cf"))
 		draw_circle(handle,16,Color.WHITE,false,2,true)
 		draw_line(handle-Vector2(7,0),handle+Vector2(7,0),Color.WHITE,2,true)
 		draw_line(handle-Vector2(0,7),handle+Vector2(0,7),Color.WHITE,2,true)
-		draw_string(ThemeDB.fallback_font,handle+Vector2(22,6),"%s %.1f m" % [road_action.capitalize(),float(piece[road_action])],HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)
+		draw_string(ThemeDB.fallback_font,handle+Vector2(22,6),("%s %.0f deg" if road_action == "angle" else "%s %.1f m") % [road_action.capitalize(),float(piece.get(road_action,90.0))],HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)
 
 func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
 	var points: PackedVector2Array = RoadPieces.samples(piece)
 	var forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
 	if key == "length": return points[0]+forward*float(piece.length)
-	if key == "radius": return points[-1]
+	if key in ["radius","angle"]: return points[-1]
 	var middle: int = points.size()/2
 	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
 	return points[middle]+Vector2(-direction.y,direction.x)*float(piece.width)*0.5
@@ -731,3 +733,38 @@ func _paint_position(point: Vector2) -> Array:
 		p.x = (floorf((p.x+extent.x)/cell)+0.5)*cell-extent.x
 		p.y = extent.y-(floorf((extent.y-p.y)/cell)+0.5)*cell
 	return [p.x,p.y]
+
+func _object_run(start: Vector2, finish: Vector2) -> Array:
+	if not free_run: return RoadPieces.barrier_run(document,start,finish,stamp_kind)
+	var result: Array = []
+	var count: int = mini(96-document.objects.size(),maxi(1,ceili(start.distance_to(finish)/6.0)))
+	var heading: float = fposmod(rad_to_deg((finish-start).angle()),360.0)
+	for i: int in range(count):
+		var p: Vector2 = start.lerp(finish,(float(i)+0.5)/count)
+		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":heading})
+	return result
+
+func connect_nearby() -> void:
+	if selected_piece < 0 or not ghost.is_empty(): return
+	var piece: Dictionary = document.pieces[selected_piece]
+	var best: float = RoadPieces.SNAP_DISTANCE
+	var result: Dictionary = {}
+	for endpoint: int in range(2):
+		if not RoadPieces._partner(document.pieces,selected_piece,endpoint).is_empty(): continue
+		var origin: Vector2 = RoadPieces._pose(piece,endpoint).position
+		var target: Vector2 = RoadPieces.snap_endpoint(origin,document.pieces,selected_piece)
+		var distance: float = origin.distance_to(target)
+		if distance < 0.001 or distance > best: continue
+		var trial: Dictionary = RoadPieces.move_endpoint(piece,endpoint,target)
+		if not trial.is_empty() and _valid_bridge_edit(trial,selected_piece):
+			best = distance
+			result = trial
+	if result.is_empty():
+		hint_changed.emit("Move an open end within 8 m of another open end, then Connect.")
+		return
+	edit_started.emit()
+	document.pieces[selected_piece] = result
+	document_changed.emit()
+	edit_finished.emit()
+	selection_changed.emit()
+	queue_redraw()

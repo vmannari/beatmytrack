@@ -292,7 +292,7 @@ func _save_settings() -> void:
 	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
 
 func _new_document() -> void:
-	if not document.is_empty() and not TrackDocument.validate(document).is_empty():
+	if not document.is_empty() and not TrackDocument.validate(document,false).is_empty():
 		_notice("Fix or undo the unsaved route change before starting another circuit.")
 		return
 	_save_draft()
@@ -364,7 +364,7 @@ func _editor() -> void:
 	top.alignment = BoxContainer.ALIGNMENT_END
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -298; top.offset_right = -16; top.offset_top = 16
+	top.offset_left = -410; top.offset_right = -16; top.offset_top = 16
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = MenuStyle.button("",_focus_issue)
 	editor_issue_button.custom_minimum_size = Vector2(112,52)
@@ -383,6 +383,10 @@ func _editor() -> void:
 	test_style.border_color = EditorButton.CYAN
 	test_button.add_theme_stylebox_override("normal",test_style)
 	test_button.add_theme_color_override("font_color",Color.WHITE)
+	var save_button: Button = MenuStyle.button("Save",_save_track_explicit)
+	save_button.name = "SaveTrack"
+	save_button.custom_minimum_size = Vector2(90,52)
+	top.add_child(save_button)
 	top.add_child(test_button)
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
@@ -472,7 +476,7 @@ func _editor() -> void:
 	metadata.add_child(theme_picker)
 	metadata.add_child(MenuStyle.button("Creator",_creator_name))
 	metadata.add_child(MenuStyle.button("New",_new_document))
-	metadata.add_child(MenuStyle.button("My circuits",_show_screen.bind("tracks")))
+	metadata.add_child(MenuStyle.button("My circuits",_open_saved_tracks))
 	metadata.add_child(MenuStyle.button("3D preview",_preview_document))
 	metadata.add_child(MenuStyle.button("Controls",_editor_help))
 	share_button = MenuStyle.button("Share",_share_dialog)
@@ -559,11 +563,14 @@ func _build_editor_tools() -> void:
 				editor_geometry = ""
 				_build_editor_tools())
 			var key: String = editor_geometry
-			_context_button("− 1 m","minus",_change_piece.bind(key,-1.0))
-			_context_button(("Lead-in" if key == "length" and piece.kind not in ["straight","bridge"] else key.capitalize())+" %.1f m" % float(piece[key]),"width",func() -> void: pass)
-			_context_button("+ 1 m","plus",_change_piece.bind(key,1.0))
+			_context_button("- 5 deg" if key == "angle" else "- 1 m","minus",_change_piece.bind(key,-5.0 if key == "angle" else -1.0))
+			_context_button(("Lead-in" if key == "length" and piece.kind not in ["straight","bridge"] else key.capitalize())+(" %.0f deg" if key == "angle" else " %.1f m") % float(piece.get(key,90.0)),"width",func() -> void: pass)
+			_context_button("+ 5 deg" if key == "angle" else "+ 1 m","plus",_change_piece.bind(key,5.0 if key == "angle" else 1.0))
 			if key != "width" and piece.kind not in ["straight","bridge"]: _context_button("Radius" if key == "length" else "Lead-in","curve",func() -> void:
 				editor_geometry = "radius" if key == "length" else "length"
+				_build_editor_tools())
+			if piece.kind == "curve" and key != "angle": _context_button("Angle","curve",func() -> void:
+				editor_geometry = "angle"
 				_build_editor_tools())
 			editor_status.text = "Only this section changes. Reconnect any open ends afterwards."
 		else:
@@ -580,7 +587,9 @@ func _build_editor_tools() -> void:
 				canvas.snap_matched = false
 				_build_editor_tools(),canvas.snap_enabled)
 			_context_button("Cancel" if not canvas.ghost.is_empty() else "Delete","delete",_delete_piece)
-			if canvas.ghost.is_empty(): _context_button("Layer","surface",canvas.cycle_piece)
+			if canvas.ghost.is_empty():
+				_context_button("Connect","snap",canvas.connect_nearby)
+				_context_button("Layer","surface",canvas.cycle_piece)
 			editor_status.text = "Drag inside to move · end dots resize and turn · ✓ to place" if not canvas.ghost.is_empty() else "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
 			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends · ground road passes beneath the middle"
 	elif category == "paint":
@@ -594,6 +603,9 @@ func _build_editor_tools() -> void:
 		_context_button("Pan","move",func() -> void:
 			canvas.mode = "pan" if canvas.mode == "paint" else "paint"
 			_build_editor_tools(),canvas.mode == "pan")
+		_context_button("Keep road" if canvas.protect_road else "Paint all","road",func() -> void:
+			canvas.protect_road = not canvas.protect_road
+			_build_editor_tools(),canvas.protect_road)
 		_build_paint_tools()
 		editor_status.text = "Paint any road shape, terrain or intersection · %.1f m %s brush" % [canvas.brush_width,canvas.brush_shape]
 	elif category == "objects":
@@ -609,13 +621,25 @@ func _build_editor_tools() -> void:
 			for pair: Array in [["barrier","Barrier"],["tyre_wall","Tyre wall"],["fence","Fence"],["tree","Tree"],["rock","Rock"]]:
 				_context_button(pair[1],pair[0],func() -> void:
 					canvas.stamp_kind = pair[0]
-					canvas.mode = "run" if pair[0] in ["barrier","tyre_wall","fence"] else "place"
+					canvas.mode = "run" if pair[0] in ["barrier","fence"] else "place"
+					canvas.free_run = pair[0] == "tyre_wall"
 					canvas.run_start = Vector2.INF
 					_build_editor_tools(),canvas.stamp_kind == pair[0] and canvas.mode in ["run","place"])
 			_context_button("Select","move",func() -> void:
 				canvas.mode = "objects"
 				_build_editor_tools(),canvas.mode == "objects")
-			editor_status.text = "Two taps: start and end of a run along the road" if canvas.mode == "run" else "Tap to place · Select to move or remove objects"
+			if canvas.stamp_kind in ["barrier","tyre_wall","fence"]:
+				_context_button("Single","objects",func() -> void:
+					canvas.mode = "place"
+					canvas.run_start = Vector2.INF
+					_build_editor_tools(),canvas.mode == "place")
+				for free: bool in [true,false]:
+					_context_button("Free line" if free else "Road edge","move",func() -> void:
+						canvas.free_run = free
+						canvas.mode = "run"
+						canvas.run_start = Vector2.INF
+						_build_editor_tools(),canvas.mode == "run" and canvas.free_run == free)
+			editor_status.text = "Two taps anywhere for a free wall line" if canvas.mode == "run" and canvas.free_run else "Two taps: start and end of a run along the road" if canvas.mode == "run" else "Tap to place · Select to move or remove objects"
 	else:
 		_context_button("Move","move",func() -> void:
 			canvas.mode = "move"
@@ -654,9 +678,9 @@ func _change_piece(key: String, delta: float) -> void:
 	if key == "flip": piece.flip = not piece.flip
 	elif key == "heading": piece.heading = fposmod(float(piece.heading)+delta,360.0)
 	else:
-		var lower: float = 6.0 if key == "width" else 3.0 if key == "radius" else 24.0 if piece.kind == "bridge" else 2.0 if piece.kind == "straight" else 0.0
-		var upper: float = 20.0 if key == "width" else 60.0 if key == "radius" else 120.0
-		piece[key] = clampf(float(piece[key])+delta,lower,upper)
+		var lower: float = 5.0 if key == "angle" else 6.0 if key == "width" else 3.0 if key == "radius" else 24.0 if piece.kind == "bridge" else 2.0 if piece.kind == "straight" else 0.0
+		var upper: float = 270.0 if key == "angle" else 20.0 if key == "width" else 60.0 if key == "radius" else 120.0
+		piece[key] = clampf(float(piece.get(key,90.0))+delta,lower,upper)
 	var errors: Array[String] = RoadPieces.validate(piece)
 	if not errors.is_empty():
 		editor_status.text = errors[0]
@@ -863,12 +887,13 @@ func _refresh_editor() -> void:
 	share_button.disabled = not errors.is_empty()
 	if is_instance_valid(canvas): canvas.refresh()
 
-func _save_draft() -> void:
-	if document.is_empty(): return
+func _save_draft() -> Error:
+	if document.is_empty(): return ERR_INVALID_DATA
 	var errors: Array[String] = TrackDocument.validate(document)
 	var message: String
-	if not errors.is_empty(): message = "Unsaved change: " + errors[0] + " Undo or adjust the route."
-	elif library.save_document(document) != OK: message = "Could not save: " + library.last_error
+	var save_error: Error = library.save_document(document)
+	if save_error != OK: message = "Could not save: " + library.last_error
+	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
 	else: message = "Saved on this device. Ready to test drive."
 	if is_instance_valid(editor_status):
 		editor_status.text = message
@@ -880,6 +905,7 @@ func _save_draft() -> void:
 		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
 		if errors.is_empty(): canvas.show_native(TrackCompiler.compile(document))
 		_update_editor_issues()
+	return save_error
 
 func _test_document() -> void:
 	if not canvas.ghost.is_empty():
@@ -1203,3 +1229,30 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_TAB: canvas.cycle_piece()
 			_: handled = false
 	if handled: get_viewport().set_input_as_handled()
+
+func _save_track_explicit() -> void:
+	if not canvas.ghost.is_empty():
+		canvas.confirm_piece()
+		if not canvas.ghost.is_empty():
+			_notice("The preview cannot be placed here. Move or cancel it before saving.")
+			return
+	if _save_draft() != OK:
+		_notice("Could not save: "+library.last_error)
+	elif not TrackDocument.validate(document).is_empty():
+		_notice("Draft saved. You can reopen it in My circuits. Before driving: "+TrackDocument.validate(document)[0])
+	else:
+		_notice("Saved on this device. Choose My circuits in Track settings, or Saved tracks in the circuit library, to drive it.")
+
+func _open_saved_tracks() -> void:
+	if not canvas.ghost.is_empty():
+		_notice("Confirm or cancel the preview before opening My circuits.")
+		return
+	if _save_draft() != OK:
+		_notice("Could not save: "+library.last_error)
+		return
+	var saved_track: NativeTrack = TrackCompiler.compile(document)
+	if saved_track != null: selected_track = saved_track
+	browser_state.name = ""
+	browser_state.creator = ""
+	browser_state.theme = "all"
+	_open_library("saved")

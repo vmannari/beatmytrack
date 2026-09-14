@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.12"
+const PHYSICS_VERSION: String = "arcade-planar-0.13"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -91,6 +91,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.position += state.velocity * STEP
 	if ground != null:
 		ground.resolve(state, previous_position, config)
+		ground.step_props(state,previous_position,config,STEP)
 	# Only actual resolved travel coats/cleans tires. Waiting or pushing a wall
 	# cannot clean them, and reverse travel counts just like forward travel.
 	var distance: float = state.position.distance_to(previous_position)

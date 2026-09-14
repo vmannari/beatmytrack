@@ -50,7 +50,7 @@ func run() -> void:
 	doc.objects = [{"kind":"barrier","position":[0,0],"rotation":0},{"kind":"tree","position":[-15,0],"rotation":0},{"kind":"rock","position":[15,0],"rotation":0},{"kind":"water","position":[0,25],"rotation":0},{"kind":"dirt","position":[0,-10],"rotation":45}]
 	var stamped: NativeTrack = TrackCompiler.compile(doc)
 	check(stamped.cell_at(Vector2.ZERO) == 4 and stamped.cell_at(Vector2(2,0)) == 4 and stamped.cell_at(Vector2(0,2)) != 4,"barrier cells match the long footprint")
-	check(stamped.cell_at(Vector2(-15,0)) == 7 and stamped.cell_at(Vector2(15,0)) == 7,"trees and rocks use the native soft-obstacle surface")
+	check(stamped.cell_at(Vector2(-15,0)) == 4 and stamped.cell_at(Vector2(15,0)) == 4,"trees and rocks use solid native collision surfaces")
 	check(stamped.cell_at(Vector2(0,25)) == 0,"road is retained over an underlying pond stamp")
 	check(stamped.cell_at(Vector2(0,-10)) == 2,"rotated dirt stamp reaches native surfaces")
 	var turned: Dictionary = doc.duplicate(true)

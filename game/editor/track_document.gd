@@ -37,7 +37,7 @@ static func valid_id(value: Variant) -> bool:
 	return true
 
 
-static func validate(data: Variant) -> Array[String]:
+static func validate(data: Variant, require_race_route: bool = true) -> Array[String]:
 	var errors: Array[String] = []
 	if not data is Dictionary:
 		return ["Choose a creator track JSON file."]
@@ -137,7 +137,8 @@ static func validate(data: Variant) -> Array[String]:
 	if not data.get("paint") is Array or data.paint.size() > 256: return ["Use up to 256 paint strokes; undo a stroke or start a new map."]
 	var painted_points: int = 0
 	for stroke: Variant in data.paint:
-		if not stroke is Dictionary or stroke.size() != 4 or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
+		if not stroke is Dictionary or stroke.size() != 4 + (1 if stroke.has("protect_road") else 0) or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
+		if stroke.has("protect_road") and not stroke.protect_road is bool: return ["Road protection must be on or off."]
 		if not _number(stroke.surface) or float(stroke.surface) != floorf(float(stroke.surface)) or int(stroke.surface) not in range(8): return ["Choose a built-in surface."]
 		if not _number(stroke.width) or float(stroke.width) < 0.5 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 0.5 to 40 metres wide."]
 		if not stroke.points is Array or stroke.points.is_empty() or stroke.points.size() > 512: return ["Paint stroke is too long."]
@@ -149,6 +150,7 @@ static func validate(data: Variant) -> Array[String]:
 	if painted_points > 16384: return ["The map has too many paint points."]
 	if not errors.is_empty():
 		return errors
+	if not require_race_route: return errors
 	for i: int in range(points.size()):
 		if _point(points[i]).distance_to(_point(points[(i+1) % points.size()])) < 2.0:
 			return ["Move neighbouring points at least 2 metres apart."]

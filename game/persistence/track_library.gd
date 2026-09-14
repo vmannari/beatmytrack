@@ -37,7 +37,7 @@ func list_documents() -> Array[Dictionary]:
 
 
 func save_document(document: Dictionary) -> Error:
-	var errors: Array[String] = TrackDocument.validate(document)
+	var errors: Array[String] = TrackDocument.validate(document,false)
 	if not errors.is_empty():
 		last_error = errors[0]
 		return ERR_INVALID_DATA
@@ -92,7 +92,7 @@ func _read(path: String) -> Dictionary:
 	if parser.parse(text) != OK:
 		last_error = "This file is not valid track JSON."
 		return {}
-	var errors: Array[String] = TrackDocument.validate(parser.data)
+	var errors: Array[String] = TrackDocument.validate(parser.data,false)
 	if not errors.is_empty():
 		last_error = errors[0]
 		return {}

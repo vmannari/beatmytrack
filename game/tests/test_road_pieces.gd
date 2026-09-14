@@ -226,12 +226,12 @@ func _wall_palette() -> void:
 		doc.objects = [{"kind":kind,"position":[0.0,0.0],"rotation":0.0}]
 		check(TrackDocument.validate(doc).is_empty(),kind+" is an allowed built-in object")
 		var track: NativeTrack = TrackCompiler.compile(doc)
-		check(track.cell_at(Vector2.ZERO) == 4,kind+" compiles to a blocking native cell")
+		check(track.overlaps_obstacle(Vector2.ZERO,0.1,false),kind+" has a physical blocking footprint")
 		check(CreatorObjects.contains(doc.objects[0],Vector2(2.5,0.0)) and not CreatorObjects.contains(doc.objects[0],Vector2(0.0,2.5)),kind+" footprint matches its long axis")
 		doc.objects[0].rotation = 90.0
 		var rotated: NativeTrack = TrackCompiler.compile(doc)
 		check(CreatorObjects.contains(doc.objects[0],Vector2(0.0,2.5)) and not CreatorObjects.contains(doc.objects[0],Vector2(2.5,0.0)),kind+" rotation turns its physical footprint")
-		check(rotated.cell_at(Vector2(0.0,2.5)) == 4 and rotated.cell_at(Vector2(2.5,0.0)) != 4,kind+" rotated footprint reaches native collision cells")
+		check(rotated.overlaps_obstacle(Vector2(0.0,2.5),0.1,false) and not rotated.overlaps_obstacle(Vector2(2.5,0.0),0.1,false),kind+" rotated footprint reaches physical collisions")
 
 
 func _practice_start() -> void:

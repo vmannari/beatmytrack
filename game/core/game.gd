@@ -178,6 +178,7 @@ func _process(delta: float) -> void:
 		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
+	if track_ground is NativeTrackVisual: track_ground.update_tyres(sim.state,native_track.tyre_origins)
 	camera.follow(point, sim.state.velocity, heading, delta)
 	hud.update_values(sim.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null

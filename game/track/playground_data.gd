@@ -76,3 +76,7 @@ func _bounce(state: VehicleState, normal: Vector2, config: HandlingConfig) -> vo
 	var yaw_limit: float = minf(config.maximum_yaw_rate, sqrt(rotation_budget / config.rotational_inertia))
 	state.yaw_rate = clampf(lerpf(contact_yaw, state.yaw_rate * (1.0 - config.collision_energy_loss) + turn, impact), -yaw_limit, yaw_limit)
 	state.collision_count += 1
+
+
+func step_props(_state: VehicleState, _from: Vector2, _config: HandlingConfig, _step_seconds: float) -> void:
+	pass

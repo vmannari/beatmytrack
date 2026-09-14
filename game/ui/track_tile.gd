@@ -24,19 +24,28 @@ func _draw() -> void:
 	frame.set_border_width_all(2 if selected or is_hovered() else 1)
 	draw_style_box(frame,Rect2(Vector2.ZERO,size))
 	draw_rect(Rect2(Vector2(2,2),Vector2(size.x-4,100)),base)
-	var points := PackedVector2Array()
+	var paths: Array[PackedVector2Array] = []
+	var pieces: Variant = entry.get("pieces",[])
+	if pieces is Array and pieces.size() <= RoadPieces.MAX_PIECES:
+		for piece: Variant in pieces:
+			if RoadPieces.validate(piece).is_empty(): paths.append(RoadPieces.samples(piece))
+	if paths.is_empty():
+		var route := PackedVector2Array()
+		for p: Array in entry.points: route.append(Vector2(p[0],p[1]))
+		if not route.is_empty(): route.append(route[0])
+		paths.append(route)
 	var low := Vector2(INF,INF)
 	var high := Vector2(-INF,-INF)
-	for p: Array in entry.points:
-		var point := Vector2(float(p[0]),-float(p[1]))
-		low = low.min(point)
-		high = high.max(point)
-		points.append(point)
-	if points.size() > 1:
-		var extent: Vector2 = (high-low).max(Vector2.ONE)
-		var scale: float = minf((size.x-54)/extent.x,72/extent.y)
-		for i: int in range(points.size()): points[i] = (points[i]-(low+high)*0.5)*scale+Vector2(size.x*0.5,51)
-		points.append(points[0])
+	for path: PackedVector2Array in paths:
+		for point: Vector2 in path:
+			low = low.min(Vector2(point.x,-point.y))
+			high = high.max(Vector2(point.x,-point.y))
+	var extent: Vector2 = (high-low).max(Vector2.ONE)
+	var scale: float = minf((size.x-54)/extent.x,72/extent.y)
+	for path: PackedVector2Array in paths:
+		if path.size() < 2: continue
+		var points := PackedVector2Array()
+		for point: Vector2 in path: points.append((Vector2(point.x,-point.y)-(low+high)*0.5)*scale+Vector2(size.x*0.5,51))
 		draw_polyline(points,Color("172129"),9,true)
 		draw_polyline(points,Color("e1e7df"),3,true)
 		draw_circle(points[0],4,Color("172129"))

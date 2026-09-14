@@ -204,6 +204,14 @@ func _random() -> void:
 func _select(entry: Dictionary) -> void:
 	var track: NativeTrack = catalog.resolve(entry)
 	if track == null:
+		var draft: Dictionary = library.load_document(str(entry.id).trim_prefix("creator_"))
+		if not draft.is_empty():
+			_clear(detail)
+			detail.add_child(MenuStyle.label(str(draft.name)+" - draft",23))
+			var errors: Array[String] = TrackDocument.validate(draft)
+			detail.add_child(MenuStyle.label(errors[0] if not errors.is_empty() else "Track needs repair before driving.",18,true))
+			detail.add_child(MenuStyle.button("Edit draft",func() -> void: edit_requested.emit(draft)))
+			return
 		notice.emit("This track could not be opened. Its saved route may need repair or reimporting.")
 		return
 	selected_track = track

@@ -15,17 +15,17 @@ static func dimensions(kind: String) -> Vector2:
 
 static func surface(kind: String) -> int:
 	match kind:
-		"barrier", "tyre_wall", "fence": return 4
+		"tree", "rock", "barrier", "tyre_wall", "fence": return 4
 		"dirt": return 2
 		"water": return 3
 	return 7
 
 static func description(kind: String) -> String:
 	match kind:
-		"tree": return "Low tree / slows the car"
-		"rock": return "Low rock / slows the car"
+		"tree": return "Tree / solid obstacle"
+		"rock": return "Rock / solid obstacle"
 		"barrier": return "Concrete barrier / blocks the car"
-		"tyre_wall": return "Stacked tyres / blocks the car"
+		"tyre_wall": return "Loose tyre stacks / move on impact"
 		"fence": return "Timber fence / blocks the car"
 		"dirt": return "Dirt patch / goes under the road"
 		_: return "Pond / blocks off-road driving"

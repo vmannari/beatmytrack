@@ -18,8 +18,9 @@ static func create(kind: String, position: Vector2, heading: float = 0.0, width:
 
 
 static func validate(piece: Variant) -> Array[String]:
-	if not piece is Dictionary or piece.size() != KEYS.size() or not piece.has_all(KEYS):
+	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) or not piece.has_all(KEYS):
 		return ["Invalid road section."]
+	if piece.has("angle") and (not _number(piece.angle) or float(piece.angle) < 5 or float(piece.angle) > 270): return ["Curve angle must be 5 to 270 degrees."]
 	if piece.kind not in KINDS: return ["Choose Straight, Curve, S-bend or Hairpin."]
 	if not piece.position is Array or piece.position.size() != 2: return ["Road sections need two coordinates."]
 	for value: Variant in piece.position:
@@ -46,7 +47,7 @@ static func samples(piece: Dictionary) -> PackedVector2Array:
 		if length > 0.0: local.append(Vector2(length*float(i)/count,0.0))
 	var radius: float = float(piece.radius)
 	var side: float = -1.0 if piece.flip else 1.0
-	if piece.kind == "curve": _arc(local,radius,PI*0.5*side,0.0)
+	if piece.kind == "curve": _arc(local,radius,deg_to_rad(float(piece.get("angle",90.0)))*side,0.0)
 	elif piece.kind == "hairpin": _arc(local,radius,PI*side,0.0)
 	elif piece.kind == "s_bend":
 		_arc(local,radius,PI*0.25*side,0.0)
@@ -68,11 +69,11 @@ static func _arc(points: PackedVector2Array, radius: float, angle: float, headin
 
 
 static func end_pose(piece: Dictionary) -> Dictionary:
-	var turn: float = 90.0 if piece.kind == "curve" else (180.0 if piece.kind == "hairpin" else 0.0)
+	var turn: float = float(piece.get("angle",90.0)) if piece.kind == "curve" else (180.0 if piece.kind == "hairpin" else 0.0)
 	var radius: float = float(piece.radius)
 	var side: float = -1.0 if piece.flip else 1.0
 	var local := Vector2(float(piece.length),0.0)
-	if piece.kind == "curve": local += Vector2(radius,side*radius)
+	if piece.kind == "curve": local += Vector2(radius*sin(deg_to_rad(turn)),side*radius*(1.0-cos(deg_to_rad(turn))))
 	elif piece.kind == "hairpin": local += Vector2(0.0,side*2.0*radius)
 	elif piece.kind == "s_bend": local += Vector2(2.0*radius*sin(PI*0.25),side*2.0*radius*(1.0-cos(PI*0.25)))
 	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))

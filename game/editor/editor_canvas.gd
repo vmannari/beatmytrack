@@ -26,6 +26,10 @@ var desktop_pan: bool = false
 var pending_road_tap: bool = false
 var protect_road: bool = true
 var free_run: bool = false
+var run_shape: String = "line"
+var run_draw: PackedVector2Array = []
+var drawing_run: bool = false
+var stamp_scale: float = 1.0
 var run_start := Vector2.INF
 var run_preview: Array = []
 var issue_marker := Vector2.INF
@@ -117,6 +121,10 @@ func show_native(track: NativeTrack) -> void:
 	queue_redraw()
 
 func cancel_gesture() -> void:
+	run_draw.clear()
+	drawing_run=false
+	run_preview.clear()
+	run_start=Vector2.INF
 	if dragging and changed_in_gesture: edit_finished.emit()
 	paint_points.clear()
 	pending_stamp = false
@@ -158,6 +166,9 @@ func _gui_input(event: InputEvent) -> void:
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
 				pending_road_tap = false
+				drawing_run=false
+				run_draw.clear()
+				run_preview.clear()
 				paint_points.clear()
 				pending_stamp = false
 				if dragging and changed_in_gesture: edit_finished.emit()
@@ -166,6 +177,9 @@ func _gui_input(event: InputEvent) -> void:
 			var was_pinching: bool = touches.size() >= 2
 			touches.erase(event.index)
 			if event.canceled:
+				drawing_run=false
+				run_draw.clear()
+				run_preview.clear()
 				pending_road_tap = false
 				pending_stamp = false
 				paint_points.clear()
@@ -204,6 +218,8 @@ func _begin(point: Vector2, pointer: int) -> void:
 		_begin_road(point)
 		return
 	if mode in ["run","start"]:
+		run_draw=PackedVector2Array([to_world(point)])
+		drawing_run=false
 		pending_stamp = true
 		return
 	if mode == "paint":
@@ -264,8 +280,17 @@ func _move(point: Vector2) -> void:
 		_move_road(point)
 		previous_pointer = point
 		return
-	if mode == "run" and run_start != Vector2.INF:
-		run_preview = _object_run(run_start,to_world(point))
+	if mode == "run" and (drawing_run or press_position.distance_to(point)>12):
+		drawing_run=true
+		pending_stamp=false
+		var target: Vector2 = to_world(point).clamp(Vector2(-110,-110),Vector2(110,110))
+		if run_shape=="curve":
+			if run_draw[-1].distance_to(target)>0.3 and run_draw.size()<512: run_draw.append(target)
+			run_preview=_path_run(run_draw)
+		else:
+			run_preview=_object_run(to_world(press_position) if run_start==Vector2.INF else run_start,target)
+		queue_redraw()
+		return
 	if not paint_points.is_empty():
 		var p: Array = _paint_position(point)
 		if Vector2(p[0],p[1]).distance_to(Vector2(paint_points[-1][0],paint_points[-1][1])) >= 0.5 and paint_points.size() < 512:
@@ -339,7 +364,9 @@ func _place(point: Vector2) -> void:
 			hint_changed.emit("Use up to 96 objects. Select one to move or remove it.")
 			return
 		edit_started.emit()
-		document.objects.append({"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation})
+		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
+		if stamp_scale != 1.0: object["scale"]=stamp_scale
+		document.objects.append(object)
 		selected_object = document.objects.size()-1
 		selected = -1
 	else:
@@ -370,6 +397,17 @@ func _place(point: Vector2) -> void:
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
+	if drawing_run:
+		if not run_preview.is_empty():
+			edit_started.emit()
+			document.objects.append_array(run_preview)
+			document_changed.emit()
+			edit_finished.emit()
+			hint_changed.emit("%d objects placed / Undo removes the whole run" % run_preview.size())
+		drawing_run=false
+		run_draw.clear()
+		run_preview.clear()
+		run_start=Vector2.INF
 	if pending_road_tap and not ghost.is_empty():
 		var target: Vector2 = to_world(press_position)
 		var trial: Dictionary = ghost.duplicate(true)
@@ -747,13 +785,29 @@ func _paint_position(point: Vector2) -> Array:
 
 func _object_run(start: Vector2, finish: Vector2) -> Array:
 	if not free_run: return RoadPieces.barrier_run(document,start,finish,stamp_kind)
+	return _path_run(PackedVector2Array([start,finish]))
+
+func _path_run(path: PackedVector2Array) -> Array:
 	var result: Array = []
-	var count: int = mini(96-document.objects.size(),maxi(1,ceili(start.distance_to(finish)/6.0)))
-	var heading: float = fposmod(rad_to_deg((finish-start).angle()),360.0)
+	if path.size()<2: return result
+	var length: float = 0
+	for i: int in range(path.size()-1): length+=path[i].distance_to(path[i+1])
+	var spacing: float = CreatorObjects.dimensions(stamp_kind).x
+	if stamp_kind=="cone": spacing=2.0
+	var desired: int = maxi(1,ceili(length/spacing))
+	var count: int = mini(96-document.objects.size(),desired)
+	var segment: int = 0
+	var traversed: float = 0
 	for i: int in range(count):
-		var p: Vector2 = start.lerp(finish,(float(i)+0.5)/count)
-		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":heading})
+		var distance: float = length*(i+0.5)/desired
+		while segment<path.size()-2 and traversed+path[segment].distance_to(path[segment+1])<distance:
+			traversed+=path[segment].distance_to(path[segment+1]); segment+=1
+		var tangent: Vector2 = path[segment+1]-path[segment]
+		var p: Vector2 = path[segment].lerp(path[segment+1],clampf((distance-traversed)/maxf(0.001,tangent.length()),0,1))
+		p=p.clamp(Vector2(-110,-110),Vector2(110,110))
+		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360)})
 	return result
+
 
 func connect_nearby() -> void:
 	if selected_piece < 0 or not ghost.is_empty(): return

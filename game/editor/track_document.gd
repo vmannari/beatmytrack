@@ -119,7 +119,8 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 				return ["Choose an object from the built-in palette."]
 			if object.has("scale"):
 				if not _number(object.scale) or float(object.scale) < 0.5 or float(object.scale) > 3.0: return ["Object scale must be 0.5 to 3 times."]
-				if object.kind == "tyre_wall" and float(object.scale) != 1.0: return ["Tyre stacks use their physical size; extend the line instead."]
+				if object.kind in ["tyre_wall","tyre_stack"] and float(object.scale) != 1.0: return ["Tyre stacks use their physical size; extend the line instead."]
+				if object.kind in CreatorCatalog.DECORATIVE and float(object.scale)>1.5: return ["Decorative objects are limited to 1.5x size."]
 			if not object.get("position") is Array or object.position.size() != 2:
 				return ["Object positions need two coordinates."]
 			for value: Variant in object.position:

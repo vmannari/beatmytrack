@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 R01/T01-T04/V02/V04/V05/G01: reference-led object browser, grouped variants, single/line/curve/road-edge placement, movable lightweight props and a central future biome availability hook. [Implementation, tests, screenshots and bounds](docs/OBJECT_BROWSER.md).
+
 2026-09-14 R01/T01-T04: editor Load now shows all saved tracks immediately; empty search no longer hides the list. [Fix, actual checks and screenshot](docs/EDITOR_LOAD_LIST.md).
 
 2026-09-14 R01/T01-T04: saved tracks and unfinished drafts now have confirmed deletion, including recovery-file cleanup and library/selection refresh. [Actual checks, screenshots and limits](docs/USER_TRACK_DELETION.md).

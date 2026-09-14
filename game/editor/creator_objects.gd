@@ -2,10 +2,28 @@ class_name CreatorObjects
 extends RefCounted
 ## Original scalable stamps; the same footprint is used in plans and native cells.
 
-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump"]
+const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "container", "shed", "hut", "grandstand"]
 
 static func dimensions(kind: String) -> Vector2:
 	match kind:
+		"tyre_stack": return Vector2(1,1)
+		"broadleaf": return Vector2(4,4)
+		"bush": return Vector2(2,2)
+		"grass_clump", "flowers", "pebbles", "cone", "light": return Vector2(1,1)
+		"log": return Vector2(4,0.8)
+		"guardrail", "wire_fence": return Vector2(6,0.5)
+		"chevron", "braking_board": return Vector2(1.5,0.5)
+		"banner": return Vector2(4,0.6)
+		"flag": return Vector2(1,1)
+		"gantry": return Vector2(12,1)
+		"crate", "barrel": return Vector2(1.2,1.2)
+		"pallet": return Vector2(2,1.4)
+		"parked_car": return Vector2(4.2,1.8)
+		"van": return Vector2(5,2)
+		"container": return Vector2(6,2.5)
+		"shed": return Vector2(7,5)
+		"hut": return Vector2(2.5,2.5)
+		"grandstand": return Vector2(8,4)
 		"tree": return Vector2(3,3)
 		"rock": return Vector2(2,2)
 		"boulder": return Vector2(3,3)
@@ -22,6 +40,7 @@ static func size_of(object: Dictionary) -> Vector2:
 
 
 static func surface(kind: String) -> int:
+	if not CreatorCatalog.family(kind).is_empty(): return 0 if kind in CreatorCatalog.DECORATIVE or kind in CreatorCatalog.SOFT else 4
 	match kind:
 		"tree", "rock", "boulder", "slate", "cliff", "barrier", "tyre_wall", "fence": return 4
 		"oil", "jump": return 0
@@ -31,6 +50,7 @@ static func surface(kind: String) -> int:
 	return 7
 
 static func description(kind: String) -> String:
+	if not CreatorCatalog.family(kind).is_empty(): return CreatorCatalog.label(kind)+" / "+CreatorCatalog.behavior(kind)
 	match kind:
 		"tree": return "Tree / solid obstacle"
 		"rock": return "Rock / solid obstacle"
@@ -67,3 +87,11 @@ static func outline(object: Dictionary) -> PackedVector2Array:
 
 static func spill_radius(angle: float) -> float:
 	return 0.93+0.04*sin(angle*3.0)+0.03*sin(angle*5.0)
+
+static func solid_contains(object: Dictionary, point: Vector2) -> bool:
+	var local: Vector2 = (point-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
+	var scale: float = float(object.get("scale",1.0))
+	if object.kind in ["tree","broadleaf"]: return local.length()<=maxf(0.36,0.4*scale)
+	if object.kind == "light": return local.length()<=maxf(0.36,0.22*scale)
+	if object.kind == "gantry": return absf(absf(local.x)-5.7*scale)<=maxf(0.36,0.3*scale) and absf(local.y)<=maxf(0.36,0.5*scale)
+	return contains(object,point)

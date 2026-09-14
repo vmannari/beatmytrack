@@ -8,9 +8,10 @@ const SLIDING_DECELERATION: float = 24.0
 static func positions(document: Dictionary) -> PackedVector2Array:
 	var result := PackedVector2Array()
 	for object: Dictionary in document.get("objects",[]):
-		if object.kind != "tyre_wall": continue
+		if object.kind not in ["tyre_wall","tyre_stack"]: continue
 		var center := Vector2(object.position[0],object.position[1])
-		for i: int in range(6): result.append(center+Vector2(i-2.5,0).rotated(deg_to_rad(float(object.rotation))))
+		var count: int = 1 if object.kind == "tyre_stack" else 6
+		for i: int in range(count): result.append(center+Vector2(i-(count-1)*0.5,0).rotated(deg_to_rad(float(object.rotation))))
 	return result
 
 static func step(state: VehicleState, origins: PackedVector2Array, contact_test: Callable, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:

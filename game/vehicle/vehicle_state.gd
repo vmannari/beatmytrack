@@ -6,6 +6,7 @@ var jump_height: float = 0.0
 var jump_velocity: float = 0.0
 var jump_cooldown: int = 0
 var loose_tyres: Array = []
+var light_props: Array = []
 var position: Vector2 = Vector2.ZERO
 var velocity: Vector2 = Vector2.ZERO
 var heading: float = 0.0
@@ -40,4 +41,5 @@ func snapshot() -> Array:
 		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]
 	result.append(loose_tyres.duplicate(true))
 	result.append([jump_height,jump_velocity,jump_cooldown])
+	result.append(light_props.duplicate(true))
 	return result

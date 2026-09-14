@@ -13,7 +13,7 @@ func run() -> void:
 	var config: HandlingConfig = load("res://resources/balanced.tres")
 	for kind: String in CreatorObjects.KINDS:
 		var doc: Dictionary = TrackDocument.create_blank()
-		var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":30,"scale":1.0 if kind == "tyre_wall" else 2.0}
+		var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":30,"scale":1.0 if kind in ["tyre_wall","tyre_stack"] or kind in CreatorCatalog.DECORATIVE else 2.0}
 		doc.objects = [object]
 		check(TrackDocument.validate(doc).is_empty(),kind+" validates with scale")
 		var track: NativeTrack = TrackCompiler.compile(doc)

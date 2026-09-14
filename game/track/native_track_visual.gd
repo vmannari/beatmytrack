@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-11"
+const VERSION: String = "track-kit-12"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -11,6 +11,7 @@ var theme_id: String = "pine"
 var editor_preview: bool = false
 var colors: Array[Color] = []
 var tyre_instances: MultiMeshInstance3D
+var light_instances: Array[Node3D] = []
 var scenic_count: int = 0
 
 
@@ -338,14 +339,14 @@ func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
 			for x: int in range(track.grid_width):
 				if _boundary_cell(track,x,y): mask[y*track.grid_width+x] = 1
 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
-		if object.kind not in ["tree","rock","boulder","slate","cliff","tyre_wall","fence"]: continue
+		if CreatorCatalog.family(object.kind).is_empty() or object.kind in CreatorCatalog.DECORATIVE or object.kind in CreatorCatalog.SOFT: continue
 		if mask.is_empty(): mask.resize(track.cells.size())
 		var center := Vector2(object.position[0],object.position[1])
 		var reach: float = CreatorObjects.size_of(object).length()*0.5
 		for y: int in range(maxi(0,floori((track.half_extent.y-center.y-reach)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-center.y+reach)/track.cell_size))):
 			for x: int in range(maxi(0,floori((center.x-reach+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((center.x+reach+track.half_extent.x)/track.cell_size))):
 				var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
-				if CreatorObjects.contains(object,point): mask[y*track.grid_width+x] = 1
+				if CreatorObjects.solid_contains(object,point): mask[y*track.grid_width+x] = 1
 	return mask
 
 
@@ -488,6 +489,20 @@ func _build_placed_objects(track: NativeTrack) -> void:
 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
 		var object_scale: float = float(object.get("scale",1.0))
+		if object.kind in CreatorCatalog.SOFT:
+			var node := Node3D.new()
+			add_child(node)
+			node.position = center
+			node.rotation.y = deg_to_rad(float(object.rotation))
+			var prop_tool := SurfaceTool.new()
+			prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+			CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
+			_finish_prop_mesh(prop_tool,node)
+			light_instances.append(node)
+			continue
+		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation))):
+			count += 1
+			continue
 		if object.kind == "tree":
 			_pine(tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
 		elif object.kind == "rock":
@@ -503,7 +518,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		elif object.kind in ["oil","puddle","jump"]:
 			HazardVisual.build(self,object)
 			continue
-		elif object.kind == "tyre_wall": continue # Shared instanced mesh below.
+		elif object.kind in ["tyre_wall","tyre_stack"]: continue # Shared instanced mesh below.
 		elif object.kind == "fence":
 			var turn: float = deg_to_rad(float(object.rotation))
 			for x: float in [-2.8,0.0,2.8]:
@@ -666,3 +681,20 @@ func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
 			p = Vector2(tyre[0],tyre[1])
 			spin = tyre[4]
 		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*0.014))
+
+func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
+	tool.generate_normals()
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = tool.commit()
+	var material := VisualGeometry.material(Color.WHITE)
+	material.vertex_color_use_as_albedo = true
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.material_override = material
+	parent.add_child(mesh)
+
+func update_light_props(state: VehicleState) -> void:
+	for index: int in range(mini(light_instances.size(),state.light_props.size())):
+		var row: Array = state.light_props[index]
+		light_instances[index].position.x = row[0]
+		light_instances[index].position.z = -float(row[1])
+		light_instances[index].rotation.z = float(row[4])*0.9

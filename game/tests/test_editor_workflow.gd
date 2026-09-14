@@ -72,7 +72,7 @@ func _blank_and_connect() -> void:
 	check(doc.layout.is_empty() and doc.pieces.is_empty() and doc.paint.is_empty(), "blank creation begins with editable terrain and no imposed road loop")
 	check(canvas.get_global_rect().size.is_equal_approx(root.get_visible_rect().size), "the editing canvas fills the landscape viewport")
 	check(canvas.mode == "road", "blank creation opens the Road workflow")
-	for text: String in ["Road","Surface","Objects","Race"]:
+	for text: String in ["Track","Surfaces","Objects","Race"]:
 		check(_button(app.get("root_ui"),text) != null, "category rail exposes " + text)
 	var before: Dictionary = doc.duplicate(true)
 	canvas.choose_piece("straight")
@@ -179,7 +179,7 @@ func _world_and_touch() -> void:
 	_touch(canvas,31,a+Vector2(-20,20),false)
 	check(canvas.zoom > initial_zoom and canvas.pan != initial_pan, "two fingers navigate the scene while the road tool is active")
 	check(app.get("document") == doc and canvas.touches.is_empty() and not canvas.dragging, "pinch navigation does not alter road sections or leave a captured finger")
-	for text: String in ["Road","Surface","Objects","Race"]:
+	for text: String in ["Track","Surfaces","Objects","Race"]:
 		var button: Button = _button(app.get("root_ui"),text)
 		if button == null:
 			continue

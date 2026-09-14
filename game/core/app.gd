@@ -30,6 +30,9 @@ var editor_map_panel: PanelContainer
 var editor_undo: Button
 var editor_redo: Button
 var editor_world: EditorWorld
+var object_browser_state: Dictionary = {}
+var object_browser: ObjectBrowser
+var editor_palette: Control
 var editor_context: HBoxContainer
 var editor_confirm: Button
 var editor_issue_button: Button
@@ -71,8 +74,10 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	if is_instance_valid(object_browser):
+		object_browser_state={"category":object_browser.category,"query":object_browser.query,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
 	if is_instance_valid(canvas):
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	screen = next
 	canvas = null
 	editor_status = null
@@ -323,6 +328,9 @@ func _editor() -> void:
 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
 		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
+		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
+		canvas.run_shape = str(editor_view.get("run_shape","line"))
+		canvas.free_run = bool(editor_view.get("free_run",false))
 		canvas.brush_surface = int(editor_view.get("brush_surface",0))
 		canvas.brush_width = float(editor_view.get("brush_width",10))
 		canvas.brush_shape = str(editor_view.get("brush_shape","round"))
@@ -400,14 +408,15 @@ func _editor() -> void:
 	rail.offset_left = 16; rail.offset_top = -142
 	rail.add_theme_constant_override("separation",4)
 	editor_mode_buttons.clear()
-	for pair: Array in [["road","Road","road"],["paint","Surface","surface"],["objects","Objects","objects"],["move","Race","race"]]:
+	for pair: Array in [["road","Track","road"],["paint","Surfaces","surface"],["objects","Objects","objects"],["move","Race","race"]]:
 		var value: String = pair[0]
 		var button: Button = EditorButton.make(pair[1],pair[2],_editor_category.bind(value))
-		button.name = "Editor"+pair[1]
+		button.name = "Editor"+({"road":"Road","paint":"Surface"}.get(value,pair[1]))
 		button.toggle_mode = true
 		editor_mode_buttons[value] = button
 		rail.add_child(button)
 	var bottom := CenterContainer.new()
+	editor_palette = bottom
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(bottom)
 	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
@@ -452,6 +461,19 @@ func _editor() -> void:
 	editor_status.add_theme_color_override("font_shadow_color",Color.BLACK)
 	editor_status.add_theme_constant_override("shadow_outline_size",5)
 	editor_status.clip_text = true
+	object_browser = ObjectBrowser.new()
+	for key: String in object_browser_state: object_browser.set(key,object_browser_state[key])
+	object_browser.biome = str(document.get("biome",document.theme))
+	overlay.add_child(object_browser)
+	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	object_browser.offset_left = 108; object_browser.offset_right = -112
+	object_browser.offset_top = -222; object_browser.offset_bottom = -16
+	object_browser.hide()
+	object_browser.asset_chosen.connect(_choose_object)
+	object_browser.mode_chosen.connect(_object_placement)
+	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+	object_browser.select_requested.connect(func() -> void:
+		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
 	editor_tools_panel = _editor_panel(overlay,"EditorTools")
 	editor_inspector = VBoxContainer.new()
 	editor_tools_panel.add_child(editor_inspector)
@@ -464,6 +486,7 @@ func _editor() -> void:
 	map_scroll.add_child(metadata)
 	metadata.add_child(MenuStyle.label("TRACK SETTINGS",20))
 	var name_field := LineEdit.new()
+	name_field.name = "CircuitName"
 	name_field.text = str(document.name)
 	name_field.max_length = 40
 	name_field.custom_minimum_size.y = 52
@@ -557,12 +580,24 @@ func _build_editor_tools() -> void:
 		editor_inspector.remove_child(child)
 		child.queue_free()
 	var category: String = "objects" if canvas.mode in ["objects","place","run"] else "move" if canvas.mode in ["move","add","start"] else "paint" if canvas.mode in ["paint","pan"] else "road"
+	if canvas.mode == "place" and canvas.stamp_kind in ["oil","puddle","water","dirt"]: category="paint"
+	if canvas.mode == "place" and canvas.stamp_kind == "jump": category="road"
+	var biome: String = str(document.get("biome",document.theme))
+	if object_browser.biome!=biome:
+		object_browser.biome=biome
+		object_browser.refresh()
+	var browsing: bool = category=="objects" and not (canvas.selected_object>=0 and canvas.mode=="objects")
+	object_browser.visible = browsing
+	editor_palette.visible = not browsing
+	editor_status.offset_top = -252 if browsing else -132
+	editor_status.offset_bottom = -223 if browsing else -103
 	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
 	if category == "road":
 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
 		if piece.is_empty():
 			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"]]:
 				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
+			_context_button("Jump","bridge",_choose_hazard.bind("jump"))
 			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
 		elif editor_geometry != "":
 			_context_button("Back","back",func() -> void:
@@ -604,6 +639,8 @@ func _build_editor_tools() -> void:
 				canvas.brush_surface = pair[0]
 				canvas.mode = "paint"
 				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
+		for pair: Array in [["oil","Oil"],["puddle","Puddle"]]:
+			_context_button(pair[1],"surface",_choose_hazard.bind(pair[0]))
 		_context_button("Brush","width",func() -> void:
 			editor_tools_panel.visible = not editor_tools_panel.visible)
 		_context_button("Pan","move",func() -> void:
@@ -616,9 +653,10 @@ func _build_editor_tools() -> void:
 		editor_status.text = "Paint any road shape, terrain or intersection · %.1f m %s brush" % [canvas.brush_width,canvas.brush_shape]
 	elif category == "objects":
 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
 			_context_button("Rotate","rotate",_rotate_object)
 			_context_button("Copy","objects",_duplicate_object)
-			if document.objects[canvas.selected_object].kind != "tyre_wall":
+			if document.objects[canvas.selected_object].kind not in ["tyre_wall","tyre_stack"]:
 				_context_button("Size -","minus",func() -> void: _scale_object(-0.25))
 				_context_button("Size +","plus",func() -> void: _scale_object(0.25))
 				editor_status.text = "%s / %.2fx" % [CreatorObjects.description(document.objects[canvas.selected_object].kind),float(document.objects[canvas.selected_object].get("scale",1.0))]
@@ -628,28 +666,8 @@ func _build_editor_tools() -> void:
 				canvas.selected_object = -1
 				_build_editor_tools())
 		else:
-			for pair: Array in [["barrier","Barrier"],["tyre_wall","Tyre wall"],["fence","Fence"],["tree","Tree"],["rock","Rock"],["boulder","Boulder"],["slate","Slate"],["cliff","Cliff"],["jump","Jump"],["oil","Oil"],["puddle","Shallow water"],["water","Pond"]]:
-				_context_button(pair[1],pair[0],func() -> void:
-					canvas.stamp_kind = pair[0]
-					canvas.mode = "run" if pair[0] in ["barrier","fence"] else "place"
-					canvas.free_run = pair[0] == "tyre_wall"
-					canvas.run_start = Vector2.INF
-					_build_editor_tools(),canvas.stamp_kind == pair[0] and canvas.mode in ["run","place"])
-			_context_button("Select","move",func() -> void:
-				canvas.mode = "objects"
-				_build_editor_tools(),canvas.mode == "objects")
-			if canvas.stamp_kind in ["barrier","tyre_wall","fence"]:
-				_context_button("Single","objects",func() -> void:
-					canvas.mode = "place"
-					canvas.run_start = Vector2.INF
-					_build_editor_tools(),canvas.mode == "place")
-				for free: bool in [true,false]:
-					_context_button("Free line" if free else "Road edge","move",func() -> void:
-						canvas.free_run = free
-						canvas.mode = "run"
-						canvas.run_start = Vector2.INF
-						_build_editor_tools(),canvas.mode == "run" and canvas.free_run == free)
-			editor_status.text = "Two taps anywhere for a free wall line" if canvas.mode == "run" and canvas.free_run else "Two taps: start and end of a run along the road" if canvas.mode == "run" else "Tap to place · Select to move or remove objects"
+			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap to place / Select / move to adjust existing objects")
+
 	else:
 		_context_button("Move","move",func() -> void:
 			canvas.mode = "move"
@@ -839,7 +857,7 @@ func _scale_object(delta: float) -> void:
 	if canvas.selected_object < 0: return
 	_remember()
 	var object: Dictionary = document.objects[canvas.selected_object]
-	object.scale = clampf(float(object.get("scale",1.0))+delta,0.5,3.0)
+	object.scale = clampf(float(object.get("scale",1.0))+delta,0.5,1.5 if object.kind in CreatorCatalog.DECORATIVE else 3.0)
 	_commit_selection()
 
 
@@ -1054,7 +1072,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
@@ -1394,3 +1412,31 @@ func _delete_user_track(id: String) -> void:
 	var settings_error: Error = records.save_records()
 	_show_screen("tracks")
 	if settings_error != OK: _notice("Track deleted, but favorite settings could not be saved.")
+
+func _choose_object(kind: String) -> void:
+	canvas.cancel_gesture()
+	canvas.stamp_kind=kind
+	canvas.stamp_scale=1.0
+	object_browser.stamp_scale=1.0
+	canvas.selected_object=-1
+	_object_placement("single")
+
+func _object_placement(value: String) -> void:
+	canvas.cancel_gesture()
+	canvas.run_start=Vector2.INF
+	canvas.run_preview.clear()
+	canvas.run_shape="curve" if value=="curve" else "line"
+	canvas.free_run=value!="road edge"
+	canvas.mode="place" if value=="single" else "run"
+	object_browser.placement=value
+	_build_editor_tools()
+
+func _choose_hazard(kind: String) -> void:
+	canvas.cancel_gesture()
+	canvas.ghost.clear()
+	canvas.stamp_kind=kind
+	canvas.stamp_scale=1.0
+	canvas.selected_object=-1
+	canvas.mode="place"
+	_build_editor_tools()
+	editor_status.text=CreatorObjects.description(kind)+" / tap to place; Objects > Select to adjust"

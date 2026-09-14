@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-7"
+const VERSION: String = "creator-compiler-8"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -124,14 +124,14 @@ static func compile(document: Dictionary) -> NativeTrack:
 
 static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
 	for object: Dictionary in document.get("objects",[]):
-		if object.kind in ["tyre_wall","oil","jump"]: continue # Loose stacks are simulated, never baked into a wall.
+		if object.kind in ["tyre_stack","tyre_wall","oil","jump"] or object.kind in CreatorCatalog.DECORATIVE or object.kind in CreatorCatalog.SOFT: continue # Loose stacks are simulated, never baked into a wall.
 		if (object.kind in ["dirt","water"]) != terrain: continue
 		var center := Vector2(object.position[0],object.position[1])
 		var reach: float = CreatorObjects.size_of(object).length()*0.5
 		for y: int in range(maxi(0,floori((extent.y-center.y-reach)/cell_size)),mini(grid.y,ceili((extent.y-center.y+reach)/cell_size))):
 			for x: int in range(maxi(0,floori((center.x-reach+extent.x)/cell_size)),mini(grid.x,ceili((center.x+reach+extent.x)/cell_size))):
 				var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
-				if CreatorObjects.contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
+				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
 
 
 static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:

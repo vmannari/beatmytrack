@@ -321,6 +321,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 
 func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
 	LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)
+	LightProps.step(state,hazard_objects,_contact,from,step_seconds,config.mass,config.collision_radius)
 
 
 func launch_jump(state: VehicleState, previous: Vector2) -> void:

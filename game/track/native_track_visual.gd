@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-9"
+const VERSION: String = "track-kit-10"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -82,6 +82,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	ground_skirt.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var kerb_count: int = 0
 	var ground_count: int = 0
+	var kerb_segments: Array[Dictionary] = []
 	for tool: SurfaceTool in [shoulders,asphalt,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
@@ -135,7 +136,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					if not _road_edge_exposed(midpoint+outward,index,outlines): continue
 					var is_kerb: bool = not dirt and _inner_bend_distance(midpoint,points) >= 0.0
 					if is_kerb:
-						_kerb_quad(red_kerbs,p,q,p+normal_p*0.75,q+normal_q*0.75,distance_start,kerb_distance)
+						kerb_segments.append({"a":p,"b":q,"outer_a":p+normal_p*0.75,"outer_b":q+normal_q*0.75,"start":distance_start,"end":kerb_distance,"piece":index})
 						kerb_count += 1
 					else:
 						# Only the outer contour varies; road/paint stay fixed.
@@ -147,6 +148,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
+	_emit_kerb_runs(red_kerbs,kerb_segments)
 	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,track.half_extent)
 	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
@@ -190,13 +192,30 @@ func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2,
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
-func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float) -> void:
+func _emit_kerb_runs(tool: SurfaceTool, segments: Array[Dictionary]) -> void:
+	var first: int = 0
+	while first < segments.size():
+		var last: int = first
+		while last+1 < segments.size():
+			var current: Dictionary = segments[last]
+			var next: Dictionary = segments[last+1]
+			if current.piece != next.piece or absf(float(current.end)-float(next.start)) > 0.0001 or Vector2(current.b).distance_to(next.a) > 0.001: break
+			last += 1
+		var origin: float = segments[first].start
+		var length: float = float(segments[last].end)-origin
+		for i: int in range(first,last+1):
+			var segment: Dictionary = segments[i]
+			_kerb_quad(tool,segment.a,segment.b,segment.outer_a,segment.outer_b,float(segment.start)-origin,float(segment.end)-origin,length)
+		first = last+1
+
+
+func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float, run_length: float = 0.0) -> void:
 	# U is actual arc distance along the middle of the kerb strip, not the
 	# road centerline or its sample index. Shared miters close segment seams.
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var distances: Array[float] = [start,end,end,start,start,end]
 	for i: int in range(6):
-		tool.set_uv(Vector2(distances[i],0.0))
+		tool.set_uv(Vector2(distances[i],run_length))
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.025)
 
 

@@ -103,3 +103,17 @@ Actual commands through `powershell -NoProfile -ExecutionPolicy Bypass -File scr
 - `git diff --check`: passed.
 
 No camera/physics/collision/document-format changes. No physical-phone test, motion-video capture, Mobile renderer comparison or Android export performed; attachment was not enumerated. Repetition visibility, in-motion stability and GPU/thermal cost still need owner/device acceptance. The generated texture is a new prototype asset, not a claim of production art acceptance.
+
+
+## Kerb starts and ends ? 2026-09-14, track-kit-10
+
+V02/V04/V05: owner requests attention to red/white stripe beginnings and endings. `native_track_visual.gd` now groups exposed kerb segments into continuous runs, restarts physical UV distance at each run, and supplies the full run length to `creator_road.gdshader`. Paint fits an odd count of complete equal blocks into each run, starting and ending white rather than cutting arbitrary red slivers. Nominal 1.5 m spacing now adjusts slightly per run to fit whole blocks; equality within a run remains. Very short fragments use one white block. Geometry, road lines, no-sand kerb backing, collisions and source documents remain unchanged.
+
+Changed runtime files: `game/track/native_track_visual.gd`, `game/track/creator_road.gdshader`. Regression coverage in `game/tests/test_road_pieces.gd` additionally checks run coordinates stay within their declared length.
+
+Actual commands through the pinned `scripts/dev.ps1` PowerShell entry point:
+- `TestPieces`: 138 checks, zero failures; normal/spacing/seam/cleanup checks, golden native cells and five-lap witness with zero contacts remain passing.
+- `CaptureStyle -StyleDocument <local Silmukka JSON>`: passed; zero bad flat normals, unchanged-cell assertion and six route captures. Reviewed [bend endings](evidence/kerb-endings.png).
+- `git diff --check`: passed.
+
+Run grouping stops at road-piece boundaries or hidden junction edges. Paint masks may still clip a run where the owner explicitly paints over the road; this does not remove those edits. No physical-phone or continuous-motion test performed, no APK exported, and device attachment was not enumerated. Owner visual acceptance remains open.

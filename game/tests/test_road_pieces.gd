@@ -282,6 +282,7 @@ func _roadside_visuals() -> void:
 			var correct: bool = true
 			var closed_seams: bool = true
 			var upward: bool = true
+			var bounded_runs: bool = true
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
 				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
@@ -292,6 +293,8 @@ func _roadside_visuals() -> void:
 				measured = true
 				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 				var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+				for coordinate: Vector2 in uv:
+					bounded_runs = bounded_runs and coordinate.y > 0.0 and coordinate.x >= -0.0001 and coordinate.x <= coordinate.y+0.0001
 				var indices := PackedInt32Array()
 				if arrays[Mesh.ARRAY_INDEX] != null:
 					indices = arrays[Mesh.ARRAY_INDEX]
@@ -322,6 +325,7 @@ func _roadside_visuals() -> void:
 					previous_u = high
 					previous_end = end
 			check(upward,"all road/grass/sand/paint triangles use upward normals")
+			check(bounded_runs,"kerb coordinates restart per run and stay within the declared complete-block length")
 			check(measured and correct,"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
 			check(closed_seams,"kerb adjacent quads share inside and outside corners")
 			check(track.cells == original,"roadside presentation preserves collision/surface cells")

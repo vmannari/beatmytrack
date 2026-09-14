@@ -25,11 +25,14 @@ void fragment() {
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, true);
 	if (grass) { ALBEDO = painted_grass(road_color.rgb, world_position.xz); }
 	if (kerb) {
-		// Equal 1.5 m blocks along the actual kerb midline, independent of
-		// triangulation and road radius. Derivatives antialias paint boundaries.
-		float phase = mod(UV.x,3.0);
+		// Fit complete equal blocks to each exposed run. An odd count starts
+		// and ends white; no arbitrary half-red slivers at curve boundaries.
+		float count = max(1.0,2.0*floor(UV.y/3.0)+1.0);
+		float block_length = max(UV.y/count,0.001);
+		float phase = mod(UV.x+block_length,block_length*2.0);
 		float aa = max(fwidth(UV.x),0.001);
-		float pale = smoothstep(1.5-aa,1.5+aa,phase)*(1.0-smoothstep(3.0-aa,3.0,phase));
+		float pale = smoothstep(block_length-aa,block_length+aa,phase);
+		if (UV.x < aa || UV.x > UV.y-aa) { pale = 1.0; }
 		ALBEDO = mix(road_color.rgb,kerb_pale.rgb,pale);
 	}
 	if (gravel) {

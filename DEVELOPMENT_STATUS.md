@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 V02/V04/V03/R01/V05: reference-led woodland visual revision, shared textured materials, irregular pines, selective outlines and driving-control icons. See [docs/VISUAL_STYLE.md](docs/VISUAL_STYLE.md) for actual evidence and acceptance limits.
+
 2026-09-14 G01: tyre contact now supports sustained pushing, stronger impact slowdown and cumulative pile resistance (physics 0.15). [Implementation, measured checks and acceptance limits](docs/TYRE_PUSHING.md).
 
 2026-09-14 tyre/load follow-up: stronger tyre sliding resistance and car impact (physics 0.14), searchable editor Load, same-ID resaving and correct unfinished-draft map previews. [Measured before/after response, checks and future shared-version lock policy](docs/TYRE_RESISTANCE_AND_LOADING.md).

@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-4"
+const VERSION: String = "track-kit-5"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
@@ -16,7 +16,10 @@ var scenic_count: int = 0
 func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
 	colors = TrackTheme.palette(theme_id)
-	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), VisualGeometry.material(colors[1]))
+	var ground := ShaderMaterial.new()
+	ground.shader = preload("res://track/ground.gdshader")
+	ground.set_shader_parameter("ground_color", colors[1])
+	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
 	_build_terrain(track)
 	_build_creator_roads(track)
 	_build_barriers(track)
@@ -270,7 +273,7 @@ func _build_low_cover(track: NativeTrack) -> void:
 	var stride: int = maxi(1, ceili(3.7 / track.cell_size))
 	var jitter: int = maxi(1,floori(stride*0.4))
 	for site: Vector2i in _scenery_sites(track,stride):
-		if scenic_count >= 180: break
+		if scenic_count >= 480: break
 		var seed_value: int = (site.x * 73856093 ^ site.y * 19349663) & 0x7fffffff
 		var cell := Vector2i(site.x+(seed_value%(jitter*2+1))-jitter,site.y+((seed_value/11)%(jitter*2+1))-jitter)
 		if not _cover_clear(track, cell, 1.3): continue
@@ -292,6 +295,7 @@ func _build_low_cover(track: NativeTrack) -> void:
 		instance.mesh = scenery.commit()
 		var material := VisualGeometry.material(Color.WHITE)
 		material.vertex_color_use_as_albedo = true
+		VisualGeometry.ink(material)
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		instance.material_override = material
 		add_child(instance)
@@ -357,6 +361,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		mesh.mesh = tool.commit()
 		var material := VisualGeometry.material(Color.WHITE)
 		material.vertex_color_use_as_albedo = true
+		VisualGeometry.ink(material)
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mesh.material_override = material
 		add_child(mesh)
@@ -433,15 +438,15 @@ func _mound(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float
 
 func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
 	_mound(tool, center, Vector3(0.12, 1.25, 0.12) * scale_value, turn, Color("554e40"))
-	for tier: int in range(3):
-		var base: Vector3 = center + Vector3(0.07*tier, 0.65 + tier*0.74, 0.03*tier)*scale_value
-		var radius: float = (1.1 - tier*0.23) * scale_value
+	for tier: int in range(5):
+		var base: Vector3 = center + Vector3(0.07*tier, 0.50 + tier*0.48, 0.03*tier)*scale_value
+		var radius: float = (1.1 - tier*0.17) * scale_value
 		var tip: Vector3 = base + Vector3(-0.12, 1.55 - tier*0.1, 0.05)*scale_value
-		for i: int in range(7):
-			var a: float = turn + TAU*i/7.0
-			var b: float = turn + TAU*(i+1)/7.0
-			var p: Vector3 = base + Vector3(cos(a), 0.07*(i%2), sin(a))*radius
-			var q: Vector3 = base + Vector3(cos(b), 0.07*((i+1)%2), sin(b))*radius
+		for i: int in range(14):
+			var a: float = turn + tier*0.6 + TAU*i/14.0
+			var b: float = turn + tier*0.6 + TAU*(i+1)/14.0
+			var p: Vector3 = base + Vector3(cos(a), 0.07*(i%2), sin(a))*radius*(1.0 if i%2 == 0 else 0.66)
+			var q: Vector3 = base + Vector3(cos(b), 0.07*((i+1)%2), sin(b))*radius*(0.66 if i%2 == 0 else 1.0)
 			tool.set_color(color.lightened(tier*0.035).darkened(0.07 if i%3 == 0 else 0.0))
 			for v: Vector3 in [p, tip, q]: tool.add_vertex(v)
 			tool.set_color(color.darkened(0.22))

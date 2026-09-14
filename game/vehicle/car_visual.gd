@@ -10,7 +10,8 @@ var brake_material: StandardMaterial3D
 
 func _ready() -> void:
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
-	var paint := VisualGeometry.material(Color("adb8b4"))
+	var paint := VisualGeometry.material(Color("ded9c6"))
+	VisualGeometry.ink(paint)
 	var trim := VisualGeometry.material(Color("171e21"))
 	var glass := VisualGeometry.material(Color("293b43"))
 	var rim := VisualGeometry.material(Color("657177"))

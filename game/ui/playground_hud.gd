@@ -86,14 +86,17 @@ func _ready() -> void:
 	var panel := PanelContainer.new()
 	panel.position = Vector2(24, 82)
 	panel.custom_minimum_size = Vector2(265, 0)
-	panel.add_theme_stylebox_override("panel", _panel_style())
+	var speed_style: StyleBoxFlat = _panel_style()
+	speed_style.border_color = Color("a9c851")
+	speed_style.border_width_left = 5
+	panel.add_theme_stylebox_override("panel", speed_style)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.visible = not editor_test
 	root.add_child(panel)
 	var info := VBoxContainer.new()
 	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(info)
-	speed_label = _label("0 km/h", 32)
+	speed_label = _label("0 km/h", 38)
 	info.add_child(speed_label)
 	profile_label = _label("Balanced", 17)
 	info.add_child(profile_label)
@@ -218,5 +221,7 @@ func _panel_style() -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.08, 0.12, 0.14, 0.86)
 	style.set_content_margin_all(12)
-	style.set_corner_radius_all(4)
+	style.border_color = Color(0.65, 0.71, 0.66, 0.6)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
 	return style

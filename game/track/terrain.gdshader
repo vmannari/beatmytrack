@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode diffuse_toon, specular_disabled;
+#include "res://track/surface_detail.gdshaderinc"
 
 uniform sampler2D surface_low : filter_linear, repeat_disable;
 uniform sampler2D surface_high : filter_linear, repeat_disable;
@@ -43,19 +44,14 @@ void fragment() {
 		float stripe = mod(floor((world_position.x + world_position.z) * 0.8), 2.0);
 		if (road > 0.5 && stripe < 1.0) { base *= vec3(0.69,0.40,0.32); }
 	}
-	// Broad, restrained tonal planes fit the matte car. Avoid speckled grass,
-	// animated noise and tiny triangles that shimmer in the follow camera.
-	float landform = sin(world_position.x * 0.18 + sin(world_position.z * 0.13))
-		+ sin(world_position.z * 0.21 + world_position.x * 0.07) * 0.5;
-	float tone = floor(landform * 1.5) * 0.018;
-	if (kind == 1 || kind == 2 || kind == 7) {
-		base *= 1.0 + tone;
-	}
 	if (kind == 3 || kind == 6) {
 		// Quiet horizontal water bands and a thin shoreline highlight.
 		float band = step(0.82, sin(world_position.z * 0.52 + sin(world_position.x * 0.18) * 0.4));
 		base *= 0.98 + band * 0.045;
 		base = mix(base, color_6.rgb, boundary * 0.35);
+	}
+	if (kind == 0 || kind == 1 || kind == 2 || kind == 7) {
+		base = surface_detail(base, world_position.xz, kind == 0);
 	}
 	ALBEDO = base;
 	ROUGHNESS = 1.0;

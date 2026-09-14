@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode diffuse_toon, specular_disabled, cull_disabled;
+#include "res://track/surface_detail.gdshaderinc"
 
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
 uniform vec2 map_extent;
@@ -16,6 +17,6 @@ void fragment() {
 	// paint used to open a junction. Obstacles keep their native footprints.
 	if (any(lessThan(map_uv, vec2(0.0))) || any(greaterThan(map_uv, vec2(1.0)))
 			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
-	ALBEDO = road_color.rgb;
+	ALBEDO = surface_detail(road_color.rgb, world_position.xz, true);
 	ROUGHNESS = 1.0;
 }

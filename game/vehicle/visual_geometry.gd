@@ -11,6 +11,12 @@ static func material(color: Color) -> StandardMaterial3D:
 	return result
 
 
+static func ink(surface: Material) -> void:
+	var outline := ShaderMaterial.new()
+	outline.shader = preload("res://track/ink.gdshader")
+	surface.next_pass = outline
+
+
 static func box(parent: Node3D, dimensions: Vector3, center: Vector3, surface: Material) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	var mesh := BoxMesh.new()

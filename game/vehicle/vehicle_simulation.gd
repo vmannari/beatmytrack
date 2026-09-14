@@ -3,7 +3,7 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.17"
+const PHYSICS_VERSION: String = "arcade-planar-0.18"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
@@ -38,7 +38,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		return
 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
-	var tire_grip: float = 1.0 - state.tire_dirt * config.dirty_tire_grip_loss
+	var fluids: Vector2 = ground.tire_fluids(state) if ground != null else Vector2.ZERO
+	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
 	state.steering = move_toward(state.steering, frame.steer / 127.0, config.steering_rate * STEP)
@@ -114,6 +115,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		state.tire_dirt = minf(1.0, state.tire_dirt + distance * pickup / config.tire_pickup_distance)
 	else:
 		state.tire_dirt = maxf(0.0, state.tire_dirt - distance / config.tire_clean_distance)
+	state.tire_oil = clampf(state.tire_oil + (distance / 3.0 if fluids.x > 0.0 else -distance / 180.0), 0.0, 1.0)
+	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
 	state.tick += 1
 
 

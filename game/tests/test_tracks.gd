@@ -201,7 +201,7 @@ func _check_soft_surfaces() -> void:
 	check(crossing.state.position.x > 3.0 and crossing.state.velocity.x > 0.0 and crossing.state.velocity.x < 18.0 and crossing.state.collision_count == 0, "car enters and exits six-metre rough patch with speed loss and no bounce")
 	track.cells.fill(0)
 	for y: int in range(track.grid_height): track.cells[y * track.grid_width + 80] = 3
-	check(track.collision_normal(Vector2(-1,0), config.collision_radius, false) != Vector2.ZERO, "deep water remains impassable")
+	check(track.collision_normal(Vector2(-1,0), config.collision_radius, false) == Vector2.ZERO, "water is traversable under the surface override")
 
 
 func _check_ramp_rail_tips() -> void:
@@ -461,7 +461,7 @@ func _check_tire_dirt() -> void:
 			track.cells.fill(2 if tick < 120 else 0)
 			sim.step(throttle, track)
 		states.append(sim.state.snapshot())
-	check(states[0] == states[1] and states[0].size() == 17 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [], "exposure and recovery replay exactly with contamination in state snapshot")
+	check(states[0] == states[1] and states[0].size() == 18 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [], "exposure and recovery replay exactly with contamination in state snapshot")
 
 
 func _check_blocked_speed() -> void:

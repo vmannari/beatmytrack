@@ -45,6 +45,38 @@ func run() -> void:
 		state.track_elevated = true
 		check(TrackHazards.factors(state,doc.objects)==Vector2(1,0),"ground hazard does not affect bridge deck")
 		state.track_elevated = false
+	# Full coatings clear in water < dirt < oil order on identical dry travel.
+	var coated := VehicleSimulation.new(config)
+	coated.state.tire_dirt = 1.0; coated.state.tire_oil = 1.0; coated.state.tire_water = 1.0
+	coated.state.velocity = Vector2(0,10)
+	for i: int in range(60): coated.step(DriveFrame.new())
+	check(coated.state.tire_oil > coated.state.tire_dirt and coated.state.tire_dirt > coated.state.tire_water,"oil persists longest, dirt medium, water shortest")
+	for kind: String in ["oil","puddle"]:
+		doc.objects = [{"kind":kind,"position":[0,0],"rotation":0}]
+		var fluid_track: NativeTrack = TrackCompiler.compile(doc)
+		var pickup_sim := VehicleSimulation.new(config); pickup_sim.state.velocity = Vector2(0,8)
+		var fluid_replay := VehicleSimulation.new(config); fluid_replay.state.velocity=Vector2(0,8)
+		for i: int in range(20):
+			pickup_sim.step(DriveFrame.new(),fluid_track)
+			fluid_replay.step(DriveFrame.new(),fluid_track)
+		for i: int in range(20):
+			pickup_sim.step(DriveFrame.new())
+			fluid_replay.step(DriveFrame.new())
+		check(pickup_sim.state.snapshot()==fluid_replay.state.snapshot(),kind+" pickup and recovery replay exactly")
+		check(pickup_sim.state.tire_oil > 0.0 if kind == "oil" else pickup_sim.state.tire_water > 0.0,kind+" coats tires")
+		var before: Array = pickup_sim.state.snapshot()
+		pickup_sim.state.velocity = Vector2.ZERO
+		for i: int in range(20): pickup_sim.step(DriveFrame.new())
+		check(pickup_sim.state.snapshot()[17] == before[17],"stationary tires retain fluids")
+	doc.objects = []
+	doc.paint = [{"surface":3,"width":40.0,"shape":"square","points":[[0,0]]}]
+	var pond: NativeTrack = TrackCompiler.compile(doc)
+	var wading := VehicleSimulation.new(config); wading.state.velocity = Vector2(0,20)
+	var power := DriveFrame.new(); power.throttle=255
+	for i: int in range(240): wading.step(power,pond)
+	check(wading.state.collision_count == 0 and wading.state.velocity.length() < 4.0 and wading.state.velocity.length() > 0.1,"pond slows strongly under power without blocking escape")
+	check(pond.water_depth(Vector2.ZERO)>0.4 and pond.water_depth(Vector2(19.8,0))<pond.water_depth(Vector2.ZERO) and pond.water_depth(Vector2(22,0))==0.0,"submersion eases across the shore")
+	doc.paint = [{"surface":0,"width":40.0,"shape":"square","points":[[0,0]]}]
 	doc.objects = [{"kind":"jump","position":[0,0],"rotation":0}]
 	var ramp: NativeTrack = TrackCompiler.compile(doc)
 	var sim := VehicleSimulation.new(config); sim.reset(Vector2(2.9,0),PI*0.5); sim.state.velocity=Vector2(14,0)
@@ -142,6 +174,20 @@ func run() -> void:
 			game.call("_process",0.1)
 			await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-bridge.png"))==OK,"bridge presentation screenshot")
+	if capture:
+		game.queue_free()
+		await process_frame
+		app.call("_start_race",pond,true)
+		await process_frame
+		game=app.get("game"); game.set_physics_process(false)
+		actual=game.get("sim"); actual.reset(Vector2(18.7,0),0.0)
+		game.set("previous_position",actual.state.position); game.set("previous_heading",0.0)
+		var water_camera: FollowCamera=game.get("camera")
+		water_camera.follow(actual.state.position,Vector2.ZERO,0.0,0.0,true)
+		for i: int in range(4):
+			game.call("_process",0.1)
+			await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/surfaces-water.png"))==OK,"shore submersion screenshot")
 	app.queue_free(); await process_frame
 	var temporary := DirAccess.open(folder)
 	for file: String in temporary.get_files(): DirAccess.remove_absolute(folder+"/"+file)

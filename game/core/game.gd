@@ -180,7 +180,9 @@ func _process(delta: float) -> void:
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
 		car.position.y += sim.state.jump_height if sim.state.jump_height > 0.0 else (0.0 if sim.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
 		if sim.state.jump_height > 0.0: car.rotation.x = atan2(sim.state.jump_velocity,maxf(5.0,sim.state.velocity.length()))
-		elif not sim.state.track_elevated: car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
+		elif not sim.state.track_elevated:
+			car.position.y -= native_track.water_depth(point)
+			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	if track_ground is NativeTrackVisual:
 		track_ground.update_tyres(sim.state,native_track.tyre_origins)
 		track_ground.update_light_props(sim.state)

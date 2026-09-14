@@ -84,3 +84,7 @@ func step_props(_state: VehicleState, _from: Vector2, _config: HandlingConfig, _
 
 func launch_jump(_state: VehicleState, _previous: Vector2) -> void:
 	pass
+
+
+func tire_fluids(_state: VehicleState) -> Vector2:
+	return Vector2.ZERO

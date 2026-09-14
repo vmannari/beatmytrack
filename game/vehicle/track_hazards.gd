@@ -10,7 +10,7 @@ static func factors(state: VehicleState, objects: Array) -> Vector2:
 		if object.kind == "oil" and CreatorObjects.contains(object,state.position): grip = minf(grip,0.20)
 		if object.kind == "puddle" and CreatorObjects.contains(object,state.position):
 			grip = minf(grip,0.45)
-			drag = maxf(drag,2.0+state.velocity.length()*0.65)
+			drag = maxf(drag,state.velocity.length()*0.65)
 	return Vector2(grip,drag)
 
 static func ramp_height(point: Vector2, objects: Array) -> float:

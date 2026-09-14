@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-14 G01/R01/V02/V04/V05: traversable water with gradual car submersion and separate long-lived oil / short-lived water tire coatings. [Behavior, actual verification and device limits](SURFACE_RESPONSE.md).
+
 2026-09-14 R01/T01-T04/V02-V05: owner rejects inconsistent editor controls and blockout graphics. [EDITOR_PRESENTATION_REFINEMENT.md](EDITOR_PRESENTATION_REFINEMENT.md) records this presentation/input slice and its uncompleted AAA art target.
 
 2026-09-14 R01/T01-T04/V02/V04/V05: shared road joins, gradual connected widths and road-aligned full-width start line. [Implementation, checks and Curvy/Blind spot captures](ROAD_JOIN_FIXES.md).

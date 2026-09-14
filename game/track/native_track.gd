@@ -118,6 +118,36 @@ func tire_pickup(state: VehicleState) -> float:
 	return 0.0
 
 
+func tire_fluids(state: VehicleState) -> Vector2:
+	if state.track_elevated or state.jump_height > 0.0: return Vector2.ZERO
+	var coating := Vector2(0.0, 1.0 if cell_at(state.position) in [3,6] else 0.0)
+	for object: Dictionary in hazard_objects:
+		if not CreatorObjects.contains(object,state.position): continue
+		if object.kind == "oil": coating.x = 1.0
+		if object.kind == "puddle": coating.y = 1.0
+	return coating
+
+
+func water_depth(point: Vector2) -> float:
+	# Average a bounded footprint to ease both sides of a raster shoreline.
+	var depth: float = 0.0
+	for y: int in range(-4,5):
+		for x: int in range(-4,5):
+			var sample: Vector2 = point + Vector2(x,y)*0.35
+			var grid: Vector2 = Vector2((sample.x+half_extent.x)/cell_size, (half_extent.y-sample.y)/cell_size)-Vector2(0.5,0.5)
+			var fraction: Vector2 = grid-grid.floor()
+			var center: Vector2 = Vector2((floorf(grid.x)+0.5)*cell_size-half_extent.x,half_extent.y-(floorf(grid.y)+0.5)*cell_size)
+			var upper: float = lerpf(_water_cell_depth(center),_water_cell_depth(center+Vector2(cell_size,0)),fraction.x)
+			var lower: float = lerpf(_water_cell_depth(center-Vector2(0,cell_size)),_water_cell_depth(center+Vector2(cell_size,-cell_size)),fraction.x)
+			depth += lerpf(upper,lower,fraction.y)
+	return depth / 81.0
+
+
+func _water_cell_depth(point: Vector2) -> float:
+	var material: int = cell_at(point)
+	return 0.48 if material == 3 else (0.12 if material == 6 else 0.0)
+
+
 func collision_elevated_at(point: Vector2, route_index: int, radius: float, previous_layer: int = -1) -> bool:
 	if CreatorBridges.at_any(creator_bridges,point,radius):
 		if previous_layer >= 0: return CreatorBridges.layer_at(creator_bridges,point,previous_layer == 1,radius)
@@ -154,7 +184,8 @@ func _native_surface_factors(state: VehicleState) -> Vector2:
 		1: return Vector2(0.65, 2.0 + speed * 0.65)
 		2: return Vector2(0.8, 2.0)
 		5: return Vector2(0.95, 0.4)
-		6: return Vector2(0.7, 3.0)
+		6: return Vector2(0.65, 0.5 + speed * 1.5)
+		3: return Vector2(0.55, 0.5 + speed * 2.5)
 		7: return Vector2(0.65, 2.0 + speed * 0.9) # Slows even under power, but allows escape from rest.
 	return Vector2(1.0, 0.0)
 
@@ -251,7 +282,7 @@ func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: boo
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
-			if cell_at(center, elevated) not in [3,4]: continue
+			if cell_at(center, elevated) not in [4]: continue
 			var low: Vector2 = center - Vector2.ONE * cell_size * 0.5
 			var high: Vector2 = center + Vector2.ONE * cell_size * 0.5
 			var offset: Vector2 = point - point.clamp(low, high)
@@ -283,7 +314,7 @@ func _support_plane(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x+0.5)*cell_size-half_extent.x, half_extent.y-(y+0.5)*cell_size)
-			if cell_at(center, elevated) not in [3,4]: continue
+			if cell_at(center, elevated) not in [4]: continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE*cell_size*0.5, center + Vector2.ONE*cell_size*0.5)
 			var offset: Vector2 = point - nearest
 			if offset.length() < distance and offset.length_squared() > 0.000001:
@@ -305,7 +336,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
-			if cell_at(center, elevated) not in [3, 4]:
+			if cell_at(center, elevated) not in [4]:
 				continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
 			var offset: Vector2 = point - nearest

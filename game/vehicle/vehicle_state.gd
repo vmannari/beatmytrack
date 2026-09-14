@@ -18,6 +18,8 @@ var tick: int = 0
 var collision_count: int = 0
 var route_index: int = -1
 var track_elevated: bool = false
+var tire_oil: float = 0.0
+var tire_water: float = 0.0
 var tire_dirt: float = 0.0 # 0 clean, 1 fully coated; persists after leaving loose ground.
 
 
@@ -42,4 +44,5 @@ func snapshot() -> Array:
 	result.append(loose_tyres.duplicate(true))
 	result.append([jump_height,jump_velocity,jump_cooldown])
 	result.append(light_props.duplicate(true))
+	result.append([tire_oil,tire_water])
 	return result

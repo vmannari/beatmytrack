@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 G01/R01/V02/V04/V05: traversable water with gradual car submersion and separate long-lived oil / short-lived water tire coatings. [Behavior, actual verification and device limits](docs/SURFACE_RESPONSE.md).
+
 2026-09-14 R01/T01-T04/V02-V05: unified editor controls, two-row asset browser, contextual options, direct object dragging and a mapped oblique planning view with refined prop meshes. [Actual captures, checks and remaining art acceptance](docs/EDITOR_PRESENTATION_REFINEMENT.md).
 
 2026-09-14 R01/T01-T04/V02/V04/V05: shared road joins, gradual connected widths and road-aligned full-width start line. [Implementation, checks and Curvy/Blind spot captures](docs/ROAD_JOIN_FIXES.md).

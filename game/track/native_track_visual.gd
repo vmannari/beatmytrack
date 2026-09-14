@@ -2,8 +2,9 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-8"
+const VERSION: String = "track-kit-9"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
+const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
 var theme_id: String = "pine"
@@ -19,6 +20,7 @@ func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	var ground := ShaderMaterial.new()
 	ground.shader = preload("res://track/ground.gdshader")
 	ground.set_shader_parameter("ground_color", colors[1])
+	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
 	_build_terrain(track)
 	_build_creator_roads(track)
@@ -48,6 +50,7 @@ func _build_terrain(track: NativeTrack) -> void:
 			else: high.set_pixel(x, y, weights)
 	var surface := ShaderMaterial.new()
 	surface.shader = TERRAIN_SHADER
+	surface.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
 	surface.set_shader_parameter("map_texel", Vector2(1.0 / track.grid_width, 1.0 / track.grid_height))
@@ -138,8 +141,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_quad(shoulders,VisualGeometry.world(p)+Vector3.UP*-0.02,VisualGeometry.world(q)+Vector3.UP*-0.02,
-							VisualGeometry.world(outer_q)+Vector3.UP*-0.02,VisualGeometry.world(outer_p)+Vector3.UP*-0.02)
+						_shoulder_quad(shoulders,p,q,outer_p,outer_q)
 						counts[0] += 1
 					if dirt: continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
@@ -178,6 +180,14 @@ func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
 func _shoulder_width(point: Vector2) -> float:
 	# Continuous, deterministic world-space erosion; no simulation RNG.
 	return 1.35 + sin(point.x*1.9+point.y*0.7)*0.12 + sin(point.y*4.7-point.x*2.3)*0.07 + sin(point.x*11.1+point.y*9.2)*0.035
+
+
+func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
+	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
+	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
+	for i: int in range(6):
+		tool.set_uv(Vector2(0.0,edge_weight[i]))
+		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
 func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float) -> void:
@@ -281,6 +291,8 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	instance.mesh = flat.commit()
 	var material := ShaderMaterial.new()
 	material.shader = CREATOR_ROAD_SHADER
+	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+	material.set_shader_parameter("grass_color", colors[1])
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)

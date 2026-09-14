@@ -1,4 +1,5 @@
 // Original world-space pigment pattern. Derivative filtering limits distant shimmer.
+uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 float pigment(vec2 p) {
 	vec2 cell = floor(p);
 	vec2 f = fract(p);
@@ -30,4 +31,13 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	blade *= step(0.72,seed) * visibility;
 	float plane = smoothstep(0.35,0.65,pigment(p*0.12));
 	return base * (0.97 + plane*0.055 - blade*0.09);
+}
+
+vec3 painted_grass(vec3 base, vec2 p) {
+	// A 20 m tile gives legible brush clusters at driving scale. An offset
+	// second sample and slower colour mask soften recognizable repetition.
+	vec3 paint = texture(painted_grass_texture,p/20.0,0.75).rgb;
+	vec3 broad = texture(painted_grass_texture,p/47.0+vec2(0.37,0.61),1.0).rgb;
+	vec3 tint = base / vec3(0.3765,0.4196,0.2118);
+	return mix(mix(paint,broad,0.18)*tint,base,0.18)*(0.82+pigment(p*0.08)*0.10);
 }

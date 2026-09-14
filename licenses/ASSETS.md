@@ -29,3 +29,5 @@ Barlow Regular and Barlow Condensed SemiBold are bundled static menu fonts, Copy
 Track-kit-5 (2026-09-14): world-space pigment/asphalt shaders, inverted-hull contours, revised procedural pine tiers, ivory car palette and drawn driving-control icons are original project code. Owner example is design reference only, not imported or generated runtime imagery. Existing source-layout and font provenance remains unchanged.
 
 Track-kit-6 (2026-09-14): revised branch masses, sparse grass strokes, gravel shoulder shader and inside-bend kerb meshes are original procedural project code. Silmukka review capture uses the local owner-authored track without copying its saved document.
+
+Painted grass v1 (2026-09-14): generated with the built-in image_gen tool from the original written prompt in `docs/PAINTED_GRASS_PROMPT.md`. Saved as `game/assets/textures/painted_grass_v1.png`, SHA-256 `0B7E9991DCCEA8CA5BB420CDAA9F489AF847AFAC78FACE20FCC65EC0AD1D72D8`. Owner board is design reference only; no board crop shipped. Original 1254-square PNG preserved; Godot import produces 1024-square mipmapped runtime texture. Prototype asset pending visual/performance acceptance.

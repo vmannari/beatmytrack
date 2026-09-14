@@ -85,3 +85,21 @@ Actual commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts
 - `git diff --check`: passed.
 
 Desktop Compatibility captures establish the corrected static geometry. Continuous-motion flicker on the owner's display still needs owner confirmation; these six views are not a video or phone test. No physical-phone test or Android export was performed; attachment was not enumerated. A newly attached close-up was not present in this user turn, so no claim of matching an exact supplied black-triangle pixel is made.
+
+
+## Painted texture reference ? 2026-09-14, track-kit-9
+
+V02/V04/V05: owner supplied a painted grass/albedo/variation/detail/transition board. Implemented one original generated grass bitmap, shared by native terrain, outer ground and creator grass skirts. The source board is not embedded in runtime. The exact built-in image_gen prompt, generated source dimensions and import policy are in [PAINTED_GRASS_PROMPT.md](PAINTED_GRASS_PROMPT.md).
+
+`surface_detail.gdshaderinc` now samples the grass asset at 20 m and 47 m scales, with broad procedural colour modulation and theme tint. The second sample softens recognizable repetition. This uses one bitmap plus procedural variation rather than claiming the board's two separate grayscale masks were authored. Asphalt and non-grass native materials retain their existing treatment. `ground.gdshader`, `terrain.gdshader`, `creator_road.gdshader` and `native_track_visual.gd` share the texture binding. Shoulder UVs now encode distance across the strip, blending irregular grass into the outer gravel edge; kerbs retain the owner's no-sand rule.
+
+`game/assets/textures/painted_grass_v1.png` is retained at generated resolution, with a committed import configuration limiting runtime size to 1024 and enabling mipmaps. Shader uses anisotropic mip filtering and positive mip bias to soften fine brush detail. Initial graphical review found the raw texture too busy/bright; final shader increases the brush scale and restrains brightness/contrast. [Final in-game bend](evidence/painted-grass.png).
+
+Actual commands through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+- `Import`: passed, including reimport after setting mipmap generation and size limit. Existing missing Android build-tools diagnostic remains.
+- `CaptureStyle -StyleDocument <local Silmukka JSON>`: passed, unchanged cells, zero bad flat normals, six route-position captures. Final bend inspected after material adjustment.
+- `TestPieces`: 132 checks passed, zero failures; includes edge cleanup, normals, kerb spacing/seams, five laps and golden cells.
+- `TestWorkflow`: 96 checks passed, zero failures.
+- `git diff --check`: passed.
+
+No camera/physics/collision/document-format changes. No physical-phone test, motion-video capture, Mobile renderer comparison or Android export performed; attachment was not enumerated. Repetition visibility, in-motion stability and GPU/thermal cost still need owner/device acceptance. The generated texture is a new prototype asset, not a claim of production art acceptance.

@@ -53,6 +53,7 @@ void fragment() {
 	if (kind == 0 || kind == 1 || kind == 2 || kind == 7) {
 		base = surface_detail(base, world_position.xz, kind == 0);
 	}
+	if (kind == 1) { base = painted_grass(colors[1],world_position.xz); }
 	ALBEDO = base;
 	ROUGHNESS = 1.0;
 }

@@ -9,6 +9,7 @@ uniform bool gravel = false;
 uniform bool grass = false;
 uniform bool kerb = false;
 uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
+uniform vec4 grass_color : source_color;
 varying vec3 world_position;
 
 void vertex() {
@@ -22,7 +23,7 @@ void fragment() {
 	if (any(lessThan(map_uv, vec2(0.0))) || any(greaterThan(map_uv, vec2(1.0)))
 			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, true);
-	if (grass) { ALBEDO = surface_detail(road_color.rgb, world_position.xz, false); }
+	if (grass) { ALBEDO = painted_grass(road_color.rgb, world_position.xz); }
 	if (kerb) {
 		// Equal 1.5 m blocks along the actual kerb midline, independent of
 		// triangulation and road radius. Derivatives antialias paint boundaries.
@@ -36,6 +37,8 @@ void fragment() {
 		ALBEDO = road_color.rgb*(0.94+pigment(world_position.xz*1.5)*0.10);
 		float grain_visibility = 1.0-smoothstep(0.35,1.0,length(fwidth(world_position.xz*14.0)));
 		ALBEDO *= 1.0-mix(0.04,smoothstep(0.70,0.87,grain),grain_visibility)*0.16;
+		float fringe = smoothstep(0.55,0.98,UV.y+(pigment(world_position.xz*5.0)-0.5)*0.32);
+		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;
 }

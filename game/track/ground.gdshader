@@ -5,6 +5,6 @@ uniform vec4 ground_color : source_color;
 varying vec3 world_position;
 void vertex() { world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
 void fragment() {
-	ALBEDO = surface_detail(ground_color.rgb, world_position.xz, false);
+	ALBEDO = painted_grass(ground_color.rgb, world_position.xz);
 	ROUGHNESS = 1.0;
 }

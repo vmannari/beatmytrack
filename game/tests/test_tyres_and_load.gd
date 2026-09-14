@@ -23,10 +23,44 @@ func run() -> void:
 	impact.position = Vector2(0,-1.7); impact.velocity = Vector2(0,20)
 	LooseTyres.step(impact,origins,free,Vector2(0,-1.8),config,VehicleSimulation.STEP)
 	print("TYRE_IMPACT car_before=20 car_after=",impact.velocity.y)
-	check(impact.velocity.y<17 and impact.velocity.y>0,"one direct stack impact removes at least 3 m/s without reversing the car")
+	check(impact.velocity.y<15 and impact.velocity.y>0,"one direct stack impact removes at least 5 m/s without reversing the car")
+	var single: VehicleState = _push(1,config,free)
+	var pile: VehicleState = _push(6,config,free)
+	print("TYRE_PUSH single=",single.loose_tyres[0][1]," pile=",pile.loose_tyres[0][1])
+	check(float(single.loose_tyres[0][1])>3.0,"sustained engine force pushes one stack from rest")
+	check(float(pile.loose_tyres[0][1])<0.2,"six touching stacks exceed available engine force")
+	check(single.snapshot()==_push(1,config,free).snapshot(),"pushing is exactly repeatable")
+	check(pile.snapshot()==_push(6,config,free).snapshot(),"pile resistance is exactly repeatable")
+	var separated: bool = true
+	for index: int in range(5):
+		separated = separated and float(pile.loose_tyres[index+1][1])-float(pile.loose_tyres[index][1])>0.99
+	check(separated,"stalled stacks remain separate bodies")
+	var bridge := VehicleState.new()
+	bridge.position = Vector2(0,-1.7); bridge.velocity = Vector2(0,20); bridge.track_elevated = true
+	LooseTyres.step(bridge,origins,free,Vector2(0,-1.8),config,VehicleSimulation.STEP)
+	check(bridge.velocity.y==20 and bridge.loose_tyres[0][1]==0.0,"overpass car ignores ground tyres")
+	var before: float = pile.position.y
+	for tick: int in range(120):
+		var previous: Vector2 = pile.position
+		pile.velocity = Vector2(0,-2)
+		pile.position += pile.velocity*VehicleSimulation.STEP
+		LooseTyres.step(pile,PackedVector2Array([Vector2.ZERO]),free,previous,config,VehicleSimulation.STEP)
+	check(pile.position.y<before-1.9,"car can reverse away from a stalled pile")
 	await _load_ui()
 	print("TYRES_LOAD_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _push(count: int, config: HandlingConfig, free: Callable) -> VehicleState:
+	var state := VehicleState.new()
+	state.position = Vector2(0,-config.collision_radius-LooseTyres.RADIUS)
+	var origins := PackedVector2Array()
+	for index: int in range(count): origins.append(Vector2(0,index))
+	for tick: int in range(240):
+		var previous: Vector2 = state.position
+		state.velocity.y += (config.engine_force-config.rolling_resistance)/config.mass*VehicleSimulation.STEP
+		state.position += state.velocity*VehicleSimulation.STEP
+		LooseTyres.step(state,origins,free,previous,config,VehicleSimulation.STEP)
+	return state
 
 func _load_ui() -> void:
 	root.size = Vector2i(1280,720)

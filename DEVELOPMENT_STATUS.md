@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-14 V02/V04/V05: track-kit-7 fixes kerb spacing along actual edge distance, closes segment seams, procedurally roughens shoulders and omits sand behind kerbs. Actual checks and Silmukka capture: docs/VISUAL_STYLE.md.
+
 2026-09-14 V02/V04/V05 follow-up: corrected grass, branch shapes, decorative stone scale, grey tree footprints and creator roadside shoulders/inner kerbs. Track-kit-6 actual Silmukka screenshot and checks are recorded in docs/VISUAL_STYLE.md.
 
 2026-09-14 V02/V04/V03/R01/V05: reference-led woodland visual revision, shared textured materials, irregular pines, selective outlines and driving-control icons. See [docs/VISUAL_STYLE.md](docs/VISUAL_STYLE.md) for actual evidence and acceptance limits.

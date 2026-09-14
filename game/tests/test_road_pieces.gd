@@ -17,6 +17,7 @@ func check(condition: bool, message: String) -> void:
 
 func run() -> void:
 	_geometry()
+	_roadside_visuals()
 	_snapping()
 	_contract()
 	_compiler()
@@ -250,3 +251,48 @@ func _practice_start() -> void:
 		check(not TrackDocument.validate(doc).is_empty(),"invalid practice start rejected: "+str(invalid))
 	var native: NativeTrack = NativeTrack.read("res://resources/tracks/slicks_freeway_test.json")
 	check(not TrackDocument.from_builtin(native).has("practice_start"),"native remix preserves its original start until explicitly moved")
+
+
+func _roadside_visuals() -> void:
+	for radius: float in [8.0,16.0,30.0]:
+		for flipped: bool in [false,true]:
+			var document: Dictionary = TrackDocument.create_blank()
+			var piece: Dictionary = RoadPieces.create("hairpin",Vector2(-30,0),0,6.0)
+			piece.radius = radius
+			piece.length = 0.0
+			piece.flip = flipped
+			document.pieces = [piece]
+			var track: NativeTrack = TrackCompiler.compile(document)
+			var original: PackedInt32Array = track.cells.duplicate()
+			var visual := NativeTrackVisual.new()
+			visual.colors = TrackTheme.palette("pine")
+			visual.call("_build_creator_roads",track)
+			var measured: bool = false
+			var correct: bool = true
+			var closed_seams: bool = true
+			for node: Node in visual.get_children():
+				var mesh: MeshInstance3D = node as MeshInstance3D
+				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
+				if not material.get_shader_parameter("kerb"): continue
+				measured = true
+				var arrays: Array = mesh.mesh.surface_get_arrays(0)
+				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+				var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+				var indices := PackedInt32Array()
+				if arrays[Mesh.ARRAY_INDEX] != null:
+					indices = arrays[Mesh.ARRAY_INDEX]
+				else:
+					for vertex: int in range(vertices.size()): indices.append(vertex)
+				for i: int in range(0,indices.size(),6):
+					var a: int = indices[i]
+					var b: int = indices[i+2]
+					var outside_a: int = indices[i+4]
+					var outside_b: int = indices[i+1]
+					var length: float = ((vertices[a]+vertices[outside_a])*0.5).distance_to((vertices[b]+vertices[outside_b])*0.5)
+					correct = correct and absf(uv[b].x-uv[a].x-length) < 0.0001
+					if i > 0 and absf(uv[indices[i-4]].x-uv[a].x) < 0.0001:
+						closed_seams = closed_seams and vertices[indices[i-4]].distance_to(vertices[a]) < 0.0001 and vertices[indices[i-5]].distance_to(vertices[outside_a]) < 0.0001
+			check(measured and correct,"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
+			check(closed_seams,"kerb adjacent quads share inside and outside corners")
+			check(track.cells == original,"roadside presentation preserves collision/surface cells")
+			visual.free()

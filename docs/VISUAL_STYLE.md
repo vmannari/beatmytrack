@@ -46,3 +46,23 @@ Actual commands (all via PowerShell -NoProfile -ExecutionPolicy Bypass -File scr
 - `git diff --check`: passed.
 
 This is still procedural artwork, with further owner visual acceptance required. Native raster-derived road contours remain an existing limitation; new inside-curve kerbs apply to creator road pieces. Decorative rocks were reduced, not owner-placed solid obstacles. No new guardrails, tyre barriers or collision geometry are inferred from the reference. Phone readability, motion shimmer and GPU performance remain untested. No physical phone test or Android export was performed; device attachment was not enumerated.
+
+
+## Equal kerbs and eroded shoulders ? 2026-09-14, track-kit-7
+
+Owner correction, V02/V04/V05: equal red/white lengths on curves, procedurally rough sand contours, and no sand behind kerbs.
+
+`game/track/native_track_visual.gd` now measures texture U along the actual kerb midline. Shared mitered endpoint offsets close gaps between successive quads. `creator_road.gdshader` paints alternating 1.5 m red/white blocks independently of road sampling and radius, with derivative antialiasing. Terminal blocks can be clipped where a kerb begins/ends or a junction hides it; complete blocks retain equal length. This is a world-space length, not equal screen-space length under oblique projection.
+
+Sand is now an exposed-edge strip rather than a full road-sized backing polygon. It is omitted on kerbed segments. A grass skirt covers the old raster shoulder underneath so grass meets the kerb directly. Sand's outer edge varies continuously with deterministic world-position functions (roughly +/-0.225 m), sampled at no more than 0.20 m intervals. The road boundary and white line remain fixed. Road, surface and collision authority remain the existing native cells.
+
+Changed files: `native_track_visual.gd`, `creator_road.gdshader`, `game/tests/test_road_pieces.gd`, this document and project status entries. Original procedural code; no new external assets.
+
+Actual commands, through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+- `TestPieces`: passed 124 checks, including 18 new checks over radii 8/16/30 m in both directions. Inspect actual generated mesh UVs against physical kerb-midline distance; verify shared inner/outer corners and unchanged canonical cells. Golden geometry and five-lap witness pass with zero contacts.
+- First test harness attempt assumed indexed geometry and failed on the unindexed mesh; fixed the harness to support both representations, then reran successfully. No invariant was removed.
+- `CaptureStyle -StyleDocument <local Silmukka JSON>`: passed and verified unchanged cells. [Final actual screenshot](evidence/style-kerbs.png) inspected on Compatibility/NVIDIA at 1494x1009. Saved owner document and records are untouched.
+- `TestWorkflow`: passed 96 checks, zero failures.
+- `git diff --check`: passed (line-ending normalization notices only).
+
+Existing native raster-only kerbs are outside this creator-piece correction. Phone motion/aliasing and GPU performance remain untested; no physical-phone test or Android export was performed, and device attachment was not enumerated. Further owner acceptance remains open.

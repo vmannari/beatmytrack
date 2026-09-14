@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-6"
+const VERSION: String = "track-kit-7"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
@@ -72,10 +72,11 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var asphalt := SurfaceTool.new()
 	var markings := SurfaceTool.new()
 	var red_kerbs := SurfaceTool.new()
-	var pale_kerbs := SurfaceTool.new()
+	var ground_skirt := SurfaceTool.new()
 	red_kerbs.begin(Mesh.PRIMITIVE_TRIANGLES)
-	pale_kerbs.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var kerb_counts: Array[int] = [0,0]
+	ground_skirt.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var kerb_count: int = 0
+	var ground_count: int = 0
 	for tool: SurfaceTool in [shoulders,asphalt,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
@@ -95,19 +96,28 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var joined_end: bool = _piece_end_joined(pieces,index,points[-1])
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
-		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+1.36,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
-			counts[0] += _road_polygon(shoulders,polygon,0.006)
+		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+1.8,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+			ground_count += _road_polygon(ground_skirt,polygon,0.006)
 		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half+0.36,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012)
-		if document.get("surface","asphalt") == "dirt": continue
+		var dirt: bool = document.get("surface","asphalt") == "dirt"
 		for polygon: PackedVector2Array in Geometry2D.offset_polyline(points,half-0.20,Geometry2D.JOIN_ROUND,Geometry2D.END_ROUND):
+			var kerb_distance: float = 0.0
 			for edge: int in range(polygon.size()):
 				var a: Vector2 = polygon[edge]
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
-				var steps: int = maxi(1,ceili(a.distance_to(b)/0.5))
+				var normal_a: Vector2 = _edge_miter(polygon,edge)
+				var normal_b: Vector2 = _edge_miter(polygon,(edge+1)%polygon.size())
+				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
 				for step: int in range(steps):
 					var p: Vector2 = a.lerp(b,float(step)/steps)
 					var q: Vector2 = a.lerp(b,float(step+1)/steps)
+					var normal_p: Vector2 = normal_a.lerp(normal_b,float(step)/steps)
+					var normal_q: Vector2 = normal_a.lerp(normal_b,float(step+1)/steps)
+					var center_p: Vector2 = p+normal_p*0.375
+					var center_q: Vector2 = q+normal_q*0.375
+					var distance_start: float = kerb_distance
+					kerb_distance += center_p.distance_to(center_q)
 					var across: Vector2 = (q-p).normalized().orthogonal()*0.085
 					var midpoint: Vector2 = (p+q)*0.5
 					if joined_start and midpoint.distance_to(points[0]) <= half+0.5 and (midpoint-points[0]).dot(points[1]-points[0]) < -0.001: continue
@@ -117,22 +127,50 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines): continue
-					var bend_distance: float = _inner_bend_distance(midpoint,points)
-					if bend_distance >= 0.0:
-						var stripe: int = int(floor(bend_distance/1.5))%2
-						var curb: SurfaceTool = red_kerbs if stripe == 0 else pale_kerbs
-						var lip: Vector2 = outward.normalized()*0.75
-						_quad(curb,VisualGeometry.world(p)+Vector3.UP*0.025,VisualGeometry.world(q)+Vector3.UP*0.025,
-							VisualGeometry.world(q+lip)+Vector3.UP*0.025,VisualGeometry.world(p+lip)+Vector3.UP*0.025)
-						kerb_counts[stripe] += 1
+					var is_kerb: bool = not dirt and _inner_bend_distance(midpoint,points) >= 0.0
+					if is_kerb:
+						_kerb_quad(red_kerbs,p,q,p+normal_p*0.75,q+normal_q*0.75,distance_start,kerb_distance)
+						kerb_count += 1
+					else:
+						# Only the outer contour varies; road/paint stay fixed.
+						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+						_quad(shoulders,VisualGeometry.world(p)+Vector3.UP*0.009,VisualGeometry.world(q)+Vector3.UP*0.009,
+							VisualGeometry.world(outer_q)+Vector3.UP*0.009,VisualGeometry.world(outer_p)+Vector3.UP*0.009)
+						counts[0] += 1
+					if dirt: continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
 	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,track.half_extent)
 	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
-	if kerb_counts[0]: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent)
-	if kerb_counts[1]: _commit_creator_road(pale_kerbs,Color("c8c2aa"),texture,track.half_extent)
+	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,track.half_extent,false,true)
+	if kerb_count: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent,false,false,true)
+
+
+func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
+	var point: Vector2 = polygon[index]
+	var before: Vector2 = (point-polygon[(index+polygon.size()-1)%polygon.size()]).normalized().orthogonal()
+	var after: Vector2 = (polygon[(index+1)%polygon.size()]-point).normalized().orthogonal()
+	var normal: Vector2 = (before+after).normalized()
+	if Geometry2D.is_point_in_polygon(point+normal*0.05,polygon): normal = -normal
+	return normal / maxf(absf(normal.dot(after)),0.5)
+
+
+func _shoulder_width(point: Vector2) -> float:
+	# Continuous, deterministic world-space erosion; no simulation RNG.
+	return 1.35 + sin(point.x*1.9+point.y*0.7)*0.12 + sin(point.y*4.7-point.x*2.3)*0.07 + sin(point.x*11.1+point.y*9.2)*0.035
+
+
+func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float) -> void:
+	# U is actual arc distance along the middle of the kerb strip, not the
+	# road centerline or its sample index. Shared miters close segment seams.
+	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
+	var distances: Array[float] = [start,end,end,start,start,end]
+	for i: int in range(6):
+		tool.set_uv(Vector2(distances[i],0.0))
+		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.025)
 
 
 func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
@@ -203,7 +241,7 @@ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 	return mask
 
 
-func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false) -> void:
+func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false) -> void:
 	tool.generate_normals()
 	var instance := MeshInstance3D.new()
 	instance.mesh = tool.commit()
@@ -213,6 +251,8 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
 	material.set_shader_parameter("gravel",gravel)
+	material.set_shader_parameter("grass",grass)
+	material.set_shader_parameter("kerb",kerb)
 	instance.material_override = material
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(instance)

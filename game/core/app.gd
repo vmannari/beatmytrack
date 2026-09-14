@@ -75,7 +75,7 @@ func _ready() -> void:
 
 func _show_screen(next: String) -> void:
 	if is_instance_valid(object_browser):
-		object_browser_state={"category":object_browser.category,"query":object_browser.query,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
+		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
 	if is_instance_valid(canvas):
 		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	screen = next
@@ -353,40 +353,47 @@ func _editor() -> void:
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root_ui.add_child(overlay)
 	MenuStyle.fill(overlay)
-	var back: Button = EditorButton.make("","back",func() -> void:
+	var close: Button = EditorButton.make("","close",func() -> void:
 		_save_draft()
 		_show_screen("play"))
-	back.tooltip_text = "Back"
-	overlay.add_child(back)
-	back.position = Vector2(16,16)
-	editor_undo = EditorButton.make("","undo",_undo)
-	editor_undo.text = "Undo"
-	editor_undo.tooltip_text = "Undo"
-	overlay.add_child(editor_undo)
-	editor_undo.position = Vector2(270,16)
-	editor_redo = EditorButton.make("","redo",_redo)
-	editor_redo.text = "Redo"
-	editor_redo.tooltip_text = "Redo"
-	overlay.add_child(editor_redo)
-	editor_redo.position = Vector2(332,16)
-	var title := VBoxContainer.new()
-	title.position = Vector2(82,16)
+	close.name="CloseEditor"
+	close.tooltip_text="Close editor"
+	overlay.add_child(close)
+	close.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	close.offset_left=-68; close.offset_right=-16; close.offset_top=16; close.offset_bottom=68
+	var title := HBoxContainer.new()
+	title.position=Vector2(16,16)
 	overlay.add_child(title)
-	title.add_child(MenuStyle.label("Track Editor",22))
 	var track_name := LineEdit.new()
-	track_name.name = "EditorTrackName"
-	track_name.text = str(document.name)
-	track_name.custom_minimum_size = Vector2(176,28)
-	track_name.max_length = 40
+	track_name.name="CircuitName"
+	track_name.text=str(document.name)
+	track_name.editable=false
+	track_name.max_length=40
+	track_name.custom_minimum_size=Vector2(220,52)
 	EditorStyle.apply(track_name)
+	track_name.add_theme_color_override("font_uneditable_color",EditorStyle.INK)
+	track_name.add_theme_stylebox_override("read_only",EditorStyle.box())
+	track_name.add_theme_font_size_override("font_size",22)
 	title.add_child(track_name)
+	var pencil: Button=EditorButton.make("","pencil",func() -> void:
+		track_name.editable=true; track_name.grab_focus(); track_name.select_all())
+	pencil.name="RenameTrack"
+	pencil.tooltip_text="Rename track"
+	title.add_child(pencil)
 	track_name.text_changed.connect(func(value: String) -> void: document.name=value)
-	track_name.focus_exited.connect(_save_draft)
+	track_name.focus_exited.connect(func() -> void: track_name.editable=false; _save_draft())
+	track_name.text_submitted.connect(func(_value: String) -> void: track_name.release_focus())
+	editor_undo=EditorButton.make("","undo",_undo)
+	editor_undo.text="Undo"
+	title.add_child(editor_undo)
+	editor_redo=EditorButton.make("","redo",_redo)
+	editor_redo.text="Redo"
+	title.add_child(editor_redo)
 	var top := HBoxContainer.new()
 	top.alignment = BoxContainer.ALIGNMENT_END
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -452; top.offset_right = -16; top.offset_top = 16
+	top.offset_left = -376; top.offset_right = -80; top.offset_top = 16
 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = EditorStyle.button("",_focus_issue)
@@ -399,36 +406,32 @@ func _editor() -> void:
 	settings.text = "Map"
 	settings.tooltip_text = "Map settings"
 	top.add_child(settings)
-	test_button = EditorStyle.button("Test",_test_document)
-	var load_button: Button = EditorStyle.button("Load",_load_track_dialog)
-	load_button.name = "LoadTrack"
-	top.add_child(load_button)
-	var save_button: Button = EditorStyle.button("Save",_save_track_explicit)
-	save_button.name = "SaveTrack"
-	top.add_child(save_button)
+	test_button = EditorButton.action("Test","play",_test_document)
+	test_button.custom_minimum_size=Vector2(104,52)
 	top.add_child(test_button)
-	for action_button: Button in [load_button,save_button,test_button]: action_button.custom_minimum_size=Vector2(82,52)
 	for state: String in ["normal","hover","pressed","hover_pressed","disabled","focus"]:
 		var test_style: StyleBoxFlat=EditorStyle.box()
 		test_style.border_color=Color("b4ed69")
 		test_style.bg_color=Color("203526") if state=="hover" else Color("101e19")
 		test_button.add_theme_stylebox_override(state,test_style)
-		test_button.add_theme_color_override("font_"+state+"_color",Color("b4ed69"))
-	test_button.add_theme_color_override("font_color",Color("b4ed69"))
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
 	var rail_panel := PanelContainer.new()
 	rail_panel.name = "EditorRailPanel"
-	rail_panel.position=Vector2(16,94)
+	rail_panel.anchor_top=0.5; rail_panel.anchor_bottom=0.5
+	rail_panel.offset_left=16
+	rail_panel.grow_vertical=Control.GROW_DIRECTION_BOTH
+	rail_panel.resized.connect(func() -> void: rail_panel.offset_top=-rail_panel.size.y*0.5; rail_panel.offset_bottom=rail_panel.size.y*0.5)
 	rail_panel.add_theme_stylebox_override("panel",EditorStyle.box())
 	overlay.add_child(rail_panel)
 	rail_panel.add_child(rail)
 	rail.add_theme_constant_override("separation",2)
 	editor_mode_buttons.clear()
-	for pair: Array in [["road","Track","road"],["paint","Surfaces","surface"],["objects","Objects","objects"],["move","Race","race"]]:
+	for pair: Array in [["road","Track","road"],["paint","Surfaces","surface"],["objects","Objects","objects"],["move","Waypoints","waypoints"]]:
 		var value: String = pair[0]
 		var button: Button = EditorButton.make(pair[1],pair[2],_editor_category.bind(value))
 		button.name = "Editor"+({"road":"Road","paint":"Surface"}.get(value,pair[1]))
+		button.custom_minimum_size=Vector2(86,60)
 		button.toggle_mode = true
 		editor_mode_buttons[value] = button
 		rail.add_child(button)
@@ -489,37 +492,29 @@ func _editor() -> void:
 	editor_inspector = VBoxContainer.new()
 	editor_tools_panel.add_child(editor_inspector)
 	editor_map_panel = _editor_panel(overlay,"EditorMap")
-	var map_scroll := ScrollContainer.new()
-	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	editor_map_panel.add_child(map_scroll)
+	editor_map_panel.anchor_bottom=0
+	editor_map_panel.offset_bottom=82
+	editor_map_panel.offset_left=-268
 	var metadata := VBoxContainer.new()
-	metadata.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	map_scroll.add_child(metadata)
-	metadata.add_child(MenuStyle.label("TRACK SETTINGS",20))
-	var name_field := LineEdit.new()
-	name_field.name = "CircuitName"
-	name_field.text = str(document.name)
-	name_field.max_length = 40
-	name_field.custom_minimum_size.y = 52
-	metadata.add_child(name_field)
-	name_field.text_changed.connect(func(value: String) -> void: document.name = value; track_name.text=value)
-	name_field.focus_exited.connect(_save_draft)
-	var theme_picker := OptionButton.new()
-	theme_picker.custom_minimum_size.y = 52
-	for value: String in TrackDocument.THEMES: theme_picker.add_item(value.capitalize())
-	theme_picker.selected = TrackDocument.THEMES.find(document.theme)
-	theme_picker.item_selected.connect(func(index: int) -> void:
-		_remember()
-		document.theme = TrackDocument.THEMES[index]
-		_save_draft())
-	metadata.add_child(theme_picker)
-	metadata.add_child(EditorStyle.button("Creator",_creator_name))
-	metadata.add_child(EditorStyle.button("New",_new_document))
-	metadata.add_child(EditorStyle.button("My circuits",_open_saved_tracks))
-	metadata.add_child(EditorStyle.button("3D preview",_preview_document))
-	metadata.add_child(EditorStyle.button("Controls",_editor_help))
-	share_button = EditorStyle.button("Share",_share_dialog)
+	editor_map_panel.add_child(metadata)
+	for entry: Array in [["New",_new_document],["Load",_load_track_dialog],["Save",_save_track_explicit]]:
+		var command: Button=EditorStyle.button(entry[0],entry[1])
+		command.name=entry[0]+"Track"
+		metadata.add_child(command)
+	share_button=EditorStyle.button("Share",_share_dialog)
 	metadata.add_child(share_button)
+	metadata.add_child(EditorStyle.button("Help",_editor_help))
+	var biome_menu := PopupMenu.new()
+	biome_menu.name="BiomeMenu"
+	overlay.add_child(biome_menu)
+	for value: String in TrackDocument.THEMES: biome_menu.add_item(value.capitalize())
+	biome_menu.id_pressed.connect(func(index: int) -> void: _set_document_value("theme",TrackDocument.THEMES[index]))
+	var biome_button: Button=EditorButton.make("Biome","biome",func() -> void:
+		biome_menu.position=Vector2i(rail_panel.get_global_rect().end.x+8,rail_panel.get_global_rect().position.y)
+		biome_menu.popup())
+	biome_button.name="EditorBiome"
+	biome_button.custom_minimum_size=Vector2(86,60)
+	rail.add_child(biome_button)
 	canvas.selection_changed.connect(_build_editor_tools)
 	_build_editor_tools()
 	_refresh_editor()
@@ -644,12 +639,12 @@ func _build_editor_tools() -> void:
 			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends · ground road passes beneath the middle"
 	elif category == "paint":
 		for pair: Array in [[0,"Road"],[1,"Grass"],[2,"Dirt"],[3,"Water"]]:
-			_context_button(pair[1],"surface",func() -> void:
+			_context_button(pair[1],"terrain_"+pair[1].to_lower(),func() -> void:
 				canvas.brush_surface = pair[0]
 				canvas.mode = "paint"
 				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
 		for pair: Array in [["oil","Oil"],["puddle","Puddle"]]:
-			_context_button(pair[1],"surface",_choose_hazard.bind(pair[0]))
+			_context_button(pair[1],"terrain_"+pair[0],_choose_hazard.bind(pair[0]))
 		_context_button("Brush","width",func() -> void:
 			editor_tools_panel.visible = not editor_tools_panel.visible)
 		_context_button("Pan","move",func() -> void:
@@ -937,10 +932,10 @@ func _save_draft() -> Error:
 	if document.is_empty(): return ERR_INVALID_DATA
 	var errors: Array[String] = TrackDocument.validate(document)
 	var message: String
-	var save_error: Error = library.save_document(document)
+	var save_error: Error = library.save_wip(document)
 	if save_error != OK: message = "Could not save: " + library.last_error
 	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
-	else: message = "Saved on this device. Ready to test drive."
+	else: message = "WIP autosaved. Saved original unchanged."
 	if is_instance_valid(editor_status):
 		editor_status.text = message
 		test_button.disabled = not errors.is_empty()
@@ -980,21 +975,6 @@ func _share_dialog() -> void:
 		else: _export_file())
 	_own_dialog(dialog)
 	dialog.popup_centered(Vector2i(650,220))
-
-func _preview_document() -> void:
-	var track: NativeTrack = TrackCompiler.compile(document)
-	if track == null:
-		_notice("Adjust the route before previewing it. " + TrackDocument.validate(document)[0])
-		return
-	var dialog := AcceptDialog.new()
-	dialog.title = str(document.name) + " / " + TrackTheme.title(str(document.theme))
-	dialog.ok_button_text = "Back to editing"
-	var preview := TrackShowroom.new()
-	preview.track = track
-	preview.custom_minimum_size = Vector2(800,420)
-	dialog.add_child(preview)
-	_own_dialog(dialog)
-	dialog.popup_centered()
 
 func _export_file() -> void:
 	var dialog := FileDialog.new()
@@ -1226,7 +1206,7 @@ func _lay_road() -> void:
 	_commit_selection()
 
 func _editor_help() -> void:
-	_notice("Drag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
+	_notice("Changes autosave to a separate WIP. Load can reopen the WIP or original. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
 
 func _input(event: InputEvent) -> void:
 	# Tab is a GUI navigation key and never reaches unhandled_key_input.
@@ -1247,7 +1227,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				elif not canvas.ghost.is_empty(): _delete_piece()
 				else: _undo()
 			KEY_Y: _redo()
-			KEY_S: _save_draft()
+			KEY_S: _save_track_explicit()
 			_: handled = false
 	else:
 		match key:
@@ -1283,12 +1263,12 @@ func _save_track_explicit() -> void:
 		if not canvas.ghost.is_empty():
 			_notice("The preview cannot be placed here. Move or cancel it before saving.")
 			return
-	if _save_draft() != OK:
+	if library.save_document(document) != OK:
 		_notice("Could not save: "+library.last_error)
 	elif not TrackDocument.validate(document).is_empty():
 		_notice("Draft saved. You can reopen it in My circuits. Before driving: "+TrackDocument.validate(document)[0])
 	else:
-		_notice("Saved on this device. Choose My circuits in Track settings, or Saved tracks in the circuit library, to drive it.")
+		_notice("Saved on this device. Choose Saved tracks in the circuit library to drive it.")
 
 func _open_saved_tracks() -> void:
 	if not canvas.ghost.is_empty():
@@ -1317,6 +1297,10 @@ func _prepare_editor_load() -> bool:
 
 func _load_track_dialog() -> void:
 	var saved: Array[Dictionary] = library.list_documents()
+	for wip: Dictionary in library.list_wips():
+		var item: Dictionary=wip.duplicate(true)
+		item["_wip"]=true
+		saved.append(item)
 	saved.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.name).naturalnocasecmp_to(str(b.name)) < 0)
 	var dialog := ConfirmationDialog.new()
 	dialog.name = "LoadTrackDialog"
@@ -1345,10 +1329,10 @@ func _load_track_dialog() -> void:
 		choices.clear()
 		for draft: Dictionary in saved:
 			if not query.is_empty() and not (str(draft.name)+" "+str(draft.get("creator",""))).to_lower().contains(query.to_lower()): continue
-			var label: String = str(draft.name)
+			var label: String = str(draft.name)+(" (WIP)" if draft.get("_wip",false) else "")
 			if not TrackDocument.validate(draft).is_empty(): label += " (draft)"
 			var index: int = choices.add_item(label)
-			choices.set_item_metadata(index,str(draft.id))
+			choices.set_item_metadata(index,("wip:" if draft.get("_wip",false) else "")+str(draft.id))
 		if choices.item_count > 0: choices.select(0)
 		dialog.get_ok_button().disabled = choices.item_count == 0
 		summary.text = "%d saved tracks" % choices.item_count if choices.item_count > 0 else ("No saved tracks yet." if saved.is_empty() else "No tracks match your search.")
@@ -1367,7 +1351,7 @@ func _load_track_dialog() -> void:
 	choices.grab_focus()
 
 func _load_saved_document(id: String) -> void:
-	var loaded: Dictionary = library.load_document(id)
+	var loaded: Dictionary = library.load_wip(id.trim_prefix("wip:")) if id.begins_with("wip:") else library.load_document(id)
 	if loaded.is_empty():
 		_notice("Could not load this track: "+library.last_error)
 		return

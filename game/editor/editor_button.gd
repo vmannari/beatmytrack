@@ -33,6 +33,7 @@ static func make(label: String, icon: String, action: Callable, chosen: bool = f
 func _draw() -> void:
 	var center := Vector2(24,size.y*0.5) if horizontal else Vector2(size.x*0.5,26 if not caption.is_empty() else size.y*0.5)
 	var ink := Color(0.94,0.97,0.97,0.35 if disabled else 1.0)
+	if glyph=="play": ink=Color("b4ed69"); ink.a=0.45 if disabled else 1.0
 	var path := PackedVector2Array()
 	if glyph in ["straight","curve","s_bend","hairpin","road","bridge"]:
 		for i: int in range(25):
@@ -49,6 +50,33 @@ func _draw() -> void:
 			draw_polyline(path.slice(segment,mini(segment+3,path.size())),ink,1.4,true)
 		if glyph == "bridge":
 			for x: int in [-15,15]: draw_line(center+Vector2(x,6),center+Vector2(x,15),ink,3,true)
+	elif glyph.begins_with("terrain_"):
+		var surface: String=glyph.trim_prefix("terrain_")
+		var tint: Color={"road":Color("667177"),"grass":Color("65864c"),"dirt":Color("bc985f"),"water":Color("4087a4"),"puddle":Color("619aa6"),"oil":Color("313039")}.get(surface,ink)
+		draw_style_box(EditorStyle.box(),Rect2(center-Vector2(22,15),Vector2(44,30)))
+		draw_rect(Rect2(center-Vector2(19,12),Vector2(38,24)),tint)
+		if surface in ["water","puddle","oil"]:
+			for y: int in [-6,2,8]: draw_arc(center+Vector2(0,y),12,0.2,2.9,12,ink*Color(1,1,1,0.6),1.3,true)
+		elif surface=="grass":
+			for x: int in [-12,0,12]: draw_polyline(PackedVector2Array([center+Vector2(x-3,2),center+Vector2(x,7),center+Vector2(x+2,-5)]),ink,1.3,true)
+		elif surface=="dirt":
+			for point: Vector2 in [Vector2(-12,-5),Vector2(5,6),Vector2(13,-6),Vector2(-6,7)]: draw_circle(center+point,2,Color("e0c59b"))
+		else:
+			for x: int in [-12,0,12]: draw_line(center+Vector2(x-3,0),center+Vector2(x+3,0),ink,2,true)
+	elif glyph=="play":
+		draw_colored_polygon(PackedVector2Array([center+Vector2(-7,-10),center+Vector2(10,0),center+Vector2(-7,10)]),ink)
+	elif glyph=="close":
+		draw_line(center-Vector2(8,8),center+Vector2(8,8),ink,2.5,true)
+		draw_line(center+Vector2(-8,8),center+Vector2(8,-8),ink,2.5,true)
+	elif glyph=="pencil":
+		draw_polyline(PackedVector2Array([center+Vector2(-9,10),center+Vector2(-6,2),center+Vector2(6,-10),center+Vector2(11,-5),center+Vector2(-1,7),center+Vector2(-9,10)]),ink,2,true)
+	elif glyph=="waypoints":
+		draw_polyline(PackedVector2Array([center+Vector2(-16,8),center+Vector2(0,-10),center+Vector2(16,6)]),ink,2,true)
+		for point: Vector2 in [Vector2(-16,8),Vector2(0,-10),Vector2(16,6)]: draw_circle(center+point,4,ink)
+	elif glyph=="biome":
+		draw_circle(center+Vector2(10,-9),5,Color("b4ce7f"))
+		draw_colored_polygon(PackedVector2Array([center+Vector2(-21,12),center+Vector2(-7,-10),center+Vector2(6,12)]),Color("7c9f79"))
+		draw_colored_polygon(PackedVector2Array([center+Vector2(-3,12),center+Vector2(9,-3),center+Vector2(22,12)]),ink)
 	elif glyph in ["load","save","next","options"]:
 		if glyph=="load":
 			draw_polyline(PackedVector2Array([center+Vector2(-10,7),center+Vector2(-10,-7),center+Vector2(-3,-7),center+Vector2(0,-3),center+Vector2(11,-3),center+Vector2(8,7),center+Vector2(-10,7)]),ink,2,true)

@@ -91,6 +91,17 @@ func run() -> void:
 		browser.category="Nature"; browser.refresh()
 		for tick: int in range(5): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-nature.png"))==OK,"nature screenshot")
+	var original_saved: Dictionary=library.load_document(doc.id)
+	var wip: Dictionary=doc.duplicate(true)
+	wip.name="Unsaved WIP revision"
+	app.set("document",wip)
+	check(app.call("_save_draft")==OK,"editor autosaves WIP independently")
+	app.set("document",doc)
+	var reopened := TrackLibrary.new(library.directory)
+	check(reopened.load_document(doc.id)==original_saved,"autosave cannot overwrite saved original")
+	check(reopened.load_wip(doc.id).name==wip.name,"WIP survives reopening the library")
+	check(browser.find_child("ObjectSearch",true,false)==null,"object search removed")
+	check(browser.previous.visible and browser.next.visible,"both paging slots always remain visible")
 	var test_action: Button=app.get("test_button")
 	check(root.get_visible_rect().encloses(test_action.get_global_rect()),"Test action stays inside screen")
 	check(not CreatorCatalog.family("jump").is_empty(),"Jump is available in Objects")
@@ -126,6 +137,13 @@ func run() -> void:
 		app.call("_editor_category","road")
 		for tick: int in range(4): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-road-toolbar.png"))==OK,"road toolbar capture")
+	if "--capture-objects" in OS.get_cmdline_user_args():
+		app.call("_editor_category","paint")
+		for tick: int in range(4): await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-surface-toolbar.png"))==OK,"surface toolbar capture")
+		(app.get("editor_map_panel") as Control).show()
+		for tick: int in range(4): await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-overflow.png"))==OK,"overflow capture")
 	print("OBJECT_BROWSER_TESTS: %d checks, %d failures" % [checks,failures])
 	app.queue_free(); await process_frame
 	quit(1 if failures else 0)

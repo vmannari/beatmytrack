@@ -77,7 +77,7 @@ func run() -> void:
 	await process_frame
 	var initial_canvas: EditorCanvas = app.get("canvas")
 	check(initial_canvas.size.x > 0.0 and initial_canvas.size.y > 0.0 and is_finite(initial_canvas.zoom) and initial_canvas.pan.is_finite() and initial_canvas.to_screen(Vector2.ZERO).is_finite(), "first layout has a finite, usable editor transform")
-	await _viewport_tap(_button(app.get("root_ui"),"Map").get_global_rect().get_center())
+	(app.get("root_ui").find_child("RenameTrack",true,false) as Button).pressed.emit()
 	await process_frame
 	var name_field: LineEdit = (app.get("root_ui") as Node).find_child("CircuitName",true,false)
 	check(name_field != null, "editor exposes a native editable circuit name")
@@ -85,7 +85,6 @@ func run() -> void:
 		await _viewport_tap(name_field.get_global_rect().get_center())
 		check(name_field.has_focus(), "viewport-dispatched touch focuses the native circuit-name field")
 		name_field.release_focus()
-	await _viewport_tap(_button(app.get("root_ui"),"Map").get_global_rect().get_center())
 	await _check_input_and_history()
 	await _check_view_retention()
 	await _capture_editor_themes()
@@ -159,7 +158,7 @@ func _check_library() -> void:
 
 
 func _check_input_and_history() -> void:
-	_button(app.get("root_ui"), "Race").pressed.emit()
+	_button(app.get("root_ui"), "Waypoints").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	var start: Vector2 = canvas.to_screen(Vector2(original.points[0][0], original.points[0][1]))
@@ -177,7 +176,7 @@ func _check_input_and_history() -> void:
 	check(changed.points[0] != original.points[0] and changed.points.size() == original.points.size(), "mouse drag moves exactly the selected route handle")
 	check((app.get("history") as Array).size() == 1, "one completed drag creates one undo step")
 	var library: TrackLibrary = app.get("library")
-	check(library.load_document(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
+	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
 	var expected_preview: NativeTrack = TrackCompiler.compile(changed)
 	check(canvas.preview.track != null and canvas.preview.track.content_hash == expected_preview.content_hash and canvas.preview.track.cells == expected_preview.cells, "released editor drag refreshes the exact compiled native preview")
 	_button(app.get("root_ui"), "Undo").pressed.emit()
@@ -267,8 +266,8 @@ func _check_import_copy() -> void:
 	var copy: Dictionary = app.get("document")
 	check(copy.id != saved.id and copy.name == imported.name, "import opens a separately identified local draft")
 	check(copy.creator == "Mira", "import preserves the shared creator attribution for search")
-	check(library.load_document(saved.id) == saved, "importing an existing identifier cannot overwrite the original draft")
-	check(library.load_document(copy.id) == copy, "the imported copy is persisted independently")
+	check(library.load_wip(saved.id) == saved, "importing an existing identifier cannot overwrite the original draft")
+	check(library.load_wip(copy.id) == copy, "the imported copy is persisted independently")
 	check(imported.id == saved.id, "import does not mutate the supplied document")
 	check((app.get("history") as Array).is_empty() and (app.get("redo_history") as Array).is_empty(), "import clears unrelated undo and redo history")
 
@@ -442,13 +441,6 @@ func _capture_editor_themes() -> void:
 		await process_frame
 		(app.get("canvas") as EditorCanvas).fit()
 		await _capture("creator-theme-" + theme)
-		_button(app.get("root_ui"), "3D preview").pressed.emit()
-		await _capture("creator-preview-" + theme)
-		for child: Node in (app.get("root_ui") as Control).get_children():
-			if child is AcceptDialog:
-				(child as AcceptDialog).get_ok_button().pressed.emit()
-				check(not child.visible, "3D preview returns to editing: " + theme)
-				child.queue_free()
 	# Restore the same authoring document after visual-only evidence variants.
 	app.set("document", original)
 	app.call("_show_screen", "create")

@@ -72,7 +72,7 @@ func _blank_and_connect() -> void:
 	check(doc.layout.is_empty() and doc.pieces.is_empty() and doc.paint.is_empty(), "blank creation begins with editable terrain and no imposed road loop")
 	check(canvas.get_global_rect().size.is_equal_approx(root.get_visible_rect().size), "the editing canvas fills the landscape viewport")
 	check(canvas.mode == "road", "blank creation opens the Road workflow")
-	for text: String in ["Track","Surfaces","Objects","Race"]:
+	for text: String in ["Track","Surfaces","Objects","Waypoints"]:
 		check(_button(app.get("root_ui"),text) != null, "category rail exposes " + text)
 	var before: Dictionary = doc.duplicate(true)
 	canvas.choose_piece("straight")
@@ -89,7 +89,7 @@ func _blank_and_connect() -> void:
 	check(doc.pieces.size() == 1 and canvas.ghost.is_empty(), "confirming the ghost commits one road section")
 	check(canvas.selected_piece == -1 and _button(app.get("root_ui"),"Straight") != null and _button(app.get("root_ui"),"Curve") != null,"confirming a section immediately returns to the road palette for the next placement")
 	check((app.get("history") as Array).size() == 1, "confirmed placement creates exactly one undo entry")
-	var stored: Dictionary = (app.get("library") as TrackLibrary).load_document(doc.id)
+	var stored: Dictionary = (app.get("library") as TrackLibrary).load_wip(doc.id)
 	check(stored == doc, "a placed open road is saved as an editable draft")
 	canvas.choose_piece("curve")
 	check(canvas.snap_matched, "next section previews an aligned endpoint join")
@@ -179,7 +179,7 @@ func _world_and_touch() -> void:
 	_touch(canvas,31,a+Vector2(-20,20),false)
 	check(canvas.zoom > initial_zoom and canvas.pan != initial_pan, "two fingers navigate the scene while the road tool is active")
 	check(app.get("document") == doc and canvas.touches.is_empty() and not canvas.dragging, "pinch navigation does not alter road sections or leave a captured finger")
-	for text: String in ["Track","Surfaces","Objects","Race"]:
+	for text: String in ["Track","Surfaces","Objects","Waypoints"]:
 		var button: Button = _button(app.get("root_ui"),text)
 		if button == null:
 			continue
@@ -383,7 +383,7 @@ func _objects_and_issues() -> void:
 	app.call("_build_editor_tools")
 	await _capture("objects")
 	var library: TrackLibrary = app.get("library")
-	check(library.load_document(doc.id) == JSON.parse_string(JSON.stringify(doc)), "section roads and barrier runs persist together in the actual JSON contract")
+	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "section roads and barrier runs persist together in the actual JSON contract")
 	var native: NativeTrack = TrackCompiler.compile(doc)
 	check(native != null and native.cells == canvas.native_preview.cells, "visible editor scenery uses the same updated collision and surface content")
 	# Controlled obstruction fixture exercises real validation and recovery UI.
@@ -412,7 +412,7 @@ func _objects_and_issues() -> void:
 	_touch(canvas,51,start_touch,false)
 	check(doc.has("practice_start") and Vector2(doc.practice_start.position[0],doc.practice_start.position[1]) == clear_start, "a map tap stores the selected practice start position")
 	check(doc.objects == blocked_document.objects and not (app.get("test_button") as Button).disabled and TrackDocument.validate(doc).is_empty(), "moving the start resolves the issue while preserving the obstacle and a valid document")
-	check(library.load_document(doc.id) == JSON.parse_string(JSON.stringify(doc)), "the alternative practice start is saved with the map")
+	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "the alternative practice start is saved with the map")
 	app.call("_undo")
 	await process_frame
 	await process_frame

@@ -114,12 +114,21 @@ func _load_ui() -> void:
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
-	check(library.load_document("current").name=="Current work","choosing a track saves outgoing work before replacement")
+	check(library.load_wip("current").name=="Current work","choosing a track saves outgoing work before replacement")
 	check(app.get("document").id=="saved_curve" and canvas.document.pieces[0].angle==120.0,"Load restores authored geometry with the same track ID")
 	check(canvas.selected_piece==-1 and app.get("history").is_empty(),"loaded track starts without the previous document selection or undo history")
 	canvas.selected_piece=0
 	app.call("_change_piece","width",2.0)
-	check(library.load_document("saved_curve").pieces[0].width==12.0,"loaded track can be edited and saved under the same ID")
+	check(library.load_wip("saved_curve").pieces[0].width==12.0,"loaded track edits autosave under the same WIP ID")
+	check(library.load_document("saved_curve").pieces[0].width==10.0,"autosave preserves original saved width")
+	app.call("_load_saved_document","wip:saved_curve")
+	await process_frame; await process_frame
+	check(app.get("document").pieces[0].width==12.0,"WIP selection restores the edited geometry")
+	app.call("_save_track_explicit")
+	check(library.load_document("saved_curve").pieces[0].width==12.0,"explicit Save updates the original only when requested")
+	for child: Node in app.get("root_ui").get_children():
+		if child is AcceptDialog: child.hide(); child.queue_free()
+	await process_frame
 	(app.get("root_ui") as Node).find_child("LoadTrack",true,false).pressed.emit()
 	await process_frame
 	dialog=(app.get("root_ui") as Node).find_child("LoadTrackDialog",true,false)

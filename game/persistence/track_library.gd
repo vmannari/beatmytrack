@@ -153,3 +153,19 @@ func delete_document(id: String) -> Error:
 	revision += 1
 	last_error = ""
 	return OK
+
+
+func save_wip(document: Dictionary) -> Error:
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	var error: Error=drafts.save_document(document)
+	last_error=drafts.last_error
+	return error
+
+func load_wip(id: String) -> Dictionary:
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	var result: Dictionary=drafts.load_document(id)
+	last_error=drafts.last_error
+	return result
+
+func list_wips() -> Array[Dictionary]:
+	return TrackLibrary.new(directory.path_join("wip")).list_documents()

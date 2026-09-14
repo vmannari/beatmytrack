@@ -5,7 +5,6 @@ signal mode_chosen(mode: String)
 signal size_chosen(scale: float)
 signal select_requested
 var category: String = "All"
-var query: String = ""
 var biome: String = "pine"
 var current: String = "tree"
 var placement: String = "single"
@@ -16,6 +15,9 @@ var details: VBoxContainer
 var options: PopupPanel
 var categories: HBoxContainer
 var page: int = 0
+var previous: Button
+var next: Button
+var page_size: int = 6
 
 func _ready() -> void:
 	name = "ObjectBrowser"
@@ -24,15 +26,6 @@ func _ready() -> void:
 	add_child(column)
 	var top := HBoxContainer.new()
 	column.add_child(top)
-	var search := LineEdit.new()
-	search.name = "ObjectSearch"
-	search.placeholder_text = "Search objects..."
-	search.text=query
-	search.custom_minimum_size = Vector2(190,38)
-	EditorStyle.apply(search)
-	top.add_child(search)
-	search.text_changed.connect(func(value: String) -> void:
-		query = value; page = 0; _tiles())
 	categories = _scroll_row(top)
 	for value: String in ["All","Recent"]+CreatorCatalog.CATEGORIES:
 		var button: Button = _button(value,func() -> void:
@@ -45,7 +38,22 @@ func _ready() -> void:
 	settings.tooltip_text="Object variants and placement"
 	settings.custom_minimum_size=Vector2(40,38)
 	top.add_child(settings)
-	tiles = _scroll_row(column)
+	var paging := HBoxContainer.new()
+	column.add_child(paging)
+	previous=EditorButton.make("","back",func() -> void: page-=1; _tiles())
+	previous.name="PreviousObjects"
+	previous.tooltip_text="Previous objects"
+	previous.custom_minimum_size=Vector2(44,88)
+	paging.add_child(previous)
+	tiles = _scroll_row(paging)
+	next=EditorButton.make("","next",func() -> void: page+=1; _tiles())
+	next.name="NextObjects"
+	next.tooltip_text="Next objects"
+	next.custom_minimum_size=Vector2(44,88)
+	paging.add_child(next)
+	resized.connect(func() -> void:
+		var count: int=maxi(1,int((size.x-120)/110))
+		if count!=page_size: page_size=count; page=0; _tiles())
 	options=PopupPanel.new()
 	options.name="ObjectOptionsPopup"
 	options.add_theme_stylebox_override("panel",EditorStyle.box())
@@ -86,13 +94,13 @@ func _tiles() -> void:
 	_clear(tiles)
 	for button: Button in categories.get_children():
 		EditorStyle.apply(button,button.text==category)
-	var entries: Array = CreatorCatalog.filtered(category,query,recent,biome)
-	page = clampi(page,0,maxi(0,(entries.size()-1)/8))
-	if page>0: tiles.add_child(EditorButton.make("","back",func() -> void: page-=1; _tiles()))
-	for index: int in range(page*8,mini(entries.size(),page*8+8)):
+	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
+	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
+	previous.disabled=page==0
+	next.disabled=(page+1)*page_size>=entries.size()
+	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
 		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],choose.bind(asset[0])))
-	if (page+1)*8<entries.size(): tiles.add_child(EditorButton.make("","next",func() -> void: page+=1; _tiles()))
 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
 
 func refresh() -> void:

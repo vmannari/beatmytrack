@@ -42,17 +42,26 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	viewport.add_child(light)
 	var camera := Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = maxf(2.0,CreatorObjects.dimensions(kind).length()*0.85)
-	if kind in ["tree","broadleaf","light","flag","gantry","hut","shed"]: camera.size=maxf(6.0,camera.size)
 	camera.position = Vector3(7,8,10)
 	viewport.add_child(camera)
-	camera.look_at_from_position(camera.position,Vector3(0,1.5 if kind in ["tree","broadleaf","light","flag","gantry","hut","shed"] else 0.45,0))
+	camera.look_at_from_position(camera.position,Vector3.ZERO)
+	var bounds: AABB=_mesh_bounds(kit)
+	var center: Vector3=bounds.get_center()
+	var projected_min := Vector3(INF,INF,INF)
+	var projected_max := Vector3(-INF,-INF,-INF)
+	for index: int in range(8):
+		var point: Vector3=camera.basis.transposed()*(bounds.get_endpoint(index)-center)
+		projected_min=projected_min.min(point)
+		projected_max=projected_max.max(point)
+	var extent: Vector3=projected_max-projected_min
+	camera.size=maxf(0.1,maxf(extent.y,extent.x/(208.0/128.0))*1.25)
+	camera.look_at_from_position(center+Vector3(7,8,10),center)
 	camera.current = true
 	var image := TextureRect.new()
 	image.texture = viewport.get_texture()
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
-	image.position = Vector2(2,2)
-	image.size = Vector2(100,62)
+	image.position = Vector2(10,6)
+	image.size = Vector2(84,54)
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(image)
 	var label := Label.new()
@@ -65,3 +74,17 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(label)
 	return button
+
+
+static func _mesh_bounds(node: Node, parent: Transform3D = Transform3D.IDENTITY) -> AABB:
+	var result := AABB()
+	var transform: Transform3D=parent*node.transform if node is Node3D else parent
+	if node is MeshInstance3D: result=transform*node.get_aabb()
+	if node is MultiMeshInstance3D and node.multimesh!=null:
+		for index: int in range(node.multimesh.instance_count):
+			var bounds: AABB=transform*node.multimesh.get_instance_transform(index)*node.multimesh.mesh.get_aabb()
+			result=bounds if result.size==Vector3.ZERO else result.merge(bounds)
+	for child: Node in node.get_children():
+		var bounds: AABB=_mesh_bounds(child,transform)
+		if bounds.size!=Vector3.ZERO: result=bounds if result.size==Vector3.ZERO else result.merge(bounds)
+	return result

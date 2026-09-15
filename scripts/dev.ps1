@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('TestBridgeHUD', 'CaptureBridgeHUD', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
+    [ValidateSet('ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -242,6 +242,12 @@ try {
             $evidencePath = Join-Path $buildRoot 'app-evidence'
             New-Item -ItemType Directory -Path $evidencePath -Force | Out-Null
             Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_app.gd', '--', "--capture-app-flow=$evidencePath") 'app-capture.log'
+        }
+        'ProfileMinimap' {
+            $baseline = @(& git -C $repoRoot show 'c647398:game/ui/hud_road_map.gd')
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read minimap baseline c647398.' }
+            [System.IO.File]::WriteAllText((Join-Path $buildRoot 'minimap-before.gd'), (($baseline -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/profile_minimap.gd', '--', "--document=$StyleDocument") 'minimap-profile.log'
         }
         'TestBridgeHUD' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd') 'bridge-hud-tests.log' }
         'CaptureBridgeHUD' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd', '--', '--capture-bridge-hud') 'bridge-hud-capture.log' }

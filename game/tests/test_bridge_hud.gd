@@ -129,6 +129,12 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		popup.popup_hide.emit()
 		check(not bool(game.get("paused")),"dismissing race menu resumes a running drive")
 	game.call("_process",0.1)
+	var rebuilds: int = hud.road_map.rebuild_count
+	for update: int in range(30):
+		hud.road_map.player += Vector2(0.1,0)
+		hud.road_map.queue_redraw()
+	check(hud.road_map.rebuild_count == rebuilds,"marker updates do not rebuild static road geometry")
+	hud.road_map.player = sim.state.position
 	var before: Array = sim.state.snapshot()
 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
 	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]

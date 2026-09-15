@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-15 V02/V03/V05/Q01/R01: minimap roads cached separately from the player marker and reduced to thin placed-road lines. Desktop redraw callback ~6 ms to ~0.05 ms; 95 graphical checks pass. [Measurements, capture and device limits](docs/MINIMAP_PERFORMANCE.md).
+
 2026-09-15 V02/V03/V04/V05/G01/R01/R07: reference-shaped HUD, icon menu, raised pedals and blue/concrete bridges; minimap exclusively follows placed road pieces on new creator tracks. 264 focused checks pass. [Evidence, commands and phone acceptance](docs/REFERENCE_HUD.md).
 
 2026-09-15 V02/V03/V04/V05/G01/R01/R07: bridge steel rails and shaded deck fascia refined; racing HUD uses navy/cream/gold Barlow styling with separate lap, timer, actions and compact speed. 412 focused checks pass. [Actual captures, commands and phone limitations](docs/BRIDGE_HUD.md).

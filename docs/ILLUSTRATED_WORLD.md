@@ -1,5 +1,7 @@
 # Illustrated gameplay world ? 2026-09-15
 
+Superseded in part by [the owner-directed scenery restoration and hatchback correction](HATCHBACK.md). Grass, road and lighting changes below describe the rejected historical pass.
+
 ## Scope and requirements
 V02/V04/V05, with V01 camera and G01 handling preserved. Owner requests gameplay closer to the illustrated menu. This first presentation slice adds cream/blue two-tone bodywork, pillars, window trim, hood seams, wipers, door handles, grille slats, round lamps and wheel spokes to the original fictional compact. Shared materials reduce grass contrast and directional asphalt grain; Pine uses cooler asphalt and restrained green. Race lighting uses softer warm sunlight and blue ambient fill. Visual kit is track-kit-15. No canonical physics, track cells, car scale or camera edits.
 

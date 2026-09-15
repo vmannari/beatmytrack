@@ -4,7 +4,7 @@ extends RefCounted
 ## Surface IDs retain the same driving meaning in every theme.
 
 const IDS: Array[String] = ["pine", "coast", "desert"]
-const PINE: Array[Color] = [Color("303b42"), Color("59684c"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
+const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
 const COAST: Array[Color] = [Color("374348"), Color("64745e"), Color("af9b77"), Color("315e69"), Color("889084"), Color("c5c4b3"), Color("648e91"), Color("948c77")]
 const DESERT: Array[Color] = [Color("3e4140"), Color("82775a"), Color("b29874"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 

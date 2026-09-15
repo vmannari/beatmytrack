@@ -18,25 +18,43 @@ static func build(parent: Node3D, bridges: Array) -> void:
 			for side: float in [-1.0,1.0]:
 				var inner: float = half*side
 				var outer: float = (half+CreatorBridges.RAIL)*side
-				strip(tool,span,a,b,inner,outer,0.65,Color("8d9492"))
-				quad(tool,vertex(span,a,inner,0.38),vertex(span,b,inner,0.38),vertex(span,b,inner,0.65),vertex(span,a,inner,0.65),Color("686e6d"))
-				quad(tool,vertex(span,a,outer,0.38),vertex(span,b,outer,0.38),vertex(span,b,outer,0.65),vertex(span,a,outer,0.65),Color("686e6d"))
-				# Open metal guardrail with discrete posts instead of a concrete slab.
+				# Broad concrete footing, narrow folded steel rail. Both remain
+				# inside the existing solid rail footprint; the underpass stays open.
+				strip(tool,span,a,b,inner,outer,0.10,Color("afb1a5"))
+				wall(tool,span,a,b,inner,0.025,0.10,Color("626e70"))
+				wall(tool,span,a,b,outer,-0.42,0.10,Color("435968"))
+				strip(tool,span,a,b,(half+0.63)*side,outer,-0.40,Color("829199"))
+				wall(tool,span,a,b,outer,-0.42,-0.34,Color("233845"))
+				var rail: float = (half+0.14)*side
+				var fold: float = (half+0.22)*side
+				var back: float = (half+0.34)*side
+				strip(tool,span,a,b,rail,back,0.65,Color("d0d2c6"))
+				quad(tool,vertex(span,a,rail,0.65),vertex(span,b,rail,0.65),vertex(span,b,fold,0.52),vertex(span,a,fold,0.52),Color("899ca3"))
+				quad(tool,vertex(span,a,fold,0.52),vertex(span,b,fold,0.52),vertex(span,b,rail,0.38),vertex(span,a,rail,0.38),Color("4b6472"))
+				wall(tool,span,a,b,back,0.38,0.65,Color("607887"))
 				if i%4 == 0:
-					var middle: float = (inner+outer)*0.5
-					var left: float = middle-0.065
-					var right: float = middle+0.065
-					quad(tool,vertex(span,a,left,-0.10),vertex(span,a+0.13,left,-0.10),vertex(span,a+0.13,left,0.65),vertex(span,a,left,0.65),Color("646b68"))
-					quad(tool,vertex(span,a,right,-0.10),vertex(span,a+0.13,right,-0.10),vertex(span,a+0.13,right,0.65),vertex(span,a,right,0.65),Color("646b68"))
-					quad(tool,vertex(span,a,left,-0.10),vertex(span,a,right,-0.10),vertex(span,a,right,0.65),vertex(span,a,left,0.65),Color("535b57"))
+					var end: float = minf(a+0.14,float(span.length))
+					var post: float = (half+0.28)*side
+					wall(tool,span,a,end,post,0.10,0.65,Color("344c5a"))
+					quad(tool,vertex(span,a,post,0.10),vertex(span,a,back,0.10),vertex(span,a,back,0.65),vertex(span,a,post,0.65),Color("617683"))
+					if i%8 == 0:
+						strip(tool,span,a,end,rail,back,0.656,Color("e7b951"))
 				strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
-			# The underside gives the span a readable thickness from racing.
-			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.2,Color("626b69"))
+			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
+		# Recessed expansion joints at the crest of each ramp.
+		for u: float in [CreatorBridges.RAMP,float(span.length)-CreatorBridges.RAMP]:
+			strip(tool,span,u,u+0.055,-half,half,0.034,Color("182c37"))
+			strip(tool,span,u+0.055,u+0.085,-half,half,0.035,Color("788382"))
+		# End caps close the folded rail and mark the non-drivable edge.
+		for u: float in [0.0,float(span.length)]:
+			for side: float in [-1.0,1.0]:
+				quad(tool,vertex(span,u,(half+0.14)*side,0.38),vertex(span,u,(half+0.34)*side,0.38),vertex(span,u,(half+0.34)*side,0.65),vertex(span,u,(half+0.14)*side,0.65),Color("e7b951"))
 		# Small approach markings explain which ends can be driven onto.
 		for u: float in [2.0,float(span.length)-2.0]:
 			for side: float in [-1.0,1.0]: strip(tool,span,u,u+0.18,side*1.0,side*2.0,0.04,Color("d5d6bb"))
 	tool.generate_normals()
 	var mesh := MeshInstance3D.new()
+	mesh.name = "BridgeSteelAndFascia"
 	mesh.mesh = tool.commit()
 	var material := VisualGeometry.material(Color.WHITE)
 	material.vertex_color_use_as_albedo = true
@@ -45,6 +63,7 @@ static func build(parent: Node3D, bridges: Array) -> void:
 	parent.add_child(mesh)
 	deck.generate_normals()
 	var road := MeshInstance3D.new()
+	road.name = "BridgeAsphalt"
 	road.mesh = deck.commit()
 	var asphalt := ShaderMaterial.new()
 	asphalt.shader = preload("res://track/bridge_road.gdshader")
@@ -61,3 +80,6 @@ static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left:
 static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:
 	tool.set_color(color)
 	for v: Vector3 in [a,c,b,a,d,c]: tool.add_vertex(v)
+
+static func wall(tool: SurfaceTool, span: Dictionary, a: float, b: float, across: float, low: float, high: float, color: Color) -> void:
+	quad(tool,vertex(span,a,across,low),vertex(span,b,across,low),vertex(span,b,across,high),vertex(span,a,across,high),color)

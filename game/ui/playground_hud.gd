@@ -14,6 +14,7 @@ signal edit_here_requested
 
 var production_mode: bool = false
 var editor_test: bool = false
+var lap_label: Label
 var race_timer: Label
 var pause_button: Button
 var handling_button: MenuButton
@@ -40,56 +41,95 @@ func _ready() -> void:
 	touch = TouchControls.new()
 	touch.driver = driver
 	root.add_child(touch)
-	var top := HBoxContainer.new()
-	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	top.offset_left = 24
-	top.offset_top = 20
-	top.offset_right = -24
-	top.add_theme_constant_override("separation", 12)
-	root.add_child(top)
-	title = _label("CIRCUIT / 01   ·   HANDLING YARD", 19)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.theme = RaceHUDStyle.theme()
+	var race_card := PanelContainer.new()
+	race_card.name = "RaceCard"
+	race_card.position = Vector2(24, 20)
+	race_card.custom_minimum_size = Vector2(248, 76)
+	race_card.add_theme_stylebox_override("panel", _panel_style())
+	race_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	race_card.visible = not editor_test
+	root.add_child(race_card)
+	var status := VBoxContainer.new()
+	status.add_theme_constant_override("separation", 0)
+	race_card.add_child(status)
+	lap_label = _label("LAP 1 / 5" if production_mode else "TEST DRIVE", 30)
+	lap_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+	status.add_child(lap_label)
+	title = _label("HANDLING YARD", 17)
+	title.custom_minimum_size.x = 224
+	title.clip_text = true
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	title.custom_minimum_size.x = 100
-	top.add_child(title)
-	race_timer = _label("00:00.00", 28)
+	title.visible = not editor_test
+	status.add_child(title)
+	var timing := PanelContainer.new()
+	timing.name = "TimingCard"
+	timing.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	timing.offset_left = -86
+	timing.offset_right = 86
+	timing.offset_top = 20
+	timing.add_theme_stylebox_override("panel", _panel_style())
+	timing.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	timing.visible = production_mode and not editor_test
+	root.add_child(timing)
+	var clock_info := VBoxContainer.new()
+	clock_info.add_theme_constant_override("separation", 0)
+	timing.add_child(clock_info)
+	var clock_caption := _label("RACE TIME", 14)
+	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	clock_caption.add_theme_color_override("font_color", RaceHUDStyle.MUTED)
+	clock_info.add_child(clock_caption)
+	race_timer = _label("00:00.00", 36)
+	race_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	race_timer.visible = production_mode and not editor_test
-	top.add_child(race_timer)
+	clock_info.add_child(race_timer)
+	var actions := VBoxContainer.new()
+	actions.name = "RaceActions"
+	actions.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	actions.offset_left = -304
+	actions.offset_right = -24
+	actions.offset_top = 20
+	actions.add_theme_constant_override("separation", 8)
+	root.add_child(actions)
+	var top := HBoxContainer.new()
+	top.alignment = BoxContainer.ALIGNMENT_END
+	top.add_theme_constant_override("separation", 8)
+	actions.add_child(top)
 	if editor_test:
-		title.visible = false
-		_button(top, "Practice (untimed)", func() -> void: pause_requested.emit())
-		pause_button = top.get_child(top.get_child_count() - 1) as Button
+		var practice := HBoxContainer.new()
+		practice.position = Vector2(24, 20)
+		root.add_child(practice)
+		_button(practice, "Practice (untimed)", func() -> void: pause_requested.emit())
+		pause_button = practice.get_child(0) as Button
 		pause_button.name = "PracticeStatus"
 		pause_button.tooltip_text = "Pause practice"
-		var spacer := Control.new()
-		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		top.add_child(spacer)
 		_button(top, "Restart", func() -> void: restart_requested.emit())
 		top.get_child(top.get_child_count() - 1).name = "PracticeRestart"
 		_button(top, "Edit here", func() -> void: edit_here_requested.emit())
-		var edit_button: Button = top.get_child(top.get_child_count() - 1) as Button
+		var edit_button := top.get_child(top.get_child_count() - 1) as Button
 		edit_button.name = "EditHere"
 		edit_button.custom_minimum_size.x = 124
-		var accent: StyleBoxFlat = _panel_style()
-		accent.bg_color = Color("006e82")
-		accent.border_color = Color("71d0d8")
-		accent.set_border_width_all(1)
+		var accent := RaceHUDStyle.panel(true)
+		accent.bg_color = RaceHUDStyle.GOLD
 		edit_button.add_theme_stylebox_override("normal", accent)
+		edit_button.add_theme_color_override("font_color", RaceHUDStyle.INK)
 	else:
-		_button(top, "Restart  R", func() -> void: restart_requested.emit())
-		_button(top, "Pause  Esc", func() -> void: pause_requested.emit())
-		pause_button = top.get_child(top.get_child_count()-1) as Button
+		_button(top, "Restart", func() -> void: restart_requested.emit())
 		if production_mode:
 			_button(top, "Tracks", func() -> void: exit_requested.emit())
+		_button(top, "Pause", func() -> void: pause_requested.emit())
+		pause_button = top.get_child(top.get_child_count() - 1) as Button
+		pause_button.add_theme_stylebox_override("normal", RaceHUDStyle.panel(true))
+	var secondary := HBoxContainer.new()
+	secondary.alignment = BoxContainer.ALIGNMENT_END
+	actions.add_child(secondary)
 	handling_button = MenuButton.new()
 	handling_button.name = "HandlingSelector"
 	handling_button.flat = false
 	handling_button.text = "Handling"
-	handling_button.custom_minimum_size = Vector2(110, 54)
-	handling_button.add_theme_stylebox_override("normal", _panel_style())
+	handling_button.custom_minimum_size = Vector2(196, 52)
 	handling_button.tooltip_text = "Compare handling; selecting a preset restarts this drive"
-	top.add_child(handling_button)
+	secondary.add_child(handling_button)
 	var choices: PopupMenu = handling_button.get_popup()
 	choices.add_theme_constant_override("v_separation", 16)
 	for entry: Array in [["Original+ (slide and drive)", 4], ["Original (unchanged)", 3], ["Planted", 0], ["Balanced", 1], ["Playful", 2]]:
@@ -99,28 +139,41 @@ func _ready() -> void:
 	choices.about_to_popup.connect(func() -> void: handling_menu_opened.emit())
 	choices.popup_hide.connect(func() -> void: handling_menu_closed.emit())
 	if OS.is_debug_build() and not production_mode:
-		_button(top, "Track F5", func() -> void: track_requested.emit())
-		_button(top, "Tune  F2", toggle_tuning)
-		_button(top, "Record  F3", func() -> void: record_requested.emit())
+		var tools := HBoxContainer.new()
+		tools.position = Vector2(24, 104)
+		root.add_child(tools)
+		_button(tools, "Track F5", func() -> void: track_requested.emit())
+		_button(tools, "Tune  F2", toggle_tuning)
+		_button(tools, "Record  F3", func() -> void: record_requested.emit())
 	var panel := PanelContainer.new()
-	panel.position = Vector2(24, 82)
-	panel.custom_minimum_size = Vector2(265, 0)
-	var speed_style: StyleBoxFlat = _panel_style()
-	speed_style.border_color = Color("a9c851")
-	speed_style.border_width_left = 5
-	panel.add_theme_stylebox_override("panel", speed_style)
+	panel.name = "SpeedCard"
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	panel.offset_left = -70
+	panel.offset_right = 70
+	panel.offset_top = -140
+	panel.offset_bottom = -64
+	panel.add_theme_stylebox_override("panel", _panel_style())
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.visible = not editor_test
 	root.add_child(panel)
 	var info := VBoxContainer.new()
-	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	info.add_theme_constant_override("separation", 0)
 	panel.add_child(info)
-	speed_label = _label("0 km/h", 38)
+	speed_label = _label("0", 38)
+	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info.add_child(speed_label)
+	var units := _label("KM/H", 14)
+	units.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	units.add_theme_color_override("font_color", RaceHUDStyle.MUTED)
+	info.add_child(units)
+	var telemetry := VBoxContainer.new()
+	telemetry.position = Vector2(24, 164)
+	root.add_child(telemetry)
 	profile_label = _label("Balanced", 17)
-	info.add_child(profile_label)
+	profile_label.visible = not production_mode
+	telemetry.add_child(profile_label)
 	debug_label = _label("", 15)
-	info.add_child(debug_label)
+	telemetry.add_child(debug_label)
 	debug_enabled = OS.is_debug_build() and not production_mode
 	var footer := VBoxContainer.new()
 	footer.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
@@ -208,7 +261,7 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 		return
 	hud_elapsed = 0.0
 	pause_button.text = ("Paused · Resume" if paused else "Practice (untimed)") if editor_test else ("Resume" if paused else ("Pause" if production_mode else "Pause  Esc"))
-	speed_label.text = "%3.0f km/h" % (state.velocity.length() * 3.6)
+	speed_label.text = "%03.0f" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
 	debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
 		state.velocity.dot(state.forward()), state.velocity.dot(state.right()), rad_to_deg(state.slip_angle()),
@@ -223,8 +276,9 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 func _label(text: String, font_size: int) -> Label:
 	var label := Label.new()
 	label.text = text
+	label.add_theme_font_override("font", RaceHUDStyle.DISPLAY)
 	label.add_theme_font_size_override("font_size", font_size)
-	label.add_theme_color_override("font_color", Color("e0e5de"))
+	label.add_theme_color_override("font_color", RaceHUDStyle.TEXT)
 	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.55))
 	label.add_theme_constant_override("shadow_offset_y", 1)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -234,19 +288,11 @@ func _label(text: String, font_size: int) -> Label:
 func _button(parent: Control, text: String, callback: Callable) -> void:
 	var button := Button.new()
 	button.text = text
-	button.custom_minimum_size.y = 54
+	button.custom_minimum_size = Vector2(76, 52)
 	button.focus_mode = Control.FOCUS_NONE
-	button.add_theme_font_size_override("font_size", 15)
-	button.add_theme_stylebox_override("normal", _panel_style())
 	button.pressed.connect(callback)
 	parent.add_child(button)
 
 
 func _panel_style() -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.08, 0.12, 0.14, 0.86)
-	style.set_content_margin_all(12)
-	style.border_color = Color(0.65, 0.71, 0.66, 0.6)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(8)
-	return style
+	return RaceHUDStyle.panel()

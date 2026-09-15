@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-15 V02/V03/V04/V05/G01/R01/R07: bridge steel rails and shaded deck fascia refined; racing HUD uses navy/cream/gold Barlow styling with separate lap, timer, actions and compact speed. 412 focused checks pass. [Actual captures, commands and phone limitations](docs/BRIDGE_HUD.md).
+
 2026-09-15 V02/V04/V05: kerb crown/bevel/base shading strengthened for normal gameplay-camera readability; physical height and response unchanged. 195 focused checks pass. [Captures and acceptance limits](docs/KERB_READABILITY.md).
 
 2026-09-15 G01/V02/V04/V05/R01/R03/R07: raised kerbs share 10 cm bevelled geometry with deterministic tyre contact and a small spring/speed response. Physics 0.21, compiler-10, recorder schema 7. [Actual checks, captures and device limits](docs/RAISED_KERBS.md).

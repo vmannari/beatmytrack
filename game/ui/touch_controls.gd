@@ -51,20 +51,20 @@ func _input(event: InputEvent) -> void:
 
 func _draw() -> void:
 	var rectangles: Array[Rect2] = zones()
-	var font: Font = ThemeDB.fallback_font
+	var font: Font = RaceHUDStyle.DISPLAY
 	for i: int in range(rectangles.size()):
 		var pressed: bool = driver != null and driver.touches.values().has(ACTIONS[i])
 		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.12, 0.17, 0.19, 0.92 if pressed else 0.78)
-		style.border_color = Color(0.8, 0.85, 0.83, 0.85 if pressed else 0.4)
+		style.bg_color = RaceHUDStyle.GOLD if pressed else Color("091923c7")
+		style.border_color = RaceHUDStyle.GOLD if pressed or i == 3 else Color("557080")
 		style.set_border_width_all(1)
-		style.set_corner_radius_all(8)
+		style.set_corner_radius_all(4)
 		draw_style_box(style, rectangles[i])
 		var text_size: Vector2 = font.get_string_size(LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
-		draw_string(font, rectangles[i].get_center() + Vector2(-text_size.x * 0.5, rectangles[i].size.y * 0.30), LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("e3e8e4"))
+		draw_string(font, rectangles[i].get_center() + Vector2(-text_size.x * 0.5, rectangles[i].size.y * 0.30), LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, RaceHUDStyle.INK if pressed else RaceHUDStyle.MUTED)
 
 		var center: Vector2 = rectangles[i].get_center() - Vector2(0, 13)
-		var ink := Color("edf0e4")
+		var ink: Color = RaceHUDStyle.INK if pressed else RaceHUDStyle.TEXT
 		if i < 2:
 			var direction: float = -1.0 if i == 0 else 1.0
 			draw_polyline(PackedVector2Array([center+Vector2(-8*direction,-16), center+Vector2(5*direction,0), center+Vector2(-8*direction,16)]), ink, 4.0, true)
@@ -73,14 +73,14 @@ func _draw() -> void:
 			draw_line(center, center+Vector2(9,-13), ink, 3.0, true)
 			draw_circle(center, 3, ink)
 		else:
-			draw_style_box(_pedal_style(), Rect2(center-Vector2(10,17),Vector2(20,34)))
+			draw_style_box(_pedal_style(ink), Rect2(center-Vector2(10,17),Vector2(20,34)))
 			for x: float in [-3.0,3.0]: draw_line(center+Vector2(x,-11),center+Vector2(x,11),ink,2.0,true)
 
 
-func _pedal_style() -> StyleBoxFlat:
+func _pedal_style(ink: Color) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color.TRANSPARENT
-	style.border_color = Color("edf0e4")
+	style.border_color = ink
 	style.set_border_width_all(2)
 	style.set_corner_radius_all(3)
 	return style

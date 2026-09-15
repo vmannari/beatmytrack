@@ -1,0 +1,137 @@
+extends SceneTree
+## Native and creator bridge presentation plus real HUD layout/state witnesses.
+var checks: int = 0
+var failures: int = 0
+var capture: bool = false
+
+func _initialize() -> void: call_deferred("run")
+
+func check(ok: bool, description: String) -> void:
+	checks += 1
+	if not ok:
+		failures += 1
+		print("FAIL: " + description)
+
+func circuit() -> NativeTrack:
+	var doc: Dictionary = TrackDocument.create_blank()
+	doc.id = "bridge_hud_review"
+	doc.name = "Overpass circuit"
+	var points: Array[Vector2] = [Vector2(-48,0),Vector2(-30,0),Vector2(30,0),Vector2(50,26),Vector2(0,42),Vector2(0,-42),Vector2(-50,-26)]
+	for i: int in range(points.size()):
+		var a: Vector2 = points[i]
+		var b: Vector2 = points[(i+1)%points.size()]
+		var piece: Dictionary = RoadPieces.create("bridge" if i == 1 else "straight",a,fposmod(rad_to_deg((b-a).angle()),360),14)
+		piece.length = a.distance_to(b)
+		doc.pieces.append(piece)
+	return TrackCompiler.compile(RoadPieces.route_from_pieces(doc).document)
+
+func run() -> void:
+	capture = "--capture-bridge-hud" in OS.get_cmdline_user_args()
+	var creator: NativeTrack = circuit()
+	var native := NativeTrack.read("res://resources/tracks/slicks_1way_test.json")
+	for track: NativeTrack in [creator,native]:
+		var cells: PackedInt32Array = track.cells.duplicate()
+		var deck: PackedInt32Array = track.deck_cells.duplicate()
+		var structure := Node3D.new()
+		var bridge := BridgePresentation.new(track)
+		bridge.build(structure)
+		check(track.cells == cells and track.deck_cells == deck,"bridge mesh construction preserves both collision layers")
+		check(structure.get_child_count() >= 2,"bridge generates road and structural meshes")
+		var facets: int = 0
+		for child: MeshInstance3D in structure.get_children():
+			var arrays: Array = child.mesh.surface_get_arrays(0)
+			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+			var downward: int = 0
+			for normal: Vector3 in normals:
+				if absf(normal.y) < 0.1: facets += 1
+				if normal.y <= 0.0: downward += 1
+			if child.material_override is ShaderMaterial:
+				check(downward == 0,"road faces point up for correct bridge lighting")
+		check(facets > 24,"bridge has vertical structural faces rather than only flat strips")
+		structure.free()
+	await review(creator,Vector2i(1280,720),false,"creator-race")
+	await review(native,Vector2i(960,540),false,"native-compact")
+	await review(creator,Vector2i(1920,864),true,"practice-wide")
+	print("BRIDGE_HUD_TESTS: %d checks, %d failures" % [checks,failures])
+	quit(0 if failures == 0 else 1)
+
+func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: String) -> void:
+	root.size = dimensions
+	root.content_scale_size = dimensions
+	var game: Node = load("res://core/game.tscn").instantiate()
+	game.set("initial_track",track)
+	game.set("production_mode",true)
+	game.set("editor_test",practice)
+	root.add_child(game)
+	game.set_physics_process(false)
+	game.set_process(false)
+	game.set("countdown_ticks",0)
+	var sim: VehicleSimulation = game.get("sim")
+	var point := Vector2(-8,0)
+	var route_index: int = track.nearest_route(point)
+	if track.creator_bridges.is_empty():
+		var bridge: BridgePresentation = game.get("bridge_presentation")
+		# Choose the highest upper-route point for a real native bridge view.
+		var highest: float = -1.0
+		for i: int in range(track.route.size()):
+			var height: float = bridge.height_at(track.route[i],i)
+			if height > highest:
+				highest = height
+				point = track.route[i]
+				route_index = i
+	sim.reset(point,PI*0.5)
+	sim.state.route_index = route_index
+	sim.state.track_elevated = true
+	game.set("previous_position",point)
+	game.set("previous_heading",sim.state.heading)
+	(game.get("camera") as FollowCamera).follow(point,Vector2.ZERO,sim.state.heading,0,true)
+	var hud: PlaygroundHUD = game.get("hud")
+	for frame: int in range(4):
+		game.call("_process",0.1)
+		await process_frame
+	var before: Array = sim.state.snapshot()
+	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
+	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]
+	var actions := hud.find_child("RaceActions",true,false) as Control
+	for child: Control in actions.get_child(0).get_children():
+		if child != hud.pause_button: buttons.append(child)
+	for button: Control in buttons:
+		check(bounds.encloses(button.get_global_rect()),"action stays on screen at %s: %s" % [dimensions,button.name])
+		check(button.size.y >= 52,"action retains a 52-unit touch target")
+	for i: int in range(buttons.size()):
+		for j: int in range(i+1,buttons.size()):
+			check(not buttons[i].get_global_rect().intersects(buttons[j].get_global_rect()),"action targets do not overlap")
+	if not practice:
+		var card := hud.find_child("RaceCard",true,false) as Control
+		var timing := hud.find_child("TimingCard",true,false) as Control
+		check(not card.get_global_rect().intersects(timing.get_global_rect()) and not timing.get_global_rect().intersects(actions.get_global_rect()),"lap, timer and actions occupy separate columns")
+		var saved: String = hud.title.text
+		hud.title.text = "A very long fictional circuit name that must never push the race timer or actions away"
+		await process_frame
+		await process_frame
+		check(card.size.x <= 248.1 and not card.get_global_rect().intersects(timing.get_global_rect()),"long circuit name stays inside the circuit card")
+		hud.title.text = saved
+		var speed := hud.find_child("SpeedCard",true,false) as Control
+		check(bounds.encloses(speed.get_global_rect()) and speed.size.y < 90,"speed card is compact and stays above the bottom inset")
+		for zone: Rect2 in hud.touch.zones():
+			check(not zone.intersects(speed.get_global_rect()),"speed does not cover a driving touch zone")
+	check(sim.state.snapshot() == before,"HUD presentation does not change simulation state")
+	await save_capture(filename)
+	hud.pause_button.pressed.emit()
+	game.call("_process",0.1)
+	check(bool(game.get("paused")) and not hud.touch.enabled,"pause action stops input")
+	if practice:
+		check(hud.pause_button.text == "Paused \u00b7 Resume","practice pause retains its resume label")
+		check(not hud.title.visible and not hud.race_timer.visible,"practice has no race timing or lap HUD")
+		await save_capture("practice-paused")
+	hud.pause_button.pressed.emit()
+	game.call("_process",0.1)
+	check(not bool(game.get("paused")) and hud.touch.enabled,"resume restores input")
+	game.queue_free()
+	await process_frame
+
+func save_capture(filename: String) -> void:
+	if not capture: return
+	for frame: int in range(3): await RenderingServer.frame_post_draw
+	var path: String = ProjectSettings.globalize_path("res://../build/bridge-hud-"+filename+".png")
+	check(root.get_texture().get_image().save_png(path) == OK,"saved "+filename)

@@ -3,7 +3,7 @@ extends RefCounted
 ## Spatial road elevation shared by bridge meshes and vehicle presentation.
 ## Presentation only: no temporal easing and no changes to canonical handling.
 
-const VERSION: String = "bridge-ramps-1"
+const VERSION: String = "bridge-ramps-2"
 const APPROACH: float = 4.0
 const INSET: float = 4.0
 var track: NativeTrack
@@ -109,6 +109,9 @@ func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
 func build(parent: Node3D) -> void:
 	CreatorBridgeVisual.build(parent,track.creator_bridges)
 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
+	var fascia := SurfaceTool.new()
+	fascia.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var fascia_count: int = 0
 	for kind: int in [0,4]:
 		var surface := SurfaceTool.new()
 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -121,7 +124,18 @@ func build(parent: Node3D) -> void:
 				for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x+1,y+1),Vector2(x,y+1)]:
 					var p: Vector2 = point(corner)
 					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.65 if kind == 4 else 0.015)))
-				for i: int in [0,2,1,0,3,2]: surface.add_vertex(vertices[i])
+				surface.set_color(Color("b9c3be") if kind == 4 else Color.WHITE)
+				for i: int in [0,1,2,0,2,3]: surface.add_vertex(vertices[i])
+				# Close exposed deck edges with a shaded, substantial fascia.
+				for i: int in range(4):
+					var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
+					if inside(neighbor) and roles[neighbor.y * track.grid_width + neighbor.x] >= 0: continue
+					var drop: float = 0.65 if kind == 4 else 0.015
+					var a: Vector3 = vertices[i] - Vector3.UP * drop
+					var b: Vector3 = vertices[(i+1)%4] - Vector3.UP * drop
+					CreatorBridgeVisual.quad(fascia,a,b,b-Vector3.UP*0.34,a-Vector3.UP*0.34,Color("435968"))
+					CreatorBridgeVisual.quad(fascia,a-Vector3.UP*0.34,b-Vector3.UP*0.34,b-Vector3.UP*0.42,a-Vector3.UP*0.42,Color("233845"))
+					fascia_count += 1
 				if kind == 4:
 					for i: int in range(4):
 						var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
@@ -129,13 +143,33 @@ func build(parent: Node3D) -> void:
 							continue
 						var a: Vector3 = vertices[i]
 						var b: Vector3 = vertices[(i+1)%4]
-						for v: Vector3 in [a,b,b-Vector3.UP*0.65,a,b-Vector3.UP*0.65,a-Vector3.UP*0.65]: surface.add_vertex(v)
+						CreatorBridgeVisual.quad(surface,a,b,b-Vector3.UP*0.12,a-Vector3.UP*0.12,Color("8c9fa6"))
+						CreatorBridgeVisual.quad(surface,a-Vector3.UP*0.12,b-Vector3.UP*0.12,b-Vector3.UP*0.51,a-Vector3.UP*0.51,Color("4b6472"))
+						CreatorBridgeVisual.quad(surface,a-Vector3.UP*0.51,b-Vector3.UP*0.51,b-Vector3.UP*0.65,a-Vector3.UP*0.65,Color("afb1a5"))
 				count += 1
 		if count:
 			surface.generate_normals()
 			var mesh := MeshInstance3D.new()
 			mesh.mesh = surface.commit()
-			var material := VisualGeometry.material(palette[4].lightened(0.17) if kind == 4 else palette[0].lightened(0.06))
-			material.cull_mode = BaseMaterial3D.CULL_DISABLED
-			mesh.material_override = material
+			if kind == 0:
+				var asphalt := ShaderMaterial.new()
+				asphalt.shader = preload("res://track/bridge_road.gdshader")
+				asphalt.set_shader_parameter("road_color", palette[0])
+				mesh.material_override = asphalt
+			else:
+				mesh.material_override = _structure_material()
 			parent.add_child(mesh)
+	if fascia_count > 0:
+		fascia.generate_normals()
+		var edge := MeshInstance3D.new()
+		edge.name = "NativeBridgeFascia"
+		edge.mesh = fascia.commit()
+		edge.material_override = _structure_material()
+		parent.add_child(edge)
+
+
+func _structure_material() -> StandardMaterial3D:
+	var material := VisualGeometry.material(Color.WHITE)
+	material.vertex_color_use_as_albedo = true
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return material

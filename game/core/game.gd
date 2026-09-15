@@ -117,6 +117,8 @@ func _ready() -> void:
 	countdown_label.offset_right = 160
 	countdown_label.offset_top = -60
 	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	countdown_label.add_theme_font_override("font", RaceHUDStyle.DISPLAY)
+	countdown_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
 	countdown_label.add_theme_font_size_override("font_size",72)
 	countdown_label.add_theme_color_override("font_outline_color",Color("172129"))
 	countdown_label.add_theme_constant_override("outline_size",12)
@@ -211,7 +213,8 @@ func _process(delta: float) -> void:
 			hud.title.text = "Practice (untimed)"
 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
 		elif production_mode:
-			hud.title.text = "%s  /  LAP %d OF %d" % [str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper()))), mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
+			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper())))
+			hud.lap_label.text = "LAP %d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
 			hud.race_timer.text = "%02d:%05.2f" % [int(track_session.elapsed_ticks / 120.0) / 60, fmod(track_session.elapsed_ticks / 120.0,60.0)]
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:

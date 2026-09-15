@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-9"
+const VERSION: String = "creator-compiler-10"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 

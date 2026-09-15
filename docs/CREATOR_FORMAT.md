@@ -37,3 +37,8 @@ Final wrapper execution exited 0; retained output is [creator-tests.txt](evidenc
 The existing ignored `.tools/review/Scripts/python.exe` with `jsonschema.Draft202012Validator` checked schema correctness, accepted the checked-in starter fixture and rejected five invalid structural examples (control-character title, traversal/device IDs, short point list, Boolean width). No runtime dependency was added.
 
 Remaining acceptance: physical-phone drag/pan/zoom and simultaneous controls, lifecycle behavior in an actual app stop/relaunch, safe areas and file selection on Android, eight of ten novice users creating/testing/sharing within five minutes, and human evaluation of edited route quality. No phone or Android share-sheet test was performed for this domain work. Three-lap timing currently uses the existing practice session; it is not a ranked shortcut verifier.
+
+
+## Raised kerb contract ? 2026-09-15
+
+Compiler-10 adds derived, shared kerb triangles to the in-memory native track. Saved creator documents remain v5. Exposed asphalt inside bends use the same RoadEdges construction for visual shoulders and canonical kerbs, with fitted white-ended runs, a 0.75 m untapered footprint and 0.10 m crown. Paint/obstacle masks suppress both appearance and support. Native source kerbs are inferred from concrete cells near asphalt; new-piece raster shoulders are excluded from that native path. Physics 0.21 versions the driving response; diagnostic schema 7 appends six kerb spring scalars at snapshot index 18. [Actual implementation, tests, new golden identity and limitations](RAISED_KERBS.md).

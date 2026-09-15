@@ -280,61 +280,63 @@ func _roadside_visuals() -> void:
 			var visual := NativeTrackVisual.new()
 			visual.colors = TrackTheme.palette("pine")
 			visual.call("_build_creator_roads",track)
-			var measured: bool = false
-			var correct: bool = true
-			var closed_seams: bool = true
 			var upward: bool = true
 			var bounded_runs: bool = true
-			var taper_coordinates: bool = true
+			var raised: bool = false
+			var sloped: bool = false
+			var matched: bool = true
+			var kerb_vertices: int = 0
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
 				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
 				var arrays: Array = mesh.mesh.surface_get_arrays(0)
 				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-				for normal: Vector3 in normals: upward = upward and normal.distance_to(Vector3.UP) < 0.0001 # Packed mesh normals have quantization error.
-				if not material.get_shader_parameter("kerb"): continue
-				measured = true
+				if material.shader.resource_path != "res://track/kerb.gdshader":
+					for normal: Vector3 in normals: upward = upward and normal.distance_to(Vector3.UP) < 0.0001
+					continue
 				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-				var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
-				var across: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV2]
-				taper_coordinates = taper_coordinates and across.size() == vertices.size()
-				for value: Vector2 in across: taper_coordinates = taper_coordinates and value.x in [0.0,1.0]
-				for coordinate: Vector2 in uv:
+				kerb_vertices += vertices.size()
+				for normal: Vector3 in normals:
+					matched = matched and normal.y > 0.0 and absf(normal.length()-1.0) < 0.001
+					sloped = sloped or normal.y < 0.98
+				for vertex: Vector3 in vertices:
+					raised = raised or vertex.y > 0.11
+					matched = matched and vertex.y >= 0.0179 and vertex.y <= 0.1181
+				for coordinate: Vector2 in arrays[Mesh.ARRAY_TEX_UV]:
 					bounded_runs = bounded_runs and coordinate.y > 0.0 and coordinate.x >= -0.0001 and coordinate.x <= coordinate.y+0.0001
-				var indices := PackedInt32Array()
-				if arrays[Mesh.ARRAY_INDEX] != null:
-					indices = arrays[Mesh.ARRAY_INDEX]
-				else:
-					for vertex: int in range(vertices.size()): indices.append(vertex)
-				var previous_end := PackedVector3Array()
-				var previous_u: float = -1.0
-				for i: int in range(0,indices.size(),6):
-					var low: float = INF
-					var high: float = -INF
-					for j: int in range(6):
-						low = minf(low,uv[indices[i+j]].x)
-						high = maxf(high,uv[indices[i+j]].x)
-					var start := PackedVector3Array()
-					var end := PackedVector3Array()
-					for j: int in range(6):
-						var vertex: int = indices[i+j]
-						if absf(uv[vertex].x-low) < 0.00001 and not start.has(vertices[vertex]): start.append(vertices[vertex])
-						if absf(uv[vertex].x-high) < 0.00001 and not end.has(vertices[vertex]): end.append(vertices[vertex])
-					if start.size() != 2 or end.size() != 2:
-						correct = false
-						continue
-					var length: float = ((start[0]+start[1])*0.5).distance_to((end[0]+end[1])*0.5)
-					correct = correct and absf(high-low-length) < 0.0001
-					if absf(previous_u-low) < 0.0001:
-						for vertex: Vector3 in start:
-							closed_seams = closed_seams and minf(vertex.distance_to(previous_end[0]),vertex.distance_to(previous_end[1])) < 0.0001
-					previous_u = high
-					previous_end = end
-			check(upward,"all road/grass/sand/paint triangles use upward normals")
-			check(taper_coordinates,"kerb taper coordinates survive mesh winding normalization")
-			check(bounded_runs,"kerb coordinates restart per run and stay within the declared complete-block length")
-			check(measured and correct,"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
-			check(closed_seams,"kerb adjacent quads share inside and outside corners")
+			# UV arc lengths retain the physical untapered midline contract.
+			var measured: bool = true
+			var segments: Array[Dictionary] = RoadKerbs.creator_segments(document)
+			for segment: Dictionary in segments:
+				var length: float = ((Vector2(segment.a)+Vector2(segment.outer_a))*0.5).distance_to((Vector2(segment.b)+Vector2(segment.outer_b))*0.5)
+				measured = measured and absf(float(segment.end)-float(segment.start)-length) < 0.0001
+			var closed_seams: bool = true
+			var previous_end: Array[Vector3] = []
+			var previous_u: float = -1.0
+			for group: int in range(0,track.kerbs.triangles.size(),6):
+				var low: float = track.kerbs.triangles[group].uv[0].x
+				var high: float = track.kerbs.triangles[group].uv[1].x
+				var start: Array[Vector3] = []
+				var end: Array[Vector3] = []
+				for triangle: int in range(group,mini(group+6,track.kerbs.triangles.size())):
+					var t: Dictionary = track.kerbs.triangles[triangle]
+					for vertex: int in range(3):
+						var point := Vector3(t.points[vertex].x,t.heights[vertex],t.points[vertex].y)
+						if absf(t.uv[vertex].x-low) < 0.00001 and not start.has(point): start.append(point)
+						if absf(t.uv[vertex].x-high) < 0.00001 and not end.has(point): end.append(point)
+				if absf(previous_u-low) < 0.0001:
+					for point: Vector3 in start:
+						var closest: float = INF
+						for prior: Vector3 in previous_end: closest = minf(closest,point.distance_to(prior))
+						closed_seams = closed_seams and closest < 0.0001
+				previous_end = end
+				previous_u = high
+			check(closed_seams,"raised kerb bevel/crown endpoints meet without cracks, including taper")
+			check(upward,"flat road/grass/sand/paint triangles retain upward normals")
+			check(raised and sloped,"kerbs have a raised crown and real bevel normals")
+			check(bounded_runs,"kerb coordinates restart per run and stay within complete-block length")
+			check(measured and not segments.is_empty(),"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
+			check(matched and kerb_vertices == track.kerbs.triangles.size()*3,"rendered kerb triangles match bounded canonical geometry")
 			check(track.cells == original,"roadside presentation preserves collision/surface cells")
 			visual.free()
 

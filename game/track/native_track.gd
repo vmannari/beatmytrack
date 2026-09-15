@@ -21,6 +21,7 @@ var finish_half_width: float = 0.0
 var tyre_origins := PackedVector2Array()
 var creator_bridges: Array = []
 var hazard_objects: Array = []
+var kerbs := RoadKerbs.new()
 
 
 static func read(path: String) -> NativeTrack:
@@ -64,6 +65,7 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	if not data.bridges.is_empty():
 		track.bridge_axis = Vector2(data.bridges[0].axis[0], data.bridges[0].axis[1])
 		track.bridge_height = float(data.bridges[0].height)
+	track.kerbs.build(track)
 	return track
 
 
@@ -357,3 +359,10 @@ func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step
 
 func launch_jump(state: VehicleState, previous: Vector2) -> void:
 	TrackHazards.launch(state,previous,hazard_objects)
+
+
+func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
+	if state.track_elevated or state.jump_height > 0.0: return Vector4.ZERO
+	var axle: Vector2 = state.forward()*config.wheelbase*0.5
+	var side: Vector2 = state.right()*(0.83*HandlingConfig.BODY_SCALE)
+	return Vector4(kerbs.height_at(state.position+axle-side),kerbs.height_at(state.position+axle+side),kerbs.height_at(state.position-axle-side),kerbs.height_at(state.position-axle+side))

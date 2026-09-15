@@ -3,12 +3,13 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.20"
+const PHYSICS_VERSION: String = "arcade-planar-0.21"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 
 var state := VehicleState.new()
 var config: HandlingConfig
+var kerb_probe := VehicleState.new()
 
 
 func _init(handling: HandlingConfig) -> void:
@@ -22,6 +23,8 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	var old_position: Vector2 = state.position
+	var old_heading: float = state.heading
 	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
 	if state.jump_height > 0.0:
 		var previous: Vector2 = state.position
@@ -34,6 +37,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		if state.jump_height == 0.0:
 			state.jump_velocity = 0.0
 			state.velocity *= 0.88
+		_step_kerbs(old_position,old_heading,null)
 		state.tick += 1
 		return
 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
@@ -139,6 +143,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		state.tire_dirt = maxf(0.0, state.tire_dirt - distance / config.tire_clean_distance)
 	state.tire_oil = clampf(state.tire_oil + (distance / 3.0 if fluids.x > 0.0 else -distance / 180.0), 0.0, 1.0)
 	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
+	_step_kerbs(old_position,old_heading,ground)
 	state.tick += 1
 
 
@@ -165,3 +170,37 @@ func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
 		var slide: float = smoothstep(0.06, 0.30, absf(state.slip_angle()))
 		power_falloff += (1.0 - power_falloff) * config.slide_power_recovery * slide
 	return config.engine_force / config.mass * throttle * power_falloff
+
+
+func _step_kerbs(previous: Vector2, previous_heading: float, ground: PlaygroundData) -> void:
+	var heights := Vector4.ZERO
+	var rise: float = 0.0
+	if ground != null and not state.track_elevated and state.jump_height == 0.0:
+		kerb_probe.position = previous
+		kerb_probe.heading = previous_heading
+		var last: Vector4 = ground.kerb_heights(kerb_probe,config)
+		# Sample actual resolved tyre travel at <=10 cm to detect short crossings
+		# at ordinary top speed and during reverse travel.
+		var travel: float = previous.distance_to(state.position)+absf(angle_difference(previous_heading,state.heading))*config.wheelbase*0.5
+		var samples: int = maxi(1,ceili(travel/0.10))
+		for sample: int in range(1,samples+1):
+			var t: float = float(sample)/samples
+			kerb_probe.position = previous.lerp(state.position,t)
+			kerb_probe.heading = lerp_angle(previous_heading,state.heading,t)
+			heights = ground.kerb_heights(kerb_probe,config)
+			for wheel: int in range(4): rise += maxf(0.0,heights[wheel]-last[wheel])*0.25
+			last = heights
+	var speed: float = state.velocity.length()
+	# A low kerb dissipates a little speed. It never supplies a collision impulse,
+	# airborne mode, steering kick or forward energy. Capped for long rumble runs.
+	var loss: float = minf(0.65*STEP,speed*rise*0.10)*smoothstep(1.0,8.0,speed)
+	if speed > 0.0: state.velocity *= maxf(0.0,speed-loss)/speed
+	var target := Vector3((heights.x+heights.y+heights.z+heights.w)*0.25,
+		atan2((heights.x+heights.y-heights.z-heights.w)*0.5,config.wheelbase),
+		atan2((heights.y+heights.w-heights.x-heights.z)*0.5,1.66*HandlingConfig.BODY_SCALE))
+	state.kerb_velocity.x += minf(0.30,rise*speed*0.12)
+	state.kerb_velocity += ((target-state.kerb_offset)*324.0-state.kerb_velocity*24.0)*STEP
+	state.kerb_offset += state.kerb_velocity*STEP
+	state.kerb_offset.x = clampf(state.kerb_offset.x,-0.015,0.14)
+	state.kerb_offset.y = clampf(state.kerb_offset.y,-0.08,0.08)
+	state.kerb_offset.z = clampf(state.kerb_offset.z,-0.10,0.10)

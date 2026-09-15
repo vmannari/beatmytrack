@@ -2,6 +2,8 @@ class_name VehicleState
 extends RefCounted
 ## Planar (x,y) -> world (x,0,-y). Heading 0 is +y; positive turns right.
 
+var kerb_offset := Vector3.ZERO # heave metres, pitch radians, roll radians
+var kerb_velocity := Vector3.ZERO
 var jump_height: float = 0.0
 var jump_velocity: float = 0.0
 var jump_cooldown: int = 0
@@ -45,4 +47,5 @@ func snapshot() -> Array:
 	result.append([jump_height,jump_velocity,jump_cooldown])
 	result.append(light_props.duplicate(true))
 	result.append([tire_oil,tire_water])
+	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])
 	return result

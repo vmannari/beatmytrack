@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-16"
+const VERSION: String = "track-kit-17"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -25,6 +25,7 @@ func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
 	_build_terrain(track)
 	_build_creator_roads(track)
+	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): _build_kerbs(track)
 	_build_barriers(track)
 	_build_low_cover(track)
 	_build_placed_objects(track)
@@ -77,13 +78,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var shoulders := SurfaceTool.new()
 	var asphalt := SurfaceTool.new()
 	var markings := SurfaceTool.new()
-	var red_kerbs := SurfaceTool.new()
 	var ground_skirt := SurfaceTool.new()
-	red_kerbs.begin(Mesh.PRIMITIVE_TRIANGLES)
 	ground_skirt.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var kerb_count: int = 0
 	var ground_count: int = 0
-	var kerb_segments: Array[Dictionary] = []
 	for tool: SurfaceTool in [shoulders,asphalt,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
@@ -108,7 +105,6 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
 		for raw_polygon: PackedVector2Array in [_trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)]:
 			var polygon: PackedVector2Array = raw_polygon
-			var kerb_distance: float = 0.0
 			for edge: int in range(polygon.size()):
 				var a: Vector2 = polygon[edge]
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
@@ -121,10 +117,6 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					var q: Vector2 = a.lerp(b,float(step+1)/steps)
 					var normal_p: Vector2 = normal_a.lerp(normal_b,float(step)/steps)
 					var normal_q: Vector2 = normal_a.lerp(normal_b,float(step+1)/steps)
-					var center_p: Vector2 = p+normal_p*0.375
-					var center_q: Vector2 = q+normal_q*0.375
-					var distance_start: float = kerb_distance
-					kerb_distance += center_p.distance_to(center_q)
 					var across: Vector2 = (q-p).normalized().orthogonal()*0.085
 					var midpoint: Vector2 = (p+q)*0.5
 					var outward: Vector2 = across*5.0
@@ -133,10 +125,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
-					if is_kerb:
-						kerb_segments.append({"a":p,"b":q,"outer_a":p+normal_p*0.75,"outer_b":q+normal_q*0.75,"start":distance_start,"end":kerb_distance,"piece":index})
-						kerb_count += 1
-					else:
+					if not is_kerb:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
@@ -146,107 +135,44 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
-	_emit_kerb_runs(red_kerbs,kerb_segments)
+	_build_kerbs(track)
 	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,track.half_extent)
 	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
 	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,track.half_extent,false,true)
-	if kerb_count: _commit_creator_road(red_kerbs,Color("a63e30"),texture,track.half_extent,false,false,true)
+
 
 
 func _join_cuts(pieces: Array, index: int) -> Array[Dictionary]:
-	var cuts: Array[Dictionary] = []
-	var outline: PackedVector2Array = RoadPieces.section_outline(pieces,index)
-	var count: int = outline.size()/2
-	for endpoint: int in range(2):
-		if RoadPieces._partner(pieces,index,endpoint).size() != 1: continue
-		var a: Vector2 = outline[0 if endpoint == 0 else count-1]
-		var b: Vector2 = outline[-1 if endpoint == 0 else count]
-		var normal: Vector2 = (b-a).normalized().orthogonal()
-		var inward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(RoadPieces._pose(pieces[index],endpoint).heading)))
-		if normal.dot(inward) < 0.0: normal = -normal
-		cuts.append({"point":(a+b)*0.5,"normal":normal,"endpoint":endpoint,"span":a.distance_to(b)})
-	return cuts
+	return RoadEdges._join_cuts(pieces,index)
 
 
 func _trim_join_outline(source: PackedVector2Array, cuts: Array[Dictionary]) -> PackedVector2Array:
-	# Only trim the contiguous folded tip. An infinite half-plane clip would
-	# also remove distant sections of a hairpin that return across that plane.
-	var count: int = source.size()/2
-	var left: PackedVector2Array = source.slice(0,count)
-	var right: PackedVector2Array = source.slice(count)
-	right.reverse()
-	for cut: Dictionary in cuts:
-		if int(cut.endpoint) == 1:
-			left.reverse()
-			right.reverse()
-		left = _trim_side_tip(left,cut)
-		right = _trim_side_tip(right,cut)
-		if int(cut.endpoint) == 1:
-			left.reverse()
-			right.reverse()
-	right.reverse()
-	return _clean_outline(left+right)
+	return RoadEdges._trim_join_outline(source,cuts)
 
 
 func _trim_side_tip(side: PackedVector2Array, cut: Dictionary) -> PackedVector2Array:
-	var index: int = 1
-	while index < side.size()-1 and (side[index]-Vector2(cut.point)).dot(cut.normal) < -0.00001: index += 1
-	if index == 1: return side
-	var a: Vector2 = side[index-1]
-	var b: Vector2 = side[index]
-	var da: float = (a-Vector2(cut.point)).dot(cut.normal)
-	var db: float = (b-Vector2(cut.point)).dot(cut.normal)
-	return PackedVector2Array([side[0],a.lerp(b,da/(da-db))])+side.slice(index)
+	return RoadEdges._trim_side_tip(side,cut)
 
 
 func _on_join_cut(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
-	for cut: Dictionary in cuts:
-		if a.distance_to(b) > float(cut.span)*0.5 and absf((a-Vector2(cut.point)).dot(cut.normal)) < 0.001 and absf((b-Vector2(cut.point)).dot(cut.normal)) < 0.001: return true
-	return false
+	return RoadEdges._on_join_cut(a,b,cuts)
 
 
 func _on_join_plane(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
-	for cut: Dictionary in cuts:
-		if absf((a-Vector2(cut.point)).dot(cut.normal)) < 0.001 and absf((b-Vector2(cut.point)).dot(cut.normal)) < 0.001: return true
-	return false
+	return RoadEdges._on_join_plane(a,b,cuts)
 
 
 func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictionary]) -> Vector2:
-	var point: Vector2 = polygon[index]
-	var before: Vector2 = polygon[(index+polygon.size()-1)%polygon.size()]
-	var after: Vector2 = polygon[(index+1)%polygon.size()]
-	var tangent := Vector2.ZERO
-	if _on_join_cut(before,point,cuts): tangent = after-point
-	elif _on_join_cut(point,after,cuts): tangent = point-before
-	else: return _edge_miter(polygon,index)
-	var normal: Vector2 = tangent.normalized().orthogonal()
-	var area: float = 0.0
-	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
-	return -normal if area < 0.0 else normal
+	return RoadEdges._roadside_miter(polygon,index,cuts)
 
 
 func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:
-	# Offset operations can retain microscopic segments along rotated straights.
-	# Their unstable tangent produces long triangular spikes when extruded.
-	var result := PackedVector2Array()
-	for point: Vector2 in source:
-		if result.is_empty() or result[-1].distance_to(point) > 0.01: result.append(point)
-	if result.size() > 3 and result[0].distance_to(result[-1]) < 0.01: result.remove_at(result.size()-1)
-	return result
+	return RoadEdges._clean_outline(source)
 
 
 func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
-	var point: Vector2 = polygon[index]
-	var before: Vector2 = (point-polygon[(index+polygon.size()-1)%polygon.size()]).normalized().orthogonal()
-	var after: Vector2 = (polygon[(index+1)%polygon.size()]-point).normalized().orthogonal()
-	var normal: Vector2 = (before+after).normalized()
-	# A tiny containment probe at a nearly-collinear boundary is unstable.
-	# Use the whole polygon's winding so consecutive normals cannot flip.
-	var area: float = 0.0
-	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
-	if area < 0.0: normal = -normal
-	return normal / maxf(absf(normal.dot(after)),0.5)
+	return RoadEdges._edge_miter(polygon,index)
 
 
 func _shoulder_width(point: Vector2) -> float:
@@ -262,52 +188,8 @@ func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2,
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
-func _emit_kerb_runs(tool: SurfaceTool, segments: Array[Dictionary]) -> void:
-	var first: int = 0
-	while first < segments.size():
-		var last: int = first
-		while last+1 < segments.size():
-			var current: Dictionary = segments[last]
-			var next: Dictionary = segments[last+1]
-			if current.piece != next.piece or absf(float(current.end)-float(next.start)) > 0.0001 or Vector2(current.b).distance_to(next.a) > 0.001: break
-			last += 1
-		var origin: float = segments[first].start
-		var length: float = float(segments[last].end)-origin
-		for i: int in range(first,last+1):
-			var segment: Dictionary = segments[i]
-			_kerb_quad(tool,segment.a,segment.b,segment.outer_a,segment.outer_b,float(segment.start)-origin,float(segment.end)-origin,length)
-		first = last+1
-
-
-func _kerb_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float, run_length: float = 0.0) -> void:
-	# U is actual arc distance along the middle of the kerb strip, not the
-	# road centerline or its sample index. Shared miters close segment seams.
-	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
-	var distances: Array[float] = [start,end,end,start,start,end]
-	var across: Array[float] = [0,1,0,0,1,1]
-	for i: int in range(6):
-		tool.set_uv(Vector2(distances[i],run_length))
-		tool.set_uv2(Vector2(across[i],0))
-		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.025)
-
-
 func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
-	# Curbs only on the inside of locally curved sections, never straight ends.
-	var nearest: int = 0
-	var best: float = INF
-	var distance: float = 0.0
-	var nearest_distance: float = 0.0
-	for i: int in range(points.size()):
-		if i > 0: distance += points[i-1].distance_to(points[i])
-		var squared: float = point.distance_squared_to(points[i])
-		if squared < best:
-			best = squared
-			nearest = i
-			nearest_distance = distance
-	if nearest == 0 or nearest == points.size()-1: return -1.0
-	var inward: Vector2 = (points[nearest+1]-points[nearest]).normalized()-(points[nearest]-points[nearest-1]).normalized()
-	if inward.length_squared() < 0.0001 or (point-points[nearest]).dot(inward) <= 0.0: return -1.0
-	return nearest_distance
+	return RoadEdges._inner_bend_distance(point,points)
 
 
 func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float) -> int:
@@ -317,17 +199,7 @@ func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float
 
 
 func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary], pieces: Array = []) -> bool:
-	for outline: Dictionary in outlines:
-		if int(outline.index) == index or not Rect2(outline.bounds).has_point(point): continue
-		var joined_neighbor: bool = false
-		if not pieces.is_empty():
-			for endpoint: int in range(2):
-				var matches: Array = RoadPieces._partner(pieces,index,endpoint)
-				if matches.size() == 1 and int(matches[0][0]) == int(outline.index):
-					var pose: Dictionary = RoadPieces._pose(pieces[index],endpoint)
-					if point.distance_to(pose.position) < float(pieces[index].width): joined_neighbor = true
-		if not joined_neighbor and Geometry2D.is_point_in_polygon(point,outline.polygon): return false
-	return true
+	return RoadEdges._road_edge_exposed(point,index,outlines,pieces)
 
 
 func _piece_end_joined(pieces: Array, index: int, endpoint: Vector2) -> bool:
@@ -340,30 +212,14 @@ func _piece_end_joined(pieces: Array, index: int, endpoint: Vector2) -> bool:
 
 
 func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
+	var excluded: PackedByteArray = RoadKerbs.exclusion_mask(track,paint)
 	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_R8)
 	mask.fill(Color.WHITE)
 	for y: int in range(track.grid_height):
 		for x: int in range(track.grid_width):
-			if track.cells[y*track.grid_width+x] in [4,7]: mask.set_pixel(x,y,Color.BLACK)
-	# Match the compiler's painted-cell coverage, including square stamps.
-	# This also removes edge paint through newly painted junctions.
-	for stroke: Dictionary in paint:
-		if stroke.get("protect_road",false): continue
-		var radius: float = float(stroke.width)*0.5
-		for index: int in range(stroke.points.size()):
-			var p: Array = stroke.points[index]
-			var q: Array = stroke.points[maxi(0,index-1)]
-			var a := Vector2(p[0],p[1])
-			var b := Vector2(q[0],q[1])
-			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
-			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
-			for y: int in range(maxi(0,floori((track.half_extent.y-hi.y)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-lo.y)/track.cell_size))):
-				for x: int in range(maxi(0,floori((lo.x+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((hi.x+track.half_extent.x)/track.cell_size))):
-					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
-					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
-					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
-					if hit: mask.set_pixel(x,y,Color.BLACK)
+			if excluded[y*track.grid_width+x] != 0: mask.set_pixel(x,y,Color.BLACK)
 	return mask
+
 
 
 func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false) -> void:
@@ -778,3 +634,32 @@ func update_light_props(state: VehicleState) -> void:
 		light_instances[index].position.x = row[0]
 		light_instances[index].position.z = -float(row[1])
 		light_instances[index].rotation.z = float(row[4])*0.9
+
+
+func _build_kerbs(track: NativeTrack) -> void:
+	if track.kerbs.triangles.is_empty(): return
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for triangle: Dictionary in track.kerbs.triangles:
+		var vertices := PackedVector3Array()
+		for i: int in range(3): vertices.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.018+triangle.heights[i]))
+		var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
+		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
+		if normal.y < 0.0: normal = -normal
+		for i: int in order:
+			tool.set_normal(normal)
+			tool.set_uv(triangle.uv[i])
+			tool.add_vertex(vertices[i])
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = tool.commit()
+	var material := ShaderMaterial.new()
+	material.shader = preload("res://track/kerb.gdshader")
+	var mask := Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,track.kerbs.blocked)
+	# Canonical bytes are 0/1; shader samples normalized bytes.
+	for y: int in range(track.grid_height):
+		for x: int in range(track.grid_width):
+			if track.kerbs.blocked[y*track.grid_width+x] != 0: mask.set_pixel(x,y,Color.WHITE)
+	material.set_shader_parameter("exclusion",ImageTexture.create_from_image(mask))
+	material.set_shader_parameter("map_extent",track.half_extent)
+	mesh.material_override = material
+	add_child(mesh)

@@ -88,3 +88,7 @@ func launch_jump(_state: VehicleState, _previous: Vector2) -> void:
 
 func tire_fluids(_state: VehicleState) -> Vector2:
 	return Vector2.ZERO
+
+
+func kerb_heights(_state: VehicleState, _config: HandlingConfig) -> Vector4:
+	return Vector4.ZERO

@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-15 G01/V02/V04/V05/R01/R03/R07: raised kerbs share 10 cm bevelled geometry with deterministic tyre contact and a small spring/speed response. Physics 0.21, compiler-10, recorder schema 7. [Actual checks, captures and device limits](docs/RAISED_KERBS.md).
+
 2026-09-14 G01/R01/R03/R07: Original+ keeps Original steering with slightly more slide and stronger nose-directed throttle. Unchanged Original remains selectable. Physics 0.20 / handling-0.15-original-slide. [Measured behavior, actual checks and remaining feel/device acceptance](docs/ORIGINAL_SLIDE.md).
 
 2026-09-14 G01/R01/R03/R07: restored Original handling as startup default and exposed a visible handling selector in normal races and creator practice. [Behavior, 201 passing focused checks, screenshot and phone limits](docs/HANDLING_SELECTOR.md).

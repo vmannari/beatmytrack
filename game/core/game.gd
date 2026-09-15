@@ -190,6 +190,11 @@ func _process(delta: float) -> void:
 		elif not sim.state.track_elevated:
 			car.position.y -= native_track.water_depth(point)
 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
+	car.rotation.z = 0.0
+	if sim.state.jump_height == 0.0:
+		car.position.y += sim.state.kerb_offset.x
+		car.rotation.x += sim.state.kerb_offset.y
+		car.rotation.z = sim.state.kerb_offset.z
 	if track_ground is NativeTrackVisual:
 		track_ground.update_tyres(sim.state,native_track.tyre_origins)
 		track_ground.update_light_props(sim.state)

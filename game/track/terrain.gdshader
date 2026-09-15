@@ -34,16 +34,7 @@ void fragment() {
 	// shading are cosmetic; native cells remain the sole surface authority.
 	float boundary = 1.0 - smoothstep(0.51, 0.69, best);
 	base *= 1.0 - boundary * 0.12;
-	// Curb paint follows the supplied curb surface near asphalt. Broader paved
-	// areas remain concrete, and no road width / lane marking is invented.
-	if (kind == 5) {
-		float road = max(max(texture(surface_low,UV+map_texel*vec2(2.5,0)).r,
-			texture(surface_low,UV-map_texel*vec2(2.5,0)).r),
-			max(texture(surface_low,UV+map_texel*vec2(0,2.5)).r,
-			texture(surface_low,UV-map_texel*vec2(0,2.5)).r));
-		float stripe = mod(floor((world_position.x + world_position.z) * 0.8), 2.0);
-		if (road > 0.5 && stripe < 1.0) { base *= vec3(0.69,0.40,0.32); }
-	}
+	// Raised native kerbs are drawn from shared RoadKerbs contact geometry.
 	if (kind == 3 || kind == 6) {
 		// Quiet horizontal water bands and a thin shoreline highlight.
 		float band = step(0.82, sin(world_position.z * 0.52 + sin(world_position.x * 0.18) * 0.4));

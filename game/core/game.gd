@@ -68,8 +68,8 @@ func _ready() -> void:
 	_build_ground(world)
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-58, -35, 0)
-	light.light_color = Color("fff1d8")
-	light.light_energy = 1.0
+	light.light_color = Color("fff5e5")
+	light.light_energy = 0.82
 	light.shadow_enabled = true
 	light.directional_shadow_max_distance = 100.0
 	world.add_child(light)
@@ -78,7 +78,7 @@ func _ready() -> void:
 	environment.environment.background_mode = Environment.BG_COLOR
 	environment.environment.background_color = Color("647158")
 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.environment.ambient_light_color = Color("bac8ce")
+	environment.environment.ambient_light_color = Color("91a9be")
 	environment.environment.ambient_light_energy = 0.35
 	world.add_child(environment)
 	car = CarVisual.new()

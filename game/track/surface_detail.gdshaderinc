@@ -16,10 +16,10 @@ float pigment(vec2 p) {
 }
 vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	float broad = pigment(p * 0.65);
-	float fine = pigment(p * vec2(18.0, 3.0));
+	float fine = pigment(p * 12.0);
 	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
 	if (road) {
-		return base * (0.96 + broad * 0.08 + (fine-0.5)*0.055*visibility);
+		return base * (0.96 + broad * 0.08 + (fine-0.5)*0.018*visibility);
 	}
 	// Sparse short blade strokes rather than circular noise clouds.
 	vec2 cell = floor(p * 2.4);
@@ -36,8 +36,8 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 vec3 painted_grass(vec3 base, vec2 p) {
 	// A 20 m tile gives legible brush clusters at driving scale. An offset
 	// second sample and slower colour mask soften recognizable repetition.
-	vec3 paint = texture(painted_grass_texture,p/20.0,0.75).rgb;
+	vec3 paint = texture(painted_grass_texture,p/20.0,2.0).rgb;
 	vec3 broad = texture(painted_grass_texture,p/47.0+vec2(0.37,0.61),1.0).rgb;
 	vec3 tint = base / vec3(0.3765,0.4196,0.2118);
-	return mix(mix(paint,broad,0.18)*tint,base,0.18)*(0.82+pigment(p*0.08)*0.10);
+	return mix(mix(paint,broad,0.35)*tint,base,0.62)*(0.82+pigment(p*0.08)*0.10);
 }

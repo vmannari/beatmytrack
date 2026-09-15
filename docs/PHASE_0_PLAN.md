@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-15 V02/V04/V05: kerb crown/bevel/base shading strengthened for normal gameplay-camera readability; physical height and response unchanged. 195 focused checks pass. [Captures and acceptance limits](KERB_READABILITY.md).
+
 2026-09-15 G01/V02/V04/V05/R01/R03/R07: raised kerbs share 10 cm bevelled geometry with deterministic tyre contact and a small spring/speed response. Physics 0.21, compiler-10, recorder schema 7. [Actual checks, captures and device limits](RAISED_KERBS.md).
 
 2026-09-14 G01/R01/R03/R07: owner prefers Original and requests more slip plus strong forward drive while sliding. Original+ is the focused tune; unchanged Original remains selectable. [ORIGINAL_SLIDE.md](ORIGINAL_SLIDE.md) records configuration, bounded power recovery, measured behavior and actual verification.

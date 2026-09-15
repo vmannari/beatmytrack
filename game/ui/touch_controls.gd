@@ -51,36 +51,43 @@ func _input(event: InputEvent) -> void:
 
 func _draw() -> void:
 	var rectangles: Array[Rect2] = zones()
-	var font: Font = RaceHUDStyle.DISPLAY
 	for i: int in range(rectangles.size()):
 		var pressed: bool = driver != null and driver.touches.values().has(ACTIONS[i])
-		var style := StyleBoxFlat.new()
-		style.bg_color = RaceHUDStyle.GOLD if pressed else Color("091923c7")
-		style.border_color = RaceHUDStyle.GOLD if pressed or i == 3 else Color("557080")
-		style.set_border_width_all(1)
-		style.set_corner_radius_all(4)
-		draw_style_box(style, rectangles[i])
-		var text_size: Vector2 = font.get_string_size(LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
-		draw_string(font, rectangles[i].get_center() + Vector2(-text_size.x * 0.5, rectangles[i].size.y * 0.30), LABELS[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, RaceHUDStyle.INK if pressed else RaceHUDStyle.MUTED)
-
-		var center: Vector2 = rectangles[i].get_center() - Vector2(0, 13)
-		var ink: Color = RaceHUDStyle.INK if pressed else RaceHUDStyle.TEXT
+		var rect: Rect2 = rectangles[i]
+		var base := StyleBoxFlat.new()
+		base.bg_color = Color("101b21")
+		base.border_color = Color("070d11")
+		base.set_border_width_all(3)
+		base.set_corner_radius_all(12)
+		base.shadow_color = Color("00000088")
+		base.shadow_size = 3
+		base.shadow_offset = Vector2(1,4)
+		draw_style_box(base,rect)
+		var face := StyleBoxFlat.new()
+		face.bg_color = Color("48545a") if i < 2 else Color("a19f93")
+		if pressed: face.bg_color = Color("bca765")
+		face.border_color = Color("8b9698") if i < 2 else Color("d1cbb7")
+		face.set_border_width_all(2)
+		face.set_corner_radius_all(9)
+		var inset: Rect2 = rect.grow(-6)
+		inset.position.y += 3 if pressed else 0
+		inset.size.y -= 4
+		draw_style_box(face,inset)
+		var center: Vector2 = inset.get_center()
 		if i < 2:
 			var direction: float = -1.0 if i == 0 else 1.0
-			draw_polyline(PackedVector2Array([center+Vector2(-8*direction,-16), center+Vector2(5*direction,0), center+Vector2(-8*direction,16)]), ink, 4.0, true)
-		elif i == 2:
-			draw_arc(center, 15, 0, TAU, 32, ink, 2.0, true)
-			draw_line(center, center+Vector2(9,-13), ink, 3.0, true)
-			draw_circle(center, 3, ink)
+			var points := PackedVector2Array([center+Vector2(-8*direction,-20),center+Vector2(10*direction,0),center+Vector2(-8*direction,20)])
+			draw_polyline(points,Color("0b151c"),11,true)
+			draw_polyline(points,Color("e5dfcb"),6,true)
 		else:
-			draw_style_box(_pedal_style(ink), Rect2(center-Vector2(10,17),Vector2(20,34)))
-			for x: float in [-3.0,3.0]: draw_line(center+Vector2(x,-11),center+Vector2(x,11),ink,2.0,true)
-
-
-func _pedal_style(ink: Color) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color.TRANSPARENT
-	style.border_color = ink
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(3)
-	return style
+			var slot := StyleBoxFlat.new()
+			slot.bg_color = Color("293740")
+			slot.border_color = Color("111c23")
+			slot.set_border_width_all(2)
+			slot.set_corner_radius_all(3)
+			if i == 2:
+				for row: int in range(4):
+					draw_style_box(slot,Rect2(inset.position+Vector2(10,9+row*(inset.size.y-20)/4),Vector2(inset.size.x-20,(inset.size.y-28)/4)))
+			else:
+				for column: int in range(4):
+					draw_style_box(slot,Rect2(inset.position+Vector2(10+column*(inset.size.x-20)/4,9),Vector2((inset.size.x-30)/4,inset.size.y-18)))

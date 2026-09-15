@@ -11,10 +11,10 @@ const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
 
 static func panel(accent: bool = false) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color("091923e8")
-	style.border_color = GOLD if accent else Color("344e5d")
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(4)
+	style.bg_color = Color("1c2931f5")
+	style.border_color = GOLD if accent else Color("617780")
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(7)
 	style.set_content_margin_all(12)
 	style.content_margin_top = 6
 	style.content_margin_bottom = 6

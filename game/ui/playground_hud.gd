@@ -14,6 +14,12 @@ signal edit_here_requested
 
 var production_mode: bool = false
 var editor_test: bool = false
+var map_ready: bool = false
+var map_track: NativeTrack
+var race_frame: HUDFrame
+var road_map: HUDRoadMap
+var instrument: HUDFrame
+var pause_glyph: HUDGlyph
 var lap_label: Label
 var race_timer: Label
 var pause_button: Button
@@ -45,19 +51,29 @@ func _ready() -> void:
 	var race_card := PanelContainer.new()
 	race_card.name = "RaceCard"
 	race_card.position = Vector2(24, 20)
-	race_card.custom_minimum_size = Vector2(248, 76)
+	race_card.custom_minimum_size = Vector2(248, 106)
 	race_card.add_theme_stylebox_override("panel", _panel_style())
 	race_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	race_card.visible = not editor_test
 	root.add_child(race_card)
+	race_frame = HUDFrame.attach(race_card,"map")
+	var overview := HBoxContainer.new()
+	overview.add_theme_constant_override("separation",8)
+	race_card.add_child(overview)
+	road_map = HUDRoadMap.new()
+	overview.add_child(road_map)
 	var status := VBoxContainer.new()
 	status.add_theme_constant_override("separation", 0)
-	race_card.add_child(status)
-	lap_label = _label("LAP 1 / 5" if production_mode else "TEST DRIVE", 30)
+	overview.add_child(status)
+	var lap_row := HBoxContainer.new()
+	status.add_child(lap_row)
+	var lap_caption := _label("LAP" if production_mode else "TEST",18)
+	lap_row.add_child(lap_caption)
+	lap_label = _label("1 / 5" if production_mode else "DRIVE",32)
 	lap_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
-	status.add_child(lap_label)
+	lap_row.add_child(lap_label)
 	title = _label("HANDLING YARD", 17)
-	title.custom_minimum_size.x = 224
+	title.custom_minimum_size.x = 112
 	title.clip_text = true
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	title.visible = not editor_test
@@ -65,24 +81,40 @@ func _ready() -> void:
 	var timing := PanelContainer.new()
 	timing.name = "TimingCard"
 	timing.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	timing.offset_left = -86
-	timing.offset_right = 86
+	timing.offset_left = -112
+	timing.offset_right = 112
 	timing.offset_top = 20
 	timing.add_theme_stylebox_override("panel", _panel_style())
 	timing.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	timing.visible = production_mode and not editor_test
 	root.add_child(timing)
+	HUDFrame.attach(timing,"clock")
 	var clock_info := VBoxContainer.new()
 	clock_info.add_theme_constant_override("separation", 0)
 	timing.add_child(clock_info)
 	var clock_caption := _label("RACE TIME", 14)
 	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	clock_caption.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var caption_back := StyleBoxFlat.new()
+	caption_back.bg_color = Color("1c2931")
+	caption_back.content_margin_left = 4
+	caption_back.content_margin_right = 4
+	clock_caption.add_theme_stylebox_override("normal",caption_back)
 	clock_caption.add_theme_color_override("font_color", RaceHUDStyle.MUTED)
 	clock_info.add_child(clock_caption)
 	race_timer = _label("00:00.00", 36)
 	race_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	race_timer.visible = production_mode and not editor_test
-	clock_info.add_child(race_timer)
+	var clock_row := HBoxContainer.new()
+	clock_info.add_child(clock_row)
+	var watch := Control.new()
+	watch.custom_minimum_size = Vector2(30,40)
+	clock_row.add_child(watch)
+	var symbol := HUDGlyph.new()
+	symbol.kind = "clock"
+	watch.add_child(symbol)
+	race_timer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clock_row.add_child(race_timer)
 	var actions := VBoxContainer.new()
 	actions.name = "RaceActions"
 	actions.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
@@ -114,12 +146,29 @@ func _ready() -> void:
 		edit_button.add_theme_stylebox_override("normal", accent)
 		edit_button.add_theme_color_override("font_color", RaceHUDStyle.INK)
 	else:
-		_button(top, "Restart", func() -> void: restart_requested.emit())
-		if production_mode:
-			_button(top, "Tracks", func() -> void: exit_requested.emit())
-		_button(top, "Pause", func() -> void: pause_requested.emit())
+		_button(top, "", func() -> void: pause_requested.emit())
 		pause_button = top.get_child(top.get_child_count() - 1) as Button
-		pause_button.add_theme_stylebox_override("normal", RaceHUDStyle.panel(true))
+		pause_button.custom_minimum_size.x = 60
+		pause_button.tooltip_text = "Pause / resume (Esc)"
+		pause_glyph = HUDGlyph.new()
+		pause_button.add_child(pause_glyph)
+		var menu := MenuButton.new()
+		menu.name = "RaceMenu"
+		menu.flat = false
+		menu.custom_minimum_size = Vector2(60,52)
+		menu.tooltip_text = "Race menu: restart or return to tracks"
+		top.add_child(menu)
+		var icon := HUDGlyph.new()
+		icon.kind = "menu"
+		menu.add_child(icon)
+		var popup: PopupMenu = menu.get_popup()
+		popup.add_item("Restart",0)
+		if production_mode: popup.add_item("Tracks",1)
+		popup.about_to_popup.connect(func() -> void: handling_menu_opened.emit())
+		popup.popup_hide.connect(func() -> void: handling_menu_closed.emit())
+		popup.id_pressed.connect(func(id: int) -> void:
+			if id == 0: restart_requested.emit()
+			else: exit_requested.emit())
 	var secondary := HBoxContainer.new()
 	secondary.alignment = BoxContainer.ALIGNMENT_END
 	actions.add_child(secondary)
@@ -148,14 +197,15 @@ func _ready() -> void:
 	var panel := PanelContainer.new()
 	panel.name = "SpeedCard"
 	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	panel.offset_left = -70
-	panel.offset_right = 70
+	panel.offset_left = -122
+	panel.offset_right = 122
 	panel.offset_top = -140
 	panel.offset_bottom = -64
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.visible = not editor_test
 	root.add_child(panel)
+	instrument = HUDFrame.attach(panel,"speed")
 	var info := VBoxContainer.new()
 	info.add_theme_constant_override("separation", 0)
 	panel.add_child(info)
@@ -261,7 +311,15 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 		return
 	hud_elapsed = 0.0
 	pause_button.text = ("Paused · Resume" if paused else "Practice (untimed)") if editor_test else ("Resume" if paused else ("Pause" if production_mode else "Pause  Esc"))
-	speed_label.text = "%03.0f" % (state.velocity.length() * 3.6)
+	if pause_glyph != null:
+		pause_button.text = ""
+		pause_glyph.kind = "resume" if paused else "pause"
+		pause_glyph.queue_redraw()
+	road_map.player = state.position
+	road_map.queue_redraw()
+	instrument.speed_fraction = clampf(state.velocity.length()*3.6/180.0,0,1)
+	instrument.queue_redraw()
+	speed_label.text = "%d" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
 	debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
 		state.velocity.dot(state.forward()), state.velocity.dot(state.right()), rad_to_deg(state.slip_angle()),
@@ -296,3 +354,18 @@ func _button(parent: Control, text: String, callback: Callable) -> void:
 
 func _panel_style() -> StyleBoxFlat:
 	return RaceHUDStyle.panel()
+
+
+func set_track(track: NativeTrack) -> void:
+	if map_ready and map_track == track: return
+	map_ready = true
+	map_track = track
+	var authored: bool = track != null and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty()
+	road_map.configure(track,authored)
+	road_map.visible = authored
+	road_map.queue_redraw()
+	race_frame.kind = "map" if authored else "plain"
+	var card := race_frame.get_parent() as PanelContainer
+	card.custom_minimum_size = Vector2(248,106) if authored else Vector2(176,76)
+	card.size = card.custom_minimum_size
+	race_frame.queue_redraw()

@@ -201,6 +201,7 @@ func _process(delta: float) -> void:
 		track_ground.update_tyres(sim.state,native_track.tyre_origins)
 		track_ground.update_light_props(sim.state)
 	camera.follow(point, sim.state.velocity, heading, delta)
+	hud.set_track(native_track)
 	hud.update_values(sim.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
 	if native_track != null:
@@ -214,7 +215,7 @@ func _process(delta: float) -> void:
 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
 		elif production_mode:
 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper())))
-			hud.lap_label.text = "LAP %d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
+			hud.lap_label.text = "%d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
 			hud.race_timer.text = "%02d:%05.2f" % [int(track_session.elapsed_ticks / 120.0) / 60, fmod(track_session.elapsed_ticks / 120.0,60.0)]
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:

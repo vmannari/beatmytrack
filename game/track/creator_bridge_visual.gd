@@ -22,16 +22,16 @@ static func build(parent: Node3D, bridges: Array) -> void:
 				# inside the existing solid rail footprint; the underpass stays open.
 				strip(tool,span,a,b,inner,outer,0.10,Color("afb1a5"))
 				wall(tool,span,a,b,inner,0.025,0.10,Color("626e70"))
-				wall(tool,span,a,b,outer,-0.42,0.10,Color("435968"))
-				strip(tool,span,a,b,(half+0.63)*side,outer,-0.40,Color("829199"))
-				wall(tool,span,a,b,outer,-0.42,-0.34,Color("233845"))
+				wall(tool,span,a,b,outer,-0.42,0.10,Color("817e70"))
+				strip(tool,span,a,b,(half+0.63)*side,outer,-0.40,Color("b6ae99"))
+				wall(tool,span,a,b,outer,-0.42,-0.34,Color("403f38"))
 				var rail: float = (half+0.14)*side
 				var fold: float = (half+0.22)*side
 				var back: float = (half+0.34)*side
-				strip(tool,span,a,b,rail,back,0.65,Color("d0d2c6"))
-				quad(tool,vertex(span,a,rail,0.65),vertex(span,b,rail,0.65),vertex(span,b,fold,0.52),vertex(span,a,fold,0.52),Color("899ca3"))
-				quad(tool,vertex(span,a,fold,0.52),vertex(span,b,fold,0.52),vertex(span,b,rail,0.38),vertex(span,a,rail,0.38),Color("4b6472"))
-				wall(tool,span,a,b,back,0.38,0.65,Color("607887"))
+				strip(tool,span,a,b,rail,back,0.65,Color("6798b3"))
+				quad(tool,vertex(span,a,rail,0.65),vertex(span,b,rail,0.65),vertex(span,b,fold,0.52),vertex(span,a,fold,0.52),Color("346c90"))
+				quad(tool,vertex(span,a,fold,0.52),vertex(span,b,fold,0.52),vertex(span,b,rail,0.38),vertex(span,a,rail,0.38),Color("193e58"))
+				wall(tool,span,a,b,back,0.38,0.65,Color("244e6a"))
 				if i%4 == 0:
 					var end: float = minf(a+0.14,float(span.length))
 					var post: float = (half+0.28)*side
@@ -41,6 +41,19 @@ static func build(parent: Node3D, bridges: Array) -> void:
 						strip(tool,span,a,end,rail,back,0.656,Color("e7b951"))
 				strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
+		# Squared concrete uprights, all within the existing solid rail strip.
+		var posts: int = maxi(1,ceili(float(span.length)/6.0))
+		for i: int in range(posts+1):
+			var a: float = clampf(float(span.length)*i/posts,0,float(span.length)-0.42)
+			var b: float = a+0.42
+			for side: float in [-1.0,1.0]:
+				var inner: float = (half+0.04)*side
+				var outer: float = (half+0.70)*side
+				strip(tool,span,a,b,inner,outer,0.79,Color("c0b79d"))
+				wall(tool,span,a,b,inner,0.10,0.79,Color("97907d"))
+				wall(tool,span,a,b,outer,-0.42,0.79,Color("787568"))
+				quad(tool,vertex(span,a,inner,0.10),vertex(span,a,outer,0.10),vertex(span,a,outer,0.79),vertex(span,a,inner,0.79),Color("a49c88"))
+				quad(tool,vertex(span,b,inner,0.10),vertex(span,b,outer,0.10),vertex(span,b,outer,0.79),vertex(span,b,inner,0.79),Color("686b63"))
 		# Recessed expansion joints at the crest of each ramp.
 		for u: float in [CreatorBridges.RAMP,float(span.length)-CreatorBridges.RAMP]:
 			strip(tool,span,u,u+0.055,-half,half,0.034,Color("182c37"))

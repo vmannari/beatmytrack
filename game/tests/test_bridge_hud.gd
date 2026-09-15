@@ -49,6 +49,24 @@ func run() -> void:
 				check(downward == 0,"road faces point up for correct bridge lighting")
 		check(facets > 24,"bridge has vertical structural faces rather than only flat strips")
 		structure.free()
+	var painted_document: Dictionary = creator.metadata.creator_document.duplicate(true)
+	painted_document.paint.append({"surface":0,"width":12.0,"shape":"round","points":[[75.0,0.0],[90.0,0.0]]})
+	var painted: NativeTrack = TrackCompiler.compile(painted_document)
+	var minimap := HUDRoadMap.new()
+	minimap.configure(painted,true)
+	var painted_geometry: Array = minimap.outlines.duplicate(true)
+	minimap.configure(creator,true)
+	check(minimap.outlines == painted_geometry,"painted surfaces cannot change the placed-road minimap")
+	painted_document.pieces.append(RoadPieces.create("straight",Vector2(75,0)))
+	var extended: NativeTrack = TrackCompiler.compile(painted_document)
+	minimap.configure(extended,true)
+	check(minimap.world_bounds.end.x >= 102.0,"placed road beyond the lap route appears in minimap bounds")
+	var empty_pieces: Array = extended.metadata.creator_document.pieces
+	extended.metadata.creator_document.pieces = []
+	minimap.configure(extended,true)
+	check(minimap.outlines.is_empty(),"no placed roads means no waypoint or paint fallback")
+	extended.metadata.creator_document.pieces = empty_pieces
+	minimap.free()
 	await review(creator,Vector2i(1280,720),false,"creator-race")
 	await review(native,Vector2i(960,540),false,"native-compact")
 	await review(creator,Vector2i(1920,864),true,"practice-wide")
@@ -67,6 +85,7 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 	game.set_process(false)
 	game.set("countdown_ticks",0)
 	var sim: VehicleSimulation = game.get("sim")
+	var initial_position: Vector2 = sim.state.position
 	var point := Vector2(-8,0)
 	var route_index: int = track.nearest_route(point)
 	if track.creator_bridges.is_empty():
@@ -89,6 +108,27 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 	for frame: int in range(4):
 		game.call("_process",0.1)
 		await process_frame
+	var authored: bool = not track.metadata.get("creator_document",{}).is_empty()
+	check(hud.road_map.visible == authored,"minimap is restricted to new creator-format tracks")
+	check((not hud.road_map.outlines.is_empty()) == authored,"legacy converted tracks do not populate minimap geometry")
+	if authored:
+		check(hud.road_map.player == sim.state.position,"minimap uses current player position")
+		var geometry: Array = hud.road_map.outlines.duplicate(true)
+		var bounds_before: Rect2 = hud.road_map.world_bounds
+		var waypoints := track.route.duplicate()
+		track.route = PackedVector2Array([Vector2(-999,-999),Vector2(999,999)])
+		hud.road_map.configure(track,true)
+		check(hud.road_map.outlines == geometry and hud.road_map.world_bounds == bounds_before,"changing waypoints cannot change minimap roads or framing")
+		track.route = waypoints
+	if not practice:
+		var menu := hud.find_child("RaceMenu",true,false) as MenuButton
+		check(menu != null and menu.get_popup().item_count == 2,"icon menu provides restart and tracks without a camera action")
+		var popup: PopupMenu = menu.get_popup()
+		popup.about_to_popup.emit()
+		check(bool(game.get("paused")),"race menu pauses the drive")
+		popup.popup_hide.emit()
+		check(not bool(game.get("paused")),"dismissing race menu resumes a running drive")
+	game.call("_process",0.1)
 	var before: Array = sim.state.snapshot()
 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
 	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]
@@ -127,6 +167,14 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 	hud.pause_button.pressed.emit()
 	game.call("_process",0.1)
 	check(not bool(game.get("paused")) and hud.touch.enabled,"resume restores input")
+	if not practice:
+		var menu := hud.find_child("RaceMenu",true,false) as MenuButton
+		menu.get_popup().id_pressed.emit(0)
+		check(sim.state.position == initial_position and sim.state.tick == 0,"race-menu restart returns to the actual start")
+		var observed: Dictionary = {"tracks":0}
+		hud.exit_requested.connect(func() -> void: observed.tracks += 1)
+		menu.get_popup().id_pressed.emit(1)
+		check(observed.tracks == 1,"race-menu tracks item requests exit")
 	game.queue_free()
 	await process_frame
 

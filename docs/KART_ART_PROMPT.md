@@ -1,0 +1,7 @@
+# Kart menu artwork — 2026-09-16
+
+Generated with the built-in image_gen tool. Existing original Formula artwork was the style reference; no supplied branded asset ships. Workspace output: `game/assets/menu/kart_illustration_v1.png`.
+
+## Exact prompt
+
+Use case: stylized-concept. Asset: 1672x941 landscape garage menu illustration. Input image is style and layout reference only. Create an original fictional adult racing GO-KART, no wings, no tall body, no roof: short tubular steel chassis, compact wheelbase, four small wide exposed black slick tyres with alloy rims, low broad rounded front bumper fairing, two low side pods, rear axle and small exposed side-mounted finned engine with exhaust. Muted burnt-orange body panels with a cream centre stripe; dark navy chassis, black seat. Believable adult proportions with one seated driver in navy racing suit, cream full-face helmet and dark visor; visible bent arms holding a small steering wheel and legs extending toward pedals. Precise detailed ink contours, mature cel-shaded matte colour planes, restrained highlights and technical detail matching reference. Deep navy blue studio backdrop, soft ground shadow. Front three-quarter view nose towards lower left. Whole kart and driver visible within left 65% of image, upper 23% and right third empty navy for editable UI. No text, numbers, sponsor logos, badges, UI or watermark. Not a toy, no cartoon exaggerated proportions, no Formula wings.

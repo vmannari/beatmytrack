@@ -1,0 +1,211 @@
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -20,11 +20,11 @@
+ 					var p := Vector3((-0.28+i*0.27)*bounds.x,0,bounds.y*0.12)
+ 					_stone(tool,kit,center+(p*scale).rotated(Vector3.UP,turn),Vector3(bounds.x*0.19,height*(0.72+i*0.12),bounds.y*0.34)*scale,turn+i*0.4,stone.darkened(i*0.045))
+ 		"broadleaf":
+-			_lathe(tool,kit,center,scale,turn,[Vector2(0.32,0),Vector2(0.21,1.4),Vector2(0.11,2.7),Vector2(0,2.8)],[wood.darkened(0.26),wood,wood])
+-			for i: int in range(8):
++			_lathe(tool,kit,center,scale,turn,[Vector2(0.32,0),Vector2(0.21,1.4),Vector2(0.11,2.7),Vector2(0,2.8)],[wood.darkened(0.26),wood,wood],true)
++			for i: int in range(6):
+ 				var angle: float=i*2.4
+-				var radius: float=0.25 if i>5 else 0.83
+-				_crown(tool,kit,center+(Vector3(sin(angle)*radius,1.65+(i%3)*0.38,cos(angle)*radius)*scale).rotated(Vector3.UP,turn),Vector3(0.86,1.08,0.78)*scale,turn+angle,leaf.lightened((i%3)*0.045))
++				var radius: float=0.20 if i>3 else 0.78
++				_crown(tool,kit,center+(Vector3(sin(angle)*radius,1.85+(i%3)*0.34,cos(angle)*radius)*scale).rotated(Vector3.UP,turn),Vector3(1.03,0.78,0.92)*scale,turn+angle,leaf.lightened((i%3)*0.045))
+ 		"bush":
+ 			for p: Vector3 in [Vector3(-0.4,0,0),Vector3(0.4,0,0.2),Vector3(0,0,-0.3)]: _crown(tool,kit,center+(p*scale).rotated(Vector3.UP,turn),Vector3(0.6,0.75,0.6)*scale,turn+p.x,leaf)
+ 		"grass_clump", "flowers":
+@@ -46,15 +46,15 @@
+ 				for side: float in [-1.0,1.0]:
+ 					_face(tool,kit,center,scale,turn,[Vector3(side*2.005,0.42,0),p+Vector3.RIGHT*side*2.005,q+Vector3.RIGHT*side*2.005],Color("bda079"))
+ 		"barrier":
+-			# Jersey profile: broad foot, sloping shoulders, narrow crown.
+-			for side: float in [-1.0,1.0]:
+-				_face(tool,kit,center,scale,turn,[Vector3(-3,0,side*0.5),Vector3(3,0,side*0.5),Vector3(3,0.23,side*0.5),Vector3(-3,0.23,side*0.5)],Color("797e78"))
+-				_face(tool,kit,center,scale,turn,[Vector3(-3,0.23,side*0.5),Vector3(3,0.23,side*0.5),Vector3(3,0.68,side*0.19),Vector3(-3,0.68,side*0.19)],Color("a9aa9b"))
+-			box.call(Vector3(0,0.76,0),Vector3(6,0.32,0.38),Color("c4c2af"))
+-			for side: float in [-1.0,1.0]:
+-				_face(tool,kit,center,scale,turn,[Vector3(side*3,0,-0.5),Vector3(side*3,0,0.5),Vector3(side*3,0.23,0.5),Vector3(side*3,0.23,-0.5)],Color("85887e"))
+-				_face(tool,kit,center,scale,turn,[Vector3(side*3,0.23,-0.5),Vector3(side*3,0.23,0.5),Vector3(side*3,0.68,0.19),Vector3(side*3,0.68,-0.19)],Color("a3a593"))
+-			for x: float in [-2.5,2.5]: box.call(Vector3(x,0.79,0),Vector3(0.36,0.24,0.4),Color("a85443"))
++			# Original solid block and three red bands; graphic shadow foot and bevel.
++			box.call(Vector3(0,0.43,0),Vector3(6,0.86,1),Color("a8aaa0"))
++			box.call(Vector3(0,0.10,0),Vector3(6.005,0.20,1.005),Color("505d59"))
++			box.call(Vector3(0,0.885,0),Vector3(5.94,0.07,0.88),Color("d9d7c4"))
++			for side: float in [-1.0,1.0]:
++				_face(tool,kit,center,scale,turn,[Vector3(-3,0.85,side*0.5),Vector3(3,0.85,side*0.5),Vector3(2.97,0.92,side*0.44),Vector3(-2.97,0.92,side*0.44)],Color("c8c9b9"))
++			for x: int in [-2,0,2]:
++				box.call(Vector3(x,0.775,0),Vector3(0.9,0.30,1.018),Color("9d392c"))
++				box.call(Vector3(x,0.935,0),Vector3(0.9,0.025,1.018),Color("cf6045"))
+ 		"guardrail", "wire_fence":
+ 			for x: float in [-2.9,0,2.9]: box.call(Vector3(x,0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
+ 			if kind == "guardrail":
+@@ -188,20 +188,42 @@
+ 	for i: int in range(8): _face(tool,kit,center,1,turn,[rings[2][i],rings[2][(i+1)%8],Vector3(-0.12,0.94,0.03)*size],color.lightened(0.12))
+ 
+ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
+-	var rings: Array = []
+-	for row: int in range(3):
+-		var ring: Array[Vector3] = []
+-		for i: int in range(10):
+-			var angle: float = TAU*i/10.0
+-			var radius: float = [0.65,1.0,0.58][row]*(0.94+0.06*sin(i*2.4))
+-			ring.append(Vector3(cos(angle)*radius,[0.0,0.43,0.84][row]+sin(i*2.4)*0.06,sin(angle)*radius)*size)
+-		rings.append(ring)
+-	for i: int in range(10):
+-		var j: int = (i+1)%10
+-		for row: int in range(2): _face(tool,kit,center,1,turn,[rings[row][i],rings[row][j],rings[row+1][j],rings[row+1][i]],color.darkened(0.16 if row==0 else 0).lightened((i%3)*0.025))
+-		_face(tool,kit,center,1,turn,[rings[2][i],rings[2][j],Vector3(0,size.y,0)],color.lightened(0.10))
+-
+-static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array) -> void:
++	# Serrated canopy edge with a single broad light plane and dark underside.
++	# Deliberately no rounded rings or spherical leaf clusters.
++	var rim: Array[Vector3] = []
++	var upper: Array[Vector3] = []
++	for i: int in range(18):
++		var angle: float = TAU*i/18.0
++		var radius: float = (1.0 if i%3 != 1 else 0.77)*(0.91+0.09*sin(i*2.1))
++		rim.append(Vector3(cos(angle)*radius,0.24+0.08*sin(i*1.7),sin(angle)*radius)*size)
++		upper.append(Vector3(cos(angle)*radius*0.57,0.73+0.07*sin(i*0.9),sin(angle)*radius*0.57)*size)
++	for i: int in range(18):
++		var j: int = (i+1)%18
++		var side_color: Color = color.lightened(0.12) if cos(TAU*i/18.0+turn)>0.2 else color.darkened(0.22)
++		_leaf_face(tool,kit,center,1,turn,[rim[i],rim[j],upper[j],upper[i]],side_color)
++		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.13,0.90,0.04)*size],color.lightened(0.26))
++		_leaf_face(tool,kit,center,1,turn,[rim[j],rim[i],Vector3(0,0.0,0)*size],color.darkened(0.43))
++
++static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
++	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
++	# Swept, tapered boughs: dark lower blades and connected upper ridges.
++	for tier: int in range(5):
++		var radius: float = 1.02-tier*0.17
++		var height: float = 0.66+tier*0.49
++		for branch: int in range(7):
++			var angle: float = turn+branch*TAU/7.0+tier*0.63
++			var reach: float = radius*(0.91+0.09*sin(branch*2.7+tier))
++			var points: Array[Vector3] = [Vector3(-0.15,height+0.47,0),Vector3(reach*0.63,height+0.12,-reach*0.36),Vector3(reach,height-0.10,-reach*0.13),Vector3(reach*0.83,height-0.02,reach*0.08),Vector3(reach*0.95,height-0.15,reach*0.24),Vector3(reach*0.45,height+0.04,reach*0.40)]
++			var ridge := Vector3(reach*0.38,height+0.37,0)
++			for i: int in range(points.size()):
++				var j: int = (i+1)%points.size()
++				var shade: Color = color.lightened(0.23) if i<3 else color.darkened(0.12)
++				_leaf_face(tool,kit,center,scale,angle,[points[i],points[j],ridge],shade)
++				_leaf_face(tool,kit,center,scale,angle,[points[j],points[i],Vector3(0,height-0.02,0)],color.darkened(0.40))
++	# Small pointed leader rather than a round cap.
++	_lathe(tool,kit,center,scale,turn,[Vector2(0.22,2.65),Vector2(0.0,3.3)],[color.lightened(0.20)],true)
++
++static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array, reverse: bool = false) -> void:
+ 	for row: int in range(profile.size()-1):
+ 		for i: int in range(20):
+ 			var a: float=TAU*i/20+turn
+@@ -209,7 +231,9 @@
+ 			var lo: Vector2=profile[row]
+ 			var hi: Vector2=profile[row+1]
+ 			tool.set_color(colors[row])
+-			kit._quad(tool,center+Vector3(cos(a)*lo.x,lo.y,sin(a)*lo.x)*scale,center+Vector3(cos(b)*lo.x,lo.y,sin(b)*lo.x)*scale,center+Vector3(cos(b)*hi.x,hi.y,sin(b)*hi.x)*scale,center+Vector3(cos(a)*hi.x,hi.y,sin(a)*hi.x)*scale)
++			var points: Array[Vector3] = [Vector3(cos(a)*lo.x,lo.y,sin(a)*lo.x),Vector3(cos(b)*lo.x,lo.y,sin(b)*lo.x),Vector3(cos(b)*hi.x,hi.y,sin(b)*hi.x),Vector3(cos(a)*hi.x,hi.y,sin(a)*hi.x)]
++			if reverse: points.reverse()
++			kit._quad(tool,center+points[0]*scale,center+points[1]*scale,center+points[2]*scale,center+points[3]*scale)
+ 
+ static func _roof(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, width: float, depth: float, color: Color) -> void:
+ 	var count: int=ceili(width/0.4)
+@@ -222,3 +246,8 @@
+ 			for j: int in range(4): points[j]=center+(points[j]*scale).rotated(Vector3.UP,turn)
+ 			tool.set_color(color.lightened((i%3)*0.025).darkened(0.08 if side<0 else 0))
+ 			kit._quad(tool,points[0],points[1],points[2],points[3])
++
++static func _leaf_face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
++	# Godot's clockwise front faces must point outwards for the ink hull.
++	points.reverse()
++	_face(tool,kit,center,scale,turn,points,color)
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-28"
++const VERSION: String = "track-kit-29"
+ const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
+ const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
+ const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
+@@ -465,6 +465,9 @@
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var count: int = 0
++	var ink_tool := SurfaceTool.new()
++	ink_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var ink_count: int = 0
+ 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+ 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
+ 		var object_scale: float = float(object.get("scale",1.0))
+@@ -478,6 +481,11 @@
+ 			CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
+ 			_finish_prop_mesh(prop_tool,node)
+ 			light_instances.append(node)
++			continue
++		if object.kind in ["tree","broadleaf","bush","barrier"]:
++			if object.kind == "tree": _pine(ink_tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
++			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
++			ink_count += 1
+ 			continue
+ 		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation))):
+ 			count += 1
+@@ -517,6 +525,17 @@
+ 		mesh.material_override = material
+ 		add_child(mesh)
+ 
++	if ink_count > 0:
++		ink_tool.generate_normals()
++		var ink_mesh := MeshInstance3D.new()
++		ink_mesh.mesh = ink_tool.commit()
++		var ink_material := VisualGeometry.material(Color.WHITE)
++		ink_material.vertex_color_use_as_albedo = true
++		ink_material.cull_mode = BaseMaterial3D.CULL_DISABLED
++		VisualGeometry.ink(ink_material)
++		ink_mesh.material_override = ink_material
++		add_child(ink_mesh)
++
+ 	if not track.tyre_origins.is_empty():
+ 		var stack := SurfaceTool.new()
+ 		stack.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -588,17 +607,7 @@
+ 
+ 
+ func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
+-	# Layered branch masses with blunt, uneven ends, not repeated star cones.
+-	_mound(tool, center, Vector3(0.18, 2.75, 0.18) * scale_value, turn, Color("65513c"))
+-	for tier: int in range(5):
+-		var y: float = 0.65 + tier*0.48
+-		var radius: float = 0.75 - tier*0.12
+-		for branch: int in range(4):
+-			var angle: float = turn + branch*TAU/4.0 + tier*1.7
+-			var offset := Vector3(cos(angle)*radius*0.8,y+sin(angle*3.0)*0.12,sin(angle)*radius*0.8)
+-			var shade: Color = color.lightened(0.035*tier).darkened(0.10 if branch%3 == 0 else 0.0)
+-			CreatorPropVisual._crown(tool,self,center+offset*scale_value,Vector3(radius*0.83,0.48,radius*0.57)*scale_value,-angle,shade)
+-	_mound(tool,center+Vector3(0,2.8,0)*scale_value,Vector3(0.20,0.40,0.18)*scale_value,turn,color.lightened(0.08))
++	CreatorPropVisual.pine(tool,self,center,scale_value,turn,color)
+ 
+ 
+ func _build_finish(track: NativeTrack) -> void:
+--- a/game/tests/capture_object_models.gd
++++ b/game/tests/capture_object_models.gd
+@@ -3,6 +3,18 @@
+ func _initialize() -> void: call_deferred("run")
+ 
+ func run() -> void:
++	var audit := SurfaceTool.new()
++	audit.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var kit := NativeTrackVisual.new()
++	CreatorPropVisual._crown(audit,kit,Vector3.ZERO,Vector3.ONE,0,Color.WHITE)
++	audit.generate_normals()
++	var arrays: Array = audit.commit().surface_get_arrays(0)
++	if arrays[Mesh.ARRAY_NORMAL][6].y < 0.5:
++		push_error("Canopy top normals must face outwards for the contour pass")
++		kit.free()
++		quit(1)
++		return
++	kit.free()
+ 	root.size = Vector2i(1560,1080)
+ 	root.content_scale_size = root.size
+ 	var backdrop := ColorRect.new()

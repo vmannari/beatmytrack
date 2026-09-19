@@ -1,6 +1,98 @@
 # Phase 0: specification review and first slice
 
+2026-09-19 V02/V03/V05: dedicated generated Storm track-card background replaces Grass fallback. 397 menu capture checks pass. [Artwork and evidence](DISCOVERY_MENU.md#dedicated-storm-artwork---2026-09-19).
+
+2026-09-19 R01/T01/V05: added scripts/deploy-phone.ps1 for fresh APK deployment plus saved-PC-track sync with replacement backups/hash verification. Tested on DN2103: focused checks 70/18/11 pass, 20 tracks verified, phone-only track retained. Missing-source preflight rejected as expected. [Usage/limits](ANDROID.md#deploy-game-and-all-saved-pc-tracks).
+
+2026-09-19 R01/V05/Q01: optimized Storm verified on DN2103: ~47 FPS versus ~43; frames over 25 ms reduced 38% to 26%. Not steady 60 FPS. Normal play restored. [Evidence](STORM.md#optimized-build-verified-on-phone---2026-09-19).
+
+2026-09-19 R01/V05/Q01: cached Storm trail histories remove repeated path evaluation; desktop microbenchmark ~89x faster, 54 checks pass. Optimized APK installed; phone FPS comparison blocked by locked/asleep device. [Details](STORM.md#trail-history-cpu-optimization---2026-09-19).
+
+2026-09-19 R01/V05/Q01: current Storm build deployed/tested on DN2103. Warm driving sample ~43 FPS, 38% frames over 25 ms; not steady 60 FPS. Diagnostic cleaned up, normal app relaunched. [Evidence](STORM.md#physical-phone-deployment-and-performance---2026-09-19).
+
+2026-09-19 V02/V04/V05: erratic droplet spurts with brief catches and sharper lateral changes replace smooth falling arcs. 53 checks passed. [Evidence and limits](STORM.md#erratic-falling-paths---2026-09-19).
+
+2026-09-19 V02/V04/V05: heavier Storm rain, greater central water coverage and roughly doubled droplet refraction. 53 checks passed. [Evidence and limits](STORM.md#heavier-rain-and-stronger-distortion---2026-09-19).
+
+2026-09-19 V04/V05: Storm lightning now every 9-16 seconds, first strike after 6 seconds. 53 checks passed. [Details](STORM.md#twice-as-frequent-lightning---2026-09-19).
+
+2026-09-19 V02/V04/V05: moving-drop trails now scale with bead width and taper as they fade. 53 checks passed. [Evidence and limits](STORM.md#trails-proportional-to-bead-width---2026-09-19).
+
+2026-09-19 V02/V04/V05: randomized uneven Storm droplet silhouettes and much stronger lightning illumination. 53 checks passed. [Evidence and limits](STORM.md#irregular-shapes-and-stronger-flash---2026-09-19).
+
+2026-09-19 V02/V04/V05: rebuilt Storm wet-glass presentation from owner mockup/shader attempt: layered beads, stronger refraction and winding rivulets. 53 checks passed. [Evidence/limits](STORM.md#wet-glass-reference-rebuild---2026-09-19).
+
+2026-09-19 V02/V04/V05: Storm droplets cling/grow, slip in curved bursts and settle again; fading trails follow their travelled path. 53 checks passed. [Evidence and limits](STORM.md#clinging-and-slipping-droplets---2026-09-19).
+
+2026-09-19 V02/V04/V05: original refractive Storm lens shader replaces outlined beads, with sparse falling drops and soft highlights. 51 checks passed; [evidence and limits](STORM.md#refractive-lens-water---2026-09-19).
+
+2026-09-19 V02/V04/V05: more visible falling Storm lens droplets, accelerating trails and occasional centre placement. 51 checks passed; [captures and acceptance](STORM.md#falling-lens-droplets---2026-09-19).
+
+2026-09-19 V02/V04/V05: Storm lens droplets enlarged 4x and lightning illumination strengthened. 51 capture checks passed; updated screenshots/video, no device test. [Follow-up](STORM.md#larger-droplets-and-brighter-lightning---2026-09-19).
+
+2026-09-19 G01/R01/R03/R07/T02/V02-V05: Storm biome with mild wet-road grip, overcast light, rain, restrained lens droplets and delayed thunder/lightning. Physics 0.29. [Changes, commands, captures and limits](STORM.md).
+
+2026-09-18 R01/G01/V02/V03/V05/Q01: Easy night lamp cost confirmed on the attached phone; spatial light culling and a mobile-night 3D render budget improve sustained presentation. [Measurements, tests, visual tradeoff and acceptance](NIGHT_LIGHTING_PERFORMANCE.md).
+
+2026-09-18 R01/G01/V03/V05/Q01: Play selection no longer synchronously compiles and rebuilds a live circuit preview. [Changes, phone timings and acceptance limits](PLAY_MENU_PERFORMANCE.md).
+
+2026-09-18 R01/G01/V03/V05/Q01: attached-phone Knot tyre-pile performance pass; preserve exact collision results and reduce redundant presentation uploads. [Implementation, measured limits and acceptance](KNOT_TYRE_PERFORMANCE.md).
+
+2026-09-18 G01/R01/V02-V05: mechanical cel-shaded pedals with exposed mounts, bevelled plates, recessed grips and restrained wear. 216 capture/HUD checks passed. [Evidence and device limits](VEHICLE_CONTROLS.md#mechanical-pedal-refinement--2026-09-18).
+
+2026-09-18 G01/R01/R03/R07/T02/V02/V04/V05: milder winter traction and soft snowbanks along asphalt edges. Physics 0.28. [Changes, metrics, tests and device limits](WINTER_ICE.md#milder-winter-handling-and-soft-snowbanks---2026-09-18).
+
+2026-09-18 G01/R01/V02-V05: distinct illustrated steering/pedal controls for all five vehicles; 161 regression checks and 125 skin/target checks passed. [Captures, commands and phone acceptance](VEHICLE_CONTROLS.md).
+
+2026-09-18 G01/R01/R03/R07/T02/V02/V04/V05: winter asphalt now has icy traction and frost visuals, including bridges. Physics 0.27. [Commands, measured behavior and acceptance](WINTER_ICE.md).
+
+2026-09-18 V02/V04/V05: darker night outside street lamps; reduced ambient/moon lighting. 41 capture checks passed. [Evidence and device limits](BIOME_CREATION.md#darker-night-follow-up---2026-09-18).
+
+2026-09-18 R01/T01-T04/V02-V05: Grass/Desert/Night city/Winter replace the three-biome picker; warm street-lamp illumination and snow presentation. [Actual checks, captures and device limits](BIOME_CREATION.md#four-biome-revision--2026-09-18).
+
+2026-09-18 R01/T01?T04/V03/V05: Create/New require large biome cards before entering an empty track; biome locked and nature palette filtered. [Changes, checks, captures and device limits](BIOME_CREATION.md).
+
+2026-09-17 R01/T01-T04/V03/V05: closer-reference panel/card styling and larger previews; removed drawer settings icon, retained options through selected asset. [Changes and checks](EDITOR_STYLE.md#reference-refinement--2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: removed editor hint bar, balanced palette padding and separated Undo/Redo from track identity. [Layout follow-up](EDITOR_STYLE.md#layout-follow-up--2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: screenshot-guided editor styling, unified rail, slimmer asset drawer, selected-only cyan and green Test/play. [Changes, checks and acceptance](EDITOR_STYLE.md).
+
+2026-09-17 R01/T01-T04/V03/V05: reference-style Free/Area/Line buttons in top controls, live brush-size slider and fine adjustment. [Captures, checks and device limits](SURFACE_USABILITY.md#reference-style-top-paint-controls---2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: in-draft surface confirmation, separate placement toolbar, Oil spill in Objects and no Road in Surfaces. 315 checks pass. [Captures, commands and device limits](SURFACE_USABILITY.md).
+
+2026-09-17 V02/V04/V05/R01/T01-T04: removed stepped shoulder/painted-sand join with decorative-only sand blending. 34 graphical checks pass. [Close-up and device limits](SURFACE_MODES.md#continuous-shoulder--painted-sand-join---2026-09-17).
+
+2026-09-17 V02/V04/V05/R01/T01-T04: painted sand matches the road shoulder tint and shared granular texture. 33 graphical checks pass. [Close-up, commands and device limits](SURFACE_MODES.md#matched-sand-color-and-grain---2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: corrected bright unpainted-road fringe regression; decorative verge replacement is now restricted to authored paint footprints. 63 checks pass after failing reproduction. [Captures and device limits](SURFACE_MODES.md#unpainted-road-regression-correction---2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: protected surface paint now replaces decorative roadside grass; outer grass edges share the road shoulder fringe. 61 checks pass. [Screenshot, commands and device limits](SURFACE_MODES.md#roadside-verge-follow-up---2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05: line/area/free surface modes, draggable draft points, explicit confirmation, rounded contours and blended material boundaries. [Actual tests, screenshots and Android limits](SURFACE_MODES.md).
+
+2026-09-17 R01/T01-T04/V03/V05: automatic-only waypoints; retired all 194 Slicks circuits from the playable/export catalog and unsupported native bases. Original starter keeps fresh installs playable. [Actual tests, screenshots and device limits](AUTOMATIC_WAYPOINTS.md).
+
+2026-09-16 R01/T01-T04: fixed stale selected geometry after explicit creator Save; immediate Home Race regression passes. [Actual checks and acceptance limits](SAVED_TRACK_REFRESH.md).
+
+2026-09-16 R01/T01-T04/V03/V05: all road types expose simultaneous labeled directional handles directly on previews and selections. [Actual checks, captures and device limits](ROAD_PLACEMENT.md#direct-preview-controls-follow-up).
+
+2026-09-16 R01/T01-T04/V03/V05: hairpins expose separate Straight length; new pieces default to zero straight arms. 285 checks pass. [Captures, commands and phone limits](ROAD_PLACEMENT.md#hairpin-straight-length-follow-up).
+
+2026-09-16 R01/T01?T04/V03/V05: independent S-bend height, equal hairpin arms and on-road tap/drag acceptance. Compiler-11. [Actual tests, screenshot and device limits](ROAD_PLACEMENT.md).
+
+2026-09-16 V02/V04/V05/Q01/R01: owner-requested gameplay 2x MSAA enabled; graphics controls deferred on wishlist. [Actual checks, screenshot and mobile acceptance](GAMEPLAY_ANTIALIASING.md).
+
+2026-09-15 V02/V04/V05: owner-directed grey handrails and asphalt material revision, track-kit-22. [Actual captures, checks and remaining acceptance](GREY_RAILS_ASPHALT.md).
+
+2026-09-15 V02/V04/V05: owner-directed asphalt texture restoration and simpler/higher handrails implemented. [Changes, 168 passing checks and remaining acceptance](ROAD_RAIL_REFINEMENT.md).
+
+2026-09-15 V02/V04/V05: patchy-asphalt owner correction, track-kit-20; more even shared asphalt with retained verge refinement. [Capture and acceptance limits](ROAD_REFINEMENT.md).
+
 2026-09-15 V02/V03/V05/Q01/R01: minimap roads cached separately from the player marker and reduced to thin placed-road lines. Desktop redraw callback ~6 ms to ~0.05 ms; 95 graphical checks pass. [Measurements, capture and device limits](MINIMAP_PERFORMANCE.md).
+
+2026-09-15 V02/V04/V05/Q01: owner-authorized road review items 1 and 2 implemented in track-kit-19. Shared asphalt tonal refinement and slower creator verge variation; 332 focused checks pass. [Actual evidence and acceptance limits](ROAD_REFINEMENT.md). Driving-data wear remains deferred.
 
 2026-09-15 V02/V03/V04/V05/G01/R01/R07: reference-shaped HUD, icon menu, raised pedals and blue/concrete bridges; minimap exclusively follows placed road pieces on new creator tracks. 264 focused checks pass. [Evidence, commands and phone acceptance](REFERENCE_HUD.md).
 
@@ -8,11 +100,21 @@
 
 2026-09-15 V02/V04/V05: kerb crown/bevel/base shading strengthened for normal gameplay-camera readability; physical height and response unchanged. 195 focused checks pass. [Captures and acceptance limits](KERB_READABILITY.md).
 
+2026-09-15 G01/V02/V04/V05/R01/R03/R07: visual body suspension reacts to acceleration, braking, cornering, impacts, jumps and bridge transitions, with bounded hard-contact sparks. Canonical handling unchanged. [Actual checks, captures and acceptance limits](VISUAL_SUSPENSION.md).
+
 2026-09-15 G01/V02/V04/V05/R01/R03/R07: raised kerbs share 10 cm bevelled geometry with deterministic tyre contact and a small spring/speed response. Physics 0.21, compiler-10, recorder schema 7. [Actual checks, captures and device limits](RAISED_KERBS.md).
+
+2026-09-15 V02/V04/V05: owner-directed grass/road/lighting restoration and three-door hatchback model correction. 70 driving checks pass; gameplay and model captures saved. [Changes, evidence and acceptance limits](HATCHBACK.md).
+
+2026-09-15 V02/V04/V05: first illustrated gameplay pass adds cream/blue car detail, quieter grass/asphalt and revised race lighting. 70 driving and 158 road-piece checks pass; desktop capture inspected. [Evidence and remaining art/device acceptance](ILLUSTRATED_WORLD.md).
 
 2026-09-14 G01/R01/R03/R07: owner prefers Original and requests more slip plus strong forward drive while sliding. Original+ is the focused tune; unchanged Original remains selectable. [ORIGINAL_SLIDE.md](ORIGINAL_SLIDE.md) records configuration, bounded power recovery, measured behavior and actual verification.
 
+2026-09-14 V02/V03/G03: owner rejects blocky menu art and selects detailed automotive ink/cel style. Original illustrated Home/Garage hero replaces procedural menu scenery. [ILLUSTRATED_MENUS.md](ILLUSTRATED_MENUS.md) records assets, actual checks/captures and remaining visual/device acceptance.
+
 2026-09-14 G01/R01/R03/R07: owner reopens focused handling iteration with supplied fun-handling notes. Progressive steering, brake rotation and recovery are implemented with an old-physics comparison preset. See [HANDLING_FUN.md](HANDLING_FUN.md) for actual checks, identity changes and pending human/phone acceptance.
+
+2026-09-14 V02/V03/G03/R01/R04/R06/R07: owner-supplied premium menu board authorizes the local presentation revision and warm yellow primary-action override. [PREMIUM_MENUS.md](PREMIUM_MENUS.md) records behavior, actual evidence and remaining visual/device acceptance. Reference online/economy panels do not expand the current slice.
 
 2026-09-14 R01/T01-T04/V02/V04/V05: centred biome/rename dialogs, keyboard-aware rename placement, taller rail, transparent header and grey disabled Test. [Checks and captures](EDITOR_WIP_WORKFLOW.md).
 
@@ -201,3 +303,112 @@ Owner authorizes sharp bends, per-node widths and built-in object editing (T01â€
 2026-09-12 G02/R03/R01: owner extends native test content to all 194 distinct locally supplied Slicks tracks. Author search uses retained source attribution or flagged deterministic fictional names. See SLICKS_CORPUS.md for actual commands/results, eight unresolved route-planner cases and remaining individual lap/bridge/device checks.
 
 2026-09-12 G02/R03/R01: bulk straight-bridge axis correction fixes YLIKULKU overpass/underpass layering. Actual validation: 793 corpus checks, 163 original track checks, three YLIKULKU AI laps with zero contacts. See SLICKS_CORPUS.md and bridge-axis evidence; mixed-orientation bridges remain a separate limitation.
+# 2026-09-15 local PB follow-up
+
+Tracks PB lookup now matches the selected handling used to save races. Original+ remains the owner-confirmed startup default. Requirements R01/R04/R06/R07; actual checks, screenshot and remaining device acceptance: [LOCAL_BEST_FIX.md](LOCAL_BEST_FIX.md).
+# Race-start follow-up, 2026-09-15
+
+G01/V03/V05/R01/R07: owner-requested start clearance and raised countdown/GO implemented. See [RACE_START.md](RACE_START.md) for actual checks, screenshots and remaining phone acceptance.
+
+2026-09-15 owner handling follow-up: stronger soil penalties, visible dirty-tire cleaning and self-righting rollover implemented within G01/R01/R03/R07/V02/V04/V05. See [SOIL_RECOVERY.md](SOIL_RECOVERY.md) for actual validation and outstanding owner/device acceptance.
+
+2026-09-15 handling correction: rollover now follows sideways travel and completes in 0.6 seconds. Requirements, actual checks and pending owner/phone acceptance: [ROLLOVER_CORRECTION.md](ROLLOVER_CORRECTION.md).
+
+2026-09-15 visual handling follow-up: grounded rollover and landing suspension. Canonical timing/physics unchanged; 156 focused checks pass. See [GROUNDED_ROLLOVER.md](GROUNDED_ROLLOVER.md).
+
+## Four-car local slice, 2026-09-15
+
+Owner authorizes three additional car classes and complete menu/art/model/handling support. Requirements G01/G03/V02-V05/R01/R03/R04/R06/R07; see [CARS.md](CARS.md) for changed files, version contracts, measured balance, commands, actual screenshots and remaining manual/phone acceptance. No commerce, online services or gameplay camera expansion.
+
+## Shortcut validation correction, 2026-09-16
+
+G01/R03/R07/T02: owner reports false hairpin/kerb penalties. Replaced nearest-progress jump heuristics with automatic ordered swept route coverage, local road/kerb tolerance and early shortcut feedback after 0.4 s / 2 m of confirmed later-route rejoin, with finish-time fallback. Five valid laps and local-only scoring remain. See [ROUTE_PROGRESS_VALIDATION.md](ROUTE_PROGRESS_VALIDATION.md) for review, changed files, actual commands/results, full-validation engine crash and remaining owner/device acceptance.
+
+## Owner rejection of shortcut v3, 2026-09-16
+
+G01/R03/R07/T02/V05: rejected dense coverage and delayed feedback are superseded by signed swept progress with spatial bypass proof, immediate +5s feedback, a persistent two-second HUD notice and counted penalized laps. Rules v4. Actual tests, saved-track trajectories, screenshots and manual/device limits: [ROUTE_PROGRESS_VALIDATION.md](ROUTE_PROGRESS_VALIDATION.md).
+
+
+## Outside-corner shortcut follow-up, 2026-09-16
+
+G01/R03/R07/T02/V05: owner reports penalties while slightly wide at outer curves. Directional bypass evidence and an explicit outside-bend debt reset replace distance-only evidence. Rules v5, same-tick warning retained. See [actual reproduction, checks and remaining acceptance](OUTER_CURVE_SHORTCUTS.md).
+
+## Go-kart local vehicle, 2026-09-16
+
+Owner authorizes a fifth selectable vehicle with smaller wheel span, short turning radius, high grip and acceleration but low top speed. Dedicated kart-1 Resource, original model/art and existing selection/records/practice integration. Requirements G01/G03/V02-V05/R01/R03/R04/R06/R07. [Actual tests, captures and remaining acceptance](KART.md).
+
+
+## Silmukka missed cuts, 2026-09-16
+
+G01/R03/R07/T02/V05: rules v6 removes blanket outside forgiveness and skipped-corner credit; retained driven approach plus excursion savings identifies inside bypasses. [Fixture, actual checks, timing and outstanding owner/device acceptance](SILMUKKA_SHORTCUTS.md).
+
+2026-09-16 owner handling follow-up: multiple flips driven by remaining lateral speed, preserving grounded presentation and upright recovery. See [MULTIPLE_ROLLOVERS.md](MULTIPLE_ROLLOVERS.md) for requirements, evidence and remaining acceptance.
+
+
+## Silmukka screenshot hairpin, 2026-09-16
+
+G01/R03/R07/T02/V05: v7 uses directional inside boundary and removes approach-diluted percentage gating. Narrow grass crossings, stop/resume and five repeated cuts tested. [Actual commands, outcomes and owner/device limits](SILMUKKA_HAIRPIN_BOUNDARY.md).
+
+2026-09-16 G01/G03/R03/R07: owner requests stronger kart grass/dirt slowdown. kart-2 tuning and 59 passing checks; [actual commands, evidence and acceptance](KART.md#stronger-grassdirt-penalty-2026-09-16).
+
+2026-09-16 V02/V03/V05: owner screenshot requests kart model alignment correction. Centered cockpit, joined nose stripe and corrected bevel; [actual checks and evidence](KART.md#model-alignment-correction-2026-09-16).
+
+2026-09-16 G01/G03/R03/R07: owner requests faster kart dirt deceleration on partial contact. Versioned wheel probes and stronger drag; [302 checks and remaining acceptance](KART.md#wheel-contact-dirt-slowdown-2026-09-16).
+
+
+## Tight hairpin island screenshot, 2026-09-16
+
+G01/R03/R07/T02/V05: constructed-hairpin interior crossing detection bypasses the inappropriate 8 m gate for small islands. Rules v8. [Actual geometry tests, diagnostic corrections and remaining owner/device acceptance](TIGHT_HAIRPIN_CROSSINGS.md).
+
+2026-09-17 G01/G03/R03/R07: owner requests shorter kart turning radius; kart-4 steering tuning, [73 passing checks and remaining acceptance](KART.md#shorter-turning-radius-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05/R03/R07: Track start-line placement and direct direction control replace the Waypoints menu. Compiler 12; [673 passing checks, captures and remaining device acceptance](START_LINE_EDITOR.md).
+
+
+2026-09-17 R01/T01-T04/V03/V05/Q01: object placement latency optimization with immediate props, bounded background compilation and exact cached/uncached equivalence. [Measurements, commands and phone limits](OBJECT_PLACEMENT_PERFORMANCE.md).
+
+2026-09-17 R01/T01-T04/V03/V05: owner-supplied illustrated editor icons integrated. [Actual validation and remaining acceptance](EDITOR_ICONS.md).
+
+
+2026-09-17 R01/T01-T04/V03/V05: endpoint-only size/rotation, direct width dots and inner curve angle dot; pure arcs, compiler 14. [Actual checks and device limits](ROAD_PLACEMENT.md#straight-and-curve-dot-controls-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05: fixed 2 m S-curve ends and removal of their length control, compiler 15. [Actual checks and acceptance](ROAD_PLACEMENT.md#fixed-s-curve-ends-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05: inner curvature dot for normal curves, circular default and preserved endpoints/tangents. Compiler 16. [Actual checks and acceptance](ROAD_PLACEMENT.md#adjustable-curve-curvature-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05: consistent direct-dot controls for S-curves and hairpins. [Actual checks, captures and acceptance](ROAD_PLACEMENT.md#consistent-s-curve-and-hairpin-dots-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05: distinguish handle actions through glyphs, shapes, spacing and active geometry feedback without labels. [Checks and remaining owner/device acceptance](ROAD_PLACEMENT.md#handle-affordances-without-labels-2026-09-17).
+
+
+2026-09-17 R01/T01-T04/V03/V05: preserve the single attached endpoint while modifying free-end geometry. [609 checks, capture and remaining acceptance](ROAD_PLACEMENT.md#adjust-the-free-end-2026-09-17).
+
+2026-09-17 R01/T01-T04/V03/V05/Q01: immediate road approval with background compilation, current-snapshot checks and gesture-idle scene application. [338 checks, before/after measurements, captures and phone limits](ROAD_APPROVAL_PERFORMANCE.md).
+
+2026-09-18 V02/V03/V04/V05/R01/T01-T04: shared object models and biome-aware creator thumbnails refined; 243 checks pass, 35-variant and gameplay captures saved. See [actual changes, evidence and device limits](OBJECT_MODELS.md).
+
+
+2026-09-18 V02/V03/V04/V05/R01/T01-T04: owner-directed original block/red-band barrier restoration and sharper inked trees, track-kit-29. 219 checks pass; captures and scoped patch in [OBJECT_MODELS](OBJECT_MODELS.md#owner-directed-barrier-and-tree-correction--2026-09-18). No phone test.
+
+2026-09-18 V02/V03/V04/V05/R01/T01-T04: inked fractured rocks and standalone Cliff tile with 8/16/24 m presets; 226 checks pass, captures and scoped patch saved. [Changes and device limits](OBJECT_MODELS.md#rocks-and-larger-cliffs--2026-09-18).
+
+
+2026-09-18 G01/V02/V04/V05: rolling tires on all five cars. [Implementation, evidence and acceptance](TIRE_ROTATION.md).
+
+
+2026-09-18: owner reference-led discovery menu presentation; [requirements, actual commands, screenshots and pending phone acceptance](DISCOVERY_MENU.md).
+
+
+2026-09-18 R01/G01/V03/V05/Q01: first Android debug APK installed on authorized DN2103 / Android 13. Focused deployment checks pass; full validation fails in existing app navigation integration checks. [Toolchain, fixes, actual commands and device acceptance](ANDROID_DEPLOYMENT_2026_09_18.md).
+
+
+2026-09-18 R01/G01/T01-T04/V03/V05/Q01: copied PC tracks/drafts to DN2103; enlarged mobile artwork and independent invisible touch targets; mobile render scale and model/trail batching. Actual device median frames ~16.8 ms, occasional misses remain. [Commands, checks, measurements and limits](MOBILE_FOLLOWUP.md).
+
+2026-09-18 R01/G01/V03/V05/Q01: measured Ajorata CPU optimisation deployed; [commands, regression outcomes, clean display trace and remaining human acceptance](AJORATA_PERFORMANCE.md).
+
+2026-09-18 R01/G01/V03/V05/Q01: full-HUD touch redraw bottleneck reproduced and fixed on attached phone. [Measurements, commands, checks and remaining acceptance](RACING_INPUT_PERFORMANCE.md).

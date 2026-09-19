@@ -1,5 +1,11 @@
 # Project agent instructions
 
+## Illustrated menu art override (2026-09-14)
+The owner rejected the procedural menu graphics and supplied a detailed inked/cel-shaded vehicle reference. Home and Garage now use an original generated fictional compact-car illustration with retained editable UI. This supersedes procedural menu scenery; it does not replace the gameplay vehicle mesh or camera. The source reference is not a shipping asset. See `docs/ILLUSTRATED_MENUS.md` and the saved generation prompt for actual assets, evidence and remaining acceptance.
+
+## Premium menu reference (2026-09-14)
+The owner supplied a nine-screen menu board and requested a more premium feel. This authorizes the Home/Garage/Tracks/Results/Settings presentation pass, including warm yellow primary actions, deep navy panels, bottom navigation and original scenic menu environments. The new yellow action reference supersedes the older white-primary menu token. Reference commerce, currencies, progression and online standings remain outside the current local slice. Gameplay camera and canonical handling are independent. See `docs/PREMIUM_MENUS.md` for actual evidence and remaining visual/device acceptance.
+
 ## Wireframe editor override (2026-09-13)
 The owner supplied a phone-editor wireframe directing a full-screen world, Road/Surface/Objects/Race rail, contextual bottom palette, directly placed road sections, local geometry handles, roadside object runs and actionable issues. Creator-track-v4 adds independent road pieces alongside free paint and the separate lap route; older user formats need not be maintained. The wireframe's **Practice (untimed)** and **Edit here** supersede five-lap creator test drives only. Ordinary races remain five laps. Practice-start placement is independent of the timed lap start. See `docs/WIREFRAME_EDITOR.md` for implemented behavior and acceptance limits.
 
@@ -56,3 +62,20 @@ The owner explicitly requested inside-area whole-piece dragging, endpoint-dot ed
 
 ## Creator scenery and hazards override (2026-09-14)
 The owner explicitly requested tapered kerbs, solid/deletable trees, visually consistent bridges, scalable rock/cliff variants and gameplay-affecting jumps, oil and water. This authorizes the local creator-object and deterministic hazard slice; online services and unrelated progression remain deferred. See docs/CREATOR_HAZARDS.md for bounds and acceptance.
+
+## Multi-car override (2026-09-15)
+The owner explicitly authorized a pickup, rear-heavy classic sports car and classic Formula car alongside the compact, including menus, pictures, gameplay models and track-dependent handling balance. Fictional vehicle identities and the established illustrated/cel-shaded style remain required. This supersedes the one-car quantity for the local slice. See docs/CARS.md for implementation, evidence and remaining human/device acceptance.
+
+## Go-kart override (2026-09-16)
+The owner authorizes a fifth local vehicle: a go-kart with narrower wheel span, shorter turning radius, very good grip, strong acceleration and relatively low top speed. It uses the established illustrated/cel-shaded style and existing local selection/records flow. See docs/KART.md for actual behaviour, tests and remaining acceptance.
+
+## Automatic waypoint and legacy collection override (2026-09-17)
+The owner removed manual waypoint authoring: expose only automatic route generation from connected road pieces. Untimed practice-start positioning remains independent. The owner also retired the Slicks collection from the playable/shipping catalog and creator bases, superseding the earlier 194-track content requirement. Original local creator tracks remain supported; do not delete player files. Legacy native data is retained only under export-excluded test fixtures for existing physics regressions. See docs/AUTOMATIC_WAYPOINTS.md.
+
+
+## Direct start-line override (2026-09-17)
+The owner removed the whole Waypoints menu and moved Start line under Track, with direction adjustment on the placed object. Generate the route automatically from connected roads; the placed start line controls timed start/finish, route direction and practice spawn. This supersedes the independent practice-start UI; old practice_start data remains a fallback only. See docs/START_LINE_EDITOR.md.
+
+
+## Discovery menu reference override (2026-09-18)
+The owner supplied a track-discovery menu reference. Top navigation, original workshop backdrop, scenic route cards and yellow actions supersede bottom navigation for the local menus. Online friend rematches, ratings, currencies and progression remain deferred. See docs/DISCOVERY_MENU.md for actual checks and limitations.

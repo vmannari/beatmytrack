@@ -1,0 +1,7 @@
+# Storm menu artwork — 2026-09-19
+
+Generated with the built-in image_gen tool using the imagegen skill. Original output copied to `game/assets/menu/discovery-storm.png` (1024 × 1536). No external reference image was supplied to generation; existing menu artwork was inspected for style. Intended for Storm track-card backgrounds, with route/UI drawn separately.
+
+Final prompt:
+
+Use case: stylized-concept. Create one original portrait 1024x1536 scenic background illustration for the Storm biome track-selection card in a mature cel-shaded racing game. Elevated oblique view over a storm-soaked pine forest valley and rocky grassy clearings, dark slate thunderclouds near the upper edge, one distant fork of white lightning illuminating wet rock, wind-driven diagonal rain, puddles and a swollen stream with cool reflections. Muted blue grey and deep natural green palette, overcast daytime darker than normal day but clearly not nighttime. Crisp inked/painterly environmental shapes matching premium illustrated game menu scenery. Composition must read at small portrait card size: dramatic storm weather along top and sides, quieter open wet ground in the central area where the game draws its own white track outline. No road circuit or track outline painted into the image, no cars, people, typography, logos, borders, UI or watermark. Single coherent image, not a collage. Clear weather distinction from sunny grass, desert, night city and snow.

@@ -1,5 +1,21 @@
 # Android debug build and physical-phone gate
 
+## Deploy game and all saved PC tracks
+
+From the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-phone.ps1
+```
+
+Uses pinned Godot through `scripts/dev.ps1 DeployAndroidWithTracks`. Runs focused import/startup/driving/catalog/menu checks, exports a fresh debug APK, installs it, copies saved tracks from `%APPDATA%/Circuit01Lab/tracks`, verifies SHA-256 hashes and launches the app. Optional `-FullValidation` selects the full regression gate; existing full-suite limitations still apply. `-DeviceSerial`, `-AdbPath`, `-GodotPath` and `-TracksPath` are supported. One authorized phone is required unless explicitly selected.
+
+PC tracks win when the same ID exists on the phone. Every replaced phone JSON is backed up under app-private `files/track_sync_backups/<run-id>/`; phone-only tracks and records are preserved. Local source snapshots and a completed-file manifest live under `build/track-sync/<run-id>/`. Each track is staged, verified and renamed individually; a disconnect can leave a partial sync, recoverable by rerunning. Source filename/JSON IDs are checked before building. This copies top-level saved track JSON, excluding editor `wip/` autosaves, `.bak` and `.tmp` files. Save edits in the PC editor first. Missing/empty source folders stop without deployment.
+
+Changed files: `scripts/deploy-phone.ps1`, `scripts/dev.ps1`, this document and status/phase notes. Requirements R01/T01/V05. Device testing and final outcome are recorded in the status entry. No gameplay behavior changed; no new screenshot is required for this command-line utility.
+
+2026-09-18 update: Android tools and matching templates are installed; the debug APK has been installed on the owner's DN2103 / Android 13. See [actual deployment results and remaining acceptance](ANDROID_DEPLOYMENT_2026_09_18.md). The missing-tool/no-APK statements below describe the original bootstrap. For focused local deployment use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 DeployAndroid -QuickValidation`; omitting that switch retains full regression validation, currently failing in app navigation integration checks.
+
 Bootstrap contains a standard APK export preset and deployment commands. At the initial inspection, matching export templates were absent; Godot's Android SDK path pointed to a nonexistent directory; its Java SDK path was empty; neither ADB nor Java was on PATH. Therefore APK export, install, launch and physical-phone handling are **not tested**. A phone cannot be enumerated until ADB is available.
 
 ## Toolchain setup
@@ -34,7 +50,7 @@ Equivalent commands after resolving executable paths:
 & $env:GODOT_BIN --headless --path game --export-debug 'Android Debug' '../build/android/circuit01-debug.apk'
 & $env:ADB_BIN devices -l
 & $env:ADB_BIN -s YOUR_SERIAL install -r build/android/circuit01-debug.apk
-& $env:ADB_BIN -s YOUR_SERIAL shell am start -W -n org.circuit01.handlinglab/com.godot.game.GodotApp
+& $env:ADB_BIN -s YOUR_SERIAL shell am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p org.circuit01.handlinglab
 ```
 
 Use the wrapper for validation before export and protection against deploying a stale failed build. `install -r` updates the debug app without intentionally deleting its data. If Android rejects a signing mismatch, stop and investigate; do not automatically uninstall and lose future PBs. Builds/logs go in ignored `build/`. No APK currently exists.
@@ -53,3 +69,5 @@ The first subjective session is:
 6. After the circuit/timing steps, complete ten consecutive laps during a 20-minute phone session. Record lap times, missed inputs, reset delay, device model/Android version, renderer, build hash and thermal conditions. Try the hairpin, chicane and wall contact. State whether you want another attempt without adding new content.
 
 Stop feature expansion and adjust handling if slides feel arbitrary, throttle is mostly passive, or retry is frustrating. Camera acceptance additionally requires a matched 1672×941 shot and full-lap visibility in every heading. Frame-time/thermal acceptance requires actual traces, not a desktop FPS average. External-test recruitment and P0-V art production follow owner handling approval.
+
+2026-09-19 deploy-phone verification: ran `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-phone.ps1` on DN2103. Final run passed import/startup, driving 70, catalog 18, menus 11, installed the APK, verified all 20 saved PC tracks and launched normally. Phone-only track `track_4f574f390cfe5be0` confirmed retained. Missing-source invocation exited 1 before build/install. Initial sync stopped on ADB progress emitted to stderr; corrected the native-process wrapper to check exit status while capturing stderr, then reran successfully. Existing build-tools fallback/exit-time warnings remain; full regressions not rerun. Targeted diff whitespace check passed. No mixed-workspace commit made.

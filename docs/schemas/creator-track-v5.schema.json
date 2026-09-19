@@ -44,6 +44,9 @@
       "enum": [
         "pine",
         "coast",
+        "night_city",
+        "winter",
+        "storm",
         "desert"
       ]
     },
@@ -339,8 +342,57 @@
           "protect_road": {
             "type": "boolean",
             "default": false
+          },
+          "mode": {
+            "enum": [
+              "free",
+              "line",
+              "area"
+            ]
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "line"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "points": {
+                  "minItems": 2,
+                  "maxItems": 64
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "area"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "points": {
+                  "minItems": 3,
+                  "maxItems": 64
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "pieces": {
@@ -386,7 +438,8 @@
           "length": {
             "type": "number",
             "minimum": 0,
-            "maximum": 120
+            "maximum": 120,
+            "description": "Straight/bridge length or the equal length of EACH hairpin arm. Ignored for pure-arc curves and S-bends, whose entry and exit straights are fixed at 2 metres each."
           },
           "radius": {
             "type": "number",
@@ -406,6 +459,18 @@
             "minimum": 5,
             "maximum": 270,
             "description": "Curve sweep in degrees, default 90; radius is independent."
+          },
+          "curvature": {
+            "type": "number",
+            "minimum": -0.3,
+            "maximum": 0.3,
+            "description": "Curve-only radial bulge; zero or omitted is a perfect circular arc. End positions and tangents are preserved."
+          },
+          "height": {
+            "type": "number",
+            "minimum": 2,
+            "maximum": 60,
+            "description": "S-bend lateral span in metres; omitted uses 2 * radius * (1 - cos(45 degrees)). Independent of lead-in length."
           }
         },
         "allOf": [
@@ -421,6 +486,34 @@
               "properties": {
                 "length": {
                   "minimum": 24
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "height"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "s_bend"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "curvature"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "curve"
                 }
               }
             }
@@ -469,6 +562,32 @@
         "type": "string",
         "maxLength": 40
       }
+    },
+    "start_line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "heading"
+      ],
+      "properties": {
+        "position": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number",
+            "minimum": -110,
+            "maximum": 110
+          }
+        },
+        "heading": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 360
+        }
+      },
+      "description": "Start/finish position and travel heading in map degrees; reverses the derived lap direction when facing against the road chain."
     }
   }
 }

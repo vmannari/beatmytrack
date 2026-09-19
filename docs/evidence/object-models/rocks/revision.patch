@@ -1,0 +1,286 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1579,8 +1579,8 @@
+ func _choose_object(kind: String) -> void:
+ 	canvas.cancel_gesture()
+ 	canvas.stamp_kind=kind
+-	canvas.stamp_scale=1.0
+-	object_browser.stamp_scale=1.0
++	canvas.stamp_scale=CreatorCatalog.default_scale(kind)
++	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+ 	_object_placement("single")
+ 
+--- a/game/editor/creator_catalog.gd
++++ b/game/editor/creator_catalog.gd
+@@ -16,7 +16,8 @@
+  ["flowers","Flowers","Nature",["flowers"]],
+  ["pebbles","Pebbles","Nature",["pebbles"]],
+  ["rock","Rock","Nature",["rock","boulder"]],
+- ["slate","Outcrop","Nature",["slate","cliff"]],
++ ["slate","Outcrop","Nature",["slate"]],
++ ["cliff","Cliff","Nature",["cliff"]],
+  ["log","Fallen log","Nature",["log"]],
+  ["tyre_stack","Tyres","Barriers",["tyre_stack","tyre_wall"]],
+  ["barrier","Concrete","Barriers",["barrier"]],
+@@ -51,7 +52,7 @@
+ 	return []
+ 
+ static func label(kind: String) -> String:
+-	return {"oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Rock formation","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
++	return {"oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+ 
+ static func behavior(kind: String) -> String:
+ 	if kind == "oil": return "Oil spill / slippery; coats tyres and reduces grip"
+@@ -73,3 +74,11 @@
+ 		if not query.strip_edges().is_empty() and not (str(asset[1])+" "+str(asset[3])).to_lower().contains(query.strip_edges().to_lower()): continue
+ 		result.append(asset)
+ 	return result
++
++static func default_scale(kind: String) -> float:
++	return 2.0 if kind == "cliff" else 1.0
++
++static func size_presets(kind: String) -> Array[float]:
++	var result: Array[float] = []
++	result.assign([1.0,2.0,3.0] if kind == "cliff" else [0.75,1.0,1.5])
++	return result
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -122,10 +122,11 @@
+ 		sizes.name = "ObjectSize"
+ 		EditorStyle.apply(sizes)
+ 		sizes.custom_minimum_size = Vector2(95,40)
+-		for title: String in ["Small","Medium","Large"]: sizes.add_item(title)
+-		sizes.select(0 if stamp_scale<1 else 2 if stamp_scale>1 else 1)
++		var presets: Array[float] = CreatorCatalog.size_presets(current)
++		for title: String in (["8 m","16 m","24 m"] if current=="cliff" else ["Small","Medium","Large"]): sizes.add_item(title)
++		sizes.select(0 if stamp_scale<presets[1] else 2 if stamp_scale>presets[1] else 1)
+ 		sizes.item_selected.connect(func(index: int) -> void:
+-			stamp_scale = [0.75,1.0,1.5][index]; size_chosen.emit(stamp_scale))
++			stamp_scale = presets[index]; size_chosen.emit(stamp_scale))
+ 		details.add_child(sizes)
+ 	if current in CreatorCatalog.LINES:
+ 		for mode: String in ["single","line","curve","road edge"]:
+--- a/game/tests/capture_object_models.gd
++++ b/game/tests/capture_object_models.gd
+@@ -48,9 +48,10 @@
+ 	document = RoadPieces.route_from_pieces(document).document
+ 	document.name = "Object model review"
+ 	document.objects = []
+-	var kinds: Array[String] = ["tree","broadleaf","boulder","barrier","guardrail","crate","barrel","container","shed","parked_car","cone","chevron"]
++	var kinds: Array[String] = ["tree","broadleaf","rock","boulder","slate","barrier"]
+ 	for i: int in range(kinds.size()):
+ 		document.objects.append({"kind":kinds[i],"position":[-12+(i%6)*6,-8+(i/6)*7],"rotation":0})
++	document.objects.append({"kind":"cliff","position":[4,3],"rotation":0,"scale":2.0})
+ 	var track: NativeTrack = TrackCompiler.compile(document)
+ 	if track == null:
+ 		push_error(str(TrackDocument.validate(document)))
+@@ -71,4 +72,46 @@
+ 	print("OBJECT_MODEL_CAPTURE: %d variants; gameplay cells preserved; %s" % [index,error_string(error)])
+ 	game.queue_free()
+ 	await process_frame
++	# Separate model-review view keeps the full cliff and reference car visible.
++	var stage := Node3D.new()
++	root.add_child(stage)
++	var cliff_track := NativeTrack.new()
++	cliff_track.metadata = {"creator_document":{"objects":[
++		{"kind":"cliff","position":[0,4],"rotation":0,"scale":2.0},
++		{"kind":"boulder","position":[-7,-4],"rotation":20},
++		{"kind":"rock","position":[-3,-4],"rotation":0},
++		{"kind":"slate","position":[6,-4],"rotation":0}]}}
++	var cliff_kit := NativeTrackVisual.new()
++	stage.add_child(cliff_kit)
++	cliff_kit._build_placed_objects(cliff_track)
++	var car := CarVisual.new()
++	stage.add_child(car)
++	car.position = Vector3(1,0,7)
++	VisualGeometry.box(stage,Vector3(60,0.1,60),Vector3(0,-0.1,0),VisualGeometry.material(Color("566044")))
++	var light := DirectionalLight3D.new()
++	light.rotation_degrees = Vector3(-48,-28,0)
++	light.light_color = Color("fff1d8")
++	light.shadow_enabled = true
++	light.shadow_bias = 0.15
++	light.shadow_normal_bias = 2.0
++	stage.add_child(light)
++	var environment := WorldEnvironment.new()
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color("202e35")
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_color = Color("bac8ce")
++	environment.environment.ambient_light_energy = 0.35
++	stage.add_child(environment)
++	var camera := Camera3D.new()
++	stage.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 22.0
++	camera.look_at_from_position(Vector3(19,17,27),Vector3(0,2,0))
++	camera.current = true
++	for frame: int in range(4): await RenderingServer.frame_post_draw
++	error = root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/object-models-cliff.png"))
++	print("CLIFF_MODEL_CAPTURE: ",error_string(error))
++	stage.queue_free()
++	await process_frame
+ 	quit(0 if error == OK else 1)
+--- a/game/tests/test_object_browser.gd
++++ b/game/tests/test_object_browser.gd
+@@ -171,6 +171,26 @@
+ 	if "--capture-objects" in OS.get_cmdline_user_args():
+ 		for tick: int in range(3): await RenderingServer.frame_post_draw
+ 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-test-disabled.png"))
++	# Cliff presets use the established scale contract, including undo and persistence.
++	browser.choose("cliff")
++	canvas = app.get("canvas")
++	check(canvas.stamp_scale==2.0,"new cliff defaults to a 16 by 6 metre footprint")
++	var cliff_sizes: OptionButton = browser.details.find_child("ObjectSize",true,false)
++	check(cliff_sizes.item_count==3 and cliff_sizes.get_item_text(2)=="24 m","cliff menu exposes its largest supported footprint")
++	cliff_sizes.item_selected.emit(2)
++	check(canvas.stamp_scale==3.0,"24 metre cliff preset reaches placement")
++	var cliff_before: int = app.get("document").objects.size()
++	canvas._place(canvas.to_screen(Vector2(0,-16)))
++	var placed: Dictionary = app.get("document").objects[-1]
++	check(placed.kind=="cliff" and placed.scale==3.0 and CreatorObjects.size_of(placed)==Vector2(24,9),"placed large cliff stores the visible footprint scale")
++	app.call("_undo")
++	check(app.get("document").objects.size()==cliff_before,"cliff placement undoes as one object")
++	var cliff_doc: Dictionary = TrackDocument.create_default()
++	cliff_doc.id="large_cliff_check"
++	cliff_doc.objects=[{"kind":"cliff","position":[0,0],"rotation":0,"scale":3.0}]
++	var cliff_track: NativeTrack = TrackCompiler.compile(cliff_doc)
++	check(cliff_track!=null and cliff_track.cell_at(Vector2(11,4))==4 and cliff_track.cell_at(Vector2(13,0))!=4,"24 metre cliff collision covers the enlarged wall and stops beyond it")
++	check(library.save_document(cliff_doc)==OK and library.load_document(cliff_doc.id).objects[0].scale==3.0,"large cliff scale survives save and reload")
+ 	print("OBJECT_BROWSER_TESTS: %d checks, %d failures" % [checks,failures])
+ 	app.queue_free(); await process_frame
+ 	quit(1 if failures else 0)
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -12,13 +12,12 @@
+ 		kit._mound(tool,center+(p*scale).rotated(Vector3.UP,turn),size*scale,turn,color)
+ 	match kind:
+ 		"rock", "boulder", "slate", "cliff":
+-			var bounds: Vector2=CreatorObjects.dimensions(kind)
+-			var height: float={"rock":0.6,"boulder":2.0,"slate":0.65,"cliff":3.4}[kind]
+-			_stone(tool,kit,center,Vector3(bounds.x*0.49,height,bounds.y*0.49)*scale,turn,stone)
+-			if kind in ["slate","cliff"]:
+-				for i: int in range(3):
+-					var p := Vector3((-0.28+i*0.27)*bounds.x,0,bounds.y*0.12)
+-					_stone(tool,kit,center+(p*scale).rotated(Vector3.UP,turn),Vector3(bounds.x*0.19,height*(0.72+i*0.12),bounds.y*0.34)*scale,turn+i*0.4,stone.darkened(i*0.045))
++			var bounds: Vector2 = CreatorObjects.dimensions(kind)
++			var height: float = {"rock":0.7,"boulder":2.1,"slate":0.85,"cliff":4.0}[kind]
++			if kind == "cliff":
++				_cliff(tool,kit,center,Vector3(bounds.x,height,bounds.y)*scale,turn,stone)
++			else:
++				_stone(tool,kit,center,Vector3(bounds.x*0.5,height,bounds.y*0.5)*scale,turn,stone)
+ 		"broadleaf":
+ 			_lathe(tool,kit,center,scale,turn,[Vector2(0.32,0),Vector2(0.21,1.4),Vector2(0.11,2.7),Vector2(0,2.8)],[wood.darkened(0.26),wood,wood],true)
+ 			for i: int in range(6):
+@@ -171,21 +170,75 @@
+ 		for index: int in [0,2,1]: tool.add_vertex(vertices[index])
+ 
+ static func _stone(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
+-	# Uneven octagonal bedrock, slanted strata and a broad broken top.
+-	var rings: Array = []
+-	for row: int in range(3):
+-		var ring: Array[Vector3] = []
+-		for i: int in range(8):
+-			var angle: float = TAU*i/8.0
+-			var radius: float = [0.98,0.87,0.61][row]*(0.90+0.08*sin(i*3.1))
+-			var h: float = [0.0,0.46,0.9][row]+(0.07*sin(i*2.3) if row>0 else 0.0)
+-			ring.append(Vector3(cos(angle)*radius-0.10*row,h,sin(angle)*radius+0.04*row)*size)
+-		rings.append(ring)
+-	for row: int in range(2):
+-		for i: int in range(8):
+-			var j: int = (i+1)%8
+-			_face(tool,kit,center,1,turn,[rings[row][i],rings[row][j],rings[row+1][j],rings[row+1][i]],color.darkened(0.17 if row==0 else 0.03).lightened((i%3)*0.035))
+-	for i: int in range(8): _face(tool,kit,center,1,turn,[rings[2][i],rings[2][(i+1)%8],Vector3(-0.12,0.94,0.03)*size],color.lightened(0.12))
++	# Off-centre fractured cap; broad shaded faces, not a rounded bevel stack.
++	var footprint: Array[Vector2] = [Vector2(1,0),Vector2(0.66,0.73),Vector2(-0.12,0.99),Vector2(-0.78,0.60),Vector2(-1,-0.03),Vector2(-0.55,-0.82),Vector2(0.16,-0.98),Vector2(0.81,-0.57)]
++	var lower: Array[Vector3] = []
++	var upper: Array[Vector3] = []
++	for i: int in range(8):
++		var p: Vector2 = footprint[i]
++		lower.append(Vector3(p.x,0,p.y)*size)
++		var inset: float = [0.76,0.69,0.81,0.63,0.83,0.77,0.58,0.71][i]
++		upper.append(Vector3(p.x*inset+0.06,[0.64,0.86,0.95,0.83,0.69,0.88,0.94,0.72][i],p.y*inset-0.04)*size)
++	for i: int in range(8):
++		var j: int = (i+1)%8
++		var shade: Color = color.darkened(0.32 if i in [0,1,7] else 0.12)
++		_leaf_face(tool,kit,center,1,turn,[lower[i],lower[j],upper[j],upper[i]],shade)
++		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.08,0.99,0.08)*size],color.lightened(0.20 if i<4 else 0.07))
++		# Short tapered fissure follows a real face, offset to avoid z-fighting.
++		if i in [0,3,6]:
++			var outward := Vector3(footprint[i].x,0,footprint[i].y).normalized()*0.012
++			var a: Vector3 = lower[i].lerp(upper[i],0.32)+outward
++			var b: Vector3 = lower[i].lerp(upper[i],0.83)+outward
++			var c: Vector3 = b.lerp(lower[j].lerp(upper[j],0.83)+outward,0.045)
++			_leaf_face(tool,kit,center,1,turn,[a,b,c],color.darkened(0.58))
++
++static func _cliff(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
++	# Continuous rectangular rock wall: exact solid footprint, broken upper ledge.
++	var front: Array = []
++	var back: Array = []
++	for row: int in range(6):
++		var f: Array[Vector3] = []
++		var b: Array[Vector3] = []
++		for i: int in range(7):
++			var x: float = -0.5+float(i)/6.0
++			var h: float = [0.0,0.25,0.29,0.56,0.61,0.91][row]+(0.14*sin(i*1.9) if row==5 else 0.035*sin(i*1.9) if row>0 else 0.0)
++			var z: float = 0.5 if row==0 else [0.5,0.46,0.36,0.43,0.29,0.34][row]+0.035*sin(i*2.4)
++			if i>0 and i<6 and row>0: x+=0.025*sin(i*3.2+row*0.8)
++			f.append(Vector3(x,h,-z)*size)
++			b.append(Vector3(x,h+0.015 if row>0 else 0.0,z)*size)
++		front.append(f); back.append(b)
++	for row: int in range(5):
++		for i: int in range(6):
++			var shade: Color = color.darkened(0.27 if i%3==0 else 0.12)
++			_leaf_face(tool,kit,center,1,turn,[front[row][i],front[row][i+1],front[row+1][i+1],front[row+1][i]],shade)
++			_leaf_face(tool,kit,center,1,turn,[back[row][i+1],back[row][i],back[row+1][i],back[row+1][i+1]],shade.darkened(0.10))
++		for i: int in [0,6]:
++			var points: Array = [front[row][i],back[row][i],back[row+1][i],front[row+1][i]]
++			if i==0: points.reverse()
++			_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.30))
++	for i: int in range(6):
++		_leaf_face(tool,kit,center,1,turn,[front[5][i],front[5][i+1],back[5][i+1],back[5][i]],color.lightened(0.22))
++	for row: int in [0,2,4]:
++		for i: int in [1,3,5]:
++			for side: int in [-1,1]:
++				var rings: Array = front if side<0 else back
++				var lo: Vector3 = rings[row][i].lerp(rings[row][i+1],0.45)
++				var hi: Vector3 = rings[row+1][i].lerp(rings[row+1][i+1],0.30)
++				var offset := Vector3(0,0,side*0.015)
++				var points: Array = [lo.lerp(hi,0.18)+offset,hi+offset,hi+Vector3(size.x*0.008,0,side*0.015)]
++				if side>0: points.reverse()
++				_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.55))
++	# Narrow, interrupted sediment seams on both faces.
++	for row: int in [2,4]:
++		for i: int in range(6):
++			if (i+row)%4==0: continue
++			for side: int in [-1,1]:
++				var ring: Array = front[row] if side<0 else back[row]
++				var a: Vector3 = ring[i]+Vector3(0,0,side*0.012)
++				var b: Vector3 = ring[i+1]+Vector3(0,0,side*0.012)
++				var points: Array = [a,b,b+Vector3.UP*size.y*0.013,a+Vector3.UP*size.y*0.013]
++				if side>0: points.reverse()
++				_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.47))
+ 
+ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
+ 	# Serrated canopy edge with a single broad light plane and dark underside.
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-30"
++const VERSION: String = "track-kit-31"
+ const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
+ const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
+ const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
+@@ -496,7 +496,7 @@
+ 			_finish_prop_mesh(prop_tool,node)
+ 			light_instances.append(node)
+ 			continue
+-		if object.kind in ["tree","broadleaf","bush","barrier"]:
++		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
+ 			if object.kind == "tree": _pine(ink_tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
+ 			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
+ 			ink_count += 1

@@ -1,6 +1,7 @@
 class_name RouteDriver
 extends RefCounted
 ## Conservative diagnostic driver. Generated route guides ordinary quantized input.
+var speed_scale: float = 1.0 # Opt-in device stress; ordinary diagnostics retain 1.0.
 
 
 func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig) -> DriveFrame:
@@ -17,6 +18,7 @@ func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig) -> 
 	var future: Vector2 = track.route[(index + 12) % track.route.size()] - target
 	var corner: float = absf(wrapf(atan2(future.x, future.y) - desired, -PI, PI))
 	var target_speed: float = clampf(12.0 - corner * 10.0 - absf(error) * 8.0, 3.0, 12.0)
+	target_speed *= clampf(speed_scale,1.0,3.0)
 	if avoidance != Vector2.ZERO:
 		target_speed = minf(target_speed, 4.0)
 	var result := DriveFrame.new()

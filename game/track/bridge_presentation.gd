@@ -3,7 +3,7 @@ extends RefCounted
 ## Spatial road elevation shared by bridge meshes and vehicle presentation.
 ## Presentation only: no temporal easing and no changes to canonical handling.
 
-const VERSION: String = "bridge-ramps-3"
+const VERSION: String = "bridge-ramps-4"
 const APPROACH: float = 4.0
 const INSET: float = 4.0
 var track: NativeTrack
@@ -107,7 +107,7 @@ func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
 
 
 func build(parent: Node3D) -> void:
-	CreatorBridgeVisual.build(parent,track.creator_bridges)
+	CreatorBridgeVisual.build(parent,track.creator_bridges,str(track.metadata.get("theme","pine")))
 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 	var fascia := SurfaceTool.new()
 	fascia.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -123,14 +123,14 @@ func build(parent: Node3D) -> void:
 				var vertices: Array[Vector3] = []
 				for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x+1,y+1),Vector2(x,y+1)]:
 					var p: Vector2 = point(corner)
-					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.65 if kind == 4 else 0.015)))
-				surface.set_color(Color("a8aa9b") if kind == 4 else Color.WHITE)
+					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else 0.015)))
+				surface.set_color(CreatorBridgeVisual.RAIL_TOP if kind == 4 else Color.WHITE)
 				for i: int in [0,1,2,0,2,3]: surface.add_vertex(vertices[i])
 				# Close exposed deck edges with a shaded, substantial fascia.
 				for i: int in range(4):
 					var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
 					if inside(neighbor) and roles[neighbor.y * track.grid_width + neighbor.x] >= 0: continue
-					var drop: float = 0.65 if kind == 4 else 0.015
+					var drop: float = 0.85 if kind == 4 else 0.015
 					var a: Vector3 = vertices[i] - Vector3.UP * drop
 					var b: Vector3 = vertices[(i+1)%4] - Vector3.UP * drop
 					CreatorBridgeVisual.quad(fascia,a,b,b-Vector3.UP*0.34,a-Vector3.UP*0.34,Color("817e70"))
@@ -143,21 +143,9 @@ func build(parent: Node3D) -> void:
 							continue
 						var a: Vector3 = vertices[i]
 						var b: Vector3 = vertices[(i+1)%4]
-						# A narrow blue steel crown on a concrete coping, not a
-						# full-width painted slab. Raster collision cells are retained.
-						var center: Vector3 = (vertices[0]+vertices[2])*0.5
-						var inward: Vector3 = (center-(a+b)*0.5).normalized()*0.14
-						CreatorBridgeVisual.quad(surface,a+Vector3.UP*0.008,b+Vector3.UP*0.008,b+inward+Vector3.UP*0.008,a+inward+Vector3.UP*0.008,Color("346c90"))
-						CreatorBridgeVisual.quad(surface,a,b,b-Vector3.UP*0.12,a-Vector3.UP*0.12,Color("346c90"))
-						CreatorBridgeVisual.quad(surface,a-Vector3.UP*0.12,b-Vector3.UP*0.12,b-Vector3.UP*0.51,a-Vector3.UP*0.51,Color("193e58"))
-						CreatorBridgeVisual.quad(surface,a-Vector3.UP*0.51,b-Vector3.UP*0.51,b-Vector3.UP*0.65,a-Vector3.UP*0.65,Color("afb1a5"))
-				if kind == 4:
-					var center_point: Vector2 = point(Vector2(x+0.5,y+0.5))
-					var along: float = center_point.dot(track.bridge_axis)
-					if fposmod(along,6.0) < track.cell_size:
-						var width: float = minf(0.46,track.cell_size*0.8)
-						var post := VisualGeometry.box(parent,Vector3(width,0.87,width),VisualGeometry.world(center_point)+Vector3.UP*(profile_height(center_point)+0.435),VisualGeometry.material(Color("a49c88")))
-						post.name = "BridgeConcretePost"
+						# Plain raised parapet: one quiet side face, no stacked bands
+						# or contrasting concrete posts on the raster rail cells.
+						CreatorBridgeVisual.quad(surface,a,b,b-Vector3.UP*0.85,a-Vector3.UP*0.85,CreatorBridgeVisual.RAIL_SIDE)
 				count += 1
 		if count:
 			surface.generate_normals()
@@ -167,6 +155,8 @@ func build(parent: Node3D) -> void:
 				var asphalt := ShaderMaterial.new()
 				asphalt.shader = preload("res://track/bridge_road.gdshader")
 				asphalt.set_shader_parameter("road_color", palette[0])
+				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
+				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
 				mesh.material_override = asphalt
 			else:
 				mesh.material_override = _structure_material()

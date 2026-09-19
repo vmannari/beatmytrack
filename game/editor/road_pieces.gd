@@ -5,6 +5,7 @@ extends RefCounted
 
 const KINDS: Array[String] = ["straight", "curve", "s_bend", "hairpin", "bridge"]
 const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
+const S_END_LENGTH: float = 2.0
 const MAX_PIECES: int = 96
 const SNAP_DISTANCE: float = 8.0
 const JOIN_DISTANCE: float = 0.15
@@ -13,14 +14,16 @@ const JOIN_ANGLE: float = 2.0
 
 static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
 	return {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
-		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 8.0, "radius":12.0 if kind == "hairpin" else 16.0,
+		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 0.0 if kind in ["hairpin","curve"] else S_END_LENGTH, "radius":12.0 if kind == "hairpin" else 16.0,
 		"width":clampf(width,6.0,20.0), "flip":false}
 
 
 static func validate(piece: Variant) -> Array[String]:
-	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) or not piece.has_all(KEYS):
+	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) or not piece.has_all(KEYS):
 		return ["Invalid road section."]
+	if piece.has("curvature") and (piece.kind != "curve" or not _number(piece.curvature) or absf(float(piece.curvature)) > 0.3): return ["Curve curvature must be between -0.3 and 0.3."]
 	if piece.has("angle") and (not _number(piece.angle) or float(piece.angle) < 5 or float(piece.angle) > 270): return ["Curve angle must be 5 to 270 degrees."]
+	if piece.has("height") and (piece.kind != "s_bend" or not _number(piece.height) or float(piece.height) < 2.0 or float(piece.height) > 60.0): return ["S-bend height must be 2 to 60 metres."]
 	if piece.kind not in KINDS: return ["Choose Straight, Curve, S-bend or Hairpin."]
 	if not piece.position is Array or piece.position.size() != 2: return ["Road sections need two coordinates."]
 	for value: Variant in piece.position:
@@ -41,17 +44,31 @@ static func validate(piece: Variant) -> Array[String]:
 
 static func samples(piece: Dictionary) -> PackedVector2Array:
 	var local := PackedVector2Array([Vector2.ZERO])
-	var length: float = float(piece.length)
+	var length: float = 0.0 if piece.kind == "curve" else S_END_LENGTH if piece.kind == "s_bend" else float(piece.length)
 	var count: int = maxi(1,ceili(length/0.75))
 	for i: int in range(1,count+1):
 		if length > 0.0: local.append(Vector2(length*float(i)/count,0.0))
 	var radius: float = float(piece.radius)
 	var side: float = -1.0 if piece.flip else 1.0
-	if piece.kind == "curve": _arc(local,radius,deg_to_rad(float(piece.get("angle",90.0)))*side,0.0)
-	elif piece.kind == "hairpin": _arc(local,radius,PI*side,0.0)
+	if piece.kind == "curve":
+		_arc(local,radius,deg_to_rad(float(piece.get("angle",90.0)))*side,0.0,1.0+3.0*absf(float(piece.get("curvature",0.0))))
+		var amount: float = float(piece.get("curvature",0.0))*curve_bulge_scale(piece)
+		for i: int in range(1,local.size()-1):
+			var fraction: float = float(i)/(local.size()-1)
+			var turn: float = deg_to_rad(float(piece.get("angle",90.0)))*fraction
+			local[i] += Vector2(sin(turn),-side*cos(turn))*amount*pow(sin(PI*fraction),2)
+	elif piece.kind == "hairpin":
+		_arc(local,radius,PI*side,0.0)
+		for i: int in range(1,count+1):
+			if length > 0.0: local.append(Vector2(length*(1.0-float(i)/count),side*2.0*radius))
 	elif piece.kind == "s_bend":
 		_arc(local,radius,PI*0.25*side,0.0)
 		_arc(local,radius,-PI*0.25*side,PI*0.25*side)
+		var exit_start: Vector2 = local[-1]
+		for i: int in range(1,count+1): local.append(exit_start+Vector2(S_END_LENGTH*float(i)/count,0))
+	if piece.kind == "s_bend":
+		var height_scale: float = height(piece)/(2.0*radius*(1.0-cos(PI*0.25)))
+		for i: int in range(local.size()): local[i].y *= height_scale
 	var result := PackedVector2Array()
 	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
 	for point: Vector2 in local: result.append(origin+point.rotated(deg_to_rad(float(piece.heading))))
@@ -59,10 +76,19 @@ static func samples(piece: Dictionary) -> PackedVector2Array:
 	return result
 
 
-static func _arc(points: PackedVector2Array, radius: float, angle: float, heading: float) -> void:
+static func curve_bulge_scale(piece: Dictionary) -> float:
+	# Shallow bends get a smaller range, avoiding a large bulge on a tiny arc.
+	return float(piece.radius)*pow(minf(1.0,float(piece.get("angle",90.0))/90.0),2)
+
+
+static func height(piece: Dictionary) -> float:
+	return float(piece.get("height",2.0*float(piece.radius)*(1.0-cos(PI*0.25))))
+
+
+static func _arc(points: PackedVector2Array, radius: float, angle: float, heading: float, density: float = 1.0) -> void:
 	var origin: Vector2 = points[-1]
 	var side: float = signf(angle)
-	var count: int = maxi(2,ceili(radius*absf(angle)/0.75))
+	var count: int = maxi(2,ceili(radius*absf(angle)*density/0.75))
 	for i: int in range(1,count+1):
 		var turn: float = absf(angle)*float(i)/count
 		points.append(origin+Vector2(radius*sin(turn),side*radius*(1.0-cos(turn))).rotated(heading))
@@ -72,10 +98,10 @@ static func end_pose(piece: Dictionary) -> Dictionary:
 	var turn: float = float(piece.get("angle",90.0)) if piece.kind == "curve" else (180.0 if piece.kind == "hairpin" else 0.0)
 	var radius: float = float(piece.radius)
 	var side: float = -1.0 if piece.flip else 1.0
-	var local := Vector2(float(piece.length),0.0)
+	var local := Vector2(0.0 if piece.kind == "curve" else float(piece.length),0.0)
 	if piece.kind == "curve": local += Vector2(radius*sin(deg_to_rad(turn)),side*radius*(1.0-cos(deg_to_rad(turn))))
-	elif piece.kind == "hairpin": local += Vector2(0.0,side*2.0*radius)
-	elif piece.kind == "s_bend": local += Vector2(2.0*radius*sin(PI*0.25),side*2.0*radius*(1.0-cos(PI*0.25)))
+	elif piece.kind == "hairpin": local = Vector2(0.0,side*2.0*radius)
+	elif piece.kind == "s_bend": local = Vector2(2.0*S_END_LENGTH+2.0*radius*sin(PI*0.25),side*height(piece))
 	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
 	return {"position":origin+local.rotated(deg_to_rad(float(piece.heading))), "heading":fposmod(float(piece.heading)+turn*side,360.0)}
 
@@ -122,6 +148,29 @@ static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1
 	return matches
 
 
+static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1) -> int:
+	var attached: Array[bool] = [false,false]
+	for endpoint: int in [0,1]:
+		var position: Vector2 = _pose(piece,endpoint).position
+		for index: int in range(pieces.size()):
+			if index == exclude: continue
+			for other_end: int in [0,1]:
+				if position.distance_to(_pose(pieces[index],other_end).position) <= JOIN_DISTANCE:
+					attached[endpoint] = true
+	return -1 if attached[0] == attached[1] else 0 if attached[0] else 1
+
+static func keep_attachment(before: Dictionary, changed: Dictionary, endpoint: int, keep_tangent: bool = true) -> Dictionary:
+	if endpoint < 0: return changed
+	var result: Dictionary = changed.duplicate(true)
+	var fixed: Dictionary = _pose(before,endpoint)
+	if keep_tangent:
+		var turn: float = wrapf(float(fixed.heading)-float(_pose(result,endpoint).heading),-180.0,180.0)
+		result.heading = fposmod(float(result.heading)+turn,360.0)
+	var shift: Vector2 = Vector2(fixed.position)-Vector2(_pose(result,endpoint).position)
+	result.position = [float(result.position[0])+shift.x,float(result.position[1])+shift.y]
+	return result
+
+
 static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> Dictionary:
 	var result: Dictionary = piece.duplicate(true)
 	var start := Vector2(piece.position[0],piece.position[1])
@@ -129,9 +178,27 @@ static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> 
 	var old_chord: Vector2 = end-start
 	var chord: Vector2 = target-start if endpoint == 1 else end-target
 	if chord.length() < 0.01 or old_chord.length() < 0.01: return {}
+	if piece.kind == "s_bend":
+		# Scale only the curved span; the two 2 m tangents never scale.
+		var x: float = 2.0*float(piece.radius)*sin(PI*0.25)
+		var y: float = height(piece)
+		var fixed: float = 2.0*S_END_LENGTH
+		var square: float = x*x+y*y
+		var discriminant: float = fixed*fixed*x*x+square*(chord.length_squared()-fixed*fixed)
+		if discriminant <= 0.0: return {}
+		var scale: float = (-fixed*x+sqrt(discriminant))/square
+		if scale <= 0.0: return {}
+		result.radius = float(piece.radius)*scale
+		result.height = y*scale
+		result.length = S_END_LENGTH
+		var local := Vector2(fixed+x*scale,(-1.0 if piece.flip else 1.0)*y*scale)
+		result.heading = fposmod(rad_to_deg(chord.angle()-local.angle()),360.0)
+		if endpoint == 0: result.position = [target.x,target.y]
+		return result if validate(result).is_empty() else {}
 	var factor: float = chord.length()/old_chord.length()
 	result.heading = fposmod(float(piece.heading)+rad_to_deg(old_chord.angle_to(chord)),360.0)
-	result.length = float(piece.length)*factor
+	result.length = 0.0 if piece.kind == "curve" else float(piece.length)*factor
+	if piece.has("height"): result.height = float(piece.height)*factor
 	if piece.kind not in ["straight","bridge"]: result.radius = float(piece.radius)*factor
 	if endpoint == 0: result.position = [target.x,target.y]
 	return result if validate(result).is_empty() else {}

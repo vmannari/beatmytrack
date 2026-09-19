@@ -6,7 +6,8 @@ func _ready() -> void:
 	resized.connect(queue_redraw)
 
 func _draw() -> void:
-	# Flat contrast surfaces; the car and setting remain visible behind the UI.
-	draw_rect(Rect2(Vector2.ZERO,Vector2(size.x,100)),Color(0.045,0.06,0.07,0.92))
-	draw_rect(Rect2(Vector2(0,100),Vector2(size.x*0.37,size.y-100)),Color(0.045,0.06,0.07,0.95))
-	draw_rect(Rect2(Vector2(0,size.y-142),Vector2(size.x,142)),Color(0.045,0.06,0.07,0.96))
+	# Soft edge shading leaves the scene open while the framed controls stay opaque.
+	var dark := Color(0.025,0.065,0.09,0.78)
+	var clear := Color(0.025,0.065,0.09,0)
+	draw_polygon(PackedVector2Array([Vector2.ZERO,Vector2(size.x,0),Vector2(size.x,190),Vector2(0,190)]),PackedColorArray([dark,dark,clear,clear]))
+	draw_polygon(PackedVector2Array([Vector2(0,size.y-190),Vector2(size.x,size.y-190),size,Vector2(0,size.y)]),PackedColorArray([clear,clear,dark,dark]))

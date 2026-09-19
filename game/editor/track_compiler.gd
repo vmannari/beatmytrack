@@ -2,12 +2,13 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-10"
+const VERSION: String = "creator-compiler-16"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
 
-static func compile(document: Dictionary) -> NativeTrack:
+
+static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> NativeTrack:
 	if not TrackDocument.validate(document).is_empty():
 		return null
 	var base: NativeTrack
@@ -25,6 +26,10 @@ static func compile(document: Dictionary) -> NativeTrack:
 		var offset: int = mini(8, maxi(1, floori(Vector2(document.points[0][0],document.points[0][1]).distance_to(Vector2(document.points[1][0],document.points[1][1]))*0.5)))
 		route = route.slice(offset) + route.slice(0,offset)
 		widths = widths.slice(offset) + widths.slice(0,offset)
+	if document.has("start_line"):
+		var start_route: Dictionary = CreatorStartLine.route_from_start(route,widths,document.start_line)
+		route = start_route.points
+		widths = start_route.widths
 	var road_samples: Dictionary = {"points":PackedVector2Array(),"widths":PackedFloat32Array()}
 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
 	var road_route: PackedVector2Array = road_samples.points
@@ -55,17 +60,27 @@ static func compile(document: Dictionary) -> NativeTrack:
 	cells.resize(grid.x * grid.y)
 	cells.fill(1)
 	if base != null: cells = base.cells.duplicate()
-	var road_mask: PackedInt32Array = cells.duplicate()
-	_stamp_objects(document,cells,grid,extent,cell_size,true)
-	var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
-	_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
-	_raster_road(road_route,road_widths,road_kind,road_mask,grid,extent,cell_size,true)
-	for section: Dictionary in sections:
-		if section.bridge: continue
-		var section_widths: PackedFloat32Array = section.widths
-		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
-		_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
-	_paint(document.paint,cells,grid,extent,cell_size,road_mask)
+	var terrain_objects: Array = []
+	for object: Dictionary in document.objects:
+		if object.kind in ["dirt","water"]: terrain_objects.append(object)
+	var raster_key: Array = [document.base_track,base.content_hash if base != null else "",grid,extent,cell_size,document.layout,document.pieces,document.surface,document.paint,terrain_objects]
+	if raster_key == preview_cache.get("key",[]):
+		cells = preview_cache.cells.duplicate()
+	else:
+		var road_mask: PackedInt32Array = cells.duplicate()
+		_stamp_objects(document,cells,grid,extent,cell_size,true)
+		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
+		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
+		_raster_road(road_route,road_widths,road_kind,road_mask,grid,extent,cell_size,true)
+		for section: Dictionary in sections:
+			if section.bridge: continue
+			var section_widths: PackedFloat32Array = section.widths
+			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
+			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
+		_paint(document.paint,cells,grid,extent,cell_size,road_mask)
+		if preview_cache.get("enabled",false):
+			preview_cache.key = raster_key.duplicate(true)
+			preview_cache.cells = cells.duplicate()
 	var scenery_cells: PackedInt32Array = cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	var deck := PackedInt32Array()
@@ -117,7 +132,7 @@ static func compile(document: Dictionary) -> NativeTrack:
 	if base != null:
 		data.deck = base.metadata.deck.duplicate(true)
 		data.bridges = base.metadata.bridges.duplicate(true)
-		if not document.route_override:
+		if not document.route_override and not document.has("start_line"):
 			for key: String in ["route","checkpoints","spawn","spawn_heading","finish"]: data[key] = base.metadata[key]
 	if not bridges.is_empty():
 		data["creator_bridges"] = bridges
@@ -141,7 +156,18 @@ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: 
 
 
 static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:
-	for stroke: Dictionary in strokes:
+	for authored: Dictionary in strokes:
+		var stroke: Dictionary = SurfacePaint.prepared(authored)
+		if stroke.get("mode","") == "area":
+			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
+			for y: int in range(bounds.position.y,bounds.end.y):
+				for x: int in range(bounds.position.x,bounds.end.x):
+					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
+					if Geometry2D.is_point_in_polygon(point,polygon) and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
+						cells[y*grid.x+x] = int(stroke.surface)
+						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
+			continue
 		var radius: float = float(stroke.width)*0.5
 		for i: int in range(stroke.points.size()):
 			var p: Array = stroke.points[i]

@@ -6,6 +6,10 @@ signal race_completed
 signal retry_requested
 signal edit_here_requested(position: Vector2)
 
+var storm_weather: StormWeather
+var weather_layer: CanvasLayer
+var biome_light: DirectionalLight3D
+var biome_environment: Environment
 var initial_track: NativeTrack
 var production_mode: bool = false
 var editor_test: bool = false
@@ -16,6 +20,7 @@ var countdown_label: Label
 const PROFILE_PATHS: Array[String] = HandlingSelection.PROFILE_PATHS
 var profile_index: int = HandlingSelection.index
 var resume_after_handling: bool = false
+var vehicle_id: String = VehicleCatalog.selected
 var handling: HandlingConfig
 var sim: VehicleSimulation
 var yard := PlaygroundData.new()
@@ -43,14 +48,23 @@ var route_driver := RouteDriver.new()
 var overview: bool = false
 var capture_tick: int = 0
 var bridge_presentation: BridgePresentation
+var profile_enabled: bool = false
+var profile_sim_us: int = 0
+var profile_rules_us: int = 0
+var profile_ai_us: int = 0
+var profile_present_us: int = 0
+var _render_viewport: Viewport
+var _base_render_scale: float = 1.0
 
 
 func _ready() -> void:
+	_render_viewport = get_viewport()
+	_base_render_scale = _render_viewport.scaling_3d_scale
 	if Engine.physics_ticks_per_second != VehicleSimulation.TICK_RATE:
 		push_error("Project physics rate must match the canonical 120 Hz step.")
 		get_tree().quit(1)
 		return
-	handling = (load(PROFILE_PATHS[profile_index]) as HandlingConfig).duplicate() as HandlingConfig
+	handling = VehicleCatalog.config(vehicle_id, profile_index)
 	sim = VehicleSimulation.new(handling)
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--track="):
@@ -81,9 +95,16 @@ func _ready() -> void:
 	environment.environment.ambient_light_color = Color("bac8ce")
 	environment.environment.ambient_light_energy = 0.35
 	world.add_child(environment)
+	biome_light = light
+	biome_environment = environment.environment
+	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",environment.environment,light)
+	_update_weather()
 	car = CarVisual.new()
+	car.vehicle_id = vehicle_id
 	world.add_child(car)
 	trails = SkidTrails.new()
+	trails.wheelbase = handling.wheelbase
+	trails.track_width = handling.track_width
 	world.add_child(trails)
 	tire_audio = TireAudio.new()
 	add_child(tire_audio)
@@ -115,7 +136,8 @@ func _ready() -> void:
 	countdown_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	countdown_label.offset_left = -160
 	countdown_label.offset_right = 160
-	countdown_label.offset_top = -60
+	countdown_label.offset_top = -170
+	countdown_label.offset_bottom = -70
 	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	countdown_label.add_theme_font_override("font", RaceHUDStyle.DISPLAY)
 	countdown_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
@@ -147,11 +169,18 @@ func _physics_process(_delta: float) -> void:
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	frame = driver.sample()
+	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if ai_enabled and native_track != null:
 		frame = route_driver.sample(sim.state, native_track, handling)
+	if profile_enabled:
+		profile_ai_us += Time.get_ticks_usec() - profile_start
+		profile_start = Time.get_ticks_usec()
 	if demo_capture:
 		frame = DriveFrame.sample(0.7 if sim.state.tick > 190 else 0.0, 1.0, 0.0)
 	sim.step(frame, yard)
+	if profile_enabled:
+		profile_sim_us += Time.get_ticks_usec() - profile_start
+		profile_start = Time.get_ticks_usec()
 	if native_track != null and not editor_test:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
 		if production_mode and track_session.finished:
@@ -160,6 +189,7 @@ func _physics_process(_delta: float) -> void:
 			hud.touch.enabled = false
 			race_completed.emit()
 	trails.sample(sim.state, frame, bridge_presentation)
+	if profile_enabled: profile_rules_us += Time.get_ticks_usec() - profile_start
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
 		_save_recording()
@@ -175,9 +205,12 @@ func _physics_process(_delta: float) -> void:
 func _process(delta: float) -> void:
 	if sim == null:
 		return
+	if storm_weather != null: storm_weather.advance(delta,paused)
+	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	var weight: float = Engine.get_physics_interpolation_fraction() if not paused else 1.0
 	var point: Vector2 = previous_position.lerp(sim.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, sim.state.heading, weight)
+	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
 	car.present(point, heading, sim.state, frame)
 	tire_audio.present(sim.state, delta, paused or countdown_ticks > 0)
 	car.rotation.x = 0.0
@@ -190,13 +223,15 @@ func _process(delta: float) -> void:
 		car.position.y += sim.state.jump_height if sim.state.jump_height > 0.0 else (0.0 if sim.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
 		if sim.state.jump_height > 0.0: car.rotation.x = atan2(sim.state.jump_velocity,maxf(5.0,sim.state.velocity.length()))
 		elif not sim.state.track_elevated:
-			car.position.y -= native_track.water_depth(point)
+			car.position.y -= water_depth
 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	car.rotation.z = 0.0
+	car.present_suspension(sim.state, car.rotation.x, water_depth == 0.0)
 	if sim.state.jump_height == 0.0:
 		car.position.y += sim.state.kerb_offset.x
 		car.rotation.x += sim.state.kerb_offset.y
 		car.rotation.z = sim.state.kerb_offset.z
+	car.present_roll(sim.state, weight)
 	if track_ground is NativeTrackVisual:
 		track_ground.update_tyres(sim.state,native_track.tyre_origins)
 		track_ground.update_light_props(sim.state)
@@ -207,19 +242,23 @@ func _process(delta: float) -> void:
 	if native_track != null:
 		track_debug.track = native_track
 		track_debug.state = sim.state
-		track_debug.queue_redraw()
+		if track_debug.visible: track_debug.queue_redraw()
 		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
 		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
 		if editor_test:
 			hud.title.text = "Practice (untimed)"
 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
 		elif production_mode:
-			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper())))
+			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
 			hud.lap_label.text = "%d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
-			hud.race_timer.text = "%02d:%05.2f" % [int(track_session.elapsed_ticks / 120.0) / 60, fmod(track_session.elapsed_ticks / 120.0,60.0)]
+			var display_time: float = track_session.race_time_seconds()
+			hud.race_timer.text = "%02d:%05.2f" % [int(display_time) / 60, fmod(display_time,60.0)]
+			hud.shortcut_penalty_label.text = ("SHORTCUT  +%ds" % int(track_session.penalty_seconds)) if track_session.shortcut_count > 0 else ""
+			hud.shortcut_notice_label.visible = track_session.shortcut_notice_active()
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:
 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
+	if profile_enabled: profile_present_us += Time.get_ticks_usec() - profile_start
 
 
 func restart() -> void:
@@ -231,8 +270,12 @@ func restart() -> void:
 	countdown_ticks = 360 if production_mode and not editor_test else 0
 	countdown_label.text = ""
 	sim.reset(yard.spawn, yard.spawn_heading)
+	if production_mode and not editor_test and native_track != null:
+		# Leave room for the whole car before the stripe; retain starts already farther back.
+		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
+		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
 	track_session = TrackSession.new()
-	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.trim_prefix("slicks_").trim_suffix("_test").to_upper() if native_track != null else "HANDLING YARD")
+	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
 	if native_track != null:
 		sim.state.route_index = native_track.nearest_route(sim.state.position)
 		sim.state.track_elevated = native_track.elevated_at(sim.state.position, sim.state.route_index)
@@ -250,7 +293,7 @@ func restart() -> void:
 func select_profile(index: int) -> void:
 	profile_index = clampi(index, 0, PROFILE_PATHS.size() - 1)
 	HandlingSelection.index = profile_index
-	handling = (ResourceLoader.load(PROFILE_PATHS[profile_index], "", ResourceLoader.CACHE_MODE_IGNORE) as HandlingConfig).duplicate() as HandlingConfig
+	handling = VehicleCatalog.config(vehicle_id, profile_index)
 	sim.config = handling
 	hud.show_config(handling)
 	restart()
@@ -338,6 +381,9 @@ func _edit_here() -> void:
 
 
 func _build_ground(world: Node3D) -> void:
+	if _render_viewport != null:
+		var theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+		_render_viewport.scaling_3d_scale = render_scale_for(theme,_base_render_scale,OS.has_feature("mobile"))
 	if native_track != null:
 		var visual := NativeTrackVisual.new()
 		bridge_presentation = BridgePresentation.new(native_track)
@@ -352,12 +398,23 @@ func _build_ground(world: Node3D) -> void:
 		track_ground = visual
 
 
+static func render_scale_for(theme: String, base_scale: float, mobile: bool) -> float:
+	# Point-lit night scenes need extra fill-rate headroom; Canvas UI stays native.
+	return minf(base_scale,0.55) if mobile and theme == "night_city" else base_scale
+
+
+func _exit_tree() -> void:
+	if is_instance_valid(_render_viewport):
+		_render_viewport.scaling_3d_scale = _base_render_scale
+
+
 func cycle_track() -> void:
 	track_index = (track_index + 1) % (TRACK_NAMES.size() + 1)
 	track_ground.queue_free()
 	native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json") if track_index < TRACK_NAMES.size() else null
 	yard = native_track if native_track != null else PlaygroundData.new()
 	_build_ground($World)
+	_update_weather()
 	restart()
 
 
@@ -382,3 +439,20 @@ func _capture_frame() -> void:
 		return
 	print("CAPTURE_SAVED: " + capture_path)
 	get_tree().quit()
+
+
+func _update_weather() -> void:
+	if weather_layer != null:
+		remove_child(weather_layer)
+		weather_layer.queue_free()
+		weather_layer = null
+		storm_weather = null
+	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
+	if native_track == null or native_track.metadata.get("theme","pine") != "storm": return
+	weather_layer = CanvasLayer.new()
+	weather_layer.layer = 0
+	add_child(weather_layer)
+	storm_weather = StormWeather.new()
+	storm_weather.name = "StormWeather"
+	storm_weather.light = biome_light
+	weather_layer.add_child(storm_weather)

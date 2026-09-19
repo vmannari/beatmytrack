@@ -142,6 +142,8 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not preferences[field] is String or preferences[field].is_empty() or preferences[field].length() > 64: return {}
 			for character: String in preferences[field]:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+		elif field == "selected_car":
+			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
 		elif field == "favorites":
 			if not preferences[field] is Array: return {}
 			for id: Variant in preferences[field]:

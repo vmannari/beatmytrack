@@ -9,6 +9,7 @@ var canvas: EditorCanvas
 var viewport: SubViewport
 var world: Node3D
 var visual: NativeTrackVisual
+var sunlight: DirectionalLight3D
 var environment: Environment
 var ground: MeshInstance3D
 var ground_material: StandardMaterial3D
@@ -38,7 +39,7 @@ func _ready() -> void:
 	environment.ambient_light_energy = 0.35
 	ambient.environment = environment
 	world.add_child(ambient)
-	var sunlight := DirectionalLight3D.new()
+	sunlight = DirectionalLight3D.new()
 	sunlight.rotation_degrees = Vector3(-58, -35, 0)
 	sunlight.light_color = Color("fff1d8")
 	sunlight.light_energy = 1.0
@@ -80,9 +81,41 @@ func follow_canvas(target: EditorCanvas) -> void:
 
 
 func show_track(data: NativeTrack) -> void:
+	var reuse: bool = visual != null and track != null and _same_ground(track,data)
 	track = data
 	if is_node_ready():
-		_build_track()
+		if reuse:
+			visual.refresh_editor_objects(track)
+			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		else:
+			_build_track()
+
+
+func preview_objects(document: Dictionary) -> void:
+	if visual == null or track == null: return
+	# Render the new props immediately; collision/scenery compilation follows.
+	var props := NativeTrack.new()
+	props.metadata = {"creator_document":document,"scenery_objects":track.metadata.get("scenery_objects",[])}
+	props.tyre_origins = LooseTyres.positions(document)
+	visual.refresh_editor_objects(props,false)
+	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+
+func _same_ground(before: NativeTrack, after: NativeTrack) -> bool:
+	if before.half_extent != after.half_extent or before.cell_size != after.cell_size: return false
+	if before.deck_cells != after.deck_cells: return false
+	var old_document: Dictionary = before.metadata.get("creator_document",{}).duplicate(true)
+	var new_document: Dictionary = after.metadata.get("creator_document",{}).duplicate(true)
+	if old_document.is_empty() or new_document.is_empty(): return false
+	# Loose tyres do not stamp surfaces. Their only grid effect is suppressing
+	# generated trees on clear grass; those footprints already render as grass.
+	# Keep all terrain/solid props in the comparison so they rebuild correctly.
+	for document: Dictionary in [old_document,new_document]:
+		var fixed_objects: Array = []
+		for object: Dictionary in document.objects:
+			if object.kind not in ["tyre_stack","tyre_wall"]: fixed_objects.append(object)
+		document.objects = fixed_objects
+	return old_document == new_document
 
 
 func _build_track() -> void:
@@ -92,6 +125,7 @@ func _build_track() -> void:
 		visual = null
 	if track != null:
 		var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
+		TrackTheme.apply_lighting(str(track.metadata.get("theme", "pine")),environment,sunlight)
 		environment.background_color = palette[1]
 		ground_material.albedo_color = palette[1]
 		visual = NativeTrackVisual.new()

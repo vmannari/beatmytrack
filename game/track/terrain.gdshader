@@ -19,35 +19,50 @@ void vertex() {
 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
+vec4 feather(sampler2D source, vec2 uv) {
+	vec2 offset = map_texel * 0.65;
+	vec4 value = texture(source,uv) * 4.0;
+	value += texture(source,uv+vec2(offset.x,0.0))*2.0;
+	value += texture(source,uv-vec2(offset.x,0.0))*2.0;
+	value += texture(source,uv+vec2(0.0,offset.y))*2.0;
+	value += texture(source,uv-vec2(0.0,offset.y))*2.0;
+	value += texture(source,uv+offset);
+	value += texture(source,uv-offset);
+	value += texture(source,uv+vec2(offset.x,-offset.y));
+	value += texture(source,uv+vec2(-offset.x,offset.y));
+	return value / 16.0;
+}
 void fragment() {
-	vec4 low = texture(surface_low, UV);
-	vec4 high = texture(surface_high, UV);
+	vec4 low = feather(surface_low, UV);
+	vec4 high = feather(surface_high, UV);
+	// Keep a short, irregular grass fringe matching the road shoulder instead
+	// of a broad airbrushed halo. Preserve relative weights of other materials.
+	float grass_weight = low.g;
+	if (grass_weight > 0.001 && grass_weight < 0.999) {
+		float broken_grass = grass_fringe(mix(0.55,0.98,grass_weight),world_position.xz);
+		float rest = (1.0-broken_grass)/(1.0-grass_weight);
+		low *= rest;
+		high *= rest;
+		low.g = broken_grass;
+	}
 	float weights[8] = float[8](low.r,low.g,low.b,low.a,high.r,high.g,high.b,high.a);
 	vec3 colors[8] = vec3[8](color_0.rgb,color_1.rgb,color_2.rgb,color_3.rgb,color_4.rgb,color_5.rgb,color_6.rgb,color_7.rgb);
-	float best = -1.0;
-	int kind = 0;
+	// Blend all material contributions instead of choosing a hard winner.
+	vec3 blended = vec3(0.0);
 	for (int i = 0; i < 8; i++) {
-		if (weights[i] > best) { best = weights[i]; kind = i; }
+		// Absent surfaces contribute exactly zero; avoid evaluating their detail.
+		if (weights[i] <= 0.0) continue;
+		vec3 layer = colors[i];
+		if (i == 1) layer = painted_grass(layer,world_position.xz);
+		else if (i == 2) layer = sand_detail(layer,world_position.xz);
+		else if (i == 0 || i == 7) layer = surface_detail(layer,world_position.xz,i == 0);
+		else if (i == 3 || i == 6) {
+			float band = step(0.82,sin(world_position.z*0.52+sin(world_position.x*0.18)*0.4));
+			layer *= 0.98 + band*0.045;
+			layer = mix(layer*0.88,color_6.rgb*1.15,pigment(world_position.xz*0.35)*0.22);
+		}
+		blended += layer * weights[i];
 	}
-	vec3 base = colors[kind];
-	// Reconstruct the native material boundaries from coverage. Palette and
-	// shading are cosmetic; native cells remain the sole surface authority.
-	float boundary = 1.0 - smoothstep(0.51, 0.69, best);
-	base *= 1.0 - boundary * 0.12;
-	// Raised native kerbs are drawn from shared RoadKerbs contact geometry.
-	if (kind == 3 || kind == 6) {
-		// Quiet horizontal water bands and a thin shoreline highlight.
-		float band = step(0.82, sin(world_position.z * 0.52 + sin(world_position.x * 0.18) * 0.4));
-		base *= 0.98 + band * 0.045;
-		float shoal = pigment(world_position.xz * 0.35);
-		base = mix(base * 0.88, color_6.rgb * 1.15, shoal * 0.22 + boundary * 0.6);
-		float ripple = smoothstep(0.92, 1.0, sin(world_position.z * 7.0 + pigment(world_position.xz * 0.7) * 5.0));
-		base += vec3(0.025,0.035,0.035) * ripple * (1.0 - smoothstep(0.08,0.3,length(fwidth(world_position.xz))));
-	}
-	if (kind == 0 || kind == 1 || kind == 2 || kind == 7) {
-		base = surface_detail(base, world_position.xz, kind == 0);
-	}
-	if (kind == 1) { base = painted_grass(colors[1],world_position.xz); }
-	ALBEDO = base;
+	ALBEDO = blended;
 	ROUGHNESS = 1.0;
 }

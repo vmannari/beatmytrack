@@ -22,10 +22,14 @@ var snap_matched: bool = false
 var road_action: String = "move"
 var geometry_drag: String = ""
 var geometry_origin: float = 0.0
+var road_approval_pending: bool = false
 var endpoint_drag: int = -1
 var piece_before_drag: Dictionary = {}
 var desktop_pan: bool = false
 var pending_road_tap: bool = false
+var pending_piece_accept: bool = false
+var start_drag: bool = false
+var pending_start_flip: bool = false
 var protect_road: bool = true
 var free_run: bool = false
 var run_shape: String = "line"
@@ -36,10 +40,14 @@ var run_start := Vector2.INF
 var run_preview: Array = []
 var issue_marker := Vector2.INF
 var issue_text: String = ""
-var brush_surface: int = 0
+var brush_surface: int = 2
 var brush_width: float = 10.0
 var brush_shape: String = "round"
 var paint_points: Array = []
+var paint_mode: String = "free"
+var pending_paint_accept: bool = false
+var paint_handle: int = -1
+var paint_before_gesture: Array = []
 var zoom: float = 1.0
 var pan := Vector2.ZERO
 var selected: int = -1
@@ -123,6 +131,7 @@ func show_native(track: NativeTrack) -> void:
 	queue_redraw()
 
 func cancel_gesture() -> void:
+	pending_paint_accept = false
 	run_draw.clear()
 	drawing_run=false
 	run_preview.clear()
@@ -136,6 +145,9 @@ func cancel_gesture() -> void:
 	touches.clear()
 	desktop_pan = false
 	pending_road_tap = false
+	pending_piece_accept = false
+	start_drag = false
+	pending_start_flip = false
 
 func _gui_input(event: InputEvent) -> void:
 	if document.is_empty(): return
@@ -150,7 +162,9 @@ func _gui_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed: zoom_by(1.0 / 1.15,event.position)
 		elif event.button_index in [MOUSE_BUTTON_MIDDLE,MOUSE_BUTTON_RIGHT] or (event.button_index == MOUSE_BUTTON_LEFT and (desktop_pan or Input.is_physical_key_pressed(KEY_SPACE))):
 			if event.pressed:
+				var draft: Array = paint_points.duplicate(true)
 				cancel_gesture()
+				if paint_mode != "free": paint_points = draft
 				desktop_pan = true
 				active_pointer = -int(event.button_index)
 				previous_pointer = event.position
@@ -168,10 +182,16 @@ func _gui_input(event: InputEvent) -> void:
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
 				pending_road_tap = false
+				pending_piece_accept = false
+				pending_start_flip = false
+				start_drag = false
+				pending_paint_accept = false
+				paint_handle = -1
 				drawing_run=false
 				run_draw.clear()
 				run_preview.clear()
-				paint_points.clear()
+				if paint_mode == "free": paint_points.clear()
+				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
 				pending_stamp = false
 				if dragging and changed_in_gesture: edit_finished.emit()
 				dragging = false
@@ -179,12 +199,18 @@ func _gui_input(event: InputEvent) -> void:
 			var was_pinching: bool = touches.size() >= 2
 			touches.erase(event.index)
 			if event.canceled:
+				pending_paint_accept = false
+				paint_handle = -1
 				drawing_run=false
 				run_draw.clear()
 				run_preview.clear()
 				pending_road_tap = false
+				pending_piece_accept = false
+				pending_start_flip = false
+				start_drag = false
 				pending_stamp = false
-				paint_points.clear()
+				if paint_mode == "free": paint_points.clear()
+				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
 			_end(event.index)
 			if was_pinching and touches.size() == 1:
 				# Either finger may lift first. The remaining finger continues
@@ -221,22 +247,49 @@ func _begin(point: Vector2, pointer: int) -> void:
 			if CreatorObjects.contains(object,to_world(point)):
 				mode="objects"
 				break
+	start_drag = false
+	pending_start_flip = false
+	if mode == "road" and ghost.is_empty() and document.has("start_line"):
+		var controls: Dictionary = start_controls()
+		if Vector2(controls.flip).distance_to(point) <= 28:
+			pending_start_flip = true
+			return
+		if Geometry2D.get_closest_point_to_segment(point,controls.left,controls.right).distance_to(point) <= 18:
+			start_drag = true
+			dragging = true
+			selected_piece = -1
+			return
 	if mode == "road":
 		_begin_road(point)
 		return
-	if mode in ["run","start"]:
+	if mode in ["run","start","start_line"]:
 		run_draw=PackedVector2Array([to_world(point)])
 		drawing_run=false
 		pending_stamp = true
 		return
 	if mode == "paint":
+		if paint_mode != "free":
+			paint_before_gesture = paint_points.duplicate(true)
+			if paint_accept_rect().has_point(point):
+				pending_paint_accept = true
+				return
+			paint_handle = -1
+			for i: int in range(paint_points.size()):
+				if to_screen(Vector2(paint_points[i][0],paint_points[i][1])).distance_to(point) <= 24:
+					paint_handle = i
+					break
+			if paint_handle < 0 and paint_points.size() < 64:
+				paint_points.append(_paint_position(point))
+				paint_handle = paint_points.size()-1
+			queue_redraw()
+			return
 		paint_points = [_paint_position(point)]
 		queue_redraw()
 		return
-	if mode == "pan":
+	if mode in ["pan","waypoints","move","add"]:
 		panning = true
 		return
-	pending_stamp = mode in ["add","place"]
+	pending_stamp = mode == "place"
 	if pending_stamp: return
 	selected = -1
 	selected_object = -1
@@ -259,22 +312,33 @@ func _begin(point: Vector2, pointer: int) -> void:
 					selected_object = document.objects.size()-1
 					document_changed.emit()
 					break
-	else:
-		for i: int in range(document.points.size()):
-			var p: Array = document.points[i]
-			var distance: float = to_screen(Vector2(p[0],p[1])).distance_to(point)
-			if distance < nearest:
-				nearest = distance
-				selected = i
 	selection_changed.emit()
-	if selected >= 0 or selected_object >= 0:
-		var value: Array = document.points[selected] if selected >= 0 else document.objects[selected_object].position
+	if selected_object >= 0:
+		var value: Array = document.objects[selected_object].position
 		drag_origin = Vector2(value[0],value[1])
 		dragging = true
 	else: panning = true
 	queue_redraw()
 
 func _move(point: Vector2) -> void:
+	if pending_paint_accept:
+		if press_position.distance_to(point) > 12:
+			pending_paint_accept = false
+			panning = true
+		else: return
+	if pending_start_flip:
+		if press_position.distance_to(point) > 8: pending_start_flip = false
+		return
+	if start_drag:
+		if press_position.distance_to(point) < 3 and not changed_in_gesture: return
+		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
+		if pose.is_empty(): return
+		if not changed_in_gesture: edit_started.emit()
+		changed_in_gesture = true
+		document["start_line"] = pose
+		document_changed.emit()
+		queue_redraw()
+		return
 	if desktop_pan:
 		pan += point-previous_pointer
 		previous_pointer = point
@@ -282,6 +346,7 @@ func _move(point: Vector2) -> void:
 		return
 	if pending_road_tap and press_position.distance_to(point) > 8:
 		pending_road_tap = false
+		pending_piece_accept = false
 		panning = true
 	if mode == "road" and dragging:
 		_move_road(point)
@@ -298,7 +363,11 @@ func _move(point: Vector2) -> void:
 			run_preview=_object_run(to_world(press_position) if run_start==Vector2.INF else run_start,target)
 		queue_redraw()
 		return
-	if not paint_points.is_empty():
+	if mode == "paint" and paint_mode != "free" and paint_handle >= 0:
+		paint_points[paint_handle] = _paint_position(point)
+		queue_redraw()
+		return
+	if mode == "paint" and not paint_points.is_empty() and paint_mode == "free":
 		var p: Array = _paint_position(point)
 		if Vector2(p[0],p[1]).distance_to(Vector2(paint_points[-1][0],paint_points[-1][1])) >= 0.5 and paint_points.size() < 512:
 			paint_points.append(p)
@@ -314,8 +383,7 @@ func _move(point: Vector2) -> void:
 			edit_started.emit()
 			changed_in_gesture = true
 		if changed_in_gesture:
-			if selected >= 0: document.points[selected] = [position.x,position.y]
-			elif selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
+			if selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
 			document_changed.emit()
 	elif panning: pan += point-previous_pointer
 	previous_pointer = point
@@ -323,6 +391,19 @@ func _move(point: Vector2) -> void:
 
 func _place(point: Vector2) -> void:
 	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
+	if mode == "start_line":
+		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
+		if pose.is_empty():
+			hint_changed.emit("Place the start line on a road.")
+			return
+		edit_started.emit()
+		document["start_line"] = pose
+		mode = "road"
+		document_changed.emit()
+		edit_finished.emit()
+		selection_changed.emit()
+		queue_redraw()
+		return
 	if mode == "start":
 		edit_started.emit()
 		var heading: float = 0.0
@@ -344,7 +425,7 @@ func _place(point: Vector2) -> void:
 					nearest_piece = distance
 					heading = fposmod(rad_to_deg((samples[i+1]-samples[i]).angle()),360)
 		document["practice_start"] = {"position":[position.x,position.y],"heading":heading}
-		mode = "move"
+		mode = "road"
 		document_changed.emit()
 		edit_finished.emit()
 		selection_changed.emit()
@@ -376,27 +457,7 @@ func _place(point: Vector2) -> void:
 		document.objects.append(object)
 		selected_object = document.objects.size()-1
 		selected = -1
-	else:
-		if document.points.size() >= TrackDocument.MAX_POINTS:
-			hint_changed.emit("Use up to 96 route nodes.")
-			return
-		var index: int = 0
-		var distance: float = INF
-		for i: int in range(document.points.size()):
-			var a: Array = document.points[i]
-			var b: Array = document.points[(i+1)%document.points.size()]
-			var closest: Vector2 = Geometry2D.get_closest_point_to_segment(point,to_screen(Vector2(a[0],a[1])),to_screen(Vector2(b[0],b[1])))
-			if closest.distance_to(point) < distance:
-				distance = closest.distance_to(point)
-				index = i+1
-		edit_started.emit()
-		var width: float = (float(document.widths[index-1])+float(document.widths[index%document.widths.size()]))*0.5
-		document.points.insert(index,[position.x,position.y])
-		document.widths.insert(index,width)
-		document.corners.insert(index,"sharp")
-		selected = index
-		selected_object = -1
-		mode = "move" # New node is immediately ready to drag and adjust.
+	else: return
 	document_changed.emit()
 	edit_finished.emit()
 	selection_changed.emit()
@@ -404,6 +465,17 @@ func _place(point: Vector2) -> void:
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
+	if pending_paint_accept:
+		pending_paint_accept = false
+		confirm_paint()
+	if pending_start_flip:
+		pending_start_flip = false
+		flip_start_line()
+	start_drag = false
+	if pending_piece_accept:
+		pending_piece_accept = false
+		dragging = false
+		confirm_piece()
 	if drawing_run:
 		if not run_preview.is_empty():
 			edit_started.emit()
@@ -424,14 +496,9 @@ func _end(pointer: int) -> void:
 			_snap_ghost()
 		selection_changed.emit()
 	pending_road_tap = false
-	if not paint_points.is_empty():
-		if document.paint.size() < 256:
-			edit_started.emit()
-			document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0})
-			document_changed.emit()
-			edit_finished.emit()
-		else: hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
-		paint_points.clear()
+	pending_piece_accept = false
+	if paint_mode == "free": confirm_paint()
+	paint_handle = -1
 	if pending_stamp: _place(press_position)
 	if dragging and changed_in_gesture:
 		edit_finished.emit()
@@ -486,12 +553,12 @@ func _draw() -> void:
 			var color: Color = palette[2] if document.surface == "dirt" else palette[0]
 			draw_line(a,b,color,width,true)
 			draw_circle(a,width*0.5,color)
-	if mode in ["move","add"]:
+	if mode == "waypoints":
 		var line := PackedVector2Array()
 		for p: Vector2 in route: line.append(to_screen(p))
 		line.append(line[0])
 		draw_polyline(line,Color(1,0.85,0.35,0.9),2,true)
-	if route.size() > 1 and mode in ["move","add"]:
+	if route.size() > 1 and mode == "waypoints":
 		var start: Vector2 = to_screen(route[0])
 		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * TrackDocument.node_width(document,0) * scale_factor() * 0.5
 		draw_line(start-across,start+across,Color("e0e7dd"),3,true)
@@ -499,16 +566,13 @@ func _draw() -> void:
 		var arrow: Vector2 = start + direction * 24
 		draw_line(arrow-direction.rotated(0.65)*12,arrow,Color("edf1f3"),3,true)
 		draw_line(arrow-direction.rotated(-0.65)*12,arrow,Color("edf1f3"),3,true)
-	for i: int in range(document.points.size() if mode in ["move","add"] else 0):
+	for i: int in range(document.points.size() if mode == "waypoints" else 0):
 		var p: Array = document.points[i]
 		var center: Vector2 = to_screen(Vector2(p[0],p[1]))
-		draw_circle(center, 25, Color(0.07,0.11,0.13,0.75))
-		draw_arc(center, 24, 0, TAU, 32, Color("d9e3e2") if selected == i else Color("90a59d"), 2, true)
-		draw_string(ThemeDB.fallback_font,center+Vector2(-6,6),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color("edf1f3"))
-		if i == selected:
-			draw_string(ThemeDB.fallback_font,center+Vector2(30,6),"%.1f m" % TrackDocument.node_width(document,i),HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color("edf1f3"))
+		draw_circle(center,4,Color("f3c644"))
 		if i == 0:
-			draw_string(ThemeDB.fallback_font, center + Vector2(-23,-34), "START", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("edf1f3"))
+			draw_string(ThemeDB.fallback_font,center+Vector2(-23,-18),"START",HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color.WHITE)
+	for piece: Dictionary in pending_road_pieces(): _draw_piece(piece,false,false)
 	for i: int in range(document.get("objects",[]).size()):
 		if world_backdrop and (mode not in ["objects","place","run"] or i != selected_object): continue
 		var object: Dictionary = document.objects[i]
@@ -522,23 +586,37 @@ func _draw() -> void:
 		if not world_backdrop: draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
 	if not paint_points.is_empty():
 		var color: Color = palette[brush_surface]
-		for i: int in range(paint_points.size()):
-			var a: Vector2 = to_screen(Vector2(paint_points[i][0],paint_points[i][1]))
-			var b: Vector2 = to_screen(Vector2(paint_points[maxi(0,i-1)][0],paint_points[maxi(0,i-1)][1]))
-			var width: float = brush_width*scale_factor()
-			draw_line(a,b,color,width,true)
-			if brush_shape == "round": draw_circle(a,width*0.5,color)
-			else: draw_rect(Rect2(a-Vector2.ONE*width*0.5,Vector2.ONE*width),color)
+		color.a = 0.7
+		var path: PackedVector2Array = SurfacePaint.contour(paint_points,paint_mode)
+		var screen_path := PackedVector2Array()
+		for p: Vector2 in path: screen_path.append(to_screen(p))
+		if paint_mode == "area" and screen_path.size() >= 3:
+			if not Geometry2D.triangulate_polygon(screen_path).is_empty(): draw_colored_polygon(screen_path,color)
+			screen_path.append(screen_path[0])
+		if screen_path.size() > 1: draw_polyline(screen_path,color,2.0 if paint_mode == "area" else brush_width*scale_factor(),true)
+		if paint_mode != "area":
+			for p: Vector2 in screen_path: draw_circle(p,brush_width*scale_factor()*0.5,color)
+		if paint_mode != "free":
+			for p: Array in paint_points:
+				var at: Vector2 = to_screen(Vector2(p[0],p[1]))
+				draw_circle(at,10,Color("f5c842"))
+				draw_circle(at,5,Color("182533"))
+		var accept: Rect2 = paint_accept_rect()
+		if accept.has_area():
+			draw_style_box(MenuStyle.box(Color("f3c644"),14),accept)
+			var center: Vector2 = accept.get_center()
+			draw_polyline(PackedVector2Array([center+Vector2(-12,0),center+Vector2(-3,9),center+Vector2(14,-10)]),Color("142331"),4,true)
 	if mode == "road":
 		for i: int in range(document.get("pieces",[]).size()):
 			if i == selected_piece: _draw_piece(document.pieces[i],false)
 		if not ghost.is_empty(): _draw_piece(ghost,true)
 		for join: Dictionary in RoadPieces.joins(document.get("pieces",[])):
 			draw_circle(to_screen(join.position),5,Color("e2efec"),false,2,true)
-	if document.has("practice_start") and mode in ["move","add","start"]:
+	if document.has("practice_start") and mode in ["waypoints","move","add","start"]:
 		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
 		draw_circle(start,14,Color("16c2cf"),false,3,true)
 		draw_string(ThemeDB.fallback_font,start+Vector2(20,5),"Practice start",HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color.WHITE)
+	if document.has("start_line") and mode in ["road","start_line"]: _draw_start_line()
 	if run_start != Vector2.INF: draw_circle(to_screen(run_start),10,Color("16c2cf"),false,3,true)
 	for object: Dictionary in run_preview:
 		var outline := PackedVector2Array()
@@ -598,7 +676,9 @@ func confirm_piece() -> void:
 		ghost.clear()
 		selected_piece = -1
 		document_changed.emit()
+		road_approval_pending = true
 		edit_finished.emit()
+		road_approval_pending = false
 	selection_changed.emit()
 	queue_redraw()
 
@@ -606,8 +686,17 @@ func _begin_road(point: Vector2) -> void:
 	geometry_drag = ""
 	endpoint_drag = -1
 	pending_road_tap = false
+	pending_piece_accept = false
 	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
-	if not current.is_empty() and road_action == "move":
+	if not current.is_empty():
+		for key: String in geometry_keys(current):
+			if to_screen(_geometry_handle(current,key)).distance_to(point) <= 24:
+				geometry_drag = key
+				geometry_origin = RoadPieces.height(current) if key == "height" else float(current.get(key,0.0 if key == "curvature" else 90.0))
+				piece_before_drag = current.duplicate(true)
+				dragging = true
+				queue_redraw()
+				return
 		for end: int in range(2):
 			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
 			if to_screen(handle).distance_to(point) <= 26:
@@ -615,9 +704,9 @@ func _begin_road(point: Vector2) -> void:
 				piece_before_drag = current.duplicate(true)
 				dragging = true
 				return
-	if not current.is_empty() and road_action in ["width","radius","length","angle"] and to_screen(_geometry_handle(current,road_action)).distance_to(point) <= 32:
-		geometry_drag = road_action
-		geometry_origin = float(current.get(geometry_drag,90.0))
+	if not current.is_empty() and piece_accept_rect(current).has_point(point):
+		pending_piece_accept = true
+		drag_origin = Vector2(current.position[0],current.position[1])
 		dragging = true
 		return
 	if not ghost.is_empty():
@@ -654,13 +743,27 @@ func _begin_road(point: Vector2) -> void:
 	selection_changed.emit()
 	queue_redraw()
 
+func _attached_end(piece: Dictionary) -> int:
+	return RoadPieces.attached_end(piece,document.pieces,selected_piece if ghost.is_empty() else -1)
+
+func anchored_change(before: Dictionary, changed: Dictionary, key: String) -> Dictionary:
+	return RoadPieces.keep_attachment(before,changed,_attached_end(before),key != "heading")
+
 func _move_road(point: Vector2) -> void:
 	var piece: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece]
+	if pending_piece_accept:
+		if press_position.distance_to(point) <= 8: return
+		pending_piece_accept = false
 	if press_position.distance_to(point) < 3 and not changed_in_gesture: return
 	if endpoint_drag >= 0:
 		var target: Vector2 = to_world(point)
-		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece)
-		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,endpoint_drag,target)
+		var moving_end: int = endpoint_drag
+		var attached: int = _attached_end(piece_before_drag)
+		if moving_end == attached:
+			moving_end = 1-attached
+			target = Vector2(RoadPieces._pose(piece_before_drag,moving_end).position)+to_world(point)-pointer_origin
+		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece if ghost.is_empty() else -1)
+		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,moving_end,target)
 		if trial.is_empty():
 			hint_changed.emit("Keep the section inside the map and within its size limits.")
 			return
@@ -675,17 +778,33 @@ func _move_road(point: Vector2) -> void:
 		queue_redraw()
 		return
 	if geometry_drag != "":
-		var increased: Dictionary = piece.duplicate(true)
-		increased[geometry_drag] = float(piece.get(geometry_drag,90.0))+1.0
-		var axis: Vector2 = _geometry_handle(increased,geometry_drag)-_geometry_handle(piece,geometry_drag)
+		var increased: Dictionary = piece_before_drag.duplicate(true)
+		increased[geometry_drag] = geometry_origin+1.0
+		if piece.kind == "s_bend" and geometry_drag == "radius": increased.height = RoadPieces.height(piece_before_drag)
+		increased = anchored_change(piece_before_drag,increased,geometry_drag)
+		var axis: Vector2 = _geometry_anchor(increased,geometry_drag)-_geometry_anchor(piece_before_drag,geometry_drag)
 		var delta: float = (to_world(point)-pointer_origin).dot(axis)/maxf(0.01,axis.length_squared())
-		var trial: Dictionary = piece.duplicate(true)
-		trial[geometry_drag] = snappedf(geometry_origin+delta,0.5)
+		if piece.kind == "curve" and geometry_drag == "angle":
+			var side: float = -1.0 if piece.flip else 1.0
+			var center: Vector2 = Vector2(piece_before_drag.position[0],piece_before_drag.position[1])+Vector2(0,side*float(piece_before_drag.radius)).rotated(deg_to_rad(float(piece_before_drag.heading)))
+			var anchor: Vector2 = _geometry_anchor(piece_before_drag,"angle")
+			delta = rad_to_deg((anchor-center).angle_to(anchor+to_world(point)-pointer_origin-center))/( -0.8 if _attached_end(piece_before_drag) == 1 else 0.8)*side
+		var trial: Dictionary = piece_before_drag.duplicate(true)
+		trial[geometry_drag] = snappedf(geometry_origin+delta,0.01 if geometry_drag == "curvature" else 0.5)
+		if geometry_drag == "curvature": trial.curvature = clampf(float(trial.curvature),-0.3,0.3)
+		elif geometry_drag == "heading": trial.heading = fposmod(float(trial.heading),360.0)
+		else:
+			var lower: float = 6.0 if geometry_drag == "width" else 3.0 if geometry_drag == "radius" else 2.0 if geometry_drag == "height" else 5.0 if geometry_drag == "angle" else 24.0 if piece.kind == "bridge" else 2.0 if piece.kind == "straight" else 0.0
+			var upper: float = 20.0 if geometry_drag == "width" else 60.0 if geometry_drag in ["radius","height"] else 270.0 if geometry_drag == "angle" else 120.0
+			trial[geometry_drag] = clampf(float(trial[geometry_drag]),lower,upper)
+		if piece.kind == "s_bend" and geometry_drag == "radius": trial.height = RoadPieces.height(piece_before_drag)
+		trial = anchored_change(piece_before_drag,trial,geometry_drag)
 		if not RoadPieces.validate(trial).is_empty(): return
 		if not _valid_bridge_edit(trial,selected_piece): return
 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 		changed_in_gesture = true
-		piece[geometry_drag] = trial[geometry_drag]
+		if ghost.is_empty(): document.pieces[selected_piece] = trial
+		else: ghost = trial
 		snap_matched = false
 		if ghost.is_empty(): document_changed.emit()
 		queue_redraw()
@@ -711,7 +830,15 @@ func _move_road(point: Vector2) -> void:
 		document_changed.emit()
 	queue_redraw()
 
-func _draw_piece(piece: Dictionary, is_ghost: bool) -> void:
+func pending_road_pieces() -> Array:
+	var pending: Array = []
+	if not world_backdrop or native_preview == null: return pending
+	var compiled: Array = native_preview.metadata.get("creator_document",{}).get("pieces",[])
+	for index: int in range(document.pieces.size()):
+		if index >= compiled.size() or document.pieces[index] != compiled[index]: pending.append(document.pieces[index])
+	return pending
+
+func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
 	var points: PackedVector2Array = RoadPieces.samples(piece)
 	var line := PackedVector2Array()
 	var left := PackedVector2Array()
@@ -724,34 +851,199 @@ func _draw_piece(piece: Dictionary, is_ghost: bool) -> void:
 		right.append(to_screen(points[i]-normal))
 	# Individual triangles also handle a deliberately tight bend whose inner
 	# edge folds over itself; a single outline is not a simple polygon there.
-	var tint := Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23)
+	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("61533e") if document.surface == "dirt" else Color("45494c")
 	for i: int in range(left.size()-1):
 		draw_primitive(PackedVector2Array([left[i],right[i],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
 		draw_primitive(PackedVector2Array([right[i],right[i+1],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
-	draw_polyline(left,Color("b9faff"),2,true)
-	draw_polyline(right,Color("b9faff"),2,true)
+	draw_polyline(left,Color("b9faff") if controls else Color("dce1dc"),2,true)
+	draw_polyline(right,Color("b9faff") if controls else Color("dce1dc"),2,true)
+	if not controls: return
+	if dragging and geometry_drag != "":
+		if geometry_drag == "width":
+			draw_polyline(left,Color("76ddeb"),4,true)
+			draw_polyline(right,Color("76ddeb"),4,true)
+		else:
+			draw_polyline(line,Color("f6bf69"),3,true)
+
 	for endpoint: int in [0,points.size()-1]:
 		draw_line(left[endpoint],right[endpoint],Color.WHITE,2,true)
-		draw_circle(line[endpoint],13,Color("16c2cf"))
-		draw_circle(line[endpoint],13,Color.WHITE,false,2,true)
-	var label: String = "Join aligned" if is_ghost and snap_matched else ("Tap to place · drag to position" if is_ghost else "Selected section")
-	if not is_ghost: label += "  /  %.1f m wide" % float(piece.width)
-	var anchor: Vector2 = line[line.size()/2]+Vector2(0,-float(piece.width)*scale_factor()*0.5-24)
-	anchor = anchor.clamp(Vector2(110,90),size-Vector2(280,120))
-	draw_style_box(MenuStyle.box(Color(0.035,0.09,0.11,0.94),8),Rect2(anchor-Vector2(10,22),Vector2(260,34)))
-	draw_string(ThemeDB.fallback_font,anchor,label,HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE)
-	if road_action in ["width","radius","length","angle"]:
-		var handle: Vector2 = to_screen(_geometry_handle(piece,road_action))
-		draw_circle(handle,16,Color("16c2cf"))
-		draw_circle(handle,16,Color.WHITE,false,2,true)
-		draw_line(handle-Vector2(7,0),handle+Vector2(7,0),Color.WHITE,2,true)
-		draw_line(handle-Vector2(0,7),handle+Vector2(0,7),Color.WHITE,2,true)
-		draw_string(ThemeDB.fallback_font,handle+Vector2(22,6),("%s %.0f deg" if road_action == "angle" else "%s %.1f m") % [road_action.capitalize(),float(piece.get(road_action,90.0))],HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color.WHITE)
+		draw_circle(line[endpoint],13,Color("f2f6f7"))
+		draw_circle(line[endpoint],13,Color("163541"),false,2,true)
+		if _attached_end(piece) == (0 if endpoint == 0 else 1):
+			draw_rect(Rect2(line[endpoint]-Vector2(5,1),Vector2(10,8)),Color("163541"),false,2)
+			draw_arc(line[endpoint]+Vector2(0,-1),4,PI,TAU,10,Color("163541"),2,true)
+		else:
+			for axis: Vector2 in [Vector2.RIGHT,Vector2.DOWN]:
+				_draw_handle_arrow(line[endpoint],axis,7,Color("163541"))
+	for key: String in geometry_keys(piece):
+		var handle: Vector2 = to_screen(_geometry_handle(piece,key))
+		if piece.kind == "bridge": draw_line(to_screen(_geometry_anchor(piece,key)),handle,Color("b9faff"),1.5,true)
+		var increased: Dictionary = piece.duplicate(true)
+		increased[key] = (RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0)))+1.0
+		if piece.kind == "s_bend" and key == "radius": increased.height = RoadPieces.height(piece)
+		increased = anchored_change(piece,increased,key)
+		var axis: Vector2 = (to_screen(_geometry_anchor(increased,key))-to_screen(_geometry_anchor(piece,key))).normalized()
+		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
+		if piece.kind != "bridge": continue
+		var caption: String = geometry_caption(piece,key)
+		var label_size := Vector2(ThemeDB.fallback_font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+12,24)
+		var label_pos: Vector2 = handle+Vector2(-label_size.x*0.5,24)
+		draw_style_box(MenuStyle.box(Color("142331"),5),Rect2(label_pos,label_size))
+		draw_string(ThemeDB.fallback_font,label_pos+Vector2(6,17),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color.WHITE)
+
+
+	var accept_rect: Rect2 = piece_accept_rect(piece)
+	draw_style_box(MenuStyle.box(Color("f3c644"),14),accept_rect)
+	var c: Vector2 = accept_rect.get_center()
+	draw_polyline(PackedVector2Array([c+Vector2(-12,0),c+Vector2(-3,9),c+Vector2(14,-10)]),Color("142331"),4,true)
+
+func _draw_geometry_glyph(center: Vector2, key: String, axis: Vector2, active: bool) -> void:
+	var ink := Color("142331")
+	var fill := Color("76ddeb") if key == "width" else Color("f6bf69")
+	if active:
+		draw_circle(center,23,Color(1,0.85,0.4,0.25))
+		fill = Color("ffdd80")
+		_draw_handle_arrow(center,axis,34,Color("fff5cd"))
+	if key == "width":
+		draw_style_box(MenuStyle.box(fill,6),Rect2(center-Vector2(17,17),Vector2(34,34)))
+		var normal := axis.orthogonal()
+		for sign_value: float in [-1.0,1.0]:
+			var edge: Vector2 = center+axis*11*sign_value
+			draw_line(edge-normal*9,edge+normal*9,ink,2,true)
+		_draw_handle_arrow(center,axis,7,ink)
+	else:
+		draw_circle(center,17,fill)
+		if key in ["angle","heading"]:
+			draw_arc(center,10,-PI*0.8,PI*0.15,16,ink,2,true)
+			var tip: Vector2 = center+Vector2.from_angle(PI*0.15)*10
+			draw_polyline(PackedVector2Array([tip+Vector2(-5,-1),tip,tip+Vector2(1,-5)]),ink,2,true)
+			if key == "angle":
+				draw_line(center,center+Vector2(0,-7),ink,2,true)
+				draw_line(center,center+Vector2(7,0),ink,2,true)
+		elif key in ["curvature","radius"]:
+			var normal := axis.orthogonal()
+			var curve := PackedVector2Array()
+			for i: int in range(17):
+				var t: float = float(i)/16.0
+				curve.append(center+normal*lerpf(-11,11,t)+axis*(sin(PI*t)*7-5))
+			draw_polyline(curve,ink,2.5,true)
+			_draw_handle_arrow(center+axis*6,axis,5,ink)
+		elif key in ["height","span"]:
+			var wave := PackedVector2Array()
+			for i: int in range(17):
+				var t: float = float(i)/16.0
+				var point := Vector2(-5+sin(t*TAU)*4,lerpf(-10,10,t))
+				wave.append(center+(point if key == "height" else Vector2(point.y,point.x)))
+			draw_polyline(wave,ink,2,true)
+			_draw_handle_arrow(center+(Vector2(7,0) if key == "height" else Vector2(0,7)),Vector2.UP if key == "height" else Vector2.RIGHT,9,ink)
+		else: # Straight-arm length: parallel arms with extension arrows.
+			var normal := axis.orthogonal()
+			for side: float in [-1.0,1.0]:
+				draw_line(center-axis*10+normal*7*side,center+axis*10+normal*7*side,ink,2,true)
+			_draw_handle_arrow(center,axis,8,ink)
+
+func _draw_handle_arrow(center: Vector2, axis: Vector2, reach: float, color: Color) -> void:
+	var normal := axis.orthogonal()
+	draw_line(center-axis*reach,center+axis*reach,color,2,true)
+	for side: float in [-1.0,1.0]:
+		var tip: Vector2 = center+axis*reach*side
+		draw_polyline(PackedVector2Array([tip-axis*3*side+normal*3,tip,tip-axis*3*side-normal*3]),color,2,true)
+
+func piece_accept_rect(piece: Dictionary) -> Rect2:
+	var points: PackedVector2Array = RoadPieces.samples(piece)
+	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
+
+func geometry_keys(piece: Dictionary) -> Array[String]:
+	if piece.kind == "straight": return ["width"]
+	if piece.kind == "curve": return ["width","curvature","angle"]
+	if piece.kind == "s_bend": return ["width","radius","height"]
+	if piece.kind == "hairpin": return ["width","radius","length"]
+	var keys: Array[String] = ["width"]
+	if piece.kind != "s_bend": keys.push_front("length")
+	if piece.kind not in ["straight","bridge"]: keys.append("radius")
+	if piece.kind == "s_bend": keys.append("height")
+	if piece.kind == "curve": keys.append("angle")
+	keys.append("heading")
+	return keys
+
+func geometry_caption(piece: Dictionary, key: String) -> String:
+	var title: String = "Rotate" if key == "heading" else "Straight" if key == "length" and piece.kind not in ["straight","bridge"] else key.capitalize()
+	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
+	return ("%s %.0f deg" if key in ["angle","heading"] else "%s %.1f m") % [title,value]
 
 func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
+	return to_world(geometry_controls(piece)[key])
+
+func geometry_controls(piece: Dictionary) -> Dictionary:
+	var controls: Dictionary = {}
+	if piece.kind != "bridge":
+		var occupied: Array[Vector2] = [to_screen(Vector2(piece.position[0],piece.position[1])),to_screen(RoadPieces.end_pose(piece).position)]
+		for key: String in geometry_keys(piece):
+			var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
+			var candidate: Vector2 = anchor
+			if key != "width":
+				for step: int in range(97):
+					candidate = anchor+Vector2.LEFT.rotated(float(step%8)*TAU/8.0)*float((step+7)/8)*12.0
+					var clear: bool = not piece_accept_rect(piece).grow(20).has_point(candidate)
+					for other: Vector2 in occupied:
+						if candidate.distance_to(other) < 48: clear = false; break
+					if clear: break
+			controls[key] = candidate
+			occupied.append(candidate)
+		return controls
+	var blocked: Array[Rect2] = [piece_accept_rect(piece).grow(20)]
+	for endpoint: Vector2 in [Vector2(piece.position[0],piece.position[1]),Vector2(RoadPieces.end_pose(piece).position)]:
+		blocked.append(Rect2(to_screen(endpoint)-Vector2(40,40),Vector2(80,80)))
+	for key: String in geometry_keys(piece):
+		var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
+		var candidate: Vector2 = anchor
+		for step: int in range(81):
+			var ring: int = (step+7)/8
+			var offset: Vector2 = Vector2.UP.rotated(float(step%8)*TAU/8.0)*float(ring)*64.0
+			candidate = anchor+offset
+			var area := Rect2(candidate-Vector2(70,26),Vector2(140,78))
+			var overlaps: bool = false
+			for rect: Rect2 in blocked:
+				if rect.intersects(area): overlaps = true; break
+			if not overlaps: break
+		controls[key] = candidate
+		blocked.append(Rect2(candidate-Vector2(70,26),Vector2(140,78)))
+	return controls
+
+func _geometry_anchor(piece: Dictionary, key: String) -> Vector2:
 	var points: PackedVector2Array = RoadPieces.samples(piece)
 	var forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
+	if piece.kind == "curve" and key in ["width","angle","curvature"]:
+		var side: float = -1.0 if piece.flip else 1.0
+		var fraction: float = (0.2 if _attached_end(piece) == 1 else 0.8) if key == "angle" else 0.5
+		var turn: float = deg_to_rad(float(piece.get("angle",90.0)))*fraction
+		var radius: float = float(piece.radius)
+		var bulge: float = float(piece.get("curvature",0.0))*RoadPieces.curve_bulge_scale(piece)*pow(sin(PI*fraction),2)
+		var reach: float = radius+bulge+float(piece.width)*0.5 if key == "width" else maxf(1.0,radius+bulge-float(piece.width)*0.5-2.0)
+		return points[0]+Vector2(reach*sin(turn),side*(radius-reach*cos(turn))).rotated(deg_to_rad(float(piece.heading)))
+	if piece.kind == "hairpin":
+		var side: float = -1.0 if piece.flip else 1.0
+		var radius: float = float(piece.radius)
+		var half: float = float(piece.width)*0.5
+		var reach: float = radius+half if key == "width" else maxf(1.0,radius-half-2.0)
+		var turn: float = PI*0.25 if key == "radius" else PI*0.5
+		return points[0]+Vector2(float(piece.length)+reach*sin(turn),side*(radius-reach*cos(turn))).rotated(deg_to_rad(float(piece.heading)))
+	if piece.kind == "s_bend" and key in ["radius","height"]:
+		var radius: float = float(piece.radius)
+		var side: float = -1.0 if piece.flip else 1.0
+		var vertical: float = RoadPieces.height(piece)/(2.0*(1.0-cos(PI*0.25)))
+		var turn: float = PI*0.125
+		var local := Vector2(RoadPieces.S_END_LENGTH+radius*sin(turn),side*vertical*(1.0-cos(turn)))
+		var tangent := Vector2(radius*cos(turn),side*vertical*sin(turn)).normalized()
+		var normal := Vector2(-tangent.y,tangent.x)*side
+		if key == "height":
+			local = Vector2(2.0*RoadPieces.S_END_LENGTH+2.0*radius*sin(PI*0.25),side*RoadPieces.height(piece))-local
+			normal = -normal
+		local += normal*(float(piece.width)*0.5+2.0)
+		return points[0]+local.rotated(deg_to_rad(float(piece.heading)))
+	if key == "heading": return points[0]+forward*maxf(12.0,float(piece.length))
 	if key == "length": return points[0]+forward*float(piece.length)
+	if key == "height": return points[-1]
 	if key in ["radius","angle"]: return points[-1]
 	var middle: int = points.size()/2
 	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
@@ -841,3 +1133,98 @@ func connect_nearby() -> void:
 	edit_finished.emit()
 	selection_changed.emit()
 	queue_redraw()
+
+func choose_start_line() -> void:
+	cancel_gesture()
+	ghost.clear()
+	selected_piece = -1
+	mode = "start_line"
+	selection_changed.emit()
+	hint_changed.emit("Tap a road to place the start line. Tap its direction arrow to reverse racing direction.")
+	queue_redraw()
+
+func flip_start_line() -> void:
+	if not document.has("start_line"): return
+	edit_started.emit()
+	document.start_line.heading = fposmod(float(document.start_line.heading)+180.0,360.0)
+	document_changed.emit()
+	edit_finished.emit()
+	queue_redraw()
+
+func start_controls() -> Dictionary:
+	var pose: Dictionary = document.start_line
+	var center := Vector2(pose.position[0],pose.position[1])
+	var forward := Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading)))
+	var width: float = float(document.width)
+	var frame: Dictionary = RoadPieces.road_frame(document.pieces,center,forward)
+	if not frame.is_empty(): width = float(frame.width)
+	var normal := Vector2(-forward.y,forward.x)*width*0.5
+	var screen_forward: Vector2 = (to_screen(center+forward)-to_screen(center)).normalized()
+	return {"center":to_screen(center),"left":to_screen(center-normal),"right":to_screen(center+normal),"forward":screen_forward,"flip":to_screen(center)+screen_forward*72}
+
+func _draw_start_line() -> void:
+	var controls: Dictionary = start_controls()
+	var a: Vector2 = controls.left
+	var b: Vector2 = controls.right
+	for i: int in range(12):
+		draw_line(a.lerp(b,float(i)/12),a.lerp(b,float(i+1)/12),Color.WHITE if i%2 == 0 else Color("142331"),9,true)
+	draw_circle(controls.center,12,Color("16c2cf"))
+	draw_circle(controls.center,12,Color.WHITE,false,2,true)
+	var button: Vector2 = controls.flip
+	var axis: Vector2 = controls.forward
+	var normal := Vector2(-axis.y,axis.x)
+	draw_line(controls.center,button,Color("f3c644"),2,true)
+	draw_circle(button,26,Color("f3c644"))
+	draw_line(button-axis*12,button+axis*12,Color("142331"),3,true)
+	draw_polyline(PackedVector2Array([button+axis*4+normal*8,button+axis*12,button+axis*4-normal*8]),Color("142331"),3,true)
+	var text_pos: Vector2 = button+Vector2(-61,36)
+	draw_style_box(MenuStyle.box(Color("142331"),5),Rect2(text_pos-Vector2(6,17),Vector2(138,27)))
+	draw_string(ThemeDB.fallback_font,text_pos,"Tap to reverse",HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE)
+
+func confirm_paint() -> void:
+	if paint_points.is_empty(): return
+	var minimum: int = 3 if paint_mode == "area" else 2 if paint_mode == "line" else 1
+	if paint_points.size() < minimum:
+		hint_changed.emit("Place at least %d points, then confirm." % minimum)
+		return
+	if paint_mode == "area" and not SurfacePaint.valid_area(paint_points):
+		hint_changed.emit("Move the points to make a simple enclosed area.")
+		return
+	if document.paint.size() >= 256:
+		hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
+		return
+	edit_started.emit()
+	document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0,"mode":paint_mode})
+	paint_points.clear()
+	paint_handle = -1
+	document_changed.emit()
+	edit_finished.emit()
+	queue_redraw()
+
+func paint_accept_rect() -> Rect2:
+	if mode != "paint" or paint_mode == "free" or paint_points.size() < (3 if paint_mode == "area" else 2): return Rect2()
+	var path: PackedVector2Array = SurfacePaint.contour(paint_points,paint_mode)
+	var candidate := Vector2.ZERO
+	if paint_mode == "area":
+		var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(path)
+		var largest: float = -1.0
+		for i: int in range(0,triangles.size(),3):
+			var a: Vector2 = path[triangles[i]]
+			var b: Vector2 = path[triangles[i+1]]
+			var c: Vector2 = path[triangles[i+2]]
+			var area: float = absf((b-a).cross(c-a))
+			if area > largest:
+				largest = area
+				candidate = (a+b+c)/3.0
+		if largest < 0.01: return Rect2()
+	else:
+		# Choose a point on the smoothed line away from its editable dots.
+		var best: float = -1.0
+		for i: int in range(path.size()-1):
+			var at: Vector2 = (path[i]+path[i+1])*0.5
+			var distance: float = INF
+			for p: Array in paint_points: distance = minf(distance,at.distance_to(Vector2(p[0],p[1])))
+			if distance > best:
+				best = distance
+				candidate = at
+	return Rect2(to_screen(candidate)-Vector2(28,28),Vector2(56,56))

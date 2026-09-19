@@ -2,20 +2,31 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-18"
+const VERSION: String = "track-kit-33"
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
+const NIGHT_TILE_SIZE: float = 16.0
+const NIGHT_ROAD_GROUP_SIZE: float = 16.0
+var partition_night_ground: bool = true
+var _menu_slices: bool = false
+var _slice_started: int = 0
 var theme_id: String = "pine"
 var editor_preview: bool = false
 var colors: Array[Color] = []
 var tyre_instances: MultiMeshInstance3D
+var _tyre_positions := PackedVector2Array()
+var _tyre_spins: Array[float] = []
 var light_instances: Array[Node3D] = []
 var scenic_count: int = 0
+var editor_objects: NativeTrackVisual
+var editor_cover: NativeTrackVisual
 
 
-func build(track: NativeTrack, bridge: BridgePresentation) -> void:
+func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
+	_menu_slices = menu_slices
+	_slice_started = Time.get_ticks_usec() if menu_slices else 0
 	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
 	colors = TrackTheme.palette(theme_id)
 	var ground := ShaderMaterial.new()
@@ -23,14 +34,50 @@ func build(track: NativeTrack, bridge: BridgePresentation) -> void:
 	ground.set_shader_parameter("ground_color", colors[1])
 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
-	_build_terrain(track)
-	_build_creator_roads(track)
+	if theme_id == "night_city" and partition_night_ground and _lamps_inside_terrain(track):
+		# This backdrop is hidden by the opaque terrain wherever lamps reach.
+		# Keep moon/ambient light, but exclude pointless point-light evaluation.
+		(get_child(get_child_count()-1) as MeshInstance3D).layers = 2
+	await _build_terrain(track)
+	if _menu_slices and not is_inside_tree(): return
+	await _build_creator_roads(track)
+	if _menu_slices and not is_inside_tree(): return
 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): _build_kerbs(track)
-	_build_barriers(track)
-	_build_low_cover(track)
-	_build_placed_objects(track)
+	await _build_barriers(track)
+	if _menu_slices and not is_inside_tree(): return
+	if editor_preview:
+		refresh_editor_objects(track)
+	else:
+		await _build_low_cover(track)
+		await _build_placed_objects(track)
 	bridge.build(self)
 	_build_finish(track)
+	_build_snow_banks(track)
+
+
+func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true) -> void:
+	if theme_id == "night_city" and partition_night_ground and get_child_count() > 0 and get_child(0) is MeshInstance3D:
+		# Moving/scaling a lamp in the editor can expose the outer backdrop.
+		(get_child(0) as MeshInstance3D).layers = 2 if _lamps_inside_terrain(track) else 1
+	if editor_objects != null:
+		remove_child(editor_objects)
+		editor_objects.queue_free()
+	editor_objects = NativeTrackVisual.new()
+	editor_objects.editor_preview = true
+	editor_objects.theme_id = theme_id
+	editor_objects.colors = colors
+	add_child(editor_objects)
+	if refresh_cover:
+		if editor_cover != null:
+			remove_child(editor_cover)
+			editor_cover.queue_free()
+		editor_cover = NativeTrackVisual.new()
+		editor_cover.editor_preview = true
+		editor_cover.theme_id = theme_id
+		editor_cover.colors = colors
+		add_child(editor_cover)
+		editor_cover._build_low_cover(track)
+	editor_objects._build_placed_objects(track)
 
 
 func _build_terrain(track: NativeTrack) -> void:
@@ -41,6 +88,10 @@ func _build_terrain(track: NativeTrack) -> void:
 	var hide_boundary: bool = _hide_creator_boundary(track)
 	var object_ground: PackedByteArray = _authored_barrier_cells(track)
 	for y: int in range(track.grid_height):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		for x: int in range(track.grid_width):
 			var kind: int = track.cells[y * track.grid_width + x]
 			# Object collision footprints are not concrete paving beneath foliage.
@@ -52,11 +103,15 @@ func _build_terrain(track: NativeTrack) -> void:
 			else: high.set_pixel(x, y, weights)
 	var surface := ShaderMaterial.new()
 	surface.shader = TERRAIN_SHADER
+	surface.set_shader_parameter("icy_road", theme_id == "winter")
+	surface.set_shader_parameter("wet_road", theme_id == "storm")
 	surface.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
 	surface.set_shader_parameter("map_texel", Vector2(1.0 / track.grid_width, 1.0 / track.grid_height))
-	for i: int in range(colors.size()): surface.set_shader_parameter("color_" + str(i), colors[i])
+	for i: int in range(colors.size()):
+		# Terrain sand uses the exact same theme tint as the road shoulder.
+		surface.set_shader_parameter("color_" + str(i), colors[i].darkened(0.20) if i == 2 else colors[i])
 	var plane := PlaneMesh.new()
 	plane.size = track.half_extent * 2.0
 	var ground := MeshInstance3D.new()
@@ -66,7 +121,42 @@ func _build_terrain(track: NativeTrack) -> void:
 		ground.position.y = -0.06
 	# The flat coverage sheet must not cast a rectangular map-border shadow.
 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(ground)
+	if theme_id == "night_city" and partition_night_ground:
+		_add_lit_terrain_tiles(track,surface,ground.position.y)
+		ground.free()
+	else:
+		add_child(ground)
+
+func _lamps_inside_terrain(track: NativeTrack) -> bool:
+	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+		if object.kind != "light": continue
+		var scale_value: float = float(object.get("scale",1.0))
+		var center := Vector2(object.position[0],object.position[1])
+		# Conservative horizontal bound including the offset lamp head.
+		var reach: float = 15.4*scale_value
+		if absf(center.x)+reach > track.half_extent.x or absf(center.y)+reach > track.half_extent.y: return false
+	return true
+
+func _add_lit_terrain_tiles(track: NativeTrack, surface: Material, height: float) -> void:
+	var extent: Vector2 = track.half_extent
+	var columns: int = ceili(extent.x*2.0/NIGHT_TILE_SIZE)
+	var rows: int = ceili(extent.y*2.0/NIGHT_TILE_SIZE)
+	for row: int in range(rows):
+		for column: int in range(columns):
+			var low := Vector2(column*NIGHT_TILE_SIZE-extent.x,row*NIGHT_TILE_SIZE-extent.y)
+			var high := (low+Vector2.ONE*NIGHT_TILE_SIZE).min(extent)
+			var mesh := SurfaceTool.new()
+			mesh.begin(Mesh.PRIMITIVE_TRIANGLES)
+			for corner: Vector2 in [low,high,Vector2(low.x,high.y),low,Vector2(high.x,low.y),high]:
+				mesh.set_normal(Vector3.UP)
+				mesh.set_uv((corner+extent)/(extent*2.0))
+				mesh.add_vertex(Vector3(corner.x,height,corner.y))
+			var tile := MeshInstance3D.new()
+			tile.name = "LitTerrainTile"
+			tile.mesh = mesh.commit()
+			tile.material_override = surface
+			tile.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(tile)
 
 
 func _build_creator_roads(track: NativeTrack) -> void:
@@ -85,12 +175,20 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var counts: Array[int] = [0,0,0]
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		if pieces[index].kind == "bridge": continue
 		for polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index)]:
 			var bounds := Rect2(polygon[0],Vector2.ZERO)
 			for point: Vector2 in polygon: bounds = bounds.expand(point)
 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
 	for index: int in range(pieces.size()):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		var piece: Dictionary = pieces[index]
 		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
@@ -106,6 +204,10 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		for raw_polygon: PackedVector2Array in [_trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)]:
 			var polygon: PackedVector2Array = raw_polygon
 			for edge: int in range(polygon.size()):
+				if _menu_yield_due():
+					await get_tree().process_frame
+					if not is_inside_tree(): return
+					_slice_started = Time.get_ticks_usec()
 				var a: Vector2 = polygon[edge]
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
 				if _on_join_cut(a,b,cuts): continue
@@ -176,8 +278,10 @@ func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
 
 
 func _shoulder_width(point: Vector2) -> float:
-	# Continuous, deterministic world-space erosion; no simulation RNG.
-	return 1.35 + sin(point.x*1.9+point.y*0.7)*0.12 + sin(point.y*4.7-point.x*2.3)*0.07 + sin(point.x*11.1+point.y*9.2)*0.035
+	# Broad erosion lobes instead of a serrated fringe. World position keeps
+	# neighbouring sections continuous; only the cosmetic outer edge moves.
+	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
+	return 1.35 + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
 func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
@@ -213,11 +317,25 @@ func _piece_end_joined(pieces: Array, index: int, endpoint: Vector2) -> bool:
 
 func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 	var excluded: PackedByteArray = RoadKerbs.exclusion_mask(track,paint)
-	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_R8)
+	# Only authored paint may replace the decorative verge. Native road/kerb
+	# cells must keep their skirt, which conceals the coarse raster boundary.
+	var painted := PackedInt32Array()
+	painted.resize(track.cells.size())
+	painted.fill(-1)
+	var paint_mask := PackedInt32Array()
+	paint_mask.resize(track.cells.size())
+	paint_mask.fill(1)
+	var overlays: Array = paint.duplicate(true)
+	for stroke: Dictionary in overlays: stroke.protect_road = false
+	TrackCompiler._paint(overlays,painted,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,paint_mask)
+	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8)
 	mask.fill(Color.WHITE)
 	for y: int in range(track.grid_height):
 		for x: int in range(track.grid_width):
-			if excluded[y*track.grid_width+x] != 0: mask.set_pixel(x,y,Color.BLACK)
+			# Road protection preserves asphalt/markings; authored non-grass
+			# paint replaces only the decorative verge beneath its footprint.
+			var index: int = y*track.grid_width+x
+			mask.set_pixel(x,y,Color(1.0 if excluded[index] == 0 else 0.0,1.0 if painted[index] in [-1,1] else 0.0,1.0 if painted[index] == 2 else 0.0,1.0))
 	return mask
 
 
@@ -251,14 +369,54 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	material.set_shader_parameter("grass_color", colors[1])
 	material.set_shader_parameter("overlay_mask",mask)
+	material.set_shader_parameter("verge_blend_mask",mask)
+	material.set_shader_parameter("sand_color",colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
+	material.set_shader_parameter("icy_road",theme_id == "winter" and color == colors[0] and not gravel and not grass and not kerb)
+	material.set_shader_parameter("wet_road",theme_id == "storm" and color == colors[0] and not gravel and not grass and not kerb)
 	material.set_shader_parameter("gravel",gravel)
 	material.set_shader_parameter("grass",grass)
 	material.set_shader_parameter("kerb",kerb)
 	instance.material_override = material
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(instance)
+	if theme_id == "night_city" and partition_night_ground:
+		_add_lit_road_parts(instance)
+		instance.free()
+	else:
+		add_child(instance)
+
+func _add_lit_road_parts(source: MeshInstance3D) -> void:
+	# Keep every triangle and its attributes. Smaller spatial groups allow the
+	# Compatibility renderer to associate local lamps with each road section.
+	var arrays: Array = source.mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var uv := PackedVector2Array()
+	var uv2 := PackedVector2Array()
+	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
+	var groups: Dictionary = {}
+	for first: int in range(0,vertices.size(),3):
+		var center: Vector3 = (vertices[first]+vertices[first+1]+vertices[first+2])/3.0
+		var cell := Vector2i(floori(center.x/NIGHT_ROAD_GROUP_SIZE),floori(center.z/NIGHT_ROAD_GROUP_SIZE))
+		if not groups.has(cell):
+			var tool := SurfaceTool.new()
+			tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+			groups[cell] = tool
+		var tool: SurfaceTool = groups[cell]
+		for index: int in range(first,first+3):
+			tool.set_normal(normals[index])
+			if not uv.is_empty(): tool.set_uv(uv[index])
+			if not uv2.is_empty(): tool.set_uv2(uv2[index])
+			tool.add_vertex(vertices[index])
+	for cell: Vector2i in groups:
+		var part := MeshInstance3D.new()
+		part.name = "LitRoadSection"
+		part.mesh = (groups[cell] as SurfaceTool).commit()
+		part.material_override = source.material_override
+		part.cast_shadow = source.cast_shadow
+		add_child(part)
 
 
 func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
@@ -300,6 +458,10 @@ func _build_barriers(track: NativeTrack) -> void:
 	var authored: PackedByteArray = _authored_barrier_cells(track)
 	# Merged top faces and exposed perimeter only: no interior wall seams.
 	for r: Array in track.rectangles:
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		if int(r[4]) != 4:
 			continue
 		var x: float = float(r[0]) * track.cell_size - track.half_extent.x
@@ -323,6 +485,10 @@ func _build_barriers(track: NativeTrack) -> void:
 							count += 1
 						start = column+1
 	for y: int in range(track.grid_height):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		for x: int in range(track.grid_width):
 			if track.cells[y * track.grid_width + x] != 4:
 				continue
@@ -354,6 +520,10 @@ func _build_low_cover(track: NativeTrack) -> void:
 	var stride: int = maxi(1, ceili(3.7 / track.cell_size))
 	var jitter: int = maxi(1,floori(stride*0.4))
 	for site: Vector2i in _scenery_sites(track,stride):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		if scenic_count >= 480: break
 		var seed_value: int = (site.x * 73856093 ^ site.y * 19349663) & 0x7fffffff
 		var cell := Vector2i(site.x+(seed_value%(jitter*2+1))-jitter,site.y+((seed_value/11)%(jitter*2+1))-jitter)
@@ -418,9 +588,31 @@ func _build_placed_objects(track: NativeTrack) -> void:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var count: int = 0
+	var ink_tool := SurfaceTool.new()
+	ink_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var ink_count: int = 0
 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+		if _menu_yield_due():
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+			_slice_started = Time.get_ticks_usec()
 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
 		var object_scale: float = float(object.get("scale",1.0))
+		if object.kind == "light" and theme_id == "night_city":
+			var lamp := OmniLight3D.new()
+			lamp.name = "StreetLamp"
+			lamp.position = center+(Vector3(0.4,4.65,0)*object_scale).rotated(Vector3.UP,deg_to_rad(float(object.rotation)))
+			lamp.light_color = Color("ffda98")
+			lamp.light_energy = 5.0
+			lamp.omni_range = 15.0*object_scale
+			lamp.omni_attenuation = 1.2
+			lamp.shadow_enabled = false
+			lamp.light_cull_mask = 1
+			add_child(lamp)
+			var glow := VisualGeometry.material(Color("ffe3ae"))
+			glow.emission_enabled = true
+			glow.emission = Color("ffda98")
+			VisualGeometry.box(self,Vector3(0.8,0.06,0.32)*object_scale,lamp.position,glow)
 		if object.kind in CreatorCatalog.SOFT:
 			var node := Node3D.new()
 			add_child(node)
@@ -431,6 +623,11 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
 			_finish_prop_mesh(prop_tool,node)
 			light_instances.append(node)
+			continue
+		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
+			if object.kind == "tree": _pine(ink_tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
+			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
+			ink_count += 1
 			continue
 		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation))):
 			count += 1
@@ -470,6 +667,17 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		mesh.material_override = material
 		add_child(mesh)
 
+	if ink_count > 0:
+		ink_tool.generate_normals()
+		var ink_mesh := MeshInstance3D.new()
+		ink_mesh.mesh = ink_tool.commit()
+		var ink_material := VisualGeometry.material(Color.WHITE)
+		ink_material.vertex_color_use_as_albedo = true
+		ink_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		VisualGeometry.ink(ink_material)
+		ink_mesh.material_override = ink_material
+		add_child(ink_mesh)
+
 	if not track.tyre_origins.is_empty():
 		var stack := SurfaceTool.new()
 		stack.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -482,6 +690,8 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		instances.mesh = stack.commit()
 		instances.instance_count = track.tyre_origins.size()
 		tyre_instances.multimesh = instances
+		_tyre_positions.clear()
+		_tyre_spins.clear()
 		var rubber := VisualGeometry.material(Color.WHITE)
 		rubber.vertex_color_use_as_albedo = true
 		rubber.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -541,17 +751,7 @@ func _mound(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float
 
 
 func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
-	# Layered branch masses with blunt, uneven ends, not repeated star cones.
-	_mound(tool, center, Vector3(0.12, 1.65, 0.12) * scale_value, turn, Color("514533"))
-	for tier: int in range(5):
-		var y: float = 0.65 + tier*0.48
-		var radius: float = 0.75 - tier*0.12
-		for branch: int in range(4):
-			var angle: float = turn + branch*TAU/4.0 + tier*1.7
-			var offset := Vector3(cos(angle)*radius*0.8,y+sin(angle*3.0)*0.12,sin(angle)*radius*0.8)
-			var shade: Color = color.lightened(0.025*tier).darkened(0.10 if branch%3 == 0 else 0.0)
-			_mound(tool,center+offset*scale_value,Vector3(radius*0.70,0.40,radius*0.48)*scale_value,-angle,shade)
-	_mound(tool,center+Vector3(0,2.8,0)*scale_value,Vector3(0.20,0.40,0.18)*scale_value,turn,color.lightened(0.08))
+	CreatorPropVisual.pine(tool,self,center,scale_value,turn,color)
 
 
 func _build_finish(track: NativeTrack) -> void:
@@ -609,6 +809,10 @@ func _commit(tool: SurfaceTool, color: Color) -> void:
 
 func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
 	if tyre_instances == null: return
+	if _tyre_positions.size() != origins.size():
+		_tyre_positions.resize(origins.size())
+		_tyre_spins.resize(origins.size())
+		_tyre_spins.fill(NAN)
 	for i: int in range(origins.size()):
 		var p: Vector2 = origins[i]
 		var spin: float = 0.0
@@ -616,6 +820,11 @@ func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
 			var tyre: Array = state.loose_tyres[i]
 			p = Vector2(tyre[0],tyre[1])
 			spin = tyre[4]
+		# Only presentation data is cached. Reset and moving tyres still upload
+		# their exact transforms; resting stacks do not dirty the GPU buffer.
+		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
+		_tyre_positions[i] = p
+		_tyre_spins[i] = spin
 		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*0.014))
 
 func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
@@ -663,3 +872,27 @@ func _build_kerbs(track: NativeTrack) -> void:
 	material.set_shader_parameter("map_extent",track.half_extent)
 	mesh.material_override = material
 	add_child(mesh)
+
+
+func _build_snow_banks(track: NativeTrack) -> void:
+	if track.snow_banks.triangles.is_empty(): return
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for triangle: Dictionary in track.snow_banks.triangles:
+		var points := PackedVector3Array()
+		for i: int in range(3): points.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.025+triangle.heights[i]))
+		var normal: Vector3 = (points[2]-points[0]).cross(points[1]-points[0]).normalized()
+		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
+		if normal.y < 0.0: normal = -normal
+		for i: int in order:
+			tool.set_normal(normal)
+			tool.add_vertex(points[i])
+	var mesh := MeshInstance3D.new()
+	mesh.name = "WinterSnowBanks"
+	mesh.mesh = tool.commit()
+	mesh.material_override = VisualGeometry.material(Color("93a7b2"))
+	add_child(mesh)
+
+
+func _menu_yield_due() -> bool:
+	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000

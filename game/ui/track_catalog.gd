@@ -6,6 +6,23 @@ var entries: Array[Dictionary] = []
 var library: TrackLibrary
 var indexed_revision: int = -1
 var source_metadata: Dictionary = {}
+var _resolved: Dictionary = {}
+var _resolved_revision: int = -1
+
+func clear_resolved() -> void:
+	_resolved.clear()
+	_resolved_revision = -1
+
+func cached_track(entry: Dictionary) -> NativeTrack:
+	if _resolved_revision != indexed_revision or indexed_revision != library.revision:
+		_resolved.clear()
+		_resolved_revision = indexed_revision
+	return _resolved.get(str(entry.id))
+
+func remember_track(entry: Dictionary, track: NativeTrack) -> void:
+	cached_track(entry) # Apply the same revision invalidation before writing.
+	if _resolved.size() >= 4: _resolved.erase(_resolved.keys()[0])
+	_resolved[str(entry.id)] = track
 
 func _init(source: TrackLibrary) -> void:
 	library = source
@@ -20,7 +37,7 @@ func add_builtin(id: String) -> void:
 	var path: String = "res://resources/tracks/" + id + ".json"
 	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
 	var author: Dictionary = source_metadata.get(id,{})
-	entries.append({"id":id,"name":str(data.get("title",author.get("name",data.get("name",id.trim_prefix("slicks_").trim_suffix("_test").to_upper())))),"creator":str(author.get("creator",data.get("creator","Unknown creator"))),"creator_kind":str(author.get("creator_kind","source")),
+	entries.append({"id":id,"name":str(data.get("title",author.get("name",data.get("name",id.replace("_"," ").to_upper())))),"creator":str(author.get("creator",data.get("creator","Unknown creator"))),"creator_kind":str(author.get("creator_kind","source")),
 		"theme":str(data.get("theme","pine")),"source":"builtin","points":data.route,"path":path})
 
 func local_ids() -> Array[String]:
@@ -51,11 +68,12 @@ func add_local(id: String) -> void:
 
 static func local_metadata(data: Dictionary) -> Dictionary:
 	if data.get("schema") != TrackDocument.SCHEMA: return {}
+	if data.get("base_track","") != "" and str(data.base_track) not in BuiltinTracks.ids(): return {}
 	if not TrackDocument.valid_id(data.get("id")): return {}
 	for field: String in ["name","creator"]:
 		var value: Variant = data.get(field,"Unknown creator")
 		if not value is String or value.strip_edges().is_empty() or value.length() > 40 or TrackDocument._has_control(value): return {}
-	if data.get("theme") not in TrackDocument.THEMES: return {}
+	if data.get("theme") not in TrackDocument.THEMES and data.get("theme") != "coast": return {}
 	var points: Variant = data.get("points")
 	if not points is Array or points.size() < 4 or points.size() > TrackDocument.MAX_POINTS: return {}
 	for point: Variant in points:
@@ -63,7 +81,7 @@ static func local_metadata(data: Dictionary) -> Dictionary:
 		for value: Variant in point:
 			if not TrackDocument._number(value) or absf(float(value)) > TrackDocument.MAX_COORD: return {}
 	return {"id":"creator_"+str(data.id),"local_id":str(data.id),"name":str(data.name),
-		"creator":str(data.get("creator","Unknown creator")),"theme":str(data.theme),"source":"saved","points":points,"pieces":data.get("pieces",[])}
+		"creator":str(data.get("creator","Unknown creator")),"theme":TrackTheme.normalized(str(data.theme)),"source":"saved","points":points,"pieces":data.get("pieces",[])}
 
 func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []

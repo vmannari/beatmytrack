@@ -41,27 +41,50 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 		buckets[cell].append(index)
 	# Accumulated friction has one per-tick budget. Iteration transmits the car's
 	# available force through a pile, including static friction at rest.
-	for iteration: int in range(16):
+	# Positions do not change during the impulse solver. Compute its contact
+	# geometry once, retaining the original index and impulse order.
+	var car_normals: Array[Vector2] = []
+	var solver_active: bool = false
+	for index: int in range(count):
+		var point: Vector2 = points[index]
+		var normal := Vector2.ZERO
+		if not state.track_elevated:
+			var near: Vector2 = Geometry2D.get_closest_point_to_segment(point,from,state.position)
+			var delta: Vector2 = point-near
+			if delta.length() <= config.collision_radius+RADIUS+0.005:
+				normal = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
+		car_normals.append(normal)
+		if normal != Vector2.ZERO or velocities[index] != Vector2.ZERO: solver_active = true
+	var pair_deltas: Array[Vector2] = []
+	var pair_normals: Array[Vector2] = []
+	var pair_touching: Array[bool] = []
+	for pair: Vector2i in pairs:
+		var delta: Vector2 = points[pair.y]-points[pair.x]
+		pair_deltas.append(delta)
+		pair_normals.append(delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT)
+		pair_touching.append(delta.length() <= 1.005)
+	for iteration: int in range(16 if solver_active else 0):
 		for index: int in range(count):
+			if velocities[index] == Vector2.ZERO and car_normals[index] == Vector2.ZERO:
+				continue
 			var speed: float = velocities[index].length()
 			var reduction: float = minf(speed,friction[index])
 			velocities[index] = velocities[index].move_toward(Vector2.ZERO,reduction)
 			friction[index] -= reduction
-			if state.track_elevated: continue
-			var near: Vector2 = Geometry2D.get_closest_point_to_segment(points[index],from,state.position)
-			var delta: Vector2 = points[index]-near
-			if delta.length() > config.collision_radius+RADIUS+0.005: continue
-			var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
+			var normal: Vector2 = car_normals[index]
+			if normal == Vector2.ZERO: continue
 			var approach: float = (state.velocity-velocities[index]).dot(normal)
 			if approach > 0:
 				var impulse: float = approach/(1.0/config.mass+1.0/MASS)
 				state.velocity -= normal*impulse/config.mass
 				velocities[index] += normal*impulse/MASS
 				if iteration == 0: state.collision_count += 1
-		for pair: Vector2i in pairs:
-			var delta: Vector2 = points[pair.y]-points[pair.x]
-			var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT
-			if delta.length()>1.005 and (delta+(velocities[pair.y]-velocities[pair.x])*step_seconds).length()>1.0: continue
+		for pair_index: int in range(pairs.size()):
+			var pair: Vector2i = pairs[pair_index]
+			if velocities[pair.x] == Vector2.ZERO and velocities[pair.y] == Vector2.ZERO:
+				continue
+			var normal: Vector2 = pair_normals[pair_index]
+			if not pair_touching[pair_index] and (pair_deltas[pair_index]+(velocities[pair.y]-velocities[pair.x])*step_seconds).length()>1.0: continue
 			var approach: float = (velocities[pair.x]-velocities[pair.y]).dot(normal)
 			if approach > 0:
 				velocities[pair.x] -= normal*approach*0.5
@@ -71,7 +94,9 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 		var p: Vector2 = points[index]
 		var velocity: Vector2 = velocities[index]
 		var motion: Vector2 = velocity*step_seconds
-		var steps: int = maxi(1,ceili(motion.length()/0.2))
+		# A stationary tyre's world contact can only assign its already-zero
+		# velocity. Avoid that query; car/pile separation below still runs.
+		var steps: int = 0 if velocity == Vector2.ZERO else maxi(1,ceili(motion.length()/0.2))
 		for i: int in range(steps):
 			var candidate: Vector2 = p+motion/steps
 			var collision: Vector3 = contact_test.call(candidate,RADIUS,false)
@@ -99,10 +124,12 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 			if delta.length()>=1.0: continue
 			var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT
 			var correction: Vector2 = normal*(1.0-delta.length())*0.5
-			var ca: Vector3 = contact_test.call(pa-correction,RADIUS,false)
-			var cb: Vector3 = contact_test.call(pb+correction,RADIUS,false)
-			if ca.z<=0: pa -= correction
-			if cb.z<=0: pb += correction
+			var next_a: Vector2 = pa-correction
+			var next_b: Vector2 = pb+correction
+			# Settled piles can retain sub-ULP overlaps: these proposed corrections
+			# round to the same position. A world query cannot change their result.
+			if next_a != pa and Vector3(contact_test.call(next_a,RADIUS,false)).z<=0: pa = next_a
+			if next_b != pb and Vector3(contact_test.call(next_b,RADIUS,false)).z<=0: pb = next_b
 			a[0]=pa.x; a[1]=pa.y; b[0]=pb.x; b[1]=pb.y
 		if state.track_elevated: continue
 		for tyre: Array in state.loose_tyres:

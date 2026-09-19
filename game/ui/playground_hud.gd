@@ -22,6 +22,8 @@ var instrument: HUDFrame
 var pause_glyph: HUDGlyph
 var lap_label: Label
 var race_timer: Label
+var shortcut_penalty_label: Label
+var shortcut_notice_label: Label
 var pause_button: Button
 var handling_button: MenuButton
 
@@ -46,6 +48,7 @@ func _ready() -> void:
 	add_child(root)
 	touch = TouchControls.new()
 	touch.driver = driver
+	touch.vehicle_id = config.vehicle_id
 	root.add_child(touch)
 	root.theme = RaceHUDStyle.theme()
 	var race_card := PanelContainer.new()
@@ -107,6 +110,24 @@ func _ready() -> void:
 	race_timer.visible = production_mode and not editor_test
 	var clock_row := HBoxContainer.new()
 	clock_info.add_child(clock_row)
+	shortcut_penalty_label = _label("", 13)
+	shortcut_penalty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+	clock_info.add_child(shortcut_penalty_label)
+	shortcut_notice_label = _label("SHORTCUT  +5s", 26)
+	shortcut_notice_label.name = "ShortcutNotice"
+	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	shortcut_notice_label.offset_left = -180
+	shortcut_notice_label.offset_right = 180
+	shortcut_notice_label.offset_top = 122
+	shortcut_notice_label.offset_bottom = 160
+	shortcut_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shortcut_notice_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+	shortcut_notice_label.add_theme_color_override("font_outline_color", Color("172129"))
+	shortcut_notice_label.add_theme_constant_override("outline_size", 8)
+	shortcut_notice_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shortcut_notice_label.visible = false
+	root.add_child(shortcut_notice_label)
 	var watch := Control.new()
 	watch.custom_minimum_size = Vector2(30,40)
 	clock_row.add_child(watch)
@@ -177,6 +198,7 @@ func _ready() -> void:
 	handling_button.flat = false
 	handling_button.text = "Handling"
 	handling_button.custom_minimum_size = Vector2(196, 52)
+	handling_button.visible = config.vehicle_id == "compact"
 	handling_button.tooltip_text = "Compare handling; selecting a preset restarts this drive"
 	secondary.add_child(handling_button)
 	var choices: PopupMenu = handling_button.get_popup()

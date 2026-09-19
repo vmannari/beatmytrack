@@ -1,6 +1,17 @@
 class_name EditorButton
 extends Button
-## Small original vector glyphs: readable controls without covering the world.
+## Owner-supplied illustrated assets with vector glyphs for utility controls.
+
+const ILLUSTRATIONS: Dictionary = {
+	"straight": preload("res://assets/editor/straight.png"),
+	"road": preload("res://assets/editor/straight.png"),
+	"curve": preload("res://assets/editor/curve.png"),
+	"s_bend": preload("res://assets/editor/s_bend.png"),
+	"hairpin": preload("res://assets/editor/hairpin.png"),
+	"bridge": preload("res://assets/editor/bridge.png"),
+	"surface": preload("res://assets/editor/surfaces.png"),
+	"objects": preload("res://assets/editor/objects.png"),
+}
 
 const CYAN := Color("16c2cf")
 var glyph: String = ""
@@ -34,22 +45,27 @@ func _draw() -> void:
 	var center := Vector2(24,size.y*0.5) if horizontal else Vector2(size.x*0.5,26 if not caption.is_empty() else size.y*0.5)
 	var ink := Color(0.94,0.97,0.97,0.35 if disabled else 1.0)
 	if glyph=="play": ink=Color("859095") if disabled else Color("b4ed69")
+	if button_pressed and get_parent() != null and get_parent().name=="EditorRail":
+		draw_circle(Vector2(6,size.y*0.5),2.5,EditorStyle.ACCENT)
 	var path := PackedVector2Array()
-	if glyph in ["straight","curve","s_bend","hairpin","road","bridge"]:
-		for i: int in range(25):
-			var t: float = float(i)/24
-			var p := Vector2(lerpf(-23,23,t),0)
-			if glyph == "curve": p = Vector2(-18+36*sin(t*PI*0.5),12-24*(1-cos(t*PI*0.5)))
-			if glyph == "s_bend": p.y = -sin(t*TAU)*8
-			if glyph == "hairpin": p = Vector2(-cos(t*PI)*20,10-sin(t*PI)*22)
-			if glyph == "road": p = Vector2(lerpf(-5,5,t),lerpf(13,-13,t))
-			path.append(center+p)
-		draw_polyline(path,ink,16,true)
-		draw_polyline(path,Color("58656a"),12,true)
-		for segment: int in range(0,path.size()-1,4):
-			draw_polyline(path.slice(segment,mini(segment+3,path.size())),ink,1.4,true)
-		if glyph == "bridge":
-			for x: int in [-15,15]: draw_line(center+Vector2(x,6),center+Vector2(x,15),ink,3,true)
+	if ILLUSTRATIONS.has(glyph):
+		var illustration: Texture2D = ILLUSTRATIONS[glyph]
+		var bounds := Vector2(36,36) if horizontal else Vector2(size.x-8,48)
+		var image_size: Vector2 = illustration.get_size()
+		var fitted_size: Vector2 = image_size * minf(bounds.x/image_size.x,bounds.y/image_size.y)
+		draw_texture_rect(illustration,Rect2(center-fitted_size*0.5,fitted_size),false,Color(1,1,1,0.35 if disabled else 1.0))
+	elif glyph == "paint_line":
+		draw_line(center+Vector2(-14,13),center+Vector2(14,-13),ink,3.5,true)
+	elif glyph == "paint_area":
+		for sign_x: int in [-1,1]:
+			for sign_y: int in [-1,1]:
+				var corner: Vector2 = center+Vector2(sign_x*13,sign_y*12)
+				draw_line(corner,corner-Vector2(sign_x*8,0),ink,2.5,true)
+				draw_line(corner,corner-Vector2(0,sign_y*7),ink,2.5,true)
+	elif glyph == "paint_brush":
+		draw_line(center+Vector2(-2,2),center+Vector2(12,-12),ink,8,true)
+		draw_circle(center+Vector2(12,-12),4,ink)
+		draw_colored_polygon(PackedVector2Array([center+Vector2(-5,2),center+Vector2(1,8),center+Vector2(-8,15),center+Vector2(-16,16),center+Vector2(-11,7)]),ink)
 	elif glyph.begins_with("terrain_"):
 		var surface: String=glyph.trim_prefix("terrain_")
 		var tint: Color={"road":Color("667177"),"grass":Color("65864c"),"dirt":Color("bc985f"),"water":Color("4087a4"),"puddle":Color("619aa6"),"oil":Color("313039")}.get(surface,ink)

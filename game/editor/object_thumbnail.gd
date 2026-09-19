@@ -1,20 +1,15 @@
 class_name ObjectThumbnail
 extends Button
 ## Small one-shot renders use exactly the placed-object mesh builder.
-static func make(kind: String, title: String, chosen: bool, action: Callable) -> Button:
+static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine") -> Button:
 	var button := ObjectThumbnail.new()
 	button.name = "Asset_"+kind
-	button.custom_minimum_size = Vector2(104,88)
-	button.tooltip_text = title
+	button.custom_minimum_size = Vector2(104,82)
+	button.tooltip_text = title+" — Tap selected asset for variants and placement"
 	button.toggle_mode = true
 	button.button_pressed = chosen
 	button.pressed.connect(action)
-	EditorStyle.apply(button,chosen)
-	for state: String in ["normal","hover","disabled"]:
-		var tile: StyleBoxFlat=EditorStyle.box(chosen,state=="hover")
-		if not chosen: tile.bg_color=Color("293c40") if state=="hover" else Color("203034")
-		tile.border_color=EditorStyle.ACCENT if chosen else Color("34464a")
-		button.add_theme_stylebox_override(state,tile)
+	EditorStyle.card(button,chosen)
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(208,128)
 	viewport.msaa_3d=Viewport.MSAA_4X
@@ -24,6 +19,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	viewport.gui_disable_input = true
 	button.add_child(viewport)
 	var kit := NativeTrackVisual.new()
+	kit.theme_id = TrackTheme.normalized(biome)
 	viewport.add_child(kit)
 	var track := NativeTrack.new()
 	var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":0}
@@ -33,16 +29,18 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	var world_environment := WorldEnvironment.new()
 	var environment := Environment.new()
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color("c4cec8")
-	environment.ambient_light_energy = 0.7
+	environment.ambient_light_color = Color("b9c9cf")
+	environment.ambient_light_energy = 0.42
 	world_environment.environment = environment
 	viewport.add_child(world_environment)
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-50,-30,0)
+	light.light_color = Color("fff0d3")
+	light.light_energy = 1.15
 	viewport.add_child(light)
 	var camera := Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.position = Vector3(7,8,10)
+	camera.position = Vector3(7,6,-10)
 	viewport.add_child(camera)
 	camera.look_at_from_position(camera.position,Vector3.ZERO)
 	var bounds: AABB=_mesh_bounds(kit)
@@ -54,14 +52,14 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 		projected_min=projected_min.min(point)
 		projected_max=projected_max.max(point)
 	var extent: Vector3=projected_max-projected_min
-	camera.size=maxf(0.1,maxf(extent.y,extent.x/(208.0/128.0))*1.25)
-	camera.look_at_from_position(center+Vector3(7,8,10),center)
+	camera.size=maxf(0.1,maxf(extent.y,extent.x/(208.0/128.0))*1.08)
+	camera.look_at_from_position(center+Vector3(7,6,-10),center)
 	camera.current = true
 	var image := TextureRect.new()
 	image.texture = viewport.get_texture()
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
-	image.position = Vector2(10,6)
-	image.size = Vector2(84,54)
+	image.position = Vector2(4,1)
+	image.size = Vector2(96,58)
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(image)
 	var label := Label.new()
@@ -69,7 +67,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable) ->
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size",14)
 	label.add_theme_font_override("font",EditorStyle.FONT)
-	label.position = Vector2(0,65)
+	label.position = Vector2(0,59)
 	label.size = Vector2(104,20)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(label)

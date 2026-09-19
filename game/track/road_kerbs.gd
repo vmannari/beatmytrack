@@ -4,6 +4,7 @@ extends RefCounted
 
 const HEIGHT: float = 0.10
 const BUCKET: float = 4.0
+var maximum_height: float = HEIGHT
 var triangles: Array[Dictionary] = []
 var buckets: Dictionary = {}
 var blocked := PackedByteArray()
@@ -162,7 +163,7 @@ func height_at(point: Vector2) -> float:
 		var b: float = (point-p[0]).cross(p[2]-p[0])/d
 		var c: float = (p[1]-p[0]).cross(point-p[0])/d
 		if b >= -0.00001 and c >= -0.00001 and b+c <= 1.00001:
-			height = maxf(height,clampf((1.0-b-c)*t.heights[0]+b*t.heights[1]+c*t.heights[2],0.0,HEIGHT))
+			height = maxf(height,clampf((1.0-b-c)*t.heights[0]+b*t.heights[1]+c*t.heights[2],0.0,maximum_height))
 	return height
 
 
@@ -171,8 +172,17 @@ static func exclusion_mask(track: NativeTrack, paint: Array) -> PackedByteArray:
 	mask.resize(track.cells.size())
 	for index: int in range(track.cells.size()):
 		if track.cells[index] in [4,7]: mask[index] = 1
-	for stroke: Dictionary in paint:
+	for authored: Dictionary in paint:
+		var stroke: Dictionary = SurfacePaint.prepared(authored)
 		if stroke.get("protect_road",false): continue
+		if stroke.get("mode","") == "area":
+			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,track.half_extent,track.cell_size,Vector2i(track.grid_width,track.grid_height))
+			for y: int in range(bounds.position.y,bounds.end.y):
+				for x: int in range(bounds.position.x,bounds.end.x):
+					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
+					if Geometry2D.is_point_in_polygon(point,polygon): mask[y*track.grid_width+x] = 1
+			continue
 		var radius: float = float(stroke.width)*0.5
 		for index: int in range(stroke.points.size()):
 			var p: Array = stroke.points[index]

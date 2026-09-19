@@ -3,11 +3,11 @@ extends RefCounted
 ## Bounded JSON authoring contract. No scripts, images, paths or engine objects.
 
 const SCHEMA: String = "creator-track-v5"
-const THEMES: Array[String] = ["pine", "coast", "desert"]
+const THEMES: Array[String] = TrackTheme.IDS
 const MAX_POINTS: int = 96
 const MAX_BYTES: int = 524288
 const MAX_COORD: float = 120.0
-const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "hidden_scenery"]
+const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "start_line", "hidden_scenery"]
 
 
 static func create_default() -> Dictionary:
@@ -50,17 +50,18 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		if not data.hidden_scenery is Array or data.hidden_scenery.size() > 256: return ["Too many removed scenery trees."]
 		for key: Variant in data.hidden_scenery:
 			if not key is String or key.length() > 40: return ["Invalid scenery identifier."]
-	if data.has("practice_start"):
-		var start: Variant = data.practice_start
+	for pose_key: String in ["practice_start","start_line"]:
+		if not data.has(pose_key): continue
+		var start: Variant = data[pose_key]
 		if not start is Dictionary or start.size() != 2 or not start.has_all(["position","heading"]):
-			return ["The practice start needs a position and heading."]
+			return ["The start needs a position and heading."]
 		if not start.position is Array or start.position.size() != 2:
-			return ["The practice start needs two coordinates."]
+			return ["The start needs two coordinates."]
 		for value: Variant in start.position:
 			if not _number(value) or absf(float(value)) > 110.0:
-				return ["Keep the practice start inside the editing area."]
+				return ["Keep the start inside the editing area."]
 		if not _number(start.heading) or float(start.heading) < 0.0 or float(start.heading) >= 360.0:
-			return ["Practice heading must be between 0 and 359 degrees."]
+			return ["Start heading must be between 0 and 359 degrees."]
 	if not data.get("pieces") is Array or data.pieces.size() > RoadPieces.MAX_PIECES:
 		return ["Use up to 96 road sections."]
 	var piece_length: float = 0.0
@@ -85,8 +86,8 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 			errors.append("Use a creator name of 1 to 40 characters.")
 		elif _has_control(creator):
 			errors.append("The creator name cannot contain control characters.")
-	if not data.get("theme") is String or data.theme not in THEMES:
-		errors.append("Choose Pine, Coast or Desert.")
+	if not data.get("theme") is String or (data.theme not in THEMES and data.theme != "coast"):
+		errors.append("Choose Grass, Desert, Night city, Winter or Storm.")
 	if data.get("surface") not in ["asphalt", "dirt"]:
 		errors.append("Choose asphalt or dirt for the road.")
 	var width: Variant = data.get("width")
@@ -145,16 +146,19 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 	if not data.get("paint") is Array or data.paint.size() > 256: return ["Use up to 256 paint strokes; undo a stroke or start a new map."]
 	var painted_points: int = 0
 	for stroke: Variant in data.paint:
-		if not stroke is Dictionary or stroke.size() != 4 + (1 if stroke.has("protect_road") else 0) or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
+		if not stroke is Dictionary or stroke.size() != 4 + (1 if stroke.has("protect_road") else 0) + (1 if stroke.has("mode") else 0) or not stroke.has_all(["surface","width","shape","points"]): return ["Invalid paint stroke."]
 		if stroke.has("protect_road") and not stroke.protect_road is bool: return ["Road protection must be on or off."]
 		if not _number(stroke.surface) or float(stroke.surface) != floorf(float(stroke.surface)) or int(stroke.surface) not in range(8): return ["Choose a built-in surface."]
 		if not _number(stroke.width) or float(stroke.width) < 0.5 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 0.5 to 40 metres wide."]
 		if not stroke.points is Array or stroke.points.is_empty() or stroke.points.size() > 512: return ["Paint stroke is too long."]
+		if stroke.get("mode","free") not in ["free","line","area"]: return ["Choose a surface placement mode."]
+		if stroke.get("mode","free") != "free" and (stroke.points.size() > 64 or stroke.points.size() < (3 if stroke.mode == "area" else 2)): return ["Use 2?64 line points or 3?64 area points."]
 		painted_points += stroke.points.size()
 		for point: Variant in stroke.points:
 			if not point is Array or point.size() != 2: return ["Invalid paint position."]
 			for value: Variant in point:
 				if not _number(value) or absf(float(value)) > 110: return ["Keep paint inside the editing area."]
+		if stroke.get("mode","") == "area" and not SurfacePaint.valid_area(stroke.points): return ["Use a simple enclosed surface area without crossings."]
 	if painted_points > 16384: return ["The map has too many paint points."]
 	if not errors.is_empty():
 		return errors

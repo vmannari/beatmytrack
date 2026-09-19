@@ -92,3 +92,7 @@ func tire_fluids(_state: VehicleState) -> Vector2:
 
 func kerb_heights(_state: VehicleState, _config: HandlingConfig) -> Vector4:
 	return Vector4.ZERO
+
+
+func slow_in_snow(_state: VehicleState, _previous: Vector2, _config: HandlingConfig, _seconds: float) -> void:
+	pass

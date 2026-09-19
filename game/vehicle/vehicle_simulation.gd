@@ -3,9 +3,11 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.21"
+const PHYSICS_VERSION: String = "arcade-planar-0.29"
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
+const ROLL_DURATION_TICKS: int = 72 # 0.6 s per revolution; shared with presentation.
+const ROLL_CONTINUE_SPEED: float = 18.0 # Remaining lateral m/s needed for another flip.
 
 var state := VehicleState.new()
 var config: HandlingConfig
@@ -25,6 +27,23 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var old_position: Vector2 = state.position
 	var old_heading: float = state.heading
+	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
+	if state.roll_ticks > 0:
+		state.roll_ticks -= 1
+		state.velocity = state.velocity.move_toward(Vector2.ZERO, 28.0 * STEP)
+		state.position += state.velocity * STEP
+		if ground != null:
+			ground.resolve(state, old_position, config)
+			ground.step_props(state, old_position, config, STEP)
+		# Decide at tire contact using velocity AFTER collision resolution. Momentum
+		# can carry another revolution, even onto asphalt, but a stop/rebound cannot.
+		var continuing_speed: float = -state.roll_direction * state.velocity.dot(state.right())
+		if state.roll_ticks == 0 and continuing_speed >= ROLL_CONTINUE_SPEED:
+			state.roll_ticks = ROLL_DURATION_TICKS
+			state.roll_cooldown = ROLL_DURATION_TICKS + 2 * TICK_RATE
+		state.yaw_rate = 0.0
+		state.tick += 1
+		return
 	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
 	if state.jump_height > 0.0:
 		var previous: Vector2 = state.position
@@ -42,7 +61,16 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		return
 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
+	if pickup > 0.0:
+		surface.x = minf(1.0, surface.x * config.loose_surface_grip)
 	var fluids: Vector2 = ground.tire_fluids(state) if ground != null else Vector2.ZERO
+	# Loose ground can trip a fast broadside slide; remaining lateral momentum determines the number of rolls.
+	if pickup > 0.0 and state.roll_cooldown == 0 and state.velocity.length() >= 24.0 and absf(state.slip_angle()) >= deg_to_rad(65.0):
+		state.roll_ticks = ROLL_DURATION_TICKS
+		state.roll_direction = -signf(state.velocity.dot(state.right()))
+		state.roll_cooldown = ROLL_DURATION_TICKS + 2 * TICK_RATE
+		state.tick += 1
+		return
 	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
@@ -64,6 +92,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
 	target_yaw *= config.front_grip / config.rear_grip
 	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
+	var lift: float = (1.0 - throttle) * (1.0 - brake) * smoothstep(8.0, 24.0, longitudinal)
+	target_yaw += state.steering * lift * config.lift_off_rotation
 	if config.progressive_handling:
 		# Front traction saturates smoothly: excess entry speed widens the path
 		# instead of continuing to rotate the chassis into an involuntary drift.
@@ -93,6 +123,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= surface.x * tire_grip
+	grip_limit *= 1.0 - lift * absf(state.steering) * config.lift_off_grip_loss
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
 	if config.progressive_handling:
 		grip_limit *= 1.0 - brake_turn * config.brake_grip_loss
@@ -110,7 +141,10 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	# Combined traction budgets make braking and acceleration compete with cornering.
 	var lateral_usage: float = absf(lateral_acceleration) / maxf(grip_limit, 0.01)
 	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))
-	longitudinal_limit *= surface.x * tire_grip
+	# Fade coating-related longitudinal loss at crawling speed so soil cannot
+	# strand the car against movable props; full penalty applies above 12 m/s.
+	var drive_tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
+	longitudinal_limit *= surface.x * drive_tire_grip
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
 	# Impact recoil may exceed powered reverse speed. Preserve that momentum,
 	# but the reverse pedal cannot sustain or increase an overspeed recoil.
@@ -124,6 +158,11 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		next_longitudinal = 0.0
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
 	resistance += surface.y
+	# Soil drag dissipates sideways momentum too, including under throttle.
+	var soil_contact: float = _wheel_soil_contact(ground, pickup) if config.wheel_soil_drag else pickup
+	var soil_drag: float = soil_contact * (3.0 + speed * 0.22) * smoothstep(6.0, 18.0, speed) * config.soil_drag_multiplier
+	next_lateral = move_toward(next_lateral, 0.0, soil_drag * STEP)
+	resistance += soil_drag
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
 	next_longitudinal = clampf(next_longitudinal, -maxf(config.reverse_speed, -longitudinal), config.maximum_speed)
 	state.velocity = forward * next_longitudinal + right * next_lateral
@@ -133,6 +172,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if ground != null:
 		ground.resolve(state, previous_position, config)
 		ground.step_props(state,previous_position,config,STEP)
+		ground.slow_in_snow(state,previous_position,config,STEP)
 		ground.launch_jump(state,previous_position)
 	# Only actual resolved travel coats/cleans tires. Waiting or pushing a wall
 	# cannot clean them, and reverse travel counts just like forward travel.
@@ -197,10 +237,24 @@ func _step_kerbs(previous: Vector2, previous_heading: float, ground: PlaygroundD
 	if speed > 0.0: state.velocity *= maxf(0.0,speed-loss)/speed
 	var target := Vector3((heights.x+heights.y+heights.z+heights.w)*0.25,
 		atan2((heights.x+heights.y-heights.z-heights.w)*0.5,config.wheelbase),
-		atan2((heights.y+heights.w-heights.x-heights.z)*0.5,1.66*HandlingConfig.BODY_SCALE))
+		atan2((heights.y+heights.w-heights.x-heights.z)*0.5,config.track_width))
 	state.kerb_velocity.x += minf(0.30,rise*speed*0.12)
 	state.kerb_velocity += ((target-state.kerb_offset)*324.0-state.kerb_velocity*24.0)*STEP
 	state.kerb_offset += state.kerb_velocity*STEP
 	state.kerb_offset.x = clampf(state.kerb_offset.x,-0.015,0.14)
 	state.kerb_offset.y = clampf(state.kerb_offset.y,-0.08,0.08)
 	state.kerb_offset.z = clampf(state.kerb_offset.z,-0.10,0.10)
+
+
+func _wheel_soil_contact(ground: PlaygroundData, center_contact: float) -> float:
+	if ground == null: return center_contact
+	# Fixed wheel order, using the canonical axle dimensions and current deck.
+	# A single wheel in loose soil must cost speed before the chassis center crosses.
+	var contact: float = center_contact
+	var probe := VehicleState.new()
+	probe.track_elevated = state.track_elevated
+	for axle: float in [-0.5, 0.5]:
+		for side: float in [-0.5, 0.5]:
+			probe.position = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
+			contact = maxf(contact, ground.tire_pickup(probe))
+	return contact

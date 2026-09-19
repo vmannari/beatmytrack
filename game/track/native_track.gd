@@ -2,6 +2,9 @@ class_name NativeTrack
 extends PlaygroundData
 ## Native SI surface geometry. No knowledge of SS blocks, palettes or file layout.
 
+const STORM_ROAD_GRIP: float = 0.85
+const WINTER_ROAD_GRIP: float = 0.60
+
 var cell_size: float
 var grid_width: int
 var grid_height: int
@@ -11,6 +14,10 @@ var rectangles: Array
 var deck_rectangles: Array
 var route := PackedVector2Array()
 var checkpoints: Array[Rect2] = []
+var route_cumulative := PackedFloat32Array()
+var route_length: float = 0.0
+var route_radii := PackedFloat32Array()
+var route_cut_radii := PackedFloat32Array()
 var bridge_axis := Vector2.ZERO
 var bridge_height: float = 0.0
 var metadata: Dictionary
@@ -22,6 +29,7 @@ var tyre_origins := PackedVector2Array()
 var creator_bridges: Array = []
 var hazard_objects: Array = []
 var kerbs := RoadKerbs.new()
+var snow_banks := SnowBanks.new()
 
 
 static func read(path: String) -> NativeTrack:
@@ -60,13 +68,201 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	track._expand(track.deck_rectangles, track.deck_cells)
 	for p: Array in data.route:
 		track.route.append(Vector2(p[0], p[1]))
+	track._build_route_distance()
 	for r: Array in data.checkpoints:
 		track.checkpoints.append(Rect2(r[0], r[1], r[2], r[3]))
+	track._build_validation_route()
 	if not data.bridges.is_empty():
 		track.bridge_axis = Vector2(data.bridges[0].axis[0], data.bridges[0].axis[1])
 		track.bridge_height = float(data.bridges[0].height)
 	track.kerbs.build(track)
+	track.snow_banks.build(track)
 	return track
+
+
+func _build_route_distance() -> void:
+	route_cumulative.resize(route.size())
+	route_length = 0.0
+	for i: int in range(route.size()):
+		route_cumulative[i] = route_length
+		route_length += route[i].distance_to(route[(i + 1) % route.size()])
+
+
+func route_progress(point: Vector2, hint: int = -1) -> float:
+	if route.size() < 2:
+		return 0.0
+	var nearest: int = nearest_route(point, hint)
+	var best_distance: float = INF
+	var best_progress: float = route_cumulative[nearest]
+	# Check neighboring segments too: route vertices alone are not a valid
+	# progress measurement on long or sharp pieces.
+	for offset: int in range(-1, 2):
+		var i: int = posmod(nearest + offset, route.size())
+		var a: Vector2 = route[i]
+		var b: Vector2 = route[(i + 1) % route.size()]
+		var edge: Vector2 = b - a
+		var t: float = clampf((point - a).dot(edge) / maxf(edge.length_squared(), 0.000001), 0.0, 1.0)
+		var projected: Vector2 = a + edge * t
+		var distance: float = point.distance_squared_to(projected)
+		if distance < best_distance:
+			best_distance = distance
+			best_progress = route_cumulative[i] + edge.length() * t
+	return best_progress
+
+
+func _build_validation_route() -> void:
+	route_radii.resize(route.size())
+	route_cut_radii.resize(route.size())
+	for i: int in range(route.size()):
+		var outgoing: Vector2 = (route[(i + 1) % route.size()] - route[i]).normalized()
+		route_radii[i] = _validation_radius(route[i], outgoing.orthogonal())
+		var reach: float = minf(8.0, route_length * 0.05)
+		var before: Vector2 = (route[i] - _race_route_point(route_cumulative[i] - reach)).normalized()
+		var after: Vector2 = (_race_route_point(route_cumulative[i] + reach) - route[i]).normalized()
+		var turn: float = before.cross(after)
+		var tangent: Vector2 = (before + after).normalized()
+		var inward: Vector2 = Vector2(-tangent.y,tangent.x) * signf(turn)
+		route_cut_radii[i] = route_radii[i]
+		if absf(turn) >= 0.02 and cell_at(route[i]) in [0,2,5]:
+			var width: float = 0.0
+			while width < 10.0 and cell_at(route[i] + inward * width) in [0,2,5]:
+				width += maxf(cell_size,0.25)
+			# Keep kerb/car overlap, but never borrow width from the outside.
+			var baseline: float = clampf(float(metadata.get("representative_width_m",9.0)) * 0.5,3.0,10.0)
+			route_cut_radii[i] = maxf(width,baseline) + 2.0
+
+
+
+
+func project_race_route(point: Vector2, previous: float = NAN, motion: Vector2 = Vector2.ZERO) -> Dictionary:
+	var best: Dictionary = {}
+	var best_score: float = INF
+	var continuity_margin: float = clampf(float(metadata.get("representative_width_m", 9.0)) * 0.5 + 1.0, 4.0, 11.0)
+	for i: int in range(route.size()):
+		var edge: Vector2 = route[(i + 1) % route.size()] - route[i]
+		var t: float = clampf((point - route[i]).dot(edge) / maxf(edge.length_squared(), 0.000001), 0.0, 1.0)
+		var distance: float = point.distance_to(route[i] + edge * t)
+		var progress: float = route_cumulative[i] + edge.length() * t
+		var delta: float = 0.0 if is_nan(previous) else wrapf(progress - previous, -route_length * 0.5, route_length * 0.5)
+		if delta < -minf(12.0, route_length * 0.1) and motion.dot(edge) > 0.0:
+			delta += route_length
+		# Prefer the current branch at a crossing or beside a hairpin. Unlike
+		# a vertex-count search window this behaves the same on sparse routes.
+		var score: float = distance + minf(absf(delta) * 0.15, continuity_margin)
+		if absf(delta) > 4.0 and delta * motion.dot(edge) < 0.0: score += 4.0
+		if score < best_score:
+			best_score = score
+			best = {"progress":progress, "delta":delta, "distance":distance, "index":i}
+	return best
+
+
+func crosses_hairpin_infield(from: Vector2, to: Vector2) -> bool:
+	# The constructed road is authoritative for small hairpins: the smoothed
+	# lap route and a fixed distance-saving threshold can swallow their island.
+	for piece: Dictionary in metadata.get("creator_document",{}).get("pieces",[]):
+		if piece.kind != "hairpin": continue
+		var origin := Vector2(piece.position[0],piece.position[1])
+		var angle: float = deg_to_rad(float(piece.heading))
+		var side: float = -1.0 if piece.flip else 1.0
+		var a: Vector2 = (from-origin).rotated(-angle)
+		var b: Vector2 = (to-origin).rotated(-angle)
+		a.y *= side
+		b.y *= side
+		var radius: float = piece.radius
+		if (a.y-radius)*(b.y-radius) > 0.0 or absf(b.y-a.y) < 0.000001: continue
+		var fraction: float = (radius-a.y)/(b.y-a.y)
+		if fraction <= 0.0 or fraction > 1.0: continue
+		var crossing: Vector2 = a.lerp(b,fraction)
+		# 0.75m kerb plus half the standard car width: crossing must put
+		# the whole car clear of the inside kerb, not merely a wheel on grass.
+		var clearance: float = 1.55
+		var inner: float = radius-float(piece.width)*0.5-clearance
+		if inner <= 0.0 or crossing.x < 0.0 or crossing.x > float(piece.length)+inner: continue
+		var world: Vector2 = from.lerp(to,fraction)
+		if not _clear_of_road(world,0.8): continue
+		return true
+	return false
+
+
+func _clear_of_road(point: Vector2, clearance: float) -> bool:
+	if kerbs.height_at(point) > 0.0: return false
+	var cell := Vector2i(floori((point.x+half_extent.x)/cell_size),floori((half_extent.y-point.y)/cell_size))
+	var reach: int = ceili(clearance/cell_size)+1
+	for y: int in range(maxi(0,cell.y-reach),mini(grid_height,cell.y+reach+1)):
+		for x: int in range(maxi(0,cell.x-reach),mini(grid_width,cell.x+reach+1)):
+			var index: int = y*grid_width+x
+			if cells[index] not in [0,2,5] and (deck_cells.is_empty() or deck_cells[index] not in [0,2,5]): continue
+			var bounds := Rect2(Vector2(x*cell_size-half_extent.x,half_extent.y-(y+1)*cell_size),Vector2.ONE*cell_size)
+			if point.distance_to(point.clamp(bounds.position,bounds.end)) <= clearance: return false
+	return true
+
+
+func has_cut_gap(previous: float, advance: float, driven: PackedVector2Array) -> bool:
+	# Progress estimates can catch up after a sharp bend. A penalty also
+	# needs spatial evidence: road was bypassed beyond its kerb tolerance,
+	# not merely projected late after the car already drove alongside it.
+	for i: int in range(route.size()):
+		var edge: Vector2 = route[(i + 1) % route.size()] - route[i]
+		var steps: int = maxi(1, ceili(edge.length() / 2.0))
+		for step: int in range(steps):
+			var fraction: float = float(step) / steps
+			var distance: float = fposmod(route_cumulative[i] + edge.length() * fraction - previous, route_length)
+			if distance > advance: continue
+			var point: Vector2 = route[i] + edge * fraction
+			var closest: float = INF
+			var driven_point := Vector2.ZERO
+			for j: int in range(driven.size() - 2, -1, -1):
+				var candidate: Vector2 = Geometry2D.get_closest_point_to_segment(point, driven[j], driven[j + 1])
+				var separation: float = point.distance_to(candidate)
+				if separation < closest:
+					closest = separation
+					driven_point = candidate
+				if closest <= route_cut_radii[i] + 1.0: break
+			if closest <= route_cut_radii[i] + 1.0: continue
+			# Distance alone cannot distinguish cutting inside from running wide.
+			# Measure bend direction over metres, not a number of route vertices.
+			var progress: float = route_cumulative[i] + edge.length() * fraction
+			var reach: float = minf(8.0, route_length * 0.05)
+			var incoming: Vector2 = (point - _race_route_point(progress - reach)).normalized()
+			var outgoing: Vector2 = (_race_route_point(progress + reach) - point).normalized()
+			var turn: float = incoming.cross(outgoing)
+			if absf(turn) < 0.02: continue
+			var tangent: Vector2 = (incoming + outgoing).normalized()
+			var inside: float = tangent.cross(driven_point - point) * signf(turn)
+			# Outside samples provide no cut evidence. They must not veto a
+			# separate inside bypass within the same excursion.
+			if inside < -1.0: continue
+			if inside > 1.0: return true
+	return false
+
+
+func _race_route_point(distance: float) -> Vector2:
+	var wrapped: float = fposmod(distance, route_length)
+	var low: int = 0
+	var high: int = route.size() - 1
+	while low < high:
+		var middle: int = (low + high + 1) / 2
+		if route_cumulative[middle] <= wrapped: low = middle
+		else: high = middle - 1
+	var edge: Vector2 = route[(low + 1) % route.size()] - route[low]
+	return route[low] + edge * clampf((wrapped - route_cumulative[low]) / maxf(edge.length(), 0.000001), 0.0, 1.0)
+
+
+func _validation_radius(point: Vector2, normal: Vector2) -> float:
+	# Measure the local road, including native kerb cells and dirt circuits.
+	# Bound intersection widening so a crossing cannot swallow a whole loop.
+	var baseline: float = clampf(float(metadata.get("representative_width_m", 9.0)) * 0.5, 3.0, 10.0)
+	var half_width: float = 0.0
+	if cell_size > 0.0 and cell_at(point) in [0, 2, 5]:
+		for side: float in [-1.0, 1.0]:
+			var width: float = 0.0
+			while width < 10.0 and cell_at(point + normal * side * width) in [0, 2, 5]:
+				width += maxf(cell_size, 0.25)
+			half_width = maxf(half_width, width)
+	else:
+		half_width = baseline
+	# 0.75 m raised creator kerb + car overlap and raster tolerance.
+	return maxf(half_width, 3.0) + 2.0
 
 
 func _expand(rects: Array, target: PackedInt32Array) -> void:
@@ -124,6 +320,7 @@ func tire_fluids(state: VehicleState) -> Vector2:
 	if state.track_elevated or state.jump_height > 0.0: return Vector2.ZERO
 	var coating := Vector2(0.0, 1.0 if cell_at(state.position) in [3,6] else 0.0)
 	for object: Dictionary in hazard_objects:
+		if object.kind not in ["oil","puddle"]: continue
 		if not CreatorObjects.contains(object,state.position): continue
 		if object.kind == "oil": coating.x = 1.0
 		if object.kind == "puddle": coating.y = 1.0
@@ -183,6 +380,9 @@ func surface_factors(state: VehicleState) -> Vector2:
 func _native_surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):
+		0:
+			var theme: String = str(metadata.get("theme", "pine"))
+			return Vector2(WINTER_ROAD_GRIP if theme == "winter" else STORM_ROAD_GRIP if theme == "storm" else 1.0, 0.0)
 		1: return Vector2(0.65, 2.0 + speed * 0.65)
 		2: return Vector2(0.8, 2.0)
 		5: return Vector2(0.95, 0.4)
@@ -335,11 +535,27 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	var total := Vector2.ZERO
 	var overlap: float = 0.0
 	var fallback := Vector2.RIGHT
+	var layer: PackedInt32Array = deck_cells if elevated else cells
+	var first_x: int = cx - reach
+	var end_x: int = cx + reach + 1
+	# One native scan handles completely clear row bands (common around loose
+	# tyre piles). The band includes extra columns, so it can only give a
+	# conservative false positive; a negative proves the whole query is clear.
+	if first_x >= 0 and end_x <= grid_width and cy-reach >= 0 and cy+reach < grid_height:
+		if not layer.slice((cy-reach)*grid_width+first_x,(cy+reach)*grid_width+end_x).has(4):
+			return Vector3.ZERO
 	for y: int in range(cy - reach, cy + reach + 1):
-		for x: int in range(cx - reach, cx + reach + 1):
-			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
-			if cell_at(center, elevated) not in [4]:
+		var row_inside: bool = y >= 0 and y < grid_height
+		var row: int = y * grid_width
+		# Native packed-array search rejects empty rows before constructing any
+		# world positions. Read current cells, so edits cannot leave a stale cache.
+		if row_inside and first_x >= 0 and end_x <= grid_width:
+			if not layer.slice(row+first_x,row+end_x).has(4): continue
+		for x: int in range(first_x, end_x):
+			# Outside the grid is solid, on both levels. Only material 4 blocks.
+			if row_inside and x >= 0 and x < grid_width and layer[row+x] != 4:
 				continue
+			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
 			var offset: Vector2 = point - nearest
 			if offset.length_squared() < radius * radius:
@@ -364,5 +580,9 @@ func launch_jump(state: VehicleState, previous: Vector2) -> void:
 func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
 	if state.track_elevated or state.jump_height > 0.0: return Vector4.ZERO
 	var axle: Vector2 = state.forward()*config.wheelbase*0.5
-	var side: Vector2 = state.right()*(0.83*HandlingConfig.BODY_SCALE)
+	var side: Vector2 = state.right()*(config.track_width*0.5)
 	return Vector4(kerbs.height_at(state.position+axle-side),kerbs.height_at(state.position+axle+side),kerbs.height_at(state.position-axle-side),kerbs.height_at(state.position-axle+side))
+
+
+func slow_in_snow(state: VehicleState, previous: Vector2, config: HandlingConfig, seconds: float) -> void:
+	snow_banks.slow_car(state,previous,config,seconds)

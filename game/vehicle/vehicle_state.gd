@@ -22,6 +22,9 @@ var route_index: int = -1
 var track_elevated: bool = false
 var tire_oil: float = 0.0
 var tire_water: float = 0.0
+var roll_ticks: int = 0
+var roll_direction: float = 1.0
+var roll_cooldown: int = 0
 var tire_dirt: float = 0.0 # 0 clean, 1 fully coated; persists after leaving loose ground.
 
 
@@ -48,4 +51,5 @@ func snapshot() -> Array:
 	result.append(light_props.duplicate(true))
 	result.append([tire_oil,tire_water])
 	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])
+	result.append([roll_ticks, roll_direction, roll_cooldown])
 	return result

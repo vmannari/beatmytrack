@@ -21,10 +21,11 @@ var page_size: int = 6
 
 func _ready() -> void:
 	name = "ObjectBrowser"
-	add_theme_stylebox_override("panel",EditorStyle.box())
+	add_theme_stylebox_override("panel",EditorStyle.panel())
 	var column := VBoxContainer.new()
 	add_child(column)
 	var top := HBoxContainer.new()
+	column.add_theme_constant_override("separation",8)
 	column.add_child(top)
 	categories = _scroll_row(top)
 	for value: String in ["All","Recent"]+CreatorCatalog.CATEGORIES:
@@ -32,33 +33,27 @@ func _ready() -> void:
 			category = value; page = 0; _tiles())
 		button.name = "Category_"+value
 		categories.add_child(button)
-	var settings: Button=EditorButton.make("","options",func() -> void:
-		options.popup(Rect2i(Vector2i(get_global_rect().end-Vector2(330,360)),Vector2i(320,250))))
-	settings.name="ObjectOptions"
-	settings.tooltip_text="Object variants and placement"
-	settings.custom_minimum_size=Vector2(40,38)
-	top.add_child(settings)
 	var paging := HBoxContainer.new()
 	column.add_child(paging)
 	previous=EditorButton.make("","back",func() -> void: page-=1; _tiles())
 	previous.name="PreviousObjects"
 	previous.tooltip_text="Previous objects"
-	previous.custom_minimum_size=Vector2(44,88)
+	previous.custom_minimum_size=Vector2(44,82)
 	paging.add_child(previous)
 	tiles = _scroll_row(paging)
 	tiles.size_flags_horizontal=Control.SIZE_EXPAND_FILL
-	tiles.alignment=BoxContainer.ALIGNMENT_CENTER
+	tiles.alignment=BoxContainer.ALIGNMENT_BEGIN
 	next=EditorButton.make("","next",func() -> void: page+=1; _tiles())
 	next.name="NextObjects"
 	next.tooltip_text="Next objects"
-	next.custom_minimum_size=Vector2(44,88)
+	next.custom_minimum_size=Vector2(44,82)
 	paging.add_child(next)
 	resized.connect(func() -> void:
 		var count: int=maxi(1,int((size.x-120)/110))
 		if count!=page_size: page_size=count; page=0; _tiles())
 	options=PopupPanel.new()
 	options.name="ObjectOptionsPopup"
-	options.add_theme_stylebox_override("panel",EditorStyle.box())
+	options.add_theme_stylebox_override("panel",EditorStyle.panel())
 	add_child(options)
 	details=VBoxContainer.new()
 	details.add_theme_constant_override("separation",8)
@@ -102,7 +97,7 @@ func _tiles() -> void:
 	next.visible=(page+1)*page_size<entries.size()
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
-		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],choose.bind(asset[0])))
+		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome))
 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
 
 func refresh() -> void:
@@ -127,10 +122,11 @@ func refresh() -> void:
 		sizes.name = "ObjectSize"
 		EditorStyle.apply(sizes)
 		sizes.custom_minimum_size = Vector2(95,40)
-		for title: String in ["Small","Medium","Large"]: sizes.add_item(title)
-		sizes.select(0 if stamp_scale<1 else 2 if stamp_scale>1 else 1)
+		var presets: Array[float] = CreatorCatalog.size_presets(current)
+		for title: String in (["8 m","16 m","24 m"] if current=="cliff" else ["Small","Medium","Large"]): sizes.add_item(title)
+		sizes.select(0 if stamp_scale<presets[1] else 2 if stamp_scale>presets[1] else 1)
 		sizes.item_selected.connect(func(index: int) -> void:
-			stamp_scale = [0.75,1.0,1.5][index]; size_chosen.emit(stamp_scale))
+			stamp_scale = presets[index]; size_chosen.emit(stamp_scale))
 		details.add_child(sizes)
 	if current in CreatorCatalog.LINES:
 		for mode: String in ["single","line","curve","road edge"]:
@@ -139,3 +135,9 @@ func refresh() -> void:
 			button.name="Placement_"+mode.replace(" ","_")
 			EditorStyle.apply(button,placement==mode)
 			details.add_child(button)
+
+func _activate_asset(kind: String) -> void:
+	var already_selected: bool=current==kind
+	choose(kind)
+	if already_selected:
+		options.popup(Rect2i(Vector2i(get_global_rect().end-Vector2(330,360)),Vector2i(320,250)))

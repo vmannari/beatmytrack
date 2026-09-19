@@ -34,6 +34,22 @@ func run() -> void:
 	check(reloaded.settings.get("last_track") == "starter_circuit","the last raced circuit survives relaunch")
 	store.settings["last_track"] = "../outside"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "starter_circuit","invalid resume identifiers cannot overwrite saved preferences")
+	var provider := TrackDiscoveryProvider.new()
+	check(provider.record_snapshot("missing").is_empty(),"missing cloud data stays unavailable")
+	check(TrackDiscoveryProvider.is_rival({"time_beaten":true}),"beaten PB marks rival")
+	check(TrackDiscoveryProvider.is_rival({"previous_top_percent":10,"current_top_percent":10.1}),"crossing exact decile marks rival")
+	check(not TrackDiscoveryProvider.is_rival({"previous_top_percent":11,"current_top_percent":19}),"movement within decile does not mark rival")
+	check(not TrackDiscoveryProvider.is_rival({"previous_top_percent":21,"current_top_percent":19}),"improving percentile does not mark rival")
+	var catalog := TrackCatalog.new(TrackLibrary.new(folder))
+	catalog.entries.assign([{"id":"a","name":"Alpha","creator":"Mika","source":"saved","theme":"pine"},{"id":"b","name":"Beta","creator":"Jen","source":"saved","theme":"pine"}])
+	provider.track_stats = {"a":{"score":2,"plays":30},"b":{"score":5,"plays":10,"friend_created":true}}
+	check(provider.query(catalog,{"sort":"score"},[])[0].id == "b","score sorts descending")
+	check(provider.query(catalog,{"sort":"plays"},[])[0].id == "a","playthroughs sort descending")
+	check(provider.query(catalog,{"search":"mika"},[]).size() == 1,"unified search finds creator")
+	check(provider.query(catalog,{"feed":"friends"},[]).is_empty(),"offline friend feed cannot invent entries")
+	provider.available = true
+	check(provider.query(catalog,{"feed":"friends"},[])[0].id == "b","friend feed uses supplied metadata")
+	check(provider.query(catalog,{"section":"favorites","feed":"friends"},["a"])[0].id == "a","favorites independent of discovery feed")
 	for filename: String in DirAccess.open(folder).get_files(): DirAccess.remove_absolute(folder.path_join(filename))
 	DirAccess.remove_absolute(folder)
 	print("MENU_PRESENTATION_TESTS: %d checks, %d failures" % [checks,failures])

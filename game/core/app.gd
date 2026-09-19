@@ -42,6 +42,7 @@ var editor_issues: Array[Dictionary] = []
 var editor_geometry: String = ""
 var editor_inspector: VBoxContainer
 var browser_state: Dictionary = {}
+var discovery_provider := TrackDiscoveryProvider.new()
 var track_catalog: TrackCatalog
 var pending_menu_notice: String = ""
 var editor_preview_thread: Thread
@@ -320,6 +321,7 @@ func _tracks() -> void:
 	browser.library = library
 	if track_catalog == null: track_catalog = TrackCatalog.new(library)
 	browser.catalog = track_catalog
+	browser.discovery = discovery_provider
 	browser.records = records
 	browser.builtin_ids = BUILTIN_IDS
 	browser.selected_track = selected_track

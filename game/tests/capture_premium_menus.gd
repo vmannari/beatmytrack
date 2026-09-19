@@ -220,11 +220,30 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.call("_refresh")
 	await _settle()
 	check(browser.grid.get_child_count() == 6,"populated discovery gallery stays bounded at six cards")
+	var tile: TrackTile = browser.grid.get_child(0)
+	var selected_before: String = browser.selected_track.identity
+	var star: Button = tile.get_node("ToggleFavorite")
+	var favorite_id: String = str(tile.entry.id)
+	await _tap(star.get_global_rect().get_center())
+	check(favorite_id in browser.records.settings.get("favorites",[]),"card star saves favorite through viewport touch")
+	check(browser.selected_track.identity == selected_before and not browser.selecting,"star does not trigger track selection")
+	check(browser.detail.find_children("*","TrackShowroom",true,false).is_empty(),"bottom card has no overview")
+	await _settle()
 	await _capture("tracks-populated-fixture",physical_size,true)
 	browser.call("_page",1)
 	await _settle()
 	check(browser.grid.get_child_count() == 2,"discovery next page shows remaining entries")
 	await _capture("tracks-storm-fixture",physical_size,true)
+	var key: String = browser.records.key_for(browser.selected_track,HandlingSelection.config())
+	browser.discovery.records_by_rules_key[key] = {
+		"race_top_percent":18,"lap_top_percent":7,
+		"race_distribution":{"bins":[1,3,6,10,17,23,28,22,16,9,5,2],"min_ms":55000,"max_ms":80000,"player_bin":7},
+		"lap_distribution":{"bins":[2,7,12,19,15,8,3],"min_ms":11000,"max_ms":17000,"player_bin":2},
+		"friends":[{"player":"Fixture Alex","race_ms":68421,"lap_ms":13410},{"player":"Fixture Jen","race_ms":70053,"lap_ms":13702}]}
+	browser.call("_show_detail")
+	await _settle()
+	await _capture("tracks-data-fixture",physical_size,true)
+	browser.discovery.records_by_rules_key.clear()
 	browser.catalog.entries = original
 	browser.state.page = 0
 	browser.call("_refresh")

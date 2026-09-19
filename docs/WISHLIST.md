@@ -29,3 +29,11 @@ Change road textures based on actual user driving data: accumulated tire wear, c
 Decide whether the source is saved local driving history or aggregated shared-track data; shared history belongs to a later online decision. Define retention/reset behavior, track-version and bridge-layer association, bounded storage/rendering cost and visibility around hazards before implementation. Wear should remain cosmetic, with no grip, timing or reward effects.
 
 Requirements to revisit: V02/V04/V05, Q01, R01. Source: owner's road-visual ideas, reviewed in [ROAD_VISUAL_REVIEW.md](ROAD_VISUAL_REVIEW.md).
+
+## My tracks publication status
+
+Recorded 2026-09-19 at the owner's explicit request. **Deferred; do not implement yet.**
+
+Show which tracks have been published and which are still saved only locally in My tracks. Distinguish a published immutable version from later unpublished local edits. Publication status must come from confirmed publication metadata, not from a successful local save or an attempted upload. Offline cached status and pending/failed publication need clear states when cloud publication is implemented.
+
+Requirements to revisit: R01, T01-T04, V03/V05.

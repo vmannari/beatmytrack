@@ -24,6 +24,8 @@ var previous: Button
 var next: Button
 var random_button: Button
 var sections: Dictionary = {}
+var discovery := TrackDiscoveryProvider.new()
+var distribution_metric: String = "race"
 var loading: bool = true
 var detail_costs: Dictionary = {}
 var selecting: bool = false
@@ -38,6 +40,7 @@ func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation",8)
 	rng.randomize()
+	discovery.changed.connect(_discovery_changed)
 	if catalog == null: catalog = TrackCatalog.new(library)
 	var title_row := HBoxContainer.new()
 	add_child(title_row)
@@ -47,11 +50,17 @@ func _ready() -> void:
 	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	count_label.clip_text = true
 	title_row.add_child(count_label)
-	title_row.add_child(_compact_button("Import track",func() -> void: import_requested.emit()))
-	title_row.add_child(_compact_button("Refresh",func() -> void:
-		if loading or selecting: return
-		catalog.indexed_revision = -1
-		_load_catalog()))
+	var more := MenuButton.new()
+	more.text = "More"
+	more.custom_minimum_size.y = 48
+	more.get_popup().add_item("Import track",0)
+	more.get_popup().add_item("Refresh library",1)
+	more.get_popup().id_pressed.connect(func(id: int) -> void:
+		if id == 0: import_requested.emit()
+		else:
+			catalog.indexed_revision = -1
+			_load_catalog())
+	title_row.add_child(more)
 	random_button = _compact_button("Surprise me",_random)
 	random_button.icon = MenuIcon.texture("surprise")
 	random_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -72,7 +81,19 @@ func _ready() -> void:
 	var filters := HBoxContainer.new()
 	filters.add_theme_constant_override("separation",6)
 	add_child(filters)
-	for pair: Array in [["all","FOR YOU"],["favorites","FAVORITES"],["saved","MY TRACKS"]]:
+	var discover := OptionButton.new()
+	discover.name = "Discover"
+	discover.custom_minimum_size = Vector2(170,48)
+	for caption: String in ["Recommended","Trending","Friends","New","Rivals"]: discover.add_item(caption)
+	discover.selected = maxi(0,["recommended","trending","friends","new","rivals"].find(state.get("feed","recommended")))
+	discover.item_selected.connect(func(index: int) -> void:
+		state.section = "all"
+		state.feed = ["recommended","trending","friends","new","rivals"][index]
+		state.page = 0
+		_refresh())
+	filters.add_child(discover)
+	sections["all"] = discover
+	for pair: Array in [["favorites","FAVORITES"],["saved","MY TRACKS"]]:
 		var id: String = pair[0]
 		var button: Button = _compact_button(pair[1],func() -> void:
 			state.section = id
@@ -81,10 +102,10 @@ func _ready() -> void:
 		button.name = "Filter_"+id
 		sections[id] = button
 		filters.add_child(button)
-	for field: String in ["name","creator"]:
+	for field: String in ["search"]:
 		var edit := LineEdit.new()
 		edit.name = "Search_"+field
-		edit.placeholder_text = "Track name…" if field == "name" else "Creator…"
+		edit.placeholder_text = "Search tracks or creators..."
 		edit.text = str(state.get(field,""))
 		edit.max_length = 80
 		edit.clear_button_enabled = true
@@ -110,22 +131,23 @@ func _ready() -> void:
 	var sorting := OptionButton.new()
 	sorting.custom_minimum_size.y = 48
 	sorting.add_theme_font_size_override("font_size",16)
-	sorting.add_item("Name A–Z")
-	sorting.add_item("Creator A–Z")
-	sorting.selected = 1 if state.get("sort","name") == "creator" else 0
+	sorting.add_item("A-Z")
+	sorting.add_item("User score")
+	sorting.add_item("Playthroughs")
+	sorting.selected = maxi(0,["name","score","plays"].find(state.get("sort","name")))
 	sorting.item_selected.connect(func(index: int) -> void:
-		state.sort = "name" if index == 0 else "creator"
+		state.sort = ["name","score","plays"][index]
 		state.page = 0
 		_refresh())
 	filters.add_child(sorting)
 	var row := VBoxContainer.new()
-	row.add_theme_constant_override("separation",16)
+	row.add_theme_constant_override("separation",8)
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(row)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.custom_minimum_size.y = 282
+	scroll.custom_minimum_size.y = 228
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(scroll)
 	grid = GridContainer.new()
@@ -200,7 +222,7 @@ func _clear(parent: Node) -> void:
 
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
-	matches = catalog.query(state,records.settings.get("favorites",[]))
+	matches = discovery.query(catalog,state,records.settings.get("favorites",[]))
 	var pages: int = maxi(1,ceili(float(matches.size())/PAGE_SIZE))
 	state.page = clampi(int(state.get("page",0)),0,pages-1)
 	_clear(grid)
@@ -212,11 +234,14 @@ func _refresh() -> void:
 		tile.selected = entry.id == selected_track.identity
 		tile.name = "Track_"+str(entry.id)
 		tile.pressed.connect(_select.bind(entry))
+		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
 		grid.add_child(tile)
 	if matches.is_empty():
 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
 		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
 			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
+		if state.get("section","all") == "all" and state.get("feed","recommended") != "recommended" and not discovery.available:
+			empty.text = "This discovery feed needs online data.\nYour local tracks are in Recommended."
 		empty.custom_minimum_size.y = 166
 		grid.add_child(empty)
 	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
@@ -317,103 +342,121 @@ func _finish_selection(result: Dictionary) -> void:
 	track_selected.emit(track)
 	_show_detail()
 
+func _discovery_changed() -> void:
+	_refresh()
+	if not selecting: _show_detail()
+
 func _show_detail() -> void:
-	var began: int = Time.get_ticks_usec()
 	_clear(detail)
-	var detail_row := HBoxContainer.new()
-	detail_row.add_theme_constant_override("separation",20)
-	detail_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	detail.add_child(detail_row)
+	var row := HBoxContainer.new()
+	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation",8)
+	detail.add_child(row)
 	var info := VBoxContainer.new()
-	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info.add_theme_constant_override("separation",4)
-	var preview_frame := Control.new()
-	preview_frame.clip_contents = true
-	preview_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview_frame.custom_minimum_size = Vector2(220,150)
-	detail_row.add_child(preview_frame)
-	detail_row.add_child(info)
-	var setup_done: int = Time.get_ticks_usec()
-	var preview := TrackShowroom.new()
-	preview.track = selected_track
-	MenuStyle.fill(preview)
-	preview_frame.add_child(preview)
-	var preview_done: int = Time.get_ticks_usec()
-	var badge := PanelContainer.new()
-	badge.position = Vector2(8,8)
-	badge.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c202ce8"),7))
-	preview_frame.add_child(badge)
-	badge.add_child(MenuStyle.label(TrackTheme.title(str(selected_track.metadata.get("theme","pine"))).to_upper(),13))
-	var favorite: bool = selected_track.identity in records.settings.get("favorites",[])
-	var favorite_button: Button = MenuStyle.button("",_favorite)
-	favorite_button.icon = MenuIcon.texture("star_filled" if favorite else "star")
-	favorite_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	favorite_button.name = "ToggleFavorite"
-	favorite_button.tooltip_text = "Remove favorite" if favorite else "Save favorite"
-	favorite_button.custom_minimum_size = Vector2(48,48)
-	favorite_button.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	favorite_button.offset_left = -56
-	favorite_button.offset_top = 8
-	favorite_button.offset_right = -8
-	favorite_button.offset_bottom = 56
-	favorite_button.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if favorite else MenuStyle.TEXT)
-	preview_frame.add_child(favorite_button)
-	var favorite_done: int = Time.get_ticks_usec()
-	var title := MenuStyle.label(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity.replace("_"," ").to_upper()))).to_upper(),30)
+	info.custom_minimum_size.x = 175
+	row.add_child(info)
+	info.add_child(MenuStyle.label(TrackTheme.title(str(selected_track.metadata.get("theme","pine"))).to_upper(),13,true))
+	var title := MenuStyle.label(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),28)
+	title.custom_minimum_size.x = 175
 	title.clip_text = true
 	title.tooltip_text = title.text
 	info.add_child(title)
-	var source_author: Dictionary = catalog.source_metadata.get(selected_track.identity,{})
-	var creator: String = str(selected_track.metadata.get("creator_document",{}).get("creator","Unknown creator")) if selected_track.metadata.has("creator_document") else str(source_author.get("creator",selected_track.metadata.get("creator","Unknown creator")))
-	if source_author.get("creator_kind", "source") == "fictional": creator += " (fictional)"
-	var byline := MenuStyle.label("by "+creator,15,true)
-	byline.clip_text = true
-	byline.tooltip_text = byline.text
-	info.add_child(byline)
-	var personal_best: float = records.best_for(selected_track,HandlingSelection.config())
-	var info_done: int = Time.get_ticks_usec()
-	var facts := HBoxContainer.new()
-	info.add_child(facts)
-	var format := VBoxContainer.new()
-	format.add_theme_constant_override("separation",0)
-	format.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	facts.add_child(format)
-	format.add_child(MenuStyle.label("RACE FORMAT",12,true))
-	format.add_child(MenuStyle.label("5 LAPS",22))
-	var best := VBoxContainer.new()
-	best.add_theme_constant_override("separation",0)
-	facts.add_child(best)
-	best.add_child(MenuStyle.label("YOUR BEST / " + VehicleCatalog.CLASSES[VehicleCatalog.IDS.find(VehicleCatalog.selected)].to_upper(),12,true))
-	var best_time := MenuStyle.label(MenuStyle.time_text(personal_best) if personal_best > 0.0 else "SET A TIME",22)
-	best_time.name = "LibraryBestTime"
-	best.add_child(best_time)
+	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator"))),14,true)
+	creator.clip_text = true
+	info.add_child(creator)
+	info.add_child(MenuStyle.label("5 LAPS",22))
+	var stats: Dictionary = discovery.track_stats.get(selected_track.identity,{})
+	info.add_child(MenuStyle.label("Score %s  /  Plays %s" % [str(stats.get("score","--")),str(stats.get("plays","--"))],13,true))
+	row.add_child(VSeparator.new())
+	var personal := VBoxContainer.new()
+	personal.add_theme_constant_override("separation",4)
+	personal.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(personal)
+	var heading := MenuStyle.label("YOUR RECORDS",24)
+	heading.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	personal.add_child(heading)
+	personal.add_child(MenuStyle.label("LOCAL / "+VehicleCatalog.CLASSES[VehicleCatalog.IDS.find(VehicleCatalog.selected)].to_upper(),12,true))
+	var times := HBoxContainer.new()
+	personal.add_child(times)
+	var key: String = records.key_for(selected_track,HandlingSelection.config())
+	var pb: Dictionary = records.records.get(key,{})
+	var snapshot: Dictionary = discovery.record_snapshot(key)
+	for metric: String in ["race","lap"]:
+		var column := VBoxContainer.new()
+		column.add_theme_constant_override("separation",4)
+		column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		times.add_child(column)
+		column.add_child(MenuStyle.label("RACE TIME" if metric == "race" else "BEST LAP",15,true))
+		var milliseconds: int = int(pb.get("race_ms" if metric == "race" else "flying_ms",0))
+		var timer := MenuStyle.label(MenuStyle.time_text(milliseconds/1000.0) if milliseconds > 0 else "--",32)
+		if metric == "race": timer.name = "LibraryBestTime"
+		timer.add_theme_color_override("font_color",MenuStyle.ACCENT)
+		column.add_child(timer)
+		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
+		column.add_child(MenuStyle.label("Top %d%%" % ceili(percentile) if percentile >= 0 else "Unranked",14,true))
+	row.add_child(VSeparator.new())
+	var distribution := VBoxContainer.new()
+	distribution.add_theme_constant_override("separation",4)
+	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	distribution.size_flags_stretch_ratio = 1.25
+	row.add_child(distribution)
+	var tabs := HBoxContainer.new()
+	distribution.add_child(tabs)
+	for metric: String in ["race","lap"]:
+		var tab := _compact_button(metric.to_upper(),func() -> void:
+			distribution_metric = metric
+			_show_detail())
+		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if distribution_metric == metric: tab.add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT))
+		if distribution_metric == metric: tab.add_theme_color_override("font_color",MenuStyle.INK)
+		tabs.add_child(tab)
+	distribution.add_child(MenuStyle.label("ALL PLAYERS / "+distribution_metric.to_upper()+" TIME",13,true))
+	var histogram := TrackDistribution.new()
+	histogram.snapshot = snapshot.get(distribution_metric+"_distribution",{})
+	histogram.custom_minimum_size = Vector2(230,92)
+	histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	distribution.add_child(histogram)
+	row.add_child(VSeparator.new())
+	var friends := VBoxContainer.new()
+	friends.add_theme_constant_override("separation",4)
+	friends.custom_minimum_size.x = 205
+	row.add_child(friends)
+	friends.add_child(MenuStyle.label("FRIENDS",24))
+	friends.add_child(MenuStyle.label("PLAYER                 RACE / LAP",12,true))
+	var standings: Array = snapshot.get("friends",[])
+	if standings.is_empty():
+		friends.add_child(MenuStyle.label("No friend records available",14,true))
+	else:
+		for index: int in range(mini(4,standings.size())):
+			var friend: Dictionary = standings[index]
+			var line := MenuStyle.label("%d  %s   %s / %s" % [index+1,str(friend.player),MenuStyle.time_text(float(friend.race_ms)/1000),MenuStyle.time_text(float(friend.lap_ms)/1000)],13)
+			line.clip_text = true
+			friends.add_child(line)
 	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation",8)
-	info.add_child(actions)
-	var race: Button = MenuStyle.button("DRIVE",func() -> void: race_requested.emit(selected_track),true)
-	race.icon = MenuIcon.texture("arrow")
-	race.add_theme_color_override("icon_normal_color",MenuStyle.INK)
-	race.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	detail.add_child(actions)
+	var race := MenuStyle.button("RACE",func() -> void: race_requested.emit(selected_track),true)
 	race.name = "LibraryRace"
 	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(race)
 	if selected_track.metadata.has("creator_document"):
-		actions.add_child(MenuStyle.button("Edit",func() -> void: edit_requested.emit(selected_track.metadata.creator_document.duplicate(true))))
-
+		actions.add_child(_compact_button("Edit",func() -> void: edit_requested.emit(selected_track.metadata.creator_document.duplicate(true))))
 		if selected_track.identity not in builtin_ids: _delete_button(selected_track.metadata.creator_document,actions)
 	else:
-		var remix: Button = MenuStyle.button("Remix",func() -> void: edit_requested.emit(TrackDocument.from_builtin(selected_track)))
+		var remix := _compact_button("Remix",func() -> void: edit_requested.emit(TrackDocument.from_builtin(selected_track)))
 		remix.name = "RemixTrack"
 		actions.add_child(remix)
-	detail_costs = {"setup":(setup_done-began)/1000.0,"preview":(preview_done-setup_done)/1000.0,"favorite":(favorite_done-preview_done)/1000.0,"info":(info_done-favorite_done)/1000.0,"actions":(Time.get_ticks_usec()-info_done)/1000.0}
+	detail_costs = {"preview":0.0}
 
 func _favorite() -> void:
+	_favorite_id(selected_track.identity)
+
+func _favorite_id(id: String) -> void:
 	var favorites: Array = records.settings.get("favorites",[]).duplicate()
-	if selected_track.identity in favorites: favorites.erase(selected_track.identity)
-	else: favorites.append(selected_track.identity)
+	if id in favorites: favorites.erase(id)
+	else: favorites.append(id)
 	records.settings.favorites = favorites
 	if records.save_records() != OK: notice.emit("Favorite could not be saved. Check available storage.")
-	_show_detail()
 	_refresh()
 
 

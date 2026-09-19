@@ -3,6 +3,8 @@ extends Button
 ## Original theme artwork and the saved route, kept separate from native scenery.
 ## The gallery uses bounded metadata and creates no live 3D scenes per result.
 
+signal favorite_requested
+
 const SCENERY: Texture2D = preload("res://assets/menu/discovery-biomes.png")
 const STORM_SCENERY: Texture2D = preload("res://assets/menu/discovery-storm.png")
 
@@ -14,11 +16,24 @@ var route_bounds: Rect2
 
 func _ready() -> void:
 	clip_contents = true
-	custom_minimum_size = Vector2(190,264)
+	custom_minimum_size = Vector2(190,220)
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tooltip_text = str(entry.name)+" — "+str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
+	var star := MenuStyle.button("",func() -> void: favorite_requested.emit())
+	star.name = "ToggleFavorite"
+	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
+	star.tooltip_text = "Remove favorite" if favorite else "Save favorite"
+	star.custom_minimum_size = Vector2(48,48)
+	star.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	star.offset_left = -52
+	star.offset_right = -4
+	star.offset_top = 4
+	star.offset_bottom = 52
+	star.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
+	star.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if favorite else MenuStyle.TEXT)
+	add_child(star)
 	_cache_route()
 	resized.connect(queue_redraw)
 	mouse_entered.connect(queue_redraw)
@@ -64,9 +79,6 @@ func _draw() -> void:
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
 	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+16,23))
 	draw_string(MenuStyle.BODY,Vector2(18,26),biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("dce5dc"))
-	if favorite:
-		draw_circle(Vector2(size.x-23,22),13,Color("0b202be8"))
-		draw_texture_rect(MenuIcon.texture("star_filled"),Rect2(size.x-33,12,20,20),false,MenuStyle.ACCENT)
 	draw_string(MenuStyle.BODY,Vector2(13,image_area.end.y-10),"5 LAPS",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("e5e8dc"))
 	draw_string(MenuStyle.BODY,Vector2(size.x-61,image_area.end.y-10),"LOCAL",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("d2d9ca"))
 

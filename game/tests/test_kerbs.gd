@@ -89,7 +89,7 @@ func run() -> void:
 	check(fast.state.kerb_offset.x > 0.001,"top-speed swept tyres detect the narrow kerb")
 	var recorder := HandlingRecorder.new()
 	recorder.start(one_side,yard)
-	check(recorder.header.schema_version == 7 and recorder.header.initial_state.size() == 19,"schema 7 records the six spring scalars at snapshot index 18")
+	check(recorder.header.schema_version == 8 and recorder.header.initial_state.size() == 20,"schema 8 records the six spring scalars at snapshot index 18")
 	check(recorder.header.physics_version == VehicleSimulation.PHYSICS_VERSION,"kerb replay manifest pins new physics")
 	_geometry()
 	for argument: String in OS.get_cmdline_user_args():
@@ -120,10 +120,10 @@ func _geometry() -> void:
 	doc.paint = []
 	doc.surface = "dirt"
 	check(TrackCompiler.compile(doc).kerbs.triangles.is_empty(),"dirt pieces never acquire asphalt kerbs")
-	var native: NativeTrack = NativeTrack.read("res://resources/tracks/slicks_freeway_test.json")
+	var native: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	check(not native.kerbs.triangles.is_empty(),"native circuits also compile raised kerbs")
 	doc.surface = "asphalt"
-	doc.base_track = "slicks_freeway_test"
+	doc.base_track = "starter_circuit"
 	var remix: NativeTrack = TrackCompiler.compile(doc)
 	var native_preserved: bool = false
 	for t: Dictionary in remix.kerbs.triangles:

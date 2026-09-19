@@ -16,11 +16,12 @@ func run() -> void:
 	check_ylikulku_crossing()
 	var catalog := TrackCatalog.new(TrackLibrary.new())
 	var config := HandlingConfig.new()
-	check(BuiltinTracks.ids().size() == 194, "all 194 distinct supplied names are in the native catalog")
+	var legacy: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/legacy_tracks/catalog.json"))
+	check(legacy.entries.size() == 194, "all 194 distinct supplied names are in the native catalog")
 	var rows: Array[Dictionary] = []
-	for entry: Dictionary in BuiltinTracks.entries():
-		catalog.add_builtin(entry.id)
-		var track := NativeTrack.read(entry.path)
+	for entry: Dictionary in legacy.entries:
+		var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/"+entry.id+".json")
+		catalog.entries.append({"id":entry.id,"name":entry.name,"creator":entry.creator,"creator_kind":entry.creator_kind,"source":"fixture","theme":"pine"})
 		check(track != null and track.identity == entry.id and track.route.size() >= 3, entry.id + " loads native geometry and route")
 		check(not str(entry.creator).strip_edges().is_empty(), entry.id + " has searchable author metadata")
 		var sim := VehicleSimulation.new(config)
@@ -44,7 +45,7 @@ func run() -> void:
 	quit(1 if failures else 0)
 
 func check_ylikulku_crossing() -> void:
-	var track := NativeTrack.read("res://resources/tracks/slicks_ylikulku_test.json")
+	var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_ylikulku_test.json")
 	var config := HandlingConfig.new()
 	check(absf(track.bridge_axis.dot(Vector2.UP)) > 0.99, "YLIKULKU bridge follows its north-south rails")
 	# Source-derived passages: north/south goes above, east/west below.

@@ -23,7 +23,7 @@ func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--capture-practice="):
 			capture_path = argument.trim_prefix("--capture-practice=")
-	var track := NativeTrack.read("res://resources/tracks/slicks_freeway_test.json")
+	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	check(track != null, "real native practice fixture loads")
 	if track == null:
 		_finish()
@@ -114,9 +114,21 @@ func _check_normal_race(track: NativeTrack) -> void:
 	var sim: VehicleSimulation = game.get("sim")
 	var session: TrackSession = game.get("track_session")
 	check(session.target_laps == 5 and int(game.get("countdown_ticks")) == 360, "ordinary production racing keeps five laps and the three-second countdown")
+	check((sim.state.position - track.finish_center).dot(track.finish_forward) <= -2.99, "race car starts fully behind the finish stripe")
 	check(not bool(game.get("attempt_practice")), "ordinary fresh race remains eligible for normal records")
 	game.call("_physics_process", 1.0 / 120.0)
 	check(sim.state.tick == 0 and (game.get("countdown_label") as Label).text == "3", "normal countdown excludes canonical racing time")
+	var announcement: Label = game.get("countdown_label")
+	check(announcement.offset_top == -170 and announcement.offset_bottom == -70, "countdown and GO share the raised announcement area")
+	if not capture_path.is_empty():
+		var practice_path: String = capture_path
+		capture_path = practice_path.get_basename() + "-race-start.png"
+		await _capture(game)
+		game.set("countdown_ticks", 0)
+		game.call("_physics_process", 1.0 / 120.0)
+		capture_path = practice_path.get_basename() + "-go.png"
+		await _capture(game)
+		capture_path = practice_path
 	game.call("_edit_here")
 	check(int(observed.edited) == 0 and not bool(game.get("paused")), "editor return action is inactive during ordinary races")
 	game.set("ai_enabled", true)

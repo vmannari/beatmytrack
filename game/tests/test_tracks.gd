@@ -18,7 +18,7 @@ func _initialize() -> void:
 
 func run() -> void:
 	for name: String in ["freeway", "1way", "66", "offroad"]:
-		var track := NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_" + name + "_test.json")
 		check(track != null and track.route.size() > 20, name + " loads")
 		var config: HandlingConfig = load("res://resources/balanced.tres")
 		var sim := VehicleSimulation.new(config)
@@ -58,6 +58,7 @@ func run() -> void:
 			if session.finished: break
 		print("TRACK_RESULT ", name, " laps=", session.completed_laps, " next_cp=", session.next_checkpoint, " times=", session.lap_times, " collisions=", sim.state.collision_count, " elevated_ticks=", elevated_ticks, " underpass_ticks=", underpass_ticks)
 		check(session.finished, name + " AI completes three ordered laps")
+		check(session.shortcut_count == 0, name + " complete driven route has no shortcut penalties")
 		check(sim.state.collision_count == 0, name + " conservative AI avoids barriers")
 		if track.bridge_height > 0:
 			check(elevated_ticks > 0 and underpass_ticks > 0, name + " both crossing branches retain their layers")
@@ -99,23 +100,24 @@ func run() -> void:
 
 
 func _check_gates(track: NativeTrack) -> void:
+	# Check actual timing boundaries. Legacy checkpoint counters are derived
+	# presentation, so do not assert their exact value after arbitrary warps.
+	var before_finish: Vector2 = track.finish_center - track.finish_forward * 2.0
+	var after_finish: Vector2 = track.finish_center + track.finish_forward * 2.0
+	var index: int = track.nearest_route(track.finish_center)
+	var session := TrackSession.new(120,3)
+	session.advance(track,after_finish,before_finish,index)
+	check(session.completed_laps == 0,track.identity + " reverse finish crossing rejected")
+	var progress: float = session.route_distance
+	session.advance(track,before_finish,before_finish,index)
+	check(session.route_distance == progress,track.identity + " stationary car cannot credit progress")
+	session.advance(track,before_finish,after_finish,index)
+	check(session.completed_laps == 0,track.identity + " rocking over finish cannot complete a lap")
+	session = TrackSession.new(120,3)
 	var gate: Rect2 = track.checkpoints[0]
-	var index: int = track.nearest_route(gate.get_center())
-	var tangent: Vector2 = (track.route[(index + 1) % track.route.size()] - track.route[index]).normalized()
-	var start: Vector2 = gate.get_center() - tangent * 30
-	var end: Vector2 = gate.get_center() + tangent * 30
-	var session := TrackSession.new(120, 3)
-	session.advance(track, end, start, index)
-	check(session.next_checkpoint == 0, track.identity + " reverse entry rejected")
-	session.advance(track, gate.get_center(), gate.get_center(), index)
-	check(session.next_checkpoint == 0, track.identity + " camping inside CP does not count")
-	session.advance(track, start, end, index)
-	check(session.next_checkpoint == 1 and session.completed_laps == 0, track.identity + " swept CP entry counts once, never a whole lap")
-	var before_finish: Vector2 = track.finish_center - track.finish_forward
-	var after_finish: Vector2 = track.finish_center + track.finish_forward
-	session = TrackSession.new(120, 3)
-	session.advance(track, before_finish, after_finish, track.nearest_route(track.finish_center))
-	check(session.completed_laps == 0, track.identity + " finish without ordered checkpoints rejected")
+	var center: Vector2 = gate.get_center()
+	session.advance(track,center-Vector2(2,0),center+Vector2(2,0),track.nearest_route(center))
+	check(session.completed_laps == 0,track.identity + " isolated manual checkpoint is not a lap")
 
 
 func _check_collision() -> void:
@@ -206,7 +208,7 @@ func _check_soft_surfaces() -> void:
 
 func _check_ramp_rail_tips() -> void:
 	for name: String in ["1way", "66", "offroad"]:
-		var track := NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_" + name + "_test.json")
 		# Isolate native upper rails from ground walls under the diagonal ends.
 		# Full-track lap/layer/escape tests above retain all original geometry.
 		track.cells.fill(0)
@@ -249,7 +251,7 @@ func _check_ramp_recovery() -> void:
 	# Off-line entry can enable an upper rail while the car circle already
 	# overlaps its end. Reproduce escape from that state on real native decks.
 	for name: String in ["1way", "66", "offroad"]:
-		var track := NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_" + name + "_test.json")
 		var config := HandlingConfig.new()
 		var found: bool = false
 		for y: int in range(track.grid_height):
@@ -427,12 +429,12 @@ func _check_tire_dirt() -> void:
 		var sim := VehicleSimulation.new(config)
 		sim.state.tire_dirt = 1.0
 		var ticks: int = 0
-		while sim.state.tire_dirt > 0.0 and ticks < 1200:
+		while sim.state.tire_dirt > 0.0 and ticks < 3600:
 			# Controlled-speed fixture isolates distance from engine acceleration.
 			sim.state.velocity = Vector2(0,speed)
 			sim.step(DriveFrame.new())
 			ticks += 1
-		check(absf(absf(sim.state.position.y) - config.tire_clean_distance) < 0.2 and sim.state.tire_dirt == 0.0, "full coating cleans over 80 m independent of speed or reverse")
+		check(absf(absf(sim.state.position.y) - config.tire_clean_distance) < 0.2 and sim.state.tire_dirt == 0.0, "full coating cleans over configured clean distance independent of speed or reverse")
 		print("TIRE_CLEAN speed=",speed," seconds=",ticks * VehicleSimulation.STEP," metres=",absf(sim.state.position.y))
 	var clean := VehicleSimulation.new(config)
 	var dirty := VehicleSimulation.new(config)
@@ -461,7 +463,7 @@ func _check_tire_dirt() -> void:
 			track.cells.fill(2 if tick < 120 else 0)
 			sim.step(throttle, track)
 		states.append(sim.state.snapshot())
-	check(states[0] == states[1] and states[0].size() == 19 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
+	check(states[0] == states[1] and states[0].size() == 20 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
 
 
 func _check_blocked_speed() -> void:

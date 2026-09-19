@@ -28,7 +28,7 @@ func circuit() -> NativeTrack:
 func run() -> void:
 	capture = "--capture-bridge-hud" in OS.get_cmdline_user_args()
 	var creator: NativeTrack = circuit()
-	var native := NativeTrack.read("res://resources/tracks/slicks_1way_test.json")
+	var native := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_1way_test.json")
 	for track: NativeTrack in [creator,native]:
 		var cells: PackedInt32Array = track.cells.duplicate()
 		var deck: PackedInt32Array = track.deck_cells.duplicate()

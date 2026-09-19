@@ -114,10 +114,10 @@ func _check_library() -> void:
 	await process_frame
 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
-	check(browser.matches.size() == browser.builtin_ids.size() and browser.grid.get_child_count() == 6,"track library pages the complete built-in collection into six visual cards")
+	check(browser.matches.size() == browser.builtin_ids.size() and browser.grid.get_child_count() == mini(6,browser.builtin_ids.size()),"track library pages the complete built-in collection into six visual cards")
 	await _capture("track-library")
 	var search: LineEdit = browser.find_child("Search_name",true,false)
-	search.text = "1wAy"
+	search.text = "sTaRtEr"
 	search.text_changed.emit(search.text)
 	check(browser.matches.size() == 1,"name search is case insensitive and filters the full catalog")
 	var creator_search: LineEdit = browser.find_child("Search_creator",true,false)
@@ -128,7 +128,7 @@ func _check_library() -> void:
 	await process_frame
 	await _viewport_tap((browser.grid.get_child(0) as Button).get_global_rect().get_center())
 	var chosen: NativeTrack = app.get("selected_track")
-	check(chosen.identity == "slicks_1way_test","a route card selects its exact circuit")
+	check(chosen.identity == "starter_circuit","a route card selects its exact circuit")
 	(browser.find_child("ToggleFavorite",true,false) as Button).pressed.emit()
 	var store: LocalRecords = app.get("records")
 	var reloaded := LocalRecords.new(store.path)
@@ -161,10 +161,13 @@ func _check_library() -> void:
 
 
 func _check_input_and_history() -> void:
-	_button(app.get("root_ui"), "Waypoints").pressed.emit()
+	_button(app.get("root_ui"), "Track").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
+	canvas.document.pieces.append(RoadPieces.create("straight",Vector2(-25,-12)))
+	canvas.selected_piece = 0
+	canvas.snap_enabled = false
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	var start: Vector2 = canvas.to_screen(Vector2(original.points[0][0], original.points[0][1]))
+	var start: Vector2 = canvas.to_screen(canvas._geometry_handle(original.pieces[0],"length"))
 	var destination: Vector2 = start + Vector2(canvas.scale_factor() * 2.0, 0.0)
 	_mouse(canvas, start, true)
 	check(canvas.dragging and canvas.active_pointer == -1, "mouse press selects and starts a handle drag")
@@ -176,7 +179,7 @@ func _check_input_and_history() -> void:
 	_mouse(canvas, destination, false)
 	check(not canvas.dragging and canvas.active_pointer == -99, "mouse release ends its gesture")
 	var changed: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	check(changed.points[0] != original.points[0] and changed.points.size() == original.points.size(), "mouse drag moves exactly the selected route handle")
+	check(changed.pieces[0].length != original.pieces[0].length and changed.points == original.points, "mouse drag changes only the selected road length")
 	check((app.get("history") as Array).size() == 1, "one completed drag creates one undo step")
 	var library: TrackLibrary = app.get("library")
 	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
@@ -191,7 +194,7 @@ func _check_input_and_history() -> void:
 	await process_frame
 	check(app.get("document") == changed, "Redo restores the edited document")
 	canvas = app.get("canvas")
-	start = canvas.to_screen(Vector2(changed.points[1][0], changed.points[1][1]))
+	start = canvas.to_screen(canvas._geometry_handle(changed.pieces[0],"length"))
 	_touch(canvas, 3, start, true)
 	check(canvas.dragging and canvas.active_pointer == 3, "touch press starts a handle drag through the same canvas")
 	_drag(canvas, 3, start + Vector2(canvas.scale_factor(), 0.0))
@@ -224,9 +227,10 @@ func _check_input_and_history() -> void:
 	check(canvas.touches.is_empty() and not canvas.dragging and not canvas.panning and canvas.active_pointer == -99, "pinch release leaves no captured or stuck gesture")
 	# Starting a fresh handle drag after pinch also proves gesture recovery.
 	var current: Dictionary = app.get("document")
-	start = canvas.to_screen(Vector2(current.points[2][0], current.points[2][1]))
+	canvas.selected_piece = 0
+	start = canvas.to_screen(canvas._geometry_handle(current.pieces[0],"length"))
 	_touch(canvas, 12, start, true)
-	check(canvas.dragging and canvas.selected == 2, "a fresh handle remains draggable after multitouch navigation")
+	check(canvas.dragging and canvas.geometry_drag == "length", "a fresh handle remains draggable after multitouch navigation")
 	var history_before: int = (app.get("history") as Array).size()
 	var emulated := InputEventMouseButton.new()
 	emulated.device = -1
@@ -279,20 +283,20 @@ func _check_view_retention() -> void:
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.zoom_by(1.2)
 	canvas.pan += Vector2(35, -12)
-	_button(app.get("root_ui"), "Add bend").pressed.emit()
+	_button(app.get("root_ui"), "Surfaces").pressed.emit()
 	var saved_zoom: float = canvas.zoom
 	var saved_pan: Vector2 = canvas.pan
 	app.call("_set_document_value", "theme", "coast")
 	await process_frame
 	await process_frame
 	canvas = app.get("canvas")
-	check(canvas.mode == "add" and canvas.pan == saved_pan and is_equal_approx(canvas.zoom, saved_zoom), "changing theme preserves the editor tool, zoom and pan")
+	check(canvas.mode == "paint" and canvas.pan == saved_pan and is_equal_approx(canvas.zoom, saved_zoom), "changing theme preserves the editor tool, zoom and pan")
 	app.call("_undo")
 	await process_frame
 	await process_frame
 	canvas = app.get("canvas")
-	check(canvas.mode == "add" and canvas.pan == saved_pan and is_equal_approx(canvas.zoom, saved_zoom), "Undo preserves the current editor view and tool")
-	_button(app.get("root_ui"), "Move").pressed.emit()
+	check(canvas.mode == "paint" and canvas.pan == saved_pan and is_equal_approx(canvas.zoom, saved_zoom), "Undo preserves the current editor view and tool")
+	_button(app.get("root_ui"), "Track").pressed.emit()
 	(app.get("canvas") as EditorCanvas).fit()
 
 
@@ -388,11 +392,19 @@ func _check_clean_result() -> void:
 	game.emit_signal("exit_requested")
 	await process_frame
 	await process_frame
+	check(((app.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the saved PB for the active handling after leaving results")
+	await _capture("tracks-saved-best")
 	var resumed: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
 	resumed.set("library",app.get("library"))
 	resumed.set("records",LocalRecords.new(records.path))
 	root.add_child(resumed)
 	await process_frame
+	await process_frame
+	resumed.call("_show_screen", "tracks")
+	await process_frame
+	await process_frame
+	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the active handling PB after loading a new app instance")
+	resumed.call("_show_screen", "play")
 	await process_frame
 	check((resumed.get("selected_track") as NativeTrack).identity == track.identity,"relaunch resumes the last ordinary race circuit")
 	check(((resumed.get("root_ui") as Node).find_child("RaceTarget",true,false) as Label).text == "01:48.816","returning home presents the actual stored five-lap time to beat")

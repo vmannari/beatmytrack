@@ -50,6 +50,10 @@ func run() -> void:
 	await _move_start_tangent()
 	await _practice_spawn_checks()
 	await _objects_and_issues()
+	await _on_piece_accept()
+	await _hairpin_straights()
+	await _all_preview_handles()
+	await _attached_editing()
 	app.queue_free()
 	await process_frame
 	_finish()
@@ -72,7 +76,7 @@ func _blank_and_connect() -> void:
 	check(doc.layout.is_empty() and doc.pieces.is_empty() and doc.paint.is_empty(), "blank creation begins with editable terrain and no imposed road loop")
 	check(canvas.get_global_rect().size.is_equal_approx(root.get_visible_rect().size), "the editing canvas fills the landscape viewport")
 	check(canvas.mode == "road", "blank creation opens the Road workflow")
-	for text: String in ["Track","Surfaces","Objects","Waypoints"]:
+	for text: String in ["Track","Surfaces","Objects"]:
 		check(_button(app.get("root_ui"),text) != null, "category rail exposes " + text)
 	var before: Dictionary = doc.duplicate(true)
 	canvas.choose_piece("straight")
@@ -179,7 +183,7 @@ func _world_and_touch() -> void:
 	_touch(canvas,31,a+Vector2(-20,20),false)
 	check(canvas.zoom > initial_zoom and canvas.pan != initial_pan, "two fingers navigate the scene while the road tool is active")
 	check(app.get("document") == doc and canvas.touches.is_empty() and not canvas.dragging, "pinch navigation does not alter road sections or leave a captured finger")
-	for text: String in ["Track","Surfaces","Objects","Waypoints"]:
+	for text: String in ["Track","Surfaces","Objects"]:
 		var button: Button = _button(app.get("root_ui"),text)
 		if button == null:
 			continue
@@ -201,17 +205,17 @@ func _geometry_handles() -> void:
 	app.call("_build_editor_tools")
 	var before: Dictionary = doc.duplicate(true)
 	var history_size: int = (app.get("history") as Array).size()
-	var handle: Vector2 = canvas._geometry_handle(doc.pieces[1],"radius")
+	var handle: Vector2 = RoadPieces.end_pose(doc.pieces[1]).position
 	var position: Vector2 = canvas.to_screen(handle)
 	_touch(canvas,41,position,true)
-	check(canvas.geometry_drag == "radius" and doc == before, "touching a radius handle selects it without changing or moving the road")
+	check(canvas.endpoint_drag == 1 and doc == before, "touching a curve endpoint selects it without changing or moving the road")
 	_drag(canvas,41,canvas.to_screen(handle+Vector2(2,2)))
 	_drag(canvas,41,canvas.to_screen(handle+Vector2(4,4)))
 	_touch(canvas,41,canvas.to_screen(handle+Vector2(4,4)),false)
-	check(doc.pieces[1].radius == float(before.pieces[1].radius)+4.0, "continuous radius drag measures total displacement from the original touch")
+	check(Vector2(RoadPieces.end_pose(doc.pieces[1]).position).distance_to(handle+Vector2(4,4))<0.001, "continuous endpoint drag reaches the final pointer without cumulative drift")
 	check(doc.pieces[1].position == before.pieces[1].position and doc.pieces[0] == before.pieces[0] and doc.points == before.points, "radius handle leaves the section anchor, neighboring road and lap route unchanged")
 	check((app.get("history") as Array).size() == history_size+1, "a multi-motion radius gesture creates one undo step")
-	check(_button(app.get("root_ui"),"Radius %.1f m" % float(doc.pieces[1].radius)) != null, "released radius edit refreshes the visible dimension caption")
+	check(_button(app.get("root_ui"),"Shape") == null and _button(app.get("root_ui"),"Rotate") == null, "curve endpoints replace separate shape and rotate buttons")
 	canvas.selected_piece = 0
 	app.set("editor_geometry","width")
 	app.call("_build_editor_tools")
@@ -226,7 +230,7 @@ func _geometry_handles() -> void:
 	_touch(canvas,42,canvas.to_screen(handle+Vector2(0,1.5)),false)
 	check(doc.pieces[0].width == float(before.pieces[0].width)+3.0 and doc.pieces[1] == before.pieces[1], "dragging one road edge widens only that section by the actual full width")
 	check((app.get("history") as Array).size() == history_size+1 and doc.pieces[0].position == before.pieces[0].position, "width gesture preserves placement and creates one undo step")
-	check(_button(app.get("root_ui"),"Width %.1f m" % float(doc.pieces[0].width)) != null, "released width edit refreshes its dimension caption")
+	check(canvas.geometry_controls(doc.pieces[0]).width == canvas.to_screen(canvas._geometry_anchor(doc.pieces[0],"width")), "width dot remains directly on the road edge")
 	before = doc.duplicate(true)
 	handle = canvas._geometry_handle(doc.pieces[0],"width")
 	position = canvas.to_screen(handle)
@@ -346,10 +350,9 @@ func _objects_and_issues() -> void:
 	var old_route: Array = doc.points.duplicate(true)
 	var road_geometry: Array = doc.pieces.duplicate(true)
 	app.call("_editor_category","move")
-	var use_roads: Button = _button(app.get("root_ui"),"Use roads")
-	check(use_roads != null, "Race tools expose explicit route creation from connected roads")
-	if use_roads != null: use_roads.pressed.emit()
-	check(doc.points != old_route and doc.pieces == road_geometry and doc.route_override, "Use roads creates a separate lap route while preserving the authored road sections")
+	check(_button(app.get("root_ui"),"Waypoints") == null, "there is no separate route menu")
+	app.call("_save_draft")
+	check(doc.points != old_route and doc.pieces == road_geometry and doc.route_override, "saving creates a separate lap route while preserving the authored road sections")
 	var route_track: NativeTrack = TrackCompiler.compile(doc)
 	var route_on_road: bool = route_track != null
 	if route_track != null:
@@ -361,9 +364,9 @@ func _objects_and_issues() -> void:
 	canvas.selected_piece = 1
 	app.call("_build_editor_tools")
 	var shape: Button = _button(app.get("root_ui"),"Shape")
-	check(shape != null, "selected bend exposes a direct Shape action")
+	check(shape == null, "selected hairpin exposes direct dots instead of a Shape action")
 	if shape != null: shape.pressed.emit()
-	check(str(app.get("editor_geometry")) == "radius", "Shape opens local bend radius controls")
+	check("radius" in canvas.geometry_keys(doc.pieces[1]), "hairpin radius is directly adjustable on the placed road")
 	await _capture("geometry")
 	app.call("_editor_category","objects")
 	canvas.mode = "run"
@@ -384,6 +387,7 @@ func _objects_and_issues() -> void:
 	await _capture("objects")
 	var library: TrackLibrary = app.get("library")
 	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "section roads and barrier runs persist together in the actual JSON contract")
+	while app.get("editor_preview_thread") != null: await process_frame
 	var native: NativeTrack = TrackCompiler.compile(doc)
 	check(native != null and native.cells == canvas.native_preview.cells, "visible editor scenery uses the same updated collision and surface content")
 	# Controlled obstruction fixture exercises real validation and recovery UI.
@@ -405,12 +409,12 @@ func _objects_and_issues() -> void:
 	var move_start: Button = _button(app.get("root_ui"),"Move start")
 	check(move_start != null, "a blocked start offers a direct Move start recovery action")
 	if move_start != null: move_start.pressed.emit()
-	check(canvas.mode == "start", "Move start requests a placement tap on the actual map")
+	check(canvas.mode == "start_line", "Move start requests a placement tap on the actual map")
 	var clear_start := Vector2(-4,-18)
 	var start_touch: Vector2 = canvas.to_screen(clear_start)
 	_touch(canvas,51,start_touch,true)
 	_touch(canvas,51,start_touch,false)
-	check(doc.has("practice_start") and Vector2(doc.practice_start.position[0],doc.practice_start.position[1]) == clear_start, "a map tap stores the selected practice start position")
+	check(doc.has("start_line") and Vector2(doc.start_line.position[0],doc.start_line.position[1]).distance_to(clear_start) < 0.01, "a map tap stores the selected start line position")
 	check(doc.objects == blocked_document.objects and not (app.get("test_button") as Button).disabled and TrackDocument.validate(doc).is_empty(), "moving the start resolves the issue while preserving the obstacle and a valid document")
 	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "the alternative practice start is saved with the map")
 	app.call("_undo")
@@ -513,3 +517,153 @@ func _finish() -> void:
 			DirAccess.remove_absolute(test_directory)
 	print("EDITOR_WORKFLOW_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _on_piece_accept() -> void:
+	await _show_document(TrackDocument.create_blank())
+	var canvas: EditorCanvas = app.get("canvas")
+	canvas.snap_enabled = false
+	canvas.choose_piece("s_bend")
+	app.set("editor_geometry","height")
+	app.call("_build_editor_tools")
+	app.call("_change_piece","height",5.0)
+	check(canvas.ghost.has("height"),"S-bend height control changes the road")
+	await _capture("s-height-accept")
+	var count: int = canvas.document.pieces.size()
+	var center: Vector2 = canvas.piece_accept_rect(canvas.ghost).get_center()
+	var before: Array = canvas.ghost.position.duplicate()
+	canvas._begin(center,-1)
+	canvas._move(center+Vector2(48,0))
+	canvas._end(-1)
+	check(not canvas.ghost.is_empty() and canvas.ghost.position != before and canvas.document.pieces.size()==count,"drag from accept moves without placing")
+	center = canvas.piece_accept_rect(canvas.ghost).get_center()
+	_touch(canvas,0,center,true)
+	_touch(canvas,0,center,false,true)
+	check(not canvas.ghost.is_empty(),"canceled accept touch does not place")
+	_touch(canvas,0,center,true)
+	_touch(canvas,0,center,false)
+	check(canvas.ghost.is_empty() and canvas.document.pieces.size()==count+1,"tap on road accept places exactly once")
+	check(app.get("root_ui").find_child("ConfirmPiece",true,false) == null,"road mode removes corner accept")
+	await _show_document(TrackDocument.create_blank())
+	app.set("editor_geometry","")
+
+func _hairpin_straights() -> void:
+	await _show_document(TrackDocument.create_blank())
+	var canvas: EditorCanvas = app.get("canvas")
+	canvas.choose_piece("hairpin")
+	check(is_zero_approx(float(canvas.ghost.length)),"new hairpin has no forced straight arms")
+	var button: Button = _button(app.get("root_ui"),"Straight length")
+	check(button == null and "length" in canvas.geometry_keys(canvas.ghost),"hairpin straight length is available as a dot without a toolbar button")
+	var radius: float = float(canvas.ghost.radius)
+	app.call("_change_piece","length",12.0)
+	check(is_equal_approx(float(canvas.ghost.length),12.0) and is_equal_approx(float(canvas.ghost.radius),radius),"straight adjustment preserves bend radius")
+	await _capture("hairpin-straights")
+	app.call("_change_piece","length",-120.0)
+	check(is_zero_approx(float(canvas.ghost.length)) and RoadPieces.validate(canvas.ghost).is_empty(),"straight arms can be removed completely")
+	await _capture("hairpin-zero-straights")
+
+func _all_preview_handles() -> void:
+	for kind: String in RoadPieces.KINDS:
+		await _show_document(TrackDocument.create_blank())
+		var canvas: EditorCanvas = app.get("canvas")
+		canvas.snap_enabled = false
+		app.set("editor_geometry","")
+		canvas.choose_piece(kind)
+		if kind != "bridge":
+			check(not "heading" in canvas.geometry_keys(canvas.ghost),kind+" uses endpoint dots for rotation")
+			check(_button(app.get("root_ui"),"Rotate") == null and _button(app.get("root_ui"),"Shape") == null,kind+" omits separate shape and rotation buttons")
+		if kind == "s_bend": check(not "length" in canvas.geometry_keys(canvas.ghost),"S end straights have no adjustable handle")
+		if kind != "bridge":
+			var controls: Dictionary = canvas.geometry_controls(canvas.ghost)
+			for key: String in controls:
+				for other: String in controls:
+					if key < other: check(Vector2(controls[key]).distance_to(controls[other])>=47.9,kind+" handles have separated touch targets")
+		await _capture("direct-"+kind)
+		for key: String in canvas.geometry_keys(canvas.ghost):
+			var before: Dictionary = canvas.ghost.duplicate(true)
+			var increased: Dictionary = before.duplicate(true)
+			var value: float = RoadPieces.height(before) if key == "height" else float(before.get(key,0.0 if key == "curvature" else 90.0))
+			increased[key] = value+1.0
+			if kind == "s_bend" and key == "radius": increased.height = RoadPieces.height(before)
+			var axis: Vector2 = canvas._geometry_anchor(increased,key)-canvas._geometry_anchor(before,key)
+			var start: Vector2 = canvas.to_screen(canvas._geometry_handle(before,key))
+			var change: float = 0.2 if key == "curvature" else 30.0 if kind == "curve" and key == "angle" else 4.0
+			var finish: Vector2 = start+canvas.to_screen(axis*change)-canvas.to_screen(Vector2.ZERO)
+			if kind == "curve" and key == "angle":
+				increased.angle = value+change
+				finish = start+canvas.to_screen(canvas._geometry_anchor(increased,key))-canvas.to_screen(canvas._geometry_anchor(before,key))
+			_touch(canvas,81,start,true)
+			check(canvas.geometry_drag == key,kind+" directly selects "+key+" without toolbar mode")
+			if kind == "hairpin" and key == "width": await _capture("active-width")
+			_drag(canvas,81,finish)
+			_touch(canvas,81,finish,false)
+			check(is_equal_approx(float(canvas.ghost.get(key,0)),snappedf(value+change,0.01 if key == "curvature" else 0.5)),kind+" direct "+key+" changes the intended dimension")
+			check(canvas.ghost.position == before.position,kind+" dimension preserves placement")
+			if key == "curvature":
+				check(RoadPieces.end_pose(canvas.ghost) == RoadPieces.end_pose(before),"curvature keeps end position and heading for joined roads")
+				await _capture("curve-curvature")
+		canvas.confirm_piece()
+		canvas.selected_piece = 0
+		app.call("_build_editor_tools")
+		var start: Vector2 = canvas.to_screen(canvas._geometry_handle(canvas.document.pieces[0],"width"))
+		_touch(canvas,82,start,true)
+		check(canvas.geometry_drag == "width",kind+" committed section exposes the same direct controls")
+		_touch(canvas,82,start,false)
+		if kind == "curve":
+			var original: Dictionary = canvas.document.pieces[0].duplicate(true)
+			var handle: Vector2 = canvas._geometry_handle(original,"curvature")
+			var increased: Dictionary = original.duplicate(true)
+			increased.curvature = float(original.curvature)+1.0
+			var axis: Vector2 = canvas._geometry_anchor(increased,"curvature")-canvas._geometry_anchor(original,"curvature")
+			_touch(canvas,83,canvas.to_screen(handle),true)
+			_drag(canvas,83,canvas.to_screen(handle+axis))
+			_touch(canvas,83,canvas.to_screen(handle+axis),false)
+			check(canvas.document.pieces[0].curvature == 0.3,"curvature drag clamps at its reasonable upper limit")
+			app.call("_undo")
+			check(app.get("document").pieces[0] == original,"undo restores the exact previous curvature")
+			app.call("_redo")
+			check(app.get("document").pieces[0].curvature == 0.3,"redo restores the reshaped curve")
+
+
+func _attached_editing() -> void:
+	for endpoint: int in [0,1]:
+		for preview: bool in [false,true]:
+			var doc: Dictionary = TrackDocument.create_blank()
+			var piece: Dictionary = RoadPieces.create("curve",Vector2(-12,-8))
+			var fixed: Dictionary = RoadPieces._pose(piece,endpoint)
+			var neighbor: Dictionary = RoadPieces.create("straight",fixed.position,90 if endpoint == 1 else 180)
+			doc.pieces = [neighbor] if preview else [piece,neighbor]
+			await _show_document(doc)
+			var canvas: EditorCanvas = app.get("canvas")
+			canvas.mode = "road"
+			canvas.snap_enabled = false
+			if preview: canvas.ghost = piece.duplicate(true)
+			else: canvas.selected_piece = 0
+			app.call("_build_editor_tools")
+			var changed: Dictionary = piece.duplicate(true)
+			changed.angle = 120.0
+			changed = canvas.anchored_change(piece,changed,"angle")
+			var handle: Vector2 = canvas.to_screen(canvas._geometry_handle(piece,"angle"))
+			var motion: Vector2 = canvas.to_screen(canvas._geometry_anchor(changed,"angle"))-canvas.to_screen(canvas._geometry_anchor(piece,"angle"))
+			_touch(canvas,90,handle,true)
+			_drag(canvas,90,handle+motion)
+			_touch(canvas,90,handle+motion,false)
+			var edited: Dictionary = canvas.ghost if preview else doc.pieces[0]
+			check(is_equal_approx(float(edited.get("angle",90.0)),120.0),"anchored angle handle follows the intended drag")
+			var pose: Dictionary = RoadPieces._pose(edited,endpoint)
+			check(Vector2(pose.position).distance_to(fixed.position)<0.001 and absf(wrapf(float(pose.heading)-float(fixed.heading),-180,180))<0.001,"shape drag preserves attached position and direction at either end")
+			check(doc.pieces[-1] == neighbor,"connected neighbor remains untouched")
+			if endpoint == 1 and not preview: await _capture("attached-free-end")
+			# Even dragging the attached grip adjusts the free end by the drag delta.
+			var before: Dictionary = edited.duplicate(true)
+			var start: Vector2 = canvas.to_screen(RoadPieces._pose(before,endpoint).position)
+			var delta := Vector2(4,3)
+			_touch(canvas,91,start,true)
+			_drag(canvas,91,start+canvas.to_screen(delta)-canvas.to_screen(Vector2.ZERO))
+			_touch(canvas,91,start+canvas.to_screen(delta)-canvas.to_screen(Vector2.ZERO),false)
+			edited = canvas.ghost if preview else doc.pieces[0]
+			check(Vector2(RoadPieces._pose(edited,endpoint).position).distance_to(fixed.position)<0.001,"attached endpoint grip cannot tear the connection apart")
+			var expected: Vector2 = Vector2(RoadPieces._pose(before,1-endpoint).position)+delta
+			check(Vector2(RoadPieces._pose(edited,1-endpoint).position).distance_to(expected)<0.001,"attached-grip drag moves the free end instead without jumping")
+			if not preview:
+				app.call("_undo")
+				check(app.get("document").pieces[0] == before,"anchored endpoint edit is undoable")

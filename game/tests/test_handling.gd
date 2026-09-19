@@ -160,7 +160,7 @@ func _original_slide() -> void:
 func _original_laps() -> void:
 	var config: HandlingConfig = load("res://resources/original_slide.tres")
 	for name: String in ["freeway", "1way", "66", "offroad"]:
-		var track: NativeTrack = NativeTrack.read("res://resources/tracks/slicks_" + name + "_test.json")
+		var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_" + name + "_test.json")
 		var sim := VehicleSimulation.new(config)
 		sim.reset(track.spawn, track.spawn_heading)
 		sim.state.route_index = track.nearest_route(track.spawn)

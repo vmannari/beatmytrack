@@ -71,7 +71,7 @@ func run() -> void:
 	browser.catalog = catalog
 	browser.records = LocalRecords.new(folder.path_join("favorites.json"))
 	browser.state = state
-	browser.selected_track = NativeTrack.read("res://resources/tracks/slicks_freeway_test.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	root.size = Vector2i(1280,720)
 	root.add_child(browser)
 	await process_frame

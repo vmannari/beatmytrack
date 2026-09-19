@@ -117,11 +117,27 @@ func run() -> void:
 		node.queue_free()
 	await process_frame
 	app.set("document",road); canvas.document=road
+	var previous_document: Dictionary = road.duplicate(true)
+	previous_document.pieces[0].angle = 90.0
+	check(library.save_document(previous_document)==OK,"save original circuit before editing")
+	app.set("selected_track",TrackCompiler.compile(previous_document))
 	# WIP autosave no longer overwrites the saved original. This scenario races
 	# the edited saved circuit, so use the current explicit Save action.
 	app.call("_save_track_explicit")
 	for node: Node in app.find_children("*", "AcceptDialog", true, false):
 		node.queue_free()
+	await process_frame
+	var saved_expected: NativeTrack = TrackCompiler.compile(library.load_document(str(road.id)))
+	check((app.get("selected_track") as NativeTrack).content_hash==saved_expected.content_hash,"Save refreshes the selected circuit without reselecting it")
+	app.call("_show_screen","play")
+	await process_frame
+	var race_button: Button = app.get("root_ui").find_child("StartRace",true,false)
+	race_button.pressed.emit()
+	await process_frame
+	var immediate_game: Node = app.get("game")
+	check(immediate_game!=null and (immediate_game.get("native_track") as NativeTrack).content_hash==saved_expected.content_hash,"immediate Home Race uses saved geometry")
+	app.call("_leave_race")
+	app.call("_show_screen","create")
 	await process_frame
 	app.call("_open_saved_tracks")
 	for i: int in range(40): await process_frame
@@ -156,6 +172,12 @@ func run() -> void:
 	if capture:
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/refinement-tyres.png"))==OK,"displaced tyres screenshot")
+		ground.update_tyres(VehicleState.new(),tyre_track.tyre_origins)
+		var restored: bool = true
+		for index: int in range(tyre_track.tyre_origins.size()):
+			var expected := Transform3D(Basis.IDENTITY,VisualGeometry.world(tyre_track.tyre_origins[index])+Vector3.UP*0.014)
+			restored = restored and ground.tyre_instances.multimesh.get_instance_transform(index).is_equal_approx(expected)
+		check(restored,"cached tyre presentation restores every original transform on reset")
 	app.call("_leave_race")
 	app.queue_free()
 	await process_frame

@@ -142,6 +142,8 @@ func _interaction() -> void:
 	canvas._begin(canvas.to_screen(Vector2.ZERO),-1)
 	check(canvas.selected_piece == 1,"dragging an already selected bridge at a crossing preserves selection")
 	canvas._end(-1)
+	check(canvas.selected_piece == -1,"center checkmark accepts the selected bridge")
+	canvas.selected_piece = 1
 	var touch := InputEventScreenTouch.new()
 	touch.index = 0; touch.pressed = true; touch.position = canvas.to_screen(Vector2(30,0))
 	canvas._gui_input(touch)

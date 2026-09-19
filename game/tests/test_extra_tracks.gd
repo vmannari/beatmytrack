@@ -21,7 +21,7 @@ func run() -> void:
 	var config: HandlingConfig = load("res://resources/balanced.tres")
 	print("EXTRA_TRACK_VERSIONS handling=", config.version, " physics=", VehicleSimulation.PHYSICS_VERSION)
 	for name: String in ["arto4", "hiekka", "ovaali3"]:
-		var path: String = "res://resources/tracks/slicks_" + name + "_test.json"
+		var path: String = "res://tests/fixtures/legacy_tracks/slicks_" + name + "_test.json"
 		var track := NativeTrack.read(path)
 		check(track != null and track.route.size() > 20, name + " loads native route")
 		if track == null:

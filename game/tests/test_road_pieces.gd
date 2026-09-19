@@ -16,6 +16,9 @@ func check(condition: bool, message: String) -> void:
 
 
 func run() -> void:
+	_shape_dimensions()
+	_attachment_pivots()
+	_curvature_circuit()
 	_join_geometry()
 	_geometry()
 	_roadside_visuals()
@@ -251,7 +254,7 @@ func _practice_start() -> void:
 	for invalid: Variant in [null,[],{}, {"position":[0,0]}, {"position":[0,0],"heading":0,"script":"run"}, {"position":[0],"heading":0}, {"position":[NAN,0],"heading":0}, {"position":[0,110.1],"heading":0}, {"position":[0,0],"heading":INF}, {"position":[0,0],"heading":-1}, {"position":[0,0],"heading":360}]:
 		doc.practice_start = invalid
 		check(not TrackDocument.validate(doc).is_empty(),"invalid practice start rejected: "+str(invalid))
-	var native: NativeTrack = NativeTrack.read("res://resources/tracks/slicks_freeway_test.json")
+	var native: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	check(not TrackDocument.from_builtin(native).has("practice_start"),"native remix preserves its original start until explicitly moved")
 
 
@@ -388,3 +391,119 @@ func _join_tip_visuals() -> void:
 		check(outline.size() >= 4 and not Geometry2D.triangulate_polygon(outline).is_empty(),"trimmed mirrored hairpin remains a renderable polygon")
 		check(outline.has(raw[raw.size()/2-1]) and outline.has(raw[raw.size()/2]),"both distant hairpin endpoints survive local join trimming")
 	visual.free()
+
+func _shape_dimensions() -> void:
+	for flipped: bool in [false,true]:
+		for sweep: float in [15.0,90.0,180.0,270.0]:
+			var curve: Dictionary = RoadPieces.create("curve",Vector2.ZERO,23)
+			curve.flip = flipped
+			curve.angle = sweep
+			var circular: PackedVector2Array = RoadPieces.samples(curve)
+			curve.curvature = 0.0
+			check(RoadPieces.samples(curve) == circular,"zero curvature preserves circular default exactly")
+			for amount: float in [-0.3,0.3]:
+				curve.curvature = amount
+				var shaped: PackedVector2Array = RoadPieces.samples(curve)
+				check(RoadPieces.validate(curve).is_empty(),"bounded curvature remains valid for both mirrored directions")
+				check(shaped[0] == circular[0] and shaped[-1] == circular[-1] and shaped != circular,"curvature changes the interior while preserving both endpoints")
+				check(RoadPieces.samples(JSON.parse_string(JSON.stringify(curve))) == shaped,"curvature survives JSON roundtrip exactly")
+			curve.curvature = 0.31
+			check(not RoadPieces.validate(curve).is_empty(),"out-of-range curvature rejected")
+			curve.curvature = NAN
+			check(not RoadPieces.validate(curve).is_empty(),"nonfinite curvature rejected")
+
+	for flipped: bool in [false,true]:
+		var section: Dictionary = RoadPieces.create("s_bend",Vector2.ZERO,27)
+		section.flip = flipped
+		section.height = 18.0
+		for endpoint: int in [0,1]:
+			var target := Vector2(-8,0) if endpoint == 0 else Vector2(34,32 if not flipped else -12)
+			var changed: Dictionary = RoadPieces.move_endpoint(section,endpoint,target)
+			check(not changed.is_empty(),"S endpoint resizes with fixed straights")
+			if changed.is_empty(): continue
+			var actual: Vector2 = Vector2(changed.position[0],changed.position[1]) if endpoint == 0 else RoadPieces.end_pose(changed).position
+			check(actual.distance_to(target)<0.001,"S endpoint still follows pointer exactly")
+			var samples: PackedVector2Array = RoadPieces.samples(changed)
+			check(absf(samples[3].distance_to(samples[0])-2.0)<0.001 and absf(samples[-1].distance_to(samples[-4])-2.0)<0.001,"both end straights remain exactly 2 m after resizing")
+			var tangent: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(changed.heading)))
+			check((samples[3]-samples[0]).normalized().dot(tangent)>0.9999 and (samples[-1]-samples[-4]).normalized().dot(tangent)>0.9999,"entry and exit straights follow matching tangents")
+
+	for flipped: bool in [false,true]:
+		var arc: Dictionary = RoadPieces.create("curve",Vector2.ZERO,31)
+		check(arc.length == 0.0,"new curves have no straight portion")
+		arc.flip = flipped
+		arc.length = 18.0 # Existing stored lead-in values cannot reintroduce a straight.
+		var center: Vector2 = Vector2(0,-arc.radius if flipped else arc.radius).rotated(deg_to_rad(31))
+		var circular: bool = true
+		for sample: Vector2 in RoadPieces.samples(arc): circular = circular and absf(sample.distance_to(center)-float(arc.radius))<0.001
+		check(circular,"all curve samples lie on a pure circle, including stored lead-ins")
+		for endpoint: int in [0,1]:
+			var target := Vector2(-10,4) if endpoint == 0 else Vector2(22,26)
+			var changed: Dictionary = RoadPieces.move_endpoint(arc,endpoint,target)
+			check(not changed.is_empty(),"curve endpoint can resize and rotate")
+			if not changed.is_empty():
+				var actual: Vector2 = Vector2(changed.position[0],changed.position[1]) if endpoint == 0 else RoadPieces.end_pose(changed).position
+				check(actual.distance_to(target)<0.001,"curve endpoint follows requested position")
+
+	for flip: bool in [false,true]:
+		var piece: Dictionary = RoadPieces.create("hairpin",Vector2.ZERO,37)
+		piece.flip = flip
+		piece.length = 23.0
+		var end: Vector2 = Vector2(RoadPieces.end_pose(piece).position).rotated(deg_to_rad(-37))
+		check(absf(end.x)<0.001,"hairpin entry and exit arms end at equal length")
+		var points: PackedVector2Array = RoadPieces.samples(piece)
+		check(points[-1].distance_to(points[-2])<=0.751,"hairpin exit is sampled continuously")
+	var bend: Dictionary = RoadPieces.create("s_bend",Vector2.ZERO)
+	var original: Vector2 = RoadPieces.end_pose(bend).position
+	bend.height = 22.0
+	var raised: Vector2 = RoadPieces.end_pose(bend).position
+	check(is_equal_approx(original.x,raised.x) and is_equal_approx(raised.y,22.0),"S height changes lateral span independently of length")
+	var fixed_shape: PackedVector2Array = RoadPieces.samples(bend)
+	bend.length = 30.0
+	check(RoadPieces.samples(bend) == fixed_shape,"stored S length cannot change either fixed end")
+	check(is_equal_approx(Vector2(RoadPieces.end_pose(bend).position).y,22.0),"S length preserves height")
+	check(RoadPieces.validate(bend).is_empty(),"height persists as a valid road dimension")
+	bend.height = -1
+	check(not RoadPieces.validate(bend).is_empty(),"invalid S height is rejected")
+
+
+func _curvature_circuit() -> void:
+	var doc: Dictionary = TrackDocument.create_blank()
+	var position := Vector2(0,-24)
+	var heading: float = 0.0
+	for i: int in range(4):
+		var piece: Dictionary = RoadPieces.create("curve",position,heading)
+		piece.radius = 24.0
+		piece.curvature = 0.2 if i%2 == 0 else -0.2
+		doc.pieces.append(piece)
+		var pose: Dictionary = RoadPieces.end_pose(piece)
+		position = pose.position; heading = pose.heading
+	var routed: Dictionary = RoadPieces.route_from_pieces(doc)
+	check(routed.ok,"reshaped curves form a closed connected route")
+	if not routed.ok: return
+	doc = routed.document
+	var track: NativeTrack = TrackCompiler.compile(doc)
+	check(track != null,"reshaped curves compile to a playable road")
+	if track == null: return
+	var copy: NativeTrack = TrackCompiler.compile(JSON.parse_string(JSON.stringify(doc)))
+	check(copy.cells == track.cells and copy.content_hash == track.content_hash,"reshaped compiled road roundtrips exactly")
+	_race(track)
+
+
+func _attachment_pivots() -> void:
+	for kind: String in RoadPieces.KINDS:
+		for endpoint: int in [0,1]:
+			var piece: Dictionary = RoadPieces.create(kind,Vector2(-20,-20),23)
+			var pose: Dictionary = RoadPieces._pose(piece,endpoint)
+			var neighbor: Dictionary = RoadPieces.create("straight",pose.position,0)
+			check(RoadPieces.attached_end(piece,[piece,neighbor],0) == endpoint,kind+" detects either connected end")
+			var trial: Dictionary = piece.duplicate(true)
+			if kind in ["straight","bridge"]: trial.length += 8.0
+			else: trial.radius += 5.0
+			trial = RoadPieces.keep_attachment(piece,trial,endpoint)
+			var after: Dictionary = RoadPieces._pose(trial,endpoint)
+			check(Vector2(pose.position).distance_to(after.position)<0.001 and absf(wrapf(float(after.heading)-float(pose.heading),-180,180))<0.001,kind+" dimension preserves attached position and tangent")
+			check(Vector2(RoadPieces._pose(piece,1-endpoint).position).distance_to(RoadPieces._pose(trial,1-endpoint).position)>1,kind+" dimension moves the free end")
+			check(RoadPieces.validate(trial).is_empty(),kind+" anchored change remains valid")
+			var opposite: Dictionary = RoadPieces.create("straight",RoadPieces._pose(piece,1-endpoint).position)
+			check(RoadPieces.attached_end(piece,[piece,neighbor,opposite],0) == -1,"two connections do not invent a free end")

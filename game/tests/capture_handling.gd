@@ -8,7 +8,7 @@ func _run() -> void:
 	root.size = Vector2i(1672, 941)
 	var scene: Node = load("res://core/game.tscn").instantiate()
 	scene.set("production_mode", true)
-	scene.set("initial_track", NativeTrack.read("res://resources/tracks/slicks_freeway_test.json"))
+	scene.set("initial_track", NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_freeway_test.json"))
 	root.add_child(scene)
 	await process_frame
 	scene.set_physics_process(false)

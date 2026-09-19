@@ -26,14 +26,14 @@ func run() -> void:
 	var folder: String = "user://menu_presentation_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var store := LocalRecords.new(folder.path_join("records.json"))
-	store.settings["last_track"] = "slicks_freeway_test"
-	store.settings["favorites"] = ["slicks_1way_test"]
+	store.settings["last_track"] = "starter_circuit"
+	store.settings["favorites"] = ["starter_circuit"]
 	check(store.save_records() == OK,"resume identity and favorites share the recoverable save")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
-	check(reloaded.settings.get("last_track") == "slicks_freeway_test","the last raced circuit survives relaunch")
+	check(reloaded.settings.get("last_track") == "starter_circuit","the last raced circuit survives relaunch")
 	store.settings["last_track"] = "../outside"
-	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "slicks_freeway_test","invalid resume identifiers cannot overwrite saved preferences")
+	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "starter_circuit","invalid resume identifiers cannot overwrite saved preferences")
 	for filename: String in DirAccess.open(folder).get_files(): DirAccess.remove_absolute(folder.path_join(filename))
 	DirAccess.remove_absolute(folder)
 	print("MENU_PRESENTATION_TESTS: %d checks, %d failures" % [checks,failures])

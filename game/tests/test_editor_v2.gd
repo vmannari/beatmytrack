@@ -107,35 +107,20 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
-	canvas.mode = "move"
-	var start: Vector2 = canvas.to_screen(Vector2(-35,-25))
+	app.call("_editor_category","waypoints")
 	var down := InputEventScreenTouch.new()
-	down.pressed = true; down.position = start+Vector2(10,0); down.index = 1
+	down.pressed = true; down.position = canvas.to_screen(Vector2(-35,-25)); down.index = 1
+	var old: Dictionary = canvas.document.duplicate(true)
 	canvas._gui_input(down)
-	var old: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	down.pressed = false
-	canvas._gui_input(down)
-	check(app.get("document") == old and canvas.selected == 0,"selecting near a node does not move it or create undo history")
-	app.call("_change_node_width",1.0)
-	check((app.get("document") as Dictionary).widths == [9.0,8.0,16.0,16.0],"selected-node inspector edits only its own width")
-	check(canvas.native_preview.cells == TrackCompiler.compile(app.get("document")).cells,"inspector edit refreshes exact native preview")
+	down.pressed = false; canvas._gui_input(down)
+	check(canvas.document == old and canvas.selected == -1,"automatic waypoints cannot be selected for manual editing")
 	canvas.mode = "add"
 	down.position = canvas.to_screen(Vector2(0,-30)); down.pressed = true
 	canvas._gui_input(down)
 	down.pressed = false; canvas._gui_input(down)
-	check(canvas.document.points.size() == 5 and canvas.document.widths.size() == 5 and canvas.document.corners[canvas.selected] == "sharp","adding a bend creates matched width and sharp-corner data")
-	app.call("_set_start_node")
-	check(canvas.document.points[0] == [0.0,-30.0] and canvas.document.widths[0] == 8.5,"setting start rotates all node properties together")
-	app.call("_undo")
-	app.call("_undo")
-	app.call("_redo")
-	check((app.get("document") as Dictionary).points.size() == 5,"redo restores added node properties")
-	app.call("_undo")
-	await process_frame
-	canvas = app.get("canvas")
-	canvas.selected = 0
-	app.call("_build_editor_tools")
-	await _capture("editor-v2-node")
+	check(canvas.document == old,"retired manual add mode cannot insert route nodes")
+	app.call("_editor_category","waypoints")
+	await _capture("editor-automatic-waypoints")
 	canvas.mode = "place"; canvas.stamp_kind = "tree"
 	var count: int = (app.get("document") as Dictionary).objects.size()
 	down.position = canvas.to_screen(Vector2(-20,10)); down.pressed = true

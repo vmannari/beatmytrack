@@ -36,7 +36,7 @@ func run() -> void:
 		var bad: Dictionary = doc.duplicate(true)
 		bad.merge(patch,true)
 		check(not TrackDocument.validate(bad).is_empty(),"invalid free-map payload rejected: "+str(patch.keys()))
-	for id: String in ["slicks_freeway_test","slicks_1way_test","slicks_66_test","slicks_offroad_test"]:
+	for id: String in BuiltinTracks.ids():
 		var native: NativeTrack = NativeTrack.read("res://resources/tracks/"+id+".json")
 		var remix: Dictionary = TrackDocument.from_builtin(native)
 		check(TrackDocument.validate(remix).is_empty(),id+" opens as an editable remix: "+str(TrackDocument.validate(remix)))
@@ -175,12 +175,20 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
-	(browser.find_child("RemixTrack",true,false) as Button).pressed.emit()
+	app.set("selected_track",NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	app.call("_show_screen","tracks")
+	await process_frame
+	browser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
+	while browser.loading: await process_frame
+	for child: Node in browser.find_children("*","Button",true,false):
+		if child.text == "Edit":
+			child.pressed.emit()
+			break
 	await process_frame
 	await process_frame
 	canvas = app.get("canvas")
-	check(canvas != null and canvas.document.base_track == "slicks_freeway_test","library Remix opens selected native circuit in free editor")
-	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/slicks_freeway_test.json").cells,"Remix UI preserves native map geometry")
+	check(canvas != null and canvas.document.id == "starter_circuit","library Edit opens original starter document")
+	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/starter_circuit.json").cells,"starter editing preserves native map geometry")
 	# The preview dialog is owned by root app; close it before remix evidence.
 	for child: Node in app.get_children():
 		if child is Window: child.queue_free()

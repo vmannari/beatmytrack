@@ -30,6 +30,7 @@ func run() -> void:
 	var browser: TrackBrowser=app.get("root_ui").find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
 	browser._select(TrackCatalog.local_metadata(doc))
+	while browser.selecting: await process_frame
 	check(browser.find_child("DeleteUserTrack",true,false)!=null,"saved track has a visible delete action")
 	if capture:
 		for i: int in range(3): await RenderingServer.frame_post_draw
@@ -61,6 +62,7 @@ func run() -> void:
 	var draft: Dictionary=doc.duplicate(true); draft.id="unfinished"; draft.points[1]=draft.points[0].duplicate()
 	check(library.save_document(draft)==OK,"save unfinished draft")
 	browser._select(TrackCatalog.local_metadata(draft))
+	while browser.selecting: await process_frame
 	check(browser.find_child("DeleteUserTrack",true,false)!=null,"unfinished draft can also be deleted")
 	app.queue_free(); await process_frame
 	var temp:=DirAccess.open(folder)

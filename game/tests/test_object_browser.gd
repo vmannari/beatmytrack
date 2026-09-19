@@ -110,6 +110,10 @@ func run() -> void:
 	app.call("_build_editor_tools")
 	check(browser.visible and canvas.stamp_kind=="jump","Jump selection keeps Objects browser open")
 	check(not browser.options.visible,"object options do not reserve a permanent row")
+	check(browser.find_child("ObjectOptions",true,false)==null,"drawer has no settings button")
+	browser._activate_asset("jump")
+	check(browser.options.visible,"reselecting an asset opens its placement options")
+	browser.options.hide()
 	var target: Vector2=Vector2(doc.objects[0].position[0],doc.objects[0].position[1])
 	canvas.mode="place"; canvas._begin(canvas.to_screen(target),-1)
 	canvas._move(canvas.to_screen(target+Vector2(4,0))); canvas._end(-1)
@@ -123,7 +127,7 @@ func run() -> void:
 		for tick: int in range(5): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-props-detail.png"))==OK,"refined prop detail capture")
 		browser.choose("tyre_stack")
-		(browser.find_child("ObjectOptions",true,false) as Button).pressed.emit()
+		browser._activate_asset("tyre_stack")
 		for tick: int in range(4): await RenderingServer.frame_post_draw
 		check(browser.options.visible,"variant and mode popover opens")
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-object-options.png"))==OK,"object options capture")
@@ -146,15 +150,7 @@ func run() -> void:
 		for tick: int in range(4): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-overflow.png"))==OK,"overflow capture")
 	(app.get("editor_map_panel") as Control).hide()
-	app.call("_choose_biome")
-	await process_frame; await process_frame
-	var biome_dialog: AcceptDialog=app.get("root_ui").find_child("BiomeDialog",true,false)
-	check(biome_dialog.visible and biome_dialog.size.x>=500,"biomes use a large centred dialog")
-	if "--capture-objects" in OS.get_cmdline_user_args():
-		for tick: int in range(3): await RenderingServer.frame_post_draw
-		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-biomes-dialog.png"))
-	biome_dialog.hide(); biome_dialog.queue_free()
-	await process_frame
+	check(app.get("root_ui").find_child("EditorBiome",true,false)==null,"biome cannot be changed in editor")
 	app.call("_rename_track")
 	await process_frame; await process_frame
 	var rename_dialog: ConfirmationDialog=app.get("root_ui").find_child("RenameDialog",true,false)
@@ -175,6 +171,26 @@ func run() -> void:
 	if "--capture-objects" in OS.get_cmdline_user_args():
 		for tick: int in range(3): await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-test-disabled.png"))
+	# Cliff presets use the established scale contract, including undo and persistence.
+	browser.choose("cliff")
+	canvas = app.get("canvas")
+	check(canvas.stamp_scale==2.0,"new cliff defaults to a 16 by 6 metre footprint")
+	var cliff_sizes: OptionButton = browser.details.find_child("ObjectSize",true,false)
+	check(cliff_sizes.item_count==3 and cliff_sizes.get_item_text(2)=="24 m","cliff menu exposes its largest supported footprint")
+	cliff_sizes.item_selected.emit(2)
+	check(canvas.stamp_scale==3.0,"24 metre cliff preset reaches placement")
+	var cliff_before: int = app.get("document").objects.size()
+	canvas._place(canvas.to_screen(Vector2(0,-16)))
+	var placed: Dictionary = app.get("document").objects[-1]
+	check(placed.kind=="cliff" and placed.scale==3.0 and CreatorObjects.size_of(placed)==Vector2(24,9),"placed large cliff stores the visible footprint scale")
+	app.call("_undo")
+	check(app.get("document").objects.size()==cliff_before,"cliff placement undoes as one object")
+	var cliff_doc: Dictionary = TrackDocument.create_default()
+	cliff_doc.id="large_cliff_check"
+	cliff_doc.objects=[{"kind":"cliff","position":[0,0],"rotation":0,"scale":3.0}]
+	var cliff_track: NativeTrack = TrackCompiler.compile(cliff_doc)
+	check(cliff_track!=null and cliff_track.cell_at(Vector2(11,4))==4 and cliff_track.cell_at(Vector2(13,0))!=4,"24 metre cliff collision covers the enlarged wall and stops beyond it")
+	check(library.save_document(cliff_doc)==OK and library.load_document(cliff_doc.id).objects[0].scale==3.0,"large cliff scale survives save and reload")
 	print("OBJECT_BROWSER_TESTS: %d checks, %d failures" % [checks,failures])
 	app.queue_free(); await process_frame
 	quit(1 if failures else 0)

@@ -1261,12 +1261,19 @@ func _results() -> void:
 		root_ui.remove_child(child)
 		child.queue_free()
 	var background := ColorRect.new()
-	background.color = Color(0.025,0.075,0.105,0.88)
+	background.color = Color.WHITE
+	var blur := ShaderMaterial.new()
+	blur.shader = preload("res://ui/results_backdrop.gdshader")
+	background.material = blur
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
-	var center := CenterContainer.new()
+	var center := MarginContainer.new()
 	MenuStyle.fill(center)
+	for side: String in ["left","right"]: center.add_theme_constant_override("margin_"+side,32)
+	for side: String in ["top","bottom"]: center.add_theme_constant_override("margin_"+side,16)
 	root_ui.add_child(center)
+	_apply_editor_safe_area(center)
+	center.resized.connect(_apply_editor_safe_area.bind(center))
 	var panel := RaceResults.new()
 	panel.circuit = track_title(track)
 	panel.vehicle_name = VehicleCatalog.title(game.vehicle_id)
@@ -1277,9 +1284,30 @@ func _results() -> void:
 	panel.clean = clean
 	panel.saved = saved
 	panel.editor = returning_to_editor
+	panel.result = RaceResultData.build(track,session.lap_times,game.get("lap_telemetry"),bool(game.get("attempt_practice")))
+	if track_catalog == null: track_catalog = TrackCatalog.new(library)
+	if track_catalog.indexed_revision != library.revision:
+		track_catalog.entries.clear()
+		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
+		for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
+		track_catalog.indexed_revision = library.revision
+	panel.recommendations = RaceRecommendations.suggest(track_catalog,track)
+	panel.next_requested.connect(_next_result_race)
 	panel.retry_requested.connect(_retry_race)
 	panel.return_requested.connect(_leave_race)
 	center.add_child(panel)
+
+func _next_result_race(recommendation: Dictionary) -> void:
+	var next_track: NativeTrack = track_catalog.resolve(recommendation.entry)
+	if next_track == null:
+		_notice("This track is no longer available. Choose another track.")
+		return
+	if is_instance_valid(game):
+		remove_child(game)
+		game.queue_free()
+	game = null
+	selected_track = next_track
+	_start_race(next_track,false)
 
 func _retry_race() -> void:
 	root_ui.visible = false

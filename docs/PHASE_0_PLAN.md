@@ -414,3 +414,6 @@ G01/R03/R07/T02/V05: constructed-hairpin interior crossing detection bypasses th
 2026-09-18 R01/G01/V03/V05/Q01: measured Ajorata CPU optimisation deployed; [commands, regression outcomes, clean display trace and remaining human acceptance](AJORATA_PERFORMANCE.md).
 
 2026-09-18 R01/G01/V03/V05/Q01: full-HUD touch redraw bottleneck reproduced and fixed on attached phone. [Measurements, commands, checks and remaining acceptance](RACING_INPUT_PERFORMANCE.md).
+
+
+2026-09-21 R01/R03/V02/V03/V05/Q01: reference-led race results with completed-lap telemetry, interactive speed/time-diff/sector map, local next-race recommendations and navigation. Final graphical suite: 103 checks pass across 1280x720, 1920x1080 and 2400x1080. No phone test; older app navigation suite remains blocked before results. See [implementation, evidence and limits](RACE_RESULTS.md).

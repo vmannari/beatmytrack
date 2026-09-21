@@ -375,7 +375,7 @@ func _check_clean_result() -> void:
 	game.set("attempt_practice", false)
 	game.emit_signal("race_completed")
 	var records: LocalRecords = app.get("records")
-	check(records.best_for(track, game.get("handling")) == 109.0 and _button(app.get("root_ui"), "Choose track") != null, "a clean normal race result persists its local PB and exposes track selection")
+	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ResultsTracks",true,false) != null, "a clean normal race result persists its local PB and exposes track selection")
 	check(((app.get("root_ui") as Node).find_child("ResultStatus",true,false) as Label).text == "FIRST TIME SET","a first normal finish is presented as the player's benchmark")
 	await _capture("normal-race-debrief")
 	# Controlled result fixtures exercise improvement feedback; they are not
@@ -383,12 +383,12 @@ func _check_clean_result() -> void:
 	completed.lap_times[4] = 20.816
 	completed.lap_start_time = 108.816
 	app.call("_results")
-	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("0.184 s faster"),"the integrated PB screen uses the previous saved target")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("-0.184 from your best"),"the integrated PB screen uses the previous saved target")
 	await _capture("improved-race-debrief")
 	completed.lap_times[4] = 21.0
 	completed.lap_start_time = 109.0
 	app.call("_results")
-	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("+0.184 s off"),"a slower integrated finish presents its exact gap without replacing the PB")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("+0.184 from your best"),"a slower integrated finish presents its exact gap without replacing the PB")
 	game.emit_signal("exit_requested")
 	await process_frame
 	await process_frame

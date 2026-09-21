@@ -40,6 +40,7 @@ var capture_path: String = ""
 var track_index: int = -1
 var TRACK_NAMES: Array[String] = BuiltinTracks.ids()
 var native_track: NativeTrack
+var lap_telemetry := LapTelemetry.new()
 var track_session: TrackSession
 var track_ground: Node3D
 var track_debug: TrackDebug
@@ -183,6 +184,7 @@ func _physics_process(_delta: float) -> void:
 		profile_start = Time.get_ticks_usec()
 	if native_track != null and not editor_test:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
+		lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
 		if production_mode and track_session.finished:
 			paused = true
 			driver.clear()
@@ -275,6 +277,8 @@ func restart() -> void:
 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
 	track_session = TrackSession.new()
+	lap_telemetry = LapTelemetry.new()
+	lap_telemetry.begin(sim.state.position)
 	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
 	if native_track != null:
 		sim.state.route_index = native_track.nearest_route(sim.state.position)

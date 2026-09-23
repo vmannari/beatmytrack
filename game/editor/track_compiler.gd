@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-16"
+const VERSION: String = "creator-compiler-19"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -11,6 +11,11 @@ static var bases: Dictionary = {}
 static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> NativeTrack:
 	if not TrackDocument.validate(document).is_empty():
 		return null
+	# Desert road beds are compacted sand regardless of the saved road option.
+	if document.theme == "desert":
+		document = document.duplicate(true)
+		document.surface = "asphalt" # Structural road cell; biome supplies material/traction.
+		if not document.layout.is_empty(): document.layout.surface = "asphalt"
 	var base: NativeTrack
 	if document.base_track != "":
 		if not bases.has(document.base_track):
@@ -127,7 +132,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
 		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
 		"finish":{"center":[finish_center.x,finish_center.y],"half_width":radius,"heading":heading,"basis":"creator route origin"},
-		"route":route_data,"checkpoints":checkpoints, "debug":{"blocks":[]},
+		"route":route_data,"route_widths":Array(widths),"checkpoints":checkpoints, "debug":{"blocks":[]},
 		"provenance":{"source":"local creator","use":"original route with built-in track kit"}}
 	if base != null:
 		data.deck = base.metadata.deck.duplicate(true)

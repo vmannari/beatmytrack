@@ -144,6 +144,12 @@ static func _normalize(data: Variant) -> Dictionary:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "selected_car":
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+		elif field == "track_ratings":
+			if not preferences[field] is Dictionary: return {}
+			for id: Variant in preferences[field]:
+				var rating: Variant = preferences[field][id]
+				if not id is String or id.is_empty() or id.length() > 128: return {}
+				if not _number(rating) or float(rating) != floorf(float(rating)) or int(rating) < 1 or int(rating) > 5: return {}
 		elif field == "favorites":
 			if not preferences[field] is Array: return {}
 			for id: Variant in preferences[field]:

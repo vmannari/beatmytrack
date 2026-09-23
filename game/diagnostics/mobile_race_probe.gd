@@ -13,7 +13,9 @@ var last_usec: int = 0
 var batches: Array[bool] = [true,true,true]
 var shadows: Array[bool] = [true,true,true]
 var sample_seconds: float = 20.0
-var costs: Dictionary = {"sim":[],"rules":[],"ai":[],"present":[]}
+var costs: Dictionary = {"sim":[],"rules":[],"ai":[],"present":[],"particles":[],"trails":[],"telemetry":[],"weather":[],"car":[],"props":[],"camera":[],"hud":[]}
+var feature_stages: Array = []
+var surface_probe = preload("res://diagnostics/surface_material_probe.gd").new()
 var slow_frames: Array[Dictionary] = []
 var track_id: String = "starter_circuit"
 var original_shadows: bool = true
@@ -27,6 +29,11 @@ var tyre_impact: bool = false
 var warmup_seconds: float = 5.0
 var peak_moving_tyres: int = 0
 var lamp_modes: Array[bool] = [true,true,true]
+var trail_modes: Array[bool] = [true,true,true]
+var compare_trails: bool = false
+var probe_track: NativeTrack
+var compare_particles: bool = false
+var particle_modes: Array[bool] = [true,true,true]
 
 func _ready() -> void:
 	set_process(false)
@@ -59,11 +66,22 @@ func _start() -> void:
 		scales = [0.667,0.667,0.667]
 		shadows = [true,true,true]
 		lamp_modes = [true,false,true]
+	compare_trails = config is Dictionary and config.get("compare_trails",false)
+	if compare_trails:
+		scales = [0.667,0.667,0.667]
+		shadows = [true,true,true]
+		trail_modes = [false,true,false]
 	if config is Dictionary and config.has("render_scale"):
 		for index: int in range(scales.size()): scales[index] = clampf(float(config.render_scale),0.5,1.0)
+	compare_particles = config is Dictionary and config.get("compare_particles",false)
+	if compare_particles:
+		scales = [0.667,0.667,0.667]
+		shadows = [true,true,true]
+		particle_modes = [true,false,true]
 	alternate_controls = config is Dictionary and config.get("alternate_controls",false)
 	# Build the actual racing HUD too: the editor practice UI hides its cards.
 	app.call("_start_race", track, not record_samples)
+	probe_track = track
 	game = app.get("game")
 	game.set("ai_enabled", true)
 	tyre_impact = config is Dictionary and config.get("tyre_impact",false)
@@ -92,6 +110,22 @@ func _start() -> void:
 	if config is Dictionary and config.get("use_game_scale",false):
 		for index: int in range(scales.size()): scales[index] = original_scale
 	original_shadows = (game.get("biome_light") as DirectionalLight3D).shadow_enabled
+	surface_probe.collect(game.get("track_ground"))
+	if config is Dictionary and config.get("feature_profile",false):
+		feature_stages = config.get("features",["baseline","shadows","particles","trails","hud","weather","half_scale","baseline"])
+		scales.clear()
+		batches.clear()
+		shadows.clear()
+		lamp_modes.clear()
+		trail_modes.clear()
+		particle_modes.clear()
+		for feature: String in feature_stages:
+			scales.append(0.5 if feature == "half_scale" else original_scale)
+			batches.append(true)
+			shadows.append(original_shadows and feature != "shadows")
+			lamp_modes.append(true)
+			trail_modes.append(false)
+			particle_modes.append(feature != "particles")
 	_configure_stage()
 	last_position = game.get("sim").state.position
 	last_usec = Time.get_ticks_usec()
@@ -99,6 +133,7 @@ func _start() -> void:
 	print("MOBILE_PROBE_START scale=", scales[stage])
 
 func _process(_delta: float) -> void:
+	if compare_trails and not trail_modes[stage]: (game.get("trails") as SkidTrails).clear()
 	if touch_stress:
 		var touch: TouchControls = (game.get("hud") as PlaygroundHUD).touch
 		var active: Array[int] = [0,3]
@@ -146,6 +181,9 @@ func _process(_delta: float) -> void:
 		"draw_calls":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 		"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)}
 	report.track_id = track_id
+	report.disabled_feature = feature_stages[stage] if not feature_stages.is_empty() else "legacy_probe"
+	report.timing_schema = 2
+	report.surface_materials_changed = surface_probe.changed_count
 	report.shadows = shadows[stage]
 	report.lamps_enabled = lamp_modes[stage]
 	report.lamp_count = game.find_children("*","OmniLight3D",true,false).size()
@@ -166,12 +204,18 @@ func _process(_delta: float) -> void:
 	report.speed_median_kph = speeds[speeds.size()/2]
 	report.speed_max_kph = speeds.back()
 	report.tyre_impact = tyre_impact
+	report.trails_saturated = trail_modes[stage]
+	report.particles_enabled = particle_modes[stage]
+	report.trail_instances = (game.get("trails") as SkidTrails).instances.visible_instance_count
 	report.peak_moving_tyres = peak_moving_tyres
 	report.collisions = game.get("sim").state.collision_count
 	for key: String in costs:
 		costs[key].sort()
 		report[key+"_median_ms"] = costs[key][costs[key].size()/2]
 		report[key+"_p99_ms"] = costs[key][int(costs[key].size()*0.99)]
+		var total: float = 0.0
+		for value: float in costs[key]: total += value
+		report[key+"_mean_ms"] = total / costs[key].size()
 	reports.append(report)
 	print("MOBILE_PROBE ", JSON.stringify(report))
 	if record_samples: report.slow_frames = slow_frames.duplicate()
@@ -180,6 +224,11 @@ func _process(_delta: float) -> void:
 	output.close()
 	stage += 1
 	if stage == scales.size():
+		surface_probe.restore()
+		_set_particles_enabled(true)
+		(game.get("trails") as SkidTrails).visible = true
+		(game.get("hud") as PlaygroundHUD).visible = true
+		if game.get("storm_weather") != null: game.get("storm_weather").visible = true
 		game.set("profile_enabled",false)
 		get_viewport().scaling_3d_scale = original_scale
 		(game.get("biome_light") as DirectionalLight3D).shadow_enabled = original_shadows
@@ -206,6 +255,15 @@ func _process(_delta: float) -> void:
 	print("MOBILE_PROBE_START scale=", scales[stage], " batch=",batches[stage])
 
 func _configure_stage() -> void:
+	if not feature_stages.is_empty():
+		var feature: String = feature_stages[stage]
+		surface_probe.apply(feature)
+		game.set("profile_skip_telemetry",feature == "telemetry")
+		_set_particles_enabled(feature != "particles")
+		(game.get("trails") as SkidTrails).visible = feature != "trails"
+		(game.get("hud") as PlaygroundHUD).visible = feature != "hud"
+		if game.get("storm_weather") != null: game.get("storm_weather").visible = feature != "weather"
+	if compare_particles: _set_particles_enabled(particle_modes[stage])
 	var previous: CarVisual = game.get("car")
 	if previous.batch_parts != batches[stage]:
 		var replacement := CarVisual.new()
@@ -217,3 +275,24 @@ func _configure_stage() -> void:
 	get_viewport().scaling_3d_scale = scales[stage]
 	(game.get("biome_light") as DirectionalLight3D).shadow_enabled = shadows[stage]
 	for lamp: OmniLight3D in game.find_children("*","OmniLight3D",true,false): lamp.visible = lamp_modes[stage]
+	if compare_trails:
+		var trails: SkidTrails = game.get("trails")
+		trails.clear()
+		if trail_modes[stage]:
+			var count: int = probe_track.route.size()
+			for index: int in range(trails.CAPACITY):
+				var route_index: int = floori(index/4.0)%count
+				var point: Vector2 = probe_track.route[route_index]
+				var next: Vector2 = probe_track.route[(route_index+1)%count]
+				var tangent: Vector2 = (next-point).normalized()
+				var side: float = -0.72 if index%2 == 0 else 0.72
+				var offset: Vector2 = tangent.orthogonal()*side
+				var a: Vector3 = VisualGeometry.world(point+offset)+Vector3(0,0.029,0)
+				var b: Vector3 = VisualGeometry.world(next+offset)+Vector3(0,0.029,0)
+				trails._mark(a,b,0.0,0,0.58)
+
+func _set_particles_enabled(enabled: bool) -> void:
+	var effect: Node3D = game.get("sand_dust")
+	effect.visible = enabled
+	for emitter: GPUParticles3D in effect.get_children():
+		emitter.speed_scale = 1.0 if enabled else 0.0

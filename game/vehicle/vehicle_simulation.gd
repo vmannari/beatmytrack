@@ -3,7 +3,9 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.29"
+const PHYSICS_VERSION: String = "arcade-planar-0.39"
+const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
 const STEP: float = 1.0 / TICK_RATE
 const ROLL_DURATION_TICKS: int = 72 # 0.6 s per revolution; shared with presentation.
@@ -91,6 +93,13 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var steer_angle: float = state.steering * config.steering_angle * (1.0 - config.high_speed_steering_reduction * speed_fraction)
 	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
 	target_yaw *= config.front_grip / config.rear_grip
+	var wheel_soil: Vector4 = _wheel_soil_contacts(ground) if config.wheel_soil_drag else Vector4(pickup,pickup,pickup,pickup)
+	# Unequal resistance across the car pulls it toward the wheels that left the
+	# road. This is a bounded continuous yaw demand rather than an impulse, so a
+	# one-wheel excursion is noticeable and settles immediately after rejoining.
+	var left_soil: float = (wheel_soil.x + wheel_soil.z) * 0.5
+	var right_soil: float = (wheel_soil.y + wheel_soil.w) * 0.5
+	var soil_drag_rate: float = (7.5 + speed * 0.38) * smoothstep(3.0,14.0,speed) * config.soil_drag_multiplier
 	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
 	var lift: float = (1.0 - throttle) * (1.0 - brake) * smoothstep(8.0, 24.0, longitudinal)
 	target_yaw += state.steering * lift * config.lift_off_rotation
@@ -112,6 +121,14 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		# Follow the player's correction sooner; no road/heading target or speed gift.
 		yaw_response *= 1.0 + config.countersteer_assistance * smoothstep(0.04, 0.3, absf(slip))
 	state.yaw_rate = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
+	# Differential wheel drag creates a moment about the centre of mass. This is
+	# applied as angular acceleration after steering response, so it adds to or
+	# opposes a corner instead of being hidden inside the requested steering yaw.
+	var differential_deceleration: float = (right_soil-left_soil) * soil_drag_rate * 0.5
+	var soil_angular_acceleration: float = differential_deceleration * config.mass * config.track_width * 0.5 / config.rotational_inertia * SOIL_TORQUE_GAIN
+	state.yaw_rate += soil_angular_acceleration * STEP * signf(longitudinal)
+	state.yaw_rate += _soil_rough_yaw_acceleration(wheel_soil,speed) * STEP
+	state.yaw_rate = clampf(state.yaw_rate,-config.maximum_yaw_rate,config.maximum_yaw_rate)
 	state.heading = wrapf(state.heading + state.yaw_rate * STEP, -PI, PI)
 	# Use the newly turned chassis frame while retaining world-space momentum.
 	forward = state.forward()
@@ -159,8 +176,11 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
 	resistance += surface.y
 	# Soil drag dissipates sideways momentum too, including under throttle.
-	var soil_contact: float = _wheel_soil_contact(ground, pickup) if config.wheel_soil_drag else pickup
-	var soil_drag: float = soil_contact * (3.0 + speed * 0.22) * smoothstep(6.0, 18.0, speed) * config.soil_drag_multiplier
+	var average_soil: float = (wheel_soil.x+wheel_soil.y+wheel_soil.z+wheel_soil.w)*0.25
+	var soil_contact: float = maxf(pickup,average_soil)
+	# Stronger high-speed scrub makes a full off-track excursion costly while
+	# averaging the probes keeps one or two escaped wheels proportional.
+	var soil_drag: float = soil_contact * soil_drag_rate
 	next_lateral = move_toward(next_lateral, 0.0, soil_drag * STEP)
 	resistance += soil_drag
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
@@ -247,14 +267,32 @@ func _step_kerbs(previous: Vector2, previous_heading: float, ground: PlaygroundD
 
 
 func _wheel_soil_contact(ground: PlaygroundData, center_contact: float) -> float:
-	if ground == null: return center_contact
-	# Fixed wheel order, using the canonical axle dimensions and current deck.
-	# A single wheel in loose soil must cost speed before the chassis center crosses.
-	var contact: float = center_contact
+	var contacts: Vector4 = _wheel_soil_contacts(ground)
+	return maxf(center_contact,maxf(maxf(contacts.x,contacts.y),maxf(contacts.z,contacts.w)))
+
+
+func _wheel_soil_contacts(ground: PlaygroundData) -> Vector4:
+	if ground == null: return Vector4.ZERO
+	# Fixed order: front-left, front-right, rear-left, rear-right. Probes use
+	# canonical axle dimensions and the current deck for deterministic replays.
+	var contacts := Vector4.ZERO
 	var probe := VehicleState.new()
 	probe.track_elevated = state.track_elevated
-	for axle: float in [-0.5, 0.5]:
+	var index: int = 0
+	for axle: float in [0.5, -0.5]:
 		for side: float in [-0.5, 0.5]:
 			probe.position = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
-			contact = maxf(contact, ground.tire_pickup(probe))
-	return contact
+			contacts[index] = ground.tire_pickup(probe)
+			index += 1
+	return contacts
+
+
+func _soil_rough_yaw_acceleration(contacts: Vector4, speed: float) -> float:
+	var contact_count: float = float(contacts.x>0.0)+float(contacts.y>0.0)+float(contacts.z>0.0)+float(contacts.w>0.0)
+	if contact_count == 0.0: return 0.0
+	# Two incommensurate spatial waves approximate small terrain-driven tyre
+	# deflections. World-space sampling feels irregular but remains replay-safe
+	# and independent of simulation/display rate.
+	var roughness: float = sin(state.position.x*2.71+state.position.y*1.83)
+	roughness += sin(state.position.x*5.17-state.position.y*3.29+0.73)*0.45
+	return roughness/1.45 * SOIL_ROUGH_YAW_ACCELERATION * contact_count*0.25 * smoothstep(3.0,18.0,speed)

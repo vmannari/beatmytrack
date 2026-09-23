@@ -188,7 +188,7 @@ func _show_screen(next: String) -> void:
 	nav.add_child(tabs)
 	for item: Array in [["play","HOME"],["tracks","PLAY"],["create","CREATE"],["garage","GARAGE"]]:
 		var id: String = item[0]
-		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id)
+		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id or (id == "create" and screen in ["biome","drafts"]))
 		button.name = "Tab_" + id
 		button.custom_minimum_size.y = 64
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -208,6 +208,7 @@ func _show_screen(next: String) -> void:
 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	layout.add_child(content)
 	match screen:
+		"drafts": _drafts()
 		"biome": _choose_biome()
 		"tracks": _tracks()
 		"create": _editor()
@@ -328,6 +329,7 @@ func _tracks() -> void:
 	browser.state = browser_state
 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
 	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
+	browser.home_requested.connect(func() -> void: _show_screen("play"))
 	browser.import_requested.connect(_import_dialog)
 	browser.delete_requested.connect(_confirm_delete_track)
 	browser.notice.connect(_notice)
@@ -1208,8 +1210,13 @@ func _own_dialog(dialog: AcceptDialog) -> void:
 	if dialog is FileDialog:
 		dialog.file_selected.connect(func(_path: String) -> void: dialog.queue_free())
 
+var test_return_to_drafts: bool = false
+var test_document_snapshot: Dictionary = {}
+
 func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	returning_to_editor = from_editor
+	test_return_to_drafts = from_editor and screen == "drafts"
+	test_document_snapshot = document.duplicate(true) if from_editor else {}
 	if not from_editor:
 		records.settings["last_track"] = track.identity
 		if records.save_records() != OK:
@@ -1221,10 +1228,12 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
 	game.set("production_mode", true)
+	game.set("rating_records", records)
 	game.set("editor_test", from_editor)
 	game.connect("exit_requested", _leave_race)
 	game.connect("edit_here_requested", _edit_here)
 	game.connect("race_completed", _results)
+	game.connect("practice_lap_completed", _complete_draft_test,CONNECT_DEFERRED)
 	game.connect("retry_requested", _retry_race)
 	add_child(game)
 	var hud: PlaygroundHUD = game.get("hud")
@@ -1242,7 +1251,8 @@ func _leave_race() -> void:
 		remove_child(game)
 		game.queue_free()
 	game = null
-	_show_screen("create" if returning_to_editor else "tracks")
+	_show_screen("drafts" if test_return_to_drafts else "create" if returning_to_editor else "tracks")
+	test_return_to_drafts = false
 	if not pending_menu_notice.is_empty():
 		_notice(pending_menu_notice)
 		pending_menu_notice = ""
@@ -1251,8 +1261,9 @@ func _results() -> void:
 	var session: TrackSession = game.get("track_session")
 	var track: NativeTrack = game.get("native_track")
 	var total: float = session.race_time_seconds()
-	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor and session.shortcut_count == 0
+	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor
 	var previous: float = records.best_for(track, game.get("handling"))
+	var previous_lap: float = float(records.records.get(records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
 	var saved: bool = not clean
 	if clean: saved = records.record(track, game.get("handling"), total, session.lap_times) == OK
 	(game.get("hud") as PlaygroundHUD).hide()
@@ -1285,17 +1296,48 @@ func _results() -> void:
 	panel.saved = saved
 	panel.editor = returning_to_editor
 	panel.result = RaceResultData.build(track,session.lap_times,game.get("lap_telemetry"),bool(game.get("attempt_practice")))
+	var flying: float = 0.0
+	for i: int in range(1,session.lap_times.size()):
+		if flying == 0 or session.lap_times[i] < flying: flying = session.lap_times[i]
+	var incident_free: bool = game.sim.state.collision_count == 0 and panel.result.laps.size() == RaceRules.LAPS
+	for lap: Dictionary in panel.result.laps:
+		if lap.get("samples",[]).is_empty() or not lap.get("events",[]).is_empty(): incident_free = false
+	panel.set_meta("reward_facts",{"complete":clean and session.finished,"total":total,"previous":previous,"previous_lap":previous_lap,"flying":flying,"incident_free":incident_free})
+	panel.continue_requested.connect(_results_continue.bind(panel,center))
+	panel.retry_requested.connect(_retry_race)
+	panel.return_requested.connect(_leave_race)
+	center.add_child(panel)
+	root_ui.modulate.a = 0.0
+	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+
+func _results_continue(results: RaceResults, parent: Control) -> void:
+	results.hide()
+	var page := RaceComplete.new()
+	page.results = results
+	page.rating_records = records
+	page.rating_track_id = (game.get("native_track") as NativeTrack).identity
+	page.facts = results.get_meta("reward_facts",{})
 	if track_catalog == null: track_catalog = TrackCatalog.new(library)
 	if track_catalog.indexed_revision != library.revision:
 		track_catalog.entries.clear()
 		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
 		for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
 		track_catalog.indexed_revision = library.revision
-	panel.recommendations = RaceRecommendations.suggest(track_catalog,track)
-	panel.next_requested.connect(_next_result_race)
-	panel.retry_requested.connect(_retry_race)
-	panel.return_requested.connect(_leave_race)
-	center.add_child(panel)
+	page.recommendations = RaceRecommendations.suggest(track_catalog,game.get("native_track"))
+	page.back_requested.connect(func() -> void:
+		parent.remove_child(page)
+		page.queue_free()
+		results.show())
+	page.home_requested.connect(func() -> void:
+		if is_instance_valid(game):
+			remove_child(game)
+			game.queue_free()
+		game = null
+		returning_to_editor = false
+		_show_screen("play"))
+	page.tracks_requested.connect(_leave_race)
+	page.race_requested.connect(_next_result_race)
+	parent.add_child(page)
 
 func _next_result_race(recommendation: Dictionary) -> void:
 	var next_track: NativeTrack = track_catalog.resolve(recommendation.entry)
@@ -1386,7 +1428,7 @@ func _build_paint_tools() -> void:
 	editor_inspector.add_child(help)
 
 func _editor_help() -> void:
-	_notice("Changes autosave to a separate WIP. Load can reopen the WIP or original. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
+	_notice("Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
 
 func _input(event: InputEvent) -> void:
 	# Tab is a GUI navigation key and never reaches unhandled_key_input.
@@ -1484,6 +1526,10 @@ func _open_saved_tracks() -> void:
 	_open_library("saved")
 
 func _prepare_editor_load() -> bool:
+	if not is_instance_valid(canvas): return true
+	if not canvas.paint_points.is_empty():
+		_notice("Confirm or cancel the surface preview first.")
+		return false
 	if not canvas.ghost.is_empty():
 		canvas.confirm_piece()
 		if not canvas.ghost.is_empty():
@@ -1494,69 +1540,119 @@ func _prepare_editor_load() -> bool:
 		return false
 	return true
 
-func _load_track_dialog() -> void:
-	if not canvas.paint_points.is_empty():
-		_notice("Confirm or cancel the surface preview first.")
-		return
-	var saved: Array[Dictionary] = library.list_documents()
-	for wip: Dictionary in library.list_wips():
-		var item: Dictionary=wip.duplicate(true)
-		item["_wip"]=true
-		saved.append(item)
-	saved.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.name).naturalnocasecmp_to(str(b.name)) < 0)
-	var dialog := ConfirmationDialog.new()
-	dialog.name = "LoadTrackDialog"
-	dialog.title = "Saved tracks"
-	dialog.dialog_hide_on_ok = false
-	dialog.ok_button_text = "Load for editing"
-	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(500,300)
-	box.add_theme_constant_override("separation",12)
-	dialog.add_child(box)
-	var summary := MenuStyle.label("Choose a saved track to edit.",18,true)
-	summary.name = "SavedTrackCount"
-	box.add_child(summary)
-	var search := LineEdit.new()
-	search.name = "LoadSearch"
-	search.placeholder_text = "Search saved tracks"
-	search.custom_minimum_size.y = 48
-	box.add_child(search)
-	var choices := ItemList.new()
-	choices.name = "SavedDrafts"
-	choices.custom_minimum_size = Vector2(500,224)
-	choices.add_theme_font_size_override("font_size",20)
-	choices.add_theme_constant_override("v_separation",18)
-	box.add_child(choices)
-	var filter: Callable = func(query: String) -> void:
-		choices.clear()
-		for draft: Dictionary in saved:
-			if not query.is_empty() and not (str(draft.name)+" "+str(draft.get("creator",""))).to_lower().contains(query.to_lower()): continue
-			var label: String = str(draft.name)+(" (WIP)" if draft.get("_wip",false) else "")
-			if not TrackDocument.validate(draft).is_empty(): label += " (draft)"
-			var index: int = choices.add_item(label)
-			choices.set_item_metadata(index,("wip:" if draft.get("_wip",false) else "")+str(draft.id))
-		if choices.item_count > 0: choices.select(0)
-		dialog.get_ok_button().disabled = choices.item_count == 0
-		summary.text = "%d saved tracks" % choices.item_count if choices.item_count > 0 else ("No saved tracks yet." if saved.is_empty() else "No tracks match your search.")
-	search.text_changed.connect(filter)
-	filter.call("")
-	var open_selected: Callable = func() -> void:
-		var selected: PackedInt32Array = choices.get_selected_items()
-		if selected.is_empty(): return
-		if not _prepare_editor_load(): return
-		_load_saved_document(str(choices.get_item_metadata(selected[0])))
-	choices.item_activated.connect(func(_index: int) -> void: open_selected.call())
-	dialog.confirmed.connect(open_selected)
-	root_ui.add_child(dialog)
-	dialog.canceled.connect(dialog.queue_free)
-	dialog.popup_centered(Vector2i(540,400))
-	choices.grab_focus()
+var draft_return_screen: String = "biome"
 
-func _load_saved_document(id: String) -> void:
+func _open_drafts() -> void:
+	if not _prepare_editor_load(): return
+	draft_return_screen = "create" if screen == "create" else "biome"
+	_show_screen("drafts")
+
+func _drafts() -> void:
+	var browser: VBoxContainer = load("res://ui/draft_browser.gd").new()
+	browser.name = "DraftBrowser"
+	browser.set("library",library)
+	browser.connect("edit_requested",_load_saved_document)
+	browser.connect("test_requested",_test_saved_draft)
+	browser.connect("publish_requested",_publish_saved_draft)
+	browser.connect("back_requested",func() -> void: _show_screen(draft_return_screen if not document.is_empty() else "biome"))
+	browser.connect("delete_requested",_confirm_delete_draft)
+	content.add_child(browser)
+
+func _read_draft_for_action(id: String) -> Dictionary:
 	var loaded: Dictionary = library.load_wip(id.trim_prefix("wip:")) if id.begins_with("wip:") else library.load_document(id)
 	if loaded.is_empty():
-		_notice("Could not load this track: "+library.last_error)
+		_notice("Could not load this draft: "+library.last_error)
+	elif library.is_published(str(loaded.id)):
+		_notice("This track is published and locked against editing.")
+		return {}
+	return loaded
+
+func _test_saved_draft(id: String) -> void:
+	var loaded: Dictionary = _read_draft_for_action(id)
+	if loaded.is_empty(): return
+	var route: Dictionary = RoadPieces.route_from_pieces(loaded)
+	if not route.ok:
+		_notice("Edit this track before testing: "+str(route.errors[0]))
 		return
+	if not loaded.has("start_line"):
+		_notice("Place a start line in the editor before testing.")
+		return
+	loaded = route.document
+	var track: NativeTrack = TrackCompiler.compile(loaded)
+	if track == null:
+		_notice("This track needs repairs before testing. Open Edit track for details.")
+		return
+	if library.save_wip(loaded) != OK:
+		_notice(library.last_error)
+		return
+	document = loaded
+	editor_view.clear()
+	history.clear()
+	redo_history.clear()
+	track.spawn = _practice_start(track)
+	track.spawn_heading = _practice_heading(track)
+	_start_race(track,true)
+
+func _complete_draft_test() -> void:
+	if not is_instance_valid(game) or test_document_snapshot.is_empty(): return
+	var witness: TrackSession = game.get("practice_validation")
+	if not witness.finished or not bool(game.get("practice_validation_eligible")): return
+	if TrackLibrary.draft_fingerprint(document) != TrackLibrary.draft_fingerprint(test_document_snapshot): return
+	if library.is_published(str(document.id)): return
+	if library.mark_tested(document) != OK:
+		pending_menu_notice = "Test completed, but its status could not be saved. Please try again."
+	else:
+		pending_menu_notice = "Test run complete. This draft is ready to publish."
+	if test_return_to_drafts: _leave_race()
+
+func _publish_saved_draft(id: String) -> void:
+	var loaded: Dictionary = _read_draft_for_action(id)
+	if loaded.is_empty(): return
+	if library.publish_document(loaded) != OK:
+		_notice(library.last_error)
+		return
+	if document.get("id","") == loaded.id:
+		document = {}
+		history.clear()
+		redo_history.clear()
+		editor_view.clear()
+	_show_screen("drafts")
+	_notice("Published to Play on this device. This track is now locked against editing.")
+
+func _confirm_delete_draft(id: String, title: String) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.name = "DeleteDraftDialog"
+	dialog.title = "Delete draft?"
+	dialog.dialog_text = 'Delete "%s" and its local autosave?\nThis cannot be undone.' % title
+	dialog.ok_button_text = "Delete draft"
+	dialog.confirmed.connect(func() -> void:
+		if library.delete_editable(id) != OK:
+			_notice(library.last_error)
+			return
+		if document.get("id","") == id:
+			document = {}
+			history.clear()
+			redo_history.clear()
+			editor_view.clear()
+		if selected_track != null and selected_track.identity == "creator_"+id:
+			selected_track = NativeTrack.read("res://resources/tracks/"+BUILTIN_IDS[0]+".json")
+		var favorites: Array = records.settings.get("favorites",[]).duplicate()
+		favorites.erase("creator_"+id)
+		records.settings.favorites = favorites
+		if records.settings.get("last_track","") == "creator_"+id: records.settings.last_track = selected_track.identity
+		var settings_error: Error = records.save_records()
+		_show_screen("drafts")
+		if settings_error != OK: _notice("Draft deleted, but favorite settings could not be saved."))
+	_own_dialog(dialog)
+	dialog.popup_centered(Vector2i(500,210))
+	dialog.get_cancel_button().grab_focus()
+
+func _load_track_dialog() -> void:
+	_open_drafts()
+
+func _load_saved_document(id: String) -> void:
+	var loaded: Dictionary = _read_draft_for_action(id)
+	if loaded.is_empty(): return
 	document = loaded
 	canvas = null # Loading a different document must not capture the outgoing view.
 	editor_view.clear()
@@ -1644,8 +1740,25 @@ func _choose_hazard(kind: String) -> void:
 
 func _choose_biome() -> void:
 	if screen != "biome": return
-	_heading("NEW TRACK", "Choose your biome")
-	content.add_child(MenuStyle.label("This choice is permanent for this track. Each biome has its own nature objects.",18))
+	if document.is_empty():
+		document = TrackDocument.create_blank()
+		document.id = TrackLibrary.unique_id()
+	var heading_row := HBoxContainer.new()
+	heading_row.add_theme_constant_override("separation",20)
+	content.add_child(heading_row)
+	var heading_copy := VBoxContainer.new()
+	heading_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	heading_copy.add_theme_constant_override("separation",2)
+	heading_row.add_child(heading_copy)
+	_heading("NEW TRACK", "Select biome",heading_copy)
+	var load_track := MenuStyle.button("LOAD TRACK",_open_drafts)
+	load_track.name = "LoadTrack"
+	load_track.icon = MenuIcon.texture("folder")
+	load_track.custom_minimum_size = Vector2(190,58)
+	load_track.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	heading_row.add_child(load_track)
+	var selected_biome: String = str(document.get("theme",TrackDocument.THEMES[0]))
+	if selected_biome not in TrackDocument.THEMES: selected_biome = TrackDocument.THEMES[0]
 	var cards := HBoxContainer.new()
 	cards.name = "BiomePicker"
 	cards.add_theme_constant_override("separation",16)
@@ -1656,15 +1769,105 @@ func _choose_biome() -> void:
 		card.name = "Biome_"+biome
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card.custom_minimum_size = Vector2(180,260)
-		card.icon = load("res://assets/editor/biome_"+biome+".svg")
-		card.expand_icon = true
-		card.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		card.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
-		card.text = TrackTheme.title(biome)
-		card.add_theme_font_size_override("font_size",26)
-		card.add_theme_constant_override("outline_size",0)
-		card.pressed.connect(_select_creation_biome.bind(biome))
+		card.clip_contents = true
+		card.text = ""
+		var selected: bool = biome == selected_biome
+		var card_style := MenuStyle.box(Color.TRANSPARENT,0)
+		card_style.border_color = MenuStyle.ACCENT if selected else MenuStyle.BORDER
+		card_style.set_border_width_all(3 if selected else 1)
+		card.add_theme_stylebox_override("normal",card_style)
+		var picture := TextureRect.new()
+		picture.name = "BiomePicture"
+		picture.texture = TrackTile.scenery_texture(biome)
+		picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		picture.modulate = Color(0.8,0.85,0.9)
+		picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		MenuStyle.fill(picture)
+		card.add_child(picture)
+		var label_panel := PanelContainer.new()
+		label_panel.name = "BiomeLabelOverlay"
+		label_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		label_panel.anchor_left = 0.0
+		label_panel.anchor_top = 1.0
+		label_panel.anchor_right = 1.0
+		label_panel.anchor_bottom = 1.0
+		label_panel.offset_top = -72
+		label_panel.offset_bottom = -8
+		label_panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720e8"),0))
+		var label_center := CenterContainer.new()
+		label_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		label_panel.add_child(label_center)
+		var label_row := HBoxContainer.new()
+		label_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		label_row.add_theme_constant_override("separation",10)
+		label_center.add_child(label_row)
+		var icon := TextureRect.new()
+		icon.name = "BiomeIcon"
+		icon.modulate = Color("c7dfff") if biome != "night_city" else Color("f1f4f3")
+		icon.texture = MenuIcon.texture({"pine":"leaf","desert":"cactus","night_city":"night","winter":"snowflake","storm":"storm"}.get(biome,"biomes"))
+		icon.custom_minimum_size = Vector2(30,30)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		label_row.add_child(icon)
+		var label := MenuStyle.label(TrackTheme.title(biome).to_upper(),26)
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label_row.add_child(label)
+		card.add_child(label_panel)
+		card.pressed.connect(_preview_creation_biome.bind(biome))
 		cards.add_child(card)
+	var summary_panel := PanelContainer.new()
+	summary_panel.name = "BiomeSummary"
+	summary_panel.custom_minimum_size.y = 118
+	summary_panel.add_theme_stylebox_override("panel",MenuStyle.card(16))
+	content.add_child(summary_panel)
+	var summary_row := HBoxContainer.new()
+	summary_row.add_theme_constant_override("separation",20)
+	summary_panel.add_child(summary_row)
+	var copy := VBoxContainer.new()
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	copy.add_theme_constant_override("separation",4)
+	summary_row.add_child(copy)
+	var summary_title := HBoxContainer.new()
+	summary_title.add_theme_constant_override("separation",10)
+	copy.add_child(summary_title)
+	var summary_icon := TextureRect.new()
+	summary_icon.name = "BiomeSummaryIcon"
+	summary_icon.modulate = Color("c7dfff") if selected_biome != "night_city" else Color("f1f4f3")
+	summary_icon.texture = MenuIcon.texture({"pine":"leaf","desert":"cactus","night_city":"night","winter":"snowflake","storm":"storm"}.get(selected_biome,"biomes"))
+	summary_icon.custom_minimum_size = Vector2(34,34)
+	summary_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	summary_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	summary_title.add_child(summary_icon)
+	summary_title.add_child(MenuStyle.label(TrackTheme.title(selected_biome).to_upper(),28))
+	var descriptions: Dictionary = {
+		"pine":"Lush forests, open fields and classic racing character. A balanced environment with clear visibility and a broad variety of scenery.",
+		"desert":"Sunset canyons, compacted sand roads and dense lingering dust. Build fast, flowing routes through warm open terrain.",
+		"night_city":"A moonlit waterfront city with warm street lamps and deep shadows. Shape technical routes that come alive after dark.",
+		"winter":"Snow-covered forests, frozen scenery and low-grip ice. Create bright alpine circuits where smooth driving matters.",
+		"storm":"Dark forest valleys, heavy rain and lightning over wet asphalt. Design dramatic routes with reduced grip and changing visibility."
+	}
+	var description := MenuStyle.label(str(descriptions.get(selected_biome,"Choose a setting for your new track.")),18,true)
+	description.name = "BiomeDescription"
+	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	copy.add_child(description)
+	summary_row.add_child(VSeparator.new())
+	var create := MenuStyle.button("CREATE TRACK",_select_creation_biome.bind(selected_biome),true)
+	create.name = "CreateTrack"
+	create.icon = MenuIcon.texture("create")
+	create.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+	create.add_theme_color_override("icon_hover_color",MenuStyle.INK)
+	create.add_theme_color_override("icon_pressed_color",MenuStyle.INK)
+	create.custom_minimum_size = Vector2(250,70)
+	create.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	create.add_theme_font_size_override("font_size",26)
+	summary_row.add_child(create)
+
+func _preview_creation_biome(biome: String) -> void:
+	if screen != "biome" or biome not in TrackDocument.THEMES: return
+	document.theme = biome
+	_show_screen("biome")
 
 func _select_creation_biome(biome: String) -> void:
 	if screen != "biome" or biome not in TrackDocument.THEMES: return

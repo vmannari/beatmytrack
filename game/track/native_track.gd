@@ -14,6 +14,7 @@ var rectangles: Array
 var deck_rectangles: Array
 var route := PackedVector2Array()
 var checkpoints: Array[Rect2] = []
+var route_widths := PackedFloat32Array()
 var route_cumulative := PackedFloat32Array()
 var route_length: float = 0.0
 var route_radii := PackedFloat32Array()
@@ -68,6 +69,7 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	track._expand(track.deck_rectangles, track.deck_cells)
 	for p: Array in data.route:
 		track.route.append(Vector2(p[0], p[1]))
+	track.route_widths = PackedFloat32Array(data.get("route_widths",[]))
 	track._build_route_distance()
 	for r: Array in data.checkpoints:
 		track.checkpoints.append(Rect2(r[0], r[1], r[2], r[3]))
@@ -377,11 +379,18 @@ func surface_factors(state: VehicleState) -> Vector2:
 	return Vector2(base.x*effects.x,base.y+effects.y)
 
 
+func off_road_rumble(state: VehicleState) -> float:
+	# Presentation roughness is independent of longitudinal resistance: loose
+	# sand and grass are equally uneven even though their drag/grip differ.
+	return 1.0 if cell_at(state.position,state.track_elevated) in [1,2] else 0.0
+
+
 func _native_surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):
 		0:
 			var theme: String = str(metadata.get("theme", "pine"))
+			if theme == "desert": return Vector2(0.94, 0.35) # Firm sand road, not deep roadside soil.
 			return Vector2(WINTER_ROAD_GRIP if theme == "winter" else STORM_ROAD_GRIP if theme == "storm" else 1.0, 0.0)
 		1: return Vector2(0.65, 2.0 + speed * 0.65)
 		2: return Vector2(0.8, 2.0)
@@ -481,9 +490,11 @@ func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: boo
 	var reach: int = ceili(radius / cell_size) + 1
 	var support: Vector3 = _support_plane(from, radius, elevated)
 	var support_normal := Vector2(support.x, support.y)
+	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
 			if cell_at(center, elevated) not in [4]: continue
 			var low: Vector2 = center - Vector2.ONE * cell_size * 0.5
 			var high: Vector2 = center + Vector2.ONE * cell_size * 0.5
@@ -513,9 +524,11 @@ func _support_plane(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	var reach: int = ceili(radius / cell_size) + 1
 	var distance: float = radius
 	var result := Vector3.ZERO
+	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x+0.5)*cell_size-half_extent.x, half_extent.y-(y+0.5)*cell_size)
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
 			if cell_at(center, elevated) not in [4]: continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE*cell_size*0.5, center + Vector2.ONE*cell_size*0.5)
 			var offset: Vector2 = point - nearest
@@ -536,6 +549,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	var overlap: float = 0.0
 	var fallback := Vector2.RIGHT
 	var layer: PackedInt32Array = deck_cells if elevated else cells
+	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
 	var first_x: int = cx - reach
 	var end_x: int = cx + reach + 1
 	# One native scan handles completely clear row bands (common around loose
@@ -556,6 +570,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 			if row_inside and x >= 0 and x < grid_width and layer[row+x] != 4:
 				continue
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
 			var offset: Vector2 = point - nearest
 			if offset.length_squared() < radius * radius:

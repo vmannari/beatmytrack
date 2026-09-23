@@ -76,9 +76,11 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	road.mesh = deck.commit()
 	var asphalt := ShaderMaterial.new()
 	asphalt.shader = preload("res://track/bridge_road.gdshader")
+	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
 	asphalt.set_shader_parameter("wet_road",theme == "storm")
+	asphalt.set_shader_parameter("packed_sand",theme == "desert")
 	road.material_override = asphalt
 	parent.add_child(road)
 

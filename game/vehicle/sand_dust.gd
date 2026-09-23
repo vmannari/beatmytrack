@@ -1,0 +1,315 @@
+class_name SandDust
+extends Node3D
+## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
+## never feeds back into the fixed-step vehicle simulation.
+
+const SAND_SURFACE: int = 2
+const REAR_AXLE: float = -1.0
+const FRONT_AXLE: float = 1.0
+const MODE_DUST: int = 0
+const MODE_SAND_SPRAY: int = 1
+const MODE_CLIPPING: int = 2
+const MODE_MUD: int = 3
+const MODE_SMOKE: int = 4
+
+var desert_profile: bool = false
+
+var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
+var track_width: float = 1.52 * HandlingConfig.BODY_SCALE
+var dust_emitters: Array[GPUParticles3D] = []
+var spray_emitters: Array[GPUParticles3D] = []
+var clipping_emitters: Array[GPUParticles3D] = []
+var mud_emitters: Array[GPUParticles3D] = []
+var smoke_emitters: Array[GPUParticles3D] = []
+var last_strengths := PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
+
+
+func _ready() -> void:
+	for wheel: int in range(4):
+		var dust := _emitter("Dust%d" % wheel,360,5.20,Vector2(2.05,2.05),Color(0.82,0.70,0.50,0.48),MODE_DUST)
+		dust_emitters.append(dust)
+		add_child(dust)
+		var clipping := _emitter("Clippings%d" % wheel,120,1.05,Vector2(0.075,0.30),Color(0.54,0.64,0.13,0.94),MODE_CLIPPING)
+		clipping_emitters.append(clipping)
+		add_child(clipping)
+		var smoke := _emitter("Smoke%d" % wheel,900,1.50,Vector2(0.72,0.72),Color(0.80,0.82,0.80,0.040),MODE_SMOKE)
+		smoke_emitters.append(smoke)
+		add_child(smoke)
+	for wheel: int in range(2):
+		var spray := _emitter("Spray%d" % wheel,72,0.65,Vector2(0.15,0.25),Color(0.52,0.37,0.19,0.68),MODE_SAND_SPRAY)
+		spray_emitters.append(spray)
+		add_child(spray)
+		var mud := _emitter("Mud%d" % wheel,90,0.78,Vector2(0.14,0.22),Color(0.25,0.20,0.10,0.86),MODE_MUD)
+		mud_emitters.append(mud)
+		add_child(mud)
+
+
+func _set_desert_profile(enabled: bool) -> void:
+	if desert_profile == enabled: return
+	desert_profile = enabled
+	for emitter: GPUParticles3D in dust_emitters:
+		emitter.lifetime = 9.0 if enabled else 5.2
+		emitter.amount = 720 if enabled else 360
+		(emitter.draw_pass_1 as QuadMesh).size = Vector2.ONE * (2.8 if enabled else 2.05)
+		var material: ParticleProcessMaterial = emitter.process_material
+		material.color = Color("bc854b") if enabled else Color(0.82,0.70,0.50)
+		material.color_ramp = _alpha_ramp(0.78 if enabled else 0.48,MODE_DUST)
+		material.scale_curve = _scale_curve(MODE_DUST)
+		material.spread = 110.0 if enabled else 72.0
+		material.initial_velocity_max = 3.2 if enabled else 1.65
+		material.damping_min = 0.30 if enabled else 0.75
+		material.damping_max = 0.65 if enabled else 1.25
+		material.gravity = Vector3(0,0.13 if enabled else 0.06,0)
+		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
+		cloud_material.set_shader_parameter("billowing",enabled)
+		if enabled:
+			var growth: Curve = (material.scale_curve as CurveTexture).curve
+			growth.set_point_value(0,0.48)
+			growth.max_value = 7.0
+			growth.set_point_value(1,1.65)
+			growth.set_point_value(2,4.0)
+			growth.set_point_value(3,7.0)
+
+
+func clear() -> void:
+	last_strengths.fill(0.0)
+	for emitter: GPUParticles3D in dust_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters:
+		emitter.emitting = false
+		emitter.restart()
+
+
+func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
+	if track != null:
+		_set_desert_profile(str(track.metadata.get("theme","pine")) == "desert")
+	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 0.8:
+		_stop()
+		return
+	var forward: Vector2 = state.forward()
+	var right: Vector2 = state.right()
+	var rear: Vector2 = state.position - forward * wheelbase * 0.5
+	var front: Vector2 = state.position + forward * wheelbase * 0.5
+	var contacts: Array[Vector2] = [rear-right*track_width*0.5,rear+right*track_width*0.5,front-right*track_width*0.5,front+right*track_width*0.5]
+	var axle_values := PackedFloat32Array([REAR_AXLE,REAR_AXLE,FRONT_AXLE,FRONT_AXLE])
+	for wheel: int in range(4):
+		var world_position: Vector3 = VisualGeometry.world(contacts[wheel]) + Vector3(0,0.025,0)
+		if bridge != null:
+			world_position.y += bridge.height_at(contacts[wheel],state.route_index,1 if state.track_elevated else 0)
+		var kind: int = SkidTrails.surface_at(track,world_position,state.track_elevated)
+		var side: float = -1.0 if wheel % 2 == 0 else 1.0
+		var on_sand: bool = kind == SAND_SURFACE
+		var strengths: Vector2 = emission_strengths(state,frame,side,axle_values[wheel]) if on_sand else Vector2(-1.0,-1.0)
+		if on_sand and desert_profile:
+			strengths.x = maxf(strengths.x,lerpf(0.28,1.0,smoothstep(0.8,12.0,state.velocity.length())))
+		last_strengths[wheel] = maxf(0.0,strengths.x)
+		var wheel_velocity: Vector2 = state.velocity + right * (state.yaw_rate * axle_values[wheel] * wheelbase * 0.5) - forward * (state.yaw_rate * side * track_width * 0.5)
+		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)
+		if wheel < 2:
+			_configure(spray_emitters[wheel],world_position+Vector3(0,0.035,0),wheel_velocity,strengths.y)
+		var grass_strengths: Vector2 = grass_emission_strengths(state,frame,side,axle_values[wheel]) if kind == 1 else Vector2(-1.0,-1.0)
+		_configure(clipping_emitters[wheel],world_position+Vector3(0,0.02,0),wheel_velocity,grass_strengths.x)
+		if wheel < 2: _configure(mud_emitters[wheel],world_position+Vector3(0,0.025,0),wheel_velocity,grass_strengths.y)
+		var smoke_strength: float = asphalt_smoke_strength(state,frame,axle_values[wheel]) if kind in [0,5] else -1.0
+		_configure(smoke_emitters[wheel],world_position+Vector3(0,0.04,0),wheel_velocity,smoke_strength)
+
+
+static func emission_strengths(state: VehicleState, frame: DriveFrame, wheel_side: float, axle: float) -> Vector2:
+	var speed: float = state.velocity.length()
+	var speed_factor: float = smoothstep(1.5,18.0,speed)
+	var lateral: float = smoothstep(0.45,9.0,absf(state.velocity.dot(state.right())))
+	var slip: float = smoothstep(0.025,0.58,absf(state.slip_angle()))
+	var yaw: float = smoothstep(0.12,1.45,absf(state.yaw_rate)) * smoothstep(3.0,14.0,speed)
+	var braking: float = frame.brake/255.0 * smoothstep(2.0,15.0,speed)
+	var dynamic: float = maxf(maxf(lateral,slip),maxf(yaw,braking))
+	if axle > 0.0: dynamic *= 0.58
+	var load: float = clampf(1.0+wheel_side*state.yaw_rate*signf(state.velocity.dot(state.forward()))*0.14,0.78,1.22)
+	var dust: float = speed_factor * lerpf(0.16,1.0,dynamic) * load
+	var spray: float = speed_factor * pow(dynamic,1.45) * load
+	return Vector2(clampf(dust,0.0,1.0),clampf(spray,0.0,1.0))
+
+
+static func grass_emission_strengths(state: VehicleState, frame: DriveFrame, wheel_side: float, axle: float) -> Vector2:
+	var speed: float = state.velocity.length()
+	var speed_factor: float = smoothstep(1.0,16.0,speed)
+	var lateral: float = smoothstep(0.4,8.0,absf(state.velocity.dot(state.right())))
+	var slip: float = smoothstep(0.035,0.55,absf(state.slip_angle()))
+	var braking: float = frame.brake/255.0*smoothstep(2.0,14.0,speed)
+	var dynamic: float = maxf(lateral,maxf(slip,braking))
+	if axle > 0.0: dynamic *= 0.64
+	var load: float = clampf(1.0+wheel_side*state.yaw_rate*0.12,0.82,1.18)
+	var clipping: float = speed_factor*lerpf(0.14,1.0,dynamic)*load
+	var mud: float = speed_factor*pow(dynamic,1.35)*load
+	return Vector2(clampf(clipping,0.0,1.0),clampf(mud,0.0,1.0))
+
+
+static func asphalt_smoke_strength(state: VehicleState, frame: DriveFrame, axle: float) -> float:
+	var speed: float = state.velocity.length()
+	var slip: float = smoothstep(0.16,0.62,absf(state.slip_angle()))
+	var lateral: float = smoothstep(3.2,10.5,absf(state.velocity.dot(state.right())))
+	var braking: float = frame.brake/255.0*smoothstep(8.0,22.0,speed)
+	var strength: float = maxf(maxf(slip,lateral),braking)*smoothstep(5.0,18.0,speed)
+	if axle > 0.0: strength *= 0.52
+	return clampf(strength,0.0,0.48)
+
+
+func _stop() -> void:
+	last_strengths.fill(0.0)
+	for emitter: GPUParticles3D in dust_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters:
+		emitter.emitting = false
+		emitter.amount_ratio = 0.0
+
+
+func _configure(emitter: GPUParticles3D, at: Vector3, wheel_velocity: Vector2, strength: float) -> void:
+	var amount: float = clampf(strength,0.0,1.0)
+	# World-space particles already emitted keep their trajectory. Inactive
+	# wheels need no transform uploads, and unchanged values need no server writes.
+	if emitter.amount_ratio != amount: emitter.amount_ratio = amount
+	var emitting: bool = amount > 0.012
+	if emitter.emitting != emitting: emitter.emitting = emitting
+	if not emitting:
+		return
+	emitter.position = at
+	if wheel_velocity.length_squared() > 0.01:
+		var backwards := Vector3(-wheel_velocity.x,0.0,wheel_velocity.y).normalized()
+		emitter.look_at(at+backwards,Vector3.UP)
+
+
+func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: Color, mode: int) -> GPUParticles3D:
+	var spray: bool = mode in [MODE_SAND_SPRAY,MODE_CLIPPING,MODE_MUD]
+	var particles := GPUParticles3D.new()
+	particles.name = label
+	particles.amount = amount
+	particles.lifetime = lifetime
+	particles.randomness = 0.58
+	# Smoke must sample the moving wheel at the canonical 120 Hz rate. At 30 Hz
+	# a fast car deposits dense batches a metre apart, visibly forming dots even
+	# with a high particle count. Other debris benefits from the cheaper cadence.
+	particles.fixed_fps = VehicleSimulation.TICK_RATE if mode == MODE_SMOKE else 30
+	particles.interpolate = true
+	particles.fract_delta = true
+	particles.local_coords = false
+	particles.visibility_aabb = AABB(Vector3(-30,-4,-30),Vector3(60,14,60))
+	var process := ParticleProcessMaterial.new()
+	process.direction = Vector3(0,0.48 if mode in [MODE_DUST,MODE_SMOKE] else 0.42,-1).normalized()
+	process.spread = 72.0 if mode in [MODE_DUST,MODE_SMOKE] else 42.0
+	process.initial_velocity_min = 0.45 if mode in [MODE_DUST,MODE_SMOKE] else 3.0
+	process.initial_velocity_max = 1.65 if mode in [MODE_DUST,MODE_SMOKE] else 7.0
+	process.gravity = Vector3(0,0.060 if mode == MODE_DUST else 0.025,0) if mode in [MODE_DUST,MODE_SMOKE] else Vector3(0,-5.0 if mode != MODE_CLIPPING else -7.0,0)
+	process.damping_min = 0.75 if mode in [MODE_DUST,MODE_SMOKE] else 3.5
+	process.damping_max = 1.25 if mode in [MODE_DUST,MODE_SMOKE] else 6.0
+	process.angular_velocity_min = -110.0
+	process.angular_velocity_max = 110.0
+	process.scale_min = 0.72
+	process.scale_max = 1.28
+	process.color = Color(tint.r,tint.g,tint.b,1.0)
+	process.color_ramp = _alpha_ramp(tint.a,mode)
+	process.scale_curve = _scale_curve(mode)
+	particles.process_material = process
+	var mesh: Mesh
+	if mode == MODE_CLIPPING:
+		var clipping_mesh := BoxMesh.new()
+		clipping_mesh.size = Vector3(size.x,0.025,size.y)
+		mesh = clipping_mesh
+	elif mode in [MODE_MUD,MODE_SAND_SPRAY]:
+		var grain_mesh := SphereMesh.new()
+		grain_mesh.radius = size.x*0.5
+		grain_mesh.height = size.y
+		grain_mesh.radial_segments = 5
+		grain_mesh.rings = 3
+		mesh = grain_mesh
+	else:
+		var quad := QuadMesh.new()
+		quad.size = size
+		quad.orientation = PlaneMesh.FACE_Z
+		mesh = quad
+	mesh.surface_set_material(0,_particle_material(mode))
+	particles.draw_pass_1 = mesh
+	particles.emitting = false
+	return particles
+
+
+func _alpha_ramp(maximum: float, mode: int) -> GradientTexture1D:
+	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
+	var gradient := Gradient.new()
+	gradient.offsets = PackedFloat32Array([0.0,0.025 if cloud else 0.08,0.72,1.0])
+	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,maximum),Color(1,1,1,maximum*(0.70 if cloud else 0.42)),Color(1,1,1,0)])
+	var texture := GradientTexture1D.new()
+	texture.gradient = gradient
+	return texture
+
+
+func _scale_curve(mode: int) -> CurveTexture:
+	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
+	var curve := Curve.new()
+	curve.add_point(Vector2(0.0,0.24 if cloud else 0.55))
+	curve.add_point(Vector2(0.12 if cloud else 0.18,0.62 if cloud else 0.9))
+	if cloud: curve.add_point(Vector2(0.42,1.60 if mode == MODE_DUST else 1.05))
+	curve.add_point(Vector2(1.0,3.65 if mode == MODE_DUST else (1.6 if mode == MODE_SMOKE else 0.78)))
+	var texture := CurveTexture.new()
+	texture.curve = curve
+	return texture
+
+
+func _particle_material(mode: int) -> ShaderMaterial:
+	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
+	var shader := Shader.new()
+	if mode in [MODE_CLIPPING,MODE_MUD,MODE_SAND_SPRAY]:
+		shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
+void fragment() {
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = 1.0;
+	ALPHA = COLOR.a;
+}
+"""
+	elif mode == MODE_SMOKE:
+		shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
+void vertex() {
+	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
+}
+void fragment() {
+	vec2 p = UV*2.0-1.0;
+	float radius = length(p);
+	float haze = 1.0-smoothstep(0.12,1.0,radius);
+	haze *= haze;
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = 1.0;
+	ALPHA = COLOR.a*haze;
+}
+"""
+	else:
+		shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
+uniform sampler2D dust_texture : source_color, filter_linear_mipmap_anisotropic;
+uniform float alpha_softness = 0.42;
+uniform bool billowing = false;
+void vertex() {
+	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
+}
+void fragment() {
+	vec4 puff = texture(dust_texture,UV);
+	float alpha = smoothstep(0.02,alpha_softness,puff.a);
+	float value = dot(puff.rgb,vec3(0.299,0.587,0.114));
+	ALBEDO = COLOR.rgb * mix(0.72,1.12,value);
+	ROUGHNESS = 1.0;
+	if (billowing) {
+		// Fade all card boundaries and give each expanding lobe a shaded base.
+		vec2 p = UV * 2.0 - 1.0;
+		alpha *= 1.0 - smoothstep(0.65,1.0,length(p));
+		ALBEDO *= mix(0.60,1.16,smoothstep(0.12,0.9,value + (0.5-UV.y)*0.24));
+	}
+	ALPHA = COLOR.a * alpha;
+}
+"""
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	material.render_priority = 4 if cloud else 1
+	if mode == MODE_DUST:
+		material.set_shader_parameter("dust_texture",load("res://assets/textures/dust_puff_v1.png"))
+		material.set_shader_parameter("alpha_softness",0.42)
+	return material

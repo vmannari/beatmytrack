@@ -1,10 +1,17 @@
 extends Node
 ## Composition and lifecycle; canonical dynamics live in VehicleSimulation.
 
+const SandDustEffect = preload("res://vehicle/sand_dust.gd")
+const ImpactCracksEffect = preload("res://camera/impact_cracks.gd")
+
 signal exit_requested
 signal race_completed
 signal retry_requested
 signal edit_here_requested(position: Vector2)
+signal practice_lap_completed
+
+var practice_validation: TrackSession
+var practice_validation_eligible: bool = true
 
 var storm_weather: StormWeather
 var weather_layer: CanvasLayer
@@ -16,6 +23,12 @@ var editor_test: bool = false
 var attempt_practice: bool = false
 var countdown_ticks: int = 0
 var countdown_label: Label
+var race_cues: Control
+var finish_sim: VehicleSimulation
+var finish_ticks: int = 0
+var rating_records: LocalRecords
+var finish_rating_pending: bool = false
+const FINISH_TICKS: int = 216
 
 const PROFILE_PATHS: Array[String] = HandlingSelection.PROFILE_PATHS
 var profile_index: int = HandlingSelection.index
@@ -29,7 +42,9 @@ var frame := DriveFrame.new()
 var recorder := HandlingRecorder.new()
 var car: CarVisual
 var camera: FollowCamera
+var impact_cracks: Control
 var trails: SkidTrails
+var sand_dust: SandDustEffect
 var tire_audio: TireAudio
 var hud: PlaygroundHUD
 var paused: bool = false
@@ -49,11 +64,21 @@ var route_driver := RouteDriver.new()
 var overview: bool = false
 var capture_tick: int = 0
 var bridge_presentation: BridgePresentation
+var checkpoint_marker: CheckpointMarker
 var profile_enabled: bool = false
 var profile_sim_us: int = 0
 var profile_rules_us: int = 0
 var profile_ai_us: int = 0
 var profile_present_us: int = 0
+var profile_particles_us: int = 0
+var profile_trails_us: int = 0
+var profile_telemetry_us: int = 0
+var profile_weather_us: int = 0
+var profile_car_us: int = 0
+var profile_props_us: int = 0
+var profile_camera_us: int = 0
+var profile_hud_us: int = 0
+var profile_skip_telemetry: bool = false
 var _render_viewport: Viewport
 var _base_render_scale: float = 1.0
 
@@ -86,7 +111,9 @@ func _ready() -> void:
 	light.light_color = Color("fff1d8")
 	light.light_energy = 1.0
 	light.shadow_enabled = true
-	light.directional_shadow_max_distance = 100.0
+	# One stable shadow projection suits the compact overhead view.
+	light.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	light.directional_shadow_max_distance = 65.0
 	world.add_child(light)
 	var environment := WorldEnvironment.new()
 	environment.environment = Environment.new()
@@ -100,6 +127,8 @@ func _ready() -> void:
 	biome_environment = environment.environment
 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",environment.environment,light)
 	_update_weather()
+	checkpoint_marker = CheckpointMarker.new()
+	world.add_child(checkpoint_marker)
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	world.add_child(car)
@@ -107,6 +136,10 @@ func _ready() -> void:
 	trails.wheelbase = handling.wheelbase
 	trails.track_width = handling.track_width
 	world.add_child(trails)
+	sand_dust = SandDustEffect.new()
+	sand_dust.wheelbase = handling.wheelbase
+	sand_dust.track_width = handling.track_width
+	world.add_child(sand_dust)
 	tire_audio = TireAudio.new()
 	add_child(tire_audio)
 	camera = FollowCamera.new()
@@ -118,6 +151,8 @@ func _ready() -> void:
 	hud.config = handling
 	hud.driver = driver
 	add_child(hud)
+	impact_cracks = ImpactCracksEffect.new()
+	add_child(impact_cracks)
 	hud.restart_requested.connect(restart)
 	hud.pause_requested.connect(toggle_pause)
 	hud.profile_requested.connect(select_profile)
@@ -147,6 +182,8 @@ func _ready() -> void:
 	countdown_label.add_theme_constant_override("outline_size",12)
 	countdown_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	debug_layer.add_child(countdown_label)
+	race_cues = preload("res://ui/race_cues.gd").new()
+	debug_layer.add_child(race_cues)
 	restart()
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
@@ -162,13 +199,19 @@ func _ready() -> void:
 func _physics_process(_delta: float) -> void:
 	if sim == null or paused:
 		return
+	if finish_sim != null:
+		_advance_finish()
+		return
 	if countdown_ticks > 0:
-		countdown_label.text = str(ceili(countdown_ticks / 120.0))
+		race_cues.show_start(countdown_ticks, 0)
+		countdown_label.text = ""
 		countdown_ticks -= 1
 		return
-	countdown_label.text = "GO" if production_mode and not editor_test and sim.state.tick < 60 else ""
+	race_cues.show_start(0, sim.state.tick) if production_mode and not editor_test else race_cues.reset()
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
+	var velocity_before_step: Vector2 = sim.state.velocity
+	var collisions_before_step: int = sim.state.collision_count
 	frame = driver.sample()
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if ai_enabled and native_track != null:
@@ -179,19 +222,35 @@ func _physics_process(_delta: float) -> void:
 	if demo_capture:
 		frame = DriveFrame.sample(0.7 if sim.state.tick > 190 else 0.0, 1.0, 0.0)
 	sim.step(frame, yard)
+	if sim.state.collision_count > collisions_before_step:
+		var resolved_impact: Vector2 = sim.state.velocity - velocity_before_step
+		camera.add_collision_impact(resolved_impact)
+		impact_cracks.show_impact(resolved_impact)
+	var roughness: float = native_track.off_road_rumble(sim.state) if native_track != null else 0.0
+	var off_track_rumble: float = smoothstep(3.0, 22.0, sim.state.velocity.length()) * roughness
+	camera.set_off_track_rumble(off_track_rumble)
 	if profile_enabled:
 		profile_sim_us += Time.get_ticks_usec() - profile_start
 		profile_start = Time.get_ticks_usec()
+	if native_track != null and editor_test:
+		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index)
 	if native_track != null and not editor_test:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
-		lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
+		if profile_enabled:
+			profile_rules_us += Time.get_ticks_usec() - profile_start
+			profile_start = Time.get_ticks_usec()
+		if not (profile_enabled and profile_skip_telemetry):
+			lap_telemetry.observe_incidents(track_session, native_track, sim.state, handling)
+			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
+		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
 		if production_mode and track_session.finished:
-			paused = true
-			driver.clear()
-			hud.touch.enabled = false
-			race_completed.emit()
-	trails.sample(sim.state, frame, bridge_presentation)
-	if profile_enabled: profile_rules_us += Time.get_ticks_usec() - profile_start
+			_begin_finish()
+	profile_start = Time.get_ticks_usec() if profile_enabled else 0
+	if trails.visible: trails.sample(sim.state, frame, bridge_presentation, native_track)
+	if profile_enabled: profile_trails_us += Time.get_ticks_usec() - profile_start
+	var particle_start: int = Time.get_ticks_usec() if profile_enabled else 0
+	if sand_dust.visible: sand_dust.sample(sim.state, frame, native_track, bridge_presentation)
+	if profile_enabled: profile_particles_us += Time.get_ticks_usec() - particle_start
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
 		_save_recording()
@@ -204,63 +263,118 @@ func _physics_process(_delta: float) -> void:
 		_capture_frame()
 
 
+func _begin_finish() -> void:
+	race_cues.reset()
+	# A separate simulation coasts visually; scored state and telemetry stay at the line.
+	finish_sim = VehicleSimulation.new(handling)
+	for property: Dictionary in sim.state.get_property_list():
+		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+			var value: Variant = sim.state.get(property.name)
+			finish_sim.state.set(property.name, value.duplicate(true) if value is Array or value is Dictionary else value)
+	finish_ticks = 0
+	driver.clear()
+	hud.touch.enabled = false
+	race_cues.show_finish(0.0)
+	finish_rating_pending = rating_records != null and not editor_test and not attempt_practice and int(rating_records.settings.get("track_ratings",{}).get(native_track.identity,0)) == 0
+	if finish_rating_pending:
+		race_cues.prepare_rating(rating_records,native_track.identity,_complete_finish)
+
+
+func _advance_finish() -> void:
+	previous_position = finish_sim.state.position
+	previous_heading = finish_sim.state.heading
+	# Retain steering briefly, then release it while gently braking through real collisions.
+	var steering: float = finish_sim.state.steering * 0.97
+	frame = DriveFrame.sample(steering, 0.0, 0.22)
+	finish_sim.step(frame, yard)
+	trails.sample(finish_sim.state, frame, bridge_presentation, native_track)
+	sand_dust.sample(finish_sim.state, frame, native_track, bridge_presentation)
+	finish_ticks += 1
+	race_cues.show_finish(minf(float(finish_ticks) / FINISH_TICKS,0.75) if finish_rating_pending else float(finish_ticks) / FINISH_TICKS)
+	if finish_rating_pending and finish_ticks >= 90: race_cues.show_rating()
+	if finish_ticks >= FINISH_TICKS and not finish_rating_pending:
+		_complete_finish()
+
+
+func _complete_finish() -> void:
+	if paused: return
+	paused = true
+	race_cues.reveal_results()
+	race_completed.emit()
+
+
 func _process(delta: float) -> void:
 	if sim == null:
 		return
-	if storm_weather != null: storm_weather.advance(delta,paused)
+	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
+	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
+	if profile_enabled: profile_weather_us += Time.get_ticks_usec() - profile_start
+	profile_start = Time.get_ticks_usec() if profile_enabled else 0
+	var section_start: int = profile_start
 	var weight: float = Engine.get_physics_interpolation_fraction() if not paused else 1.0
-	var point: Vector2 = previous_position.lerp(sim.state.position, weight)
-	var heading: float = lerp_angle(previous_heading, sim.state.heading, weight)
+	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
+	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
-	car.present(point, heading, sim.state, frame)
-	tire_audio.present(sim.state, delta, paused or countdown_ticks > 0)
+	car.present(point, heading, presented.state, frame)
+	tire_audio.present(presented.state, delta, paused or countdown_ticks > 0)
 	car.rotation.x = 0.0
 	if native_track != null:
 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
-		var front: float = bridge_presentation.height_at(point + axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
-		var rear: float = bridge_presentation.height_at(point - axle, sim.state.route_index,1 if sim.state.track_elevated else 0)
+		var front: float = bridge_presentation.height_at(point + axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
+		var rear: float = bridge_presentation.height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
-		car.position.y += sim.state.jump_height if sim.state.jump_height > 0.0 else (0.0 if sim.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
-		if sim.state.jump_height > 0.0: car.rotation.x = atan2(sim.state.jump_velocity,maxf(5.0,sim.state.velocity.length()))
-		elif not sim.state.track_elevated:
+		car.position.y += presented.state.jump_height if presented.state.jump_height > 0.0 else (0.0 if presented.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
+		if presented.state.jump_height > 0.0: car.rotation.x = atan2(presented.state.jump_velocity,maxf(5.0,presented.state.velocity.length()))
+		elif not presented.state.track_elevated:
 			car.position.y -= water_depth
 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	car.rotation.z = 0.0
-	car.present_suspension(sim.state, car.rotation.x, water_depth == 0.0)
-	if sim.state.jump_height == 0.0:
-		car.position.y += sim.state.kerb_offset.x
-		car.rotation.x += sim.state.kerb_offset.y
-		car.rotation.z = sim.state.kerb_offset.z
-	car.present_roll(sim.state, weight)
+	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0)
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005)
+	if presented.state.jump_height == 0.0:
+		car.position.y += presented.state.kerb_offset.x
+		car.rotation.x += presented.state.kerb_offset.y
+		car.rotation.z = presented.state.kerb_offset.z
+	car.present_roll(presented.state, weight)
+	if profile_enabled:
+		profile_car_us += Time.get_ticks_usec() - section_start
+		section_start = Time.get_ticks_usec()
 	if track_ground is NativeTrackVisual:
-		track_ground.update_tyres(sim.state,native_track.tyre_origins)
-		track_ground.update_light_props(sim.state)
-	camera.follow(point, sim.state.velocity, heading, delta)
+		track_ground.update_tyres(presented.state,native_track.tyre_origins)
+		track_ground.update_light_props(presented.state)
+	if profile_enabled:
+		profile_props_us += Time.get_ticks_usec() - section_start
+		section_start = Time.get_ticks_usec()
+	camera.follow(point, presented.state.velocity, heading, delta)
+	if profile_enabled:
+		profile_camera_us += Time.get_ticks_usec() - section_start
+		section_start = Time.get_ticks_usec()
 	hud.set_track(native_track)
-	hud.update_values(sim.state, frame, delta, paused, recorder.active)
+	hud.update_values(presented.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
 	if native_track != null:
 		track_debug.track = native_track
-		track_debug.state = sim.state
+		track_debug.state = presented.state
 		if track_debug.visible: track_debug.queue_redraw()
-		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
+		var progress_text: String = "FINISH" if track_session.next_checkpoint == track_session.checkpoint_count() else "CP %d/%d" % [track_session.next_checkpoint + 1, track_session.checkpoint_count()]
 		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
 		if editor_test:
 			hud.title.text = "Practice (untimed)"
 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
 		elif production_mode:
 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
-			hud.lap_label.text = "%d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
-			var display_time: float = track_session.race_time_seconds()
-			hud.race_timer.text = "%02d:%05.2f" % [int(display_time) / 60, fmod(display_time,60.0)]
-			hud.shortcut_penalty_label.text = ("SHORTCUT  +%ds" % int(track_session.penalty_seconds)) if track_session.shortcut_count > 0 else ""
-			hud.shortcut_notice_label.visible = track_session.shortcut_notice_active()
+			hud.show_session(track_session)
+			hud.shortcut_penalty_label.text = ""
+			hud.shortcut_notice_label.text = "Missed checkpoint"
+			hud.shortcut_notice_label.visible = track_session.missed_checkpoint >= 0
+			checkpoint_marker.present(track_session,native_track,bridge_presentation)
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:
 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
 	if profile_enabled: profile_present_us += Time.get_ticks_usec() - profile_start
+	if profile_enabled: profile_hud_us += Time.get_ticks_usec() - section_start
 
 
 func restart() -> void:
@@ -271,12 +385,21 @@ func restart() -> void:
 	attempt_practice = editor_test
 	countdown_ticks = 360 if production_mode and not editor_test else 0
 	countdown_label.text = ""
+	finish_sim = null
+	finish_ticks = 0
+	finish_rating_pending = false
+	race_cues.reset()
+	if countdown_ticks > 0: race_cues.show_start(countdown_ticks, 0)
 	sim.reset(yard.spawn, yard.spawn_heading)
 	if production_mode and not editor_test and native_track != null:
 		# Leave room for the whole car before the stripe; retain starts already farther back.
 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
 	track_session = TrackSession.new()
+	practice_validation = TrackSession.new(120,1)
+	practice_validation_eligible = true
+	checkpoint_marker.previous_gate = -2
+	checkpoint_marker.visible = false
 	lap_telemetry = LapTelemetry.new()
 	lap_telemetry.begin(sim.state.position)
 	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
@@ -289,10 +412,17 @@ func restart() -> void:
 	previous_heading = sim.state.heading
 	trails.clear()
 	camera.follow(sim.state.position, Vector2.ZERO, sim.state.heading, 0.0, true)
+	impact_cracks.clear_effect()
 	hud.touch.enabled = true
 	hud.message_label.text = "" if editor_test else "Brake before the circle. Lift and countersteer. F5: handling test tracks."
 	hud.title.text = "Practice (untimed)" if editor_test else hud.title.text
 
+
+func _advance_practice_validation(from: Vector2, to: Vector2, route_index: int) -> void:
+	if ai_enabled or demo_capture: practice_validation_eligible = false
+	if not practice_validation_eligible or practice_validation.finished: return
+	practice_validation.advance(native_track,from,to,route_index)
+	if practice_validation.finished: practice_lap_completed.emit()
 
 func select_profile(index: int) -> void:
 	profile_index = clampi(index, 0, PROFILE_PATHS.size() - 1)
@@ -318,7 +448,6 @@ func _close_handling_menu() -> void:
 func toggle_pause() -> void:
 	if production_mode and not editor_test and track_session.finished: return
 	paused = not paused
-	if paused and production_mode: attempt_practice = true
 	driver.clear()
 	frame = DriveFrame.new()
 	hud.touch.enabled = not paused
@@ -363,6 +492,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_3: select_profile(2)
 			KEY_4: select_profile(3)
 			KEY_5: select_profile(4)
+			KEY_6: select_profile(5)
 			KEY_F2: hud.toggle_tuning()
 			KEY_F3: toggle_recording()
 			KEY_F6: select_profile(profile_index)
@@ -372,6 +502,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_F9:
 				ai_enabled = not ai_enabled
 				restart()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if race_cues != null and race_cues.rating_confirming: return
+	if finish_sim == null or paused or finish_ticks < 30: return
+	if finish_rating_pending and finish_ticks < 90: return
+	var continue_pressed: bool = (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed)
+	if continue_pressed:
+		_complete_finish()
+		get_viewport().set_input_as_handled()
 
 
 func _edit_here() -> void:

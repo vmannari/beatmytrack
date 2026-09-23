@@ -37,10 +37,15 @@ func list_documents() -> Array[Dictionary]:
 
 
 func save_document(document: Dictionary) -> Error:
+	if is_published(str(document.get("id",""))):
+		last_error = "Published tracks are locked against editing."
+		return ERR_UNAUTHORIZED
 	var errors: Array[String] = TrackDocument.validate(document,false)
 	if not errors.is_empty():
 		last_error = errors[0]
 		return ERR_INVALID_DATA
+	var review_error: Error = invalidate_test_if_changed(document)
+	if review_error != OK: return review_error
 	var error: Error = DirAccess.make_dir_recursive_absolute(directory)
 	if error != OK:
 		last_error = "Could not open the local track folder."
@@ -156,6 +161,11 @@ func delete_document(id: String) -> Error:
 
 
 func save_wip(document: Dictionary) -> Error:
+	if is_published(str(document.get("id",""))):
+		last_error = "Published tracks are locked against editing."
+		return ERR_UNAUTHORIZED
+	var review_error: Error = invalidate_test_if_changed(document)
+	if review_error != OK: return review_error
 	var drafts := TrackLibrary.new(directory.path_join("wip"))
 	var error: Error=drafts.save_document(document)
 	last_error=drafts.last_error
@@ -169,3 +179,87 @@ func load_wip(id: String) -> Dictionary:
 
 func list_wips() -> Array[Dictionary]:
 	return TrackLibrary.new(directory.path_join("wip")).list_documents()
+
+func editable_entries() -> Array[Dictionary]:
+	# Saved originals and editor autosaves are versions of the same local draft.
+	var by_id: Dictionary = {}
+	for source: String in ["saved","wip"]:
+		var store := TrackLibrary.new(directory.path_join("wip") if source == "wip" else directory)
+		for doc: Dictionary in store.list_documents():
+			if is_published(str(doc.id)): continue
+			var modified: int = 0
+			for suffix: String in [".json",".json.bak",".json.tmp"]:
+				var path: String = store.directory.path_join(str(doc.id)+suffix)
+				if FileAccess.file_exists(path) and not store._read(path).is_empty():
+					modified = FileAccess.get_modified_time(path)
+					break
+			var item: Dictionary = {"id":doc.id,"document":doc,"modified":modified,"source":source,
+				"load_id":("wip:" if source == "wip" else "")+str(doc.id)}
+			if not by_id.has(doc.id) or modified >= int(by_id[doc.id].modified): by_id[doc.id] = item
+	var result: Array[Dictionary] = []
+	for item: Dictionary in by_id.values(): result.append(item)
+	result.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
+		if a.modified != b.modified: return a.modified > b.modified
+		return str(a.document.name).naturalnocasecmp_to(str(b.document.name)) < 0)
+	return result
+
+func delete_editable(id: String) -> Error:
+	if is_published(id):
+		last_error = "Published tracks are locked."
+		return ERR_UNAUTHORIZED
+	var review_error: Error = _test_library().delete_document(id)
+	if review_error != OK: return review_error
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	var error: Error = drafts.delete_document(id)
+	if error != OK:
+		last_error = drafts.last_error
+		return error
+	return delete_document(id)
+
+func _test_library() -> TrackLibrary:
+	var version: String = (VehicleSimulation.PHYSICS_VERSION+RaceRules.KEY+TrackCompiler.VERSION).sha256_text().left(12)
+	return TrackLibrary.new(directory.path_join(".tested-"+version))
+
+static func draft_fingerprint(document: Dictionary) -> String:
+	return JSON.stringify(document,"",true).sha256_text()
+
+func is_tested(document: Dictionary) -> bool:
+	if not TrackDocument.valid_id(document.get("id")): return false
+	var snapshot: Dictionary = _test_library().load_document(str(document.id))
+	return not snapshot.is_empty() and draft_fingerprint(snapshot) == draft_fingerprint(document)
+
+func mark_tested(document: Dictionary) -> Error:
+	if not TrackDocument.validate(document).is_empty(): return ERR_INVALID_DATA
+	if not document.has("start_line") or not RoadPieces.route_from_pieces(document).ok:
+		last_error = "Connect the roads and place a start line before completing a test."
+		return ERR_INVALID_DATA
+	var reviews := _test_library()
+	var error: Error = DirAccess.make_dir_recursive_absolute(reviews.directory)
+	if error == OK: error = reviews._atomic_write(document,reviews.directory.path_join(str(document.id)+".json"))
+	last_error = reviews.last_error
+	return error
+
+func invalidate_test_if_changed(document: Dictionary) -> Error:
+	var reviews := _test_library()
+	var snapshot: Dictionary = reviews.load_document(str(document.id))
+	if snapshot.is_empty() or draft_fingerprint(snapshot) == draft_fingerprint(document): return OK
+	var error: Error = reviews.delete_document(str(document.id))
+	last_error = reviews.last_error
+	return error
+
+func is_published(id: String) -> bool:
+	if not TrackDocument.valid_id(id): return false
+	return not TrackLibrary.new(directory.path_join(".published")).load_document(id).is_empty()
+
+func publish_document(document: Dictionary) -> Error:
+	if is_published(str(document.get("id",""))): return ERR_ALREADY_EXISTS
+	if not is_tested(document):
+		last_error = "Complete test run to publish"
+		return ERR_UNAUTHORIZED
+	var error: Error = save_document(document)
+	if error != OK: return error
+	var published := TrackLibrary.new(directory.path_join(".published"))
+	error = published.save_document(document)
+	last_error = published.last_error
+	if error == OK: revision += 1
+	return error

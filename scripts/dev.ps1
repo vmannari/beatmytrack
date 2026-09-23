@@ -1,6 +1,6 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [ValidateSet('TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+    [ValidateSet('TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -89,7 +89,7 @@ function Invoke-Validation {
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_driving.gd') 'driving-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_handling.gd') 'handling-tests.log'
-    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_route_validation.gd') 'route-validation-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_retirement.gd') 'editor-retirement.log'
@@ -103,6 +103,7 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd') 'bridge-hud-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator_refinement.gd') 'refinement-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tyres_and_load.gd') 'tyres-load-tests.log'
@@ -112,6 +113,7 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_hazards.gd') 'hazards-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_kerbs.gd') 'kerbs-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_ice.gd') 'ice-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_desert.gd') 'desert-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_storm.gd') 'storm-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_soil.gd') 'soil-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_suspension.gd') 'suspension-tests.log'
@@ -289,9 +291,15 @@ try {
     if ($LASTEXITCODE -ne 0 -or $version -ne $expectedVersion) { throw "Engine mismatch: expected $expectedVersion; got '$version' from $script:godot." }
     Write-Host "Godot: $version ($script:godot)"
     switch ($Action) {
+        'CaptureCompactDetail' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_compact_detail.gd') 'compact-detail-capture.log' }
         'TestVehicleBatch' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_vehicle_batch.gd') 'vehicle-batch-tests.log' }
         'TestMobileControls' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_mobile_controls.gd') 'mobile-controls-tests.log' }
+        'TestBridgeContacts' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log' }
         'TestSuspension' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_suspension.gd') 'suspension-tests.log' }
+        'TestPerformance' {
+            Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_impact_cracks.gd') 'impact-cracks-tests.log'
+            Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_performance.gd') 'performance-tests.log'
+        }
         'TestSoil' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_soil.gd') 'soil-tests.log' }
         'CaptureSoil' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_soil.gd', '--', '--capture') 'soil-capture.log' }
         'CaptureSuspension' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_suspension.gd', '--', '--capture') 'suspension-capture.log' }
@@ -339,11 +347,15 @@ try {
         'CaptureStormVideo' { Invoke-Checked $script:godot @('--path', $projectRoot, '--fixed-fps', '30', '--write-movie', (Join-Path $buildRoot 'storm-weather.avi'), '--script', 'res://tests/test_storm.gd', '--', '--video') 'storm-video.log' }
         'CaptureStorm' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_storm.gd', '--', '--capture') 'storm-capture.log' }
         'TestIce' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_ice.gd') 'ice-tests.log' }
+        'TestDesert' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_desert.gd') 'desert-tests.log' }
+        'CaptureDesert' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_desert.gd', '--', '--capture') 'desert-capture.log' }
         'TestBiomes' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_biomes.gd') 'biomes-test.log' }
         'CaptureBiomes' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_biomes.gd', '--', '--capture') 'biomes-capture.log' }
         'CaptureControls' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_controls.gd') 'controls-capture.log' }
         'TestResults' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_race_results.gd') 'results-tests.log' }
         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
+        'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd') 'surface-profile-tests.log' }
+        'CaptureCheckpoints' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd') 'checkpoint-capture.log' }
         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
         'Import' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log' }
         'TestConstruction' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log' }
@@ -364,7 +376,7 @@ try {
         'CaptureShortcutFeedback' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_shortcut_feedback.gd') 'shortcut-hud-tests.log' }
         'ReviewRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/review_route_validation.gd') 'route-owner-review.log' }
         'TestSilmukka' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_silmukka.gd') 'silmukka-tests.log' }
-        'TestRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_route_validation.gd') 'route-validation-tests.log' }
+        'TestRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log' }
         'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
         'TestCreator' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log' }
         'TestEditor' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log' }

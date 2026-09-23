@@ -2,7 +2,8 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-33"
+const VERSION: String = "track-kit-54"
+const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -31,6 +32,7 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	colors = TrackTheme.palette(theme_id)
 	var ground := ShaderMaterial.new()
 	ground.shader = preload("res://track/ground.gdshader")
+	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	ground.set_shader_parameter("ground_color", colors[1])
 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
@@ -103,8 +105,10 @@ func _build_terrain(track: NativeTrack) -> void:
 			else: high.set_pixel(x, y, weights)
 	var surface := ShaderMaterial.new()
 	surface.shader = TERRAIN_SHADER
+	surface.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	surface.set_shader_parameter("icy_road", theme_id == "winter")
 	surface.set_shader_parameter("wet_road", theme_id == "storm")
+	surface.set_shader_parameter("packed_sand", theme_id == "desert")
 	surface.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
@@ -165,14 +169,17 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if pieces.is_empty(): return
 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
 	var texture: ImageTexture = ImageTexture.create_from_image(mask)
+	var road_texture: ImageTexture = ImageTexture.create_from_image(_creator_road_mask(track))
 	var shoulders := SurfaceTool.new()
 	var asphalt := SurfaceTool.new()
+	var asphalt_fringe := SurfaceTool.new()
 	var markings := SurfaceTool.new()
 	var ground_skirt := SurfaceTool.new()
 	ground_skirt.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var ground_count: int = 0
-	for tool: SurfaceTool in [shoulders,asphalt,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for tool: SurfaceTool in [shoulders,asphalt,asphalt_fringe,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
+	var fringe_count: int = 0
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
 		if _menu_yield_due():
@@ -198,8 +205,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
-		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.36,Geometry2D.JOIN_ROUND):
-			counts[1] += _road_polygon(asphalt,polygon,0.012)
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.16,Geometry2D.JOIN_ROUND):
+			counts[1] += _road_polygon(asphalt,polygon,0.012,points)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
 		for raw_polygon: PackedVector2Array in [_trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)]:
 			var polygon: PackedVector2Array = raw_polygon
@@ -226,6 +233,10 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
+					_asphalt_fringe_quad(asphalt_fringe,
+						p+normal_p*0.36,q+normal_q*0.36,
+						p+normal_p*0.56,q+normal_q*0.56,points)
+					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
 					if not is_kerb:
 						# Only the outer contour varies; road/paint stay fixed.
@@ -233,15 +244,18 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
 						_shoulder_quad(shoulders,p,q,outer_p,outer_q)
 						counts[0] += 1
+					# Retain the authored road-edge marking and keep it smooth;
+					# only the asphalt/sand colour transition receives subtle breakup.
 					if dirt: continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
 	_build_kerbs(track)
-	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,track.half_extent,true)
-	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,track.half_extent)
-	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,track.half_extent)
-	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,track.half_extent,false,true)
+	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
+	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
+	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 
 
 
@@ -292,13 +306,41 @@ func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2,
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
+func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array) -> void:
+	var vertices: Array[Vector2] = [inner_a,outer_b,inner_b,inner_a,outer_a,outer_b]
+	var across: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
+	for i: int in range(6):
+		tool.set_uv(Vector2(0.0,across[i]))
+		tool.set_uv2(_asphalt_axis(vertices[i],points))
+		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
+
+
 func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
 	return RoadEdges._inner_bend_distance(point,points)
 
 
-func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float) -> int:
+func _asphalt_axis(point: Vector2, points: PackedVector2Array) -> Vector2:
+	# Double-angle encoding treats forward/backward as the same grain axis.
+	# Interpolation remains continuous where headings wrap or pieces reverse.
+	var nearest: float = INF
+	var axis := Vector2.ZERO
+	for i: int in range(points.size()-1):
+		var a: Vector2 = points[i]
+		var b: Vector2 = points[i+1]
+		var distance: float = point.distance_squared_to(Geometry2D.get_closest_point_to_segment(point,a,b))
+		if distance < nearest and a.distance_squared_to(b) > 0.000001:
+			nearest = distance
+			var direction: Vector2 = (b-a).normalized()
+			# VisualGeometry maps simulation Y to negative world Z.
+			axis = Vector2(direction.x*direction.x-direction.y*direction.y,-2.0*direction.x*direction.y)
+	return axis
+
+
+func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float, points: PackedVector2Array = PackedVector2Array()) -> int:
 	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
-	for index: int in indices: tool.add_vertex(VisualGeometry.world(polygon[index])+Vector3.UP*height)
+	for index: int in indices:
+		tool.set_uv2(_asphalt_axis(polygon[index],points))
+		tool.add_vertex(VisualGeometry.world(polygon[index])+Vector3.UP*height)
 	return indices.size()/3
 
 
@@ -339,8 +381,18 @@ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
 	return mask
 
 
+func _creator_road_mask(track: NativeTrack) -> Image:
+	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_L8)
+	mask.fill(Color.BLACK)
+	for y: int in range(track.grid_height):
+		for x: int in range(track.grid_width):
+			if track.cells[y*track.grid_width+x] == 0:
+				mask.set_pixel(x,y,Color.WHITE)
+	return mask
 
-func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false) -> void:
+
+
+func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false) -> void:
 	# Polygon triangulation and edge strips can have opposite winding. All
 	# these surfaces are horizontal: normalize clockwise top faces and use
 	# explicit up normals instead of inferring lighting from polygon order.
@@ -366,18 +418,26 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, exte
 	instance.mesh = flat.commit()
 	var material := ShaderMaterial.new()
 	material.shader = CREATOR_ROAD_SHADER
+	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	material.set_shader_parameter("grass_color", colors[1])
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("verge_blend_mask",mask)
+	material.set_shader_parameter("road_mask",road_mask)
+	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
 	material.set_shader_parameter("sand_color",colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
+	material.set_shader_parameter("asphalt_base_color",colors[0])
 	material.set_shader_parameter("icy_road",theme_id == "winter" and color == colors[0] and not gravel and not grass and not kerb)
 	material.set_shader_parameter("wet_road",theme_id == "storm" and color == colors[0] and not gravel and not grass and not kerb)
 	material.set_shader_parameter("gravel",gravel)
+	material.set_shader_parameter("packed_sand",theme_id == "desert")
 	material.set_shader_parameter("grass",grass)
 	material.set_shader_parameter("kerb",kerb)
+	material.set_shader_parameter("asphalt_surface",asphalt_surface)
+	material.set_shader_parameter("edge_fringe",edge_fringe)
+	material.set_shader_parameter("road_marking",road_marking)
 	instance.material_override = material
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	if theme_id == "night_city" and partition_night_ground:
@@ -421,6 +481,16 @@ func _add_lit_road_parts(source: MeshInstance3D) -> void:
 
 func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
 	var mask := PackedByteArray()
+	# Low bridge undersides already have their ramp/fascia mesh. Never add
+	# generic 65 cm barrier blocks that protrude through the ramp asphalt.
+	if not track.creator_bridges.is_empty():
+		mask.resize(track.cells.size())
+		for y: int in range(track.grid_height):
+			for x: int in range(track.grid_width):
+				if track.cells[y*track.grid_width+x] != 4: continue
+				var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
+				for span: Dictionary in track.creator_bridges:
+					if CreatorBridges.blocks_ground(span,point): mask[y*track.grid_width+x] = 1
 	if _hide_creator_boundary(track):
 		# The finite creator perimeter still blocks the car, but an empty map
 		# is presented as open terrain rather than a walled enclosure.

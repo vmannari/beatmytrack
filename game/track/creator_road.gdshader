@@ -4,12 +4,18 @@ render_mode diffuse_toon, specular_disabled, cull_disabled;
 
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
 uniform sampler2D verge_blend_mask : filter_linear, repeat_disable;
+uniform sampler2D road_mask : filter_linear, repeat_disable;
+uniform vec2 road_mask_texel;
 uniform vec4 sand_color : source_color;
 uniform vec2 map_extent;
 uniform vec4 road_color : source_color;
+uniform vec4 asphalt_base_color : source_color;
 uniform bool gravel = false;
 uniform bool grass = false;
 uniform bool kerb = false;
+uniform bool asphalt_surface = false;
+uniform bool edge_fringe = false;
+uniform bool road_marking = false;
 uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
 uniform vec4 grass_color : source_color;
 varying vec3 world_position;
@@ -44,7 +50,29 @@ void fragment() {
 	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
 	float sand = 0.0;
 	if (grass || gravel) { sand = sand_coverage(map_uv); }
-	ALBEDO = surface_detail(road_color.rgb, world_position.xz, true);
+	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
+	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
+		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
+	}
+	if (edge_fringe && !wet_road && !icy_road) {
+		// UV.y is explicit distance across a 0.20 m cosmetic edge strip, so
+		// curves never inherit the coarse canonical surface-grid staircase.
+		float breakup = pigment(world_position.xz * 5.5 + vec2(4.1, 13.7));
+		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
+		float asphalt_coverage = 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+		vec3 shoulder = sand_detail(sand_color.rgb, world_position.xz);
+		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+	}
+	if (road_marking) {
+		// Preserve a continuous readable line while breaking up its pigment
+		// with mild fading and sparse asphalt-coloured chips.
+		float fade = pigment(world_position.xz * 1.9 + vec2(27.0, 8.0)) * 0.12;
+		float chip_noise = pigment(world_position.xz * 13.0 + vec2(5.0, 41.0));
+		float chip_aa = max(fwidth(chip_noise) * 0.75, 0.025);
+		float chips = smoothstep(0.66 - chip_aa, 0.78 + chip_aa, chip_noise) * 0.42;
+		vec3 worn_asphalt = surface_detail(asphalt_base_color.rgb, world_position.xz, true);
+		ALBEDO = mix(ALBEDO, worn_asphalt, fade + chips);
+	}
 	if (grass) { ALBEDO = mix(painted_grass(road_color.rgb,world_position.xz),sand_detail(sand_color.rgb,world_position.xz),sand); }
 	if (kerb) {
 		// Fit complete equal blocks to each exposed run. An odd count starts

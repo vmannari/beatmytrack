@@ -23,6 +23,58 @@ var last_slope: float = 0.0
 var spark_cooldown: float = 0.0
 var sparks: Array[Dictionary] = []
 var spark_cursor: int = 0
+var ramp_tick: int = -1
+var ramp_support: float = 0.0
+var ramp_lift: float = 0.0
+var ramp_velocity: float = 0.0
+var ramp_pitch: float = 0.0
+var ramp_pitch_speed: float = 0.0
+var ramp_body_pitch: float = 0.0
+
+
+func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
+	# Small visual unloading at crests, followed by gravity and a damped
+	# landing. This never grants canonical airtime or collision immunity.
+	if not enabled or ramp_tick < 0 or state.tick < ramp_tick or state.tick-ramp_tick > 30:
+		ramp_support = support
+		ramp_lift = 0.0
+		ramp_velocity = 0.0
+		ramp_pitch = pitch
+		ramp_pitch_speed = 0.0
+		ramp_body_pitch = 0.0
+		ramp_tick = state.tick
+	if state.tick > ramp_tick:
+		var ticks: int = state.tick-ramp_tick
+		var rise: float = (support-ramp_support)/ticks
+		var height: float = ramp_support+ramp_lift
+		for i: int in range(ticks):
+			var floor_height: float = ramp_support+rise*(i+1)
+			ramp_velocity -= 22.0/120.0
+			height += ramp_velocity/120.0
+			if height <= floor_height:
+				if ramp_lift > 0.005 and ramp_velocity < -1.0:
+					suspension_speed.x -= minf(-ramp_velocity*0.10,0.7)
+				height = floor_height
+				ramp_velocity = minf(rise*120.0,4.5)
+			if height > floor_height+0.55:
+				height = floor_height+0.55
+				ramp_velocity = minf(ramp_velocity,0.0)
+			ramp_lift = maxf(0.0,height-floor_height)
+			var travel_sign: float = -1.0 if state.velocity.dot(state.forward()) < 0.0 else 1.0
+			var flight_pitch: float = atan2(ramp_velocity*travel_sign,maxf(5.0,state.velocity.length()))
+			var target: float = lerp_angle(pitch,flight_pitch,smoothstep(0.0,0.12,ramp_lift))
+			# Retain angular velocity through touchdown and onto flat road.
+			# A damped spring gives a small diminishing rebound instead of a
+			# one-way lerp followed by an abrupt return to the road angle.
+			ramp_pitch_speed += ((target-ramp_pitch)*100.0-ramp_pitch_speed*10.0)/120.0
+			ramp_pitch += ramp_pitch_speed/120.0
+		ramp_support = support
+		ramp_tick = state.tick
+	position.y += ramp_lift
+	# Wheel support remains on the road; the sprung body follows slope changes
+	# with inertia. During unloading the whole car follows its vertical travel.
+	rotation.x = lerp_angle(pitch,ramp_pitch,smoothstep(0.0,0.12,ramp_lift))
+	ramp_body_pitch = clampf(ramp_pitch-rotation.x,-0.10,0.10) if enabled else 0.0
 
 
 func _ready() -> void:
@@ -31,60 +83,37 @@ func _ready() -> void:
 		VehicleModels.build(self, vehicle_id)
 		if batch_parts: VisualGeometry.batch_static_parts(self)
 		return
-	var paint := VisualGeometry.material(Color("c8c1ab"))
-	VisualGeometry.ink(paint)
-	var blue := VisualGeometry.material(Color("244d69"))
-	VisualGeometry.ink(blue)
+	var paint := VisualGeometry.material(Color("e0d5b5"))
+	var blue := VisualGeometry.material(Color("30627d"))
 	var trim := VisualGeometry.material(Color("171e21"))
-	var glass := VisualGeometry.material(Color("293b43"))
+	var glass := VisualGeometry.material(Color("1e3036"))
 	var rim := VisualGeometry.material(Color("657177"))
 	var lamps := VisualGeometry.material(Color("e4dfc5"))
 	brake_material = VisualGeometry.material(Color("802d2b"))
 	body = Node3D.new()
 	add_child(body)
-	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], trim)
+	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], blue)
 	_shell(body, [Vector3(0.86, 0.5, 2.03), Vector3(0.88, 0.86, 1.98), Vector3(0.76, 1.02, 1.8)], blue)
-	_shell(body, [Vector3(0.875, 0.85, 1.98), Vector3(0.76, 1.02, 1.8)], paint)
 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
-	_hatchback(paint, glass, trim)
+	_hatchback(paint, glass, trim, blue)
 	for side: float in [-1.0, 1.0]:
-		_seam(body,Vector3(side*0.55,1.025,-1.73),Vector3(side*0.58,1.025,-1.05),0.012,trim)
-		# One long front door, then a fixed rear quarter window.
-		_seam(body,Vector3(side*0.88,0.87,0.47),Vector3(side*0.88,0.58,0.47),0.012,trim)
-		VisualGeometry.box(body,Vector3(0.025,0.055,0.20),Vector3(side*0.88,0.85,0.32),trim)
-		_seam(body,Vector3(side*0.89,0.64,-0.90),Vector3(side*0.89,0.64,0.78),0.024,trim)
-		# Painted sill stripe and swept rear-quarter cream motif from the menu.
-		_panel([Vector3(side*0.884,0.83,0.78),Vector3(side*0.884,0.83,1.35),Vector3(side*0.884,0.59,1.05),Vector3(side*0.884,0.59,0.90)],Vector3(side,0,0),paint)
-	VisualGeometry.box(body,Vector3(1.26,0.19,0.04),Vector3(0,0.79,-2.035),trim)
-	for slat: int in range(3):
-		VisualGeometry.box(body,Vector3(0.72,0.013,0.025),Vector3(0,0.73+slat*0.055,-2.065),rim)
-	for side: float in [-1.0, 1.0]:
-		for offset: float in [0.43,0.65]:
-			var lamp := VisualGeometry.cylinder(body,0.10,0.04,Vector3(side*offset,0.80,-2.055),lamps)
-			lamp.rotation.x = PI*0.5
-		VisualGeometry.box(body,Vector3(0.14,0.13,0.045),Vector3(side*0.77,0.77,-2.02),VisualGeometry.material(Color("b77929")))
+		VisualGeometry.box(body,Vector3(0.055,0.22,0.035),Vector3(side*0.806,0.798,-2.005),VisualGeometry.material(Color("b77929")))
 		brake_lights.append(VisualGeometry.box(body, Vector3(0.16, 0.27, 0.07), Vector3(side * 0.73, 0.84, 2.01), brake_material))
-		VisualGeometry.box(body, Vector3(0.18, 0.12, 0.28), Vector3(side * 0.93, 1.03, -0.48), trim)
 		for axle: float in [-1.28, 1.28]:
-			for segment: int in range(12):
-				var a0: float = PI*segment/12.0
-				var a1: float = PI*(segment+1)/12.0
-				_panel([Vector3(side*0.893,0.37+sin(a0)*0.39,axle+cos(a0)*0.39),Vector3(side*0.893,0.37+sin(a1)*0.39,axle+cos(a1)*0.39),Vector3(side*0.895,0.37+sin(a1)*0.46,axle+cos(a1)*0.46),Vector3(side*0.895,0.37+sin(a0)*0.46,axle+cos(a0)*0.46)],Vector3(side,0,0),blue)
 			var pivot := Node3D.new()
 			pivot.position = Vector3(side * 0.83, 0.37, axle)
 			add_child(pivot)
-			var tire := VisualGeometry.cylinder(pivot, 0.36, 0.24, Vector3.ZERO, trim)
-			tire.rotation.z = PI * 0.5
-			var hub := VisualGeometry.cylinder(pivot, 0.2, 0.25, Vector3.ZERO, rim)
+			CompactDetail.tire(pivot, trim)
+			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.16, Vector3.ZERO, trim)
 			hub.rotation.z = PI * 0.5
 			for spoke: int in range(8):
 				var a: float = spoke*TAU/8.0
-				_seam(pivot,Vector3(side*0.132,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.132,sin(a)*0.185,cos(a)*0.185),0.024,lamps)
+				_seam(pivot,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
 			if axle < 0:
 				front_wheels.append(pivot)
-			register_rolling_wheel(pivot, 0.36)
-	VisualGeometry.box(body, Vector3(1.0, 0.14, 0.08), Vector3(0, 0.49, -2.13), trim)
+			register_rolling_wheel(pivot, 0.37)
 	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
+	CompactDetail.build(self, blue, paint, trim, rim)
 	if batch_parts: VisualGeometry.batch_static_parts(self)
 
 
@@ -148,8 +177,8 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		if airborne:
 			target = Vector3(0.035, 0.0, 0.0)
 		elif not was_airborne:
-			target.x = -minf(absf(slope_rate) * state.velocity.length() * 0.0015, 0.07)
-			target.y -= clampf(slope_rate * 0.018, -0.045, 0.045)
+			target.x = clampf(-slope_rate * state.velocity.dot(state.forward()) * 0.002, -0.075, 0.05)
+			target.y -= clampf(slope_rate * 0.012, -0.035, 0.035)
 		if was_rolling and state.roll_ticks == 0:
 			suspension_speed.x -= 0.85
 			suspension_speed.z += state.roll_direction * 0.24
@@ -163,7 +192,9 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		spark_cooldown = maxf(0.0, spark_cooldown - dt)
 		_update_sparks(dt)
 		for step: int in range(state.tick - last_tick):
-			suspension_speed += ((target - suspension) * 150.0 - suspension_speed * 15.0) / 120.0
+			# Heave/pitch settle over more than one diminishing movement;
+			# lateral roll retains its accepted steering response.
+			suspension_speed += ((target - suspension) * Vector3(90.0,110.0,150.0) - suspension_speed * Vector3(9.0,10.0,15.0)) / 120.0
 			suspension += suspension_speed / 120.0
 			suspension.x = clampf(suspension.x, -0.11, 0.06)
 			suspension.y = clampf(suspension.y, -0.12, 0.12)
@@ -180,13 +211,13 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		last_slope = road_pitch
 	var compliance: float = 0.30 if vehicle_id == "kart" else 1.0
 	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE
-	body.rotation.x = suspension.y * compliance
+	body.rotation.x = (suspension.y + ramp_body_pitch) * compliance
 	body.rotation.z = suspension.z * compliance
 
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.
-const ROLL_OUTLINE: Array[Vector2] = [Vector2(-0.95,0.01), Vector2(0.95,0.01),
-	Vector2(-0.95,0.73), Vector2(0.95,0.73), Vector2(-1.02,1.09), Vector2(1.02,1.09),
+const ROLL_OUTLINE: Array[Vector2] = [Vector2(-0.975,0.0), Vector2(0.975,0.0),
+	Vector2(-0.975,0.76), Vector2(0.975,0.76), Vector2(-1.02,1.09), Vector2(1.02,1.09),
 	Vector2(-0.63,1.49), Vector2(0.63,1.49)]
 
 func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
@@ -281,7 +312,7 @@ func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: 
 	stroke.basis = Basis.looking_at(end-start,up)
 
 
-func _hatchback(paint: Material, glass: Material, trim: Material) -> void:
+func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material) -> void:
 	# Broad roof, long side glazing and a sloping rear hatch; +Z is the tail.
 	var lf := Vector3(-0.76,1.01,-1.00)
 	var rf := Vector3(0.76,1.01,-1.00)
@@ -293,22 +324,35 @@ func _hatchback(paint: Material, glass: Material, trim: Material) -> void:
 	var trr := Vector3(0.63,1.48,1.18)
 	_panel([lf,rf,trf,tlf],Vector3(0,0.79,-0.61),paint)
 	_panel([lr,rr,trr,tlr],Vector3(0,0.84,0.54),paint)
-	_panel([tlf,trf,trr,tlr],Vector3.UP,paint)
-	_panel([Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),glass)
-	_panel([Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),glass)
+	var roof_paint := VisualGeometry.material(Color("c5baa0"))
+	_panel([tlf,trf,trr,tlr],Vector3.UP,roof_paint)
+	var roof := Node3D.new()
+	body.add_child(roof)
+	roof.position.z = 0.39
+	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],roof_paint)
+	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.10)
+	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.07)
+	var quarter_surround := VisualGeometry.material(Color("a6b1aa"))
 	for side: float in [-1.0,1.0]:
-		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),paint)
+		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
 		# Window corners lie on the sloped cabin side, just outside its paint.
-		_panel([Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),glass)
-		_panel([Vector3(side*0.748,1.07,0.52),Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),Vector3(side*0.651,1.425,0.52)],Vector3(side,0.277,0),glass)
-		_panel([Vector3(side*0.749,1.07,0.42),Vector3(side*0.749,1.07,0.52),Vector3(side*0.652,1.425,0.52),Vector3(side*0.652,1.425,0.42)],Vector3(side,0.277,0),trim)
-		_seam(body,Vector3(side*0.750,1.065,-0.88),Vector3(side*0.750,1.065,1.70),0.018,trim)
+		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),trim,0.0)
+		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.747,1.075,0.50),Vector3(side*0.733,1.125,1.53),Vector3(side*0.656,1.405,1.12),Vector3(side*0.651,1.425,0.50)],Vector3(side,0.277,0),trim,0.0,[0.035,0.15,0.095,0.035],quarter_surround)
 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
-	var reflection := VisualGeometry.material(Color("4d6673"))
-	_panel([Vector3(-0.52,1.074,-0.944),Vector3(-0.34,1.074,-0.944),Vector3(0.10,1.44,-0.471),Vector3(-0.13,1.44,-0.471)],Vector3(0,0.79,-0.61),reflection)
 	# Hatch seam and rear wiper make the short tail readable from overhead.
 	_seam(body,Vector3(-0.68,1.05,1.87),Vector3(0.68,1.05,1.87),0.018,trim)
 	_seam(body,Vector3(0,1.10,1.80),Vector3(0.36,1.17,1.69),0.020,trim)
+	# A fine inset perimeter crease defines the pressed roof's rolled edge.
+	var roof_line := VisualGeometry.material(Color("b3aa95"))
+	var roof_highlight := VisualGeometry.material(Color("dcd1b6"))
+	var perimeter: Array[Vector2] = [Vector2(-0.44,-0.38),Vector2(0.44,-0.38),Vector2(0.60,-0.16),Vector2(0.60,0.94),Vector2(0.44,1.16),Vector2(-0.44,1.16),Vector2(-0.60,0.94),Vector2(-0.60,-0.16)]
+	for i: int in range(perimeter.size()):
+		var a: Vector2 = perimeter[i]
+		var b: Vector2 = perimeter[(i+1)%perimeter.size()]
+		_seam(body,Vector3(a.x,1.493,a.y),Vector3(b.x,1.493,b.y),0.008,roof_line)
+		var inset_a: Vector2 = Vector2(0,0.39).lerp(a,0.986)
+		var inset_b: Vector2 = Vector2(0,0.39).lerp(b,0.986)
+		_seam(body,Vector3(inset_a.x,1.493,inset_a.y),Vector3(inset_b.x,1.493,inset_b.y),0.008,roof_highlight)
 
 
 func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:

@@ -6,8 +6,36 @@ const MAX_SAMPLES: int = 2048
 var completed: Array[Dictionary] = []
 var samples: Array[Dictionary] = []
 var stride: int = 6
-var lap_shortcuts: int = 0
 var lap_start: float = 0.0
+var events: Array[Dictionary] = []
+var was_off_track: bool = false
+var collision_count: int = 0
+var last_collision_tick: int = -1000
+
+func observe_incidents(session: TrackSession, track: NativeTrack, state: VehicleState, config: HandlingConfig) -> void:
+	# Observe every tick, independently of speed-sample decimation. Group sustained
+	# obstacle contact until there has been a quarter second without a collision.
+	if state.collision_count > collision_count:
+		if session.elapsed_ticks - last_collision_tick > session.tick_rate / 4:
+			_add_event("collision", session, state.position)
+		last_collision_tick = session.elapsed_ticks
+	collision_count = state.collision_count
+	var off_track: bool = fully_off_track(track, state, config)
+	if off_track and not was_off_track: _add_event("off_track", session, state.position)
+	was_off_track = off_track
+
+func _add_event(kind: String, session: TrackSession, position: Vector2) -> void:
+	events.append({"kind":kind, "position":position, "elapsed":session.elapsed_ticks / float(session.tick_rate) - lap_start})
+
+static func fully_off_track(track: NativeTrack, state: VehicleState, config: HandlingConfig) -> bool:
+	if state.jump_height > 0.0: return false
+	for axle: float in [-0.5, 0.5]:
+		for side: float in [-0.5, 0.5]:
+			var point: Vector2 = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
+			# Native road materials include authored dirt roads; kerbs still count.
+			if track.cell_at(point, state.track_elevated) in [0, 2, 5]: return false
+			if not state.track_elevated and track.kerbs.height_at(point) > 0.0: return false
+	return true
 
 func begin(position: Vector2) -> void:
 	samples = [_point(0, 0.0, 0.0, position, 0.0, 0.0, true)]
@@ -16,13 +44,13 @@ func observe(session: TrackSession, track: NativeTrack, position: Vector2, speed
 	var index: int = completed.size()
 	var ended: bool = session.completed_laps > index
 	var timestamp: float = session.elapsed_ticks / float(session.tick_rate)
-	var valid: bool = not practice and session.shortcut_count == lap_shortcuts
+	var valid: bool = not practice
 	if ended:
 		var duration: float = session.lap_start_time - lap_start
 		samples.append(_point(index, session.lap_start_time, duration, track.finish_center, 1.0, speed, valid))
-		completed.append({"index":index,"time":session.lap_times[index],"duration":duration,"valid":valid,"samples":samples})
+		completed.append({"index":index,"time":session.lap_times[index],"duration":duration,"valid":valid,"samples":samples,"events":events})
+		events = []
 		lap_start = session.lap_start_time
-		lap_shortcuts = session.shortcut_count
 		samples = [_point(index + 1, lap_start, 0.0, track.finish_center, 0.0, speed, not practice)]
 		stride = 6
 	elif session.elapsed_ticks % stride == 0:

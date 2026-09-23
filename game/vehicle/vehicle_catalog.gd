@@ -23,7 +23,7 @@ static func description(id: String = "") -> String:
 
 static func config(id: String, compact_profile: int = 4) -> HandlingConfig:
 	if valid_id(id) == "compact":
-		return (load(HandlingSelection.PROFILE_PATHS[clampi(compact_profile,0,4)]) as HandlingConfig).duplicate() as HandlingConfig
+		return (load(HandlingSelection.PROFILE_PATHS[clampi(compact_profile,0,HandlingSelection.PROFILE_PATHS.size()-1)]) as HandlingConfig).duplicate() as HandlingConfig
 	return (load("res://resources/cars/" + id + ".tres") as HandlingConfig).duplicate() as HandlingConfig
 
 static func artwork(id: String) -> Texture2D:

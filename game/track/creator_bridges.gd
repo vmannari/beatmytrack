@@ -4,6 +4,7 @@ extends RefCounted
 const HEIGHT: float = 3.5
 const RAMP: float = 8.0
 const RAIL: float = 0.75
+const UNDERPASS_CLEARANCE: float = 2.20 # Tallest local car (~1.73 m), 0.42 m deck, small clearance.
 
 static var base_footprints: Dictionary = {}
 
@@ -42,9 +43,12 @@ static func initial_layer(bridges: Array, point: Vector2, heading: float) -> boo
 		if contains(bridge,point) and absf(forward.dot(Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading))))) > 0.75: return true
 	return false
 
-static func layer_at(bridges: Array, point: Vector2, previous: bool, margin: float = 0.0) -> bool:
+static func layer_at(bridges: Array, point: Vector2, previous: bool, _margin: float = 0.0) -> bool:
 	for bridge: Dictionary in bridges:
-		if not contains(bridge,point,margin): continue
+		# The centre must leave the deck at its ground-level end. Expanding
+		# both axes by the car radius joins separate spans in dense tracks and
+		# carries the upper layer sideways onto the next bridge (Knit).
+		if not contains(bridge,point): continue
 		var u: float = local_point(bridge,point).x
 		# Enter the upper layer only through ground-level ramp ends. A car
 		# already on the deck stays there, even while turning or reversing.
@@ -55,6 +59,16 @@ static func at_any(bridges: Array, point: Vector2, margin: float = 0.0) -> bool:
 	for bridge: Dictionary in bridges:
 		if contains(bridge,point,margin): return true
 	return false
+
+static func span_at(bridges: Array, point: Vector2) -> int:
+	for i: int in range(bridges.size()):
+		if contains(bridges[i],point): return i
+	return -1
+
+static func blocks_ground(bridge: Dictionary, point: Vector2) -> bool:
+	if not contains(bridge,point): return false
+	var p: Vector2 = local_point(bridge,point)
+	return height(bridge,point) < UNDERPASS_CLEARANCE and (minf(p.x,float(bridge.length)-p.x) >= 2.0 or absf(p.y) > float(bridge.width)*0.5)
 
 static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Array, grid: Vector2i, extent: Vector2, cell: float) -> void:
 	for bridge: Dictionary in bridges:
@@ -73,6 +87,11 @@ static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Arr
 				# the middle of a span remains exactly as authored.
 				if (p.x < 2.0 or p.x > float(bridge.length)-2.0) and absf(p.y) <= float(bridge.width)*0.5:
 					ground[y*grid.x+x] = 0
+				# Ground cars cannot enter the low underside from the tunnel or
+				# side. The upper ramp remains independently drivable. Preserve
+				# the open middle, where the deck has full vehicle clearance.
+				if blocks_ground(bridge,point):
+					ground[y*grid.x+x] = 4
 
 static func rectangles(cells: PackedInt32Array, grid: Vector2i) -> Array:
 	var result: Array = []

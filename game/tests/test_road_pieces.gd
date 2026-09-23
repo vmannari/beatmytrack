@@ -289,11 +289,19 @@ func _roadside_visuals() -> void:
 			var sloped: bool = false
 			var matched: bool = true
 			var kerb_vertices: int = 0
+			var asphalt_detail_materials: int = 0
+			var worn_marking_materials: int = 0
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
 				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
 				var arrays: Array = mesh.mesh.surface_get_arrays(0)
 				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+				if material.shader.resource_path == "res://track/creator_road.gdshader" and material.get_shader_parameter("asphalt_surface"):
+					asphalt_detail_materials += 1
+					var road_mask: Texture2D = material.get_shader_parameter("road_mask")
+					matched = matched and road_mask != null and road_mask.get_width() == track.grid_width and road_mask.get_height() == track.grid_height
+				if material.shader.resource_path == "res://track/creator_road.gdshader" and material.get_shader_parameter("road_marking"):
+					worn_marking_materials += 1
 				if material.shader.resource_path != "res://track/kerb.gdshader":
 					for normal: Vector3 in normals: upward = upward and normal.distance_to(Vector3.UP) < 0.0001
 					continue
@@ -335,6 +343,8 @@ func _roadside_visuals() -> void:
 				previous_end = end
 				previous_u = high
 			check(closed_seams,"raised kerb bevel/crown endpoints meet without cracks, including taper")
+			check(asphalt_detail_materials == 2,"creator asphalt has separate solid and UV-controlled edge-fringe materials")
+			check(worn_marking_materials == 1,"creator road edge markings use one shared worn-pigment material")
 			check(upward,"flat road/grass/sand/paint triangles retain upward normals")
 			check(raised and sloped,"kerbs have a raised crown and real bevel normals")
 			check(bounded_runs,"kerb coordinates restart per run and stay within complete-block length")

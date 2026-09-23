@@ -217,9 +217,14 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 		entry.creator = "Gallery fixture"
 		entry.theme = TrackTheme.IDS[index%TrackTheme.IDS.size()]
 		browser.catalog.entries.append(entry)
+	browser.records.settings["track_ratings"] = {"gallery_fixture_0":4,"gallery_fixture_2":5}
 	browser.call("_refresh")
 	await _settle()
 	check(browser.grid.get_child_count() == 6,"populated discovery gallery stays bounded at six cards")
+	for card: TrackTile in browser.grid.get_children():
+		var rating: int = int(browser.records.settings.track_ratings.get(str(card.entry.id),0))
+		check(card.personal_rating == rating,"gallery shows saved rating for its track identity")
+		check(card.rating_text() == ("%.1f (1)" % rating if rating > 0 else "— (0)"),"gallery shows rating and bracketed local vote count")
 	var tile: TrackTile = browser.grid.get_child(0)
 	var selected_before: String = browser.selected_track.identity
 	var star: Button = tile.get_node("ToggleFavorite")
@@ -229,6 +234,10 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check(browser.selected_track.identity == selected_before and not browser.selecting,"star does not trigger track selection")
 	check(browser.detail.find_children("*","TrackShowroom",true,false).is_empty(),"bottom card has no overview")
 	await _settle()
+	var race_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+	var lap_chart: TrackDistribution = browser.find_child("LapDistribution",true,false)
+	check(race_chart != null and lap_chart != null and race_chart.get_global_rect().end.x <= lap_chart.global_position.x,"race and lap comparisons remain visible side by side")
+	check(browser.find_child("DeleteUserTrack",true,false) == null and browser.find_child("RemixTrack",true,false) == null,"Play does not expose track modification actions")
 	await _capture("tracks-populated-fixture",physical_size,true)
 	browser.call("_page",1)
 	await _settle()
@@ -247,3 +256,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.catalog.entries = original
 	browser.state.page = 0
 	browser.call("_refresh")
+	await _settle()
+	var home: Button = browser.find_child("PlayMainMenu",true,false)
+	await _tap(home.get_global_rect().get_center())
+	check(app.get("screen") == "play","bottom Main menu action reaches Home through viewport touch")

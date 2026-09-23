@@ -45,7 +45,8 @@ func _new_game(track: NativeTrack, practice: bool) -> Node:
 
 func _check_practice(track: NativeTrack) -> void:
 	var game: Node = _new_game(track, true)
-	var observed: Dictionary = {"completed": 0, "edited": 0, "position": Vector2.ZERO}
+	var observed: Dictionary = {"completed": 0, "edited": 0, "position": Vector2.ZERO, "tested":0}
+	game.connect("practice_lap_completed",func() -> void: observed.tested += 1)
 	game.connect("race_completed", func() -> void: observed.completed += 1)
 	game.connect("edit_here_requested", func(position: Vector2) -> void:
 		observed.edited += 1
@@ -71,6 +72,7 @@ func _check_practice(track: NativeTrack) -> void:
 			break
 	print("PRACTICE_DRIVE laps=", witness.completed_laps, " ticks=", sim.state.tick, " collisions=", sim.state.collision_count)
 	check(witness.finished and witness.completed_laps == 6, "actual editor driving continues through six full ordered laps")
+	check(observed.tested == 0 and not game.get("practice_validation_eligible"),"AI practice cannot unlock publication")
 	check(not bool(game.get("paused")) and int(observed.completed) == 0, "practice cannot emit results or stop after the normal five-lap limit")
 	check(session.elapsed_ticks == 0 and session.completed_laps == 0 and session.lap_times.is_empty() and not session.finished, "practice creates no scored race times or lap records")
 	var finished_tick: int = sim.state.tick
@@ -117,12 +119,20 @@ func _check_normal_race(track: NativeTrack) -> void:
 	check((sim.state.position - track.finish_center).dot(track.finish_forward) <= -2.99, "race car starts fully behind the finish stripe")
 	check(not bool(game.get("attempt_practice")), "ordinary fresh race remains eligible for normal records")
 	game.call("_physics_process", 1.0 / 120.0)
-	check(sim.state.tick == 0 and (game.get("countdown_label") as Label).text == "3", "normal countdown excludes canonical racing time")
+	check(sim.state.tick == 0 and game.get("race_cues").stage == 1, "normal countdown excludes canonical racing time")
+	var cue_constants: Dictionary = game.get("race_cues").get_script().get_script_constant_map()
+	var start_atlas: Texture2D = cue_constants.get("START_LIGHTS_ATLAS")
+	check(start_atlas != null and start_atlas.get_size() == Vector2(3264, 120), "start lights use one padded preloaded six-frame atlas")
+	var finish_panel: Texture2D = cue_constants.get("RACE_COMPLETE_PANEL")
+	check(finish_panel != null and finish_panel.get_size() == Vector2(1024, 341), "finish uses one mobile-sized preloaded completion panel")
 	var announcement: Label = game.get("countdown_label")
 	check(announcement.offset_top == -170 and announcement.offset_bottom == -70, "countdown and GO share the raised announcement area")
 	if not capture_path.is_empty():
 		var practice_path: String = capture_path
 		capture_path = practice_path.get_basename() + "-race-start.png"
+		await _capture(game)
+		game.get("race_cues").show_start(60, 0)
+		capture_path = practice_path.get_basename() + "-all-red.png"
 		await _capture(game)
 		game.set("countdown_ticks", 0)
 		game.call("_physics_process", 1.0 / 120.0)
@@ -141,10 +151,45 @@ func _check_normal_race(track: NativeTrack) -> void:
 		if session.finished:
 			break
 	check(fourth_lap_checked and session.finished and session.completed_laps == 5, "actual normal driving still finishes precisely five ordered laps")
-	check(bool(game.get("paused")) and int(observed.completed) == 1 and session.lap_times.size() == 5, "normal finish still stops driving and emits one result with five times")
+	check(not bool(game.get("paused")) and int(observed.completed) == 0 and session.lap_times.size() == 5, "finish defers results while preserving five scored laps")
+	var scored_snapshot: Array = sim.state.snapshot()
+	var scored_ticks: int = session.elapsed_ticks
+	var coast: VehicleSimulation = game.get("finish_sim")
+	check(coast != null and coast.state != sim.state, "finish coast has independent state")
+	var finish_position: Vector2 = coast.state.position
+	for tick: int in range(108): game.call("_physics_process", 1.0 / 120.0)
+	check(coast.state.position.distance_to(finish_position) > 1.0, "car continues moving after crossing finish")
+	check(sim.state.snapshot() == scored_snapshot and session.elapsed_ticks == scored_ticks, "coasting cannot change official state or time")
+	var tap := InputEventScreenTouch.new()
+	tap.pressed = true
+	game.call("_unhandled_input", tap)
+	check(bool(game.get("paused")) and int(observed.completed) == 1, "race-complete panel tap can continue after the guarded reveal")
+	if not capture_path.is_empty():
+		var saved_path: String = capture_path
+		capture_path = saved_path.get_basename() + "-finish.png"
+		await _capture(game)
+		var cues: Control = game.get("race_cues")
+		for sample: int in range(18):
+			cues.show_finish(0.12 + sample * 0.025)
+			capture_path = saved_path.get_basename() + "-flag-%02d.png" % sample
+			await _capture(game)
+		cues.show_finish(0.5)
+		capture_path = saved_path
+	for tick: int in range(108): game.call("_physics_process", 1.0 / 120.0)
+	check(bool(game.get("paused")) and int(observed.completed) == 1, "coast ends with exactly one result")
 	var finished_tick: int = sim.state.tick
 	game.call("_physics_process", 1.0 / 120.0)
 	check(sim.state.tick == finished_tick and int(observed.completed) == 1, "ordinary finish cannot advance or emit duplicate results")
+	game.call("restart")
+	check(game.get("finish_sim") == null and game.get("race_cues").stage == 1 and not bool(game.get("paused")), "retry resets coast and red lights")
+	for light: int in range(1, 6):
+		game.call("_physics_process", 1.0 / 120.0)
+		check(game.get("race_cues").stage == light and sim.state.tick == 0, "red lights accumulate while race clock stays stopped: %d" % light)
+		for tick: int in range(59): game.call("_physics_process", 1.0 / 120.0)
+	for tick: int in range(60): game.call("_physics_process", 1.0 / 120.0)
+	check(game.get("race_cues").stage == 5 and sim.state.tick == 0, "all five reds hold before release")
+	game.call("_physics_process", 1.0 / 120.0)
+	check(game.get("race_cues").stage == 0 and sim.state.tick == 1, "all lights extinguish on the first race tick")
 	game.queue_free()
 	await process_frame
 

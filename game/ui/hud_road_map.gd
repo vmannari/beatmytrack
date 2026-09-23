@@ -6,7 +6,7 @@ var outlines: Array[PackedVector2Array] = []
 var world_bounds := Rect2()
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(104,84)
+	custom_minimum_size = Vector2(128,128)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	road_layer = RoadLayer.new()
 	road_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -21,7 +21,7 @@ class RoadLayer extends Control:
 	func _draw() -> void:
 		draw_count += 1
 		for path: PackedVector2Array in paths: draw_polyline(path,Color("080e12"),3.0,true)
-		for path: PackedVector2Array in paths: draw_polyline(path,Color("bec7c5"),1.5,true)
+		for path: PackedVector2Array in paths: draw_polyline(path,Color("e4e8e5"),2.5,true)
 
 var road_layer: RoadLayer
 var cached_scale: float = 1.0
@@ -31,7 +31,7 @@ func _rebuild_roads() -> void:
 	if road_layer == null: return
 	rebuild_count += 1
 	road_layer.paths.clear()
-	cached_scale = minf((size.x-14)/maxf(world_bounds.size.x,1),(size.y-14)/maxf(world_bounds.size.y,1))
+	cached_scale = minf((size.x-40)/maxf(world_bounds.size.x,1),(size.y-40)/maxf(world_bounds.size.y,1))
 	for outline: PackedVector2Array in outlines:
 		var path := PackedVector2Array()
 		var count: int = outline.size()/2
@@ -50,8 +50,8 @@ func _draw() -> void:
 	if outlines.is_empty(): return
 	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
 	var marker: Vector2 = (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
-	draw_circle(marker,4,Color("f1eee3"))
-	draw_circle(marker,2.5,Color("55a9d9"))
+	draw_circle(marker,5,Color("f1eee3"))
+	draw_circle(marker,3.5,Color("55a9d9"))
 
 func configure(track: NativeTrack, authored: bool) -> void:
 	outlines.clear()

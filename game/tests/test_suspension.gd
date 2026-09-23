@@ -69,6 +69,46 @@ func _run() -> void:
 		state.tick += 1
 		car.present_suspension(state, 0.4)
 	check(not car.sparks[8].mesh.visible and car.spark_cursor == 16, "steady incline emits no sparks; particles expire")
+	for speed: float in [3.0,24.0]:
+		var peak: float = 0.0
+		var span: Dictionary = RoadPieces.create("bridge",Vector2.ZERO,0,10)
+		span.length = 32.0
+		state.tick = 0
+		state.velocity = Vector2(speed,0)
+		car.present_ramp(state,0,0,false)
+		for i: int in range(ceili(40.0/speed*120.0)):
+			var u: float = -4.0+i*speed/120.0
+			var front: float = CreatorBridges.height(span,Vector2(u+1.13,0))
+			var rear: float = CreatorBridges.height(span,Vector2(u-1.13,0))
+			state.tick += 1
+			car.position.y = (front+rear)*0.5
+			car.rotation.x = atan2(front-rear,2.26)
+			car.present_ramp(state,car.position.y,car.rotation.x,true)
+			peak = maxf(peak,car.ramp_lift)
+		check(peak < 0.01 if speed < 5 else peak > 0.05 and peak <= 0.55,"slow ramp stays planted; fast ramp visibly unloads within bounds")
+		check(car.ramp_lift == 0.0,"car lands after descending ramp")
+		print("RAMP speed=",speed," peak_lift=",peak)
+	var ramp_pose: float = car.ramp_lift
+	car.present_ramp(state,0,0,true)
+	check(car.ramp_lift == ramp_pose,"duplicate snapshots cannot advance crest motion")
+	car.present_ramp(state,0,0,false)
+	check(car.ramp_lift == 0.0 and car.ramp_velocity == 0.0,"jump/roll/reset clears visual ramp motion")
+	for stride: int in [1,2,4]:
+		state.tick = 0
+		state.velocity = Vector2(0,12)
+		car.present_ramp(state,0,0.25,false)
+		var response: Array[float] = []
+		for tick: int in range(stride,241,stride):
+			state.tick = tick
+			car.present_ramp(state,0,0,true)
+			if tick in [48,96,240]: response.append(car.ramp_pitch)
+		check(response[0] < -0.01 and response[1] > 0.001,"pitch rebounds on both sides after ramp exit at %d Hz" % (120/stride))
+		check(absf(response[1]) < absf(response[0])*0.3 and absf(response[2]) < 0.0001,"successive ramp rebounds decay and settle at %d Hz" % (120/stride))
+		var frozen: Vector2 = Vector2(car.ramp_pitch,car.ramp_pitch_speed)
+		var canonical: Array = state.snapshot()
+		car.present_ramp(state,0,0,true)
+		check(frozen == Vector2(car.ramp_pitch,car.ramp_pitch_speed) and canonical == state.snapshot(),"paused ramp spring preserves pose and canonical state")
+		print("RAMP_SETTLE rate=",120/stride," pitch_at_0.4_0.8_2s=",response)
 	if "--capture" in OS.get_cmdline_user_args():
 		root.size = Vector2i(1280,720)
 		var ground := VisualGeometry.material(Color("55595a"))
@@ -105,5 +145,55 @@ func _run() -> void:
 			check(root.get_texture().get_image().save_png("res://../build/suspension-" + scenario + ".png") == OK, "capture " + scenario)
 	world.queue_free()
 	await process_frame
+	if "--capture" in OS.get_cmdline_user_args(): await _capture_ramp()
 	print("SUSPENSION_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _capture_ramp() -> void:
+	var world := Node3D.new()
+	root.add_child(world)
+	var span: Dictionary = RoadPieces.create("bridge",Vector2(-16,0),0,10)
+	span.length = 32.0
+	CreatorBridgeVisual.build(world,[span])
+	VisualGeometry.box(world,Vector3(200,0.1,60),Vector3(0,-0.1,0),VisualGeometry.material(Color("627157")))
+	var car := CarVisual.new()
+	world.add_child(car)
+	var light := DirectionalLight3D.new()
+	world.add_child(light)
+	light.rotation_degrees = Vector3(-50,-25,0)
+	var camera := Camera3D.new()
+	world.add_child(camera)
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = 13.0
+	var state := VehicleState.new()
+	state.velocity = Vector2(24,0)
+	state.heading = PI*0.5
+	var frame := DriveFrame.new()
+	var captured: int = 0
+	var targets: Array[float] = [4.0,10.0,26.0,35.0]
+	var names: Array[String] = ["climb","crest","descent","settled"]
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../build/ramp-motion"))
+	for i: int in range(420):
+		var u: float = -4.0+i*0.2
+		state.tick = i
+		state.position = Vector2(-16+u,0)
+		car.present(state.position,state.heading,state,frame)
+		var front: float = CreatorBridges.height(span,state.position+Vector2(1.13,0))
+		var rear: float = CreatorBridges.height(span,state.position-Vector2(1.13,0))
+		car.position.y = (front+rear)*0.5
+		car.rotation.x = atan2(front-rear,2.26)
+		car.present_ramp(state,car.position.y,car.rotation.x,true)
+		car.present_suspension(state,car.rotation.x,car.ramp_lift <= 0.005)
+		camera.position = car.position+Vector3(6,9,10)
+		camera.look_at(car.position+Vector3(0,0.6,0))
+		if i % 4 == 0:
+			await process_frame
+			await RenderingServer.frame_post_draw
+			check(root.get_texture().get_image().save_png("res://../build/ramp-motion/frame-%03d.png" % (i/4)) == OK,"capture ramp motion frame")
+		if captured < targets.size() and u >= targets[captured]:
+			await process_frame
+			await RenderingServer.frame_post_draw
+			check(root.get_texture().get_image().save_png("res://../build/ramp-"+names[captured]+".png") == OK,"capture ramp "+names[captured])
+			captured += 1
+	world.queue_free()
+	await process_frame

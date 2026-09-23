@@ -7,12 +7,26 @@ signal favorite_requested
 
 const SCENERY: Texture2D = preload("res://assets/menu/discovery-biomes.png")
 const STORM_SCENERY: Texture2D = preload("res://assets/menu/discovery-storm.png")
+const FOOTER_HEIGHT: float = 61.0
+const TITLE_FONT_SIZE: int = 21
 
 var entry: Dictionary
 var favorite: bool = false
+var personal_rating: int = 0
 var selected: bool = false
+var draft_mode: bool = false
+var preview_only: bool = false
 var paths: Array[PackedVector2Array] = []
 var route_bounds: Rect2
+
+static func scenery_texture(theme_id: String) -> Texture2D:
+	if theme_id == "storm": return STORM_SCENERY
+	var quadrant: Vector2 = {"pine":Vector2(0,0),"desert":Vector2(1,0),"night_city":Vector2(0,1),"winter":Vector2(1,1)}.get(theme_id,Vector2.ZERO)
+	var cell: Vector2 = SCENERY.get_size()*0.5
+	var atlas := AtlasTexture.new()
+	atlas.atlas = SCENERY
+	atlas.region = Rect2(quadrant*cell,cell)
+	return atlas
 
 func _ready() -> void:
 	clip_contents = true
@@ -21,6 +35,7 @@ func _ready() -> void:
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tooltip_text = str(entry.name)+" — "+str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
+	if not draft_mode: tooltip_text += "\n" + rating_text() + " — local votes on this device"
 	var star := MenuStyle.button("",func() -> void: favorite_requested.emit())
 	star.name = "ToggleFavorite"
 	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
@@ -34,6 +49,7 @@ func _ready() -> void:
 	star.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
 	star.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if favorite else MenuStyle.TEXT)
 	add_child(star)
+	star.visible = not draft_mode
 	_cache_route()
 	resized.connect(queue_redraw)
 	mouse_entered.connect(queue_redraw)
@@ -46,7 +62,7 @@ func _cache_route() -> void:
 	if pieces is Array and pieces.size() <= RoadPieces.MAX_PIECES:
 		for piece: Variant in pieces:
 			if RoadPieces.validate(piece).is_empty(): paths.append(RoadPieces.samples(piece))
-	if paths.is_empty():
+	if paths.is_empty() and not draft_mode:
 		var route := PackedVector2Array()
 		for p: Array in entry.points: route.append(Vector2(p[0],p[1]))
 		if not route.is_empty(): route.append(route[0])
@@ -60,34 +76,48 @@ func _cache_route() -> void:
 	route_bounds = Rect2(low,(high-low).max(Vector2.ONE)) if low.is_finite() else Rect2(Vector2.ZERO,Vector2.ONE)
 
 func _draw() -> void:
-	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-78))
+	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-4 if preview_only else size.y-FOOTER_HEIGHT-1.0))
 	_draw_terrain(image_area)
 	_draw_route(image_area)
+	if preview_only: return
 	# Quiet footer keeps creator attribution separate from the route illustration.
-	draw_rect(Rect2(0,size.y-77,size.x,77),Color("091720"))
-	draw_line(Vector2(1,size.y-77),Vector2(size.x-1,size.y-77),Color("344d56"),1)
+	draw_rect(Rect2(0,size.y-FOOTER_HEIGHT,size.x,FOOTER_HEIGHT),Color("091720"))
+	draw_line(Vector2(1,size.y-FOOTER_HEIGHT),Vector2(size.x-1,size.y-FOOTER_HEIGHT),Color("344d56"),1)
 	var frame: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
-	frame.border_color = MenuStyle.ACCENT if selected else MenuStyle.BORDER.lightened(0.2) if is_hovered() or has_focus() else MenuStyle.BORDER
+	var accent: Color = Color("54cfff") if draft_mode else MenuStyle.ACCENT
+	frame.border_color = accent if selected else MenuStyle.BORDER.lightened(0.2) if is_hovered() or has_focus() else MenuStyle.BORDER
 	frame.set_border_width_all(2 if selected or has_focus() else 1)
 	draw_style_box(frame,Rect2(Vector2.ONE,size-Vector2(2,2)))
-	if selected: draw_line(Vector2(14,size.y-2),Vector2(size.x-14,size.y-2),MenuStyle.ACCENT,2)
-	draw_string(MenuStyle.DISPLAY,Vector2(13,size.y-35),str(entry.name).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,size.x-26,25,MenuStyle.TEXT)
+	if selected: draw_line(Vector2(14,size.y-2),Vector2(size.x-14,size.y-2),accent,2)
+	draw_string(MenuStyle.DISPLAY,Vector2(13,size.y-29),str(entry.name).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,size.x-26,TITLE_FONT_SIZE,MenuStyle.TEXT)
 	var creator: String = str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": creator += " (fictional)"
-	draw_string(MenuStyle.BODY,Vector2(13,size.y-14),"by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(13,size.y-10),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
 	var biome: String = TrackTheme.title(str(entry.get("theme","pine"))).to_upper()
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
 	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+16,23))
 	draw_string(MenuStyle.BODY,Vector2(18,26),biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("dce5dc"))
-	draw_string(MenuStyle.BODY,Vector2(13,image_area.end.y-10),"5 LAPS",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("e5e8dc"))
-	draw_string(MenuStyle.BODY,Vector2(size.x-61,image_area.end.y-10),"LOCAL",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("d2d9ca"))
+	if draft_mode:
+		var status: String = "TESTED" if entry.get("tested",false) else "DRAFT"
+		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) else Color("0069a0"),0),Rect2(size.x-77,10,67,23))
+		draw_string(MenuStyle.DISPLAY,Vector2(size.x-71,27),status,HORIZONTAL_ALIGNMENT_LEFT,60,15,MenuStyle.TEXT)
+	if not draft_mode:
+		draw_string(MenuStyle.BODY,Vector2(13,image_area.end.y-10),"5 LAPS",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("e5e8dc"))
+		var rating_width: float = MenuStyle.BODY.get_string_size(rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+32
+		var rating_box := Rect2(size.x-rating_width-9,image_area.end.y-29,rating_width,24)
+		draw_style_box(MenuStyle.box(Color("091720ee"),0),rating_box)
+		draw_texture_rect(MenuIcon.texture("star_filled" if personal_rating > 0 else "star"),Rect2(rating_box.position+Vector2(6,4),Vector2(16,16)),false,MenuStyle.ACCENT if personal_rating > 0 else MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,rating_box.position+Vector2(27,17),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if personal_rating > 0 else MenuStyle.MUTED)
+
+func rating_text() -> String:
+	return "%.1f (1)" % personal_rating if personal_rating > 0 else "— (0)"
 
 func _draw_terrain(area: Rect2) -> void:
 	var theme_id: String = str(entry.get("theme","pine"))
-	var quadrant: Vector2 = {"pine":Vector2(0,0),"desert":Vector2(1,0),"night_city":Vector2(0,1),"winter":Vector2(1,1)}.get(theme_id,Vector2.ZERO)
 	var artwork: Texture2D = STORM_SCENERY if theme_id == "storm" else SCENERY
 	var cell: Vector2 = artwork.get_size() if theme_id == "storm" else artwork.get_size()*0.5
-	var source := Rect2(Vector2.ZERO if theme_id == "storm" else quadrant*cell,cell)
+	var source := Rect2(Vector2.ZERO,cell)
+	if theme_id != "storm": source = (scenery_texture(theme_id) as AtlasTexture).region
 	var ratio: float = area.size.x/area.size.y
 	if cell.x/cell.y > ratio:
 		source.size.x = cell.y*ratio
@@ -116,6 +146,6 @@ func _draw_route(area: Rect2) -> void:
 		draw_polyline(points,Color("15202a"),9,true)
 		draw_polyline(points,Color("f0ede0"),5,true)
 		draw_polyline(points,Color("ffffff"),1.2,true)
-		if path == paths[0]:
+		if path == paths[0] and not draft_mode:
 			draw_circle(points[0],5,Color("091720"))
 			draw_circle(points[0],2.7,MenuStyle.ACCENT)

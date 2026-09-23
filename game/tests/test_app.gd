@@ -375,7 +375,7 @@ func _check_clean_result() -> void:
 	game.set("attempt_practice", false)
 	game.emit_signal("race_completed")
 	var records: LocalRecords = app.get("records")
-	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ResultsTracks",true,false) != null, "a clean normal race result persists its local PB and exposes track selection")
+	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ContinueResults",true,false) != null, "a clean normal race result persists its local PB and exposes Continue")
 	check(((app.get("root_ui") as Node).find_child("ResultStatus",true,false) as Label).text == "FIRST TIME SET","a first normal finish is presented as the player's benchmark")
 	await _capture("normal-race-debrief")
 	# Controlled result fixtures exercise improvement feedback; they are not

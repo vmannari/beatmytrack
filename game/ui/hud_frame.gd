@@ -2,36 +2,72 @@ class_name HUDFrame
 extends Control
 ## Scalable inked instrument silhouettes, drawn behind real UI controls.
 var kind: String = "clock"
-var speed_fraction: float = 0.0
+var speed_fraction: float = 0.0:
+	set(value):
+		var changed: bool = floori(value*60.0) != floori(speed_fraction*60.0)
+		speed_fraction = value
+		if changed and speed_ticks != null: speed_ticks.queue_redraw()
+var speed_ticks: Control
+var draw_count: int = 0
+var lap_status: Control
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	get_parent().resized.connect(queue_redraw)
+	if kind == "speed":
+		speed_ticks = Control.new()
+		speed_ticks.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(speed_ticks)
+		speed_ticks.draw.connect(_draw_speed_ticks)
 
 func _draw() -> void:
+	draw_count += 1
 	var extent: Vector2 = (get_parent() as Control).size
-	var points: PackedVector2Array
-	match kind:
-		"plain": points = PackedVector2Array([Vector2(0,0),Vector2(1,0),Vector2(1,1),Vector2(0,1)])
-		"map": points = PackedVector2Array([Vector2(0,0),Vector2(1,0),Vector2(1,0.72),Vector2(0.59,0.72),Vector2(0.53,1),Vector2(0,1)])
-		"speed": points = PackedVector2Array([Vector2(0,1),Vector2(0.06,0.38),Vector2(0.29,0.34),Vector2(0.37,0.05),Vector2(0.63,0.05),Vector2(0.71,0.34),Vector2(0.94,0.38),Vector2(1,1)])
-		_: points = PackedVector2Array([Vector2(0,0),Vector2(0.28,0),Vector2(0.33,0.17),Vector2(0.67,0.17),Vector2(0.72,0),Vector2(1,0),Vector2(0.96,1),Vector2(0.04,1)])
-	for i: int in range(points.size()): points[i] = points[i] * (extent-Vector2(6,6)) + Vector2(3,3) - position
-	points = rounded(points,5.0)
-	var shadow := points.duplicate()
-	for i: int in range(shadow.size()): shadow[i] += Vector2(0,3)
-	draw_colored_polygon(shadow,Color("080e12"))
-	draw_colored_polygon(points,Color("1c2931f5"))
-	points.append(points[0])
-	draw_polyline(points,Color("080e12"),5,true)
-	draw_polyline(points,Color("607882"),1.5,true)
-	if kind == "speed":
-		for side: int in [-1,1]:
-			var center := Vector2(extent.x*(0.5+side*0.18),extent.y*0.94)-position
-			for tick: int in range(7):
-				var angle: float = (-PI*0.5+tick*0.17) if side == 1 else (-PI*0.5-tick*0.17)
-				var direction := Vector2(cos(angle),sin(angle))
-				draw_line(center+direction*25,center+direction*35,Color("a6c2ce") if tick/7.0 < speed_fraction else Color("42545f"),3.5,true)
+	if kind == "map":
+		var center := Vector2(76,extent.y*0.5)-position
+		draw_circle(center,64,Color("12201a77"))
+		_soft_backing(lap_backing_rect())
+		draw_arc(center,64,0,TAU,96,Color("bac6c077"),1.5,true)
+		draw_line(Vector2(152,36)-position,Vector2(152,extent.y-36)-position,Color("ccd2ceaa"),1,true)
+	elif kind == "plain":
+		_soft_backing(lap_backing_rect())
+	elif kind == "clock":
+		_soft_backing(Rect2(-position-Vector2(12,6),extent+Vector2(24,12)))
+	elif kind == "speed":
+		var center := Vector2(extent.x*0.5,extent.y-16)-position
+		var radius: float = extent.x*0.48
+		_soft_backing(Rect2(center-Vector2(radius,radius),Vector2(radius*2,radius+38)))
+		draw_arc(center,radius,PI+0.06,TAU-0.06,96,Color("e8eee0bb"),1.6,true)
+		draw_arc(center,radius,TAU-0.43,TAU-0.06,20,Color("dd4244"),3,true)
+		if speed_ticks != null: speed_ticks.queue_redraw()
+
+func _draw_speed_ticks() -> void:
+	var extent: Vector2 = (get_parent() as Control).size
+	var center := Vector2(extent.x*0.5,extent.y-16)-position
+	var radius: float = extent.x*0.48
+	for tick: int in range(61):
+		var angle: float = lerpf(PI+0.10,TAU-0.10,tick/60.0)
+		var direction := Vector2(cos(angle),sin(angle))
+		var color := Color("e7ecd6aa") if tick/60.0 <= speed_fraction else Color("c4ceac55")
+		if tick > 53: color = Color("d5534b99")
+		speed_ticks.draw_line(center+direction*(radius-10),center+direction*(radius-(17 if tick % 5 == 0 else 14)),color,1,true)
+
+func lap_backing_rect() -> Rect2:
+	if lap_status == null: return Rect2()
+	return Rect2(lap_status.global_position-global_position,lap_status.size).grow_individual(16,10,16,10)
+
+
+func _soft_backing(rect: Rect2) -> void:
+	# Feathered charcoal scrim: no hard card edge over the racing world.
+	for layer: int in range(20):
+		var inset: float = layer * 0.016
+		var radii: Vector2 = rect.size * (0.5-inset)
+		var points := PackedVector2Array()
+		for segment: int in range(64):
+			var angle: float = TAU*segment/64.0
+			points.append(rect.get_center()+Vector2(cos(angle),sin(angle))*radii)
+		draw_colored_polygon(points,Color(0.035,0.065,0.06,0.027))
+
 
 static func attach(panel: PanelContainer, shape: String) -> HUDFrame:
 	var frame := HUDFrame.new()

@@ -97,6 +97,28 @@ func _run() -> void:
 func _original_slide() -> void:
 	var original: HandlingConfig = load("res://resources/baseline.tres")
 	var tune: HandlingConfig = load("res://resources/original_slide.tres")
+	var refined: HandlingConfig = load("res://resources/compact_fun.tres")
+	check(tune.version == "handling-0.15-original-slide" and refined.version == "handling-0.19-compact-rwd", "Original+ remains frozen while Drift+ has a distinct record identity")
+	check(refined.steering_rate == 24.0 and refined.grip_recovery == 8.0 and refined.throttle_rotation == 0.25 and refined.throttle_grip_loss == 0.08, "Drift+ pins moderate rear-drive power rotation, rear traction loss and quick recovery")
+	var previous_corner := car(tune)
+	var refined_corner := car(refined)
+	advance(previous_corner, 100, 0.8, 1, 0)
+	advance(refined_corner, 100, 0.8, 1, 0)
+	print("DRIFT_PLUS_METRIC powered corner slip Original+/Drift+ degrees=", [absf(rad_to_deg(previous_corner.state.slip_angle())), absf(rad_to_deg(refined_corner.state.slip_angle()))])
+	check(absf(refined_corner.state.slip_angle()) > deg_to_rad(25.0) and absf(refined_corner.state.slip_angle()) < deg_to_rad(32.0), "Drift+ powered drift sits in the intended midpoint band")
+	var power_oversteer := car(refined)
+	var coast_turn := car(refined)
+	advance(power_oversteer, 72, 0.7, 1.0, 0)
+	advance(coast_turn, 72, 0.7, 0.0, 0)
+	print("DRIFT_PLUS_METRIC power/coast slip and heading=", [absf(rad_to_deg(power_oversteer.state.slip_angle())), absf(rad_to_deg(coast_turn.state.slip_angle())), absf(rad_to_deg(power_oversteer.state.heading)), absf(rad_to_deg(coast_turn.state.heading))])
+	check(absf(power_oversteer.state.slip_angle()) > absf(coast_turn.state.slip_angle()) + deg_to_rad(5.0), "Drift+ throttle creates clear power oversteer relative to coasting")
+	check(absf(power_oversteer.state.heading) > absf(coast_turn.state.heading), "Drift+ throttle rotates the chassis more than coasting")
+	advance(refined_corner, 180, 0, 0.6, 0)
+	check(absf(refined_corner.state.slip_angle()) < 0.03, "Drift+ recovers after unwinding and driving out")
+	var drift_locked := car(refined)
+	advance(drift_locked, 1200, 1, 1, 0)
+	print("DRIFT_PLUS_METRIC full-lock speed/slip=", [drift_locked.state.velocity.length(), absf(rad_to_deg(drift_locked.state.slip_angle()))])
+	check(drift_locked.state.position.is_finite() and drift_locked.state.velocity.length() < refined.maximum_speed and absf(drift_locked.state.slip_angle()) < deg_to_rad(55), "Drift+ sustained full lock remains bounded below a broadside spin")
 	var slides: Array[float] = []
 	var push: Array[float] = []
 	for config: HandlingConfig in [original, tune]:
@@ -253,7 +275,7 @@ func _baseline() -> void:
 	check(largest_error < 0.00001, "Baseline reproduces pre-change recorded checkpoints within JSON precision")
 
 func _replays() -> void:
-	for name: String in ["stable", "balanced", "loose", "baseline", "original_slide"]:
+	for name: String in ["stable", "balanced", "loose", "baseline", "original_slide", "compact_fun"]:
 		var config: HandlingConfig = load("res://resources/" + name + ".tres")
 		var frames: Array = []
 		var reference := car(config)

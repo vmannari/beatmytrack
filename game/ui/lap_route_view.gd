@@ -24,17 +24,20 @@ func show_lap(value: Dictionary, comparison: Dictionary) -> void:
 	lap = value
 	reference = comparison
 	selected_point = -1
-	queue_redraw()
+	_fit()
 
 func _fit() -> void:
 	fitted.clear()
 	if route.size() < 2: return
 	bounds = Rect2(Vector2(route[0].x,-route[0].y),Vector2.ZERO)
 	for p: Vector2 in route: bounds = bounds.expand(Vector2(p.x,-p.y))
-	var pad := Vector2(10,10) if miniature else Vector2(65,16)
-	var available: Vector2 = size - pad*2 - Vector2(0,0 if miniature else 34)
-	factor = maxf(0.001,minf(available.x/maxf(bounds.size.x,0.1),available.y/maxf(bounds.size.y,0.1)))
-	origin = (size-Vector2(0,0 if miniature else 34)-bounds.size*factor)*0.5
+	for event: Dictionary in lap.get("events", []):
+		var p: Vector2 = event.position
+		bounds = bounds.expand(Vector2(p.x,-p.y))
+	# A dedicated left gutter keeps the route stroke out of the stacked legend.
+	var area := Rect2(Vector2(10,10),size-Vector2(20,20)) if miniature else Rect2(Vector2(_legend_rect().end.x+18,16),size-Vector2(_legend_rect().end.x+83,66))
+	factor = maxf(0.001,minf(area.size.x/maxf(bounds.size.x,0.1),area.size.y/maxf(bounds.size.y,0.1)))
+	origin = area.position+(area.size-bounds.size*factor)*0.5
 	for p: Vector2 in route: fitted.append(_screen(p))
 	if miniature and fitted[0].distance_to(fitted[-1]) > 0.01: fitted.append(fitted[0])
 	queue_redraw()
@@ -54,10 +57,17 @@ func _segment_color(progress: float, low: float, high: float) -> Color:
 		var delta: float = LapTelemetry.at(lap,progress)-LapTelemetry.at(reference,progress)
 		return Color("9bb6c5").lerp(Color("ed8056") if delta > 0 else Color("55dbaa"),clampf(absf(delta)/0.6,0.0,1.0))
 	if mode == "Sectors":
-		var colors: Array[Color] = [Color("63b5dc"),Color("62d4b1"),Color("b5c6d1")]
 		for i: int in range(boundaries.size()-1):
-			if progress <= boundaries[i+1]: return colors[i%colors.size()]
+			if progress <= boundaries[i+1]: return _sector_color(i)
 	return speed_color((LapTelemetry.at(lap,progress,"speed")-low)/maxf(high-low,1.0))
+
+func _sector_color(index: int) -> Color:
+	if reference.get("samples",[]).is_empty(): return MenuStyle.MUTED
+	var sectors: Array[Dictionary] = LapTelemetry.sectors(lap,boundaries)
+	var fastest_sectors: Array[Dictionary] = LapTelemetry.sectors(reference,boundaries)
+	if index < 0 or index >= sectors.size() or index >= fastest_sectors.size(): return MenuStyle.MUTED
+	var delta: float = float(sectors[index].time)-float(fastest_sectors[index].time)
+	return Color("ed8056") if delta > 0.0005 else (Color("55dbaa") if delta < -0.0005 else Color("9bb6c5"))
 
 func _draw() -> void:
 	if fitted.size() < 2: return
@@ -75,12 +85,15 @@ func _draw() -> void:
 		var color: Color = _segment_color(float(i)/(fitted.size()-1),low,high)
 		draw_line(fitted[i],fitted[i+1],color,7,true)
 		draw_circle(fitted[i],3.5,color,true,-1,true)
+	if mode == "Sectors": _draw_sector_ends()
 	# Start/finish chequered flag.
 	var start: Vector2 = fitted[0]
 	for x: int in range(4):
 		for y: int in range(3): draw_rect(Rect2(start+Vector2(x*4-8,y*4-6),Vector2(4,4)),Color.WHITE if (x+y)%2 == 0 else Color("111e27"))
 	var sectors: Array[Dictionary] = LapTelemetry.sectors(lap,boundaries)
-	var occupied: Array[Rect2] = []
+	var occupied: Array[Rect2] = [_legend_rect()]
+	for event: Dictionary in lap.get("events", []):
+		occupied.append(Rect2(_screen(event.position)-Vector2(10,10),Vector2(20,20)))
 	if selected_point >= 0: occupied.append(_tooltip_rect())
 	for i: int in range(sectors.size()):
 		var middle: int = clampi(roundi((float(sectors[i].start)+float(sectors[i].end))*0.5*(fitted.size()-1)),0,fitted.size()-1)
@@ -88,13 +101,28 @@ func _draw() -> void:
 		var label_rect: Rect2 = _sector_label_rect(p,occupied)
 		occupied.append(label_rect)
 		var label_pos: Vector2 = label_rect.position+Vector2(0,14)
-		draw_line(p,label_rect.get_center(),Color("56707e"),1,true)
+		draw_line(p,_leader_end(p,label_rect),Color("56707e"),1,true)
 		draw_string(MenuStyle.BODY,label_pos,"Sector %d" % (i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.TEXT)
 		draw_string(MenuStyle.BODY,label_pos+Vector2(0,18),("%.2f s" % sectors[i].time) if not lap.get("samples",[]).is_empty() else "\u2014",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	for event: Dictionary in lap.get("events", []):
+		_draw_incident(_screen(event.position), str(event.kind))
 	_draw_legend()
 	if selected_point >= 0: _draw_tooltip()
 	elif lap.get("samples",[]).is_empty():
 		draw_string(MenuStyle.BODY,Vector2(12,20),"Telemetry unavailable for this lap",HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
+
+func _draw_sector_ends() -> void:
+	# A transverse line keeps boundaries visible when adjacent sectors share a colour.
+	for i: int in range(1,boundaries.size()):
+		var point_index: int = clampi(roundi(boundaries[i]*(fitted.size()-1)),0,fitted.size()-1)
+		var before: Vector2 = fitted[maxi(0,point_index-1)]
+		var after: Vector2 = fitted[mini(fitted.size()-1,point_index+1)]
+		var tangent: Vector2 = (after-before).normalized()
+		if tangent.is_zero_approx(): continue
+		var normal := Vector2(-tangent.y,tangent.x)
+		var center: Vector2 = fitted[point_index]
+		draw_line(center-normal*7.0,center+normal*7.0,Color("07121a"),4.0,true)
+		draw_line(center-normal*6.0,center+normal*6.0,Color("f3f7f5"),2.0,true)
 
 func _sector_label_rect(anchor: Vector2, occupied: Array[Rect2]) -> Rect2:
 	var best := Rect2(Vector2(8,8),Vector2(84,36))
@@ -118,11 +146,32 @@ func _sector_label_rect(anchor: Vector2, occupied: Array[Rect2]) -> Rect2:
 				best_score = score
 	return best
 
+func _legend_rect() -> Rect2:
+	var width: float = maxf(MenuStyle.BODY.get_string_size("Off track",HORIZONTAL_ALIGNMENT_LEFT,-1,14).x,MenuStyle.BODY.get_string_size("Collision",HORIZONTAL_ALIGNMENT_LEFT,-1,14).x)
+	return Rect2(Vector2(8,4),Vector2(31+width-8,48))
+
+static func _leader_end(anchor: Vector2, label_rect: Rect2) -> Vector2:
+	# Stop at the label edge so the leader never runs beneath either text row.
+	var center: Vector2 = label_rect.get_center()
+	var toward_anchor: Vector2 = anchor-center
+	if toward_anchor.is_zero_approx():
+		return center
+	var half: Vector2 = label_rect.size*0.5
+	var scale: float = minf(
+		half.x/maxf(absf(toward_anchor.x),0.0001),
+		half.y/maxf(absf(toward_anchor.y),0.0001)
+	)
+	return center+toward_anchor*scale
+
 func _draw_legend() -> void:
+	_draw_incident(Vector2(18,16), "collision")
+	draw_string(MenuStyle.BODY,Vector2(31,21),"Collision",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	_draw_incident(Vector2(18,40), "off_track")
+	draw_string(MenuStyle.BODY,Vector2(31,45),"Off track",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 	var left: float = size.x*0.5-110
 	var y: float = size.y-16
 	if mode == "Sectors":
-		draw_string(MenuStyle.BODY,Vector2(size.x*0.5-111,y+4),"Automatic equal-distance sectors",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,Vector2(size.x*0.5-145,y+4),"Green gains  •  grey matches  •  orange loses",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 		return
 	for i: int in range(100):
 		var t: float = i/99.0
@@ -130,6 +179,14 @@ func _draw_legend() -> void:
 		draw_rect(Rect2(left+i*2.2,y-7,2.3,8),color)
 	draw_string(MenuStyle.BODY,Vector2(left-58,y+2),"Slower" if mode == "Speed" else "Gaining",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 	draw_string(MenuStyle.BODY,Vector2(left+232,y+2),"Faster" if mode == "Speed" else "Losing",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+
+func _draw_incident(at: Vector2, kind: String) -> void:
+	draw_circle(at,9,Color("08141e"),true,-1,true)
+	if kind == "collision":
+		draw_line(at-Vector2(4,4),at+Vector2(4,4),Color("ff796c"),3,true)
+		draw_line(at+Vector2(-4,4),at+Vector2(4,-4),Color("ff796c"),3,true)
+	else:
+		draw_polyline(PackedVector2Array([at+Vector2(0,-6),at+Vector2(6,0),at+Vector2(0,6),at+Vector2(-6,0),at+Vector2(0,-6)]),Color("ffcf61"),2,true)
 
 func _draw_tooltip() -> void:
 	var p: Dictionary = lap.samples[selected_point]

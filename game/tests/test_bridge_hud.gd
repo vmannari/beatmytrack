@@ -135,6 +135,53 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		hud.road_map.queue_redraw()
 	check(hud.road_map.rebuild_count == rebuilds,"marker updates do not rebuild static road geometry")
 	hud.road_map.player = sim.state.position
+	if not practice:
+		var session := TrackSession.new(120,7)
+		session.elapsed_ticks = 8100
+		session.completed_laps = 2
+		session.lap_start_time = 61.25
+		hud.show_session(session)
+		check(hud.lap_label.text == "3" and hud.lap_total.text == "/ 7","lap display uses actual session count and target")
+		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","race and current lap clocks use distinct session times")
+		session.penalty_seconds = 5.0
+		session.lap_penalty_seconds = 5.0
+		hud.show_session(session)
+		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","checkpoint rules use elapsed time, ignoring retired shortcut penalties")
+		session.lap_times.assign([20.0,21.0,26.5])
+		session.finished = true
+		hud.show_session(session)
+		check(hud.lap_timer.text == "00:26.50","finish retains the completed final lap time")
+		hud.show_session(TrackSession.new())
+		check(hud.race_timer.text == "00:00.00" and hud.lap_timer.text == "00:00.00" and hud.lap_label.text == "1","restart clears both clocks and lap")
+		check(hud._time_text(59.9999) == "00:59.99" and hud._time_text(60.0) == "01:00.00","clock rollover never prints sixty seconds")
+		# Show distinct changing data in the visual witness, then restore the real session.
+		session.finished = false
+		session.penalty_seconds = 0.0
+		session.lap_penalty_seconds = 0.0
+		hud.show_session(session)
+	if not practice:
+		for timer: Label in [hud.race_timer,hud.lap_timer]:
+			var font: Font = timer.get_theme_font("font")
+			var font_size: int = timer.get_theme_font_size("font_size")
+			var reference_width: float = font.get_string_size("00:00.00",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
+			for digit: int in range(10):
+				var sample: String = "%d%d:%d%d.%d%d" % [digit,digit,digit,digit,digit,digit]
+				check(is_equal_approx(font.get_string_size(sample,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x,reference_width),"timer digit advances stay fixed: "+sample)
+		var timer_rect: Rect2 = hud.race_timer.get_global_rect()
+		var lap_rect: Rect2 = hud.lap_timer.get_global_rect()
+		var saved_race: String = hud.race_timer.text
+		var saved_lap: String = hud.lap_timer.text
+		for sample: String in ["11:11.11","88:88.88","00:59.99","01:00.00"]:
+			hud.race_timer.text = sample
+			hud.lap_timer.text = sample
+			await process_frame
+			await process_frame
+			check(hud.race_timer.get_global_rect() == timer_rect and hud.lap_timer.get_global_rect() == lap_rect,"changing timer digits preserves both label rectangles")
+		hud.race_timer.text = saved_race
+		hud.lap_timer.text = saved_lap
+		var backing: Rect2 = hud.race_frame.lap_backing_rect()
+		var content := Rect2(hud.race_frame.lap_status.global_position-hud.race_frame.global_position,hud.race_frame.lap_status.size)
+		check(backing.encloses(content) and backing.get_center().is_equal_approx(content.get_center()),"lap backing is centred on actual label group")
 	var before: Array = sim.state.snapshot()
 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
 	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]
@@ -158,7 +205,7 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		check(card.size.x <= 248.1 and not card.get_global_rect().intersects(timing.get_global_rect()),"long circuit name stays inside the circuit card")
 		hud.title.text = saved
 		var speed := hud.find_child("SpeedCard",true,false) as Control
-		check(bounds.encloses(speed.get_global_rect()) and speed.size.y < 90,"speed card is compact and stays above the bottom inset")
+		check(bounds.encloses(speed.get_global_rect()) and speed.size.y <= 120,"semicircular speed gauge stays within its 120-unit budget and above the bottom inset")
 		for zone: Rect2 in hud.touch.zones():
 			check(not zone.intersects(speed.get_global_rect()),"speed does not cover a driving touch zone")
 	check(sim.state.snapshot() == before,"HUD presentation does not change simulation state")

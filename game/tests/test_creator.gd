@@ -35,11 +35,11 @@ func run() -> void:
 		check(track.metadata.theme == theme,theme+" theme passes through to the shared native data")
 		check(track.metadata.name == document.name and track.metadata.title == document.name,theme+" friendly document title reaches menus and results")
 		check(track.route == TrackDocument.smooth_points(document),theme+" preview and drive share the same route")
-		var expected: int = 2 if document.surface == "dirt" else 0
+		var expected: int = 2 if document.surface == "dirt" and theme != "desert" else 0
 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
 		if theme == "pine":
-			check(track.content_hash == "819930a1ffa5d5d8aedcaa7b13a0a3f39b11f96e8bfea0ee34fd74aa4e64da2b","compiler-v16 canonical identity matches golden hash")
+			check(track.content_hash == "6b3853240960a09a70912625e485dc78d9b9906c93b523d9bb344dc0e83f90a8","compiler-v19 canonical identity matches golden hash")
 		var route_on_road: bool = true
 		for point: Vector2 in track.route:
 			route_on_road = route_on_road and track.cell_at(point) == expected

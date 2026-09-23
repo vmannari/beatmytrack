@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-23 V02/V04/V05/Q01: owner rejected plain hybrid grass. Kit 56 restores original painted vegetation detail, greatly reduces broad blotches and matches tuft colour to the ground. CaptureGrass 17, TestGrass 15 and TestSurfaces 50 checks pass; revised gameplay screenshot inspected. No phone test/deployment/profiling. See docs/HYBRID_GRASS.md.
+
 2026-09-23 V02/V04/V05/Q01: grass-only hybrid material uses baked macro/albedo/normal maps and five opaque clustered MultiMesh tuft variants. Visual kit 55; 2,270 tuft origins in captured driving view. Grass 15/17 headless/graphical, surface 50, desert 24, biome 92 and shader-probe 928 checks pass. Desktop screenshots inspected. Phone attached; no device test/export/profiling. See docs/HYBRID_GRASS.md.
 
 2026-09-23 R01/R03/V03/V05/Q01: Results Sectors route and table colours now encode each sector's time delta against the fastest valid lap (green gain, grey match, orange loss); transverse outlined lines mark every sector end. 185 headless and 204 graphical checks pass; three responsive captures refreshed and desktop capture inspected. No phone test/export. See docs/RACE_RESULTS.md.

@@ -16,6 +16,7 @@ func build(track: NativeTrack, tint: Color, sliced: bool = false) -> void:
 	material.shader = preload("res://track/grass_tuft.gdshader")
 	material.set_shader_parameter("ground_tint",tint)
 	material.set_shader_parameter("grass_macro_mask",NativeTrackVisual.GRASS_MACRO)
+	material.set_shader_parameter("painted_grass_texture",NativeTrackVisual.GRASS_TEXTURE)
 	var meshes: Array[ArrayMesh] = []
 	for variant: int in range(5): meshes.append(_mesh(variant))
 	var extent: Vector2 = track.half_extent

@@ -94,12 +94,15 @@ vec3 directional_asphalt(vec3 base, vec2 p, vec2 encoded_axis) {
 vec3 painted_grass(vec3 base, vec2 p) {
 	if (hybrid_grass) {
 		vec3 macro = texture(grass_macro_mask,p/32.0).rgb;
-		vec3 thick = base*vec3(0.69,0.77,0.70);
-		vec3 dry = base*vec3(1.20,1.13,1.10);
-		vec3 tint = mix(thick,base,smoothstep(0.12,0.57,macro.r));
-		tint = mix(tint,dry,smoothstep(0.56,0.92,macro.r)*0.72);
-		float blades = texture(grass_albedo,p/4.0).r;
-		return tint*(0.65+blades*0.70)*(0.98+macro.b*0.04);
+		// Retain the original painted vegetation: broad colour alone loses
+		// all the leaf/clump structure at the actual driving camera height.
+		vec3 paint = texture(painted_grass_texture,p/20.0).rgb;
+		vec3 tint = base / vec3(0.3765,0.4196,0.2118);
+		vec3 vegetation = mix(paint*tint,base,0.10);
+		// Macro variation modulates existing detail instead of replacing it
+		// with smooth, bright yellow-green clouds.
+		vec3 patch = mix(vec3(0.89,0.94,0.88),vec3(1.06,1.035,0.98),macro.r);
+		return vegetation*patch*0.87;
 	}
 	// Cool neutral palettes use snow/concrete grain without green brush pigment.
 	if (base.b > base.r * 0.95) return base * (0.94 + pigment(p * 0.7) * 0.06);

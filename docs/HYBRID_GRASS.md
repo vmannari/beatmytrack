@@ -1,5 +1,12 @@
 # Hybrid grass — 2026-09-23
 
+## Owner correction: restore vegetation detail
+
+The owner rejected kit 55 as too plain. Kit 56 restores the original `painted_grass_v1.png` as the dominant albedo at its original 20 m world scale, with only 10% flat-colour blending and no extra positive mip bias. Broad macro shading is much weaker; the smooth yellow-green blobs no longer replace vegetation structure. Tufts sample the same painted texture and macro tint. Sparse opaque geometry and filtered fine normals remain. The synthetic `grass_albedo` map is retained as a prior experiment but is no longer sampled by the active grass colour function. No new art assets were generated.
+
+Changed files: `surface_detail.gdshaderinc`, `grass_tuft.gdshader`, `grass_tufts.gd`, `native_track_visual.gd`, these notes, status/plan and evidence. Requirements V02/V04/V05/Q01. Actual pinned-build commands: `scripts/dev.ps1 -Action CaptureGrass` (17 checks passed), `TestGrass` (15 passed), `TestSurfaces` (50 passed), each invoked through PowerShell with `-NoProfile -ExecutionPolicy Bypass -File`. Refreshed driving and detail captures; driving view inspected at gameplay scale. [Rejected plain version](evidence/grass/rejected-plain-driving.png) and [revised detailed version](evidence/grass/hybrid-driving.png) use the same framing. No phone deployment, device test or profiling performed for this correction; owner visual acceptance and mobile motion/performance checks remain pending. The original implementation record below describes the rejected first pass.
+
+
 Requirements V02/V04/V05/Q01; owner grass-only material/geometry request. Visual kit 55. No physics, route, timing, camera or track-data contract changes.
 
 Grass in Pine and Storm uses three original baked 512×512 maps: a 32 m macro tile with roughly 4–10 m irregular medium/thick/dry patches, a 4 m albedo-factor tile containing 30–60 cm blade fans, and a 0.8 m normal tile containing 5–10 cm relief. Broad variation dominates fine contrast. Normal strength fades at subpixel size; all maps have mipmaps and anisotropic filtering. Ground, weighted terrain, road skirts and sand-to-grass fringes share world coordinates. Desert, Winter and Night city retain their existing ground appearance (Night city uses a neutral paved palette).

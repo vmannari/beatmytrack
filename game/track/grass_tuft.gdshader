@@ -14,9 +14,9 @@ void fragment() {
 	// upward normals on backfaces rather than shading them like black undersides.
 	if (!FRONT_FACING) NORMAL = -NORMAL;
 	float macro = texture(grass_macro_mask,world_xz/32.0).r;
-	vec3 paint = texture(painted_grass_texture,world_xz/20.0).rgb;
-	vec3 vegetation = mix(paint*ground_tint.rgb/vec3(0.3765,0.4196,0.2118),ground_tint.rgb,0.10);
-	vec3 patch = mix(vec3(0.89,0.94,0.88),vec3(1.06,1.035,0.98),macro);
-	ALBEDO = vegetation*patch*0.92*COLOR.rgb;
+	vec3 paint = texture(painted_grass_texture,world_xz/10.0).rgb;
+	vec3 vegetation = paint*ground_tint.rgb/vec3(0.3765,0.4196,0.2118);
+	vec3 patch = mix(vec3(0.82,0.93,0.88),vec3(1.10,1.08,0.94),macro);
+	ALBEDO = vegetation*patch*COLOR.rgb*0.72;
 	ROUGHNESS = 1.0;
 }

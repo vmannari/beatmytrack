@@ -14,6 +14,14 @@ func _initialize() -> void:
 
 func run() -> void:
 	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
+	var capture_track: String = ""
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--track="): capture_track = argument.trim_prefix("--track=")
+	if not capture_track.is_empty():
+		var document: Dictionary = TrackLibrary.new().load_document(capture_track)
+		check(not document.is_empty(),"requested comparison track exists")
+		if document.is_empty(): quit(1); return
+		track = TrackCompiler.compile(document)
 	var cells: PackedInt32Array = track.cells.duplicate()
 	var deck: PackedInt32Array = track.deck_cells.duplicate()
 	var tufts := GrassTufts.new()
@@ -78,10 +86,24 @@ func run() -> void:
 			game.call("_process",0.0)
 			await RenderingServer.frame_post_draw
 		var folder: String = "res://../docs/evidence/grass"
+		if not capture_track.is_empty(): folder += "/"+capture_track.validate_filename()
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 		check(root.get_texture().get_image().save_png(folder+"/hybrid-driving.png") == OK,"gameplay grass evidence saved")
 		var visible_tufts: int = _visible_tufts(game,game.get("camera"))
 		print("GRASS_VIEW: %d tuft origins inside driving viewport (not GPU timing)" % visible_tufts)
+		var probe = preload("res://diagnostics/surface_material_probe.gd").new()
+		probe.collect(game.get("track_ground"))
+		check(not probe.grass_roots.is_empty(),"phone probe finds grass geometry")
+		for mode: String in ["grass_original","grass_material","baseline"]:
+			probe.apply(mode)
+			await RenderingServer.frame_post_draw
+			for grass: GrassTufts in probe.grass_roots:
+				check(grass.visible == (mode == "baseline"),"comparison toggles only intended grass geometry")
+			for entry: Dictionary in probe.entries:
+				var active: ShaderMaterial = entry.mesh.material_override
+				check(active.get_shader_parameter("hybrid_grass") == (mode != "grass_original"),"comparison restores intended grass material")
+			check(root.get_texture().get_image().save_png(folder+"/"+mode+"-driving.png") == OK,"grass comparison evidence saved")
+		probe.restore()
 		# Dedicated close review camera; production camera configuration is untouched.
 		var camera: Camera3D = game.get("camera")
 		var focus: Vector3 = VisualGeometry.world(track.spawn)+Vector3(-8,0,0)

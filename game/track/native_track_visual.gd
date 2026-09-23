@@ -2,11 +2,11 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-56"
+const VERSION: String = "track-kit-57"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
-const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/grass_albedo.png")
+const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/meadow_grass_v2.png")
 const GRASS_MACRO: Texture2D = preload("res://assets/textures/grass_macro_mask.png")
 const GRASS_NORMAL: Texture2D = preload("res://assets/textures/grass_normal.png")
 

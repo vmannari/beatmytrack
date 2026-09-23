@@ -348,7 +348,7 @@ try {
         'CaptureStorm' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_storm.gd', '--', '--capture') 'storm-capture.log' }
         'TestIce' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_ice.gd') 'ice-tests.log' }
         'TestGrass' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_grass.gd') 'grass-tests.log' }
-        'CaptureGrass' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_grass.gd', '--', '--capture') 'grass-capture.log' }
+        'CaptureGrass' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/test_grass.gd', '--', '--capture') + $trackArguments) 'grass-capture.log' }
         'TestDesert' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_desert.gd') 'desert-tests.log' }
         'CaptureDesert' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_desert.gd', '--', '--capture') 'desert-capture.log' }
         'TestBiomes' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_biomes.gd') 'biomes-test.log' }

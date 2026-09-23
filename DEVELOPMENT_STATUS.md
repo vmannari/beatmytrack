@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-23 V02/V04/V05/Q01: kit 57 adds original meadow blade/clump artwork and shaded opaque tufts instead of restoring old leafy grass. Fresh APK installed on DN2103; 18 comparison stages completed. Ajorata median unchanged; repeated Storm +0.20?0.24 ms (1.2?1.4%), lower p95. First Storm pass showed device-wide slowdown affecting original grass too; all results retained. Desktop/device evidence and acceptance limits: docs/GRASS_PERFORMANCE.md.
+
 2026-09-23 V02/V04/V05/Q01: owner rejected plain hybrid grass. Kit 56 restores original painted vegetation detail, greatly reduces broad blotches and matches tuft colour to the ground. CaptureGrass 17, TestGrass 15 and TestSurfaces 50 checks pass; revised gameplay screenshot inspected. No phone test/deployment/profiling. See docs/HYBRID_GRASS.md.
 
 2026-09-23 V02/V04/V05/Q01: grass-only hybrid material uses baked macro/albedo/normal maps and five opaque clustered MultiMesh tuft variants. Visual kit 55; 2,270 tuft origins in captured driving view. Grass 15/17 headless/graphical, surface 50, desert 24, biome 92 and shader-probe 928 checks pass. Desktop screenshots inspected. Phone attached; no device test/export/profiling. See docs/HYBRID_GRASS.md.

@@ -3,8 +3,11 @@ extends RefCounted
 const PREVIOUS: ShaderInclude = preload("res://diagnostics/previous_surface.gdshaderinc")
 var entries: Array[Dictionary] = []
 var changed_count: int = 0
+var grass_roots: Array[GrassTufts] = []
 
 func collect(root: Node) -> void:
+	for node: Node in root.find_children("*", "Node3D", true, false):
+		if node is GrassTufts: grass_roots.append(node)
 	for mesh: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
 		var material: Material = mesh.material_override
 		if material is not ShaderMaterial: continue
@@ -14,8 +17,18 @@ func collect(root: Node) -> void:
 
 func apply(mode: String) -> void:
 	changed_count = 0
+	for grass: GrassTufts in grass_roots:
+		grass.visible = mode not in ["grass_original","grass_material"]
 	for entry: Dictionary in entries:
 		var material: ShaderMaterial = entry.original
+		if mode == "grass_original":
+			if not entry.variants.has(mode):
+				var legacy: ShaderMaterial = material.duplicate()
+				legacy.set_shader_parameter("hybrid_grass",false)
+				entry.variants[mode] = legacy
+			entry.mesh.material_override = entry.variants[mode]
+			changed_count += 1
+			continue
 		var creator: bool = entry.path.ends_with("creator_road.gdshader")
 		var road: bool = creator and (material.get_shader_parameter("asphalt_surface") == true or material.get_shader_parameter("road_marking") == true or material.get_shader_parameter("edge_fringe") == true)
 		var selected: bool = mode in ["asphalt_previous","directional_off"] or (mode == "road_flat" and road) or (mode == "terrain_flat" and not road)
@@ -57,5 +70,6 @@ func apply(mode: String) -> void:
 		changed_count += 1
 
 func restore() -> void:
+	for grass: GrassTufts in grass_roots: grass.visible = true
 	for entry: Dictionary in entries:
 		entry.mesh.material_override = entry.original

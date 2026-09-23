@@ -6,7 +6,7 @@ uniform bool packed_sand = false;
 // Original world-space pigment pattern. Derivative filtering limits distant shimmer.
 uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool hybrid_grass = false;
-uniform sampler2D grass_albedo : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_macro_mask : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 
@@ -94,15 +94,13 @@ vec3 directional_asphalt(vec3 base, vec2 p, vec2 encoded_axis) {
 vec3 painted_grass(vec3 base, vec2 p) {
 	if (hybrid_grass) {
 		vec3 macro = texture(grass_macro_mask,p/32.0).rgb;
-		// Retain the original painted vegetation: broad colour alone loses
-		// all the leaf/clump structure at the actual driving camera height.
-		vec3 paint = texture(painted_grass_texture,p/20.0).rgb;
-		vec3 tint = base / vec3(0.3765,0.4196,0.2118);
-		vec3 vegetation = mix(paint*tint,base,0.10);
-		// Macro variation modulates existing detail instead of replacing it
-		// with smooth, bright yellow-green clouds.
-		vec3 patch = mix(vec3(0.89,0.94,0.88),vec3(1.06,1.035,0.98),macro.r);
-		return vegetation*patch*0.87;
+		// Actual narrow-blade meadow clumps with visible root depth. The
+		// offset companion sample breaks repetition without runtime noise.
+		vec3 paint = texture(grass_albedo,p/10.0).rgb;
+		vec3 companion = texture(grass_albedo,vec2(-p.y,p.x)/17.0+vec2(0.31,0.57)).rgb;
+		vec3 vegetation = mix(paint,companion,0.18)*base/vec3(0.3765,0.4196,0.2118);
+		vec3 patch = mix(vec3(0.82,0.93,0.88),vec3(1.10,1.08,0.94),macro.r);
+		return vegetation*patch*0.72;
 	}
 	// Cool neutral palettes use snow/concrete grain without green brush pigment.
 	if (base.b > base.r * 0.95) return base * (0.94 + pigment(p * 0.7) * 0.06);

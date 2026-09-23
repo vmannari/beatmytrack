@@ -1,5 +1,7 @@
 # Hybrid grass — 2026-09-23
 
+**Current result: kit 57 introduces new meadow artwork and actual DN2103 comparisons.** See [visual/performance results](GRASS_PERFORMANCE.md) and [interactive comparison](evidence/grass/comparison.html). Earlier attempts below were rejected or superseded.
+
 ## Owner correction: restore vegetation detail
 
 The owner rejected kit 55 as too plain. Kit 56 restores the original `painted_grass_v1.png` as the dominant albedo at its original 20 m world scale, with only 10% flat-colour blending and no extra positive mip bias. Broad macro shading is much weaker; the smooth yellow-green blobs no longer replace vegetation structure. Tufts sample the same painted texture and macro tint. Sparse opaque geometry and filtered fine normals remain. The synthetic `grass_albedo` map is retained as a prior experiment but is no longer sampled by the active grass colour function. No new art assets were generated.

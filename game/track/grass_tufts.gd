@@ -16,7 +16,7 @@ func build(track: NativeTrack, tint: Color, sliced: bool = false) -> void:
 	material.shader = preload("res://track/grass_tuft.gdshader")
 	material.set_shader_parameter("ground_tint",tint)
 	material.set_shader_parameter("grass_macro_mask",NativeTrackVisual.GRASS_MACRO)
-	material.set_shader_parameter("painted_grass_texture",NativeTrackVisual.GRASS_TEXTURE)
+	material.set_shader_parameter("painted_grass_texture",NativeTrackVisual.GRASS_ALBEDO)
 	var meshes: Array[ArrayMesh] = []
 	for variant: int in range(5): meshes.append(_mesh(variant))
 	var extent: Vector2 = track.half_extent
@@ -79,11 +79,12 @@ static func _mesh(variant: int) -> ArrayMesh:
 	for blade: int in range(3+variant):
 		var angle: float = blade*2.399+variant*0.7
 		var axis := Vector3(cos(angle),0,sin(angle))
-		var side := Vector3(-axis.z,0,axis.x)*0.018
+		var side := Vector3(-axis.z,0,axis.x)*0.026
 		var base: Vector3 = axis*0.035
-		var tip: Vector3 = base+axis*0.075+Vector3.UP*(0.055+float((blade+variant)%4)*0.012)
+		var tip: Vector3 = base+axis*0.095+Vector3.UP*(0.065+float((blade+variant)%4)*0.012)
 		var ridge: Vector3 = base+axis*0.014+Vector3.UP*0.033
 		for vertex: Vector3 in [base-side,ridge,tip,ridge,base+side,tip]:
+			tool.set_color(Color(0.64,0.72,0.54).lerp(Color(1.13,1.12,0.90),clampf(vertex.y/0.10,0.0,1.0)))
 			tool.set_normal((Vector3.UP+axis*0.3).normalized())
 			tool.add_vertex(vertex)
 	return tool.commit()

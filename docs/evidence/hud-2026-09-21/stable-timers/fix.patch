@@ -1,0 +1,113 @@
+--- a/game/ui/hud_frame.gd
++++ b/game/ui/hud_frame.gd
+@@ -3,6 +3,7 @@
+ ## Scalable inked instrument silhouettes, drawn behind real UI controls.
+ var kind: String = "clock"
+ var speed_fraction: float = 0.0
++var lap_status: Control
+ 
+ func _ready() -> void:
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -13,10 +14,12 @@
+ 	if kind == "map":
+ 		var center := Vector2(76,extent.y*0.5)-position
+ 		draw_circle(center,64,Color("12201a77"))
+-		_soft_backing(Rect2(Vector2(146,24)-position,Vector2(extent.x-146,extent.y-48)))
++		_soft_backing(lap_backing_rect())
+ 		draw_arc(center,64,0,TAU,96,Color("bac6c077"),1.5,true)
+ 		draw_line(Vector2(152,36)-position,Vector2(152,extent.y-36)-position,Color("ccd2ceaa"),1,true)
+-	elif kind == "clock" or kind == "plain":
++	elif kind == "plain":
++		_soft_backing(lap_backing_rect())
++	elif kind == "clock":
+ 		_soft_backing(Rect2(-position-Vector2(12,6),extent+Vector2(24,12)))
+ 	elif kind == "speed":
+ 		var center := Vector2(extent.x*0.5,extent.y-16)-position
+@@ -30,6 +33,11 @@
+ 			var color := Color("e7ecd6aa") if tick/60.0 <= speed_fraction else Color("c4ceac55")
+ 			if tick > 53: color = Color("d5534b99")
+ 			draw_line(center+direction*(radius-10),center+direction*(radius-(17 if tick % 5 == 0 else 14)),color,1,true)
++
++func lap_backing_rect() -> Rect2:
++	if lap_status == null: return Rect2()
++	return Rect2(lap_status.global_position-global_position,lap_status.size).grow_individual(16,10,16,10)
++
+ 
+ func _soft_backing(rect: Rect2) -> void:
+ 	# Feathered charcoal scrim: no hard card edge over the racing world.
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -68,6 +68,9 @@
+ 	road_map = HUDRoadMap.new()
+ 	overview.add_child(road_map)
+ 	var status := VBoxContainer.new()
++	race_frame.lap_status = status
++	status.resized.connect(race_frame.queue_redraw)
++	status.item_rect_changed.connect(race_frame.queue_redraw)
+ 	status.add_theme_constant_override("separation", 0)
+ 	status.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	overview.add_child(status)
+@@ -105,7 +108,7 @@
+ 	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	clock_caption.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+ 	clock_info.add_child(clock_caption)
+-	race_timer = _label("00:00.00", 40)
++	race_timer = _timer_label(40)
+ 	race_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	race_timer.visible = production_mode and not editor_test
+ 	var clock_row := HBoxContainer.new()
+@@ -134,7 +137,7 @@
+ 	var lap_time_caption := _label("LAP",16)
+ 	lap_time_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	clock_info.add_child(lap_time_caption)
+-	lap_timer = _label("00:00.00",24)
++	lap_timer = _timer_label(24)
+ 	lap_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	lap_timer.add_theme_color_override("font_color",RaceHUDStyle.MUTED)
+ 	clock_info.add_child(lap_timer)
+@@ -420,3 +423,13 @@
+ 	# Integer centiseconds avoid a rounded 00:60.00 at minute boundaries.
+ 	var centiseconds: int = floori(seconds * 100.0 + 0.00001)
+ 	return "%02d:%02d.%02d" % [centiseconds / 6000,(centiseconds / 100) % 60,centiseconds % 100]
++
++
++func _timer_label(font_size: int) -> Label:
++	var label := _label("00:00.00",font_size)
++	var numerals := FontVariation.new()
++	numerals.base_font = RaceHUDStyle.BODY
++	numerals.opentype_features = {"tnum":1}
++	label.add_theme_font_override("font",numerals)
++	label.custom_minimum_size = numerals.get_string_size("00:00.00",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size)
++	return label
+--- a/game/tests/test_bridge_hud.gd
++++ b/game/tests/test_bridge_hud.gd
+@@ -159,6 +159,29 @@
+ 		session.penalty_seconds = 0.0
+ 		session.lap_penalty_seconds = 0.0
+ 		hud.show_session(session)
++	if not practice:
++		for timer: Label in [hud.race_timer,hud.lap_timer]:
++			var font: Font = timer.get_theme_font("font")
++			var font_size: int = timer.get_theme_font_size("font_size")
++			var reference_width: float = font.get_string_size("00:00.00",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
++			for digit: int in range(10):
++				var sample: String = "%d%d:%d%d.%d%d" % [digit,digit,digit,digit,digit,digit]
++				check(is_equal_approx(font.get_string_size(sample,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x,reference_width),"timer digit advances stay fixed: "+sample)
++		var timer_rect: Rect2 = hud.race_timer.get_global_rect()
++		var lap_rect: Rect2 = hud.lap_timer.get_global_rect()
++		var saved_race: String = hud.race_timer.text
++		var saved_lap: String = hud.lap_timer.text
++		for sample: String in ["11:11.11","88:88.88","00:59.99","01:00.00"]:
++			hud.race_timer.text = sample
++			hud.lap_timer.text = sample
++			await process_frame
++			await process_frame
++			check(hud.race_timer.get_global_rect() == timer_rect and hud.lap_timer.get_global_rect() == lap_rect,"changing timer digits preserves both label rectangles")
++		hud.race_timer.text = saved_race
++		hud.lap_timer.text = saved_lap
++		var backing: Rect2 = hud.race_frame.lap_backing_rect()
++		var content := Rect2(hud.race_frame.lap_status.global_position-hud.race_frame.global_position,hud.race_frame.lap_status.size)
++		check(backing.encloses(content) and backing.get_center().is_equal_approx(content.get_center()),"lap backing is centred on actual label group")
+ 	var before: Array = sim.state.snapshot()
+ 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
+ 	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]

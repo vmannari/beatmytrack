@@ -1,0 +1,121 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -96,27 +96,18 @@
+ 	add_child(body)
+ 	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], trim)
+ 	_shell(body, [Vector3(0.86, 0.5, 2.03), Vector3(0.88, 0.86, 1.98), Vector3(0.76, 1.02, 1.8)], blue)
+-	_shell(body, [Vector3(0.875, 0.85, 1.98), Vector3(0.76, 1.02, 1.8)], paint)
+ 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+ 	_hatchback(paint, glass, trim, blue)
+ 	for side: float in [-1.0, 1.0]:
+-		_seam(body,Vector3(side*0.55,1.025,-1.73),Vector3(side*0.58,1.025,-1.05),0.012,trim)
+ 		# One long front door, then a fixed rear quarter window.
+ 		_seam(body,Vector3(side*0.88,0.87,0.47),Vector3(side*0.88,0.58,0.47),0.012,trim)
+ 		VisualGeometry.box(body,Vector3(0.025,0.055,0.20),Vector3(side*0.88,0.85,0.32),trim)
+ 		_seam(body,Vector3(side*0.89,0.64,-0.90),Vector3(side*0.89,0.64,0.78),0.024,trim)
+-	VisualGeometry.box(body,Vector3(1.26,0.19,0.04),Vector3(0,0.79,-2.035),trim)
+-	for slat: int in range(3):
+-		VisualGeometry.box(body,Vector3(0.72,0.013,0.025),Vector3(0,0.73+slat*0.055,-2.065),rim)
+ 	for side: float in [-1.0, 1.0]:
+ 		VisualGeometry.box(body,Vector3(0.14,0.13,0.045),Vector3(side*0.77,0.77,-2.02),VisualGeometry.material(Color("b77929")))
+ 		brake_lights.append(VisualGeometry.box(body, Vector3(0.16, 0.27, 0.07), Vector3(side * 0.73, 0.84, 2.01), brake_material))
+ 		VisualGeometry.box(body, Vector3(0.18, 0.12, 0.28), Vector3(side * 0.93, 1.03, -0.48), trim)
+ 		for axle: float in [-1.28, 1.28]:
+-			for segment: int in range(12):
+-				var a0: float = PI*segment/12.0
+-				var a1: float = PI*(segment+1)/12.0
+-				_panel([Vector3(side*0.893,0.37+sin(a0)*0.39,axle+cos(a0)*0.39),Vector3(side*0.893,0.37+sin(a1)*0.39,axle+cos(a1)*0.39),Vector3(side*0.895,0.37+sin(a1)*0.46,axle+cos(a1)*0.46),Vector3(side*0.895,0.37+sin(a0)*0.46,axle+cos(a0)*0.46)],Vector3(side,0,0),blue)
+ 			var pivot := Node3D.new()
+ 			pivot.position = Vector3(side * 0.83, 0.37, axle)
+ 			add_child(pivot)
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -28,18 +28,34 @@
+ 	var amber := VisualGeometry.material(Color("d58b32"))
+ 	var lens := VisualGeometry.material(Color("e7e4d2"))
+ 	var shade := VisualGeometry.material(Color("384e55"))
+-	# Sculpted arch lips project beyond the blue shoulder, wrapping the tyres.
++	_front(car, blue, cream, trim, alloy)
++	# The arch rolls out from the actual body skin to a narrow dark opening lip.
++	var arch_trim := VisualGeometry.material(Color("454b4d"))
++	var fender: Material = blue.duplicate()
++	fender.next_pass = null
+ 	for side: float in [-1.0,1.0]:
+ 		for axle: float in [-1.28,1.28]:
+-			for segment: int in range(16):
+-				var a: float = PI*segment/16.0
+-				var b: float = PI*(segment+1)/16.0
+-				for band: int in range(2):
+-					var r0: float = 0.39+band*0.045
+-					var r1: float = r0+0.045
+-					var x0: float = 0.971-band*0.016
+-					var x1: float = x0-0.016
+-					car._panel([Vector3(side*x0,0.37+sin(a)*r0,axle+cos(a)*r0),Vector3(side*x0,0.37+sin(b)*r0,axle+cos(b)*r0),Vector3(side*x1,0.37+sin(b)*r1,axle+cos(b)*r1),Vector3(side*x1,0.37+sin(a)*r1,axle+cos(a)*r1)],Vector3(side,0.3,0),trim if band == 0 else blue)
++			var radii: Array[float] = [0.389,0.409,0.468,0.53]
++			var widths: Array[float] = [0.979,0.981,0.956,0.877]
++			for segment: int in range(20):
++				var a: float = PI*segment/20.0
++				var b: float = PI*(segment+1)/20.0
++				for band: int in range(3):
++					var r0: float = radii[band]
++					var r1: float = radii[band+1]
++					var x0: float = widths[band]
++					var x1: float = widths[band+1]
++					var p0 := Vector3(side*x0,0.37+sin(a)*r0,axle+cos(a)*r0)
++					var p1 := Vector3(side*x0,0.37+sin(b)*r0,axle+cos(b)*r0)
++					var p2 := Vector3(side*x1,0.37+sin(b)*r1,axle+cos(b)*r1)
++					var p3 := Vector3(side*x1,0.37+sin(a)*r1,axle+cos(a)*r1)
++					# Upper body tapers inward above its waist; meet that surface.
++					if band == 2:
++						p2.x = side*(0.88-maxf(0.0,p2.y-0.86)*0.75+0.003)
++						p3.x = side*(0.88-maxf(0.0,p3.y-0.86)*0.75+0.003)
++					var normal: Vector3 = (p1-p0).cross(p3-p0).normalized()
++					if normal.x*side < 0.0: normal = -normal
++					car._panel([p0,p1,p2,p3],normal,trim if band == 0 else arch_trim if band == 1 else fender)
+ 		# Door perimeter, raised handle, waist crease and sill catch light cleanly.
+ 		car._seam(car.body,Vector3(side*0.889,0.54,-0.74),Vector3(side*0.889,0.54,0.53),0.013,trim)
+ 		car._seam(car.body,Vector3(side*0.884,0.55,-0.74),Vector3(side*0.884,0.87,-0.74),0.013,trim)
+@@ -59,7 +75,7 @@
+ 	car._seam(car.body,Vector3(-0.68,1.068,-0.952),Vector3(0.68,1.068,-0.952),0.025,trim)
+ 	car._seam(car.body,Vector3(-0.57,1.448,-0.462),Vector3(0.57,1.448,-0.462),0.022,trim)
+ 	for vent: int in range(18):
+-		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.029,-1.04),trim)
++		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.047,-1.04),trim)
+ 	for end: float in [-1.0,1.0]:
+ 		VisualGeometry.box(car.body,Vector3(1.66,0.135,0.12),Vector3(0,0.49,end*2.08),rubber)
+ 		VisualGeometry.box(car.body,Vector3(1.51,0.022,0.128),Vector3(0,0.552,end*2.08),alloy)
+@@ -69,7 +85,7 @@
+ 		for layer: int in range(4):
+ 			var radii: Array[float] = [0.174,0.148,0.124,0.080]
+ 			var materials: Array[Material] = [trim,bright,shade,lens]
+-			var light := VisualGeometry.cylinder(car.body,radii[layer],0.025,Vector3(side*0.59,0.79,-2.058-layer*0.013),materials[layer])
++			var light := VisualGeometry.cylinder(car.body,radii[layer],0.025,Vector3(side*0.59,0.79,-2.034-layer*0.008),materials[layer])
+ 			light.rotation.x = PI*0.5
+ 		VisualGeometry.box(car.body,Vector3(0.22,0.075,0.035),Vector3(side*0.61,0.59,-2.086),amber)
+ 	# Recessed dark centres, alloy rim lips and explicit lug centres on every wheel.
+@@ -86,3 +102,25 @@
+ 			var a: float = lug*TAU/4.0
+ 			var bolt := VisualGeometry.cylinder(rotor,0.014,0.305,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright)
+ 			bolt.rotation.z = PI*0.5
++
++
++static func _front(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
++	# Solid fascia extends back into the shell: no air gap behind grille or lamps.
++	VisualGeometry.box(car.body,Vector3(1.53,0.35,0.24),Vector3(0,0.785,-1.91),blue)
++	VisualGeometry.box(car.body,Vector3(1.49,0.277,0.075),Vector3(0,0.785,-2.008),trim)
++	for row: int in range(5):
++		VisualGeometry.box(car.body,Vector3(0.79,0.017,0.015),Vector3(0,0.690+row*0.046,-2.05),alloy)
++	# Hood shoulder flows down to the grille surround; cream is an inset bonnet.
++	car._panel([Vector3(-0.76,1.024,-1.01),Vector3(0.76,1.024,-1.01),Vector3(0.73,0.974,-2.036),Vector3(-0.73,0.974,-2.036)],Vector3(0,1,-0.05),blue)
++	car._panel([Vector3(-0.55,1.065,-1.10),Vector3(0.55,1.065,-1.10),Vector3(0.515,1.054,-1.78),Vector3(-0.515,1.054,-1.78)],Vector3.UP,cream)
++	car._panel([Vector3(-0.515,1.054,-1.78),Vector3(0.515,1.054,-1.78),Vector3(0.57,0.988,-1.986),Vector3(-0.57,0.988,-1.986)],Vector3(0,1,-0.23),cream)
++	var edge := VisualGeometry.material(Color("b8af93"))
++	for side: float in [-1.0,1.0]:
++		car._panel([Vector3(side*0.55,1.065,-1.10),Vector3(side*0.515,1.054,-1.78),Vector3(side*0.607,1.036,-1.78),Vector3(side*0.637,1.045,-1.10)],Vector3(side*0.18,1,0),edge)
++		car._panel([Vector3(side*0.515,1.054,-1.78),Vector3(side*0.57,0.988,-1.986),Vector3(side*0.62,0.978,-1.986),Vector3(side*0.607,1.036,-1.78)],Vector3(side*0.2,1,-0.22),cream)
++		car._seam(car.body,Vector3(side*0.647,1.045,-1.10),Vector3(side*0.617,1.037,-1.78),0.009,trim)
++		car._seam(car.body,Vector3(side*0.617,1.037,-1.78),Vector3(side*0.629,0.979,-1.99),0.009,trim)
++		# Small washer nozzle and pressed crease, visible from above.
++		VisualGeometry.box(car.body,Vector3(0.026,0.016,0.045),Vector3(side*0.37,1.071,-1.16),trim)
++	car._seam(car.body,Vector3(-0.637,1.052,-1.09),Vector3(0.637,1.052,-1.09),0.011,trim)
++	car._seam(car.body,Vector3(-0.62,0.981,-1.991),Vector3(0.62,0.981,-1.991),0.010,trim)

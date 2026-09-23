@@ -79,3 +79,10 @@ The owner removed the whole Waypoints menu and moved Start line under Track, wit
 
 ## Discovery menu reference override (2026-09-18)
 The owner supplied a track-discovery menu reference. Top navigation, original workshop backdrop, scenic route cards and yellow actions supersede bottom navigation for the local menus. Online friend rematches, ratings, currencies and progression remain deferred. See docs/DISCOVERY_MENU.md for actual checks and limitations.
+
+
+## Mobile optimization and checkpoint override (2026-09-22)
+The owner authorizes removing random road cracks, baking surface detail and reducing shadow quality for mobile performance. Timed laps require all road gates in order; missing a section requires returning, with no automatic +5s shortcut penalty. Gates must prevent hairpin shortcuts without excessive/intersecting dense gates impeding legitimate inside lines. Rules v10 replaces the old penalty contract. See docs/MOBILE_OPTIMIZATION_2026_09_22.md for implementation, physical-device measurements and remaining acceptance.
+
+## Desert sand and sunset override (2026-09-22)
+The owner requests desert roads to always be a distinct, more drivable compacted sand, with dense dust during ordinary driving that causes considerable obstruction and lingers. This explicitly supersedes the earlier brief/unobstructive dust art constraint for desert. Desert lighting uses a red-orange sunset and longer shadows. See docs/DESERT_SUNSET.md for implementation and acceptance limits.

@@ -1,5 +1,31 @@
 # Required biome selection ? 2026-09-18
 
+## Reference menu icon match - 2026-09-23
+
+R01/V03/V05: owner's clarification targets only the small biome symbols in the supplied Create reference. Revised the existing vector artwork to its curved folded leaf, narrow rounded cactus, crescent with scalloped clouds and small sparkle stars, delicate six-arm snowflake, and rounded rain cloud with the requested added lightning bolt. Card and summary symbols share the reference's pale blue, with an off-white Night symbol. These are vector recreations rather than screenshot crops. Scenic art and heading remain as accepted.
+
+Changed `game/ui/menu_icon.gd`, `game/core/app.gd`, this document, status/phase notes and existing icon/menu PNG evidence. Actual command `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureBiomes`: 92 checks passed, zero failures. Inspected enlarged symbols and the refreshed [picker](evidence/biomes/picker.png). No phone test or export performed; owner visual acceptance remains.
+
+## Filled biome glyph replacement - 2026-09-23
+
+Requirements R01/V03/V05. Replaced the rejected line glyphs with original filled SVG silhouettes: a leaf with one tapered open vein, a cactus with solid rounded arms, a crescent with separated cloud and stars informed by the owner's reference, a sixfold symmetric snowflake and a cloud with lightning and rain. Night reference is composition guidance only; no reference pixels or watermark are shipped. Biome glyphs use a 64-unit design grid rasterized at 112 pixels with mipmaps for the 30/34-pixel UI sizes. Removed obsolete glyph definitions.
+
+Changed files: `game/ui/menu_icon.gd`, capture support in `game/tests/test_biomes.gd`, status/phase notes, this document and `docs/evidence/biomes/` captures. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureBiomes`: 92 checks, zero failures after final refinement. Inspected all five enlarged icon PNGs and the [menu capture](evidence/biomes/picker.png). Enlarged evidence: `icon-leaf.png`, `icon-cactus.png`, `icon-night.png`, `icon-snowflake.png`, `icon-storm.png` in that folder. No phone test or export; attachment not checked. Owner visual acceptance and phone rendering remain outstanding.
+
+## Selection details, icons and explicit creation - 2026-09-23
+
+Requirements R01/T01-T04/V03/V05. The five scenic biome cards now select rather than immediately opening the editor. Each card has an original shared vector glyph and the selected card receives a yellow border. A full-width bottom card repeats the selected biome icon/name, provides biome-specific building and driving context, and exposes the explicit yellow **Create track** action. The upper-right **Load track** folder action opens the established Saved tracks library. The existing thin artwork strip below each card label remains.
+
+Changed files: `game/core/app.gd`, `game/ui/menu_icon.gd`, `game/tests/test_biomes.gd`, this document, development status, phase plan and refreshed picker evidence. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureBiomes` with pinned Godot 4.7.2. The first run stopped on a duplicate test-variable parse error; the fixture variable was renamed and the final run passed 87 checks with zero failures. The refreshed 1280x720 [picker capture](evidence/biomes/picker.png) was visually inspected. No phone test or Android export was performed; phone attachment was not checked. Remaining acceptance is owner review and physical-phone layout/touch validation.
+
+Follow-up: all five biome glyphs were redrawn with cleaner silhouettes and balanced 24x24 geometry, including a symmetrical branched Winter snowflake. The page heading is now **Select biome**. A repeated `CaptureBiomes` run passed 92 checks with zero failures; the refreshed desktop capture was inspected at rendered card size.
+
+## Track-gallery artwork and overlaid labels - 2026-09-22
+
+Requirements R01/V03/V05. The Create biome picker now uses the same `discovery-biomes.png` and `discovery-storm.png` scenic artwork as the Tracks gallery. Biome names are overlaid near the bottom of each image, leaving a thin strip of uninterrupted artwork visible below the label row. The explanatory "Choice is permanent" sentence has been removed. Selection behavior and biome immutability are unchanged.
+
+Changed files: `game/core/app.gd`, `game/ui/track_tile.gd`, `game/tests/test_biomes.gd`, this document, development status, phase plan and the refreshed picker evidence. `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureBiomes` passed all 62 checks using pinned Godot 4.7.2. The refreshed 1280x720 [picker capture](evidence/biomes/picker.png) was visually inspected: all five crops fill their cards and every lower overlaid label is readable with artwork visible beneath it. No phone test or Android export was performed; phone attachment was not checked. Owner phone/touch acceptance remains.
+
 Requirements: R01/T01?T04/V03/V05; owner request dated 2026-09-18.
 
 Create navigation and editor New now allocate a fresh blank document and open a required three-card biome selection screen. Selecting Pine forest, Coast or Desert enters the editor. No road pieces, painted surfaces, objects, base track or road layout are inherited. The existing internal route scaffold remains until automatic road-route generation; it is not authored road geometry. Load and Edit still open existing documents, and returning from practice preserves the current track.

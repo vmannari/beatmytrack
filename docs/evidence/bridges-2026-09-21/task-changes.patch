@@ -1,0 +1,1379 @@
+diff --git a/game/track/creator_bridges.gd b/game/track/creator_bridges.gd
+--- a/game/track/creator_bridges.gd
++++ b/game/track/creator_bridges.gd
+@@ -4,6 +4,7 @@
+ const HEIGHT: float = 3.5
+ const RAMP: float = 8.0
+ const RAIL: float = 0.75
++const UNDERPASS_CLEARANCE: float = 2.20 # Tallest local car (~1.73 m), 0.42 m deck, small clearance.
+ 
+ static var base_footprints: Dictionary = {}
+ 
+@@ -42,9 +43,12 @@
+ 		if contains(bridge,point) and absf(forward.dot(Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading))))) > 0.75: return true
+ 	return false
+ 
+-static func layer_at(bridges: Array, point: Vector2, previous: bool, margin: float = 0.0) -> bool:
++static func layer_at(bridges: Array, point: Vector2, previous: bool, _margin: float = 0.0) -> bool:
+ 	for bridge: Dictionary in bridges:
+-		if not contains(bridge,point,margin): continue
++		# The centre must leave the deck at its ground-level end. Expanding
++		# both axes by the car radius joins separate spans in dense tracks and
++		# carries the upper layer sideways onto the next bridge (Knit).
++		if not contains(bridge,point): continue
+ 		var u: float = local_point(bridge,point).x
+ 		# Enter the upper layer only through ground-level ramp ends. A car
+ 		# already on the deck stays there, even while turning or reversing.
+@@ -55,6 +59,16 @@
+ 	for bridge: Dictionary in bridges:
+ 		if contains(bridge,point,margin): return true
+ 	return false
++
++static func span_at(bridges: Array, point: Vector2) -> int:
++	for i: int in range(bridges.size()):
++		if contains(bridges[i],point): return i
++	return -1
++
++static func blocks_ground(bridge: Dictionary, point: Vector2) -> bool:
++	if not contains(bridge,point): return false
++	var p: Vector2 = local_point(bridge,point)
++	return height(bridge,point) < UNDERPASS_CLEARANCE and (minf(p.x,float(bridge.length)-p.x) >= 2.0 or absf(p.y) > float(bridge.width)*0.5)
+ 
+ static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Array, grid: Vector2i, extent: Vector2, cell: float) -> void:
+ 	for bridge: Dictionary in bridges:
+@@ -73,6 +87,11 @@
+ 				# the middle of a span remains exactly as authored.
+ 				if (p.x < 2.0 or p.x > float(bridge.length)-2.0) and absf(p.y) <= float(bridge.width)*0.5:
+ 					ground[y*grid.x+x] = 0
++				# Ground cars cannot enter the low underside from the tunnel or
++				# side. The upper ramp remains independently drivable. Preserve
++				# the open middle, where the deck has full vehicle clearance.
++				if blocks_ground(bridge,point):
++					ground[y*grid.x+x] = 4
+ 
+ static func rectangles(cells: PackedInt32Array, grid: Vector2i) -> Array:
+ 	var result: Array = []
+diff --git a/game/track/native_track.gd b/game/track/native_track.gd
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -487,9 +487,11 @@
+ 	var reach: int = ceili(radius / cell_size) + 1
+ 	var support: Vector3 = _support_plane(from, radius, elevated)
+ 	var support_normal := Vector2(support.x, support.y)
++	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
+ 	for y: int in range(cy - reach, cy + reach + 1):
+ 		for x: int in range(cx - reach, cx + reach + 1):
+ 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
++			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+ 			if cell_at(center, elevated) not in [4]: continue
+ 			var low: Vector2 = center - Vector2.ONE * cell_size * 0.5
+ 			var high: Vector2 = center + Vector2.ONE * cell_size * 0.5
+@@ -519,9 +521,11 @@
+ 	var reach: int = ceili(radius / cell_size) + 1
+ 	var distance: float = radius
+ 	var result := Vector3.ZERO
++	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
+ 	for y: int in range(cy - reach, cy + reach + 1):
+ 		for x: int in range(cx - reach, cx + reach + 1):
+ 			var center := Vector2((x+0.5)*cell_size-half_extent.x, half_extent.y-(y+0.5)*cell_size)
++			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+ 			if cell_at(center, elevated) not in [4]: continue
+ 			var nearest: Vector2 = point.clamp(center - Vector2.ONE*cell_size*0.5, center + Vector2.ONE*cell_size*0.5)
+ 			var offset: Vector2 = point - nearest
+@@ -542,6 +546,7 @@
+ 	var overlap: float = 0.0
+ 	var fallback := Vector2.RIGHT
+ 	var layer: PackedInt32Array = deck_cells if elevated else cells
++	var span: int = CreatorBridges.span_at(creator_bridges,point) if elevated else -1
+ 	var first_x: int = cx - reach
+ 	var end_x: int = cx + reach + 1
+ 	# One native scan handles completely clear row bands (common around loose
+@@ -562,6 +567,7 @@
+ 			if row_inside and x >= 0 and x < grid_width and layer[row+x] != 4:
+ 				continue
+ 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
++			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+ 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
+ 			var offset: Vector2 = point - nearest
+ 			if offset.length_squared() < radius * radius:
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -475,6 +475,16 @@
+ 
+ func _authored_barrier_cells(track: NativeTrack) -> PackedByteArray:
+ 	var mask := PackedByteArray()
++	# Low bridge undersides already have their ramp/fascia mesh. Never add
++	# generic 65 cm barrier blocks that protrude through the ramp asphalt.
++	if not track.creator_bridges.is_empty():
++		mask.resize(track.cells.size())
++		for y: int in range(track.grid_height):
++			for x: int in range(track.grid_width):
++				if track.cells[y*track.grid_width+x] != 4: continue
++				var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
++				for span: Dictionary in track.creator_bridges:
++					if CreatorBridges.blocks_ground(span,point): mask[y*track.grid_width+x] = 1
+ 	if _hide_creator_boundary(track):
+ 		# The finite creator perimeter still blocks the car, but an empty map
+ 		# is presented as open terrain rather than a walled enclosure.
+diff --git a/game/editor/track_compiler.gd b/game/editor/track_compiler.gd
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Pure bounded compiler; native surface cells drive both simulation and art.
+ 
+-const VERSION: String = "creator-compiler-16"
++const VERSION: String = "creator-compiler-17"
+ const CELL_SIZE: float = 0.5
+ static var bases: Dictionary = {}
+ 
+diff --git a/game/vehicle/vehicle_simulation.gd b/game/vehicle/vehicle_simulation.gd
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -3,7 +3,7 @@
+ ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+-const PHYSICS_VERSION: String = "arcade-planar-0.36"
++const PHYSICS_VERSION: String = "arcade-planar-0.37"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.15 # rad/s^2 peak spatial disturbance.
+ const TICK_RATE: int = 120
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -23,6 +23,48 @@
+ var spark_cooldown: float = 0.0
+ var sparks: Array[Dictionary] = []
+ var spark_cursor: int = 0
++var ramp_tick: int = -1
++var ramp_support: float = 0.0
++var ramp_lift: float = 0.0
++var ramp_velocity: float = 0.0
++var ramp_pitch: float = 0.0
++
++
++func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
++	# Small visual unloading at crests, followed by gravity and a damped
++	# landing. This never grants canonical airtime or collision immunity.
++	if not enabled or ramp_tick < 0 or state.tick < ramp_tick or state.tick-ramp_tick > 30:
++		ramp_support = support
++		ramp_lift = 0.0
++		ramp_velocity = 0.0
++		ramp_pitch = pitch
++		ramp_tick = state.tick
++	if state.tick > ramp_tick:
++		var ticks: int = state.tick-ramp_tick
++		var rise: float = (support-ramp_support)/ticks
++		var height: float = ramp_support+ramp_lift
++		for i: int in range(ticks):
++			var floor_height: float = ramp_support+rise*(i+1)
++			ramp_velocity -= 22.0/120.0
++			height += ramp_velocity/120.0
++			if height <= floor_height:
++				if ramp_lift > 0.005 and ramp_velocity < -1.0:
++					suspension_speed.x -= minf(-ramp_velocity*0.10,0.7)
++				height = floor_height
++				ramp_velocity = minf(rise*120.0,4.5)
++			if height > floor_height+0.55:
++				height = floor_height+0.55
++				ramp_velocity = minf(ramp_velocity,0.0)
++			ramp_lift = maxf(0.0,height-floor_height)
++			var travel_sign: float = -1.0 if state.velocity.dot(state.forward()) < 0.0 else 1.0
++			var target: float = atan2(ramp_velocity*travel_sign,maxf(5.0,state.velocity.length())) if ramp_lift > 0.005 else pitch
++			ramp_pitch = lerpf(ramp_pitch,target,0.075)
++		ramp_support = support
++		ramp_tick = state.tick
++	position.y += ramp_lift
++	# Wheel support remains on the road; the sprung body follows slope changes
++	# with inertia. During unloading the whole car follows its vertical travel.
++	if ramp_lift > 0.005: rotation.x = ramp_pitch
+ 
+ 
+ func _ready() -> void:
+@@ -148,8 +190,8 @@
+ 		if airborne:
+ 			target = Vector3(0.035, 0.0, 0.0)
+ 		elif not was_airborne:
+-			target.x = -minf(absf(slope_rate) * state.velocity.length() * 0.0015, 0.07)
+-			target.y -= clampf(slope_rate * 0.018, -0.045, 0.045)
++			target.x = clampf(-slope_rate * state.velocity.dot(state.forward()) * 0.003, -0.09, 0.06)
++			target.y -= clampf(slope_rate * 0.045, -0.09, 0.09)
+ 		if was_rolling and state.roll_ticks == 0:
+ 			suspension_speed.x -= 0.85
+ 			suspension_speed.z += state.roll_direction * 0.24
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -252,7 +252,8 @@
+ 			car.position.y -= water_depth
+ 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
+ 	car.rotation.z = 0.0
+-	car.present_suspension(sim.state, car.rotation.x, water_depth == 0.0)
++	car.present_ramp(sim.state,car.position.y,car.rotation.x,native_track != null and sim.state.jump_height == 0.0 and sim.state.roll_ticks == 0 and water_depth == 0.0)
++	car.present_suspension(sim.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005)
+ 	if sim.state.jump_height == 0.0:
+ 		car.position.y += sim.state.kerb_offset.x
+ 		car.rotation.x += sim.state.kerb_offset.y
+diff --git a/game/resources/tracks/starter_circuit.json b/game/resources/tracks/starter_circuit.json
+--- a/game/resources/tracks/starter_circuit.json
++++ b/game/resources/tracks/starter_circuit.json
+@@ -12108,5 +12108,5 @@
+ 	],
+ 	"theme": "pine",
+ 	"title": "Starter Circuit",
+-	"version": "creator-compiler-16"
++	"version": "creator-compiler-17"
+ }
+\ No newline at end of file
+diff --git a/game/tests/test_bridge_contacts.gd b/game/tests/test_bridge_contacts.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_bridge_contacts.gd
+@@ -0,0 +1,76 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func _initialize() -> void:
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/knit_bridge_regression.json"))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	for reverse: bool in [false,true]:
++		for offset: float in [-1.0,0.0,1.0]:
++			_knit(track,reverse,offset)
++	# The isolated first span has both open ends and a clear central tunnel.
++	var span: Dictionary = track.creator_bridges[0]
++	var origin := Vector2(span.position[0],span.position[1])
++	var axis := Vector2.RIGHT.rotated(deg_to_rad(span.heading))
++	var normal := axis.orthogonal()
++	var config: HandlingConfig = load("res://resources/balanced.tres")
++	for u: float in [3.0,float(span.length)-3.0]:
++		var target: Vector2 = origin+axis*u
++		check(track.overlaps_obstacle(target,0.1,false),"low underside is solid on ground")
++		check(not track.overlaps_obstacle(target,config.collision_radius,true),"same ramp asphalt stays drivable above")
++		var from: Vector2 = origin+axis*float(span.length)*0.5
++		var state := VehicleState.new()
++		state.position = target
++		state.velocity = (target-from).normalized()*30.0
++		track.resolve(state,from,config)
++		check(state.collision_count > 0 and not state.track_elevated,"swept tunnel-to-ramp contact cannot teleport upstairs")
++		check(state.position.distance_to(target) > config.collision_radius,"underside blocks full car footprint")
++	var middle: Vector2 = origin+axis*float(span.length)*0.5
++	var under := VehicleState.new()
++	under.position = middle+normal*8.0
++	under.velocity = normal*25.0
++	track.resolve(under,middle-normal*8.0,config)
++	check(under.collision_count == 0 and not under.track_elevated,"central underpass crosses both rails without collision")
++	var rail := VehicleState.new()
++	rail.track_elevated = true
++	rail.position = middle+normal*8.0
++	rail.velocity = normal*25.0
++	track.resolve(rail,middle,config)
++	check(rail.collision_count > 0,"upper rail still blocks driving off the deck")
++	print("BRIDGE_CONTACT_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func _knit(track: NativeTrack, reverse: bool, lateral: float) -> void:
++	var config: HandlingConfig = load("res://resources/balanced.tres")
++	var points: PackedVector2Array = track.route.duplicate()
++	if reverse: points.reverse()
++	for i: int in range(points.size()):
++		var index: int = points.size()-1-i if reverse else i
++		var tangent: Vector2 = (track.route[(index+1)%points.size()]-track.route[posmod(index-1,points.size())]).normalized()
++		points[i] += tangent.orthogonal()*lateral
++	var state := VehicleState.new()
++	state.position = points[0]
++	state.route_index = track.nearest_route(state.position)
++	state.track_elevated = track.elevated_at(state.position,state.route_index)
++	var hits: int = 0
++	for i: int in range(points.size()):
++		var a: Vector2 = points[i]
++		var b: Vector2 = points[(i+1)%points.size()]
++		for j: int in range(1,11):
++			var from: Vector2 = state.position
++			state.position = a.lerp(b,j/10.0)
++			state.velocity = (b-a).normalized()*10.0
++			var count: int = state.collision_count
++			track.resolve(state,from,config)
++			if state.collision_count > count:
++				if hits < 3: print("HIT i=",i," point=",state.position," upper=",state.track_elevated)
++				hits += 1
++				state.position = a.lerp(b,j/10.0)
++	print("KNIT reverse=",reverse," offset=",lateral," hits=",hits)
++	check(hits == 0,"Knit continuous route remains clear in both directions and across driving line")
+diff --git a/game/tests/test_bridge_contacts.gd.uid b/game/tests/test_bridge_contacts.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_bridge_contacts.gd.uid
+@@ -0,0 +1 @@
++uid://bd1dso7fi3c08
+diff --git a/game/tests/fixtures/knit_bridge_regression.json b/game/tests/fixtures/knit_bridge_regression.json
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/knit_bridge_regression.json
+@@ -0,0 +1,862 @@
++{
++	"base_track": "",
++	"corners": [
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp",
++		"sharp"
++	],
++	"id": "track_3db76e7338edcf28",
++	"layout": {},
++	"name": "Knit",
++	"objects": [],
++	"paint": [],
++	"pieces": [
++		{
++			"flip": false,
++			"heading": 0.0995343457426124,
++			"kind": "bridge",
++			"length": 24.1696205848798,
++			"position": [
++				10.3783130645752,
++				16.7799015045166
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 180.14180411868,
++			"kind": "straight",
++			"length": 16.0745800512464,
++			"position": [
++				10.3783130645752,
++				16.7799015045166
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 180.215452140849,
++			"kind": "bridge",
++			"length": 24.2312984282733,
++			"position": [
++				-5.69621658325195,
++				16.740119934082
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 180.171880443143,
++			"kind": "hairpin",
++			"length": 1.01070435756808,
++			"position": [
++				-29.9637279510498,
++				28.7773971557617
++			],
++			"radius": 6.06422614540846,
++			"width": 10.0
++		},
++		{
++			"angle": 94.0,
++			"flip": false,
++			"heading": 89.2943672695069,
++			"kind": "curve",
++			"length": 0.0,
++			"position": [
++				-18.0737609863281,
++				17.4128646850586
++			],
++			"radius": 11.2446329470292,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 270.444460241885,
++			"kind": "straight",
++			"length": 8.15719890594482,
++			"position": [
++				-18.0737609863281,
++				17.4128646850586
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 270.588884084957,
++			"kind": "bridge",
++			"length": 24.0155715930008,
++			"position": [
++				-18.0104846954346,
++				9.25591087341309
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 359.782676032686,
++			"kind": "straight",
++			"length": 17.3354471661729,
++			"position": [
++				-27.0,
++				-1.5
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 90.4307359569597,
++			"kind": "bridge",
++			"length": 24.1496521274429,
++			"position": [
++				2.0,
++				6.0
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 180.88727546288,
++			"kind": "bridge",
++			"length": 24.166919708252,
++			"position": [
++				14.4993410110474,
++				-1.19152653217316
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 270.226961585301,
++			"kind": "straight",
++			"length": 20.1964244842529,
++			"position": [
++				2.0,
++				6.0
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"angle": 94.0,
++			"curvature": 0.09,
++			"flip": false,
++			"heading": 357.958202411616,
++			"kind": "curve",
++			"length": 0.0,
++			"position": [
++				14.4993410110474,
++				-1.19152653217316
++			],
++			"radius": 7.50348307941396,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 88.2980672317877,
++			"kind": "hairpin",
++			"length": 0.0,
++			"position": [
++				21.6714859008789,
++				29.5590744018555
++			],
++			"radius": 9.93089945561882,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 271.480436994648,
++			"kind": "straight",
++			"length": 23.0031661987305,
++			"position": [
++				21.6714859008789,
++				29.5590744018555
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 271.622637484706,
++			"kind": "hairpin",
++			"length": 3.0,
++			"position": [
++				-17.7636623382568,
++				-14.7583923339844
++			],
++			"radius": 9.9258100250713,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 183.944809751558,
++			"kind": "hairpin",
++			"length": 0.0,
++			"position": [
++				-27.0,
++				-1.5
++			],
++			"radius": 9.75737380981445,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 359.920799639898,
++			"kind": "bridge",
++			"length": 38.3613968519091,
++			"position": [
++				-25.6574726104736,
++				-20.9685134887695
++			],
++			"radius": 16.0,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 359.350906632606,
++			"height": 15.6873414474763,
++			"kind": "s_bend",
++			"length": 2.0,
++			"position": [
++				12.7038860321045,
++				-21.0215358734131
++			],
++			"radius": 16.5634848358413,
++			"width": 10.0
++		},
++		{
++			"angle": 96.0,
++			"flip": false,
++			"heading": 355.681218453835,
++			"kind": "curve",
++			"length": 0.0,
++			"position": [
++				40.3041458129883,
++				-5.64588451385498
++			],
++			"radius": 12.077938290775,
++			"width": 10.0
++		},
++		{
++			"angle": 94.5,
++			"flip": false,
++			"heading": 88.3160332350326,
++			"kind": "curve",
++			"length": 0.0,
++			"position": [
++				53.2864189147949,
++				6.75210952758789
++			],
++			"radius": 9.90909279297683,
++			"width": 10.0
++		},
++		{
++			"flip": false,
++			"heading": 180.813637134787,
++			"kind": "straight",
++			"length": 8.34772452952007,
++			"position": [
++				42.8947792053223,
++				16.9404296875
++			],
++			"radius": 16.0,
++			"width": 10.0
++		}
++	],
++	"points": [
++		[
++			10.3783130645752,
++			16.7799015045166
++		],
++		[
++			15.3126811981201,
++			16.7884731292725
++		],
++		[
++			20.247049331665,
++			16.7970447540283
++		],
++		[
++			25.18141746521,
++			16.8056182861328
++		],
++		[
++			30.1157836914063,
++			16.8141899108887
++		],
++		[
++			35.0501022338867,
++			16.8290233612061
++		],
++		[
++			39.9839820861816,
++			16.8990917205811
++		],
++		[
++			44.9113883972168,
++			16.8279705047607
++		],
++		[
++			49.3994178771973,
++			14.907639503479
++		],
++		[
++			52.4310035705566,
++			11.0796527862549
++		],
++		[
++			53.2855987548828,
++			6.26529836654663
++		],
++		[
++			52.2401924133301,
++			1.47923099994659
++		],
++		[
++			49.3785438537598,
++			-2.49764728546143
++		],
++		[
++			45.1712760925293,
++			-5.00745582580566
++		],
++		[
++			40.3133544921875,
++			-5.64629316329956
++		],
++		[
++			35.4126510620117,
++			-6.00086116790771
++		],
++		[
++			31.0462856292725,
++			-8.23198699951172
++		],
++		[
++			27.6039924621582,
++			-11.7462196350098
++		],
++		[
++			24.7348976135254,
++			-15.7570037841797
++		],
++		[
++			21.0916996002197,
++			-19.0590991973877
++		],
++		[
++			16.5492401123047,
++			-20.8923492431641
++		],
++		[
++			11.6238660812378,
++			-21.0200424194336
++		],
++		[
++			6.68949508666992,
++			-21.0132217407227
++		],
++		[
++			1.75512433052063,
++			-21.0064029693604
++		],
++		[
++			-3.17924642562866,
++			-20.9995822906494
++		],
++		[
++			-8.11361694335938,
++			-20.9927616119385
++		],
++		[
++			-13.0479879379272,
++			-20.9859428405762
++		],
++		[
++			-17.9823589324951,
++			-20.9791221618652
++		],
++		[
++			-22.9167289733887,
++			-20.9723014831543
++		],
++		[
++			-27.844705581665,
++			-20.8713760375977
++		],
++		[
++			-32.3210601806641,
++			-18.9257755279541
++		],
++		[
++			-35.3008575439453,
++			-15.0606260299683
++		],
++		[
++			-36.0291786193848,
++			-10.23424243927
++		],
++		[
++			-34.3291931152344,
++			-5.65989112854004
++		],
++		[
++			-30.6284065246582,
++			-2.47705054283142
++		],
++		[
++			-25.846321105957,
++			-1.50437605381012
++		],
++		[
++			-20.9119815826416,
++			-1.52309226989746
++		],
++		[
++			-15.9776411056519,
++			-1.54180872440338
++		],
++		[
++			-11.0433006286621,
++			-1.5605251789093
++		],
++		[
++			-6.10936164855957,
++			-1.5106954574585
++		],
++		[
++			-1.17557787895203,
++			-1.43428540229797
++		],
++		[
++			3.75820565223694,
++			-1.35787546634674
++		],
++		[
++			8.69198894500732,
++			-1.28146553039551
++		],
++		[
++			13.6257724761963,
++			-1.20505547523499
++		],
++		[
++			18.5095977783203,
++			-0.737495064735413
++		],
++		[
++			21.8404598236084,
++			2.6568341255188
++		],
++		[
++			22.2404098510742,
++			7.5454216003418
++		],
++		[
++			22.1129283905029,
++			12.4781494140625
++		],
++		[
++			21.985445022583,
++			17.4108772277832
++		],
++		[
++			21.8579635620117,
++			22.3436069488525
++		],
++		[
++			21.7304801940918,
++			27.2763347625732
++		],
++		[
++			21.3909645080566,
++			32.1868934631348
++		],
++		[
++			19.1134090423584,
++			36.5050468444824
++		],
++		[
++			15.0512361526489,
++			39.2147941589355
++		],
++		[
++			10.188850402832,
++			39.655216217041
++		],
++		[
++			5.70203590393066,
++			37.7303657531738
++		],
++		[
++			2.67879199981689,
++			33.8957939147949
++		],
++		[
++			1.82646143436432,
++			29.0834407806396
++		],
++		[
++			1.86355638504028,
++			24.1492042541504
++		],
++		[
++			1.90065145492554,
++			19.2149696350098
++		],
++		[
++			1.9377464056015,
++			14.2807331085205
++		],
++		[
++			1.97484147548676,
++			9.34649753570557
++		],
++		[
++			2.00628924369812,
++			4.41222906112671
++		],
++		[
++			2.02583479881287,
++			-0.52210807800293
++		],
++		[
++			2.04538035392761,
++			-5.45644474029541
++		],
++		[
++			2.06492590904236,
++			-10.3907814025879
++		],
++		[
++			2.11196208000183,
++			-15.3246746063232
++		],
++		[
++			1.77843022346497,
++			-20.2217559814453
++		],
++		[
++			-0.687305808067322,
++			-24.4364814758301
++		],
++		[
++			-4.86400413513184,
++			-26.9639358520508
++		],
++		[
++			-9.74102401733398,
++			-27.1997623443604
++		],
++		[
++			-14.1365671157837,
++			-25.0728092193604
++		],
++		[
++			-16.9868507385254,
++			-21.1095371246338
++		],
++		[
++			-17.7210159301758,
++			-16.2638778686523
++		],
++		[
++			-17.7988967895508,
++			-11.3302869796753
++		],
++		[
++			-17.8496112823486,
++			-6.39617252349854
++		],
++		[
++			-17.9003238677979,
++			-1.46205747127533
++		],
++		[
++			-17.9510383605957,
++			3.4720573425293
++		],
++		[
++			-18.0017509460449,
++			8.40617179870605
++		],
++		[
++			-18.0421695709229,
++			13.3403797149658
++		],
++		[
++			-18.0995464324951,
++			18.2740173339844
++		],
++		[
++			-19.469575881958,
++			22.9728126525879
++		],
++		[
++			-22.708532333374,
++			26.6413269042969
++		],
++		[
++			-27.1972808837891,
++			28.589879989624
++		],
++		[
++			-32.1098098754883,
++			28.6525650024414
++		],
++		[
++			-36.0704612731934,
++			25.9516010284424
++		],
++		[
++			-36.8314247131348,
++			21.2144393920898
++		],
++		[
++			-33.8985633850098,
++			17.4163494110107
++		],
++		[
++			-29.0964756011963,
++			16.6521244049072
++		],
++		[
++			-24.1621341705322,
++			16.6706790924072
++		],
++		[
++			-19.2277946472168,
++			16.6892356872559
++		],
++		[
++			-14.2934532165527,
++			16.7077903747559
++		],
++		[
++			-9.35911273956299,
++			16.7263469696045
++		],
++		[
++			-4.42476749420166,
++			16.7432670593262
++		],
++		[
++			0.509592652320862,
++			16.7554779052734
++		],
++		[
++			5.44395303726196,
++			16.7676906585693
++		]
++	],
++	"route_override": true,
++	"schema": "creator-track-v5",
++	"start_line": {
++		"heading": 357.459003569781,
++		"position": [
++			40.8044204711914,
++			-5.66808557510376
++		]
++	},
++	"surface": "asphalt",
++	"theme": "pine",
++	"width": 10.0,
++	"widths": [
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0,
++		10.0
++	]
++}
+\ No newline at end of file
+diff --git a/game/tests/test_creator.gd b/game/tests/test_creator.gd
+--- a/game/tests/test_creator.gd
++++ b/game/tests/test_creator.gd
+@@ -39,7 +39,7 @@
+ 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
+ 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
+ 		if theme == "pine":
+-			check(track.content_hash == "819930a1ffa5d5d8aedcaa7b13a0a3f39b11f96e8bfea0ee34fd74aa4e64da2b","compiler-v16 canonical identity matches golden hash")
++			check(track.content_hash == "61183651f3027470949070b22ca5d04bcf8834d46dc4879d8e6d2b50e34a164f","compiler-v17 canonical identity matches golden hash")
+ 		var route_on_road: bool = true
+ 		for point: Vector2 in track.route:
+ 			route_on_road = route_on_road and track.cell_at(point) == expected
+diff --git a/game/tests/test_suspension.gd b/game/tests/test_suspension.gd
+--- a/game/tests/test_suspension.gd
++++ b/game/tests/test_suspension.gd
+@@ -69,6 +69,30 @@
+ 		state.tick += 1
+ 		car.present_suspension(state, 0.4)
+ 	check(not car.sparks[8].mesh.visible and car.spark_cursor == 16, "steady incline emits no sparks; particles expire")
++	for speed: float in [3.0,24.0]:
++		var peak: float = 0.0
++		var span: Dictionary = RoadPieces.create("bridge",Vector2.ZERO,0,10)
++		span.length = 32.0
++		state.tick = 0
++		state.velocity = Vector2(speed,0)
++		car.present_ramp(state,0,0,false)
++		for i: int in range(ceili(40.0/speed*120.0)):
++			var u: float = -4.0+i*speed/120.0
++			var front: float = CreatorBridges.height(span,Vector2(u+1.13,0))
++			var rear: float = CreatorBridges.height(span,Vector2(u-1.13,0))
++			state.tick += 1
++			car.position.y = (front+rear)*0.5
++			car.rotation.x = atan2(front-rear,2.26)
++			car.present_ramp(state,car.position.y,car.rotation.x,true)
++			peak = maxf(peak,car.ramp_lift)
++		check(peak < 0.01 if speed < 5 else peak > 0.05 and peak <= 0.55,"slow ramp stays planted; fast ramp visibly unloads within bounds")
++		check(car.ramp_lift == 0.0,"car lands after descending ramp")
++		print("RAMP speed=",speed," peak_lift=",peak)
++	var ramp_pose: float = car.ramp_lift
++	car.present_ramp(state,0,0,true)
++	check(car.ramp_lift == ramp_pose,"duplicate snapshots cannot advance crest motion")
++	car.present_ramp(state,0,0,false)
++	check(car.ramp_lift == 0.0 and car.ramp_velocity == 0.0,"jump/roll/reset clears visual ramp motion")
+ 	if "--capture" in OS.get_cmdline_user_args():
+ 		root.size = Vector2i(1280,720)
+ 		var ground := VisualGeometry.material(Color("55595a"))
+@@ -105,5 +129,50 @@
+ 			check(root.get_texture().get_image().save_png("res://../build/suspension-" + scenario + ".png") == OK, "capture " + scenario)
+ 	world.queue_free()
+ 	await process_frame
++	if "--capture" in OS.get_cmdline_user_args(): await _capture_ramp()
+ 	print("SUSPENSION_TESTS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
++
++func _capture_ramp() -> void:
++	var world := Node3D.new()
++	root.add_child(world)
++	var span: Dictionary = RoadPieces.create("bridge",Vector2(-16,0),0,10)
++	span.length = 32.0
++	CreatorBridgeVisual.build(world,[span])
++	VisualGeometry.box(world,Vector3(90,0.1,60),Vector3(0,-0.1,0),VisualGeometry.material(Color("627157")))
++	var car := CarVisual.new()
++	world.add_child(car)
++	var light := DirectionalLight3D.new()
++	world.add_child(light)
++	light.rotation_degrees = Vector3(-50,-25,0)
++	var camera := Camera3D.new()
++	world.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 13.0
++	var state := VehicleState.new()
++	state.velocity = Vector2(24,0)
++	state.heading = PI*0.5
++	var frame := DriveFrame.new()
++	var captured: int = 0
++	var targets: Array[float] = [4.0,10.0,26.0,35.0]
++	var names: Array[String] = ["climb","crest","descent","settled"]
++	for i: int in range(220):
++		var u: float = -4.0+i*0.2
++		state.tick = i
++		state.position = Vector2(-16+u,0)
++		car.present(state.position,state.heading,state,frame)
++		var front: float = CreatorBridges.height(span,state.position+Vector2(1.13,0))
++		var rear: float = CreatorBridges.height(span,state.position-Vector2(1.13,0))
++		car.position.y = (front+rear)*0.5
++		car.rotation.x = atan2(front-rear,2.26)
++		car.present_ramp(state,car.position.y,car.rotation.x,true)
++		car.present_suspension(state,car.rotation.x,car.ramp_lift <= 0.005)
++		if captured < targets.size() and u >= targets[captured]:
++			camera.position = car.position+Vector3(6,9,10)
++			camera.look_at(car.position+Vector3(0,0.6,0))
++			await process_frame
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png("res://../build/ramp-"+names[captured]+".png") == OK,"capture ramp "+names[captured])
++			captured += 1
++	world.queue_free()
++	await process_frame
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -103,6 +103,7 @@
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd') 'bridge-hud-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator_refinement.gd') 'refinement-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tyres_and_load.gd') 'tyres-load-tests.log'
+@@ -291,6 +292,7 @@
+     switch ($Action) {
+         'TestVehicleBatch' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_vehicle_batch.gd') 'vehicle-batch-tests.log' }
+         'TestMobileControls' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_mobile_controls.gd') 'mobile-controls-tests.log' }
++        'TestBridgeContacts' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log' }
+         'TestSuspension' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_suspension.gd') 'suspension-tests.log' }
+         'TestPerformance' {
+             Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_impact_cracks.gd') 'impact-cracks-tests.log'
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-09-21 G01/G03/R01/R03/R07/V02/V04/V05/Q01: bridge underside collisions, per-span rail isolation and exact ramp-end layer transitions fix Knit phantom contacts; bounded crest unloading and stronger suspension improve ramp motion. Physics 0.37, creator compiler 17. Focused checks and desktop captures pass; no phone test. [Implementation, commands and acceptance](docs/BRIDGE_COLLISIONS.md).
+ 
+ 2026-09-21 R01/R03/G01/V03/V05/Q01: bounded saturated-glass overflow fixes a potential collision freeze; retained HUD geometry, inactive-emitter gating and early trail rejection reduce presentation CPU work. 9 glass, 13 performance, 160 soil, 555 touch and 157 graphical HUD checks pass. Physical DN2103 before/after: Ajorata median 20.806 to 19.943 ms; Storm 25.999 to 24.841 ms, still below 60 FPS. Optimized APK installed and normal play restored. [Evidence and limits](docs/PERFORMANCE_2026_09_21.md).
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-09-21 G01/G03/R01/R03/R07/V02/V04/V05/Q01: owner-requested bridge underside/Knit collision fixes and visual ramp unloading. Physics 0.37, compiler 17; focused checks and desktop captures pass, no phone test. See [BRIDGE_COLLISIONS.md](BRIDGE_COLLISIONS.md) for commands, regression status and remaining acceptance.
+ 
+ 2026-09-21 R01/R03/G01/V03/V05/Q01: bounded saturated-glass overflow fixes a potential collision freeze; retained HUD geometry, inactive-emitter gating and early trail rejection reduce presentation CPU work. 9 glass, 13 performance, 160 soil, 555 touch and 157 graphical HUD checks pass. Physical DN2103 before/after: Ajorata median 20.806 to 19.943 ms; Storm 25.999 to 24.841 ms, still below 60 FPS. Optimized APK installed and normal play restored. [Evidence and limits](PERFORMANCE_2026_09_21.md).
+ 
+diff --git a/docs/BRIDGE_COLLISIONS.md b/docs/BRIDGE_COLLISIONS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/BRIDGE_COLLISIONS.md
+@@ -0,0 +1,46 @@
++# Bridge collisions and ramp motion — 2026-09-21
++
++Requirements: **G01/G03/R01/R03/R07** (deterministic driving, collision layers and replay), **V02/V04/V05/Q01** (vehicle presentation and evidence). Owner request: stop entering ramps from underneath, remove Knit phantom collisions, and make ramp motion less rigid.
++
++## Findings and changes
++
++The saved local Knit (`track_3db76e7338edcf28`) reproduced 287 collision samples during a diagnostic sweep of its centreline. Expanding bridge membership by the collision radius connected otherwise separate spans: a car leaving a ramp inherited the upper layer of a nearby perpendicular bridge. The combined deck grid also let one bridge's rails hit a car still on another bridge's low exit ramp. Actual span membership now ends at the ramp endpoint, and upper collision/support/escape queries ignore cells belonging to other spans. Existing ground obstacles remain active below bridges.
++
++Creator ramps previously stamped no underside collision. Ground collision now covers the low underside and low side rails, while the separately compiled upper road stays open. The shared clearance is 2.20 m (tallest local car, 42 cm deck and a small allowance); the central tunnel remains open. These cells use the existing ramp mesh rather than generic barrier cubes. The raster remains the existing 0.5 m grid, so boundaries retain its spatial tolerance.
++
++Physics is **arcade-planar-0.37**, compiler **creator-compiler-17**. Recompilation changes content hashes and prevents old records from being compared as if collision rules were unchanged. No player save is edited or deleted. A read-only copy of the owner's Knit is retained in export-excluded test fixtures.
++
++Vehicle presentation adds tick-driven vertical inertia, capped at 0.55 m, with gravity, pitch response and a landing compression impulse. Signed slope changes compress at ramp entry and unload at the crest instead of always compressing. Slow travel remains planted; fast travel can briefly rise above the surface and settle. This is cosmetic: canonical jump state, handling, route timing and collision immunity are unchanged. Hazard jumps/rolls and restart reset the ramp presentation; duplicate snapshots do not advance it. Camera calibration is unchanged.
++
++Changed runtime files: `game/track/creator_bridges.gd`, `game/track/native_track.gd`, `game/track/native_track_visual.gd`, `game/editor/track_compiler.gd`, `game/vehicle/vehicle_simulation.gd`, `game/vehicle/car_visual.gd`, `game/core/game.gd`, regenerated `game/resources/tracks/starter_circuit.json` (version only). Tests/evidence: `game/tests/test_bridge_contacts.gd`, its UID, `game/tests/fixtures/knit_bridge_regression.json`, `game/tests/test_creator.gd` (new compiler hash golden), `game/tests/test_suspension.gd`, `scripts/dev.ps1`, this document, development/phase status and `docs/evidence/bridges-2026-09-21/`.
++
++## Commands and actual outcomes
++
++All commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, which verifies Godot **4.7.2.stable.official.ed1daf0bf**.
++
++| Action | Result |
++| --- | --- |
++| `TestBridgeContacts` | 16 checks pass. Six complete Knit sweeps (both directions, centre and ±1 m) have zero collisions. Low underside blocks swept entry from both tunnel directions; upper ramp and central lower crossing remain clear; upper rails still block. |
++| `TestConstruction` | 74 checks pass; five-lap bridge race has zero contacts, traverses both levels, and replays exactly after JSON round trip. |
++| `TestSuspension` | 19 checks pass, including planted 3 m/s traversal, bounded unloading at 24 m/s, landing and reset. |
++| `CaptureSuspension` | 27 checks pass; four ordinary suspension and four ramp captures saved. |
++| `CaptureBridgeHUD` | 157 checks pass; real gameplay presentation captured in Compatibility. |
++| `GenerateStarter` | Succeeds; checked diff contains only compiler version 16 → 17. |
++| `TestCreator` | 112 checks pass after pinning the compiler-17 golden; starter geometry/road-area assertions remain unchanged. |
++| `TestHazards` | 150 checks pass. |
++| `TestPieces` | 340 checks pass, including two five-lap races with zero contacts. |
++| `TestKerbs` | 31 checks pass. |
++| `Validate` | First attempt passes import, all 151 script parses, startup, driving (74), handling (88), route validation (55), native tracks/replays (167), extra tracks (27), retirement (24), placement (24), road approval (19), start line (27), then stops at the old compiler golden. That golden was subsequently updated and the creator suite passes. |
++| `Validate` retry | Interrupted by engine exit `-1073741819` (access violation) during parse of unchanged `persistence/handling_recorder.gd`. No full-suite pass is claimed. |
++| `CheckScript -ScriptPath res://persistence/handling_recorder.gd` | The script that hit the engine crash passes on independent retry. |
++| `git diff --check` | Passes; only repository line-ending conversion notices. |
++
++The individual construction/hazard/pieces/kerb runs above were completed after the full-suite interruption. Original and retry full logs are saved with the evidence. Existing full-app/navigation and later suites were not reached by these full runs.
++
++The workspace already contained substantial unrelated changes. [Task-only Git patch](evidence/bridges-2026-09-21/task-changes.patch) is the review checkpoint against that pre-task workspace; it excludes the earlier edits. `python temp/create_bridge_checkpoint.py` generated it and `git apply --reverse --check docs/evidence/bridges-2026-09-21/task-changes.patch` verifies it against the final working files without changing them. No merge or commit of unrelated work was made.
++
++## Evidence and acceptance
++
++Ramp captures: [climb](evidence/bridges-2026-09-21/ramp-climb.png), [crest](evidence/bridges-2026-09-21/ramp-crest.png), [descent](evidence/bridges-2026-09-21/ramp-descent.png), [settled](evidence/bridges-2026-09-21/ramp-settled.png). [Gameplay bridge capture](evidence/bridges-2026-09-21/bridge-hud-creator-race.png).
++
++No physical phone test or Android deployment was performed. Remaining acceptance: owner driving Knit (including wider/off-line approaches), subjective ramp movement at gameplay camera scale on all five cars, and phone appearance/performance. The bounded visual lift is not a general physical 3D jump solver.

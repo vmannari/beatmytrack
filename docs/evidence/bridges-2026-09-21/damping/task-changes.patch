@@ -1,0 +1,178 @@
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -28,6 +28,8 @@
+ var ramp_lift: float = 0.0
+ var ramp_velocity: float = 0.0
+ var ramp_pitch: float = 0.0
++var ramp_pitch_speed: float = 0.0
++var ramp_body_pitch: float = 0.0
+ 
+ 
+ func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
+@@ -38,6 +40,8 @@
+ 		ramp_lift = 0.0
+ 		ramp_velocity = 0.0
+ 		ramp_pitch = pitch
++		ramp_pitch_speed = 0.0
++		ramp_body_pitch = 0.0
+ 		ramp_tick = state.tick
+ 	if state.tick > ramp_tick:
+ 		var ticks: int = state.tick-ramp_tick
+@@ -57,14 +61,20 @@
+ 				ramp_velocity = minf(ramp_velocity,0.0)
+ 			ramp_lift = maxf(0.0,height-floor_height)
+ 			var travel_sign: float = -1.0 if state.velocity.dot(state.forward()) < 0.0 else 1.0
+-			var target: float = atan2(ramp_velocity*travel_sign,maxf(5.0,state.velocity.length())) if ramp_lift > 0.005 else pitch
+-			ramp_pitch = lerpf(ramp_pitch,target,0.075)
++			var flight_pitch: float = atan2(ramp_velocity*travel_sign,maxf(5.0,state.velocity.length()))
++			var target: float = lerp_angle(pitch,flight_pitch,smoothstep(0.0,0.12,ramp_lift))
++			# Retain angular velocity through touchdown and onto flat road.
++			# A damped spring gives a small diminishing rebound instead of a
++			# one-way lerp followed by an abrupt return to the road angle.
++			ramp_pitch_speed += ((target-ramp_pitch)*100.0-ramp_pitch_speed*10.0)/120.0
++			ramp_pitch += ramp_pitch_speed/120.0
+ 		ramp_support = support
+ 		ramp_tick = state.tick
+ 	position.y += ramp_lift
+ 	# Wheel support remains on the road; the sprung body follows slope changes
+ 	# with inertia. During unloading the whole car follows its vertical travel.
+-	if ramp_lift > 0.005: rotation.x = ramp_pitch
++	rotation.x = lerp_angle(pitch,ramp_pitch,smoothstep(0.0,0.12,ramp_lift))
++	ramp_body_pitch = clampf(ramp_pitch-rotation.x,-0.10,0.10) if enabled else 0.0
+ 
+ 
+ func _ready() -> void:
+@@ -190,8 +200,8 @@
+ 		if airborne:
+ 			target = Vector3(0.035, 0.0, 0.0)
+ 		elif not was_airborne:
+-			target.x = clampf(-slope_rate * state.velocity.dot(state.forward()) * 0.003, -0.09, 0.06)
+-			target.y -= clampf(slope_rate * 0.045, -0.09, 0.09)
++			target.x = clampf(-slope_rate * state.velocity.dot(state.forward()) * 0.002, -0.075, 0.05)
++			target.y -= clampf(slope_rate * 0.012, -0.035, 0.035)
+ 		if was_rolling and state.roll_ticks == 0:
+ 			suspension_speed.x -= 0.85
+ 			suspension_speed.z += state.roll_direction * 0.24
+@@ -205,7 +215,9 @@
+ 		spark_cooldown = maxf(0.0, spark_cooldown - dt)
+ 		_update_sparks(dt)
+ 		for step: int in range(state.tick - last_tick):
+-			suspension_speed += ((target - suspension) * 150.0 - suspension_speed * 15.0) / 120.0
++			# Heave/pitch settle over more than one diminishing movement;
++			# lateral roll retains its accepted steering response.
++			suspension_speed += ((target - suspension) * Vector3(90.0,110.0,150.0) - suspension_speed * Vector3(9.0,10.0,15.0)) / 120.0
+ 			suspension += suspension_speed / 120.0
+ 			suspension.x = clampf(suspension.x, -0.11, 0.06)
+ 			suspension.y = clampf(suspension.y, -0.12, 0.12)
+@@ -222,7 +234,7 @@
+ 		last_slope = road_pitch
+ 	var compliance: float = 0.30 if vehicle_id == "kart" else 1.0
+ 	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE
+-	body.rotation.x = suspension.y * compliance
++	body.rotation.x = (suspension.y + ramp_body_pitch) * compliance
+ 	body.rotation.z = suspension.z * compliance
+ 
+ 
+diff --git a/game/tests/test_suspension.gd b/game/tests/test_suspension.gd
+--- a/game/tests/test_suspension.gd
++++ b/game/tests/test_suspension.gd
+@@ -93,6 +93,22 @@
+ 	check(car.ramp_lift == ramp_pose,"duplicate snapshots cannot advance crest motion")
+ 	car.present_ramp(state,0,0,false)
+ 	check(car.ramp_lift == 0.0 and car.ramp_velocity == 0.0,"jump/roll/reset clears visual ramp motion")
++	for stride: int in [1,2,4]:
++		state.tick = 0
++		state.velocity = Vector2(0,12)
++		car.present_ramp(state,0,0.25,false)
++		var response: Array[float] = []
++		for tick: int in range(stride,241,stride):
++			state.tick = tick
++			car.present_ramp(state,0,0,true)
++			if tick in [48,96,240]: response.append(car.ramp_pitch)
++		check(response[0] < -0.01 and response[1] > 0.001,"pitch rebounds on both sides after ramp exit at %d Hz" % (120/stride))
++		check(absf(response[1]) < absf(response[0])*0.3 and absf(response[2]) < 0.0001,"successive ramp rebounds decay and settle at %d Hz" % (120/stride))
++		var frozen: Vector2 = Vector2(car.ramp_pitch,car.ramp_pitch_speed)
++		var canonical: Array = state.snapshot()
++		car.present_ramp(state,0,0,true)
++		check(frozen == Vector2(car.ramp_pitch,car.ramp_pitch_speed) and canonical == state.snapshot(),"paused ramp spring preserves pose and canonical state")
++		print("RAMP_SETTLE rate=",120/stride," pitch_at_0.4_0.8_2s=",response)
+ 	if "--capture" in OS.get_cmdline_user_args():
+ 		root.size = Vector2i(1280,720)
+ 		var ground := VisualGeometry.material(Color("55595a"))
+@@ -139,7 +155,7 @@
+ 	var span: Dictionary = RoadPieces.create("bridge",Vector2(-16,0),0,10)
+ 	span.length = 32.0
+ 	CreatorBridgeVisual.build(world,[span])
+-	VisualGeometry.box(world,Vector3(90,0.1,60),Vector3(0,-0.1,0),VisualGeometry.material(Color("627157")))
++	VisualGeometry.box(world,Vector3(200,0.1,60),Vector3(0,-0.1,0),VisualGeometry.material(Color("627157")))
+ 	var car := CarVisual.new()
+ 	world.add_child(car)
+ 	var light := DirectionalLight3D.new()
+@@ -156,7 +172,8 @@
+ 	var captured: int = 0
+ 	var targets: Array[float] = [4.0,10.0,26.0,35.0]
+ 	var names: Array[String] = ["climb","crest","descent","settled"]
+-	for i: int in range(220):
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../build/ramp-motion"))
++	for i: int in range(420):
+ 		var u: float = -4.0+i*0.2
+ 		state.tick = i
+ 		state.position = Vector2(-16+u,0)
+@@ -167,9 +184,13 @@
+ 		car.rotation.x = atan2(front-rear,2.26)
+ 		car.present_ramp(state,car.position.y,car.rotation.x,true)
+ 		car.present_suspension(state,car.rotation.x,car.ramp_lift <= 0.005)
++		camera.position = car.position+Vector3(6,9,10)
++		camera.look_at(car.position+Vector3(0,0.6,0))
++		if i % 4 == 0:
++			await process_frame
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png("res://../build/ramp-motion/frame-%03d.png" % (i/4)) == OK,"capture ramp motion frame")
+ 		if captured < targets.size() and u >= targets[captured]:
+-			camera.position = car.position+Vector3(6,9,10)
+-			camera.look_at(car.position+Vector3(0,0.6,0))
+ 			await process_frame
+ 			await RenderingServer.frame_post_draw
+ 			check(root.get_texture().get_image().save_png("res://../build/ramp-"+names[captured]+".png") == OK,"capture ramp "+names[captured])
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-09-21 V02/V04/V05/Q01/R01: ramp suspension follow-up retains pitch velocity through touchdown, blends into damped body motion and softens heave/pitch for diminishing rebounds. 141 graphical suspension and 16 bridge checks pass; animation saved, no phone test. [Evidence](docs/BRIDGE_COLLISIONS.md#damped-suspension-follow-up--2026-09-21).
+ 
+ 2026-09-21 G01/G03/R01/R03/R07/V02/V04/V05/Q01: bridge underside collisions, per-span rail isolation and exact ramp-end layer transitions fix Knit phantom contacts; bounded crest unloading and stronger suspension improve ramp motion. Physics 0.37, creator compiler 17. Focused checks and desktop captures pass; no phone test. [Implementation, commands and acceptance](docs/BRIDGE_COLLISIONS.md).
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-09-21 V02/V04/V05/Q01/R01: owner-directed ramp damping refinement adds continuing, diminishing suspension rebound through touchdown. 141 graphical suspension and 16 bridge checks pass; no phone test. [Evidence](BRIDGE_COLLISIONS.md#damped-suspension-follow-up--2026-09-21).
+ 
+ 2026-09-21 G01/G03/R01/R03/R07/V02/V04/V05/Q01: owner-requested bridge underside/Knit collision fixes and visual ramp unloading. Physics 0.37, compiler 17; focused checks and desktop captures pass, no phone test. See [BRIDGE_COLLISIONS.md](BRIDGE_COLLISIONS.md) for commands, regression status and remaining acceptance.
+ 
+diff --git a/docs/BRIDGE_COLLISIONS.md b/docs/BRIDGE_COLLISIONS.md
+--- a/docs/BRIDGE_COLLISIONS.md
++++ b/docs/BRIDGE_COLLISIONS.md
+@@ -44,3 +44,17 @@
+ Ramp captures: [climb](evidence/bridges-2026-09-21/ramp-climb.png), [crest](evidence/bridges-2026-09-21/ramp-crest.png), [descent](evidence/bridges-2026-09-21/ramp-descent.png), [settled](evidence/bridges-2026-09-21/ramp-settled.png). [Gameplay bridge capture](evidence/bridges-2026-09-21/bridge-hud-creator-race.png).
+ 
+ No physical phone test or Android deployment was performed. Remaining acceptance: owner driving Knit (including wider/off-line approaches), subjective ramp movement at gameplay camera scale on all five cars, and phone appearance/performance. The bounded visual lift is not a general physical 3D jump solver.
++
++## Damped suspension follow-up — 2026-09-21
++
++Owner feedback: ramp motion felt like one sway followed by an abrupt static pose. Requirements **V02/V04/V05/Q01/R01**. `CarVisual` now retains pitch velocity through touchdown and flat-road travel using a spring with a 0.5 damping ratio. The whole-car airborne rotation blends smoothly into the sprung body correction as the tyres regain support. Heave and pitch have separate, softer spring/damper values, with smaller slope impulses; lateral roll retains its previous response. The existing 0.55 m visual lift bound and canonical physics/collisions remain unchanged.
++
++In the 0.25-radian exit-response test, residual pitch is -0.0350 radians after 0.4 s, +0.00424 after 0.8 s, and -0.00000167 after 2 s: a small rebound followed by a much smaller return, then rest. Those samples match at 30/60/120 Hz. Duplicate snapshots freeze the spring and canonical snapshots remain untouched.
++
++Changed files: `game/vehicle/car_visual.gd`, `game/tests/test_suspension.gd`, this document and the development/phase status notes. A [follow-up Git patch](evidence/bridges-2026-09-21/damping/task-changes.patch) records only this tuning against the pre-follow-up workspace.
++
++Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestSuspension` initially passed 19 checks. Final `CaptureSuspension` passes **141 checks**, including 30/60/120 Hz decay checks, still captures and 105 animation frames. The first animation capture failed because directory creation needed a global filesystem path on Windows; correcting that path made the rerun pass. `TestBridgeContacts` passes **16 checks**, with zero collisions on all six Knit sweeps. The existing `.tools/review/Scripts/python.exe` and Pillow assembled captured frames into the animation; no dependency was installed. `git apply --reverse --check` verifies the follow-up patch without changing working files.
++
++[Ramp motion animation](evidence/bridges-2026-09-21/damping/ramp-motion.gif) · [Frame sequence](evidence/bridges-2026-09-21/damping/motion-sequence.jpg) · [Capture log](evidence/bridges-2026-09-21/damping/suspension-capture.log).
++
++No phone test or deployment was performed for this follow-up. Owner acceptance of motion in ordinary gameplay and on the other vehicle models remains outstanding. This presentation-only change does not change physics/rules versions and did not trigger another full physics regression run.

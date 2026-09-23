@@ -1,0 +1,158 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -92,7 +92,7 @@
+ 	brake_material = VisualGeometry.material(Color("802d2b"))
+ 	body = Node3D.new()
+ 	add_child(body)
+-	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], trim)
++	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], blue)
+ 	_shell(body, [Vector3(0.86, 0.5, 2.03), Vector3(0.88, 0.86, 1.98), Vector3(0.76, 1.02, 1.8)], blue)
+ 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+ 	_hatchback(paint, glass, trim, blue)
+@@ -324,31 +324,29 @@
+ 	var trr := Vector3(0.63,1.48,1.18)
+ 	_panel([lf,rf,trf,tlf],Vector3(0,0.79,-0.61),paint)
+ 	_panel([lr,rr,trr,tlr],Vector3(0,0.84,0.54),paint)
+-	_panel([tlf,trf,trr,tlr],Vector3.UP,paint)
++	var roof_paint := VisualGeometry.material(Color("c5baa0"))
++	_panel([tlf,trf,trr,tlr],Vector3.UP,roof_paint)
+ 	var roof := Node3D.new()
+ 	body.add_child(roof)
+ 	roof.position.z = 0.39
+-	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],paint)
+-	_panel([Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),glass)
+-	_panel([Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),glass)
++	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],roof_paint)
++	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.035)
++	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.012)
+ 	for side: float in [-1.0,1.0]:
+ 		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
+ 		# Window corners lie on the sloped cabin side, just outside its paint.
+-		_panel([Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),glass)
+-		_panel([Vector3(side*0.748,1.07,0.52),Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),Vector3(side*0.651,1.425,0.52)],Vector3(side,0.277,0),glass)
+-		_panel([Vector3(side*0.749,1.07,0.42),Vector3(side*0.749,1.07,0.52),Vector3(side*0.652,1.425,0.52),Vector3(side*0.652,1.425,0.42)],Vector3(side,0.277,0),trim)
+-		_seam(body,Vector3(side*0.750,1.065,-0.88),Vector3(side*0.750,1.065,1.70),0.018,trim)
++		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),trim,0.0)
++		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,0.52),Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),Vector3(side*0.651,1.425,0.52)],Vector3(side,0.277,0),trim,0.0)
+ 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
+-	var reflection := VisualGeometry.material(Color("3b535d"))
+-	_panel([Vector3(-0.60,1.10,-0.907),Vector3(-0.24,1.10,-0.907),Vector3(0.17,1.433,-0.478),Vector3(-0.54,1.433,-0.478)],Vector3(0,0.79,-0.61),reflection)
+-	for side: float in [-1.0,1.0]:
+-		_panel([Vector3(side*0.738,1.115,-0.71),Vector3(side*0.738,1.115,-0.33),Vector3(side*0.660,1.405,0.13),Vector3(side*0.660,1.405,-0.33)],Vector3(side,0.277,0),reflection)
+-		_seam(body,Vector3(side*0.651,1.43,-0.35),Vector3(side*0.651,1.43,1.14),0.018,trim)
+-		_seam(body,Vector3(side*0.748,1.07,-0.85),Vector3(side*0.651,1.425,-0.35),0.021,trim)
+-		_seam(body,Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),0.021,trim)
+ 	# Hatch seam and rear wiper make the short tail readable from overhead.
+ 	_seam(body,Vector3(-0.68,1.05,1.87),Vector3(0.68,1.05,1.87),0.018,trim)
+ 	_seam(body,Vector3(0,1.10,1.80),Vector3(0.36,1.17,1.69),0.020,trim)
++	# Faint longitudinal roof pressings and a soft edge tint, below the cream glare.
++	var roof_line := VisualGeometry.material(Color("aaa28f"))
++	var roof_edge := VisualGeometry.material(Color("b9af96"))
++	for side: float in [-1.0,1.0]:
++		_seam(body,Vector3(side*0.47,1.495,-0.17),Vector3(side*0.47,1.495,0.96),0.007,roof_line)
++		_panel([Vector3(side*0.50,1.493,-0.12),Vector3(side*0.55,1.493,-0.12),Vector3(side*0.55,1.493,0.91),Vector3(side*0.50,1.493,0.96)],Vector3.UP,roof_edge)
+ 
+ 
+ func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -80,7 +80,6 @@
+ 		car._seam(car.body,Vector3(side*low_x,0.55,-0.71),Vector3(side*low_x,0.55,0.47),0.008,trim)
+ 		VisualGeometry.box(car.body,Vector3(0.018,0.046,0.17),Vector3(side*0.883,0.835,0.30),trim)
+ 		VisualGeometry.box(car.body,Vector3(0.023,0.021,0.13),Vector3(side*0.894,0.846,0.30),bright)
+-		car._seam(car.body,Vector3(side*0.863,0.49,-0.75),Vector3(side*0.863,0.49,0.75),0.012,trim)
+ 		VisualGeometry.box(car.body,Vector3(0.020,0.032,0.066),Vector3(side*0.881,0.82,-0.83),amber)
+ 		# A small bevelled housing on a stalk replaces the black square mirror.
+ 		car._seam(car.body,Vector3(side*0.79,1.01,-0.74),Vector3(side*0.93,1.01,-0.72),0.025,trim)
+@@ -92,15 +91,12 @@
+ 		VisualGeometry.box(mirror,Vector3(1.0,0.32,0.09),Vector3(0,0.04,1.13),bright)
+ 		# Slim drip rails, black windscreen gasket, separate wiper blades.
+ 		car._seam(car.body,Vector3(side*0.627,1.487,-0.39),Vector3(side*0.627,1.487,1.18),0.018,cream)
+-		car._seam(car.body,Vector3(side*0.68,1.068,-0.952),Vector3(side*0.57,1.448,-0.462),0.025,trim)
+ 		car._seam(car.body,Vector3(side*0.67,1.083,-0.934),Vector3(side*0.16,1.12,-0.886),0.023,trim)
+ 		# Stacked rear lenses in a dark housing, and restrained hatch hardware.
+ 		VisualGeometry.box(car.body,Vector3(0.19,0.34,0.065),Vector3(side*0.73,0.85,2.025),trim)
+ 		VisualGeometry.box(car.body,Vector3(0.145,0.095,0.07),Vector3(side*0.73,0.955,2.033),amber)
+ 		VisualGeometry.box(car.body,Vector3(0.145,0.13,0.075),Vector3(side*0.73,0.835,2.033),car.brake_material)
+ 		VisualGeometry.box(car.body,Vector3(0.145,0.055,0.07),Vector3(side*0.73,0.727,2.033),lens)
+-	car._seam(car.body,Vector3(-0.68,1.068,-0.952),Vector3(0.68,1.068,-0.952),0.025,trim)
+-	car._seam(car.body,Vector3(-0.57,1.448,-0.462),Vector3(0.57,1.448,-0.462),0.022,trim)
+ 	for vent: int in range(18):
+ 		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.047,-1.04),trim)
+ 	for end: float in [1.0]:
+@@ -114,8 +110,8 @@
+ 			for layer: int in range(4):
+ 				var radii: Array[float] = [0.122,0.107,0.094,0.064]
+ 				var materials: Array[Material] = [trim,bright,shade,lens]
+-				var light := VisualGeometry.cylinder(car.body,radii[layer],0.018,Vector3(x,0.798,-2.064+0.075*pow(offset/0.8,2.0)-layer*0.009),materials[layer])
+-				light.rotation = Vector3(PI*0.5,-atan(0.234375*x),0)
++				var light := VisualGeometry.cylinder(car.body,radii[layer],0.018,Vector3(x,0.798,_nose_z(x)-layer*0.009),materials[layer])
++				light.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+ 			var glint := VisualGeometry.cylinder(car.body,0.028,0.009,Vector3(x-0.022,0.841,_nose_z(x)-0.038),lens)
+ 			glint.rotation.x = PI*0.5
+ 		VisualGeometry.box(car.body,Vector3(0.19,0.065,0.028),Vector3(side*0.61,0.536,_nose_z(side*0.61)-0.055),amber)
+@@ -187,7 +183,7 @@
+ 
+ 
+ static func _nose_z(x: float) -> float:
+-	return -2.064+0.075*pow(x/0.8,2.0)
++	return -2.119+0.130*pow(x/0.8,2.0)
+ 
+ 
+ static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, back: float, material: Material) -> void:
+--- /dev/null
++++ b/game/vehicle/compact_glazing.gd
+@@ -0,0 +1,53 @@
++extends RefCounted
++## Rounded original glazing with opaque, restrained reflection tones.
++static var shared_glass: StandardMaterial3D
++
++static func window(car: CarVisual, corners: Array[Vector3], normal: Vector3, trim: Material, bow: float = 0.0) -> void:
++	var center := Vector3.ZERO
++	for point: Vector3 in corners: center += point*0.25
++	var outline: Array[Vector3] = []
++	for i: int in range(4):
++		var corner: Vector3 = corners[i]
++		var start: Vector3 = corner.move_toward(corners[(i+3)%4],0.065)
++		var end: Vector3 = corner.move_toward(corners[(i+1)%4],0.065)
++		for step: int in range(6):
++			var t: float = step/5.0
++			outline.append(start.lerp(corner,t).lerp(corner.lerp(end,t),t))
++	_surface(car,outline,center,normal,trim,0.0,false)
++	if shared_glass == null:
++		shared_glass = VisualGeometry.material(Color.WHITE)
++		shared_glass.vertex_color_use_as_albedo = true
++	var inset: Array[Vector3] = []
++	for point: Vector3 in outline:
++		inset.append(center+(point-center)*0.947+normal.normalized()*0.006)
++	_surface(car,inset,center+normal.normalized()*0.006,normal,shared_glass,bow,true)
++
++static func _surface(car: CarVisual, edge: Array[Vector3], center: Vector3, normal: Vector3, material: Material, bow: float, tinted: bool) -> void:
++	normal = normal.normalized()
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var rings: int = 5 if bow > 0.0 else 1
++	for ring: int in range(rings):
++		var r0: float = float(ring)/rings
++		var r1: float = float(ring+1)/rings
++		for i: int in range(edge.size()):
++			var j: int = (i+1)%edge.size()
++			var points: Array[Vector3] = [center.lerp(edge[i],r0),center.lerp(edge[j],r0),center.lerp(edge[j],r1),center.lerp(edge[i],r1)]
++			points[0] += normal*bow*(1.0-r0*r0)
++			points[1] += normal*bow*(1.0-r0*r0)
++			points[2] += normal*bow*(1.0-r1*r1)
++			points[3] += normal*bow*(1.0-r1*r1)
++			for triangle: Array in [[0,1,2],[0,2,3]]:
++				if (points[triangle[1]]-points[triangle[0]]).cross(points[triangle[2]]-points[triangle[0]]).dot(normal) > 0:
++					triangle.reverse()
++				for index: int in triangle:
++					var delta: Vector3 = points[index]-center
++					tool.set_normal((normal+delta*bow*3.0).normalized())
++					if tinted:
++						var reflection: float = smoothstep(-0.13,0.12,delta.y+delta.x*0.28)
++						tool.set_color(Color("1c3038").lerp(Color("415d69"),reflection*0.65))
++					tool.add_vertex(points[index])
++	var mesh := MeshInstance3D.new()
++	mesh.mesh = tool.commit()
++	mesh.material_override = material
++	car.body.add_child(mesh)

@@ -1,0 +1,378 @@
+--- a/game/diagnostics/mobile_race_probe.gd
++++ b/game/diagnostics/mobile_race_probe.gd
+@@ -15,6 +15,7 @@
+ var sample_seconds: float = 20.0
+ var costs: Dictionary = {"sim":[],"rules":[],"ai":[],"present":[],"particles":[],"trails":[],"telemetry":[],"weather":[],"car":[],"props":[],"camera":[],"hud":[]}
+ var feature_stages: Array = []
++var surface_probe = preload("res://diagnostics/surface_material_probe.gd").new()
+ var slow_frames: Array[Dictionary] = []
+ var track_id: String = "starter_circuit"
+ var original_shadows: bool = true
+@@ -109,6 +110,7 @@
+ 	if config is Dictionary and config.get("use_game_scale",false):
+ 		for index: int in range(scales.size()): scales[index] = original_scale
+ 	original_shadows = (game.get("biome_light") as DirectionalLight3D).shadow_enabled
++	surface_probe.collect(game.get("track_ground"))
+ 	if config is Dictionary and config.get("feature_profile",false):
+ 		feature_stages = config.get("features",["baseline","shadows","particles","trails","hud","weather","half_scale","baseline"])
+ 		scales.clear()
+@@ -181,6 +183,7 @@
+ 	report.track_id = track_id
+ 	report.disabled_feature = feature_stages[stage] if not feature_stages.is_empty() else "legacy_probe"
+ 	report.timing_schema = 2
++	report.surface_materials_changed = surface_probe.changed_count
+ 	report.shadows = shadows[stage]
+ 	report.lamps_enabled = lamp_modes[stage]
+ 	report.lamp_count = game.find_children("*","OmniLight3D",true,false).size()
+@@ -221,6 +224,7 @@
+ 	output.close()
+ 	stage += 1
+ 	if stage == scales.size():
++		surface_probe.restore()
+ 		_set_particles_enabled(true)
+ 		(game.get("trails") as SkidTrails).visible = true
+ 		(game.get("hud") as PlaygroundHUD).visible = true
+@@ -253,6 +257,7 @@
+ func _configure_stage() -> void:
+ 	if not feature_stages.is_empty():
+ 		var feature: String = feature_stages[stage]
++		surface_probe.apply(feature)
+ 		game.set("profile_skip_telemetry",feature == "telemetry")
+ 		_set_particles_enabled(feature != "particles")
+ 		(game.get("trails") as SkidTrails).visible = feature != "trails"
+--- a/scripts/profile-features-phone.ps1
++++ b/scripts/profile-features-phone.ps1
+@@ -1,9 +1,10 @@
+-param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall)
++param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile)
+ $ErrorActionPreference = 'Stop'
+ $root = Split-Path -Parent $PSScriptRoot
+ $adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
+ $package = 'org.circuit01.handlinglab'
+ $evidence = Join-Path $root 'docs/evidence/performance-2026-09-22'
++if ($SurfaceProfile) { $evidence = Join-Path $root 'docs/evidence/surface-performance-2026-09-22' }
+ New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+ function Adb([string[]]$Arguments) {
+     $result = & $adb @Arguments
+@@ -19,6 +20,7 @@
+     foreach ($track in @(@('ajorata','track_acf29166cceaaa42'),@('storm','track_f7dc946b49ce9ea8'))) {
+         if ($StormOnly -and $track[0] -ne 'storm') { continue }
+         $config = @{track_id=$track[1]; seconds=$Seconds; sustained=$true; use_game_scale=$true; feature_profile=$true; touch_stress=$true; features=@('baseline','telemetry','shadows','particles','trails','hud','weather','half_scale','baseline')}
++        if ($SurfaceProfile) { $config.features = @('baseline','asphalt_previous','baseline','directional_off','baseline','road_flat','baseline','terrain_flat','baseline') }
+         $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$($track[0])-config.json" -Encoding ASCII
+         Adb @('shell','am','force-stop',$package)
+         Adb @('push',"$evidence/$($track[0])-config.json",'/data/local/tmp/feature-profile.json')
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -350,6 +350,7 @@
+         'CaptureControls' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_controls.gd') 'controls-capture.log' }
+         'TestResults' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_race_results.gd') 'results-tests.log' }
+         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
++        'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd') 'surface-profile-tests.log' }
+         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
+         'Import' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log' }
+         'TestConstruction' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log' }
+--- /dev/null
++++ b/game/diagnostics/surface_material_probe.gd
+@@ -0,0 +1,57 @@
++extends RefCounted
++## Debug probe only. Preserve mesh, masks, lighting and original material objects.
++const PREVIOUS: ShaderInclude = preload("res://diagnostics/previous_surface.gdshaderinc")
++var entries: Array[Dictionary] = []
++var changed_count: int = 0
++
++func collect(root: Node) -> void:
++	for mesh: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
++		var material: Material = mesh.material_override
++		if material is not ShaderMaterial: continue
++		var path: String = material.shader.resource_path
++		if path not in ["res://track/creator_road.gdshader", "res://track/terrain.gdshader", "res://track/ground.gdshader"]: continue
++		entries.append({"mesh":mesh,"original":material,"path":path,"variants":{}})
++
++func apply(mode: String) -> void:
++	changed_count = 0
++	for entry: Dictionary in entries:
++		var material: ShaderMaterial = entry.original
++		var creator: bool = entry.path.ends_with("creator_road.gdshader")
++		var road: bool = creator and (material.get_shader_parameter("asphalt_surface") == true or material.get_shader_parameter("road_marking") == true or material.get_shader_parameter("edge_fringe") == true)
++		var selected: bool = mode in ["asphalt_previous","directional_off"] or (mode == "road_flat" and road) or (mode == "terrain_flat" and not road)
++		if not selected:
++			entry.mesh.material_override = material
++			continue
++		if not entry.variants.has(mode):
++			var shader := Shader.new()
++			var source: String = material.shader.code
++			if mode == "asphalt_previous":
++				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + "\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n")
++			elif mode == "directional_off":
++				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")
++			elif creator:
++				var first: int = source.find("\tALBEDO = surface_detail(")
++				var last: int = source.find("\tROUGHNESS = 1.0;",first)
++				assert(first >= 0 and last > first)
++				# Kerbs retain their tapered discard and stripe pattern.
++				if material.get_shader_parameter("kerb") == true:
++					entry.mesh.material_override = material
++					continue
++				source = source.substr(0,first) + "\tALBEDO = road_color.rgb;\n" + source.substr(last)
++			elif entry.path.ends_with("ground.gdshader"):
++				source = source.replace("painted_grass(ground_color.rgb, world_position.xz)", "ground_color.rgb")
++			else:
++				var first: int = source.find("\t\tif (i == 1) layer")
++				var last: int = source.find("\t\tblended += layer",first)
++				assert(first >= 0 and last > first)
++				source = source.substr(0,first) + source.substr(last)
++			shader.code = source
++			var replacement: ShaderMaterial = material.duplicate()
++			replacement.shader = shader
++			entry.variants[mode] = replacement
++		entry.mesh.material_override = entry.variants[mode]
++		changed_count += 1
++
++func restore() -> void:
++	for entry: Dictionary in entries:
++		entry.mesh.material_override = entry.original
+--- /dev/null
++++ b/game/diagnostics/surface_material_probe.gd.uid
+@@ -0,0 +1 @@
++uid://cxwdo54dcgqyl
+--- /dev/null
++++ b/game/diagnostics/previous_surface.gdshaderinc
+@@ -0,0 +1,87 @@
++uniform bool icy_road = false;
++uniform bool wet_road = false;
++// Original world-space pigment pattern. Derivative filtering limits distant shimmer.
++uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++float pigment(vec2 p) {
++	vec2 cell = floor(p);
++	vec2 f = fract(p);
++	f = f * f * (3.0 - 2.0 * f);
++	vec3 a = fract(vec3(cell.xyx) * 0.1031);
++	a += dot(a, a.yzx + 33.33);
++	float n00 = fract((a.x + a.y) * a.z);
++	a = fract(vec3((cell + vec2(1,0)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	float n10 = fract((a.x+a.y)*a.z);
++	a = fract(vec3((cell + vec2(0,1)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	float n01 = fract((a.x+a.y)*a.z);
++	a = fract(vec3((cell + vec2(1,1)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	return mix(mix(n00,n10,f.x),mix(n01,fract((a.x+a.y)*a.z),f.x),f.y);
++}
++// Shared broken, short grass fringe for road shoulders and painted terrain.
++float grass_fringe(float coverage, vec2 p) {
++	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
++}
++// Matte sand shared by terrain paint and roadside shoulders. Grain is
++// isotropic (no grass-like diagonal strokes), with filtered fine minerals.
++vec3 sand_detail(vec3 base, vec2 p) {
++	float broad = pigment(p*0.65+vec2(8.3,21.7));
++	float medium = pigment(p*4.3+vec2(19.2,3.8));
++	float grain = pigment(p*19.0);
++	float grit = pigment(p*8.7+vec2(31.4,7.1));
++	float fine_visibility = 1.0-smoothstep(0.5,1.5,length(fwidth(p*19.0)));
++	float grit_visibility = 1.0-smoothstep(0.6,1.6,length(fwidth(p*8.7)));
++	float aa = max(0.035,fwidth(grit)*0.65);
++	float dark_grit = smoothstep(0.72-aa,0.85+aa,grit);
++	float light_grain = smoothstep(0.58,0.82,grain);
++	return base*(0.965+(broad-0.5)*0.045+(medium-0.5)*0.045
++		+(grain-0.5)*0.12*fine_visibility
++		+light_grain*0.04*fine_visibility-dark_grit*0.16*grit_visibility);
++}
++vec3 surface_detail(vec3 base, vec2 p, bool road) {
++	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
++	if (road && wet_road) {
++		float sheen = smoothstep(0.48,0.75,pigment(p*0.24 + vec2(3.2,7.6)));
++		return mix(base,base*1.22+vec3(0.035,0.045,0.055),sheen*0.45);
++	}
++	if (road && icy_road) {
++		float frost = pigment(p * 0.7);
++		float streak = pow(0.5 + 0.5 * sin(p.x * 2.3 + pigment(p * 0.2) * 9.0), 18.0);
++		return mix(base * (0.91 + frost * 0.12), vec3(0.62,0.74,0.82), streak * 0.14);
++	}
++	if (road) {
++		// Fine mineral flecks in an even binder, not broad soft noise blobs.
++		// Two sizes break up a regular grain pattern; filter toward each
++		// layer's average when the flecks fall below a screen pixel.
++		float grain = pigment(p * 12.0);
++		float aa = max(0.035,fwidth(grain)*0.65);
++		float mineral = smoothstep(0.57-aa,0.57+aa,grain);
++		float pores = 1.0-smoothstep(0.30-aa,0.30+aa,grain);
++		float fine_visibility = 1.0-smoothstep(0.8,1.8,length(fwidth(p*12.0)));
++		float coarse = pigment(p * 3.7 + vec2(27.1,13.7));
++		float coarse_aa = max(0.035,fwidth(coarse)*0.65);
++		float chips = smoothstep(0.72-coarse_aa,0.72+coarse_aa,coarse);
++		float chip_visibility = 1.0-smoothstep(0.8,1.8,length(fwidth(p*3.7)));
++		return base * (1.0 + ((mineral-0.32)*0.032-(pores-0.14)*0.018)*fine_visibility
++			+ (chips-0.08)*0.008*chip_visibility);
++	}
++	// Sparse short blade strokes rather than circular noise clouds.
++	vec2 cell = floor(p * 2.4);
++	float seed = fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);
++	float other = fract(sin(dot(cell,vec2(269.5,183.3)))*43758.5453);
++	vec2 local = fract(p * 2.4) - vec2(0.25+seed*0.5,0.25+other*0.5);
++	float blade = (1.0-smoothstep(0.025,0.09,abs(local.x + local.y*(seed-0.5)*1.5)))
++		* smoothstep(-0.35,-0.1,local.y) * (1.0-smoothstep(0.05,0.32,local.y));
++	blade *= step(0.72,seed) * visibility;
++	float plane = smoothstep(0.35,0.65,pigment(p*0.12));
++	return base * (0.97 + plane*0.055 - blade*0.09);
++}
++
++vec3 painted_grass(vec3 base, vec2 p) {
++	// Cool neutral palettes use snow/concrete grain without green brush pigment.
++	if (base.b > base.r * 0.95) return base * (0.94 + pigment(p * 0.7) * 0.06);
++	// A 20 m tile gives legible brush clusters at driving scale. An offset
++	// second sample and slower colour mask soften recognizable repetition.
++	vec3 paint = texture(painted_grass_texture,p/20.0,0.75).rgb;
++	vec3 broad = texture(painted_grass_texture,p/47.0+vec2(0.37,0.61),1.0).rgb;
++	vec3 tint = base / vec3(0.3765,0.4196,0.2118);
++	return mix(mix(paint,broad,0.18)*tint,base,0.18)*(0.82+pigment(p*0.08)*0.10);
++}
+--- /dev/null
++++ b/game/diagnostics/previous_surface.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://de05x62lahj17
+--- /dev/null
++++ b/game/tests/test_surface_profile.gd
+@@ -0,0 +1,45 @@
++extends SceneTree
++var failures: int = 0
++var checks: int = 0
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(description)
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	for track_id: String in ["track_acf29166cceaaa42","track_f7dc946b49ce9ea8"]:
++		await exercise(track_id)
++	print("SURFACE_PROFILE_TESTS: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
++func exercise(track_id: String) -> void:
++	var document: Dictionary = TrackLibrary.new().load_document(track_id)
++	check(not document.is_empty(),"saved Ajorata fixture available")
++	if document.is_empty(): quit(1); return
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(document)
++	root.add_child(game)
++	game.paused = true
++	for i: int in range(10): await process_frame
++	var probe = load("res://diagnostics/surface_material_probe.gd").new()
++	probe.collect(game.track_ground)
++	check(probe.entries.size() > 2,"road and terrain material coverage")
++	var meshes: Array = []
++	for entry: Dictionary in probe.entries: meshes.append(entry.mesh.mesh)
++	for mode: String in ["asphalt_previous","directional_off","road_flat","terrain_flat","baseline"]:
++		probe.apply(mode)
++		for i: int in range(8): await process_frame
++		await RenderingServer.frame_post_draw
++		for i: int in range(probe.entries.size()):
++			var entry: Dictionary = probe.entries[i]
++			check(entry.mesh.mesh == meshes[i],"unchanged mesh " + mode)
++			var actual: ShaderMaterial = entry.mesh.material_override
++			var parameter: String = "road_color" if entry.path.ends_with("creator_road.gdshader") else ("ground_color" if entry.path.ends_with("ground.gdshader") else "color_0")
++			check(actual.get_shader_parameter(parameter) == entry.original.get_shader_parameter(parameter),"palette survives shader swap " + mode)
++			for uniform: String in ["wet_road","icy_road","asphalt_surface","road_marking","edge_fringe","gravel","grass","overlay_mask","surface_low","surface_high","map_extent"]:
++				check(actual.get_shader_parameter(uniform) == entry.original.get_shader_parameter(uniform),"uniform survives swap: " + uniform + " " + mode)
++		root.get_texture().get_image().save_png("res://../build/surface-profile-"+track_id+"-"+mode+".png")
++	probe.restore()
++	for entry: Dictionary in probe.entries: check(entry.mesh.material_override == entry.original,"exact original material restored")
++	game.free()
+--- /dev/null
++++ b/docs/SURFACE_PERFORMANCE_2026_09_22.md
+@@ -0,0 +1,87 @@
++# Road-surface regression investigation — 2026-09-22
++
++Requirements R01/R03/R07/V02/V04/V05/Q01. The owner asked whether the road surface explains the recent mobile slowdown. This extends the earlier feature investigation, which did not isolate surface shading.
++
++## Controlled comparisons
++
++Same physical DN2103 / Android 13 / Mali-G77 MC9, Godot 4.7.2 Compatibility, normal 0.667 3D scale, shadows enabled, real HUD/timing/telemetry and normal biome effects. Each variant is bracketed by current-material baselines. All stages restart, warm for five seconds and measure twenty seconds. AI attempts are unscored; no records are written.
++
++Only duplicate ShaderMaterials change. Mesh resources, transforms, canonical track data, physics, camera, lighting, render scale, weather, HUD, particles and material base colours remain. The exact original material objects are restored for each baseline and on completion.
++
++Variants:
++
++- `asphalt_previous`: shared surface include from Git commit `767dcb0` (`game/track/surface_detail.gdshaderinc`), with the newly added directional asphalt function replaced by an identity function. Current creator geometry, mask/cutout code, worn-line logic and edge-strip geometry remain. This isolates the newer dry-asphalt detail and directional grain; it is not a whole-game historical rollback. Grass, sand, wet and icy detail functions in the older include match their current counterparts.
++- `directional_off`: removes only the directional asphalt colour call. All other current shader code remains.
++- `road_flat`: constant palette colour on creator asphalt, white markings and cosmetic asphalt-edge meshes. Original mask discard, lighting and geometry remain, but cosmetic texture/wear/crossfade are simplified. Sand/grass shoulders remain detailed.
++- `terrain_flat`: removes detailed colouring from the base ground, weighted terrain layers and creator grass/sand shoulders. Terrain mask feathering/weights and road detail remain. Tapered striped kerbs are retained.
++
++The probe covers `creator_road.gdshader`, `terrain.gdshader` and `ground.gdshader`. It does not replace separate bridge-deck shaders, prop shaders or the weather screen effects. `surface_materials_changed` counts assigned replacement materials, not draw calls or unique GPU programs. Previous-detail and directional modes also create equivalent variants for collected materials where their altered functions are unused.
++
++## Ajorata results: dry-asphalt regression confirmed
++
++For each variant, the comparison baseline is the average of the current-material medians immediately before and after it. Milliseconds per rendered frame; lower is better.
++
++| Comparison | Bracketing baseline | Variant median | Variant p95 | Median saving |
++|---|---:|---:|---:|---:|
++| Previous asphalt detail | 20.336 | 16.846 | 20.129 | **3.490 ms** |
++| Current detail, directional pass off | 20.275 | 18.770 | 22.540 | **1.505 ms** |
++| Flat creator-road colour | 20.299 | 16.929 | 20.445 | **3.370 ms** |
++| Flat terrain/shoulder colouring | 20.304 | 16.794 | 20.162 | **3.510 ms** |
++
++The five current-material baselines were 20.370, 20.301, 20.249, 20.348 and 20.260 ms. Returning to the current shader repeatedly restores the slower frame time. Historical asphalt detail improves the measured median from about **49.2 to 59.4 FPS**, with the same 353 end-of-stage draw calls and 51 collisions. Particle primitive counts vary slightly with presentation scheduling. This is a substantial surface-shading regression, not a CPU telemetry effect or a shadow-quality change.
++
++The directional pass accounts for a measurable part of the newer cost. The terrain comparison includes underlying painted-asphalt layers as well as grass/sand/ground, so it does not assign 3.51 ms exclusively to grass or sand. Savings overlap and are constrained by frame pacing near 16.7 ms; do not sum them. None of these p95 results establishes sustained 60 FPS.
++
++## Storm results: terrain/shared shader is the major surface cost
++
++| Comparison | Bracketing baseline | Variant median | Variant p95 | Median saving |
++|---|---:|---:|---:|---:|
++| Previous shared asphalt detail | 25.681 | 20.067 | 23.320 | **5.614 ms** |
++| Current detail, directional pass off | 25.698 | 25.432 | 28.228 | 0.266 ms |
++| Flat creator-road colour | 25.714 | 25.575 | 28.627 | 0.139 ms |
++| Flat terrain/shoulder colouring | 25.689 | 16.730 | 20.184 | **8.959 ms** |
++
++The five current baselines were 25.651, 25.710, 25.685, 25.743 and 25.634 ms. The repeated baselines establish that the large improvements are reversible within the same APK. Older shared detail improves the median from **38.9 to 49.8 FPS** with all weather and shadows retained.
++
++Storm does not show a meaningful gain from flattening only the creator-road meshes. Its large surface cost lies in the weighted terrain/ground/shoulder group. The historical include changes the common shader programs used by both terrain and road materials; this result is **not proof that the wet-asphalt colour branch itself executes the new dry-asphalt calculations**. Wet flags and masks were verified to survive replacement. Worn markings still use dry detail, and the larger shared shader can also affect compiler output, branching and register use. These individual GPU mechanisms have not been timed. The measured conclusion is that reverting the newer shared asphalt implementation removes 5.6 ms here, and simplifying the larger terrain group removes about 9 ms.
++
++## Source-level explanation
++
++The old dry-asphalt colour branch evaluates two interpolated `pigment` noise calls. The current branch evaluates approximately thirteen, including warping, weathering, patches/cracks and grain; the directional pass adds six more. Each noise evaluation itself computes four hashed lattice corners. This source-level increase is not a GPU-time multiplier, but it explains why the material deserves measurement. New details are evaluated procedurally per fragment rather than sampled from a precomputed asphalt texture.
++
++The mobile old/current comparisons measure this cost directly while preserving shadows. A regression attributable to surface shading can therefore coexist with the earlier weather/shadow costs; those earlier feature-off savings were not proof that the road was inexpensive.
++
++The next optimization should target shared surface/terrain shading: precompute or texture-sample the expensive asphalt detail, reduce the directional pass, and investigate specialized terrain materials that avoid unnecessary surface calculations. Preserve the approved appearance, masks and physics. Replacing the shipping art with these flat diagnostic colours is not the proposed fix.
++
++## Implementation, provenance and validation
++
++Changed files:
++
++- `game/diagnostics/surface_material_probe.gd`: scoped shader variants, cached material replacements and restoration.
++- `game/diagnostics/previous_surface.gdshaderinc`: original project shader copied with `git show 767dcb0:game/track/surface_detail.gdshaderinc` for the historical comparison; not third-party artwork.
++- `game/diagnostics/mobile_race_probe.gd`: attach the surface experiment to existing debug-marker stages, report replacement count and restore materials.
++- `scripts/profile-features-phone.ps1`: `-SurfaceProfile` selects nine alternating stages and a separate evidence directory, retaining prior measurements.
++- `game/tests/test_surface_profile.gd` and `scripts/dev.ps1`: graphical experiment checks through `TestSurfaceProfile`.
++- This report, status/plan and evidence record commands and outcomes.
++
++Actual commands:
++
++```powershell
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 ExportAndroid -QuickValidation
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestSurfaceProfile
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/profile-features-phone.ps1 -SurfaceProfile
++```
++
++The fresh APK export passed import/startup, 74 driving, 18 catalog and 22 menu checks; the existing driving ObjectDB leak warning remains. The graphical shader experiment initially passed 79 checks. Expanded dry/wet verification then passed **928 checks**, including mesh-resource identity, retained palette/texture-mask/wet/ice/road flags, actual shader rendering and exact original-material restoration on both tracks. The first test harness incorrectly instantiated the game script without its `World` scene node and failed; changing it to instantiate the actual game scene fixed the harness. No production invariant was weakened. No canonical physics was edited, so full replay regression was not rerun.
++
++Desktop captures demonstrate [current detail](evidence/surface-performance-2026-09-22/desktop-baseline.png), [historical asphalt detail](evidence/surface-performance-2026-09-22/desktop-previous-asphalt.png) and [flat road shading](evidence/surface-performance-2026-09-22/desktop-road-flat.png). The flat comparison was visually inspected. These are diagnostic variants, not a proposed shipping appearance.
++
++## Limits
++
++All eighteen phone stages completed. The initial battery temperature was 37.5°C, 40.2°C after Ajorata and 42.0°C after Storm (battery readings, not GPU temperatures). Tight bracketing baselines help control that warming; this is not a thermal-soak certification. Shader switches occur before the warm-up window. No phone screenshot was taken during measurement windows.
++
++The runner removed the debug marker/results and temporary device configuration, then successfully cold-launched normal play. Player files were retained. Original production materials and settings remain installed. Final raw reports, APK SHA-256, device/battery records, test/export/runner logs and screenshots are in [the evidence directory](evidence/surface-performance-2026-09-22/). The [task-only review patch](evidence/surface-performance-2026-09-22/surface-profiling-changes.patch) excludes prior shared-workspace edits; no unrelated work was committed.
++
++Final verification: both raw reports contain nine stages; the device file listing confirms the diagnostic marker/results are absent. `git diff --check` passes for modified tracked files, and `git apply --reverse --check --ignore-space-change` verifies the review patch against the mixed-line-ending workspace.
++
++Short AI runs do not represent all tracks, complete races, worst-case particle loads, long thermal sessions or other phones. Ajorata's driver repeatedly contacts obstacles. Whole-frame differences include GPU/driver scheduling and are not exact shader GPU timestamps; capped frame pacing can hide additional savings near 16.7 ms. Variants simplify appearance solely to measure cost. No production shader-quality change is made by this investigation.

@@ -1,8 +1,214 @@
 # Development status
 
+2026-09-23 R01/R03/V03/V05/Q01: Results Sectors route and table colours now encode each sector's time delta against the fastest valid lap (green gain, grey match, orange loss); transverse outlined lines mark every sector end. 185 headless and 204 graphical checks pass; three responsive captures refreshed and desktop capture inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05/Q01: rating stars centered on both axes; saved stars and score remain visible for 0.7 s, then finish cues fade over 0.4 s before Results. Confirmation blocks duplicate input. 198 graphical Results checks pass; desktop capture inspected. No phone test/export. See docs/TRACK_RATINGS.md.
+
+2026-09-23 R01/V03/V05/Q01: Play track cards show saved personal rating and actual local vote count (0/1). 490 graphical menu checks pass across three sizes; desktop/compact captures inspected. Shared aggregate ratings remain unconnected; no phone test/export. See docs/TRACK_RATINGS.md.
+
+2026-09-23 R01/V03/V05/Q01: owner correction moves delayed rating directly beneath the on-track Race Complete sign in black/gold styling; removes Results popup. Unrated finish waits for stars/Skip, rated tracks retain automatic transition. 184 graphical Results and 49 practice checks pass; existing two practice shutdown ObjectDB warnings. Corrected desktop capture inspected; no phone test/export. See docs/TRACK_RATINGS.md.
+
+2026-09-23 R01/V03/V05/Q01: delayed skippable personal track rating after finish; atomic persistence suppresses rated tracks and editable stars sit beneath standings. 164 headless Results, 179 graphical Results and 53 record checks pass; desktop captures inspected. No phone test/export. See docs/TRACK_RATINGS.md.
+
+2026-09-23 V03/V05: redrawn trash bin and explicit horizontal/vertical centering in square Delete button. CaptureTyresLoad: 68 checks pass; desktop capture inspected. No phone test/export. See docs/DRAFT_BROWSER.md.
+
+2026-09-23 R01/T01-T04/V03/V05/Q01: selected-draft bottom actions, square Delete, grey gated Publish, one ordered untimed test lap, edit-invalidated Tested status and local publication/edit lock. 68 load/workflow, 49 practice and 92 biome checks pass; two practice shutdown ObjectDB warnings remain. Desktop captures inspected; no phone test/export. See docs/DRAFT_BROWSER.md.
+
+2026-09-23 R01/T01-T04/V03/V05/Q01: Load track opens a scenic editing gallery with newest saved/autosaved versions, last-save metadata, search/pages, Continue editing and confirmed deletion. 44 load/tyre, 92 biome and 22 menu checks pass; desktop capture inspected. No phone test/export. See docs/DRAFT_BROWSER.md.
+
+2026-09-23 R01/V03/V05/Q01: stacked incident legend with route exclusion gutter; laurel leaves connect to exact stem geometry and PB time is centered. 154 headless / 168 graphical checks pass; desktop evidence inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05: small biome icons recreated to follow supplied Create reference shapes/colour, with lightning added to Storm. CaptureBiomes passes 92 checks; enlarged and menu evidence inspected. No phone test/export. See docs/BIOME_CREATION.md.
+
+2026-09-23 R01/V03/V05: replaced rejected biome line icons with filled leaf/cactus/moon-cloud/lightning-cloud silhouettes and mathematically symmetric Winter branches. Enlarged and menu captures inspected; CaptureBiomes passes 92 checks. No phone test/export. See docs/BIOME_CREATION.md.
+
+2026-09-23 R01/T01-T04/V03/V05: Create biome selection gains five refined biome icons, selected border, descriptive bottom card, explicit yellow Create track action and upper-right Load track action to Saved tracks; heading is “Select biome.” 92 biome checks pass; refreshed desktop capture inspected. No phone test/export. See docs/BIOME_CREATION.md.
+
+2026-09-23 R01/V03/V05/Q01: Play retains its shared 20 px bottom inset while restoring natural 8 px row spacing; smaller gallery cards, title footer and title type provide the vertical room. Both script checks and CaptureMenus (454 checks at three sizes) pass; desktop and compact evidence inspected. No phone test/export. See docs/PLAY_PAGE.md.
+
+2026-09-23 R01/V03/V05/Q01: removed Play More menu and made Favorites use the track-card star icon in track_browser.gd. CaptureMenus passes 454 checks across three sizes; screenshot inspected. No phone test/export. See docs/PLAY_PAGE.md.
+
+2026-09-23 V03/V05/Q01: Surprise me dice redrawn as a shaded, outlined three-face cube in menu_icon.gd. CaptureMenus passes 466 checks across three sizes; refreshed desktop evidence inspected. No phone test/export. See docs/PLAY_PAGE.md.
+
+2026-09-23 R01/V03/V05/Q01: Play reference update adds filter icons, bottom dice/Surprise me and Home/Race actions, scenic selected-track panel, stacked records and side-by-side WHERE YOU STAND comparisons; removes Play edit/delete/remix actions. 22 menu and 466 graphical checks pass across three sizes. Desktop evidence inspected; no phone test/export. See docs/PLAY_PAGE.md.
+
+2026-09-23 R01/V03/V05/Q01: Results back button uses an original thin yellow left arrow at the far left edge, with centered RESULTS text, matching the supplied action reference. Changed race_complete.gd and results_icons.gd; CaptureResults via scripts/dev.ps1 passed 163 checks and refreshed three-size evidence. Desktop screenshot inspected; no phone test/export.
+
+2026-09-23 R01/V03/V05/Q01: Race Complete top-right home icon opens Main Menu; bottom-left < RESULTS returns to analysis; Tracks adds circuit icon. 163 graphical checks pass; desktop capture inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05/Q01: rewards show eligible rows only with sequential slide/fade, gold border accents and running total count-up. 149 headless / 163 graphical checks pass; desktop evidence inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05/Q01: Race Complete replaces placeholder with provisional rewards, real measured times and local next-track selection. Consistency omitted; clean requires no collision/off-track incidents. Percentile model rewards only new higher tiers; unavailable standings/history/challenges remain explicit, no wallet writes. 144 headless / 157 graphical checks pass; three-size evidence saved, desktop inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05/Q01: Results adds PB laurels, wider equal icon buttons, measured sector table, KPI icons/dividers and larger lap times. 127 headless / 138 graphical checks pass; refreshed desktop screenshot inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-23 R01/V03/V05/Q01: simplified Results to Race Again / Continue, shorter time panel, yellow right-side PB, taller lap rows and expanded analysis ordered Sectors / Time diff / Speed. Continue opens recommendations/rewards placeholder with results/library navigation. 120 headless, 131 graphical and 22 menu checks pass; desktop evidence inspected. No phone test/export. See docs/RACE_RESULTS.md.
+
+2026-09-22 V03/V05/Q01: removed residual cumulative start-light scaling error. Source-boundary-derived centres map through the exact padded-crop scale, giving equal bezel clearance through the rightmost red lamp. 71 graphical checks pass; full-resolution capture inspected. No phone test/profiling.
+
+2026-09-22 V03/V05/Q01: final start-light correction restores source-measured right/bottom gantry bounds with transparent padding and refines right-lamp centres. Both end tabs, lower trim and all five centred lenses are visible. 71 graphical checks pass; full-resolution capture inspected. One draw, ~159 KB atlas; no phone test/profiling.
+
+2026-09-22 V03/V05/Q01: corrected remaining start-light lens drift exposed by owner device screenshot. Five independently measured overlay centres now align every red lens with its fixed bezel, including end housing. 71 graphical checks pass; full-resolution all-red capture inspected. No phone test or profiling.
+
+2026-09-22 V03/V05/R01/Q01: owner-supplied 1024×341 race-complete panel replaces the procedural 120-cell waving flag. One canvas draw, capped responsive size, guarded touch/mouse continue and unchanged 1.8 s automatic fallback. 48 headless / 71 graphical checks pass; desktop capture inspected. No phone test or profiling. See docs/RACE_FLOW.md.
+
+2026-09-22 V02/V04/V05/Q01: reference correction gives desert rust-red earth/amber light and much wider shaded dust billows; visual kit 54. Desert 24, soil 163 and graphical capture 25 checks pass. Refreshed desktop evidence inspected; no phone test/profiling. [Details](docs/DESERT_SUNSET.md).
+
+2026-09-22 V03/V05/Q01: fixed supplied start-light atlas overlap seen in owner capture. All stages now retain one identical gantry and replace only aligned circular lens pixels; duplicate/offset housings are removed. Atlas reduced to ~146 KB; 69 graphical checks pass and refreshed captures inspected. No phone test or profiling.
+
+2026-09-22 G01/V03/V05/Q01: owner-supplied start-light artwork replaces procedural lamps, normalized to the supplied green housing geometry. Six stages are a single 193 KB transparent atlas and one canvas draw; countdown/rules are unchanged. 46 headless and 69 graphical practice checks pass; desktop captures inspected. No Android export, phone test or device profiling. See docs/RACE_FLOW.md.
+
+2026-09-22 G01/G03/R01/R03/R07/V02/V04/V05/Q01: desert firm-sand roads, dense nine-second dust and low red-orange sunset. Physics 0.39 / compiler 19 / visual kit 53. Focused behavior, creator, track, biome and soil checks pass; desktop captures saved. Full validation stopped on now-updated creator expectations; remaining chain and phone acceptance not completed. See [details](docs/DESERT_SUNSET.md).
+
+2026-09-22 R01/V03/V05: Create biome cards now reuse the Tracks gallery scenery, with biome labels overlaid near the bottom and a thin artwork strip retained beneath; removed the permanence explanation. 62 biome checks pass and the refreshed desktop capture was inspected. No phone test or export.
+
+2026-09-22 R03/R07/G01/V03/V05/Q01: rules v12 adds up to 6 m outside bend recovery; missed-checkpoint labels simplified, translucent road-only line plus faint removable acceptance margins. 122 checkpoint, 27 start-line, 167 track/replay, 53 record and 14 graphical checks pass. Desktop evidence inspected; no phone test/export. See docs/MOBILE_OPTIMIZATION_2026_09_22.md (Outside recovery and marker clarity).
+
+2026-09-22 V02/V04/V05/Q01/R01: clearer dynamic side-window reflections, matching rear wraparound bumper and recessed rim barrels/spokes. 30 batching and 114 quick checks pass; updated APK installed/launched on DN2103. No profiling. [Evidence and limits](docs/WINDOW_REFLECTIONS.md#side-reflections-matching-rear-bumper-and-rim-depth---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: simple world-fixed sky/cloud reflections on compact glass respond to viewing angle and vehicle rotation. 30 batching and 114 deployment quick checks pass; APK installed/launched on DN2103, visible startup verified. Owner will test; no profiling performed as requested. [Evidence and limits](docs/WINDOW_REFLECTIONS.md).
+
+2026-09-22 V02/V04/V05/Q01/R01: front bumper now continuous dark rubber with rounded corner/side returns; grey top strip removed, twin headlights retained. Six desktop views captured; 30 batching checks pass. No phone test. [Evidence](docs/COMPACT_LOOK.md#dark-wraparound-front-bumper---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: reference-led roof perimeter crease and tapered/rounded rear quarter windows with slim light surrounds. Six desktop captures saved; 30 batching checks pass. No phone test. [Evidence](docs/COMPACT_LOOK.md#reference-roof-edge-and-rear-quarter-windows---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: glass boundaries now curve visibly from overhead and front bumper projects farther with a taller face/top edge. Six desktop views including high rear captured; 30 batching checks pass. No phone test. [Evidence](docs/COMPACT_LOOK.md#visible-glass-curvature-and-front-bumper---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: compact loses black sill shell, gains deeper nose curve, rounded glazing/crowned windshield and faint roof pressings. 30 batching checks pass; desktop front/side captures inspected. No phone test. [Evidence and limits](docs/COMPACT_LOOK.md#rounded-glazing-nose-and-roof-detail---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: reduced compact front-fender lateral projection by 35% from its body attachment; rear fenders and wheels retained. 30 batching checks pass; updated capture inspected. No phone test. [Evidence](docs/COMPACT_LOOK.md#front-flare-projection-reduced-35-percent---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: compact nose gains a shallow curve across fascia/grille/bumper and twin round headlights per side matching owner menu reference. 30 batching checks pass; refreshed desktop captures inspected. No phone test. [Evidence and limits](docs/COMPACT_LOOK.md#curved-nose-and-twin-lamps---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: compact side cleanup removes block mirrors, redundant black strips and open-panel ink artifacts; tapered seams and broad silver-blue fender highlights improve reference fidelity. Both side captures inspected; 30 batching checks pass. No phone test. [Evidence and limits](docs/COMPACT_LOOK.md#side-cleanup-and-fender-highlights---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: compact front correction integrates grille into a solid fascia, shapes the bonnet and replaces detached arch strips with charcoal flares blending into painted fenders. 30 batching checks pass; refreshed desktop captures. No phone test. [Evidence and limits](docs/COMPACT_LOOK.md#front-hood-and-fender-correction---2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01/R01: owner-reference compact model gains rounded/wider tyres, recessed alloys, sculpted arches, layered lamps, dark glazing and body trim. 30 batching and 28 suspension checks pass; before/after desktop captures saved. No phone test. [Details and acceptance](docs/COMPACT_LOOK.md).
+
+2026-09-22 R01/R03/V03/V05/Q01: pausing and shortcut history no longer invalidate an otherwise completed race, its local record, or completed-lap telemetry. Genuine editor practice remains unranked. The TOTAL RACE TIME card now contains only the total and personal best. 120 headless Results, 130 graphical Results and 22 menu checks pass; refreshed desktop capture inspected. No phone test or export. See docs/RACE_RESULTS.md.
+
+2026-09-22 V03/V05/R01: removed the waypoint/checkpoint marker from the minimap while retaining the player marker, world missed-gate marker and return notice. 7 checkpoint-capture and 153 bridge/HUD checks pass; refreshed desktop capture inspected. No phone test. [Details and evidence](docs/MINIMAP_WAYPOINT_MARKER.md).
+
+2026-09-22 G01/G03/R01/R03/R07/V01/Q01: off-road terrain steering texture is slightly stronger while remaining deterministic, contact/speed-scaled and bounded; continuous camera rumble uses a lower-frequency presentation profile without changing collision shake. Physics 0.38. Camera (7), soil (163), driving (74) and handling (88) checks pass; kart handling passes 32 checks, while its chained car-model suite retains four pre-existing visual-model failures. No phone test. See docs/OFF_TRACK_HANDLING.md and docs/CAMERA_SHAKE.md.
+
+2026-09-22 V03/V05/Q01/RR02/RR05: Results sector leader lines stop at label edges, sector labels avoid the incident legend, and its wording is shortened to “Off track.” 116 headless and 126 graphical checks pass across three sizes; refreshed 1280x720 capture inspected. No phone test or export. See [details](docs/RACE_RESULTS.md#sector-leader-clearance--2026-09-22).
+
+2026-09-22 V02/V04/V05/Q01: restored creator bridge asphalt by binding the shared baked surface texture. 157 graphical bridge/HUD checks pass; desktop screenshot inspected. No device test. See docs/MOBILE_OPTIMIZATION_2026_09_22.md, Bridge texture restoration.
+
+2026-09-22 R03/R07/G01/V03/Q01: owner-requested checkpoint forgiveness adds up to 3 m inside gentle curves, tapering away on tighter bends; visible line matches asymmetric acceptance. Rules v11; 108 checkpoint checks pass including hairpin shortcuts. [Details and evidence](docs/MOBILE_OPTIMIZATION_2026_09_22.md#inside-recovery-allowance--2026-09-22-follow-up).
+
+2026-09-22 R01/R03/R07/G01/V02/V03/V04/V05/Q01: baked road/sand detail, removed random cracks, reduced directional shadows and replaced route-history searches with ordered road gates. Owner follow-up reduces gate density to approximately 12 m and smooths bend normals. Missed sections require return; no +5s penalty. Rules v10 / compiler 18 / visual kit 52. See [actual tests, phone comparisons and acceptance](docs/MOBILE_OPTIMIZATION_2026_09_22.md).
+
+2026-09-22 R01/R03/V03/V05/Q01/RR02: Results maps show collision crosses and all-four-tyres-off-track diamonds. 104 headless / 114 graphical checks pass; screenshot saved. No phone test or export. See [details](docs/RACE_RESULTS.md#incident-markers--2026-09-22).
+
+2026-09-22 R01/R03/R07/V02/V04/V05/Q01: owner-suspected surface regression confirmed on DN2103. Alternating current/older shared asphalt detail saves 3.490 ms on Ajorata and 5.614 ms on Storm; directional grain costs 1.505 ms on dry Ajorata. Flat terrain/shoulder colouring saves 3.510/8.959 ms, with weather/shadows retained. Eighteen phone stages and 928 graphical uniform/geometry/restoration checks completed. Normal production visuals restored; no quality reduction shipped. [Evidence, interpretation and limits](docs/SURFACE_PERFORMANCE_2026_09_22.md).
+
+2026-09-22 R01/R03/R07/G01/V03/V05/Q01: physical DN2103 feature profiling separates route timing, Results telemetry, trails, particles, weather and presentation CPU costs. Eighteen phone stages completed: Storm weather off saves 7.406 ms median; shadows off saves 2.899/6.071 ms on Ajorata/Storm. Results recording averages only 0.032/0.039 ms per frame; route validation 1.787/2.097 ms. Focused export, 94 Results and 22 performance/glass checks pass. Normal play restored; no production quality reduction. [Report, raw measurements, commands and limitations](docs/PERFORMANCE_2026_09_22.md).
+
+2026-09-21 V02/V04/V05/Q01/R01: ramp suspension follow-up retains pitch velocity through touchdown, blends into damped body motion and softens heave/pitch for diminishing rebounds. 141 graphical suspension and 16 bridge checks pass; animation saved, no phone test. [Evidence](docs/BRIDGE_COLLISIONS.md#damped-suspension-follow-up--2026-09-21).
+
+2026-09-21 G01/G03/R01/R03/R07/V02/V04/V05/Q01: bridge underside collisions, per-span rail isolation and exact ramp-end layer transitions fix Knit phantom contacts; bounded crest unloading and stronger suspension improve ramp motion. Physics 0.37, creator compiler 17. Focused checks and desktop captures pass; no phone test. [Implementation, commands and acceptance](docs/BRIDGE_COLLISIONS.md).
+
+2026-09-21 R01/R03/G01/V03/V05/Q01: bounded saturated-glass overflow fixes a potential collision freeze; retained HUD geometry, inactive-emitter gating and early trail rejection reduce presentation CPU work. 9 glass, 13 performance, 160 soil, 555 touch and 157 graphical HUD checks pass. Physical DN2103 before/after: Ajorata median 20.806 to 19.943 ms; Storm 25.999 to 24.841 ms, still below 60 FPS. Optimized APK installed and normal play restored. [Evidence and limits](docs/PERFORMANCE_2026_09_21.md).
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-51 makes white edge-line wear clearly visible with stronger fading and more frequent/deeper asphalt chips while preserving continuous readability. 390 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#stronger-marking-wear---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-50 adds mild fading and sparse asphalt-coloured chips to white creator-road edge markings while retaining continuous readable lines. Focused checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#worn-white-edge-markings---2026-09-21).
+
+2026-09-21 V03/V05/R01: tabular race/lap timer digits prevent width jitter; lap backing follows actual label bounds. 157 graphical HUD checks pass, capture saved. No phone test. [Evidence](docs/HUD_REFRESH.md#stable-timers-and-aligned-lap-backing--2026-09-21).
+
+2026-09-21 V02/V03/V05/G01/R01: HUD follow-up adds soft translucent readout backings and depressed pedal geometry without active pedal highlights. 107 HUD and 555 touch checks pass; five-vehicle captures saved. No phone test. [Evidence](docs/HUD_REFRESH.md#subtle-backings-and-depressed-pedals--2026-09-21).
+
+2026-09-21 G01/G03/R01/R03/R07/V05: sand now shares grass camera shake; both loose surfaces add small deterministic spatial steering disturbances alongside physical wheel drag. Physics 0.36; 381 focused checks pass, no phone test. [Details](docs/OFF_TRACK_HANDLING.md#loose-surface-shake-and-steering-texture---2026-09-21).
+
+2026-09-21 V02/V03/V05/G01/R01/R03: owner-supplied HUD replacement with live lap/race clocks, circular placed-road minimap, semicircular speed gauge and supplied control artwork. 107 HUD, 555 touch, 33 practice and 114 quick-regression checks pass; desktop captures saved. No phone test. [Details and evidence](docs/HUD_REFRESH.md).
+
 2026-09-21 R01/R03/V02/V03/V05/Q01: reference-led race results with completed-lap telemetry, interactive speed/time-diff/sector map, local next-race recommendations and navigation. Final graphical suite: 103 checks pass across 1280x720, 1920x1080 and 2400x1080. No phone test; older app navigation suite remains blocked before results. See [implementation, evidence and limits](docs/RACE_RESULTS.md).
 
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-46 increases the accepted asphalt/sand fringe crossfade from ~5 cm to 10 cm without changing its shape or cutoff. 384 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#10-cm-crossfade---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: accepted UV fringe shape retained; track-kit-45 adds a compact ~5 cm asphalt/sand crossfade for a smudged material transition. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#small-smudged-material-blend---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-44 replaces ineffective coarse-grid edge tuning with a continuous 0.20 m UV-controlled visual fringe along every exposed road edge. Width varies by a few pixels without curve stair-steps; white lines and physics remain unchanged. 384 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#continuous-uv-edge-fringe-replacement---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-43 treats the owner-marked nearly smooth strip as baseline; transition width now varies continuously by only a few pixels, at 19% of the prior lobe amplitude. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#few-pixel-transition-width-correction---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: owner-marked target areas guide track-kit-42: filtered curve edges now use repeated shallow rounded lobes instead of nearly invisible fine noise, without restoring saw teeth. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#rounded-edge-lobe-correction---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: curve-edge refinement smooths the coarse mask staircase and changes breakup to smaller, more frequent, shallow variation. Track-kit-41; solid post-line asphalt and white markings retained. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#fine-curve-edge-correction---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: real-road-reference correction preserves a solid asphalt strip beyond the inset white line and confines reduced irregularity to the final asphalt/sand edge. Track-kit-40; 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#real-road-edge-proportion-correction---2026-09-21).
+
+2026-09-21 V02/V04/V05/Q01/R01: live-screenshot correction removes the smooth translucent verge ribbon. Track-kit-39 uses a real asphalt/sand coverage boundary shaped like the sand/grass fringe at half displacement, retaining white lines and joined geometry. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#coverage-shape-correction---2026-09-21).
+
+2026-09-20 V02/V04/V05/Q01/R01: owner correction rejects the exaggerated verge. Track-kit-38 restores smooth white lines and continuous asphalt, leaving only a restrained outer-edge tint to slightly break mathematical smoothness. 334 checks and desktop captures pass. No phone test. [Evidence](docs/ROAD_REALISM.md#restrained-border-correction---2026-09-20).
+
+2026-09-20 V02/V04/V05/Q01/R01: owner screenshot correction replaces hard asphalt teeth, join gaps and the white verge border with a narrow broken asphalt-to-sand material transition matching the sand/grass language. Track-kit-37; 384 checks and desktop captures pass. No phone test. [Evidence and limits](docs/ROAD_REALISM.md#natural-asphalt-to-sand-transition---2026-09-20).
+
+2026-09-20 V02/V04/V05/Q01/R01: owner follow-up gives the cosmetic asphalt silhouette a denser, slightly sharper uneven edge than the sand/grass shoulder while preserving the smooth marking, collision and compiled road. Track-kit-35; 335 checks and desktop captures pass. No phone test. [Evidence and limits](docs/ROAD_REALISM.md#sharper-uneven-asphalt-contour---2026-09-20).
+
+2026-09-20 V02/V04/V05/Q01/R01: reference-guided procedural road realism adds restrained world-space asphalt variation, deterministic repairs/sealed cracks and creator-road edge wear while retaining physics-driven four-wheel tyre marks. Track-kit-34; 662 focused checks pass and desktop captures succeed. No phone test. [Evidence and limits](docs/ROAD_REALISM.md).
+
+2026-09-20 V01/V02/V04/Q01: persistent glass now accumulates independently on the collision-affected left/right/top/bottom edge. Damage spills to the least-fractured other edge only after the struck side is full; blended corner masks avoid seams. 8 focused checks pass; no phone test. [Details](docs/CAMERA_SHAKE.md#impact-glass-follow-up).
+
+2026-09-20 V01/V02/V04/Q01: owner-reference persistent glass replaces the rejected fading starburst. An original transparent edge-shard texture accumulates with meaningful impacts, keeps the centre broadly clear and remains until restart/new race. 6 focused checks pass; no phone test. [Details](docs/CAMERA_SHAKE.md#impact-glass-follow-up).
+
+2026-09-20 V01/V04/Q01: meaningful collisions now show a brief impulse-scaled branched glass fracture on the struck side; scrapes stay clean and the input-transparent overlay clears within 0.5 seconds or immediately on restart. 6 focused checks pass; no phone test. [Details](docs/CAMERA_SHAKE.md#impact-glass-follow-up).
+
+2026-09-20 G01/R01/V01/V04/Q01: owner feedback replaces collision jitter with a directional resolved-impulse spring: sharp kick, small rebound and fast settlement. Off-track vibration is reduced to ~1.5 px, continuously blended and speed/resistance-scaled; HUD remains static. 6 camera, 167 track and 155 soil checks pass; no phone test. [Details](docs/CAMERA_SHAKE.md).
+
+2026-09-20 G01/R01/V01/V04/Q01: collision camera shake scales from the resolved velocity impulse, while speed and loose-surface resistance drive a lighter continuous off-track rumble. Presentation-only bounded waves preserve canonical physics and framing. 5 camera, 167 track and 155 soil checks pass; no phone test. [Details](docs/CAMERA_SHAKE.md).
+
+2026-09-20 V02/V04/V05: owner race screenshot identified 30 Hz emitter batching as the remaining asphalt-smoke gaps. Smoke now samples wheel motion at 120 Hz while other effects retain 30 Hz. 155 headless and 164 graphical checks pass; no phone profiling. [Details](docs/SAND_DUST.md#grass-and-asphalt-extension--2026-09-20).
+
+2026-09-20 V02/V04/V05: asphalt smoke no longer reuses visible dust-puff silhouettes; a dedicated radial haze shader and 900 particles per wheel create a much more uniform continuous trail at lower opacity/cap. 154 headless and 163 graphical checks pass; no phone profiling. [Details](docs/SAND_DUST.md#grass-and-asphalt-extension--2026-09-20).
+
+2026-09-20 V02/V04/V05: asphalt haze refined to 640 smaller particles per wheel at 0.055 peak alpha, lower 0.55 intensity cap and reduced expansion for a fainter, more continuous trail. [Details](docs/SAND_DUST.md#grass-and-asphalt-extension--2026-09-20).
+
+2026-09-20 V02/V04/V05: grass overlay cards replaced by ballistic 3D blades/mud grains; asphalt smoke uses 420 smaller soft particles per wheel for a continuous ribbon instead of separated spots. 153 headless and 162 graphical checks pass; no phone profiling. [Details](docs/SAND_DUST.md#grass-and-asphalt-extension--2026-09-20).
+
+2026-09-20 R01/V02/V04/V05/Q01: grass gains speed/slip-scaled clippings and rear mud flecks; dry asphalt gains modest thresholded smoke only under strong cornering/braking. 151 headless and 160 graphical checks pass; no phone profiling. [Evidence and limits](docs/SAND_DUST.md#grass-and-asphalt-extension--2026-09-20).
+
+2026-09-20 V02/V04/V05: artificial/delayed dust cards replaced by an original authored billow sprite with useful opacity in ~0.13 seconds, visible tyre-level onset and rising clustered volume. 146 headless and 153 graphical checks pass; no phone test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 V02/V04/V05: removed immediate foreground dust override. New dust is tiny/transparent and depth-tested at exact tyre contact, then rises and expands until older clouds naturally cover the car. 145 headless and 152 graphical checks pass; no phone test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 V02/V04/V05: sand dust now originates at ground contact and slowly gains height through upward launch plus mild lift, instead of appearing at a fixed pre-suspended height. 145 headless and 151 graphical checks pass; no phone test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 V02/V04/V05: dust now composites over the opaque car, uses lighter sand colour, 360-particle wheel emitters, 2.05 m puffs, 5.2-second life and 3.65x expansion for a substantially larger/denser plume. 143 headless and 149 graphical checks pass; no phone performance test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 V02/V04/V05: rejected flat sand streaks replaced by dense camera-facing dust volume with 4.8-second persistence, surface/car-obscuring overlap, independent rotation/deceleration and a dedicated progressive slip response. 142 headless and 148 graphical checks pass; no phone performance test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 V02/V04/V05: owner follow-up enlarges sand dust and extends the main cloud to 2.1 seconds, with moderately larger/longer rear spray. 141 headless and 147 graphical checks pass; no phone test. [Details](docs/SAND_DUST.md).
+
+2026-09-20 R01/V02/V04/V05/Q01: sand now has wheel-driven two-layer particles: restrained four-wheel expanding dust plus short, stronger rear spray tied to the tire-mark physics intensity and wheel-point velocity. 139 headless, 145 graphical and 74 driving checks pass; no phone test. [Evidence and limits](docs/SAND_DUST.md).
+
+2026-09-20 R01/V02/V04/V05/Q01: final tire trails deployed to DN2103. Controlled empty/16,384-mark/empty phone probe measured 16.866/16.792/16.837 ms medians and 20.400/19.913/19.833 ms p95; saturation adds one draw call with no measured sustained regression. Debug marker removed and normal app relaunched. [Evidence and limits](docs/SURFACE_TIRE_TRACKS.md#physical-phone-performance-and-deployment--2026-09-20).
+
+2026-09-20 G01/G03/R01/R03/R07: owner follow-up increases physics-based differential verge torque by 35% without changing soil deceleration or adding retained yaw. Physics 0.35; 345 focused checks pass, no phone test. [Details](docs/OFF_TRACK_HANDLING.md#stronger-physical-wheel-torque---2026-09-20).
+
+2026-09-20 G01/G03/R01/R03/R07: replaces the rejected authored verge tug with differential wheel-drag torque derived from contact, mass, track width and rotational inertia. Physics 0.34; 345 focused checks pass, no phone test. [Details](docs/OFF_TRACK_HANDLING.md#differential-wheel-drag-correction---2026-09-20).
+
+2026-09-20 G01/G03/R01/R03/R07: replaces the rejected scripted near-spin with a brief progressive, self-damping one-tyre verge tug. Physics 0.33; 343 focused checks pass, no phone test. [Details](docs/OFF_TRACK_HANDLING.md#natural-verge-tug-correction---2026-09-20).
+
+2026-09-20 G01/G03/R01/R03/R07: a single off-track tyre now creates a 60-tick near-spin pivot response while balanced soil contact cancels yaw. Physics 0.32; 342 focused checks pass, no phone test. [Details](docs/OFF_TRACK_HANDLING.md#single-tyre-near-spin-follow-up---2026-09-20).
+
+2026-09-20 G01/G03/R01/R03/R07: owner follow-up strengthens off-track deceleration and partial-wheel pull. Physics 0.31; 284 relevant focused checks pass. The chained car suite retains four unrelated visual-model failures; no phone test. [Details](docs/OFF_TRACK_HANDLING.md#stronger-follow-up---2026-09-20).
+
+2026-09-20 R01/V02/V04/V05/Q01: reference-guided asphalt marks now follow all four wheel contacts, use tire-width feathered charcoal streaks, nonlinear slip/brake opacity, rear-biased oversteer response, distance-smoothed starts/ends and repeated-pass alpha accumulation. The fixed single batch retains ~1.31 km through 16,384 instances. Approved sand and dark brown-green grass remain. 134 headless, 139 graphical and 114 quick-regression checks pass; no phone test. [Details and acceptance](docs/SURFACE_TIRE_TRACKS.md).
+
+2026-09-20 G01/G03/R01/R03/R07: all vehicles now use proportional four-wheel loose-surface drag, stronger full off-track slowdown and bounded pull toward escaped wheels. Physics 0.30; 363 focused checks pass, no phone test. [Metrics, commands and remaining acceptance](docs/OFF_TRACK_HANDLING.md).
+
+2026-09-19 G01/R01/R03/R07: Drift+ 0.19 moderated to the requested midpoint between Original+ and the stronger rear-drive tune. Powered fixture: 29.46° versus 17.61° Original+ and 39.18° prior Drift+; power/coast distinction and recovery remain. [Metrics](docs/COMPACT_HANDLING_REFINEMENT.md).
+
+2026-09-19 G01/R01/R03/R07: Drift+ 0.18 now has an explicit arcade rear-drive character: throttle adds rotation and cornering traction loss while coasting stays calmer; quick unwind recovery remains. 88 handling checks pass. [Metrics and limits](docs/COMPACT_HANDLING_REFINEMENT.md).
+
+2026-09-19 G01/R01/R03/R07: owner found the initial Drift+ difference too subtle. Handling 0.17 makes breakaway, sustained angle and throttle rotation materially stronger while retaining quick unwind recovery; Original+ remains unchanged/default. [Metrics and checks](docs/COMPACT_HANDLING_REFINEMENT.md).
+
 2026-09-19 R01/R04/R06/R07/V02/V03/V05: refined discovery menu, direct favorite stars, record/distribution/friend panel and cloud-ready read-model boundary. 460 graphical and 93 focused checks pass; no phone test. [Details and acceptance](docs/REFINED_DISCOVERY.md).
+
+2026-09-19 G01/R01/R03/R07: separate compact Drift+ option adds more powered drift, calmer steering onset and quicker grip recovery while Original+ remains unchanged/default. Handling 0.16. [Metrics, commands and acceptance limits](docs/COMPACT_HANDLING_REFINEMENT.md).
 
 2026-09-19 V02/V03/V05: dedicated generated Storm track-card background replaces Grass fallback. 397 menu capture checks pass. [Artwork and evidence](docs/DISCOVERY_MENU.md#dedicated-storm-artwork---2026-09-19).
 
@@ -399,3 +605,16 @@ Final bulk verification: 194 conversions, zero failures; 781 runtime/search chec
 2026-09-18 R01/G01/V03/V05/Q01: reproduced racing stutter under full HUD plus touch input (740 missed refreshes/minute). Retained button artwork installed; final fast Ajorata test reaches 105 km/h with 3 misses in 141 seconds. 689 graphical controls checks and 20 exact artwork comparisons pass. [Evidence and remaining acceptance](docs/RACING_INPUT_PERFORMANCE.md).
 
 2026-09-18 owner device follow-up: Ajorata is reported noticeably smoother after the retained touch-artwork fix. Rare measured refresh misses remain; see docs/RACING_INPUT_PERFORMANCE.md.
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-47 refines dry asphalt toward the owner reference with visible fine aggregate and restrained weathering. 384 focused checks pass; final desktop capture inspected. No phone test. See docs/ROAD_REALISM.md (Reference asphalt texture).
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-48 adds irregular asphalt grain density/weathering and subtle road-aligned detail on creator road pieces. 384 checks pass; final desktop capture inspected. No phone test. See ROAD_REALISM.md (Irregular road-aligned grain).
+
+
+2026-09-21 V02/V04/V05/Q01/R01: track-kit-49 reduces cloudy asphalt weathering while retaining irregular, road-aligned grain. 50 surface checks pass; desktop capture retry succeeds and was inspected. No phone test. See ROAD_REALISM.md (Crisper asphalt follow-up).
+
+
+2026-09-22 G01/V03/V05/R01/R03/R07/Q01: traffic-light start and separate 1.8-second finish coast with Results crossfade. Official time/state freeze at the line. Practice 40, graphical practice 44 and Results 116 checks pass; desktop evidence saved. No phone test/export. See docs/RACE_FLOW.md.
+
+
+2026-09-22 G01/V03/V05/R01/R03/R07/Q01: five accumulating red race lights and simultaneous lights-out start replace road signals; waving chequered flag replaces finish banner. Refined vector housings/cloth. 45 headless / 68 graphical checks pass; evidence in docs/RACE_FLOW.md. No phone test/export.

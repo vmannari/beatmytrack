@@ -1,0 +1,1130 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -79,3 +79,7 @@
+ 
+ ## Discovery menu reference override (2026-09-18)
+ The owner supplied a track-discovery menu reference. Top navigation, original workshop backdrop, scenic route cards and yellow actions supersede bottom navigation for the local menus. Online friend rematches, ratings, currencies and progression remain deferred. See docs/DISCOVERY_MENU.md for actual checks and limitations.
++
++
++## Mobile optimization and checkpoint override (2026-09-22)
++The owner authorizes removing random road cracks, baking surface detail and reducing shadow quality for mobile performance. Timed laps require all road gates in order; missing a section requires returning, with no automatic +5s shortcut penalty. Gates must prevent hairpin shortcuts without excessive/intersecting dense gates impeding legitimate inside lines. Rules v10 replaces the old penalty contract. See docs/MOBILE_OPTIMIZATION_2026_09_22.md for implementation, physical-device measurements and remaining acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,8 @@
+ # Development status
++
++2026-09-22 R01/R03/R07/G01/V02/V03/V04/V05/Q01: baked road/sand detail, removed random cracks, reduced directional shadows and replaced route-history searches with ordered road gates. Owner follow-up reduces gate density to approximately 12 m and smooths bend normals. Missed sections require return; no +5s penalty. Rules v10 / compiler 18 / visual kit 52. See [actual tests, phone comparisons and acceptance](docs/MOBILE_OPTIMIZATION_2026_09_22.md).
++
++2026-09-22 R01/R03/V03/V05/Q01/RR02: Results maps show collision crosses and all-four-tyres-off-track diamonds. 104 headless / 114 graphical checks pass; screenshot saved. No phone test or export. See [details](docs/RACE_RESULTS.md#incident-markers--2026-09-22).
+ 
+ 2026-09-22 R01/R03/R07/V02/V04/V05/Q01: owner-suspected surface regression confirmed on DN2103. Alternating current/older shared asphalt detail saves 3.490 ms on Ajorata and 5.614 ms on Storm; directional grain costs 1.505 ms on dry Ajorata. Flat terrain/shoulder colouring saves 3.510/8.959 ms, with weather/shadows retained. Eighteen phone stages and 928 graphical uniform/geometry/restoration checks completed. Normal production visuals restored; no quality reduction shipped. [Evidence, interpretation and limits](docs/SURFACE_PERFORMANCE_2026_09_22.md).
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,8 @@
+ # Phase 0: specification review and first slice
++
++2026-09-22 R01/R03/R07/G01/V02/V03/V04/V05/Q01: baked road/sand detail, removed random cracks, reduced directional shadows and replaced route-history searches with ordered road gates. Owner follow-up reduces gate density to approximately 12 m and smooths bend normals. Missed sections require return; no +5s penalty. Rules v10 / compiler 18 / visual kit 52. See [actual tests, phone comparisons and acceptance](MOBILE_OPTIMIZATION_2026_09_22.md).
++
++2026-09-22 R01/R03/V03/V05/Q01/RR02: Results incident markers implemented; 104 headless / 114 graphical checks pass. No physics changes or phone test. See [commands and evidence](RACE_RESULTS.md#incident-markers--2026-09-22).
+ 
+ 2026-09-22 R01/R03/R07/V02/V04/V05/Q01: road/terrain follow-up confirms recent shared asphalt-shader regression in eighteen DN2103 stages: old detail saves 3.490/5.614 ms on Ajorata/Storm; terrain simplification saves 3.510/8.959 ms. 928 graphical checks pass, normal visuals/play restored. [Actual comparisons, commands and remaining acceptance](SURFACE_PERFORMANCE_2026_09_22.md).
+ 
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -54,6 +54,7 @@
+ var overview: bool = false
+ var capture_tick: int = 0
+ var bridge_presentation: BridgePresentation
++var checkpoint_marker: CheckpointMarker
+ var profile_enabled: bool = false
+ var profile_sim_us: int = 0
+ var profile_rules_us: int = 0
+@@ -100,7 +101,9 @@
+ 	light.light_color = Color("fff1d8")
+ 	light.light_energy = 1.0
+ 	light.shadow_enabled = true
+-	light.directional_shadow_max_distance = 100.0
++	# One stable shadow projection suits the compact overhead view.
++	light.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
++	light.directional_shadow_max_distance = 65.0
+ 	world.add_child(light)
+ 	var environment := WorldEnvironment.new()
+ 	environment.environment = Environment.new()
+@@ -114,6 +117,8 @@
+ 	biome_environment = environment.environment
+ 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",environment.environment,light)
+ 	_update_weather()
++	checkpoint_marker = CheckpointMarker.new()
++	world.add_child(checkpoint_marker)
+ 	car = CarVisual.new()
+ 	car.vehicle_id = vehicle_id
+ 	world.add_child(car)
+@@ -217,6 +222,7 @@
+ 			profile_rules_us += Time.get_ticks_usec() - profile_start
+ 			profile_start = Time.get_ticks_usec()
+ 		if not (profile_enabled and profile_skip_telemetry):
++			lap_telemetry.observe_incidents(track_session, native_track, sim.state, handling)
+ 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
+ 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
+ 		if production_mode and track_session.finished:
+@@ -296,7 +302,7 @@
+ 		track_debug.track = native_track
+ 		track_debug.state = sim.state
+ 		if track_debug.visible: track_debug.queue_redraw()
+-		var progress_text: String = "FINISH" if track_session.next_checkpoint == native_track.checkpoints.size() else "CP %d/%d" % [track_session.next_checkpoint + 1, native_track.checkpoints.size()]
++		var progress_text: String = "FINISH" if track_session.next_checkpoint == track_session.checkpoint_count() else "CP %d/%d" % [track_session.next_checkpoint + 1, track_session.checkpoint_count()]
+ 		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
+ 		if editor_test:
+ 			hud.title.text = "Practice (untimed)"
+@@ -304,8 +310,13 @@
+ 		elif production_mode:
+ 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
+ 			hud.show_session(track_session)
+-			hud.shortcut_penalty_label.text = ("SHORTCUT  +%ds" % int(track_session.penalty_seconds)) if track_session.shortcut_count > 0 else ""
+-			hud.shortcut_notice_label.visible = track_session.shortcut_notice_active()
++			hud.shortcut_penalty_label.text = ""
++			hud.shortcut_notice_label.text = "CHECKPOINT %d MISSED — RETURN" % (track_session.next_checkpoint+1)
++			hud.shortcut_notice_label.visible = track_session.missed_checkpoint >= 0
++			hud.road_map.checkpoint = track_session.checkpoint_position(native_track)
++			hud.road_map.checkpoint_visible = track_session.initialized and not track_session.finished
++			hud.road_map.checkpoint_missed = track_session.missed_checkpoint >= 0
++			checkpoint_marker.present(track_session,native_track,bridge_presentation)
+ 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
+ 		else:
+ 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
+@@ -327,6 +338,8 @@
+ 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
+ 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
+ 	track_session = TrackSession.new()
++	checkpoint_marker.previous_gate = -2
++	checkpoint_marker.visible = false
+ 	lap_telemetry = LapTelemetry.new()
+ 	lap_telemetry.begin(sim.state.position)
+ 	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Pure bounded compiler; native surface cells drive both simulation and art.
+ 
+-const VERSION: String = "creator-compiler-17"
++const VERSION: String = "creator-compiler-18"
+ const CELL_SIZE: float = 0.5
+ static var bases: Dictionary = {}
+ 
+@@ -127,7 +127,7 @@
+ 		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
+ 		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
+ 		"finish":{"center":[finish_center.x,finish_center.y],"half_width":radius,"heading":heading,"basis":"creator route origin"},
+-		"route":route_data,"checkpoints":checkpoints, "debug":{"blocks":[]},
++		"route":route_data,"route_widths":Array(widths),"checkpoints":checkpoints, "debug":{"blocks":[]},
+ 		"provenance":{"source":"local creator","use":"original route with built-in track kit"}}
+ 	if base != null:
+ 		data.deck = base.metadata.deck.duplicate(true)
+--- a/game/project.godot
++++ b/game/project.godot
+@@ -78,6 +78,8 @@
+ 
+ [rendering]
+ 
++lights_and_shadows/directional_shadow/size=1024
++
+ textures/vram_compression/import_etc2_astc=true
+ scaling_3d/scale.mobile=0.667
+ 
+--- a/game/race/race_rules.gd
++++ b/game/race/race_rules.gd
+@@ -2,4 +2,4 @@
+ extends RefCounted
+ 
+ const LAPS: int = 5
+-const KEY: String = "standing-5-local-v8"
++const KEY: String = "standing-5-road-gates-v10"
+--- a/game/race/track_session.gd
++++ b/game/race/track_session.gd
+@@ -1,9 +1,7 @@
+ class_name TrackSession
+ extends RefCounted
+-signal shortcut_detected
+-## Swept route progress, actual driven-path evidence and fixed-tick feedback.
+-## The route is authoritative; no hand-placed waypoint/checkpoint list is needed.
+-
++## Ordered swept gates; no route-history/shortcut search per tick.
++signal shortcut_detected # Legacy observer API; never emitted by checkpoint rules.
+ var next_checkpoint: int = 0
+ var completed_laps: int = 0
+ var elapsed_ticks: int = 0
+@@ -13,136 +11,166 @@
+ var tick_rate: int
+ var target_laps: int
+ var route_distance: float = 0.0
++var finish_armed: bool = false
++var initialized: bool = false
++var missed_checkpoint: int = -1
++# Retained read-model fields; these rules never add time penalties.
+ var shortcut_count: int = 0
+ var shortcut_distance: float = 0.0
+ var penalty_seconds: float = 0.0
+-var finish_armed: bool = false
+-var initialized: bool = false
++var lap_penalty_seconds: float = 0.0
++var last_shortcut_tick: int = -1
+ var last_progress: float = 0.0
+-var shortcut_latched: bool = false
+-var clean_ticks: int = 0
+-var clean_distance: float = 0.0
+-var last_shortcut_tick: int = -1
+-var lap_penalty_seconds: float = 0.0
+-var recent_motion := PackedVector2Array()
+-var bypass_origin: float = 0.0
+-var bypass_progress: float = 0.0
+-var bypass_travel: float = 0.0
+-var bypass_path := PackedVector2Array()
+-
++var _widths: Array[Vector2] = []
++var _centers := PackedVector2Array()
++var _directions := PackedVector2Array()
++var _progress := PackedFloat32Array()
++var _start_progress: float = 0.0
+ 
+ func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
+ 	tick_rate = rate
+ 	target_laps = laps
+ 
++func _configure(track: NativeTrack) -> void:
++	# Bake the gate corridor once. Runtime visits only the current gate and
++	# its neighbour, regardless of track length or total gate count.
++	_start_progress = track.route_progress(track.finish_center)
++	var targets: Array[float] = []
++	var count: int = maxi(4,ceili(track.route_length/12.0))
++	for i: int in range(1,count): targets.append(track.route_length*i/count)
++	# Add abrupt corners; smoothly sampled bends use the spaced gates.
++	for i: int in range(track.route.size()):
++		var incoming: Vector2 = (track.route[i]-track.route[posmod(i-1,track.route.size())]).normalized()
++		var outgoing: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[i]).normalized()
++		var distance: float = fposmod(track.route_cumulative[i]-_start_progress,track.route_length)
++		if incoming.dot(outgoing) < 0.707 and distance > 0.25 and distance < track.route_length-0.25: targets.append(distance)
++	targets.sort()
++	var dirt: bool = track.metadata.get("creator_document",{}).get("surface","") == "dirt" or not track.metadata.has("creator_document")
++	for distance: float in targets:
++		if not _progress.is_empty() and distance-_progress[-1] < 3.0: continue
++		var absolute: float = _start_progress+distance
++		var center: Vector2 = track._race_route_point(absolute)
++		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
++		var wrapped: float = fposmod(absolute,track.route_length)
++		var low: int = 0
++		var high: int = track.route.size()-1
++		while low < high:
++			var mid: int = (low+high+1)/2
++			if track.route_cumulative[mid] <= wrapped: low = mid
++			else: high = mid-1
++		var half: float = maxf(3.0,float(track.metadata.get("representative_width_m",9.0))*0.5)
++		if track.route_widths.size() == track.route.size(): half = track.route_widths[low]*0.5
++		elif track.route_radii.size() == track.route.size(): half = maxf(3.0,track.route_radii[low]-2.0)
++		var normal: Vector2 = direction.orthogonal()
++		var elevated: bool = track.elevated_at(center,low) if track.grid_width > 0 else false
++		var widths := Vector2(half+0.75,half+0.75)
++		var allowed: Array = [0,2,5] if dirt else [0,5]
++		if track.grid_width > 0 and track.cell_at(center,elevated) in allowed:
++			for side: int in range(2):
++				var span: float = 0.0
++				var sign_value: float = -1.0 if side == 0 else 1.0
++				while span < half+0.75 and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
++				widths[side] = minf(half+0.75,span+0.5)
++		_centers.append(center)
++		_directions.append(direction)
++		_progress.append(distance)
++		_widths.append(widths)
++	initialized = true
+ 
+-func advance(track: NativeTrack, from: Vector2, to: Vector2, _route_index: int) -> void:
++func _inside(index: int, point: Vector2) -> bool:
++	var lateral: float = (point-_centers[index]).dot(_directions[index].orthogonal())
++	return lateral >= -_widths[index].x and lateral <= _widths[index].y
++
++func checkpoint_position(track: NativeTrack) -> Vector2:
++	return _centers[next_checkpoint] if next_checkpoint < _centers.size() else track.finish_center
++func checkpoint_direction(track: NativeTrack) -> Vector2:
++	return _directions[next_checkpoint] if next_checkpoint < _directions.size() else track.finish_forward
++func checkpoint_width(track: NativeTrack) -> float:
++	if next_checkpoint >= _centers.size(): return track.finish_half_width*2.0
++	return _widths[next_checkpoint].x+_widths[next_checkpoint].y
++func checkpoint_count() -> int: return _centers.size()
++
++func _crossing(index: int, from: Vector2, to: Vector2) -> float:
++	var before: float = (from-_centers[index]).dot(_directions[index])
++	var after: float = (to-_centers[index]).dot(_directions[index])
++	if before > 0.0 or after <= 0.0: return -1.0
++	return -before/(after-before)
++
++func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int) -> void:
+ 	if finished: return
+ 	elapsed_ticks += 1
+-	if track.route_length <= 0.0: return
+-	if not initialized:
+-		last_progress = float(track.project_race_route(from).progress)
+-		recent_motion.append(from)
+-		bypass_origin = last_progress
+-		bypass_path.append(from)
+-		initialized = true
+-	var motion: Vector2 = to - from
+-	if motion.length_squared() <= 0.00000001: return
+-	var steps: int = maxi(1, ceili(motion.length() / 0.5))
+-	var on_corridor: bool = false
+-	for step: int in range(steps):
+-		on_corridor = _follow_motion(track, from.lerp(to, float(step) / steps), from.lerp(to, float(step + 1) / steps))
+-	if shortcut_latched and last_shortcut_tick != elapsed_ticks:
+-		clean_ticks = clean_ticks + 1 if on_corridor else 0
+-		clean_distance = clean_distance + motion.length() if on_corridor else 0.0
+-		if clean_ticks >= ceili(tick_rate * 0.5) and clean_distance >= 20.0: shortcut_latched = false
+-	next_checkpoint = clampi(int(maxf(route_distance, 0.0) / track.route_length * track.checkpoints.size()), 0, track.checkpoints.size())
+-	if to.distance_to(track.finish_center) > minf(maxf(15.0, track.finish_half_width * 2.0), track.route_length * 0.15):
+-		finish_armed = true
+-	var before: float = (from - track.finish_center).dot(track.finish_forward)
+-	var after: float = (to - track.finish_center).dot(track.finish_forward)
+-	if not finish_armed or before > 0.0 or after <= 0.0 or route_distance < track.route_length * 0.75: return
+-	var crossing: float = -before / (after - before)
+-	if absf((from.lerp(to, crossing) - track.finish_center).cross(track.finish_forward)) > track.finish_half_width + 2.0: return
+-	var time: float = (elapsed_ticks - 1 + crossing) / tick_rate
+-	# A time penalty is the consequence; do not also discard a driven lap.
+-	# shortcut_count still excludes the whole attempt from local records.
+-	lap_times.append(time - lap_start_time + lap_penalty_seconds)
++	if track.route_length <= 0.0 or track.route.size() < 2: return
++	if not initialized: _configure(track)
++	if from.distance_squared_to(to) <= 0.00000001: return
++	# A long sweep may cross multiple gates, but only in increasing time order.
++	var consumed: float = -1.0
++	while next_checkpoint < _centers.size():
++		var fraction: float = _crossing(next_checkpoint,from,to)
++		if fraction < 0.0 or fraction < consumed-0.000001: break
++		var point: Vector2 = from.lerp(to,fraction)
++		if not _inside(next_checkpoint,point):
++			if point.distance_squared_to(_centers[next_checkpoint]) < 1600.0: missed_checkpoint = next_checkpoint
++			break
++		consumed = fraction
++		next_checkpoint += 1
++		missed_checkpoint = -1
++	if next_checkpoint+1 < _centers.size():
++		var later: float = _crossing(next_checkpoint+1,from,to)
++		if later >= 0.0 and _inside(next_checkpoint+1,from.lerp(to,later)): missed_checkpoint = next_checkpoint
++	_update_display_progress(track,to,route_index)
++	# Crossing the start and the first dense gate in the same fast tick is
++	# departure, not an incomplete lap. Arm only after meaningful progress.
++	if route_distance >= minf(15.0,track.route_length*0.25): finish_armed = true
++	var before: float = (from-track.finish_center).dot(track.finish_forward)
++	var after: float = (to-track.finish_center).dot(track.finish_forward)
++	if not finish_armed or before > 0.0 or after <= 0.0: return
++	var crossing: float = -before/(after-before)
++	if absf((from.lerp(to,crossing)-track.finish_center).cross(track.finish_forward)) > track.finish_half_width+1.5: return
++	if next_checkpoint < _centers.size():
++		missed_checkpoint = next_checkpoint
++		return
++	if crossing < consumed-0.000001: return
++	var time: float = (elapsed_ticks-1+crossing)/tick_rate
++	lap_times.append(time-lap_start_time)
+ 	lap_start_time = time
+-	lap_penalty_seconds = 0.0
+ 	completed_laps += 1
+-	finished = completed_laps == target_laps
++	finished = completed_laps >= target_laps
+ 	route_distance = 0.0
+ 	next_checkpoint = 0
+ 	finish_armed = false
+-	recent_motion = PackedVector2Array([to])
+-	bypass_path = PackedVector2Array([to])
+-	bypass_origin = last_progress
+-	bypass_progress = 0.0
+-	bypass_travel = 0.0
++	missed_checkpoint = -1
+ 
++func _update_display_progress(track: NativeTrack, point: Vector2, hint: int) -> void:
++	# Telemetry only. Reuse the simulation hint and inspect three segments.
++	var best: float = INF
++	var progress: float = last_progress
++	for offset: int in range(-1,2):
++		var i: int = posmod(hint+offset,track.route.size())
++		var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
++		var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
++		var distance: float = point.distance_squared_to(track.route[i]+edge*t)
++		if distance < best:
++			best = distance
++			progress = track.route_cumulative[i]+edge.length()*t
++	last_progress = progress
++	var low: float = _progress[next_checkpoint-1] if next_checkpoint > 0 else 0.0
++	var high: float = _progress[next_checkpoint] if next_checkpoint < _progress.size() else track.route_length
++	route_distance = clampf(fposmod(progress-_start_progress,track.route_length),low,high)
+ 
+-func _follow_motion(track: NativeTrack, from: Vector2, to: Vector2) -> bool:
+-	var motion: Vector2 = to - from
+-	var observation: Dictionary = track.project_race_route(to, last_progress, motion)
+-	var delta: float = observation.delta
+-	var travelled: float = motion.length()
+-	var radius: float = track.route_radii[int(observation.index)]
+-	if recent_motion[-1].distance_to(to) >= 0.5:
+-		recent_motion.append(to)
+-		if recent_motion.size() > 512: recent_motion.remove_at(0)
+-	# Compare one contiguous excursion, not the side of the road at its rejoin.
+-	bypass_progress += delta
+-	bypass_travel += travelled
+-	var bypass_driven: PackedVector2Array = recent_motion.duplicate()
+-	bypass_driven.append(to)
+-	var gained: float = bypass_progress - bypass_travel
+-	var cut: bool = track.crosses_hairpin_infield(from,to) or (gained > 8.0 and track.has_cut_gap(bypass_origin, bypass_progress, bypass_driven))
+-	if cut and not shortcut_latched:
+-		shortcut_count += 1
+-		penalty_seconds += 5.0
+-		lap_penalty_seconds += 5.0
+-		shortcut_distance += maxf(gained,0.0)
+-		last_shortcut_tick = elapsed_ticks
+-		shortcut_latched = true
+-		shortcut_detected.emit()
+-		clean_ticks = 0
+-		clean_distance = 0.0
+-	# Keep the origin while away from the allowed corridor. Once back on it,
+-	# retain a short approach so branch changes on adjacent roads are covered.
+-	if bypass_path[-1].distance_to(to) >= 0.5: bypass_path.append(to)
+-	if (float(observation.distance) <= radius and bypass_travel > 40.0 and absf(delta) < travelled * 2.0) or bypass_path.size() > 256 or cut:
+-		bypass_origin = observation.progress
+-		bypass_progress = 0.0
+-		bypass_travel = 0.0
+-		bypass_path = PackedVector2Array([to])
+-	# Signed distance, never positive-only accumulation: reverse/forward
+-	# rocking cannot manufacture a completed lap.
+-	route_distance += delta
+-	last_progress = observation.progress
+-	var route_edge: Vector2 = track.route[(int(observation.index) + 1) % track.route.size()] - track.route[int(observation.index)]
+-	return float(observation.distance) <= radius * 0.75 and motion.normalized().dot(route_edge.normalized()) >= 0.9
+-
+-
+-func shortcut_notice_active() -> bool:
+-	return last_shortcut_tick >= 0 and elapsed_ticks - last_shortcut_tick < tick_rate * 2
+-
+-
++func shortcut_notice_active() -> bool: return false
+ func race_time_seconds() -> float:
+-	return (lap_start_time if finished else float(elapsed_ticks) / float(tick_rate)) + penalty_seconds
+-
++	return lap_start_time if finished else float(elapsed_ticks)/tick_rate
+ 
+ static func entry_fraction(rect: Rect2, from: Vector2, to: Vector2) -> float:
+ 	var lo: float = 0.0
+ 	var hi: float = 1.0
+-	var motion: Vector2 = to - from
++	var motion: Vector2 = to-from
+ 	for axis: int in range(2):
+ 		if absf(motion[axis]) < 0.000001:
+-			if from[axis] < rect.position[axis] or from[axis] > rect.end[axis]:
+-				return -1.0
++			if from[axis] < rect.position[axis] or from[axis] > rect.end[axis]: return -1.0
+ 		else:
+-			var a: float = (rect.position[axis] - from[axis]) / motion[axis]
+-			var b: float = (rect.end[axis] - from[axis]) / motion[axis]
+-			lo = maxf(lo, minf(a, b))
+-			hi = minf(hi, maxf(a, b))
++			var a: float = (rect.position[axis]-from[axis])/motion[axis]
++			var b: float = (rect.end[axis]-from[axis])/motion[axis]
++			lo = maxf(lo,minf(a,b))
++			hi = minf(hi,maxf(a,b))
+ 	return lo if lo <= hi else -1.0
+--- a/game/tests/test_bridge_hud.gd
++++ b/game/tests/test_bridge_hud.gd
+@@ -146,7 +146,7 @@
+ 		session.penalty_seconds = 5.0
+ 		session.lap_penalty_seconds = 5.0
+ 		hud.show_session(session)
+-		check(hud.race_timer.text == "01:12.50" and hud.lap_timer.text == "00:11.25","penalties enter each live clock once")
++		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","checkpoint rules use elapsed time, ignoring retired shortcut penalties")
+ 		session.lap_times.assign([20.0,21.0,26.5])
+ 		session.finished = true
+ 		hud.show_session(session)
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -154,6 +154,7 @@
+ 			if kind == 0:
+ 				var asphalt := ShaderMaterial.new()
+ 				asphalt.shader = preload("res://track/bridge_road.gdshader")
++				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
+ 				asphalt.set_shader_parameter("road_color", palette[0])
+ 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
+ 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -14,6 +14,7 @@
+ var deck_rectangles: Array
+ var route := PackedVector2Array()
+ var checkpoints: Array[Rect2] = []
++var route_widths := PackedFloat32Array()
+ var route_cumulative := PackedFloat32Array()
+ var route_length: float = 0.0
+ var route_radii := PackedFloat32Array()
+@@ -68,6 +69,7 @@
+ 	track._expand(track.deck_rectangles, track.deck_cells)
+ 	for p: Array in data.route:
+ 		track.route.append(Vector2(p[0], p[1]))
++	track.route_widths = PackedFloat32Array(data.get("route_widths",[]))
+ 	track._build_route_distance()
+ 	for r: Array in data.checkpoints:
+ 		track.checkpoints.append(Rect2(r[0], r[1], r[2], r[3]))
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,8 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-51"
++const VERSION: String = "track-kit-52"
++const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
+ const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
+ const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
+ const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
+@@ -31,6 +32,7 @@
+ 	colors = TrackTheme.palette(theme_id)
+ 	var ground := ShaderMaterial.new()
+ 	ground.shader = preload("res://track/ground.gdshader")
++	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+ 	ground.set_shader_parameter("ground_color", colors[1])
+ 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+ 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
+@@ -103,6 +105,7 @@
+ 			else: high.set_pixel(x, y, weights)
+ 	var surface := ShaderMaterial.new()
+ 	surface.shader = TERRAIN_SHADER
++	surface.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+ 	surface.set_shader_parameter("icy_road", theme_id == "winter")
+ 	surface.set_shader_parameter("wet_road", theme_id == "storm")
+ 	surface.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+@@ -414,6 +417,7 @@
+ 	instance.mesh = flat.commit()
+ 	var material := ShaderMaterial.new()
+ 	material.shader = CREATOR_ROAD_SHADER
++	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+ 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+ 	material.set_shader_parameter("grass_color", colors[1])
+ 	material.set_shader_parameter("overlay_mask",mask)
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -1,3 +1,5 @@
++// Baked original colour factors, generated by scripts/bake-surface-detail.py.
++uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
+ uniform bool icy_road = false;
+ uniform bool wet_road = false;
+ // Original world-space pigment pattern. Derivative filtering limits distant shimmer.
+@@ -23,55 +25,13 @@
+ // Matte sand shared by terrain paint and roadside shoulders. Grain is
+ // isotropic (no grass-like diagonal strokes), with filtered fine minerals.
+ vec3 sand_detail(vec3 base, vec2 p) {
+-	float broad = pigment(p*0.65+vec2(8.3,21.7));
+-	float medium = pigment(p*4.3+vec2(19.2,3.8));
+-	float grain = pigment(p*19.0);
+-	float grit = pigment(p*8.7+vec2(31.4,7.1));
+-	float fine_visibility = 1.0-smoothstep(0.5,1.5,length(fwidth(p*19.0)));
+-	float grit_visibility = 1.0-smoothstep(0.6,1.6,length(fwidth(p*8.7)));
+-	float aa = max(0.035,fwidth(grit)*0.65);
+-	float dark_grit = smoothstep(0.72-aa,0.85+aa,grit);
+-	float light_grain = smoothstep(0.58,0.82,grain);
+-	return base*(0.965+(broad-0.5)*0.045+(medium-0.5)*0.045
+-		+(grain-0.5)*0.12*fine_visibility
+-		+light_grain*0.04*fine_visibility-dark_grit*0.16*grit_visibility);
++	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
+ }
+ 
+-// Dry-asphalt breakup is world-space so creator pieces, painted road and
+-// bridge decks do not reveal their individual UV layouts. Repairs are rare,
+-// softly feathered and deterministic; they are colour-only and never alter
+-// collision or grip.
++// Shared world-space baked asphalt. Random repair/crack shapes are removed;
++// binder variation and mineral grain remain presentation-only.
+ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
+-	float macro = pigment(p * 0.052 + vec2(17.4, 6.1));
+-	float secondary = pigment(p * 0.115 + vec2(3.7, 29.2));
+-	// Weathered charcoal binder: broad variation stays subordinate to the
+-	// mineral texture. Warping and uneven grain density avoid uniform stipple.
+-	vec2 warp = vec2(pigment(p*0.39),pigment(p*0.47+vec2(8.1,3.7)))-0.5;
+-	float weathering = pigment(p * 0.63 + warp*1.7 + vec2(41.2, 9.6));
+-	// Keep broad staining quiet so it does not read as blurred clouds.
+-	vec3 result = base * (1.015 + (macro - 0.5) * 0.035
+-		+ (secondary - 0.5) * 0.03 + (weathering - 0.5) * 0.045);
+-
+-	vec2 patch_cell = floor(p / 13.0);
+-	float patch_seed = pigment(patch_cell + vec2(81.0, 14.0));
+-	vec2 patch_center = vec2(
+-		0.24 + 0.52 * pigment(patch_cell + vec2(9.0, 47.0)),
+-		0.24 + 0.52 * pigment(patch_cell + vec2(61.0, 5.0))
+-	);
+-	vec2 local = fract(p / 13.0) - patch_center;
+-	float angle = patch_seed * 6.2831853;
+-	local = mat2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle))) * local;
+-	float shape_noise = pigment(p * 0.31 + patch_cell * 0.17) - 0.5;
+-	float patch_distance = length(local / vec2(0.27, 0.13)) + shape_noise * 0.22;
+-	float patch = step(0.82, patch_seed) * (1.0 - smoothstep(0.76, 1.03, patch_distance));
+-	result *= 1.0 - patch * 0.065;
+-
+-	// A broken hairline inside some repair areas suggests sealed cracking at
+-	// gameplay distance without introducing high-frequency shimmer.
+-	float crack_wave = abs(local.y + sin(local.x * 31.0 + patch_seed * 9.0) * 0.018);
+-	float crack_aa = max(fwidth(crack_wave), 0.0025);
+-	float crack = patch * (1.0 - smoothstep(0.006 - crack_aa, 0.010 + crack_aa, crack_wave));
+-	return result * (1.0 - crack * 0.075);
++	return base * (0.8 + texture(surface_factors,p/32.0).r * 0.4);
+ }
+ 
+ vec3 surface_detail(vec3 base, vec2 p, bool road) {
+@@ -85,24 +45,8 @@
+ 		float streak = pow(0.5 + 0.5 * sin(p.x * 2.3 + pigment(p * 0.2) * 9.0), 18.0);
+ 		return mix(base * (0.91 + frost * 0.12), vec3(0.62,0.74,0.82), streak * 0.14);
+ 	}
+-	if (road) {
+-		base = dry_asphalt_detail(base, p);
+-		// Fine mineral flecks in an even binder, not broad soft noise blobs.
+-		// Two sizes break up a regular grain pattern; filter toward each
+-		// layer's average when the flecks fall below a screen pixel.
+-		float density = pigment(p*1.3+vec2(11.4,7.2));
+-		float grain = pigment(p * 17.0 + vec2(density*2.7,pigment(p*2.1)*2.1));
+-		float aa = max(0.035,fwidth(grain)*0.65);
+-		float mineral = smoothstep(0.57-aa,0.57+aa,grain);
+-		float pores = 1.0-smoothstep(0.30-aa,0.30+aa,grain);
+-		float fine_visibility = 1.0-smoothstep(0.8,1.8,length(fwidth(p*17.0)));
+-		float coarse = pigment(p * 7.3 + vec2(27.1,13.7));
+-		float coarse_aa = max(0.035,fwidth(coarse)*0.65);
+-		float chips = smoothstep(0.72-coarse_aa,0.72+coarse_aa,coarse);
+-		float chip_visibility = 1.0-smoothstep(0.8,1.8,length(fwidth(p*7.3)));
+-		return base * (1.0 + ((mineral-0.32)*0.085-(pores-0.14)*0.045)*fine_visibility*mix(0.45,1.6,density)
+-			+ (chips-0.08)*0.022*chip_visibility);
+-	}
++	if (road) { return dry_asphalt_detail(base,p); }
++
+ 	// Sparse short blade strokes rather than circular noise clouds.
+ 	vec2 cell = floor(p * 2.4);
+ 	float seed = fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);
+@@ -122,11 +66,11 @@
+ 	float strength = smoothstep(0.15,0.75,length(encoded_axis));
+ 	float angle = atan(encoded_axis.y,encoded_axis.x+0.000001)*0.5;
+ 	vec2 direction = vec2(cos(angle),sin(angle));
+-	float worn = pigment(p*2.8)*0.4;
+-	worn += pigment((p+direction*0.28)*2.8)*0.24;
+-	worn += pigment((p-direction*0.28)*2.8)*0.24;
+-	worn += pigment((p+direction*0.56)*2.8)*0.06;
+-	worn += pigment((p-direction*0.56)*2.8)*0.06;
++	float worn = texture(surface_factors,p/32.0).g*0.4;
++	worn += texture(surface_factors,(p+direction*0.28)/32.0).g*0.24;
++	worn += texture(surface_factors,(p-direction*0.28)/32.0).g*0.24;
++	worn += texture(surface_factors,(p+direction*0.56)/32.0).g*0.06;
++	worn += texture(surface_factors,(p-direction*0.56)/32.0).g*0.06;
+ 	float breakup = smoothstep(0.25,0.75,pigment(p*0.73+vec2(13.1,6.4)));
+ 	return base*(1.0+(worn-0.5)*0.15*mix(0.25,1.0,breakup)*strength);
+ }
+--- a/game/ui/hud_road_map.gd
++++ b/game/ui/hud_road_map.gd
+@@ -2,6 +2,9 @@
+ extends Control
+ ## Only placed road-piece geometry. No waypoint, painted-surface or legacy fallback.
+ var player := Vector2.ZERO
++var checkpoint := Vector2.ZERO
++var checkpoint_visible: bool = false
++var checkpoint_missed: bool = false
+ var outlines: Array[PackedVector2Array] = []
+ var world_bounds := Rect2()
+ 
+@@ -48,6 +51,11 @@
+ 
+ func _draw() -> void:
+ 	if outlines.is_empty(): return
++	if checkpoint_visible:
++		var target: Vector2 = (checkpoint-world_bounds.get_center())*cached_scale
++		var target_point: Vector2 = size*0.5+Vector2(target.x,-target.y)
++		draw_circle(target_point,7.0 if checkpoint_missed else 5.0,Color("ffca45"))
++		draw_circle(target_point,3.0,Color("172129"))
+ 	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
+ 	var marker: Vector2 = (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
+ 	draw_circle(marker,5,Color("f1eee3"))
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -118,11 +118,11 @@
+ 	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+ 	shortcut_penalty_label.visible = false
+ 	clock_info.add_child(shortcut_penalty_label)
+-	shortcut_notice_label = _label("SHORTCUT  +5s", 26)
++	shortcut_notice_label = _label("CHECKPOINT MISSED — RETURN", 22)
+ 	shortcut_notice_label.name = "ShortcutNotice"
+ 	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+-	shortcut_notice_label.offset_left = -180
+-	shortcut_notice_label.offset_right = 180
++	shortcut_notice_label.offset_left = -300
++	shortcut_notice_label.offset_right = 300
+ 	shortcut_notice_label.offset_top = 164
+ 	shortcut_notice_label.offset_bottom = 202
+ 	shortcut_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+@@ -412,7 +412,7 @@
+ 	lap_label.text = str(mini(session.target_laps,session.completed_laps + 1))
+ 	lap_total.text = "/ %d" % session.target_laps
+ 	race_timer.text = _time_text(session.race_time_seconds())
+-	var current: float = maxf(0.0,float(session.elapsed_ticks)/session.tick_rate-session.lap_start_time) + session.lap_penalty_seconds
++	var current: float = maxf(0.0,float(session.elapsed_ticks)/session.tick_rate-session.lap_start_time)
+ 	if session.finished and not session.lap_times.is_empty(): current = session.lap_times[-1]
+ 	lap_timer.text = _time_text(current)
+ 	shortcut_penalty_label.visible = session.shortcut_count > 0
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -89,7 +89,7 @@
+     }
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_driving.gd') 'driving-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_handling.gd') 'handling-tests.log'
+-    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_route_validation.gd') 'route-validation-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_retirement.gd') 'editor-retirement.log'
+@@ -351,6 +351,7 @@
+         'TestResults' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_race_results.gd') 'results-tests.log' }
+         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
+         'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd') 'surface-profile-tests.log' }
++        'CaptureCheckpoints' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd') 'checkpoint-capture.log' }
+         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
+         'Import' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log' }
+         'TestConstruction' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log' }
+@@ -371,7 +372,7 @@
+         'CaptureShortcutFeedback' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_shortcut_feedback.gd') 'shortcut-hud-tests.log' }
+         'ReviewRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/review_route_validation.gd') 'route-owner-review.log' }
+         'TestSilmukka' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_silmukka.gd') 'silmukka-tests.log' }
+-        'TestRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_route_validation.gd') 'route-validation-tests.log' }
++        'TestRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log' }
+         'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
+         'TestCreator' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log' }
+         'TestEditor' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log' }
+--- a/scripts/profile-features-phone.ps1
++++ b/scripts/profile-features-phone.ps1
+@@ -1,10 +1,12 @@
+-param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile)
++param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile,
++    [switch]$Baseline, [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
+ $ErrorActionPreference = 'Stop'
+ $root = Split-Path -Parent $PSScriptRoot
+ $adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
+ $package = 'org.circuit01.handlinglab'
+ $evidence = Join-Path $root 'docs/evidence/performance-2026-09-22'
+ if ($SurfaceProfile) { $evidence = Join-Path $root 'docs/evidence/surface-performance-2026-09-22' }
++if ($ReportName) { $evidence = Join-Path $root "docs/evidence/$ReportName" }
+ New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+ function Adb([string[]]$Arguments) {
+     $result = & $adb @Arguments
+@@ -21,6 +23,8 @@
+         if ($StormOnly -and $track[0] -ne 'storm') { continue }
+         $config = @{track_id=$track[1]; seconds=$Seconds; sustained=$true; use_game_scale=$true; feature_profile=$true; touch_stress=$true; features=@('baseline','telemetry','shadows','particles','trails','hud','weather','half_scale','baseline')}
+         if ($SurfaceProfile) { $config.features = @('baseline','asphalt_previous','baseline','directional_off','baseline','road_flat','baseline','terrain_flat','baseline') }
++        if ($Baseline) { $config.features = @('baseline') }
++        $stageCount = $config.features.Count
+         $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$($track[0])-config.json" -Encoding ASCII
+         Adb @('shell','am','force-stop',$package)
+         Adb @('push',"$evidence/$($track[0])-config.json",'/data/local/tmp/feature-profile.json')
+@@ -28,7 +32,7 @@
+         Adb @('shell','run-as',$package,'rm','-f','files/mobile_probe_results.json')
+         Adb @('shell','input','keyevent','KEYCODE_WAKEUP')
+         Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package)
+-        $deadline = (Get-Date).AddSeconds(($Seconds+5)*9+120)
++        $deadline = (Get-Date).AddSeconds(($Seconds+5)*$stageCount+120)
+         $done = 0
+         while ((Get-Date) -lt $deadline) {
+             Start-Sleep -Seconds 5
+@@ -41,9 +45,9 @@
+                 foreach ($r in $reports | Select-Object -Skip $done) { Write-Host "$($track[0]) $($r.disabled_feature): median=$($r.frame_median_ms) p95=$($r.frame_p95_ms) telemetry=$($r.telemetry_mean_ms)" }
+                 $done = $reports.Count
+             }
+-            if ($done -eq 9) { break }
++            if ($done -eq $stageCount) { break }
+         }
+-        if ($done -ne 9) { throw "Incomplete $($track[0]) profile: $done/9 stages" }
++        if ($done -ne $stageCount) { throw "Incomplete $($track[0]) profile: $done/$stageCount stages" }
+         Adb @('shell','dumpsys','battery') | Set-Content "$evidence/battery-$($track[0]).txt"
+     }
+ } finally {
+--- /dev/null
++++ b/game/tests/test_checkpoint_rules.gd
+@@ -0,0 +1,120 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++func fixture() -> NativeTrack:
++	var track := NativeTrack.new()
++	track.route = PackedVector2Array([Vector2(0,0),Vector2(40,0),Vector2(40,40),Vector2(0,40)])
++	track.finish_center = Vector2.ZERO
++	track.finish_forward = Vector2.RIGHT
++	track.finish_half_width = 6.0
++	track._build_route_distance()
++	for p: Vector2 in [Vector2(20,0),Vector2(40,20),Vector2(20,40),Vector2(0,20)]: track.checkpoints.append(Rect2(p-Vector2(6,6),Vector2(12,12)))
++	return track
++func drive(session: TrackSession, track: NativeTrack, path: PackedVector2Array, spacing: float = 0.5) -> bool:
++	var warned: bool = false
++	for i: int in range(path.size()-1):
++		var count: int = maxi(1,ceili(path[i].distance_to(path[i+1])/spacing))
++		for j: int in range(count):
++			var a: Vector2 = path[i].lerp(path[i+1],float(j)/count)
++			var b: Vector2 = path[i].lerp(path[i+1],float(j+1)/count)
++			session.advance(track,a,b,track.nearest_route(b))
++			warned = warned or session.missed_checkpoint >= 0
++	return warned
++func run() -> void:
++	var track := fixture()
++	var loop := PackedVector2Array([Vector2(1,0),Vector2(40,0),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)])
++	for spacing: float in [0.1,0.5,3.0,50.0]:
++		var session := TrackSession.new()
++		for lap: int in range(5):
++			drive(session,track,loop,spacing)
++			check(session.completed_laps == lap+1,"ordered full lap at spacing "+str(spacing))
++		check(session.finished and session.lap_times.size() == 5,"five laps finish")
++		var ticks: int = session.elapsed_ticks
++		session.advance(track,Vector2.ZERO,Vector2.ONE,0)
++		check(session.elapsed_ticks == ticks,"finish freezes official time")
++		check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,v: float) -> float: return total+v,0.0)),"lap times equal race clock without penalty")
++	var missed := TrackSession.new(120,1)
++	drive(missed,track,PackedVector2Array([Vector2(1,0),Vector2(40,20),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)]))
++	check(not missed.finished and missed.completed_laps == 0 and missed.next_checkpoint < missed.checkpoint_count(),"skipped gate blocks the finish and cannot be credited out of order")
++	check(missed.missed_checkpoint == missed.next_checkpoint,"missing road section is highlighted")
++	check(missed.penalty_seconds == 0 and missed.shortcut_count == 0,"no shortcut penalty under checkpoint rules")
++	var before_recovery: int = missed.elapsed_ticks
++	drive(missed,track,loop)
++	check(missed.finished and missed.missed_checkpoint == -1,"returning through all required gates recovers the lap")
++	check(missed.lap_times[0] > before_recovery/120.0,"recovery time remains in the lap")
++	var reverse := TrackSession.new(120,1)
++	drive(reverse,track,PackedVector2Array([Vector2(30,0),Vector2(10,0)]))
++	check(reverse.next_checkpoint == 0,"reverse crossing does not consume a forward gate")
++	for i: int in range(1000): reverse.advance(track,Vector2(20,0),Vector2(20,0),0)
++	check(reverse.next_checkpoint == 0 and not reverse.finished,"stationary overlap cannot manufacture progress")
++	var sweep := TrackSession.new(120,1)
++	drive(sweep,track,PackedVector2Array([Vector2(-10,0),Vector2(30,0)]),100.0)
++	check(sweep.next_checkpoint >= 2,"swept high-speed gate crossing cannot tunnel")
++	var outside := TrackSession.new(120,1)
++	drive(outside,track,PackedVector2Array([Vector2(0,12),Vector2(30,12)]),100.0)
++	check(outside.next_checkpoint == 0 and outside.missed_checkpoint == 0,"passing beside the gate is a miss")
++	var sparse := fixture()
++	sparse.checkpoints.clear()
++	var automatic := TrackSession.new(120,1)
++	drive(automatic,sparse,loop)
++	check(automatic.finished and automatic.checkpoint_count() >= 12 and automatic.checkpoint_count() <= 16,"native routes without gates get automatic ordered gates")
++	check(RaceRules.KEY == "standing-5-road-gates-v10","checkpoint records use a new rules key")
++	# Real creator hairpins: a cut must block the eventual finish, even when
++	# the car rejoins and follows the rest of the route correctly.
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
++	var real_track: NativeTrack = TrackCompiler.compile(document)
++	var clean := TrackSession.new(120,1)
++	var full := real_track.route.duplicate()
++	full.append(real_track.route[0])
++	full.append(real_track.route[1])
++	drive(clean,real_track,full)
++	check(clean.finished,"complete real hairpin route finishes")
++	for start: int in [50,55,60,65]:
++		for end: int in [85,90,95,100]:
++			var cut := TrackSession.new(120,1)
++			var path := PackedVector2Array()
++			for i: int in range(start+1): path.append(real_track.route[i])
++			for i: int in range(end,real_track.route.size()): path.append(real_track.route[i])
++			path.append(real_track.route[0])
++			path.append(real_track.route[1])
++			drive(cut,real_track,path)
++			check(not cut.finished and cut.missed_checkpoint >= 0,"hairpin shortcut blocks finish %d -> %d" % [start,end])
++			drive(cut,real_track,full)
++			check(cut.finished,"return to missed hairpin section recovers %d -> %d" % [start,end])
++	# Tight continuous hairpins: legal inner/outer lines at up to 240 m/s
++	# equivalent sweep lengths, including gate-plane intersections in infield.
++	for radius: float in [6.0,10.0]:
++		var bend := NativeTrack.new()
++		for i: int in range(128): bend.route.append(Vector2.from_angle(TAU*i/128)*radius)
++		bend.route_widths.resize(128)
++		bend.route_widths.fill(10.0)
++		bend.finish_center = bend.route[0]
++		bend.finish_forward = Vector2(0,1)
++		bend.finish_half_width = 6.0
++		bend._build_route_distance()
++		for offset: float in [-4.0,0.0,4.0]:
++			for spacing: float in [0.1,0.5,2.0]:
++				var arc := PackedVector2Array()
++				var samples: int = maxi(8,ceili(TAU*(radius+offset)/spacing))
++				for i: int in range(samples+2): arc.append(Vector2.from_angle(TAU*i/samples)*(radius+offset))
++				var legal := TrackSession.new(120,1)
++				var warned: bool = drive(legal,bend,arc,spacing)
++				check(legal.finished and not warned,"tight hairpin legal radius %s offset %s sweep %s" % [radius,offset,spacing])
++		var cut := TrackSession.new(120,1)
++		var diagonal := PackedVector2Array([bend.route[0],bend.route[64]])
++		for i: int in range(65,130): diagonal.append(bend.route[i%128])
++		drive(cut,bend,diagonal)
++		check(not cut.finished and cut.missed_checkpoint >= 0,"tight hairpin diameter shortcut rejected")
++	var measured := TrackSession.new(120,100000)
++	measured.advance(track,Vector2.ZERO,Vector2(1,0),0)
++	var start: int = Time.get_ticks_usec()
++	for i: int in range(12000): measured.advance(track,Vector2(1,0),Vector2(1.2,0),0)
++	print("CHECKPOINT_CPU_US_PER_TICK: ",(Time.get_ticks_usec()-start)/12000.0)
++	print("CHECKPOINT_TESTS: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/game/tests/test_checkpoint_rules.gd.uid
+@@ -0,0 +1 @@
++uid://ddj30g8lcrm8n
+--- /dev/null
++++ b/game/tests/capture_checkpoints.gd
+@@ -0,0 +1,45 @@
++extends SceneTree
++var failures: int = 0
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	if not ok:
++		failures += 1
++		push_error(message)
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var document: Dictionary = TrackLibrary.new().load_document("track_acf29166cceaaa42")
++	var track: NativeTrack = TrackCompiler.compile(document)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.production_mode = true
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.paused = true
++	game.countdown_ticks = 0
++	var session: TrackSession = game.track_session
++	session.advance(track,track.spawn,track.spawn,0)
++	var gate: Vector2 = session.checkpoint_position(track)
++	var direction: Vector2 = session.checkpoint_direction(track)
++	var side: Vector2 = direction.orthogonal()*(session.checkpoint_width(track)*0.5+5.0)
++	session.advance(track,gate+side-direction*5,gate+side+direction*5,0)
++	check(session.missed_checkpoint == 0,"actual missed sweep creates checkpoint notice")
++	game.sim.state.position = gate-direction*8
++	game.sim.state.heading = atan2(direction.x,direction.y)
++	game.previous_position = game.sim.state.position
++	game.previous_heading = game.sim.state.heading
++	game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0.0,true)
++	for i: int in range(12): await process_frame
++	check(game.checkpoint_marker.visible,"missed gate gets a world marker")
++	check(game.hud.road_map.checkpoint_missed,"minimap highlights the actual missed gate")
++	check(game.hud.shortcut_notice_label.visible and "RETURN" in game.hud.shortcut_notice_label.text,"persistent return notice")
++	await RenderingServer.frame_post_draw
++	root.get_texture().get_image().save_png("res://../build/checkpoint-missed.png")
++	session.advance(track,gate-direction*2,gate+direction*2,0)
++	for i: int in range(4): await process_frame
++	check(not game.checkpoint_marker.visible and not game.hud.shortcut_notice_label.visible,"recovery clears world and HUD notices")
++	game.restart()
++	check(game.track_session.next_checkpoint == 0 and game.track_session.missed_checkpoint == -1,"restart clears checkpoint state")
++	check(not game.checkpoint_marker.visible,"restart clears cached marker")
++	game.free()
++	print("CHECKPOINT_CAPTURE: 7 checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/game/tests/capture_checkpoints.gd.uid
+@@ -0,0 +1 @@
++uid://bxqviuvd0d1ig
+--- /dev/null
++++ b/game/ui/checkpoint_marker.gd
+@@ -0,0 +1,36 @@
++class_name CheckpointMarker
++extends MeshInstance3D
++## Only a missed gate gets a world marker; minimap always shows the next gate.
++var label: Label3D
++var previous_gate: int = -2
++func _ready() -> void:
++	var box := BoxMesh.new()
++	box.size = Vector3(1,0.06,0.35)
++	mesh = box
++	var material := StandardMaterial3D.new()
++	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++	material.albedo_color = Color("ffcc49")
++	material_override = material
++	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	label = Label3D.new()
++	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
++	label.font_size = 48
++	label.pixel_size = 0.025
++	label.outline_size = 10
++	label.modulate = Color("ffdf77")
++	label.position.y = 2.2
++	label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(label)
++	visible = false
++func present(session: TrackSession, track: NativeTrack, bridge: BridgePresentation) -> void:
++	visible = session.missed_checkpoint >= 0 and not session.finished
++	if not visible or previous_gate == session.missed_checkpoint: return
++	previous_gate = session.missed_checkpoint
++	var center: Vector2 = session.checkpoint_position(track)
++	var direction: Vector2 = session.checkpoint_direction(track)
++	var route_index: int = track.nearest_route(center)
++	position = VisualGeometry.world(center)
++	position.y = bridge.height_at(center,route_index)+0.12
++	rotation.y = -atan2(direction.x,direction.y)
++	(mesh as BoxMesh).size.x = session.checkpoint_width(track)
++	label.text = "CHECKPOINT %d" % (session.next_checkpoint+1)
+--- /dev/null
++++ b/game/ui/checkpoint_marker.gd.uid
+@@ -0,0 +1 @@
++uid://bays3vfaspsjx
+--- /dev/null
++++ b/scripts/bake-surface-detail.py
+@@ -0,0 +1,53 @@
++"""Bake original surface colour factors; no runtime generation or external assets.
++
++Channels: R asphalt multiplier encoded over [0.8,1.2], G directional grain,
++B sand multiplier over [0.8,1.2]. Seamless 32 m tile, 2x supersampling.
++Requires the existing development numpy installation; PNG uses stdlib only.
++"""
++from pathlib import Path
++import struct, zlib
++import numpy as np
++
++SIZE, TILE = 1024, 32.0
++n = SIZE * 2
++y, x = np.mgrid[:n, :n].astype(np.float32)
++x = (x + .5) * TILE / n
++y = (y + .5) * TILE / n
++def fract(v): return v - np.floor(v)
++def smooth(a,b,v):
++    t = np.clip((v-a)/(b-a),0,1)
++    return t*t*(3-2*t)
++def noise(f, ox=0., oy=0.):
++    period = max(1,round(f*TILE))
++    px, py = x*period/TILE+ox, y*period/TILE+oy
++    ix, iy = np.floor(px), np.floor(py)
++    fx, fy = smooth(0,1,fract(px)), smooth(0,1,fract(py))
++    def h(dx,dy):
++        a = fract(((ix+dx)%period)*.1031)
++        b = fract(((iy+dy)%period)*.1031)
++        c = a.copy()
++        d = a*(b+33.33)+b*(c+33.33)+c*(a+33.33)
++        a,b,c = a+d,b+d,c+d
++        return fract((a+b)*c)
++    return (h(0,0)*(1-fx)+h(1,0)*fx)*(1-fy)+(h(0,1)*(1-fx)+h(1,1)*fx)*fy
++
++# Retain subtle binder variation and mineral contrast; omit repair/crack shapes.
++base = 1.015+(noise(.052,17.4,6.1)-.5)*.035+(noise(.115,3.7,29.2)-.5)*.03+(noise(.63,41.2,9.6)-.5)*.045
++density = noise(1.3,11.4,7.2)
++grain = noise(17.)
++mineral = smooth(.535,.605,grain)
++pores = 1-smooth(.265,.335,grain)
++chips = smooth(.685,.755,noise(7.3,27.1,13.7))
++asphalt = base*(1+((mineral-.32)*.085-(pores-.14)*.045)*(.45+1.15*density)+(chips-.08)*.022)
++grit = noise(8.7,31.4,7.1)
++sand = .965+(noise(.65,8.3,21.7)-.5)*.045+(noise(4.3,19.2,3.8)-.5)*.045+(noise(19.)-.5)*.12+smooth(.58,.82,noise(19.))*.04-smooth(.685,.885,grit)*.16
++pixels = np.stack(((asphalt-.8)/.4,noise(2.8),(sand-.8)/.4),axis=-1)
++pixels = pixels.reshape(SIZE,2,SIZE,2,3).mean(axis=(1,3))
++pixels = np.rint(np.clip(pixels,0,1)*255).astype(np.uint8)
++def chunk(kind,data):
++    return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
++raw = b''.join(b'\0'+row.tobytes() for row in pixels)
++png = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!2I5B',SIZE,SIZE,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw,9))+chunk(b'IEND',b'')
++path = Path(__file__).resolve().parents[1]/'game/assets/textures/surface_factors_v1.png'
++path.write_bytes(png)
++print(f'{path}: {len(png)} bytes; tile={TILE}m; mean factors asphalt={asphalt.mean():.4f} sand={sand.mean():.4f}')
+--- /dev/null
++++ b/game/assets/textures/surface_factors_v1.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://dotx0vyi36agf"
++path="res://.godot/imported/surface_factors_v1.png-07024a7f0fbbbcaf494327bf2ceaa21a.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/textures/surface_factors_v1.png"
++dest_files=["res://.godot/imported/surface_factors_v1.png-07024a7f0fbbbcaf494327bf2ceaa21a.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=0
++detect_3d/compress_to=1
+--- /dev/null
++++ b/docs/MOBILE_OPTIMIZATION_2026_09_22.md
+@@ -0,0 +1,58 @@
++# Mobile rendering and road-gate optimization ? 2026-09-22
++
++Requirements: R01/R03/R07/G01/V02/V03/V04/V05/Q01. Owner-authorized performance/quality tradeoff and revised lap validation contract.
++
++## Implemented behavior
++
++- Original seamless 1024?1024, 32 m surface-factor texture replaces repeated asphalt/sand noise arithmetic. Asphalt binder/mineral variation and directional grain remain; random crack/repair shapes are removed. Mipmapped sampling is shared by terrain, creator roads and bridge decks. Grass/shoulder blending, wet/ice effects and road geometry remain. Generator: `scripts/bake-surface-detail.py` (existing development numpy, no runtime dependency or external assets). Texture provenance is original procedural code, no third-party image.
++- Directional shadows use a 1024 map, one orthogonal projection and 65 m range. Lighting remains; shadows lose resolution. Camera/handling were not changed by this task.
++- Ordered swept road gates replace whole-route/history shortcut searches. Generated once; each tick tests the expected gate and its neighbour, consuming additional gates only if the same sweep crosses them in order. Telemetry projects onto three local segments using the simulation's existing hint. The per-tick work does not scan all route points.
++- All required gates must be passed before finish. Missing a section highlights the required gate in the world/minimap and says to return. Recovery time remains on the clock. No +5 s penalty. Reverse travel, stationary overlap, skipped gates and completing the remainder after a hairpin cut cannot manufacture a lap.
++- Owner rejected the initial dense arrangement. Final gates are approximately 12 m apart, supplemented at abrupt corners, with a 3 m deduplication distance and directions sampled over 4 m. This is about one sixth of the 2 m draft density, plus sharp corners. Widths are bounded by road width and nearby drivable cells, with small kerb tolerance. Only the missed gate is drawn across the world. Tight inside/outside lines are tested separately from infield cuts.
++- Rule identity `standing-5-road-gates-v10` isolates new PBs from old penalty rules. Compiler 18 includes route widths in native data; visual kit 52 identifies the baked surface. Player files are preserved.
++
++## Commands and tests actually run
++
++All engine commands use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 <Action>` and pinned Godot 4.7.2.
++
++| Action | Actual outcome |
++|---|---|
++| `TestRouteValidation` | 96 checks pass, final spaced gates. Includes 16 real Silmukka cuts plus recovery, two tight-radius inside/centre/outside sweep cases at three speeds, reverse/stationary checks and five complete laps. Desktop hot-path mean 2.65 microseconds/tick; this is not a mobile measurement. |
++| `TestStartLine` | 27 checks pass with final gates: five laps both directions, exact physics replay, start-line editing. |
++| `TestTracks` | 167 checks pass with final gates, all four historical tracks complete and replay exactly. No legacy invariant removed. |
++| `CaptureCheckpoints` | 7 checks pass with final gates; actual missed sweep, world/minimap/notice, recovery and restart. |
++| `TestResults` | 104 checks pass after replacing validation. |
++| `CaptureBridgeHUD` | 157 checks pass. Obsolete injected +5 s expectation updated to the explicitly authorized no-penalty contract. |
++| `TestSurfaceProfile` | 928 graphical checks pass for material binding, geometry retention and restoration. |
++| `TestRecords`, `TestSurfaces`, `TestMobileControls` | 53 / 50 / 555 checks pass in this optimization task. |
++| `ExportAndroid -QuickValidation` | Final export passes import/startup, driving 74, catalog 18, menus 22. Full all-project suite not run. |
++
++Initial dense-gate compilation caught an Array typing error, fixed before final tests. Sparse gates failed legacy Offroad laps; final route-derived spaced gates pass those unchanged assertions. Dense offset-line experiments exposed an older Silmukka guide displaced toward grass; those blindly offset paths were not valid road-line fixtures. Final legitimate-line tests use explicit 10 m-wide tight bends, while the actual Silmukka fixture remains the shortcut/recovery test. Historic `test_route_validation.gd` and `test_silmukka.gd` retain old +5 s expectations and are not current rules acceptance; `TestRouteValidation` now invokes `test_checkpoint_rules.gd`.
++
++## Physical phone comparison
++
++Physical DN2103, Android 13, Mali-G77 MC9. Normal 0.667 render scale; same AI, touch-stress HUD, timing/Results telemetry, particles, weather and trails. Each track restarts, warms five seconds and samples 45 seconds. Runs are diagnostic/unscored. Before and final APK hashes, configurations, temperatures and raw reports are retained in `evidence/optimization-before-2026-09-22/` and `evidence/optimization-final-2026-09-22/`. Intermediate `optimization-after` evidence used sparse draft gates and is not the final result.
++
++Commands:
++
++```powershell
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/profile-features-phone.ps1 -Baseline -SkipInstall -Seconds 45 -ReportName optimization-before-2026-09-22
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/profile-features-phone.ps1 -Baseline -Seconds 45 -ReportName optimization-final-2026-09-22
++```
++
++| Track | Before median / p95 | Final median / p95 | Rules CPU before / final |
++|---|---:|---:|---:|
++| Ajorata | 21.173 / 25.130 ms | 16.802 / 19.784 ms | 1.922 / 0.064 ms |
++| Storm | 25.930 / 30.669 ms | 16.814 / 19.648 ms | 2.440 / 0.056 ms |
++
++Final Results telemetry averages 0.056 ms (Ajorata) / 0.052 ms (Storm) per rendered frame. Frame medians improve 20.6% / 35.2%. Both p95 values remain above 16.67 ms, so some frames still miss 60 FPS. Final APK installed successfully; probe files removed and normal app relaunched.
++
++Combined changes are measured together: do not add their savings to the earlier isolated experiments. CPU section timings are per rendered frame (potentially multiple physics ticks); GPU/CPU costs overlap. Median improvement is not a sustained 60 FPS guarantee. Runs are sequential, one device, finite AI paths, not a fleet or thermal soak.
++
++## Changed files and evidence
++
++Runtime: `game/race/track_session.gd`, `race_rules.gd`, `game/editor/track_compiler.gd`, `game/track/native_track.gd`, `native_track_visual.gd`, `bridge_presentation.gd`, `surface_detail.gdshaderinc`, `game/assets/textures/surface_factors_v1.png` and import settings, `game/project.godot`, `game/core/game.gd`, `game/ui/checkpoint_marker.gd`, `hud_road_map.gd`, `playground_hud.gd`.
++
++Tooling/tests: `scripts/bake-surface-detail.py`, `scripts/profile-features-phone.ps1`, `scripts/dev.ps1`, `game/tests/test_checkpoint_rules.gd`, `capture_checkpoints.gd`, `test_bridge_hud.gd`. Documentation: this report, AGENTS, status and Phase 0 plan. A task-only patch compares with the saved pre-task dirty-worktree snapshot, avoiding unrelated handling/HUD/Results edits.
++
++[Missed checkpoint capture](evidence/optimization-final-2026-09-22/checkpoint-missed.png). Desktop visual inspection retained the road's granular appearance; crack detail is absent. Remaining human acceptance: final quality on the phone, varied real racing lines around creator hairpins/intersections/bridges, and longer thermal runs. Gate validation enforces ordered road sections with kerb tolerance; it does not claim continuous tyre-by-tyre boundary policing between gates. No production service deployment.

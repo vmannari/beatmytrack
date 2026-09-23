@@ -1,0 +1,276 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -83,12 +83,12 @@
+ 		VehicleModels.build(self, vehicle_id)
+ 		if batch_parts: VisualGeometry.batch_static_parts(self)
+ 		return
+-	var paint := VisualGeometry.material(Color("c8c1ab"))
++	var paint := VisualGeometry.material(Color("e0d5b5"))
+ 	VisualGeometry.ink(paint)
+-	var blue := VisualGeometry.material(Color("244d69"))
++	var blue := VisualGeometry.material(Color("30627d"))
+ 	VisualGeometry.ink(blue)
+ 	var trim := VisualGeometry.material(Color("171e21"))
+-	var glass := VisualGeometry.material(Color("293b43"))
++	var glass := VisualGeometry.material(Color("1e3036"))
+ 	var rim := VisualGeometry.material(Color("657177"))
+ 	var lamps := VisualGeometry.material(Color("e4dfc5"))
+ 	brake_material = VisualGeometry.material(Color("802d2b"))
+@@ -98,22 +98,17 @@
+ 	_shell(body, [Vector3(0.86, 0.5, 2.03), Vector3(0.88, 0.86, 1.98), Vector3(0.76, 1.02, 1.8)], blue)
+ 	_shell(body, [Vector3(0.875, 0.85, 1.98), Vector3(0.76, 1.02, 1.8)], paint)
+ 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+-	_hatchback(paint, glass, trim)
++	_hatchback(paint, glass, trim, blue)
+ 	for side: float in [-1.0, 1.0]:
+ 		_seam(body,Vector3(side*0.55,1.025,-1.73),Vector3(side*0.58,1.025,-1.05),0.012,trim)
+ 		# One long front door, then a fixed rear quarter window.
+ 		_seam(body,Vector3(side*0.88,0.87,0.47),Vector3(side*0.88,0.58,0.47),0.012,trim)
+ 		VisualGeometry.box(body,Vector3(0.025,0.055,0.20),Vector3(side*0.88,0.85,0.32),trim)
+ 		_seam(body,Vector3(side*0.89,0.64,-0.90),Vector3(side*0.89,0.64,0.78),0.024,trim)
+-		# Painted sill stripe and swept rear-quarter cream motif from the menu.
+-		_panel([Vector3(side*0.884,0.83,0.78),Vector3(side*0.884,0.83,1.35),Vector3(side*0.884,0.59,1.05),Vector3(side*0.884,0.59,0.90)],Vector3(side,0,0),paint)
+ 	VisualGeometry.box(body,Vector3(1.26,0.19,0.04),Vector3(0,0.79,-2.035),trim)
+ 	for slat: int in range(3):
+ 		VisualGeometry.box(body,Vector3(0.72,0.013,0.025),Vector3(0,0.73+slat*0.055,-2.065),rim)
+ 	for side: float in [-1.0, 1.0]:
+-		for offset: float in [0.43,0.65]:
+-			var lamp := VisualGeometry.cylinder(body,0.10,0.04,Vector3(side*offset,0.80,-2.055),lamps)
+-			lamp.rotation.x = PI*0.5
+ 		VisualGeometry.box(body,Vector3(0.14,0.13,0.045),Vector3(side*0.77,0.77,-2.02),VisualGeometry.material(Color("b77929")))
+ 		brake_lights.append(VisualGeometry.box(body, Vector3(0.16, 0.27, 0.07), Vector3(side * 0.73, 0.84, 2.01), brake_material))
+ 		VisualGeometry.box(body, Vector3(0.18, 0.12, 0.28), Vector3(side * 0.93, 1.03, -0.48), trim)
+@@ -125,18 +120,18 @@
+ 			var pivot := Node3D.new()
+ 			pivot.position = Vector3(side * 0.83, 0.37, axle)
+ 			add_child(pivot)
+-			var tire := VisualGeometry.cylinder(pivot, 0.36, 0.24, Vector3.ZERO, trim)
+-			tire.rotation.z = PI * 0.5
+-			var hub := VisualGeometry.cylinder(pivot, 0.2, 0.25, Vector3.ZERO, rim)
++			CompactDetail.tire(pivot, trim)
++			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.285, Vector3.ZERO, trim)
+ 			hub.rotation.z = PI * 0.5
+ 			for spoke: int in range(8):
+ 				var a: float = spoke*TAU/8.0
+-				_seam(pivot,Vector3(side*0.132,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.132,sin(a)*0.185,cos(a)*0.185),0.024,lamps)
++				_seam(pivot,Vector3(side*0.148,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
+ 			if axle < 0:
+ 				front_wheels.append(pivot)
+-			register_rolling_wheel(pivot, 0.36)
++			register_rolling_wheel(pivot, 0.37)
+ 	VisualGeometry.box(body, Vector3(1.0, 0.14, 0.08), Vector3(0, 0.49, -2.13), trim)
+ 	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
++	CompactDetail.build(self, blue, paint, trim, rim)
+ 	if batch_parts: VisualGeometry.batch_static_parts(self)
+ 
+ 
+@@ -239,8 +234,8 @@
+ 
+ 
+ # Conservative cross-section of the wheels, body, mirrors and roof in model metres.
+-const ROLL_OUTLINE: Array[Vector2] = [Vector2(-0.95,0.01), Vector2(0.95,0.01),
+-	Vector2(-0.95,0.73), Vector2(0.95,0.73), Vector2(-1.02,1.09), Vector2(1.02,1.09),
++const ROLL_OUTLINE: Array[Vector2] = [Vector2(-0.975,0.0), Vector2(0.975,0.0),
++	Vector2(-0.975,0.76), Vector2(0.975,0.76), Vector2(-1.02,1.09), Vector2(1.02,1.09),
+ 	Vector2(-0.63,1.49), Vector2(0.63,1.49)]
+ 
+ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
+@@ -335,7 +330,7 @@
+ 	stroke.basis = Basis.looking_at(end-start,up)
+ 
+ 
+-func _hatchback(paint: Material, glass: Material, trim: Material) -> void:
++func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material) -> void:
+ 	# Broad roof, long side glazing and a sloping rear hatch; +Z is the tail.
+ 	var lf := Vector3(-0.76,1.01,-1.00)
+ 	var rf := Vector3(0.76,1.01,-1.00)
+@@ -348,18 +343,27 @@
+ 	_panel([lf,rf,trf,tlf],Vector3(0,0.79,-0.61),paint)
+ 	_panel([lr,rr,trr,tlr],Vector3(0,0.84,0.54),paint)
+ 	_panel([tlf,trf,trr,tlr],Vector3.UP,paint)
++	var roof := Node3D.new()
++	body.add_child(roof)
++	roof.position.z = 0.39
++	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],paint)
+ 	_panel([Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),glass)
+ 	_panel([Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),glass)
+ 	for side: float in [-1.0,1.0]:
+-		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),paint)
++		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
+ 		# Window corners lie on the sloped cabin side, just outside its paint.
+ 		_panel([Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),glass)
+ 		_panel([Vector3(side*0.748,1.07,0.52),Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),Vector3(side*0.651,1.425,0.52)],Vector3(side,0.277,0),glass)
+ 		_panel([Vector3(side*0.749,1.07,0.42),Vector3(side*0.749,1.07,0.52),Vector3(side*0.652,1.425,0.52),Vector3(side*0.652,1.425,0.42)],Vector3(side,0.277,0),trim)
+ 		_seam(body,Vector3(side*0.750,1.065,-0.88),Vector3(side*0.750,1.065,1.70),0.018,trim)
+ 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
+-	var reflection := VisualGeometry.material(Color("4d6673"))
+-	_panel([Vector3(-0.52,1.074,-0.944),Vector3(-0.34,1.074,-0.944),Vector3(0.10,1.44,-0.471),Vector3(-0.13,1.44,-0.471)],Vector3(0,0.79,-0.61),reflection)
++	var reflection := VisualGeometry.material(Color("3b535d"))
++	_panel([Vector3(-0.60,1.10,-0.907),Vector3(-0.24,1.10,-0.907),Vector3(0.17,1.433,-0.478),Vector3(-0.54,1.433,-0.478)],Vector3(0,0.79,-0.61),reflection)
++	for side: float in [-1.0,1.0]:
++		_panel([Vector3(side*0.738,1.115,-0.71),Vector3(side*0.738,1.115,-0.33),Vector3(side*0.660,1.405,0.13),Vector3(side*0.660,1.405,-0.33)],Vector3(side,0.277,0),reflection)
++		_seam(body,Vector3(side*0.651,1.43,-0.35),Vector3(side*0.651,1.43,1.14),0.018,trim)
++		_seam(body,Vector3(side*0.748,1.07,-0.85),Vector3(side*0.651,1.425,-0.35),0.021,trim)
++		_seam(body,Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),0.021,trim)
+ 	# Hatch seam and rear wiper make the short tail readable from overhead.
+ 	_seam(body,Vector3(-0.68,1.05,1.87),Vector3(0.68,1.05,1.87),0.018,trim)
+ 	_seam(body,Vector3(0,1.10,1.80),Vector3(0.36,1.17,1.69),0.020,trim)
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -290,6 +290,7 @@
+     if ($LASTEXITCODE -ne 0 -or $version -ne $expectedVersion) { throw "Engine mismatch: expected $expectedVersion; got '$version' from $script:godot." }
+     Write-Host "Godot: $version ($script:godot)"
+     switch ($Action) {
++        'CaptureCompactDetail' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_compact_detail.gd') 'compact-detail-capture.log' }
+         'TestVehicleBatch' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_vehicle_batch.gd') 'vehicle-batch-tests.log' }
+         'TestMobileControls' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_mobile_controls.gd') 'mobile-controls-tests.log' }
+         'TestBridgeContacts' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log' }
+--- /dev/null
++++ b/game/vehicle/compact_detail.gd
+@@ -0,0 +1,88 @@
++class_name CompactDetail
++extends RefCounted
++## Original fictional hatch details, authored from the owner's visual direction.
++## Shared opaque materials batch on the sprung body and four rolling pivots.
++
++static func tire(parent: Node3D, material: Material) -> void:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	# Rounded shoulders, broad tread, recessed sidewall. Axis is local X.
++	var profile: Array[Vector2] = [Vector2(-0.14,0.23),Vector2(-0.14,0.32),Vector2(-0.105,0.363),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.105,0.363),Vector2(0.14,0.32),Vector2(0.14,0.23)]
++	for row: int in range(profile.size()-1):
++		for segment: int in range(32):
++			var a: float = TAU*segment/32.0
++			var b: float = TAU*(segment+1)/32.0
++			var p: Vector2 = profile[row]
++			var q: Vector2 = profile[row+1]
++			var points: Array[Vector3] = [Vector3(p.x,sin(a)*p.y,cos(a)*p.y),Vector3(q.x,sin(a)*q.y,cos(a)*q.y),Vector3(q.x,sin(b)*q.y,cos(b)*q.y),Vector3(p.x,sin(b)*p.y,cos(b)*p.y)]
++			for index: int in [0,2,1,0,3,2]: tool.add_vertex(points[index])
++	tool.generate_normals()
++	var mesh := MeshInstance3D.new()
++	mesh.mesh = tool.commit()
++	mesh.material_override = material
++	parent.add_child(mesh)
++
++static func build(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
++	var rubber := VisualGeometry.material(Color("303234"))
++	var bright := VisualGeometry.material(Color("b5b8ae"))
++	var amber := VisualGeometry.material(Color("d58b32"))
++	var lens := VisualGeometry.material(Color("e7e4d2"))
++	var shade := VisualGeometry.material(Color("384e55"))
++	# Sculpted arch lips project beyond the blue shoulder, wrapping the tyres.
++	for side: float in [-1.0,1.0]:
++		for axle: float in [-1.28,1.28]:
++			for segment: int in range(16):
++				var a: float = PI*segment/16.0
++				var b: float = PI*(segment+1)/16.0
++				for band: int in range(2):
++					var r0: float = 0.39+band*0.045
++					var r1: float = r0+0.045
++					var x0: float = 0.971-band*0.016
++					var x1: float = x0-0.016
++					car._panel([Vector3(side*x0,0.37+sin(a)*r0,axle+cos(a)*r0),Vector3(side*x0,0.37+sin(b)*r0,axle+cos(b)*r0),Vector3(side*x1,0.37+sin(b)*r1,axle+cos(b)*r1),Vector3(side*x1,0.37+sin(a)*r1,axle+cos(a)*r1)],Vector3(side,0.3,0),trim if band == 0 else blue)
++		# Door perimeter, raised handle, waist crease and sill catch light cleanly.
++		car._seam(car.body,Vector3(side*0.889,0.54,-0.74),Vector3(side*0.889,0.54,0.53),0.013,trim)
++		car._seam(car.body,Vector3(side*0.884,0.55,-0.74),Vector3(side*0.884,0.87,-0.74),0.013,trim)
++		car._seam(car.body,Vector3(side*0.886,0.88,-1.55),Vector3(side*0.886,0.88,1.59),0.018,shade)
++		VisualGeometry.box(car.body,Vector3(0.032,0.033,0.15),Vector3(side*0.90,0.862,0.32),bright)
++		VisualGeometry.box(car.body,Vector3(0.04,0.065,1.46),Vector3(side*0.891,0.45,0),blue)
++		VisualGeometry.box(car.body,Vector3(0.042,0.045,0.09),Vector3(side*0.883,0.80,-0.82),amber)
++		# Slim drip rails, black windscreen gasket, separate wiper blades.
++		car._seam(car.body,Vector3(side*0.627,1.487,-0.39),Vector3(side*0.627,1.487,1.18),0.018,cream)
++		car._seam(car.body,Vector3(side*0.68,1.068,-0.952),Vector3(side*0.57,1.448,-0.462),0.025,trim)
++		car._seam(car.body,Vector3(side*0.67,1.083,-0.934),Vector3(side*0.16,1.12,-0.886),0.023,trim)
++		# Stacked rear lenses in a dark housing, and restrained hatch hardware.
++		VisualGeometry.box(car.body,Vector3(0.19,0.34,0.065),Vector3(side*0.73,0.85,2.025),trim)
++		VisualGeometry.box(car.body,Vector3(0.145,0.095,0.07),Vector3(side*0.73,0.955,2.033),amber)
++		VisualGeometry.box(car.body,Vector3(0.145,0.13,0.075),Vector3(side*0.73,0.835,2.033),car.brake_material)
++		VisualGeometry.box(car.body,Vector3(0.145,0.055,0.07),Vector3(side*0.73,0.727,2.033),lens)
++	car._seam(car.body,Vector3(-0.68,1.068,-0.952),Vector3(0.68,1.068,-0.952),0.025,trim)
++	car._seam(car.body,Vector3(-0.57,1.448,-0.462),Vector3(0.57,1.448,-0.462),0.022,trim)
++	for vent: int in range(18):
++		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.029,-1.04),trim)
++	for end: float in [-1.0,1.0]:
++		VisualGeometry.box(car.body,Vector3(1.66,0.135,0.12),Vector3(0,0.49,end*2.08),rubber)
++		VisualGeometry.box(car.body,Vector3(1.51,0.022,0.128),Vector3(0,0.552,end*2.08),alloy)
++	VisualGeometry.box(car.body,Vector3(0.29,0.045,0.035),Vector3(0,0.91,2.04),trim)
++	# Large single round headlamp per side, inset reflector and off-centre glint.
++	for side: float in [-1.0,1.0]:
++		for layer: int in range(4):
++			var radii: Array[float] = [0.174,0.148,0.124,0.080]
++			var materials: Array[Material] = [trim,bright,shade,lens]
++			var light := VisualGeometry.cylinder(car.body,radii[layer],0.025,Vector3(side*0.59,0.79,-2.058-layer*0.013),materials[layer])
++			light.rotation.x = PI*0.5
++		VisualGeometry.box(car.body,Vector3(0.22,0.075,0.035),Vector3(side*0.61,0.59,-2.086),amber)
++	# Recessed dark centres, alloy rim lips and explicit lug centres on every wheel.
++	for rotor: Node3D in car.rolling_wheels:
++		var side: float = signf((rotor.get_parent() as Node3D).position.x)
++		var lip := Node3D.new()
++		rotor.add_child(lip)
++		lip.position.x = side*0.143
++		lip.rotation.z = PI*0.5
++		VisualGeometry.ring(lip,Vector3.ZERO,0.235,0.023,bright)
++		var cap := VisualGeometry.cylinder(rotor,0.062,0.3,Vector3.ZERO,trim)
++		cap.rotation.z = PI*0.5
++		for lug: int in range(4):
++			var a: float = lug*TAU/4.0
++			var bolt := VisualGeometry.cylinder(rotor,0.014,0.305,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright)
++			bolt.rotation.z = PI*0.5
+--- /dev/null
++++ b/game/vehicle/compact_detail.gd.uid
+@@ -0,0 +1 @@
++uid://c6a4ipt1raxyj
+--- /dev/null
++++ b/game/tests/capture_compact_detail.gd
+@@ -0,0 +1,39 @@
++extends SceneTree
++## Captures the production asset with both the gameplay and inspection cameras.
++func _initialize() -> void: call_deferred("run")
++
++func save_view(label: String) -> void:
++	for i: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++	var result: Error = root.get_texture().get_image().save_png("res://../docs/evidence/compact-look/"+label+".png")
++	if result != OK:
++		push_error("Could not save "+label)
++		quit(1)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	VehicleCatalog.selected = "compact"
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.production_mode = true
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	game.countdown_label.hide()
++	game.race_cues.hide()
++	game.car.present(game.initial_track.spawn,0.0,VehicleState.new(),DriveFrame.new())
++	game.camera.follow(game.initial_track.spawn,Vector2.ZERO,0.0,0.0,true)
++	await save_view("gameplay")
++	game.hud.hide()
++	var camera := Camera3D.new()
++	game.get_node("World").add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 6.8
++	camera.current = true
++	for rear: bool in [false,true]:
++		camera.position = game.car.position + Vector3(-5,5,7 if rear else -7)
++		camera.look_at(game.car.position+Vector3(0,0.5,0))
++		await save_view("rear" if rear else "front")
++	game.free()
++	print("COMPACT_DETAIL_CAPTURE: 3 views saved")
++	quit()
+--- /dev/null
++++ b/game/tests/capture_compact_detail.gd.uid
+@@ -0,0 +1 @@
++uid://be2pjp428q3r8

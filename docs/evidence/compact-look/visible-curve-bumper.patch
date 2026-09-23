@@ -1,0 +1,74 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -330,8 +330,8 @@
+ 	body.add_child(roof)
+ 	roof.position.z = 0.39
+ 	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],roof_paint)
+-	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.035)
+-	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.012)
++	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.10)
++	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.07)
+ 	for side: float in [-1.0,1.0]:
+ 		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
+ 		# Window corners lie on the sloped cabin side, just outside its paint.
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -114,7 +114,7 @@
+ 				light.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+ 			var glint := VisualGeometry.cylinder(car.body,0.028,0.009,Vector3(x-0.022,0.841,_nose_z(x)-0.038),lens)
+ 			glint.rotation.x = PI*0.5
+-		VisualGeometry.box(car.body,Vector3(0.19,0.065,0.028),Vector3(side*0.61,0.536,_nose_z(side*0.61)-0.055),amber)
++		VisualGeometry.box(car.body,Vector3(0.19,0.065,0.028),Vector3(side*0.61,0.535,_nose_z(side*0.61)-0.15),amber)
+ 	# Recessed dark centres, alloy rim lips and explicit lug centres on every wheel.
+ 	for rotor: Node3D in car.rolling_wheels:
+ 		var side: float = signf((rotor.get_parent() as Node3D).position.x)
+@@ -137,8 +137,8 @@
+ 	_nose_band(car,0.795,0.660,0.932,-0.009,-1.91,trim)
+ 	for row: int in range(5):
+ 		_nose_band(car,0.280,0.691+row*0.046,0.702+row*0.046,-0.017,-2.00,alloy)
+-	_nose_band(car,0.85,0.458,0.605,-0.045,-1.94,trim)
+-	_nose_band(car,0.83,0.593,0.609,-0.047,-1.95,alloy)
++	_nose_band(car,0.89,0.435,0.645,-0.135,-1.91,trim)
++	_nose_band(car,0.88,0.622,0.649,-0.137,-1.92,alloy)
+ 	# Curved upper shoulder connects the hood to the lamp surround.
+ 	for segment: int in range(16):
+ 		var x0: float = lerpf(-0.76,0.76,segment/16.0)
+--- a/game/vehicle/compact_glazing.gd
++++ b/game/vehicle/compact_glazing.gd
+@@ -13,6 +13,23 @@
+ 		for step: int in range(6):
+ 			var t: float = step/5.0
+ 			outline.append(start.lerp(corner,t).lerp(corner.lerp(end,t),t))
++	if bow > 0.0:
++		# Sample the long edges too: bowing only the interior leaves a straight
++		# silhouette from overhead. Curve both the seal and glass boundary.
++		var curved: Array[Vector3] = []
++		var half_width: float = maxf(absf(corners[0].x),absf(corners[1].x))
++		var down_slope: Vector3 = (corners[0]-corners[3]).normalized()
++		for i: int in range(outline.size()):
++			var start: Vector3 = outline[i]
++			var end: Vector3 = outline[(i+1)%outline.size()]
++			var steps: int = maxi(1,int(ceil(start.distance_to(end)/0.10)))
++			for step: int in range(steps):
++				var point: Vector3 = start.lerp(end,float(step)/steps)
++				var crown: float = maxf(0.0,1.0-pow(point.x/half_width,2.0))
++				point += (normal.normalized()*0.35+down_slope*0.75)*bow*crown
++				curved.append(point)
++		outline = curved
++		center += (normal.normalized()*0.35+down_slope*0.75)*bow
+ 	_surface(car,outline,center,normal,trim,0.0,false)
+ 	if shared_glass == null:
+ 		shared_glass = VisualGeometry.material(Color.WHITE)
+--- a/game/tests/capture_compact_detail.gd
++++ b/game/tests/capture_compact_detail.gd
+@@ -38,6 +38,9 @@
+ 		camera.position = game.car.position + Vector3(side*8,7,-1)
+ 		camera.look_at(game.car.position+Vector3(0,0.5,0))
+ 		await save_view("side-left" if side < 0 else "side-right")
++	camera.position = game.car.position + Vector3(-1.2,9,7)
++	camera.look_at(game.car.position+Vector3(0,0.5,0))
++	await save_view("high-rear")
+ 	game.free()
+-	print("COMPACT_DETAIL_CAPTURE: 5 views saved")
++	print("COMPACT_DETAIL_CAPTURE: 6 views saved")
+ 	quit()

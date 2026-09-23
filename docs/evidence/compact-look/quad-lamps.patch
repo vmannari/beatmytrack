@@ -1,0 +1,100 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -97,7 +97,7 @@
+ 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+ 	_hatchback(paint, glass, trim, blue)
+ 	for side: float in [-1.0, 1.0]:
+-		VisualGeometry.box(body,Vector3(0.14,0.13,0.045),Vector3(side*0.77,0.77,-2.02),VisualGeometry.material(Color("b77929")))
++		VisualGeometry.box(body,Vector3(0.055,0.22,0.035),Vector3(side*0.806,0.798,-2.005),VisualGeometry.material(Color("b77929")))
+ 		brake_lights.append(VisualGeometry.box(body, Vector3(0.16, 0.27, 0.07), Vector3(side * 0.73, 0.84, 2.01), brake_material))
+ 		for axle: float in [-1.28, 1.28]:
+ 			var pivot := Node3D.new()
+@@ -112,7 +112,6 @@
+ 			if axle < 0:
+ 				front_wheels.append(pivot)
+ 			register_rolling_wheel(pivot, 0.37)
+-	VisualGeometry.box(body, Vector3(1.0, 0.14, 0.08), Vector3(0, 0.49, -2.13), trim)
+ 	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
+ 	CompactDetail.build(self, blue, paint, trim, rim)
+ 	if batch_parts: VisualGeometry.batch_static_parts(self)
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -95,18 +95,22 @@
+ 	car._seam(car.body,Vector3(-0.57,1.448,-0.462),Vector3(0.57,1.448,-0.462),0.022,trim)
+ 	for vent: int in range(18):
+ 		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.047,-1.04),trim)
+-	for end: float in [-1.0,1.0]:
++	for end: float in [1.0]:
+ 		VisualGeometry.box(car.body,Vector3(1.66,0.135,0.12),Vector3(0,0.49,end*2.08),rubber)
+ 		VisualGeometry.box(car.body,Vector3(1.51,0.022,0.128),Vector3(0,0.552,end*2.08),alloy)
+ 	VisualGeometry.box(car.body,Vector3(0.29,0.045,0.035),Vector3(0,0.91,2.04),trim)
+-	# Large single round headlamp per side, inset reflector and off-centre glint.
++	# Twin round lamps per side share the gently curved, recessed dark fascia.
+ 	for side: float in [-1.0,1.0]:
+-		for layer: int in range(4):
+-			var radii: Array[float] = [0.174,0.148,0.124,0.080]
+-			var materials: Array[Material] = [trim,bright,shade,lens]
+-			var light := VisualGeometry.cylinder(car.body,radii[layer],0.025,Vector3(side*0.59,0.79,-2.034-layer*0.008),materials[layer])
+-			light.rotation.x = PI*0.5
+-		VisualGeometry.box(car.body,Vector3(0.22,0.075,0.035),Vector3(side*0.61,0.59,-2.086),amber)
++		for offset: float in [0.405,0.651]:
++			var x: float = side*offset
++			for layer: int in range(4):
++				var radii: Array[float] = [0.122,0.107,0.094,0.064]
++				var materials: Array[Material] = [trim,bright,shade,lens]
++				var light := VisualGeometry.cylinder(car.body,radii[layer],0.018,Vector3(x,0.798,-2.064+0.075*pow(offset/0.8,2.0)-layer*0.009),materials[layer])
++				light.rotation = Vector3(PI*0.5,-atan(0.234375*x),0)
++			var glint := VisualGeometry.cylinder(car.body,0.028,0.009,Vector3(x-0.022,0.841,_nose_z(x)-0.038),lens)
++			glint.rotation.x = PI*0.5
++		VisualGeometry.box(car.body,Vector3(0.19,0.065,0.028),Vector3(side*0.61,0.536,_nose_z(side*0.61)-0.055),amber)
+ 	# Recessed dark centres, alloy rim lips and explicit lug centres on every wheel.
+ 	for rotor: Node3D in car.rolling_wheels:
+ 		var side: float = signf((rotor.get_parent() as Node3D).position.x)
+@@ -124,13 +128,18 @@
+ 
+ 
+ static func _front(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
+-	# Solid fascia extends back into the shell: no air gap behind grille or lamps.
+-	VisualGeometry.box(car.body,Vector3(1.53,0.35,0.24),Vector3(0,0.785,-1.91),blue)
+-	VisualGeometry.box(car.body,Vector3(1.49,0.277,0.075),Vector3(0,0.785,-2.008),trim)
++	# A shallow 7.5 cm bow across the nose; closed bands tie into the shell.
++	_nose_band(car,0.81,0.605,0.971,0.0,-1.89,blue)
++	_nose_band(car,0.795,0.660,0.932,-0.009,-1.91,trim)
+ 	for row: int in range(5):
+-		VisualGeometry.box(car.body,Vector3(0.79,0.017,0.015),Vector3(0,0.690+row*0.046,-2.05),alloy)
+-	# Hood shoulder flows down to the grille surround; cream is an inset bonnet.
+-	car._panel([Vector3(-0.76,1.024,-1.01),Vector3(0.76,1.024,-1.01),Vector3(0.73,0.974,-2.036),Vector3(-0.73,0.974,-2.036)],Vector3(0,1,-0.05),blue)
++		_nose_band(car,0.280,0.691+row*0.046,0.702+row*0.046,-0.017,-2.00,alloy)
++	_nose_band(car,0.85,0.458,0.605,-0.045,-1.94,trim)
++	_nose_band(car,0.83,0.593,0.609,-0.047,-1.95,alloy)
++	# Curved upper shoulder connects the hood to the lamp surround.
++	for segment: int in range(16):
++		var x0: float = lerpf(-0.76,0.76,segment/16.0)
++		var x1: float = lerpf(-0.76,0.76,(segment+1)/16.0)
++		car._panel([Vector3(x0,1.024,-1.01),Vector3(x1,1.024,-1.01),Vector3(x1,0.974,_nose_z(x1)),Vector3(x0,0.974,_nose_z(x0))],Vector3(0,1,-0.05),blue)
+ 	car._panel([Vector3(-0.55,1.065,-1.10),Vector3(0.55,1.065,-1.10),Vector3(0.515,1.054,-1.78),Vector3(-0.515,1.054,-1.78)],Vector3.UP,cream)
+ 	car._panel([Vector3(-0.515,1.054,-1.78),Vector3(0.515,1.054,-1.78),Vector3(0.57,0.988,-1.986),Vector3(-0.57,0.988,-1.986)],Vector3(0,1,-0.23),cream)
+ 	var edge := VisualGeometry.material(Color("b8af93"))
+@@ -167,3 +176,22 @@
+ 	part.mesh = tool.commit()
+ 	part.material_override = material
+ 	car.body.add_child(part)
++
++
++static func _nose_z(x: float) -> float:
++	return -2.064+0.075*pow(x/0.8,2.0)
++
++
++static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, back: float, material: Material) -> void:
++	for segment: int in range(16):
++		var x0: float = lerpf(-half_width,half_width,segment/16.0)
++		var x1: float = lerpf(-half_width,half_width,(segment+1)/16.0)
++		var z0: float = _nose_z(x0)+offset
++		var z1: float = _nose_z(x1)+offset
++		car._panel([Vector3(x0,bottom,z0),Vector3(x1,bottom,z1),Vector3(x1,top,z1),Vector3(x0,top,z0)],Vector3((z1-z0)/(x1-x0),0,-1),material)
++		car._panel([Vector3(x0,top,z0),Vector3(x1,top,z1),Vector3(x1,top,back),Vector3(x0,top,back)],Vector3.UP,material)
++		car._panel([Vector3(x0,bottom,z0),Vector3(x1,bottom,z1),Vector3(x1,bottom,back),Vector3(x0,bottom,back)],Vector3.DOWN,material)
++	for side: float in [-1.0,1.0]:
++		var x: float = side*half_width
++		var z: float = _nose_z(x)+offset
++		car._panel([Vector3(x,bottom,z),Vector3(x,top,z),Vector3(x,top,back),Vector3(x,bottom,back)],Vector3(side,0,0),material)

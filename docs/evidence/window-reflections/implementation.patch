@@ -1,0 +1,73 @@
+--- a/game/vehicle/compact_glazing.gd
++++ b/game/vehicle/compact_glazing.gd
+@@ -1,6 +1,6 @@
+ extends RefCounted
+-## Rounded original glazing with opaque, restrained reflection tones.
+-static var shared_glass: StandardMaterial3D
++## Rounded original glazing with a shared opaque dynamic sky reflection.
++static var shared_glass: ShaderMaterial
+ 
+ static func window(car: CarVisual, corners: Array[Vector3], normal: Vector3, trim: Material, bow: float = 0.0, corner_radii: Array[float] = [], surround: Material = null) -> void:
+ 	var center := Vector3.ZERO
+@@ -38,8 +38,8 @@
+ 			seal.append(center+(point-center)*0.977+normal.normalized()*0.003)
+ 		_surface(car,seal,center+normal.normalized()*0.003,normal,trim,0.0,false)
+ 	if shared_glass == null:
+-		shared_glass = VisualGeometry.material(Color.WHITE)
+-		shared_glass.vertex_color_use_as_albedo = true
++		shared_glass = ShaderMaterial.new()
++		shared_glass.shader = preload("res://vehicle/window_reflection.gdshader")
+ 	var inset: Array[Vector3] = []
+ 	for point: Vector3 in outline:
+ 		inset.append(center+(point-center)*0.947+normal.normalized()*0.006)
+--- a/game/tests/capture_compact_detail.gd
++++ b/game/tests/capture_compact_detail.gd
+@@ -41,6 +41,11 @@
+ 	camera.position = game.car.position + Vector3(-1.2,9,7)
+ 	camera.look_at(game.car.position+Vector3(0,0.5,0))
+ 	await save_view("high-rear")
++	camera.position = game.car.position + Vector3(-5,5,-7)
++	camera.look_at(game.car.position+Vector3(0,0.5,0))
++	for angle: int in [0,30,60,90]:
++		game.car.rotation.y = deg_to_rad(angle)
++		await save_view("reflection-turn-"+str(angle))
+ 	game.free()
+-	print("COMPACT_DETAIL_CAPTURE: 6 views saved")
++	print("COMPACT_DETAIL_CAPTURE: 10 views saved")
+ 	quit()
+--- /dev/null
++++ b/game/vehicle/window_reflection.gdshader
+@@ -0,0 +1,29 @@
++shader_type spatial;
++render_mode diffuse_toon, specular_disabled;
++
++// Cheap world-fixed sky reflection: camera/vehicle motion changes the reflected
++// direction. No scene capture, screen texture, time animation or transparency.
++uniform vec4 glass_tint : source_color = vec4(0.075, 0.125, 0.145, 1.0);
++uniform vec4 sky_tint : source_color = vec4(0.40, 0.55, 0.63, 1.0);
++uniform vec4 cloud_tint : source_color = vec4(0.79, 0.81, 0.76, 1.0);
++
++void fragment() {
++	vec3 n = normalize(NORMAL);
++	vec3 view = normalize(VIEW);
++	vec3 direction = normalize((INV_VIEW_MATRIX * vec4(reflect(-view, n), 0.0)).xyz);
++	float sky = smoothstep(-0.22, 0.45, direction.y);
++	vec3 environment = mix(vec3(0.07, 0.105, 0.10), sky_tint.rgb, sky);
++	// Two broad blurred cloud shapes, anchored to world directions.
++	float cloud_a = smoothstep(0.65, 0.94, dot(direction, normalize(vec3(-0.6, 0.65, 0.45))));
++	float cloud_b = smoothstep(0.78, 0.97, dot(direction, normalize(vec3(0.72, 0.5, -0.48))));
++	float clouds = max(cloud_a, cloud_b * 0.75) * sky;
++	float cloud_band = smoothstep(0.18, 0.48, sin(dot(direction, vec3(3.2, 1.6, 2.4))));
++	clouds = max(clouds, cloud_band * sky * 0.85);
++	environment = mix(environment, cloud_tint.rgb, clouds * 0.8);
++	float facing = clamp(dot(n, view), 0.0, 1.0);
++	float fresnel = pow(1.0 - facing, 3.0);
++	float strength = 0.28 + 0.38 * fresnel;
++	ALBEDO = mix(glass_tint.rgb, environment, strength);
++	EMISSION = environment * strength * 0.09;
++	ROUGHNESS = 0.65;
++}
+--- /dev/null
++++ b/game/vehicle/window_reflection.gdshader.uid
+@@ -0,0 +1 @@
++uid://t8g8pw7848k7

@@ -1,0 +1,132 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -104,11 +104,11 @@
+ 			pivot.position = Vector3(side * 0.83, 0.37, axle)
+ 			add_child(pivot)
+ 			CompactDetail.tire(pivot, trim)
+-			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.285, Vector3.ZERO, trim)
++			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.16, Vector3.ZERO, trim)
+ 			hub.rotation.z = PI * 0.5
+ 			for spoke: int in range(8):
+ 				var a: float = spoke*TAU/8.0
+-				_seam(pivot,Vector3(side*0.148,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
++				_seam(pivot,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
+ 			if axle < 0:
+ 				front_wheels.append(pivot)
+ 			register_rolling_wheel(pivot, 0.37)
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -99,9 +99,7 @@
+ 		VisualGeometry.box(car.body,Vector3(0.145,0.055,0.07),Vector3(side*0.73,0.727,2.033),lens)
+ 	for vent: int in range(18):
+ 		VisualGeometry.box(car.body,Vector3(0.014,0.012,0.082),Vector3(-0.51+vent*0.06,1.047,-1.04),trim)
+-	for end: float in [1.0]:
+-		VisualGeometry.box(car.body,Vector3(1.66,0.135,0.12),Vector3(0,0.49,end*2.08),rubber)
+-		VisualGeometry.box(car.body,Vector3(1.51,0.022,0.128),Vector3(0,0.552,end*2.08),alloy)
++	_wrap_bumper(car,trim,true)
+ 	VisualGeometry.box(car.body,Vector3(0.29,0.045,0.035),Vector3(0,0.91,2.04),trim)
+ 	# Twin round lamps per side share the gently curved, recessed dark fascia.
+ 	for side: float in [-1.0,1.0]:
+@@ -123,11 +121,12 @@
+ 		lip.position.x = side*0.143
+ 		lip.rotation.z = -side*PI*0.5
+ 		VisualGeometry.ring(lip,Vector3.ZERO,0.235,0.023,bright)
+-		var cap := VisualGeometry.cylinder(rotor,0.062,0.3,Vector3.ZERO,trim)
++		_rim_bowl(rotor,side,alloy)
++		var cap := VisualGeometry.cylinder(rotor,0.062,0.18,Vector3.ZERO,trim)
+ 		cap.rotation.z = PI*0.5
+ 		for lug: int in range(4):
+ 			var a: float = lug*TAU/4.0
+-			var bolt := VisualGeometry.cylinder(rotor,0.014,0.305,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright)
++			var bolt := VisualGeometry.cylinder(rotor,0.014,0.195,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright)
+ 			bolt.rotation.z = PI*0.5
+ 
+ 
+@@ -185,7 +184,7 @@
+ 	return -2.119+0.130*pow(x/0.8,2.0)
+ 
+ 
+-static func _wrap_bumper(car: CarVisual, rubber: Material) -> void:
++static func _wrap_bumper(car: CarVisual, rubber: Material, rear: bool = false) -> void:
+ 	# One continuous chamfered section: no silver shelf or square end blocks.
+ 	# Short side returns stop before the front wheel openings.
+ 	var path: Array[Vector2] = [Vector2(-0.94,-1.77),Vector2(-0.948,-1.90),Vector2(-0.936,-1.985),Vector2(-0.905,-2.045),Vector2(-0.85,-2.095)]
+@@ -208,10 +207,16 @@
+ 			var k: int = (j+1)%profile.size()
+ 			var points: Array[Vector3] = [rings[i][j],rings[i+1][j],rings[i+1][k],rings[i][k]]
+ 			var normal: Vector3 = -(points[1]-points[0]).cross(points[3]-points[0]).normalized()
++			if rear:
++				for vertex: int in range(points.size()): points[vertex].z = -points[vertex].z
++				normal.z = -normal.z
+ 			car._panel(points,normal,rubber)
++	if rear:
++		for ring: Array in rings:
++			for vertex: int in range(ring.size()): ring[vertex].z = -ring[vertex].z
+ 	for end: int in [0,rings.size()-1]:
+-		car._panel([rings[end][0],rings[end][2],rings[end][3],rings[end][4]],Vector3(0,0,1),rubber)
+-		car._panel([rings[end][0],rings[end][4],rings[end][5],rings[end][0]],Vector3(0,0,1),rubber)
++		car._panel([rings[end][0],rings[end][2],rings[end][3],rings[end][4]],Vector3(0,0,-1 if rear else 1),rubber)
++		car._panel([rings[end][0],rings[end][4],rings[end][5],rings[end][0]],Vector3(0,0,-1 if rear else 1),rubber)
+ 
+ 
+ static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, back: float, material: Material) -> void:
+@@ -227,3 +232,23 @@
+ 		var x: float = side*half_width
+ 		var z: float = _nose_z(x)+offset
+ 		car._panel([Vector3(x,bottom,z),Vector3(x,top,z),Vector3(x,top,back),Vector3(x,bottom,back)],Vector3(side,0,0),material)
++
++
++static func _rim_bowl(rotor: Node3D, side: float, metal: Material) -> void:
++	# Sloping inner barrel from the bright lip to a recessed spoke bed.
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for segment: int in range(32):
++		var a: float = TAU*segment/32.0
++		var b: float = TAU*(segment+1)/32.0
++		var points: Array[Vector3] = [Vector3(side*0.146,sin(a)*0.232,cos(a)*0.232),Vector3(side*0.146,sin(b)*0.232,cos(b)*0.232),Vector3(side*0.074,sin(b)*0.195,cos(b)*0.195),Vector3(side*0.074,sin(a)*0.195,cos(a)*0.195)]
++		var normal := Vector3(side*0.46,-sin((a+b)*0.5)*0.89,-cos((a+b)*0.5)*0.89)
++		var indices: Array[int] = [0,1,2,0,2,3]
++		if (points[1]-points[0]).cross(points[2]-points[0]).dot(normal) > 0: indices = [0,2,1,0,3,2]
++		for index: int in indices:
++			tool.set_normal(normal.normalized())
++			tool.add_vertex(points[index])
++	var part := MeshInstance3D.new()
++	part.mesh = tool.commit()
++	part.material_override = metal
++	rotor.add_child(part)
+--- a/game/vehicle/compact_glazing.gd
++++ b/game/vehicle/compact_glazing.gd
+@@ -47,6 +47,8 @@
+ 
+ static func _surface(car: CarVisual, edge: Array[Vector3], center: Vector3, normal: Vector3, material: Material, bow: float, tinted: bool) -> void:
+ 	normal = normal.normalized()
++	if tinted and absf(normal.x) > 0.7:
++		bow = maxf(bow,0.055)
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var rings: int = 5 if bow > 0.0 else 1
+--- a/game/vehicle/window_reflection.gdshader
++++ b/game/vehicle/window_reflection.gdshader
+@@ -12,7 +12,11 @@
+ 	vec3 view = normalize(VIEW);
+ 	vec3 direction = normalize((INV_VIEW_MATRIX * vec4(reflect(-view, n), 0.0)).xyz);
+ 	float sky = smoothstep(-0.22, 0.45, direction.y);
+-	vec3 environment = mix(vec3(0.07, 0.105, 0.10), sky_tint.rgb, sky);
++	// Side panes often reflect below the horizon from the overhead camera.
++	// Include broad generic landscape tones there, rather than nearly black.
++	float landscape_band = smoothstep(-0.15, 0.2, sin(dot(direction, vec3(4.0, 1.0, 3.0))));
++	vec3 landscape = mix(vec3(0.10, 0.16, 0.17), vec3(0.31, 0.40, 0.42), landscape_band);
++	vec3 environment = mix(landscape, sky_tint.rgb, sky);
+ 	// Two broad blurred cloud shapes, anchored to world directions.
+ 	float cloud_a = smoothstep(0.65, 0.94, dot(direction, normalize(vec3(-0.6, 0.65, 0.45))));
+ 	float cloud_b = smoothstep(0.78, 0.97, dot(direction, normalize(vec3(0.72, 0.5, -0.48))));
+@@ -24,6 +28,8 @@
+ 	float fresnel = pow(1.0 - facing, 3.0);
+ 	float strength = 0.28 + 0.38 * fresnel;
+ 	ALBEDO = mix(glass_tint.rgb, environment, strength);
+-	EMISSION = environment * strength * 0.09;
++	vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
++	float side_pane = 1.0 - smoothstep(0.35, 0.7, abs(world_normal.y));
++	EMISSION = environment * strength * mix(0.09, 0.4, side_pane);
+ 	ROUGHNESS = 0.65;
+ }

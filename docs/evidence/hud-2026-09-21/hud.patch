@@ -1,0 +1,598 @@
+diff --git a/game/tests/test_bridge_hud.gd b/game/tests/test_bridge_hud.gd
+index b474322..df1f511 100644
+--- a/game/tests/test_bridge_hud.gd
++++ b/game/tests/test_bridge_hud.gd
+@@ -135,6 +135,30 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename:
+ 		hud.road_map.queue_redraw()
+ 	check(hud.road_map.rebuild_count == rebuilds,"marker updates do not rebuild static road geometry")
+ 	hud.road_map.player = sim.state.position
++	if not practice:
++		var session := TrackSession.new(120,7)
++		session.elapsed_ticks = 8100
++		session.completed_laps = 2
++		session.lap_start_time = 61.25
++		hud.show_session(session)
++		check(hud.lap_label.text == "3" and hud.lap_total.text == "/ 7","lap display uses actual session count and target")
++		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","race and current lap clocks use distinct session times")
++		session.penalty_seconds = 5.0
++		session.lap_penalty_seconds = 5.0
++		hud.show_session(session)
++		check(hud.race_timer.text == "01:12.50" and hud.lap_timer.text == "00:11.25","penalties enter each live clock once")
++		session.lap_times.assign([20.0,21.0,26.5])
++		session.finished = true
++		hud.show_session(session)
++		check(hud.lap_timer.text == "00:26.50","finish retains the completed final lap time")
++		hud.show_session(TrackSession.new())
++		check(hud.race_timer.text == "00:00.00" and hud.lap_timer.text == "00:00.00" and hud.lap_label.text == "1","restart clears both clocks and lap")
++		check(hud._time_text(59.9999) == "00:59.99" and hud._time_text(60.0) == "01:00.00","clock rollover never prints sixty seconds")
++		# Show distinct changing data in the visual witness, then restore the real session.
++		session.finished = false
++		session.penalty_seconds = 0.0
++		session.lap_penalty_seconds = 0.0
++		hud.show_session(session)
+ 	var before: Array = sim.state.snapshot()
+ 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
+ 	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]
+@@ -158,7 +182,7 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename:
+ 		check(card.size.x <= 248.1 and not card.get_global_rect().intersects(timing.get_global_rect()),"long circuit name stays inside the circuit card")
+ 		hud.title.text = saved
+ 		var speed := hud.find_child("SpeedCard",true,false) as Control
+-		check(bounds.encloses(speed.get_global_rect()) and speed.size.y < 90,"speed card is compact and stays above the bottom inset")
++		check(bounds.encloses(speed.get_global_rect()) and speed.size.y <= 120,"semicircular speed gauge stays within its 120-unit budget and above the bottom inset")
+ 		for zone: Rect2 in hud.touch.zones():
+ 			check(not zone.intersects(speed.get_global_rect()),"speed does not cover a driving touch zone")
+ 	check(sim.state.snapshot() == before,"HUD presentation does not change simulation state")
+diff --git a/game/ui/hud_frame.gd b/game/ui/hud_frame.gd
+index 75cd856..b7e82c9 100644
+--- a/game/ui/hud_frame.gd
++++ b/game/ui/hud_frame.gd
+@@ -10,28 +10,22 @@ func _ready() -> void:
+ 
+ func _draw() -> void:
+ 	var extent: Vector2 = (get_parent() as Control).size
+-	var points: PackedVector2Array
+-	match kind:
+-		"plain": points = PackedVector2Array([Vector2(0,0),Vector2(1,0),Vector2(1,1),Vector2(0,1)])
+-		"map": points = PackedVector2Array([Vector2(0,0),Vector2(1,0),Vector2(1,0.72),Vector2(0.59,0.72),Vector2(0.53,1),Vector2(0,1)])
+-		"speed": points = PackedVector2Array([Vector2(0,1),Vector2(0.06,0.38),Vector2(0.29,0.34),Vector2(0.37,0.05),Vector2(0.63,0.05),Vector2(0.71,0.34),Vector2(0.94,0.38),Vector2(1,1)])
+-		_: points = PackedVector2Array([Vector2(0,0),Vector2(0.28,0),Vector2(0.33,0.17),Vector2(0.67,0.17),Vector2(0.72,0),Vector2(1,0),Vector2(0.96,1),Vector2(0.04,1)])
+-	for i: int in range(points.size()): points[i] = points[i] * (extent-Vector2(6,6)) + Vector2(3,3) - position
+-	points = rounded(points,5.0)
+-	var shadow := points.duplicate()
+-	for i: int in range(shadow.size()): shadow[i] += Vector2(0,3)
+-	draw_colored_polygon(shadow,Color("080e12"))
+-	draw_colored_polygon(points,Color("1c2931f5"))
+-	points.append(points[0])
+-	draw_polyline(points,Color("080e12"),5,true)
+-	draw_polyline(points,Color("607882"),1.5,true)
+-	if kind == "speed":
+-		for side: int in [-1,1]:
+-			var center := Vector2(extent.x*(0.5+side*0.18),extent.y*0.94)-position
+-			for tick: int in range(7):
+-				var angle: float = (-PI*0.5+tick*0.17) if side == 1 else (-PI*0.5-tick*0.17)
+-				var direction := Vector2(cos(angle),sin(angle))
+-				draw_line(center+direction*25,center+direction*35,Color("a6c2ce") if tick/7.0 < speed_fraction else Color("42545f"),3.5,true)
++	if kind == "map":
++		var center := Vector2(76,extent.y*0.5)-position
++		draw_circle(center,64,Color("12201a55"))
++		draw_arc(center,64,0,TAU,96,Color("bac6c077"),1.5,true)
++		draw_line(Vector2(152,36)-position,Vector2(152,extent.y-36)-position,Color("ccd2ceaa"),1,true)
++	elif kind == "speed":
++		var center := Vector2(extent.x*0.5,extent.y-16)-position
++		var radius: float = extent.x*0.48
++		draw_arc(center,radius,PI+0.06,TAU-0.06,96,Color("e8eee0bb"),1.6,true)
++		draw_arc(center,radius,TAU-0.43,TAU-0.06,20,Color("dd4244"),3,true)
++		for tick: int in range(61):
++			var angle: float = lerpf(PI+0.10,TAU-0.10,tick/60.0)
++			var direction := Vector2(cos(angle),sin(angle))
++			var color := Color("e7ecd6aa") if tick/60.0 <= speed_fraction else Color("c4ceac55")
++			if tick > 53: color = Color("d5534b99")
++			draw_line(center+direction*(radius-10),center+direction*(radius-(17 if tick % 5 == 0 else 14)),color,1,true)
+ 
+ static func attach(panel: PanelContainer, shape: String) -> HUDFrame:
+ 	var frame := HUDFrame.new()
+diff --git a/game/ui/hud_road_map.gd b/game/ui/hud_road_map.gd
+index 60d1f6d..9cbc209 100644
+--- a/game/ui/hud_road_map.gd
++++ b/game/ui/hud_road_map.gd
+@@ -6,7 +6,7 @@ var outlines: Array[PackedVector2Array] = []
+ var world_bounds := Rect2()
+ 
+ func _ready() -> void:
+-	custom_minimum_size = Vector2(104,84)
++	custom_minimum_size = Vector2(128,128)
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	road_layer = RoadLayer.new()
+ 	road_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -21,7 +21,7 @@ class RoadLayer extends Control:
+ 	func _draw() -> void:
+ 		draw_count += 1
+ 		for path: PackedVector2Array in paths: draw_polyline(path,Color("080e12"),3.0,true)
+-		for path: PackedVector2Array in paths: draw_polyline(path,Color("bec7c5"),1.5,true)
++		for path: PackedVector2Array in paths: draw_polyline(path,Color("e4e8e5"),2.5,true)
+ 
+ var road_layer: RoadLayer
+ var cached_scale: float = 1.0
+@@ -31,7 +31,7 @@ func _rebuild_roads() -> void:
+ 	if road_layer == null: return
+ 	rebuild_count += 1
+ 	road_layer.paths.clear()
+-	cached_scale = minf((size.x-14)/maxf(world_bounds.size.x,1),(size.y-14)/maxf(world_bounds.size.y,1))
++	cached_scale = minf((size.x-40)/maxf(world_bounds.size.x,1),(size.y-40)/maxf(world_bounds.size.y,1))
+ 	for outline: PackedVector2Array in outlines:
+ 		var path := PackedVector2Array()
+ 		var count: int = outline.size()/2
+@@ -50,8 +50,8 @@ func _draw() -> void:
+ 	if outlines.is_empty(): return
+ 	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
+ 	var marker: Vector2 = (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
+-	draw_circle(marker,4,Color("f1eee3"))
+-	draw_circle(marker,2.5,Color("55a9d9"))
++	draw_circle(marker,5,Color("f1eee3"))
++	draw_circle(marker,3.5,Color("55a9d9"))
+ 
+ func configure(track: NativeTrack, authored: bool) -> void:
+ 	outlines.clear()
+diff --git a/game/ui/race_hud_style.gd b/game/ui/race_hud_style.gd
+index d5b3b53..5586b62 100644
+--- a/game/ui/race_hud_style.gd
++++ b/game/ui/race_hud_style.gd
+@@ -4,17 +4,17 @@ extends RefCounted
+ 
+ const INK := Color("091923")
+ const TEXT := Color("f1eee3")
+-const MUTED := Color("a4bac7")
++const MUTED := Color("c1c8c8")
+ const GOLD := Color("ffd15c")
+ const DISPLAY: Font = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
+ const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
+ 
+ static func panel(accent: bool = false) -> StyleBoxFlat:
+ 	var style := StyleBoxFlat.new()
+-	style.bg_color = Color("1c2931f5")
+-	style.border_color = GOLD if accent else Color("617780")
++	style.bg_color = Color("182123a8")
++	style.border_color = GOLD if accent else Color("aab8bc88")
+ 	style.set_border_width_all(2)
+-	style.set_corner_radius_all(7)
++	style.set_corner_radius_all(26)
+ 	style.set_content_margin_all(12)
+ 	style.content_margin_top = 6
+ 	style.content_margin_bottom = 6
+@@ -27,8 +27,8 @@ static func theme() -> Theme:
+ 	value.set_font("font", "Button", DISPLAY)
+ 	value.set_font_size("font_size", "Button", 20)
+ 	for type: String in ["Button", "MenuButton"]:
+-		value.set_font("font", type, DISPLAY)
+-		value.set_font_size("font_size", type, 20)
++		value.set_font("font", type, BODY)
++		value.set_font_size("font_size", type, 16)
+ 		value.set_stylebox("normal", type, panel())
+ 		value.set_stylebox("hover", type, panel(true))
+ 		var pressed := panel(true)
+diff --git a/game/ui/touch_control_art.gd b/game/ui/touch_control_art.gd
+index 3ca00e9..fdd2c3a 100644
+--- a/game/ui/touch_control_art.gd
++++ b/game/ui/touch_control_art.gd
+@@ -1,6 +1,9 @@
+ class_name TouchControlArt
+ extends Control
+-## Retained vector commands for one button state; prepared during countdown.
++## Supplied artwork, retained per-button draw lists and separate touch geometry.
++const STEERING: Texture2D = preload("res://assets/hud/steering.png")
++const BRAKE: Texture2D = preload("res://assets/hud/brake.png")
++const GAS: Texture2D = preload("res://assets/hud/gas.png")
+ var vehicle_id: String = "compact"
+ var button_index: int = 0
+ var pressed: bool = false
+@@ -9,162 +12,23 @@ var artwork_rect := Rect2()
+ 
+ func _draw() -> void:
+ 	draw_count += 1
+-	draw_set_transform(artwork_rect.position,0.0,artwork_rect.size/Vector2(100,100))
+-	_draw_control(button_index,pressed)
+-
+-
+-func _plate(rect: Rect2, color: Color, radius: int, edge: Color, width: int = 2) -> void:
+-	var style := StyleBoxFlat.new()
+-	style.bg_color = color
+-	style.border_color = edge
+-	style.set_border_width_all(width)
+-	style.set_corner_radius_all(radius)
+-	draw_style_box(style, rect)
+-
+-
+-func _draw_control(index: int, pressed: bool) -> void:
+-	var ink := Color("0b1820")
+-	var metal := Color("a7b5b7")
+-	var accent := Color("749aa8")
+-	var radius: int = 14
+-	match vehicle_id:
+-		"pickup":
+-			metal = Color("929c8f")
+-			accent = Color("b5b78c")
+-			radius = 5
+-		"classic":
+-			metal = Color("c5b99c")
+-			accent = Color("c59a69")
+-			radius = 22
+-		"formula":
+-			metal = Color("b2bec4")
+-			accent = Color("b88778")
+-			radius = 6
+-		"kart":
+-			metal = Color("b5bbb0")
+-			accent = Color("95ad83")
+-			radius = 28
+-	var steering: bool = index < 2
+-	if not steering:
+-		_draw_pedal(index, pressed, metal, accent)
+-		return
+-	var bounds := Rect2(3,3,94,91)
+-	if vehicle_id == "kart" and not steering: bounds = Rect2(16,3,68,91)
+-	if vehicle_id == "classic" and index == 3: bounds = Rect2(14,3,72,91)
+-	_plate(Rect2(bounds.position + Vector2(0,5),bounds.size), Color("06101899"),radius,Color("06101899"))
+-	_plate(bounds, ink, radius, ink)
+-	var face: Rect2 = bounds.grow(-4)
+-	face.position.y += 3 if pressed else 0
+-	face.size.y -= 5
+-	_plate(face, Color("33434a") if steering else metal, radius-3, RaceHUDStyle.GOLD if pressed else metal.darkened(0.3))
+-	# A single light edge and deep lower bevel create the same inked planes as the cars.
+-	draw_line(face.position+Vector2(12,3),Vector2(face.end.x-12,face.position.y+3),metal.lightened(0.22),2,true)
+-	var center: Vector2 = face.get_center()
+-	if steering:
+-		var rim: Color = accent if not pressed else RaceHUDStyle.GOLD
+-		if vehicle_id in ["classic","kart","compact"]:
+-			draw_arc(center,30,0.25,PI*2-0.25,40,ink,9,true)
+-			draw_arc(center,30,0.25,PI*2-0.25,40,rim,4,true)
+-			draw_line(center+Vector2(0,16),center+Vector2(0,28),rim,4,true)
+-		elif vehicle_id == "formula":
+-			_plate(Rect2(center-Vector2(35,24),Vector2(13,48)),ink,5,accent)
+-			_plate(Rect2(center+Vector2(22,-24),Vector2(13,48)),ink,5,accent)
+-		else:
+-			for x: float in [18.0,82.0]:
+-				for y: float in [19.0,66.0]:
+-					draw_circle(Vector2(x,y),3,metal)
+-		var direction: float = -1.0 if index == 0 else 1.0
+-		var points := PackedVector2Array([center+Vector2(-6*direction,-12),center+Vector2(7*direction,0),center+Vector2(-6*direction,12)])
+-		draw_polyline(points,ink,10,true)
+-		draw_polyline(points,RaceHUDStyle.GOLD if pressed else RaceHUDStyle.TEXT,5,true)
+-	# Gold foot / thumb witness remains readable without relying on colour alone.
+-	var marker: Color = RaceHUDStyle.GOLD if pressed else accent
+-	_plate(Rect2(center.x-12,bounds.end.y-5,24,4),marker,2,marker,1)
+-
+-func _pedal_contour(rect: Rect2, taper: float) -> PackedVector2Array:
+-	return PackedVector2Array([
+-		rect.position+Vector2(taper+5,0), Vector2(rect.end.x-taper-5,rect.position.y),
+-		Vector2(rect.end.x-taper,rect.position.y+5), Vector2(rect.end.x,rect.end.y-7),
+-		rect.end-Vector2(7,0), Vector2(rect.position.x+7,rect.end.y),
+-		Vector2(rect.position.x,rect.end.y-7), rect.position+Vector2(taper,5)])
+-
+-
+-func _pedal_shape(rect: Rect2, taper: float, fill: Color, edge: Color) -> void:
+-	var points: PackedVector2Array = _pedal_contour(rect,taper)
+-	draw_colored_polygon(points,fill)
+-	points.append(points[0])
+-	draw_polyline(points,edge,2,true)
+-
+-
+-func _fastener(point: Vector2, metal: Color) -> void:
+-	draw_circle(point+Vector2(0,1),3.8,Color("142027"))
+-	draw_circle(point,2.7,metal.lightened(0.18))
+-	draw_arc(point,2.7,PI,TAU,10,metal.lightened(0.4),1,true)
+-	draw_line(point-Vector2(1.4,0),point+Vector2(1.4,0),Color("26343a"),1.2,true)
+-
+-
+-func _draw_pedal(index: int, pressed: bool, metal: Color, accent: Color) -> void:
+-	var ink := Color("0b171d")
+-	var gas: bool = index == 3
+-	var racing: bool = vehicle_id in ["classic","formula","kart"]
+-	var width: float = 59.0 if gas else 84.0
+-	if vehicle_id == "kart": width = 48.0 if gas else 60.0
+-	var top: float = 9.0 if gas else 17.0
+-	var rect := Rect2(50-width/2,top,width,78-top)
+-	var taper: float = 5.0 if gas else 2.0
+-	# Exposed bent steel arm and pivot: the face reads as a pedal, not a UI tile.
+-	_plate(Rect2(42,1,16,92),ink,4,ink)
+-	_plate(Rect2(46,2,9,88),metal.darkened(0.55),2,ink,1)
+-	draw_line(Vector2(48,4),Vector2(48,87),metal.darkened(0.05),2,true)
+-	_plate(Rect2(37,86,26,8),metal.darkened(0.45),3,ink)
+-	_fastener(Vector2(42,90),metal)
+-	_fastener(Vector2(58,90),metal)
+-	if pressed: rect.position.y += 4
+-	var shadow: Rect2 = rect
+-	shadow.position += Vector2(3,7 if not pressed else 3)
+-	_pedal_shape(shadow,taper,Color("06101488"),Color("06101488"))
+-	var thickness: Rect2 = rect
+-	thickness.position.y += 5 if not pressed else 2
+-	_pedal_shape(thickness,taper,metal.darkened(0.6),ink)
+-	_pedal_shape(rect,taper,metal, RaceHUDStyle.GOLD if pressed else ink)
+-	# Broad, hard cel planes establish curvature without glossy gradients.
+-	var points: PackedVector2Array = _pedal_contour(rect,taper)
+-	draw_colored_polygon(PackedVector2Array([points[1],points[2],points[3],points[4],points[4]-Vector2(8,0),points[1]-Vector2(6,0)]),metal.darkened(0.22))
+-	draw_polyline(PackedVector2Array([points[7],points[0],points[1]]),metal.lightened(0.32),2,true)
+-	var grip: Rect2 = rect.grow(-9)
+-	if racing:
+-		# Countersunk holes: a dark bore, lower inner wall and bright machined lip.
+-		var columns: int = 2 if gas or vehicle_id == "kart" else 3
+-		for row: int in range(3):
+-			for col: int in range(columns):
+-				var point: Vector2 = grip.position+Vector2((col+0.5)*grip.size.x/columns,(row+0.5)*grip.size.y/3)
+-				draw_circle(point,5,metal.darkened(0.38))
+-				draw_circle(point+Vector2(0,-0.7),3.4,ink)
+-				draw_arc(point,4.7,0.15,PI-0.15,12,metal.lightened(0.32),1.3,true)
++	var rect: Rect2 = artwork_rect
++	if pressed: rect.position.y += 3
++	var tint := Color(1.16,1.12,0.86) if pressed else Color.WHITE
++	if button_index < 2:
++		var diameter: float = minf(rect.size.x,rect.size.y)
++		var face := Rect2(rect.get_center()-Vector2.ONE*diameter*0.5,Vector2.ONE*diameter)
++		draw_texture_rect_region(STEERING,face,Rect2(356 if button_index == 0 else 946,220,474,456),tint)
++		if pressed: draw_arc(face.get_center(),diameter*0.47,0,TAU,64,RaceHUDStyle.GOLD,2,true)
+ 	else:
+-		_pedal_shape(grip.grow(2),1,Color("26302f"),ink)
+-		for row: int in range(5):
+-			var y: float = grip.position.y+2+row*(grip.size.y-3)/5
+-			# Rubber ribs have raised shoulders and polished contact centres.
+-			var rib := Rect2(grip.position.x+2,y,grip.size.x-4,5)
+-			_plate(rib,Color("434b46"),1,ink,1)
+-			draw_line(rib.position+Vector2(2,0),Vector2(rib.end.x-3,y),Color("697069"),1.3,true)
+-			if row in [1,2,3]:
+-				draw_line(Vector2(47,y+1),Vector2(56 if gas else 62,y+1),Color("8b8f7e"),1.4,true)
+-	# Two mounting screws, offset wear on contact edges, no random/noisy texture.
+-	_fastener(Vector2(rect.get_center().x,rect.position.y+4),metal)
+-	_fastener(Vector2(rect.get_center().x,rect.end.y-4),metal)
+-	for offset: float in [0.0,5.0,11.0]:
+-		var point := Vector2(rect.position.x+4+offset,rect.end.y-5)
+-		draw_line(point,point+Vector2(3,-1),metal.lightened(0.38),1.4,true)
+-	if racing:
+-		draw_line(rect.position+Vector2(12,15),rect.position+Vector2(16,12),metal.lightened(0.27),1,true)
+-		draw_line(rect.position+Vector2(14,18),rect.position+Vector2(19,14),metal.lightened(0.27),1,true)
+-	# Caption belongs to the HUD, not printed across the shoe-contact surface.
+-	var label: String = "GAS" if gas else "BRAKE"
+-	var font: Font = RaceHUDStyle.DISPLAY
+-	var text_width: float = font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x
+-	var baseline := Vector2(50-text_width/2,99)
+-	draw_string_outline(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,11,3,ink)
+-	draw_string(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,11,RaceHUDStyle.GOLD if pressed else RaceHUDStyle.TEXT)
+-	draw_line(Vector2(36,82),Vector2(64,82),RaceHUDStyle.GOLD if pressed else accent,2,true)
++		var gas: bool = button_index == 3
++		var height: float = rect.size.y-19
++		var width: float = height*(0.61 if gas else 0.69)
++		var face := Rect2(Vector2(rect.get_center().x-width*0.5,rect.position.y),Vector2(width,height))
++		draw_texture_rect_region(GAS if gas else BRAKE,face,Rect2(274,326,504,850) if gas else Rect2(266,354,494,718),tint)
++		var label: String = "GAS" if gas else "BRAKE"
++		var font: Font = RaceHUDStyle.DISPLAY
++		var width_text: float = font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x
++		var baseline := Vector2(rect.get_center().x-width_text*0.5,rect.end.y)
++		draw_string_outline(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,14,3,Color("142021aa"))
++		draw_string(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,14,RaceHUDStyle.GOLD if pressed else RaceHUDStyle.TEXT)
+diff --git a/game/core/game.gd b/game/core/game.gd
+index 415ef19..c944e8f 100644
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -252,9 +273,7 @@ func _process(delta: float) -> void:
+ 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
+ 		elif production_mode:
+ 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
+-			hud.lap_label.text = "%d / %d" % [mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps]
+-			var display_time: float = track_session.race_time_seconds()
+-			hud.race_timer.text = "%02d:%05.2f" % [int(display_time) / 60, fmod(display_time,60.0)]
++			hud.show_session(track_session)
+ 			hud.shortcut_penalty_label.text = ("SHORTCUT  +%ds" % int(track_session.penalty_seconds)) if track_session.shortcut_count > 0 else ""
+ 			hud.shortcut_notice_label.visible = track_session.shortcut_notice_active()
+ 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
+diff --git a/game/ui/playground_hud.gd b/game/ui/playground_hud.gd
+index ac1f592..8cb088f 100644
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -21,6 +21,8 @@ var road_map: HUDRoadMap
+ var instrument: HUDFrame
+ var pause_glyph: HUDGlyph
+ var lap_label: Label
++var lap_timer: Label
++var lap_total: Label
+ var race_timer: Label
+ var shortcut_penalty_label: Label
+ var shortcut_notice_label: Label
+@@ -54,32 +56,36 @@ func _ready() -> void:
+ 	var race_card := PanelContainer.new()
+ 	race_card.name = "RaceCard"
+ 	race_card.position = Vector2(24, 20)
+-	race_card.custom_minimum_size = Vector2(248, 106)
++	race_card.custom_minimum_size = Vector2(248, 140)
+ 	race_card.add_theme_stylebox_override("panel", _panel_style())
+ 	race_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	race_card.visible = not editor_test
+ 	root.add_child(race_card)
+ 	race_frame = HUDFrame.attach(race_card,"map")
+ 	var overview := HBoxContainer.new()
+-	overview.add_theme_constant_override("separation",8)
++	overview.add_theme_constant_override("separation",16)
+ 	race_card.add_child(overview)
+ 	road_map = HUDRoadMap.new()
+ 	overview.add_child(road_map)
+ 	var status := VBoxContainer.new()
+ 	status.add_theme_constant_override("separation", 0)
++	status.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	overview.add_child(status)
+ 	var lap_row := HBoxContainer.new()
+-	status.add_child(lap_row)
++
+ 	var lap_caption := _label("LAP" if production_mode else "TEST",18)
+-	lap_row.add_child(lap_caption)
+-	lap_label = _label("1 / 5" if production_mode else "DRIVE",32)
++	status.add_child(lap_caption)
++	status.add_child(lap_row)
++	lap_label = _label("1" if production_mode else "DRIVE",32)
+ 	lap_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+ 	lap_row.add_child(lap_label)
++	lap_total = _label("/ 5" if production_mode else "",32)
++	lap_row.add_child(lap_total)
+ 	title = _label("HANDLING YARD", 17)
+ 	title.custom_minimum_size.x = 112
+ 	title.clip_text = true
+ 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	title.visible = not editor_test
++	title.visible = false
+ 	status.add_child(title)
+ 	var timing := PanelContainer.new()
+ 	timing.name = "TimingCard"
+@@ -95,17 +101,11 @@ func _ready() -> void:
+ 	var clock_info := VBoxContainer.new()
+ 	clock_info.add_theme_constant_override("separation", 0)
+ 	timing.add_child(clock_info)
+-	var clock_caption := _label("RACE TIME", 14)
++	var clock_caption := _label("RACE", 16)
+ 	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	clock_caption.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+-	var caption_back := StyleBoxFlat.new()
+-	caption_back.bg_color = Color("1c2931")
+-	caption_back.content_margin_left = 4
+-	caption_back.content_margin_right = 4
+-	clock_caption.add_theme_stylebox_override("normal",caption_back)
+-	clock_caption.add_theme_color_override("font_color", RaceHUDStyle.MUTED)
+ 	clock_info.add_child(clock_caption)
+-	race_timer = _label("00:00.00", 36)
++	race_timer = _label("00:00.00", 40)
+ 	race_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	race_timer.visible = production_mode and not editor_test
+ 	var clock_row := HBoxContainer.new()
+@@ -113,14 +113,15 @@ func _ready() -> void:
+ 	shortcut_penalty_label = _label("", 13)
+ 	shortcut_penalty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
++	shortcut_penalty_label.visible = false
+ 	clock_info.add_child(shortcut_penalty_label)
+ 	shortcut_notice_label = _label("SHORTCUT  +5s", 26)
+ 	shortcut_notice_label.name = "ShortcutNotice"
+ 	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+ 	shortcut_notice_label.offset_left = -180
+ 	shortcut_notice_label.offset_right = 180
+-	shortcut_notice_label.offset_top = 122
+-	shortcut_notice_label.offset_bottom = 160
++	shortcut_notice_label.offset_top = 164
++	shortcut_notice_label.offset_bottom = 202
+ 	shortcut_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	shortcut_notice_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+ 	shortcut_notice_label.add_theme_color_override("font_outline_color", Color("172129"))
+@@ -128,14 +129,15 @@ func _ready() -> void:
+ 	shortcut_notice_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	shortcut_notice_label.visible = false
+ 	root.add_child(shortcut_notice_label)
+-	var watch := Control.new()
+-	watch.custom_minimum_size = Vector2(30,40)
+-	clock_row.add_child(watch)
+-	var symbol := HUDGlyph.new()
+-	symbol.kind = "clock"
+-	watch.add_child(symbol)
+ 	race_timer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	clock_row.add_child(race_timer)
++	var lap_time_caption := _label("LAP",16)
++	lap_time_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	clock_info.add_child(lap_time_caption)
++	lap_timer = _label("00:00.00",24)
++	lap_timer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	lap_timer.add_theme_color_override("font_color",RaceHUDStyle.MUTED)
++	clock_info.add_child(lap_timer)
+ 	var actions := VBoxContainer.new()
+ 	actions.name = "RaceActions"
+ 	actions.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+@@ -146,7 +148,7 @@ func _ready() -> void:
+ 	root.add_child(actions)
+ 	var top := HBoxContainer.new()
+ 	top.alignment = BoxContainer.ALIGNMENT_END
+-	top.add_theme_constant_override("separation", 8)
++	top.add_theme_constant_override("separation", 16)
+ 	actions.add_child(top)
+ 	if editor_test:
+ 		var practice := HBoxContainer.new()
+@@ -169,14 +171,16 @@ func _ready() -> void:
+ 	else:
+ 		_button(top, "", func() -> void: pause_requested.emit())
+ 		pause_button = top.get_child(top.get_child_count() - 1) as Button
+-		pause_button.custom_minimum_size.x = 60
++		pause_button.custom_minimum_size = Vector2(60,60)
++		_round_button(pause_button)
+ 		pause_button.tooltip_text = "Pause / resume (Esc)"
+ 		pause_glyph = HUDGlyph.new()
+ 		pause_button.add_child(pause_glyph)
+ 		var menu := MenuButton.new()
+ 		menu.name = "RaceMenu"
+ 		menu.flat = false
+-		menu.custom_minimum_size = Vector2(60,52)
++		menu.custom_minimum_size = Vector2(60,60)
++		_round_button(menu)
+ 		menu.tooltip_text = "Race menu: restart or return to tracks"
+ 		top.add_child(menu)
+ 		var icon := HUDGlyph.new()
+@@ -219,10 +223,10 @@ func _ready() -> void:
+ 	var panel := PanelContainer.new()
+ 	panel.name = "SpeedCard"
+ 	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+-	panel.offset_left = -122
+-	panel.offset_right = 122
+-	panel.offset_top = -140
+-	panel.offset_bottom = -64
++	panel.offset_left = -114
++	panel.offset_right = 114
++	panel.offset_top = -156
++	panel.offset_bottom = -42
+ 	panel.add_theme_stylebox_override("panel", _panel_style())
+ 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	panel.visible = not editor_test
+@@ -231,10 +235,11 @@ func _ready() -> void:
+ 	var info := VBoxContainer.new()
+ 	info.add_theme_constant_override("separation", 0)
+ 	panel.add_child(info)
+-	speed_label = _label("0", 38)
++	info.alignment = BoxContainer.ALIGNMENT_END
++	speed_label = _label("0", 44)
+ 	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	info.add_child(speed_label)
+-	var units := _label("KM/H", 14)
++	var units := _label("km/h", 18)
+ 	units.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	units.add_theme_color_override("font_color", RaceHUDStyle.MUTED)
+ 	info.add_child(units)
+@@ -356,7 +361,8 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
+ func _label(text: String, font_size: int) -> Label:
+ 	var label := Label.new()
+ 	label.text = text
+-	label.add_theme_font_override("font", RaceHUDStyle.DISPLAY)
++	label.add_theme_font_override("font", RaceHUDStyle.BODY)
++	label.add_theme_constant_override("outline_size",0)
+ 	label.add_theme_font_size_override("font_size", font_size)
+ 	label.add_theme_color_override("font_color", RaceHUDStyle.TEXT)
+ 	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.55))
+@@ -388,6 +394,29 @@ func set_track(track: NativeTrack) -> void:
+ 	road_map.queue_redraw()
+ 	race_frame.kind = "map" if authored else "plain"
+ 	var card := race_frame.get_parent() as PanelContainer
+-	card.custom_minimum_size = Vector2(248,106) if authored else Vector2(176,76)
++	card.custom_minimum_size = Vector2(248,140) if authored else Vector2(176,76)
+ 	card.size = card.custom_minimum_size
+ 	race_frame.queue_redraw()
++
++
++func _round_button(button: Button) -> void:
++	for state: String in ["normal","hover","pressed","focus"]:
++		var style := RaceHUDStyle.panel(state != "normal")
++		style.set_corner_radius_all(30)
++		button.add_theme_stylebox_override(state,style)
++
++
++func show_session(session: TrackSession) -> void:
++	lap_label.text = str(mini(session.target_laps,session.completed_laps + 1))
++	lap_total.text = "/ %d" % session.target_laps
++	race_timer.text = _time_text(session.race_time_seconds())
++	var current: float = maxf(0.0,float(session.elapsed_ticks)/session.tick_rate-session.lap_start_time) + session.lap_penalty_seconds
++	if session.finished and not session.lap_times.is_empty(): current = session.lap_times[-1]
++	lap_timer.text = _time_text(current)
++	shortcut_penalty_label.visible = session.shortcut_count > 0
++
++
++func _time_text(seconds: float) -> String:
++	# Integer centiseconds avoid a rounded 00:60.00 at minute boundaries.
++	var centiseconds: int = floori(seconds * 100.0 + 0.00001)
++	return "%02d:%02d.%02d" % [centiseconds / 6000,(centiseconds / 100) % 60,centiseconds % 100]

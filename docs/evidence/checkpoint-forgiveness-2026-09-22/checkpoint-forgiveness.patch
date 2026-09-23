@@ -1,0 +1,78 @@
+--- a/game/race/track_session.gd
++++ b/game/race/track_session.gd
+@@ -71,6 +71,15 @@
+ 				var sign_value: float = -1.0 if side == 0 else 1.0
+ 				while span < half+0.75 and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
+ 				widths[side] = minf(half+0.75,span+0.5)
++		# A shallow excursion already loses grip/time. Allow extra inside
++		# recovery space, fading it out before a tight hairpin can be cut.
++		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
++		var departure: Vector2 = (track._race_route_point(absolute+8.0)-center).normalized()
++		var turn: float = absf(approach.angle_to(departure))
++		if turn > 0.01:
++			var allowance: float = 3.0*(1.0-smoothstep(deg_to_rad(30.0),deg_to_rad(60.0),turn))
++			var inside: int = 1 if (departure-approach).dot(normal) > 0.0 else 0
++			widths[inside] += allowance
+ 		_centers.append(center)
+ 		_directions.append(direction)
+ 		_progress.append(distance)
+@@ -82,7 +91,10 @@
+ 	return lateral >= -_widths[index].x and lateral <= _widths[index].y
+ 
+ func checkpoint_position(track: NativeTrack) -> Vector2:
+-	return _centers[next_checkpoint] if next_checkpoint < _centers.size() else track.finish_center
++	if next_checkpoint >= _centers.size(): return track.finish_center
++	# Draw the actual asymmetric span, including the inside recovery margin.
++	var widths: Vector2 = _widths[next_checkpoint]
++	return _centers[next_checkpoint]+_directions[next_checkpoint].orthogonal()*(widths.y-widths.x)*0.5
+ func checkpoint_direction(track: NativeTrack) -> Vector2:
+ 	return _directions[next_checkpoint] if next_checkpoint < _directions.size() else track.finish_forward
+ func checkpoint_width(track: NativeTrack) -> float:
+--- a/game/race/race_rules.gd
++++ b/game/race/race_rules.gd
+@@ -2,4 +2,4 @@
+ extends RefCounted
+ 
+ const LAPS: int = 5
+-const KEY: String = "standing-5-road-gates-v10"
++const KEY: String = "standing-5-road-gates-v11"
+--- a/game/tests/test_checkpoint_rules.gd
++++ b/game/tests/test_checkpoint_rules.gd
+@@ -64,7 +64,7 @@
+ 	var automatic := TrackSession.new(120,1)
+ 	drive(automatic,sparse,loop)
+ 	check(automatic.finished and automatic.checkpoint_count() >= 12 and automatic.checkpoint_count() <= 16,"native routes without gates get automatic ordered gates")
+-	check(RaceRules.KEY == "standing-5-road-gates-v10","checkpoint records use a new rules key")
++	check(RaceRules.KEY == "standing-5-road-gates-v11","checkpoint records use a new rules key")
+ 	# Real creator hairpins: a cut must block the eventual finish, even when
+ 	# the car rejoins and follows the rest of the route correctly.
+ 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
+@@ -111,6 +111,28 @@
+ 		for i: int in range(65,130): diagonal.append(bend.route[i%128])
+ 		drive(cut,bend,diagonal)
+ 		check(not cut.finished and cut.missed_checkpoint >= 0,"tight hairpin diameter shortcut rejected")
++	# Gentle bends allow a three-metre inside recovery margin in either direction.
++	for winding: float in [-1.0,1.0]:
++		var gentle := NativeTrack.new()
++		for i: int in range(256): gentle.route.append(Vector2.from_angle(winding*TAU*i/256)*40.0)
++		gentle.route_widths.resize(256)
++		gentle.route_widths.fill(10.0)
++		gentle.finish_center = gentle.route[0]
++		gentle.finish_forward = Vector2(0,winding)
++		gentle.finish_half_width = 6.0
++		gentle._build_route_distance()
++		for lateral: float in [7.5,11.0,-7.5]:
++			var recovery := TrackSession.new(120,1)
++			recovery._configure(gentle)
++			var center: Vector2 = recovery._centers[0]
++			var tangent: Vector2 = recovery._directions[0]
++			var point: Vector2 = center-center.normalized()*lateral
++			recovery.advance(gentle,point-tangent,point+tangent,0)
++			check((recovery.next_checkpoint > 0) == (lateral == 7.5),"gentle inside recovery allowed; large cut/outside remain bounded")
++			var marker_center: Vector2 = recovery.checkpoint_position(gentle)
++			var normal: Vector2 = recovery.checkpoint_direction(gentle).orthogonal()
++			var half_span: float = recovery.checkpoint_width(gentle)*0.5
++			check(recovery._inside(recovery.next_checkpoint,marker_center-normal*(half_span-0.01)) and recovery._inside(recovery.next_checkpoint,marker_center+normal*(half_span-0.01)),"visible marker matches asymmetric accepted span")
+ 	var measured := TrackSession.new(120,100000)
+ 	measured.advance(track,Vector2.ZERO,Vector2(1,0),0)
+ 	var start: int = Time.get_ticks_usec()

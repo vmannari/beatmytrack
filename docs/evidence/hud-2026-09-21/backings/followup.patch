@@ -1,0 +1,72 @@
+--- a/game/ui/hud_frame.gd
++++ b/game/ui/hud_frame.gd
+@@ -12,12 +12,16 @@
+ 	var extent: Vector2 = (get_parent() as Control).size
+ 	if kind == "map":
+ 		var center := Vector2(76,extent.y*0.5)-position
+-		draw_circle(center,64,Color("12201a55"))
++		draw_circle(center,64,Color("12201a77"))
++		_soft_backing(Rect2(Vector2(146,24)-position,Vector2(extent.x-146,extent.y-48)))
+ 		draw_arc(center,64,0,TAU,96,Color("bac6c077"),1.5,true)
+ 		draw_line(Vector2(152,36)-position,Vector2(152,extent.y-36)-position,Color("ccd2ceaa"),1,true)
++	elif kind == "clock" or kind == "plain":
++		_soft_backing(Rect2(-position-Vector2(12,6),extent+Vector2(24,12)))
+ 	elif kind == "speed":
+ 		var center := Vector2(extent.x*0.5,extent.y-16)-position
+ 		var radius: float = extent.x*0.48
++		_soft_backing(Rect2(center-Vector2(radius,radius),Vector2(radius*2,radius+38)))
+ 		draw_arc(center,radius,PI+0.06,TAU-0.06,96,Color("e8eee0bb"),1.6,true)
+ 		draw_arc(center,radius,TAU-0.43,TAU-0.06,20,Color("dd4244"),3,true)
+ 		for tick: int in range(61):
+@@ -26,6 +30,18 @@
+ 			var color := Color("e7ecd6aa") if tick/60.0 <= speed_fraction else Color("c4ceac55")
+ 			if tick > 53: color = Color("d5534b99")
+ 			draw_line(center+direction*(radius-10),center+direction*(radius-(17 if tick % 5 == 0 else 14)),color,1,true)
++
++func _soft_backing(rect: Rect2) -> void:
++	# Feathered charcoal scrim: no hard card edge over the racing world.
++	for layer: int in range(20):
++		var inset: float = layer * 0.016
++		var radii: Vector2 = rect.size * (0.5-inset)
++		var points := PackedVector2Array()
++		for segment: int in range(64):
++			var angle: float = TAU*segment/64.0
++			points.append(rect.get_center()+Vector2(cos(angle),sin(angle))*radii)
++		draw_colored_polygon(points,Color(0.035,0.065,0.06,0.027))
++
+ 
+ static func attach(panel: PanelContainer, shape: String) -> HUDFrame:
+ 	var frame := HUDFrame.new()
+--- a/game/ui/touch_control_art.gd
++++ b/game/ui/touch_control_art.gd
+@@ -13,8 +13,8 @@
+ func _draw() -> void:
+ 	draw_count += 1
+ 	var rect: Rect2 = artwork_rect
+-	if pressed: rect.position.y += 3
+-	var tint := Color(1.16,1.12,0.86) if pressed else Color.WHITE
++	if pressed and button_index < 2: rect.position.y += 3
++	var tint := Color(1.16,1.12,0.86) if pressed and button_index < 2 else Color.WHITE
+ 	if button_index < 2:
+ 		var diameter: float = minf(rect.size.x,rect.size.y)
+ 		var face := Rect2(rect.get_center()-Vector2.ONE*diameter*0.5,Vector2.ONE*diameter)
+@@ -25,10 +25,18 @@
+ 		var height: float = rect.size.y-19
+ 		var width: float = height*(0.61 if gas else 0.69)
+ 		var face := Rect2(Vector2(rect.get_center().x-width*0.5,rect.position.y),Vector2(width,height))
++		var recess := StyleBoxFlat.new()
++		recess.bg_color = Color("09121188")
++		recess.set_corner_radius_all(9)
++		draw_style_box(recess,face.grow(2))
++		if pressed:
++			# Tilt the face away into its fixed mounting recess. Captions stay still.
++			face.position += Vector2(width*0.035,height*0.18)
++			face.size *= Vector2(0.93,0.82)
+ 		draw_texture_rect_region(GAS if gas else BRAKE,face,Rect2(274,326,504,850) if gas else Rect2(266,354,494,718),tint)
+ 		var label: String = "GAS" if gas else "BRAKE"
+ 		var font: Font = RaceHUDStyle.DISPLAY
+ 		var width_text: float = font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x
+ 		var baseline := Vector2(rect.get_center().x-width_text*0.5,rect.end.y)
+ 		draw_string_outline(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,14,3,Color("142021aa"))
+-		draw_string(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,14,RaceHUDStyle.GOLD if pressed else RaceHUDStyle.TEXT)
++		draw_string(font,baseline,label,HORIZONTAL_ALIGNMENT_LEFT,-1,14,RaceHUDStyle.TEXT)

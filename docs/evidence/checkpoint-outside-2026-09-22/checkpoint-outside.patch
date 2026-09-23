@@ -1,0 +1,250 @@
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -349,7 +349,7 @@
+ 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
+ 			hud.show_session(track_session)
+ 			hud.shortcut_penalty_label.text = ""
+-			hud.shortcut_notice_label.text = "CHECKPOINT %d MISSED — RETURN" % (track_session.next_checkpoint+1)
++			hud.shortcut_notice_label.text = "Missed checkpoint"
+ 			hud.shortcut_notice_label.visible = track_session.missed_checkpoint >= 0
+ 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
+ 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
+--- a/game/race/race_rules.gd
++++ b/game/race/race_rules.gd
+@@ -2,4 +2,4 @@
+ extends RefCounted
+ 
+ const LAPS: int = 5
+-const KEY: String = "standing-5-road-gates-v11"
++const KEY: String = "standing-5-road-gates-v12"
+--- a/game/race/track_session.gd
++++ b/game/race/track_session.gd
+@@ -22,6 +22,7 @@
+ var last_shortcut_tick: int = -1
+ var last_progress: float = 0.0
+ var _widths: Array[Vector2] = []
++var _road_widths: Array[Vector2] = []
+ var _centers := PackedVector2Array()
+ var _directions := PackedVector2Array()
+ var _progress := PackedFloat32Array()
+@@ -64,6 +65,7 @@
+ 		var normal: Vector2 = direction.orthogonal()
+ 		var elevated: bool = track.elevated_at(center,low) if track.grid_width > 0 else false
+ 		var widths := Vector2(half+0.75,half+0.75)
++		var road_widths := Vector2(half,half)
+ 		var allowed: Array = [0,2,5] if dirt else [0,5]
+ 		if track.grid_width > 0 and track.cell_at(center,elevated) in allowed:
+ 			for side: int in range(2):
+@@ -71,6 +73,7 @@
+ 				var sign_value: float = -1.0 if side == 0 else 1.0
+ 				while span < half+0.75 and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
+ 				widths[side] = minf(half+0.75,span+0.5)
++				road_widths[side] = minf(half,span)
+ 		# A shallow excursion already loses grip/time. Allow extra inside
+ 		# recovery space, fading it out before a tight hairpin can be cut.
+ 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
+@@ -80,10 +83,13 @@
+ 			var allowance: float = 3.0*(1.0-smoothstep(deg_to_rad(30.0),deg_to_rad(60.0),turn))
+ 			var inside: int = 1 if (departure-approach).dot(normal) > 0.0 else 0
+ 			widths[inside] += allowance
++			# Running wide costs distance; keep inside shortcut limits separate.
++			widths[1-inside] += 6.0*smoothstep(0.01,0.08,turn)
+ 		_centers.append(center)
+ 		_directions.append(direction)
+ 		_progress.append(distance)
+ 		_widths.append(widths)
++		_road_widths.append(road_widths)
+ 	initialized = true
+ 
+ func _inside(index: int, point: Vector2) -> bool:
+@@ -101,6 +107,13 @@
+ 	if next_checkpoint >= _centers.size(): return track.finish_half_width*2.0
+ 	return _widths[next_checkpoint].x+_widths[next_checkpoint].y
+ func checkpoint_count() -> int: return _centers.size()
++
++func checkpoint_road_center(track: NativeTrack) -> Vector2:
++	return _centers[next_checkpoint] if next_checkpoint < _centers.size() else track.finish_center
++func checkpoint_road_spans(track: NativeTrack) -> Vector2:
++	return _road_widths[next_checkpoint] if next_checkpoint < _road_widths.size() else Vector2.ONE*track.finish_half_width
++func checkpoint_acceptance_spans(track: NativeTrack) -> Vector2:
++	return _widths[next_checkpoint] if next_checkpoint < _widths.size() else Vector2.ONE*track.finish_half_width
+ 
+ func _crossing(index: int, from: Vector2, to: Vector2) -> float:
+ 	var before: float = (from-_centers[index]).dot(_directions[index])
+--- a/game/tests/capture_checkpoints.gd
++++ b/game/tests/capture_checkpoints.gd
+@@ -16,13 +16,20 @@
+ 	game.set_physics_process(false)
+ 	game.paused = true
+ 	game.countdown_ticks = 0
++	game.race_cues.visible = false
+ 	var session: TrackSession = game.track_session
+ 	session.advance(track,track.spawn,track.spawn,0)
++	# Pick a bend with a wide recovery extension for visual evidence.
++	for index: int in range(session.checkpoint_count()):
++		session.next_checkpoint = index
++		var extra: Vector2 = session.checkpoint_acceptance_spans(track)-session.checkpoint_road_spans(track)
++		if maxf(extra.x,extra.y) > 6.0: break
++	var selected_gate: int = session.next_checkpoint
+ 	var gate: Vector2 = session.checkpoint_position(track)
+ 	var direction: Vector2 = session.checkpoint_direction(track)
+ 	var side: Vector2 = direction.orthogonal()*(session.checkpoint_width(track)*0.5+5.0)
+ 	session.advance(track,gate+side-direction*5,gate+side+direction*5,0)
+-	check(session.missed_checkpoint == 0,"actual missed sweep creates checkpoint notice")
++	check(session.missed_checkpoint == selected_gate,"actual missed sweep creates checkpoint notice")
+ 	game.sim.state.position = gate-direction*8
+ 	game.sim.state.heading = atan2(direction.x,direction.y)
+ 	game.previous_position = game.sim.state.position
+@@ -34,7 +41,16 @@
+ 	for property: Dictionary in game.hud.road_map.get_property_list():
+ 		minimap_properties.append(property.name)
+ 	check(&"checkpoint" not in minimap_properties,"minimap has no waypoint marker state")
+-	check(game.hud.shortcut_notice_label.visible and "RETURN" in game.hud.shortcut_notice_label.text,"persistent return notice")
++	check(game.hud.shortcut_notice_label.visible and game.hud.shortcut_notice_label.text == "Missed checkpoint","persistent return notice")
++	check(game.checkpoint_marker.label.text == "Missed checkpoint","world label has no checkpoint number")
++	var road: Vector2 = session.checkpoint_road_spans(track)
++	var accepted: Vector2 = session.checkpoint_acceptance_spans(track)
++	check(is_equal_approx(game.checkpoint_marker.mesh.size.x,road.x+road.y),"main line spans road edges only")
++	check(is_equal_approx(game.checkpoint_marker.material_override.albedo_color.a,0.65),"road line is translucent")
++	for side_index: int in range(2):
++		var margin: MeshInstance3D = game.checkpoint_marker.margins[side_index]
++		check(is_equal_approx(margin.mesh.size.x,accepted[side_index]-road[side_index]),"margin ends at actual acceptance boundary")
++		check(margin.material_override.albedo_color.a < game.checkpoint_marker.material_override.albedo_color.a,"development margins are fainter")
+ 	await RenderingServer.frame_post_draw
+ 	root.get_texture().get_image().save_png("res://../build/checkpoint-missed.png")
+ 	session.advance(track,gate-direction*2,gate+direction*2,0)
+@@ -44,5 +60,5 @@
+ 	check(game.track_session.next_checkpoint == 0 and game.track_session.missed_checkpoint == -1,"restart clears checkpoint state")
+ 	check(not game.checkpoint_marker.visible,"restart clears cached marker")
+ 	game.free()
+-	print("CHECKPOINT_CAPTURE: 7 checks, ",failures," failures")
++	print("CHECKPOINT_CAPTURE: 14 checks, ",failures," failures")
+ 	quit(0 if failures == 0 else 1)
+--- a/game/tests/test_checkpoint_rules.gd
++++ b/game/tests/test_checkpoint_rules.gd
+@@ -64,7 +64,7 @@
+ 	var automatic := TrackSession.new(120,1)
+ 	drive(automatic,sparse,loop)
+ 	check(automatic.finished and automatic.checkpoint_count() >= 12 and automatic.checkpoint_count() <= 16,"native routes without gates get automatic ordered gates")
+-	check(RaceRules.KEY == "standing-5-road-gates-v11","checkpoint records use a new rules key")
++	check(RaceRules.KEY == "standing-5-road-gates-v12","checkpoint records use a new rules key")
+ 	# Real creator hairpins: a cut must block the eventual finish, even when
+ 	# the car rejoins and follows the rest of the route correctly.
+ 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
+@@ -98,11 +98,15 @@
+ 		bend.finish_forward = Vector2(0,1)
+ 		bend.finish_half_width = 6.0
+ 		bend._build_route_distance()
+-		for offset: float in [-4.0,0.0,4.0]:
++		for offset: float in [-4.0,0.0,4.0,10.0]:
+ 			for spacing: float in [0.1,0.5,2.0]:
+ 				var arc := PackedVector2Array()
+ 				var samples: int = maxi(8,ceili(TAU*(radius+offset)/spacing))
+-				for i: int in range(samples+2): arc.append(Vector2.from_angle(TAU*i/samples)*(radius+offset))
++				for i: int in range(samples+2):
++					# Rejoin the road for the independently bounded finish line.
++					var fraction: float = float(i)/samples
++					var excursion: float = offset if fraction > 0.12 and fraction < 0.88 else minf(offset,4.0)
++					arc.append(Vector2.from_angle(TAU*i/samples)*(radius+excursion))
+ 				var legal := TrackSession.new(120,1)
+ 				var warned: bool = drive(legal,bend,arc,spacing)
+ 				check(legal.finished and not warned,"tight hairpin legal radius %s offset %s sweep %s" % [radius,offset,spacing])
+@@ -121,14 +125,14 @@
+ 		gentle.finish_forward = Vector2(0,winding)
+ 		gentle.finish_half_width = 6.0
+ 		gentle._build_route_distance()
+-		for lateral: float in [7.5,11.0,-7.5]:
++		for lateral: float in [7.5,11.0,-7.5,-10.5,-13.0]:
+ 			var recovery := TrackSession.new(120,1)
+ 			recovery._configure(gentle)
+ 			var center: Vector2 = recovery._centers[0]
+ 			var tangent: Vector2 = recovery._directions[0]
+ 			var point: Vector2 = center-center.normalized()*lateral
+ 			recovery.advance(gentle,point-tangent,point+tangent,0)
+-			check((recovery.next_checkpoint > 0) == (lateral == 7.5),"gentle inside recovery allowed; large cut/outside remain bounded")
++			check((recovery.next_checkpoint > 0) == (lateral in [7.5,-7.5,-10.5]),"inside and outside recovery allowed; excessive excursions bounded")
+ 			var marker_center: Vector2 = recovery.checkpoint_position(gentle)
+ 			var normal: Vector2 = recovery.checkpoint_direction(gentle).orthogonal()
+ 			var half_span: float = recovery.checkpoint_width(gentle)*0.5
+--- a/game/ui/checkpoint_marker.gd
++++ b/game/ui/checkpoint_marker.gd
+@@ -1,17 +1,32 @@
+ class_name CheckpointMarker
+ extends MeshInstance3D
+ ## Only a missed gate gets a world marker; the minimap has no waypoint marker.
++## Temporary development overlay; disable this flag to hide acceptance margins.
++const SHOW_DEVELOPMENT_MARGINS: bool = true
+ var label: Label3D
++var margins: Array[MeshInstance3D] = []
+ var previous_gate: int = -2
++func line_material(alpha: float) -> StandardMaterial3D:
++	var material := StandardMaterial3D.new()
++	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
++	material.albedo_color = Color(1.0,0.8,0.286,alpha)
++	return material
+ func _ready() -> void:
+ 	var box := BoxMesh.new()
+-	box.size = Vector3(1,0.06,0.35)
++	box.size = Vector3(1,0.025,0.24)
+ 	mesh = box
+-	var material := StandardMaterial3D.new()
+-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+-	material.albedo_color = Color("ffcc49")
+-	material_override = material
++	material_override = line_material(0.65)
+ 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	for side: int in range(2):
++		var margin := MeshInstance3D.new()
++		var margin_mesh := BoxMesh.new()
++		margin_mesh.size = Vector3(1,0.02,0.14)
++		margin.mesh = margin_mesh
++		margin.material_override = line_material(0.22)
++		margin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		add_child(margin)
++		margins.append(margin)
+ 	label = Label3D.new()
+ 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+ 	label.font_size = 48
+@@ -20,17 +35,26 @@
+ 	label.modulate = Color("ffdf77")
+ 	label.position.y = 2.2
+ 	label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	label.text = "Missed checkpoint"
+ 	add_child(label)
+ 	visible = false
+ func present(session: TrackSession, track: NativeTrack, bridge: BridgePresentation) -> void:
+ 	visible = session.missed_checkpoint >= 0 and not session.finished
+ 	if not visible or previous_gate == session.missed_checkpoint: return
+ 	previous_gate = session.missed_checkpoint
+-	var center: Vector2 = session.checkpoint_position(track)
++	var center: Vector2 = session.checkpoint_road_center(track)
+ 	var direction: Vector2 = session.checkpoint_direction(track)
++	var road: Vector2 = session.checkpoint_road_spans(track)
++	var accepted: Vector2 = session.checkpoint_acceptance_spans(track)
++	var shift: float = (road.y-road.x)*0.5
+ 	var route_index: int = track.nearest_route(center)
+-	position = VisualGeometry.world(center)
++	position = VisualGeometry.world(center+direction.orthogonal()*shift)
+ 	position.y = bridge.height_at(center,route_index)+0.12
+ 	rotation.y = -atan2(direction.x,direction.y)
+-	(mesh as BoxMesh).size.x = session.checkpoint_width(track)
+-	label.text = "CHECKPOINT %d" % (session.next_checkpoint+1)
++	(mesh as BoxMesh).size.x = road.x+road.y
++	for side: int in range(2):
++		var span: float = maxf(0.0,accepted[side]-road[side])
++		margins[side].visible = SHOW_DEVELOPMENT_MARGINS and span > 0.001
++		(margins[side].mesh as BoxMesh).size.x = maxf(0.001,span)
++		var sign_value: float = -1.0 if side == 0 else 1.0
++		margins[side].position.x = sign_value*(road[side]+span*0.5)-shift
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -118,7 +118,7 @@
+ 	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+ 	shortcut_penalty_label.visible = false
+ 	clock_info.add_child(shortcut_penalty_label)
+-	shortcut_notice_label = _label("CHECKPOINT MISSED — RETURN", 22)
++	shortcut_notice_label = _label("Missed checkpoint", 22)
+ 	shortcut_notice_label.name = "ShortcutNotice"
+ 	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+ 	shortcut_notice_label.offset_left = -300

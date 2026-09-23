@@ -1,0 +1,54 @@
+--- a/game/vehicle/compact_detail.gd
++++ b/game/vehicle/compact_detail.gd
+@@ -132,13 +132,12 @@
+ 
+ 
+ static func _front(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
+-	# A shallow 7.5 cm bow across the nose; closed bands tie into the shell.
++	# Curved nose with a separate moulded rubber bumper wrapping both corners.
+ 	_nose_band(car,0.81,0.605,0.971,0.0,-1.89,blue)
+ 	_nose_band(car,0.795,0.660,0.932,-0.009,-1.91,trim)
+ 	for row: int in range(5):
+ 		_nose_band(car,0.280,0.691+row*0.046,0.702+row*0.046,-0.017,-2.00,alloy)
+-	_nose_band(car,0.89,0.435,0.645,-0.135,-1.91,trim)
+-	_nose_band(car,0.88,0.622,0.649,-0.137,-1.92,alloy)
++	_wrap_bumper(car,trim)
+ 	# Curved upper shoulder connects the hood to the lamp surround.
+ 	for segment: int in range(16):
+ 		var x0: float = lerpf(-0.76,0.76,segment/16.0)
+@@ -186,6 +185,35 @@
+ 	return -2.119+0.130*pow(x/0.8,2.0)
+ 
+ 
++static func _wrap_bumper(car: CarVisual, rubber: Material) -> void:
++	# One continuous chamfered section: no silver shelf or square end blocks.
++	# Short side returns stop before the front wheel openings.
++	var path: Array[Vector2] = [Vector2(-0.94,-1.77),Vector2(-0.948,-1.90),Vector2(-0.936,-1.985),Vector2(-0.905,-2.045),Vector2(-0.85,-2.095)]
++	for i: int in range(17):
++		var x: float = lerpf(-0.75,0.75,i/16.0)
++		path.append(Vector2(x,_nose_z(x)-0.135))
++	path.append_array([Vector2(0.85,-2.095),Vector2(0.905,-2.045),Vector2(0.936,-1.985),Vector2(0.948,-1.90),Vector2(0.94,-1.77)])
++	var profile: Array[Vector2] = [Vector2(0,0.472),Vector2(0,0.588),Vector2(0.025,0.630),Vector2(0.145,0.630),Vector2(0.145,0.435),Vector2(0.025,0.435)]
++	var rings: Array = []
++	for i: int in range(path.size()):
++		var tangent: Vector2 = (path[mini(i+1,path.size()-1)]-path[maxi(i-1,0)]).normalized()
++		var outward := Vector2(tangent.y,-tangent.x)
++		var ring: Array[Vector3] = []
++		for section: Vector2 in profile:
++			var point: Vector2 = path[i]-outward*section.x
++			ring.append(Vector3(point.x,section.y,point.y))
++		rings.append(ring)
++	for i: int in range(rings.size()-1):
++		for j: int in range(profile.size()):
++			var k: int = (j+1)%profile.size()
++			var points: Array[Vector3] = [rings[i][j],rings[i+1][j],rings[i+1][k],rings[i][k]]
++			var normal: Vector3 = -(points[1]-points[0]).cross(points[3]-points[0]).normalized()
++			car._panel(points,normal,rubber)
++	for end: int in [0,rings.size()-1]:
++		car._panel([rings[end][0],rings[end][2],rings[end][3],rings[end][4]],Vector3(0,0,1),rubber)
++		car._panel([rings[end][0],rings[end][4],rings[end][5],rings[end][0]],Vector3(0,0,1),rubber)
++
++
+ static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, back: float, material: Material) -> void:
+ 	for segment: int in range(16):
+ 		var x0: float = lerpf(-half_width,half_width,segment/16.0)

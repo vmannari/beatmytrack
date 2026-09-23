@@ -1,0 +1,72 @@
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -332,21 +332,27 @@
+ 	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],roof_paint)
+ 	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.10)
+ 	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.07)
++	var quarter_surround := VisualGeometry.material(Color("a6b1aa"))
+ 	for side: float in [-1.0,1.0]:
+ 		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
+ 		# Window corners lie on the sloped cabin side, just outside its paint.
+ 		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),trim,0.0)
+-		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,0.52),Vector3(side*0.748,1.07,1.68),Vector3(side*0.651,1.425,1.14),Vector3(side*0.651,1.425,0.52)],Vector3(side,0.277,0),trim,0.0)
++		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.747,1.075,0.50),Vector3(side*0.733,1.125,1.53),Vector3(side*0.656,1.405,1.12),Vector3(side*0.651,1.425,0.50)],Vector3(side,0.277,0),trim,0.0,[0.035,0.15,0.095,0.035],quarter_surround)
+ 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
+ 	# Hatch seam and rear wiper make the short tail readable from overhead.
+ 	_seam(body,Vector3(-0.68,1.05,1.87),Vector3(0.68,1.05,1.87),0.018,trim)
+ 	_seam(body,Vector3(0,1.10,1.80),Vector3(0.36,1.17,1.69),0.020,trim)
+-	# Faint longitudinal roof pressings and a soft edge tint, below the cream glare.
+-	var roof_line := VisualGeometry.material(Color("aaa28f"))
+-	var roof_edge := VisualGeometry.material(Color("b9af96"))
+-	for side: float in [-1.0,1.0]:
+-		_seam(body,Vector3(side*0.47,1.495,-0.17),Vector3(side*0.47,1.495,0.96),0.007,roof_line)
+-		_panel([Vector3(side*0.50,1.493,-0.12),Vector3(side*0.55,1.493,-0.12),Vector3(side*0.55,1.493,0.91),Vector3(side*0.50,1.493,0.96)],Vector3.UP,roof_edge)
++	# A fine inset perimeter crease defines the pressed roof's rolled edge.
++	var roof_line := VisualGeometry.material(Color("b3aa95"))
++	var roof_highlight := VisualGeometry.material(Color("dcd1b6"))
++	var perimeter: Array[Vector2] = [Vector2(-0.44,-0.38),Vector2(0.44,-0.38),Vector2(0.60,-0.16),Vector2(0.60,0.94),Vector2(0.44,1.16),Vector2(-0.44,1.16),Vector2(-0.60,0.94),Vector2(-0.60,-0.16)]
++	for i: int in range(perimeter.size()):
++		var a: Vector2 = perimeter[i]
++		var b: Vector2 = perimeter[(i+1)%perimeter.size()]
++		_seam(body,Vector3(a.x,1.493,a.y),Vector3(b.x,1.493,b.y),0.008,roof_line)
++		var inset_a: Vector2 = Vector2(0,0.39).lerp(a,0.986)
++		var inset_b: Vector2 = Vector2(0,0.39).lerp(b,0.986)
++		_seam(body,Vector3(inset_a.x,1.493,inset_a.y),Vector3(inset_b.x,1.493,inset_b.y),0.008,roof_highlight)
+ 
+ 
+ func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:
+--- a/game/vehicle/compact_glazing.gd
++++ b/game/vehicle/compact_glazing.gd
+@@ -2,14 +2,15 @@
+ ## Rounded original glazing with opaque, restrained reflection tones.
+ static var shared_glass: StandardMaterial3D
+ 
+-static func window(car: CarVisual, corners: Array[Vector3], normal: Vector3, trim: Material, bow: float = 0.0) -> void:
++static func window(car: CarVisual, corners: Array[Vector3], normal: Vector3, trim: Material, bow: float = 0.0, corner_radii: Array[float] = [], surround: Material = null) -> void:
+ 	var center := Vector3.ZERO
+ 	for point: Vector3 in corners: center += point*0.25
+ 	var outline: Array[Vector3] = []
+ 	for i: int in range(4):
+ 		var corner: Vector3 = corners[i]
+-		var start: Vector3 = corner.move_toward(corners[(i+3)%4],0.065)
+-		var end: Vector3 = corner.move_toward(corners[(i+1)%4],0.065)
++		var radius: float = corner_radii[i] if corner_radii.size() == 4 else 0.065
++		var start: Vector3 = corner.move_toward(corners[(i+3)%4],radius)
++		var end: Vector3 = corner.move_toward(corners[(i+1)%4],radius)
+ 		for step: int in range(6):
+ 			var t: float = step/5.0
+ 			outline.append(start.lerp(corner,t).lerp(corner.lerp(end,t),t))
+@@ -30,7 +31,12 @@
+ 				curved.append(point)
+ 		outline = curved
+ 		center += (normal.normalized()*0.35+down_slope*0.75)*bow
+-	_surface(car,outline,center,normal,trim,0.0,false)
++	_surface(car,outline,center,normal,surround if surround != null else trim,0.0,false)
++	if surround != null:
++		var seal: Array[Vector3] = []
++		for point: Vector3 in outline:
++			seal.append(center+(point-center)*0.977+normal.normalized()*0.003)
++		_surface(car,seal,center+normal.normalized()*0.003,normal,trim,0.0,false)
+ 	if shared_glass == null:
+ 		shared_glass = VisualGeometry.material(Color.WHITE)
+ 		shared_glass.vertex_color_use_as_albedo = true

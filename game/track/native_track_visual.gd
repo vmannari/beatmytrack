@@ -2,10 +2,14 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-54"
+const VERSION: String = "track-kit-55"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
+const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/grass_albedo.png")
+const GRASS_MACRO: Texture2D = preload("res://assets/textures/grass_macro_mask.png")
+const GRASS_NORMAL: Texture2D = preload("res://assets/textures/grass_normal.png")
+
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
 const NIGHT_TILE_SIZE: float = 16.0
@@ -25,6 +29,13 @@ var editor_objects: NativeTrackVisual
 var editor_cover: NativeTrackVisual
 
 
+func _bind_grass(material: ShaderMaterial) -> void:
+	material.set_shader_parameter("hybrid_grass",theme_id in ["pine","storm"])
+	material.set_shader_parameter("grass_albedo",GRASS_ALBEDO)
+	material.set_shader_parameter("grass_macro_mask",GRASS_MACRO)
+	material.set_shader_parameter("grass_normal",GRASS_NORMAL)
+
+
 func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
 	_menu_slices = menu_slices
 	_slice_started = Time.get_ticks_usec() if menu_slices else 0
@@ -35,6 +46,7 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	ground.set_shader_parameter("ground_color", colors[1])
 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+	_bind_grass(ground)
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
 	if theme_id == "night_city" and partition_night_ground and _lamps_inside_terrain(track):
 		# This backdrop is hidden by the opaque terrain wherever lamps reach.
@@ -110,6 +122,7 @@ func _build_terrain(track: NativeTrack) -> void:
 	surface.set_shader_parameter("wet_road", theme_id == "storm")
 	surface.set_shader_parameter("packed_sand", theme_id == "desert")
 	surface.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+	_bind_grass(surface)
 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
 	surface.set_shader_parameter("map_texel", Vector2(1.0 / track.grid_width, 1.0 / track.grid_height))
@@ -420,6 +433,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.shader = CREATOR_ROAD_SHADER
 	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+	_bind_grass(material)
 	material.set_shader_parameter("grass_color", colors[1])
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("verge_blend_mask",mask)
@@ -579,6 +593,11 @@ func _build_barriers(track: NativeTrack) -> void:
 
 
 func _build_low_cover(track: NativeTrack) -> void:
+	if theme_id in ["pine","storm"]:
+		var tufts := GrassTufts.new()
+		add_child(tufts)
+		await tufts.build(track,colors[1],_menu_slices)
+		if _menu_slices and not is_inside_tree(): return
 	var scenery := SurfaceTool.new()
 	scenery.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var foliage: Color = TrackTheme.foliage(theme_id)
@@ -589,15 +608,19 @@ func _build_low_cover(track: NativeTrack) -> void:
 	# Baked vertex colors reduce the entire prop kit to one mesh/material.
 	var stride: int = maxi(1, ceili(3.7 / track.cell_size))
 	var jitter: int = maxi(1,floori(stride*0.4))
+	var accepted_sites: int = 0
 	for site: Vector2i in _scenery_sites(track,stride):
 		if _menu_yield_due():
 			await get_tree().process_frame
 			if not is_inside_tree(): return
 			_slice_started = Time.get_ticks_usec()
-		if scenic_count >= 480: break
+		if accepted_sites >= 480: break
 		var seed_value: int = (site.x * 73856093 ^ site.y * 19349663) & 0x7fffffff
 		var cell := Vector2i(site.x+(seed_value%(jitter*2+1))-jitter,site.y+((seed_value/11)%(jitter*2+1))-jitter)
 		if not _cover_clear(track, cell, 1.3): continue
+		accepted_sites += 1
+		# Preserve the original site budget and stone population while replacing grass.
+		if theme_id in ["pine","storm"] and seed_value % 4 != 0: continue
 		var center := Vector3((cell.x+0.5)*track.cell_size-track.half_extent.x, 0.014, (cell.y+0.5)*track.cell_size-track.half_extent.y)
 		var scale_value: float = 0.8 + (seed_value % 11) * 0.035
 		var turn: float = (seed_value % 37) * 0.17

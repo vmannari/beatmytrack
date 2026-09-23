@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-23 V02/V04/V05/Q01: grass-only hybrid material uses baked macro/albedo/normal maps and five opaque clustered MultiMesh tuft variants. Visual kit 55; 2,270 tuft origins in captured driving view. Grass 15/17 headless/graphical, surface 50, desert 24, biome 92 and shader-probe 928 checks pass. Desktop screenshots inspected. Phone attached; no device test/export/profiling. See docs/HYBRID_GRASS.md.
+
 2026-09-23 R01/R03/V03/V05/Q01: Results sector colours compare corresponding sector times with the fastest valid lap, consistently across route and table; visible transverse lines mark sector ends. TestResults passes 185 checks and CaptureResults passes 204 checks; desktop evidence inspected. No phone test/export. See docs/RACE_RESULTS.md.
 
 2026-09-23 R01/V03/V05/Q01: rating stars centered on both axes; saved stars and score remain visible for 0.7 s, then finish cues fade over 0.4 s before Results. Confirmation blocks duplicate input. 198 graphical Results checks pass; desktop capture inspected. No phone test/export. See docs/TRACK_RATINGS.md.

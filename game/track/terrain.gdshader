@@ -64,5 +64,6 @@ void fragment() {
 		blended += layer * weights[i];
 	}
 	ALBEDO = blended;
+	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
 	ROUGHNESS = 1.0;
 }

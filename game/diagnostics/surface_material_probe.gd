@@ -26,7 +26,10 @@ func apply(mode: String) -> void:
 			var shader := Shader.new()
 			var source: String = material.shader.code
 			if mode == "asphalt_previous":
-				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + "\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n")
+				# Historical shared detail predates packed sand and grass relief.
+				# Adapt its interface explicitly; this mode restores historical grass too.
+				var compatibility: String = "\nuniform bool packed_sand = false;\nvec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n"
+				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + compatibility)
 			elif mode == "directional_off":
 				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")
 			elif creator:
@@ -48,6 +51,7 @@ func apply(mode: String) -> void:
 			shader.code = source
 			var replacement: ShaderMaterial = material.duplicate()
 			replacement.shader = shader
+			if mode in ["road_flat","terrain_flat"]: replacement.set_shader_parameter("hybrid_grass",false)
 			entry.variants[mode] = replacement
 		entry.mesh.material_override = entry.variants[mode]
 		changed_count += 1

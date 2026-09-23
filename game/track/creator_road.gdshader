@@ -93,4 +93,7 @@ void fragment() {
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;
+	float relief_weight = grass ? (1.0-sand) : 0.0;
+	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
+	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
 }

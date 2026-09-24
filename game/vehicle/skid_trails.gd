@@ -189,6 +189,10 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 static func surface_at(track: NativeTrack, point: Vector3, elevated: bool) -> int:
 	if track == null: return -1
 	var kind: int = track.cell_at(Vector2(point.x, -point.z), elevated)
+	# Desert shoulders retain canonical kerb cells, but the sandy apron must
+	# leave the same sand grooves as the road and ground, never black rubber.
+	if str(track.metadata.get("theme", "pine")) == "desert" and kind in [0, 1, 2, 5]:
+		return 2
 	if kind == 0:
 		var theme: String = str(track.metadata.get("theme", "pine"))
 		if theme == "desert": return 2

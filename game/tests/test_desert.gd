@@ -72,6 +72,27 @@ func run() -> void:
 	check(cloud.spread > 90.0 and cloud.damping_max < 0.75,"desert dust spreads sideways rather than remaining at tyre width")
 	check((cloud.color_ramp as GradientTexture1D).gradient.sample(0.15 / 9.0).a > 0.8,"cloud becomes dense within 150 ms rather than trailing a second behind")
 	check(growth.sample(0.25 / 9.0) >= 1.4,"cloud fills the near wake within 250 ms")
+	bed.cells.fill(1)
+	var offroad := VehicleState.new()
+	offroad.velocity = Vector2(0,12)
+	check(SkidTrails.surface_at(bed,Vector3.ZERO,false) == 2,"desert off-track soil presents sand tyre marks")
+	dust.sample(offroad,DriveFrame.new(),bed)
+	check(bed.cell_at(Vector2.ZERO) == 1,"desert effects preserve canonical off-track soil")
+	for wheel: int in range(4):
+		check(dust.dust_emitters[wheel].emitting and dust.tyre_emitters[wheel].emitting,"off-track wheel emits lingering sand and contact puff")
+		check(not dust.clipping_emitters[wheel].emitting,"desert wheel never emits grass clippings")
+	check(dust.spray_emitters[0].emitting and not dust.mud_emitters[0].emitting,"ordinary off-track driving throws sand grains without mud")
+	bed.metadata.theme = "pine"
+	bed.cells.fill(5)
+	check(SkidTrails.surface_at(bed,Vector3.ZERO,false) == 5,"meadow kerbs retain rubber marks")
+	bed.metadata.theme = "desert"
+	check(SkidTrails.surface_at(bed,Vector3.ZERO,false) == 2,"desert sandy road edge uses sand grooves instead of dark kerb rubber")
+	dust.sample(offroad,DriveFrame.new(),bed)
+	check(dust.dust_emitters[0].emitting and not dust.smoke_emitters[0].emitting,"desert road edge emits sand dust instead of asphalt smoke")
+	bed.cells.fill(1)
+	bed.metadata.theme = "pine"
+	dust.sample(offroad,DriveFrame.new(),bed)
+	check(SkidTrails.surface_at(bed,Vector3.ZERO,false) == 1 and dust.clipping_emitters[0].emitting and not dust.dust_emitters[0].emitting,"leaving desert restores meadow effects")
 	dust._stop()
 	check(not dust.dust_emitters[0].emitting,"stopping ends emission without restarting existing clouds")
 	dust.queue_free()
@@ -92,6 +113,17 @@ func run() -> void:
 		visual.free()
 	check(NativeTrackVisual.DUNE_FACTORS.get_image().has_mipmaps(),"dune slope map is mip filtered")
 	check(NativeTrackVisual.DUNE_ALBEDO.get_image().has_mipmaps(),"dune artwork is mip filtered")
+	check(NativeTrackVisual.DESERT_FINISH_COLORS == [Color("938267"),Color("635b4b")],"desert finish uses two subdued sand pigments instead of black and white")
+	check(NativeTrackVisual.DESERT_FINISH_COLORS != NativeTrackVisual.STANDARD_FINISH_COLORS,"desert finish treatment is isolated from other biomes")
+	var finish_visual := NativeTrackVisual.new()
+	finish_visual.theme_id = "desert"
+	finish_visual._build_finish(track)
+	var desert_finish_light: MeshInstance3D = finish_visual.get_node_or_null("DesertSandFinishPale")
+	var desert_finish_dark: MeshInstance3D = finish_visual.get_node_or_null("DesertSandFinishDark")
+	check(desert_finish_light != null and desert_finish_dark != null,"desert builds two faded sand checker tones")
+	if desert_finish_light != null and desert_finish_dark != null:
+		check((desert_finish_light.material_override as ShaderMaterial).get_shader_parameter("pigment_color") == NativeTrackVisual.DESERT_FINISH_COLORS[0] and (desert_finish_dark.material_override as ShaderMaterial).get_shader_parameter("pigment_color") == NativeTrackVisual.DESERT_FINISH_COLORS[1],"desert finish mesh binds the biome pigments")
+	finish_visual.free()
 	if "--capture" in OS.get_cmdline_user_args():
 		var capture_track: String = ""
 		for argument: String in OS.get_cmdline_user_args():
@@ -173,6 +205,30 @@ func run() -> void:
 		await create_timer(3.0).timeout
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/lingering-dust.png") == OK,"lingering dust evidence")
+		effect.clear()
+		var offtrack_origin: Vector2 = track.route[0]
+		for offset: int in range(5,100):
+			var candidate: Vector2 = track.route[0] + Vector2(offset,0)
+			if track.cell_at(candidate) == 1 and track.cell_at(candidate+Vector2(0,20)) == 1:
+				offtrack_origin = candidate
+				break
+		check(track.cell_at(offtrack_origin) == 1,"capture uses actual off-track soil")
+		var trails := SkidTrails.new()
+		race.add_child(trails)
+		for i: int in range(150):
+			state.position = offtrack_origin + Vector2(0,float(i)*0.12)
+			state.heading = 0.0
+			state.velocity = Vector2(0,12)
+			race.set("previous_position",state.position)
+			race.set("previous_heading",state.heading)
+			effect.sample(state,DriveFrame.new(),track)
+			trails.sample(state,DriveFrame.new(),null,track)
+			await create_timer(1.0/60.0).timeout
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(folder+"/off-track-dust.png") == OK,"off-track sand effects evidence")
+		effect.clear()
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(folder+"/off-track-marks.png") == OK,"off-track sand tyre marks evidence")
 		race.queue_free()
 	await process_frame
 	print("DESERT: %d checks, %d failures" % [checks,failures])

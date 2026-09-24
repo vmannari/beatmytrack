@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-8"
+const PRESENTATION_VERSION: String = "desert-dust-9"
 const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
@@ -58,6 +58,18 @@ func _ready() -> void:
 func _set_desert_profile(enabled: bool) -> void:
 	if desert_profile == enabled: return
 	desert_profile = enabled
+	for emitter: GPUParticles3D in spray_emitters:
+		# Small flattened grains form a low ballistic fan beneath the soft plume.
+		# Reuse the rear spray budget rather than adding flying grass substitutes.
+		var grain: SphereMesh = emitter.draw_pass_1
+		grain.radius = 0.045 if enabled else 0.075
+		grain.height = 0.065 if enabled else 0.25
+		var grit: ParticleProcessMaterial = emitter.process_material
+		grit.color = Color("b69a70") if enabled else Color(0.52,0.37,0.19)
+		grit.direction = Vector3(0,0.24 if enabled else 0.42,-1).normalized()
+		grit.spread = 58.0 if enabled else 42.0
+		grit.scale_min = 0.40 if enabled else 0.72
+		grit.scale_max = 1.15 if enabled else 1.28
 	for emitter: GPUParticles3D in dust_emitters:
 		emitter.lifetime = 9.0 if enabled else 5.2
 		emitter.amount = 64 if enabled else 360
@@ -145,6 +157,8 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 		var strengths: Vector2 = emission_strengths(state,frame,side,axle_values[wheel]) if on_sand else Vector2(-1.0,-1.0)
 		if on_sand and desert_profile:
 			strengths.x = maxf(strengths.x,lerpf(0.28,1.0,smoothstep(0.8,12.0,state.velocity.length())))
+			if track.cell_at(contacts[wheel],state.track_elevated) in [1,2]:
+				strengths.y = maxf(strengths.y,0.30*smoothstep(0.8,12.0,state.velocity.length()))
 		last_strengths[wheel] = maxf(0.0,strengths.x)
 		var wheel_velocity: Vector2 = state.velocity + right * (state.yaw_rate * axle_values[wheel] * wheelbase * 0.5) - forward * (state.yaw_rate * side * track_width * 0.5)
 		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)

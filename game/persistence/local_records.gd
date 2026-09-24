@@ -156,6 +156,8 @@ static func _normalize(data: Variant) -> Dictionary:
 				if not id is String or id.length() > 64 or id.is_empty(): return {}
 				for character: String in id:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+		elif field == "control_layout":
+			if not ControlLayout.valid(preferences[field]): return {}
 		elif field == "left_handed":
 			if not preferences[field] is bool:
 				return {}

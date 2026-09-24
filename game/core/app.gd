@@ -126,6 +126,8 @@ func _ready() -> void:
 	if OS.is_debug_build() and FileAccess.file_exists("user://mobile_probe.json"):
 		var probe: Node = load("res://diagnostics/mobile_race_probe.gd").new()
 		add_child(probe)
+	if OS.is_debug_build() and FileAccess.file_exists("user://control_probe.json"):
+		add_child(load("res://diagnostics/mobile_control_probe.gd").new())
 	if OS.is_debug_build() and FileAccess.file_exists("user://menu_probe.json"):
 		add_child(load("res://diagnostics/mobile_menu_probe.gd").new())
 	if not capture_path.is_empty(): _capture()
@@ -425,32 +427,21 @@ func _settings() -> void:
 	panel.add_child(settings)
 	settings.add_child(MenuStyle.label("DRIVING CONTROLS",28))
 	settings.add_child(MenuStyle.label("Set up your touch controls for a comfortable reach.",18,true))
-	var handedness := CheckButton.new()
-	handedness.text = "Left-handed pedals"
-	handedness.custom_minimum_size.y = 60
-	handedness.button_pressed = ui_left_handed
-	handedness.toggled.connect(func(value: bool) -> void:
-		ui_left_handed = value
-		_save_settings())
-	settings.add_child(handedness)
-	settings.add_child(HSeparator.new())
-	settings.add_child(MenuStyle.label("TOUCH BUTTON SIZE", 16, true))
-	var row := HBoxContainer.new()
-	settings.add_child(row)
-	for pair: Array in [[1.0,"Standard"],[1.2,"Large"],[1.4,"Extra large"]]:
-		var scale: float = pair[0]
-		var option := MenuStyle.button(pair[1], func() -> void:
-			ui_touch_scale = scale
-			_save_settings()
-			_show_screen("settings"), is_equal_approx(ui_touch_scale, scale))
-		option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(option)
+	settings.add_child(MenuStyle.button("Customize layout", _customize_controls, true))
+	settings.add_child(MenuStyle.label("Drag steering, gas and brake into place.\nChoose buttons, horizontal steering or joystick.",18,true))
 	settings.add_child(HSeparator.new())
 	settings.add_child(MenuStyle.label("KEYBOARD",16,true))
 	for hint: String in ["WASD / arrows   Steer and accelerate", "Space   Brake     ·     R   Retry     ·     Esc   Pause", "Editor: drag to move, scroll or pinch to zoom."]:
 		var label := MenuStyle.label(hint,18,true)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		settings.add_child(label)
+
+func _customize_controls() -> void:
+	var editor := ControlLayoutEditor.new()
+	editor.records = records
+	root_ui.visible = false
+	add_child(editor)
+	editor.closed.connect(func() -> void: root_ui.visible = true)
 
 func _save_settings() -> void:
 	records.settings.touch_scale = ui_touch_scale
@@ -1239,6 +1230,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	var hud: PlaygroundHUD = game.get("hud")
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
+	hud.touch.layout = ControlLayout.from_settings(records.settings)
 
 func _edit_here(position: Vector2) -> void:
 	_leave_race()

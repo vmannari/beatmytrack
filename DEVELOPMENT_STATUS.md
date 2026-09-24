@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 R01/V03/V05/Q01: configurable touch layout editor, three steering methods, independent analog pedals, presets/reset, safe normalized geometry and atomic settings. 199 headless / 202 graphical layout checks (plus 72 synthetic viewport checks), 555 mobile-input and 53 record checks pass; final Android quick export passes and APK installed. Phone attached but locked; no physical multitouch/iOS test. Older TestApp stops on obsolete menu-button assumptions. See docs/TOUCH_CONTROL_LAYOUT.md.
+
 2026-09-24 V02/V04/V05/Q01: desert-dust-6 slows cloud rotation with inverse growth: at most 12 degrees/s initially, about 3.1 degrees/s for mature clouds. CaptureDesert 57 and Android quick export pass; APK installed, no phone driving/profiling. See docs/DESERT_DUST.md.
 
 2026-09-24 V02/V04/V05/Q01: desert-dust-4 brings cloud onset to the car: peak opacity at 0.108 s, earlier growth, stronger tyre puffs and narrower soft-intersection fade. Counts unchanged. CaptureDesert 57, soil 163 and quick Android export pass; APK installed, no phone driving/profiling. See docs/DESERT_DUST.md.

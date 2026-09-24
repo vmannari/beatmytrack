@@ -14,6 +14,13 @@ const MODE_CLIPPING: int = 2
 const MODE_MUD: int = 3
 const MODE_SMOKE: int = 4
 
+const WINTER_PRESENTATION_VERSION: String = "winter-spray-1"
+var snow_chips: Array[GPUParticles3D] = []
+var snow_powder: Array[GPUParticles3D] = []
+var snow_impacts: Array[GPUParticles3D] = []
+var snow_contact := PackedByteArray([0,0,0,0])
+var snow_last_burst: int = -1000
+var snow_burst_count: int = 0
 var desert_profile: bool = false
 
 var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
@@ -129,10 +136,13 @@ func _desert_alpha() -> GradientTexture1D:
 
 
 func clear() -> void:
+	snow_contact.fill(0)
+	snow_last_burst = -1000
+	snow_burst_count = 0
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters:
-		emitter.emitting = false
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts:
 		emitter.restart()
+		emitter.emitting = false
 
 
 func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
@@ -141,6 +151,11 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 0.8:
 		_stop()
 		return
+	var winter: bool = track.metadata.get("theme","pine") == "winter"
+	if winter: _ensure_snow()
+	elif not snow_chips.is_empty():
+		for emitter: GPUParticles3D in snow_chips+snow_powder+snow_impacts: emitter.emitting = false
+		snow_contact.fill(0)
 	var forward: Vector2 = state.forward()
 	var right: Vector2 = state.right()
 	var rear: Vector2 = state.position - forward * wheelbase * 0.5
@@ -161,6 +176,8 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 				strengths.y = maxf(strengths.y,0.30*smoothstep(0.8,12.0,state.velocity.length()))
 		last_strengths[wheel] = maxf(0.0,strengths.x)
 		var wheel_velocity: Vector2 = state.velocity + right * (state.yaw_rate * axle_values[wheel] * wheelbase * 0.5) - forward * (state.yaw_rate * side * track_width * 0.5)
+		if winter:
+			_sample_snow(wheel,contacts[wheel],world_position,wheel_velocity,kind,state,frame,track)
 		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)
 		_configure(tyre_emitters[wheel],world_position,wheel_velocity,strengths.x if desert_profile else -1.0)
 		if wheel < 2:
@@ -213,7 +230,7 @@ static func asphalt_smoke_strength(state: VehicleState, frame: DriveFrame, axle:
 
 func _stop() -> void:
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters:
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts:
 		emitter.emitting = false
 		emitter.amount_ratio = 0.0
 
@@ -423,3 +440,60 @@ void fragment() {
 		material.set_shader_parameter("dust_texture",load("res://assets/textures/dust_puff_v1.png"))
 		material.set_shader_parameter("alpha_softness",0.42)
 	return material
+
+
+func _ensure_snow() -> void:
+	if not snow_chips.is_empty(): return
+	for wheel: int in range(4):
+		var chips: GPUParticles3D = _emitter("SnowChips%d" % wheel,64,0.70,Vector2(0.09,0.11),Color(0.88,0.94,1.0,0.90),MODE_SAND_SPRAY)
+		var process: ParticleProcessMaterial = chips.process_material
+		process.gravity = Vector3(0,-8.0,0)
+		process.initial_velocity_min = 1.5
+		process.initial_velocity_max = 4.5
+		process.spread = 62.0
+		process.damping_min = 0.7
+		process.damping_max = 1.4
+		snow_chips.append(chips)
+		add_child(chips)
+		var powder: GPUParticles3D = _emitter("SnowPowder%d" % wheel,28,1.15,Vector2(0.8,0.8),Color(0.87,0.94,1.0,0.24),MODE_DUST)
+		(powder.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
+		(powder.process_material as ParticleProcessMaterial).scale_curve = _bounded_growth([0.35,0.6,1.0,1.2])
+		snow_powder.append(powder)
+		add_child(powder)
+	for index: int in range(2):
+		var burst: GPUParticles3D = _emitter("SnowBankImpact%d" % index,32,1.6,Vector2(1.4,1.4),Color(0.91,0.96,1.0,0.62),MODE_DUST)
+		burst.one_shot = true
+		burst.explosiveness = 0.92
+		var process: ParticleProcessMaterial = burst.process_material
+		process.direction = Vector3.UP
+		process.spread = 85.0
+		process.initial_velocity_min = 1.1
+		process.initial_velocity_max = 3.8
+		process.gravity = Vector3(0,-0.6,0)
+		process.scale_curve = _bounded_growth([0.3,0.8,1.4,1.7])
+		(burst.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
+		snow_impacts.append(burst)
+		add_child(burst)
+
+
+func _sample_snow(wheel: int, contact: Vector2, at: Vector3, velocity: Vector2, kind: int, state: VehicleState, frame: DriveFrame, track: NativeTrack) -> void:
+	var speed: float = state.velocity.length()
+	var loose: bool = kind in [7,10]
+	var scrub: float = SkidTrails.physics_intensity(state,frame,kind,-1.0 if wheel%2 == 0 else 1.0)
+	var moving: float = smoothstep(0.8,13.0,speed)
+	var chips: float = moving*(0.35+scrub*0.65) if loose else scrub*moving*0.10 if kind == 8 else 0.0
+	var powder: float = chips*0.62 if loose else chips*0.30
+	var bank_height: float = 0.0 if state.track_elevated else track.snow_banks.height_at(contact)
+	var in_bank: bool = bank_height > 0.07
+	var origin: Vector3 = at+Vector3.UP*(bank_height+0.04)
+	_configure(snow_chips[wheel],origin,velocity,chips)
+	_configure(snow_powder[wheel],origin,velocity,powder)
+	if in_bank and snow_contact[wheel] == 0 and speed > 2.5 and state.tick-snow_last_burst > 50:
+		var burst: GPUParticles3D = snow_impacts[snow_burst_count%2]
+		burst.position = origin
+		burst.amount_ratio = clampf(speed/12.0,0.25,1.0)
+		burst.restart()
+		burst.emitting = true
+		snow_last_burst = state.tick
+		snow_burst_count += 1
+	snow_contact[wheel] = 1 if in_bank else 0

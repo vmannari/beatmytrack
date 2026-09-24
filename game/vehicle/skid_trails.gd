@@ -141,6 +141,11 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 		right.y += bridge.height_at(Vector2(right.x,-right.z),state.route_index,layer)
 		front_left.y += bridge.height_at(Vector2(front_left.x,-front_left.z),state.route_index,layer)
 		front_right.y += bridge.height_at(Vector2(front_right.x,-front_right.z),state.route_index,layer)
+	if track != null and track.metadata.get("theme","pine") == "winter" and not state.track_elevated:
+		left.y += track.snow_banks.height_at(Vector2(left.x,-left.z))
+		right.y += track.snow_banks.height_at(Vector2(right.x,-right.z))
+		front_left.y += track.snow_banks.height_at(Vector2(front_left.x,-front_left.z))
+		front_right.y += track.snow_banks.height_at(Vector2(front_right.x,-front_right.z))
 	var left_kind: int = surface_at(track, left, state.track_elevated)
 	var right_kind: int = surface_at(track, right, state.track_elevated)
 	var front_left_kind: int = surface_at(track, front_left, state.track_elevated)
@@ -193,6 +198,10 @@ static func surface_at(track: NativeTrack, point: Vector3, elevated: bool) -> in
 	# leave the same sand grooves as the road and ground, never black rubber.
 	if str(track.metadata.get("theme", "pine")) == "desert" and kind in [0, 1, 2, 5]:
 		return 2
+	if str(track.metadata.get("theme","pine")) == "winter":
+		if kind in [1,5,7]: return 7
+		if kind == 2: return 10
+		if kind in [3,6]: return 11
 	if kind == 0:
 		var theme: String = str(track.metadata.get("theme", "pine"))
 		if theme == "desert": return 2
@@ -209,8 +218,8 @@ static func physics_intensity(state: VehicleState, frame: DriveFrame, surface_ki
 	var braking: float = frame.brake / 255.0 * smoothstep(2.0, 18.0, speed)
 	var rotation: float = smoothstep(0.15, 1.8, absf(state.yaw_rate)) * smoothstep(3.0, 16.0, speed) * 0.55
 	var rolling_surface: float = 0.0
-	if surface_kind in [1, 2, 7]: rolling_surface = smoothstep(1.0, 16.0, speed) * 0.34
-	elif surface_kind in [3, 6, 9]: rolling_surface = smoothstep(2.0, 18.0, speed) * 0.20
+	if surface_kind in [1, 2, 7, 10]: rolling_surface = smoothstep(1.0, 16.0, speed) * 0.34
+	elif surface_kind in [3, 6, 9, 11]: rolling_surface = smoothstep(2.0, 18.0, speed) * 0.20
 	var contamination: float = state.tire_dirt * smoothstep(1.0, 12.0, speed) * 0.82
 	var dynamic: float
 	if axle > 0.0:
@@ -234,7 +243,7 @@ func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength
 	var basis: Basis = Basis.from_euler(rotation).scaled_local(Vector3(width,relief,a.distance_to(b)+0.06))
 	mark_transforms[cursor] = Transform3D(basis,(a+b)*0.5)
 	mark_colors[cursor] = tint
-	var loose: float = 1.0 if surface_kind in [1,2,7] else 0.0
+	var loose: float = 1.0 if surface_kind in [1,2,7,10] else 0.0
 	var phase: float = fposmod(a.x*0.173+a.z*0.271,1.0)
 	mark_custom[cursor] = Color(clampf(float(surface_kind)/10.0,0.0,1.0),strength,loose,phase)
 	instances.set_instance_transform(cursor,mark_transforms[cursor])
@@ -254,8 +263,10 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0) -> Vector4:
 		2: result = Vector4(0.68, 0.53, 0.32, 0.52) # Compressed dirt or sand groove.
 		3, 6: result = Vector4(0.12, 0.18, 0.19, 0.42) # Thin wet wake.
 		5: result = Vector4(0.16, 0.17, 0.16, 0.50) # Rubber on painted kerb.
-		7: result = Vector4(0.54, 0.57, 0.55, 0.42) # Disturbed snowbank.
-		8: result = Vector4(0.25, 0.29, 0.30, 0.38) # Scuffed frosty/icy road.
+		7: result = Vector4(0.43, 0.56, 0.67, 0.66) # Disturbed snowbank.
+		8: result = Vector4(0.53, 0.64, 0.72, 0.30) # Scuffed frosty/icy road.
+		10: result = Vector4(0.57,0.65,0.69,0.42) # Compressed snow on packed terrain.
+		11: result = Vector4(0.38,0.51,0.59,0.32) # Wet slush wake.
 		9: result = Vector4(0.07, 0.10, 0.105, 0.48) # Damp rubber on storm asphalt.
 		0:
 			result = Vector4(0.43, 0.29, 0.15, 0.62) if dirt > 0.025 else Vector4(0.12, 0.115, 0.105, 0.46)
@@ -272,7 +283,9 @@ func _surface_width(kind: int, strength: float = 1.0) -> float:
 		0: base = 0.25
 		1: base = 0.29
 		2: base = 0.30
-		7: base = 0.19
+		7: base = 0.31
+		10: base = 0.27
+		11: base = 0.23
 		3, 6: base = 0.17
 		5: base = 0.22
 		8, 9: base = 0.24
@@ -285,7 +298,8 @@ func _surface_relief(kind: int, strength: float = 1.0) -> float:
 	match kind:
 		1: maximum = 0.072 # Bent grass shoulders around a flattened center.
 		2: maximum = 0.060 # Compressed dirt/sand rut.
-		7: maximum = 0.030 # Restrained displaced snow.
-		3, 6, 9: maximum = 0.006
+		7: maximum = 0.055 # Restrained displaced snow.
+		10: maximum = 0.025
+		3, 6, 9, 11: maximum = 0.006
 		_: maximum = 0.003
 	return maximum * lerpf(0.38, 1.0, clampf(strength, 0.0, 1.0))

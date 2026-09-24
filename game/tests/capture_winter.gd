@@ -71,7 +71,77 @@ func run() -> void:
 	for frame: int in range(3): await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(folder+"/bend-detail.png") == OK)
 	print("WINTER_CAPTURE: surfaces/contacts preserved, mipmaps, smooth banks, no edge stripes, two captures PASS; sections=",ground.get_meta("winter_smooth_sections"))
+	await _snow_effects(game,track)
 	game.queue_free()
 	await process_frame
 	print("WINTER_CHECKS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+
+func _snow_effects(game: Node, track: NativeTrack) -> void:
+	var probe := NativeTrack.new()
+	probe.cell_size = 10.0
+	probe.grid_width = 2
+	probe.grid_height = 2
+	probe.half_extent = Vector2(10,10)
+	probe.cells.resize(4)
+	probe.deck_cells.resize(4)
+	probe.deck_cells.fill(-1)
+	probe.metadata = {"theme":"winter"}
+	for kind: int in range(8):
+		probe.cells.fill(kind)
+		check(SkidTrails.surface_at(probe,Vector3.ZERO,false) == [8,7,10,11,4,7,11,7][kind],"winter surface mapping "+str(kind))
+	var effects: SandDust = game.get("sand_dust")
+	var trails: SkidTrails = game.get("trails")
+	var state := VehicleState.new()
+	state.velocity = Vector2(3,-9)
+	state.heading = PI
+	var frame: DriveFrame = DriveFrame.sample(0,1,0)
+	var folder: String = "res://../docs/evidence/winter-effects"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+	game.set_process(false)
+	trails.clear()
+	var camera: Camera3D = game.get("camera")
+	camera.position = Vector3(0,22,42)
+	camera.look_at(Vector3(0,0,24))
+	camera.size = 23.0
+	for index: int in range(105):
+		state.tick = index*2
+		state.position = Vector2(0,-18.0-float(index)*0.12)
+		var before: Array = state.snapshot()
+		effects.sample(state,frame,track,game.get("bridge_presentation"))
+		trails.sample(state,frame,game.get("bridge_presentation"),track)
+		check(state.snapshot() == before,"snow presentation leaves canonical snapshot unchanged")
+		game.get("sim").state = state
+		game.call("_process",0.0)
+		camera.position = Vector3(0,22,42)
+		camera.look_at(Vector3(0,0,24))
+		camera.size = 23.0
+		await create_timer(0.016).timeout
+		await RenderingServer.frame_post_draw
+		if index == 64: check(root.get_texture().get_image().save_png(folder+"/bank-impact.png") == OK)
+	check(effects.snow_burst_count > 0,"crossing bank emits impact snow")
+	check(effects.snow_burst_count <= 3,"bank cloud cooldown prevents sustained burst spam")
+	check(effects.snow_chips.size() == 4 and effects.snow_impacts.size() == 2,"bounded wheel emitters and impact pool")
+	check(effects.snow_chips[0].emitting,"loose snow throws chips")
+	check(not effects.clipping_emitters[0].emitting and not effects.dust_emitters[0].emitting,"winter suppresses green clippings and sand dust")
+	check(root.get_texture().get_image().save_png(folder+"/snow-tracks.png") == OK)
+	state.jump_height = 1.0
+	effects.sample(state,frame,track)
+	check(not effects.snow_chips[0].emitting,"airborne wheels stop snow spray")
+	state.jump_height = 0.0
+	state.track_elevated = true
+	var bursts: int = effects.snow_burst_count
+	effects.sample(state,frame,track)
+	check(effects.snow_burst_count == bursts,"elevated wheels cannot strike ground snowbanks")
+	effects.clear()
+	check(effects.snow_burst_count == 0 and not effects.snow_impacts[0].emitting,"restart clears snow impacts")
+	state.track_elevated = false
+	state.position = Vector2.ZERO
+	probe.cells.fill(1)
+	probe.metadata.theme = "pine"
+	effects.sample(state,frame,probe)
+	check(not effects.snow_chips[0].emitting and not effects.snow_powder[0].emitting,"nonwinter theme stops winter emitters")
+	check(effects.clipping_emitters[0].emitting,"grass keeps its original clippings")
+	check(trails._surface_style(7,0.0).z > trails._surface_style(7,0.0).x,"loose snow marks stay cool rather than muddy")
+	check(trails._surface_relief(7) > trails._surface_relief(8),"snow ruts have more relief than ice scuffs")

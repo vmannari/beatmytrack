@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: kit 66 warms/darkens desert road pigment toward surrounding sand, extends shoulder blending 0.91 m farther inward and raises inner-bend clods 65%. CaptureDesert 53, TestSurfaces 50 and quick Android export checks pass. Desktop capture inspected. See docs/DESERT_COLOUR_HEIGHT.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 65 replaces continuous raised desert ribbons with flat original sandy-apron artwork and clustered independent sand clods in the shoulder batch. Three gameplay views captured; 809 clods/14,562 triangles on saved desert track. CaptureDesert 53, TestSurfaces 50 and corrected TestSurfaceProfile 928 checks pass. DN2103 installed/tested: repeated production median ~17.35 ms/p95 ~29 ms; particles-disabled 16.85/20.15 ms, initial run slower. Normal play restored. No old/new cost comparison. See docs/DESERT_APRON.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 64 tapers berm height over 3 m at actual curved-run boundaries, reduces coarse rib shading and broadens irregular outer shoulder blending. Approved directional road material retained. CaptureDesert 50 checks pass; screenshot inspected. See docs/DESERT_TAPER.md.

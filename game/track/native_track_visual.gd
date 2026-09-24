@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-65"
+const VERSION: String = "track-kit-66"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -255,7 +255,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
 					_asphalt_fringe_quad(asphalt_fringe,
-						p+normal_p*0.36,q+normal_q*0.36,
+						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
@@ -272,7 +272,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 								var normal: Vector2 = (normal_p+normal_q)*0.5
 								var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
 								var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
-								_sand_clod(shoulders,center,(q-p).angle(),size,seed_value)
+								_sand_clod(shoulders,center,(q-p).angle(),size,seed_value,1.65 if is_kerb else 1.0)
 								sand_clods += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
@@ -363,7 +363,7 @@ func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2,
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
-func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, seed_value: int) -> void:
+func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, seed_value: int, height_scale: float) -> void:
 	# Independent low collapsed sand clods: eighteen opaque facets, no raised ribbon.
 	var ring := PackedVector3Array()
 	var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*-0.012
@@ -372,7 +372,7 @@ func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, se
 		var irregular: float = 0.82+float((seed_value+i*17)%11)*0.025
 		var offset := Vector2(cos(angle)*0.28,sin(angle)*0.22).rotated(turn)*size*irregular
 		ring.append(origin+Vector3(offset.x,0.018,-offset.y))
-	var crown: Vector3 = origin+Vector3(0.025,0.20*size,0.01)
+	var crown: Vector3 = origin+Vector3(0.025,0.20*size*height_scale,0.01)
 	for i: int in range(6):
 		var next: int = (i+1)%6
 		var middle: Vector3 = (ring[i]+ring[next]+crown)/3.0+Vector3.UP*(0.025*size)

@@ -12,6 +12,9 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	var deck := SurfaceTool.new()
 	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for span: Dictionary in bridges:
+		if theme == "desert":
+			DesertBridgeVisual.append(tool,deck,span)
+			continue
 		var count: int = ceili(float(span.length)/0.5)
 		var half: float = float(span.width)*0.5
 		for i: int in range(count):
@@ -69,6 +72,11 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	material.vertex_color_use_as_albedo = true
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = material
+	if theme == "desert":
+		var stone := ShaderMaterial.new()
+		stone.shader = preload("res://track/desert_bridge.gdshader")
+		mesh.material_override = stone
+		mesh.name = "DesertBridgeSandstone"
 	parent.add_child(mesh)
 	deck.generate_normals()
 	var road := MeshInstance3D.new()

@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 67 replaces fine desert road-edge breakup with broader approximately 5.6 m variation, constrained to existing blend strip endpoints. CaptureDesert 53 and quick Android export checks pass; gameplay capture inspected. See docs/DESERT_EDGE_VARIATION.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 66 warms/darkens desert road pigment toward surrounding sand, extends shoulder blending 0.91 m farther inward and raises inner-bend clods 65%. CaptureDesert 53, TestSurfaces 50 and quick Android export checks pass. Desktop capture inspected. See docs/DESERT_COLOUR_HEIGHT.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 65 replaces continuous raised desert ribbons with flat original sandy-apron artwork and clustered independent sand clods in the shoulder batch. Three gameplay views captured; 809 clods/14,562 triangles on saved desert track. CaptureDesert 53, TestSurfaces 50 and corrected TestSurfaceProfile 928 checks pass. DN2103 installed/tested: repeated production median ~17.35 ms/p95 ~29 ms; particles-disabled 16.85/20.15 ms, initial run slower. Normal play restored. No old/new cost comparison. See docs/DESERT_APRON.md.

@@ -58,11 +58,11 @@ void fragment() {
 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
 	}
 	if (edge_fringe && !wet_road && !icy_road) {
-		// UV.y is explicit distance across a 0.20 m cosmetic edge strip, so
+		// UV.y spans the cosmetic blend strip (1.47 m for desert), so
 		// curves never inherit the coarse canonical surface-grid staircase.
-		float breakup = pigment(world_position.xz * 5.5 + vec2(4.1, 13.7));
+		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
-		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.12) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
 	}

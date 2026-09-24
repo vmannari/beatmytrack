@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-63"
+const VERSION: String = "track-kit-64"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -260,7 +260,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_shoulder_quad(shoulders,p,q,outer_p,outer_q,is_kerb)
+						_shoulder_quad(shoulders,p,q,outer_p,outer_q,is_kerb,points)
 						counts[0] += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
@@ -316,16 +316,43 @@ func _shoulder_width(point: Vector2) -> float:
 	return (1.75 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
-func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false) -> void:
+func _berm_envelope(point: Vector2, points: PackedVector2Array) -> float:
+	if points.size() < 3: return 0.0
+	var distances: Array[float] = [0.0]
+	var nearest: int = 0
+	var best: float = INF
+	for i: int in range(points.size()):
+		if i > 0: distances.append(distances[-1]+points[i-1].distance_to(points[i]))
+		var squared: float = point.distance_squared_to(points[i])
+		if squared < best:
+			best = squared
+			nearest = i
+	if nearest == 0 or nearest == points.size()-1: return 0.0
+	var first: int = nearest
+	var last: int = nearest
+	while first > 1 and _sand_bend_sample(points,first-1): first -= 1
+	while last < points.size()-2 and _sand_bend_sample(points,last+1): last += 1
+	var start: float = (distances[first-1]+distances[first])*0.5
+	var finish: float = (distances[last]+distances[last+1])*0.5
+	var along: float = _sand_coordinates(point,points).x
+	return smoothstep(0.0,3.0,along-start)*smoothstep(0.0,3.0,finish-along)
+
+
+func _sand_bend_sample(points: PackedVector2Array, index: int) -> bool:
+	return ((points[index+1]-points[index]).normalized()-(points[index]-points[index-1]).normalized()).length_squared() >= 0.0001
+
+
+func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false, points: PackedVector2Array = PackedVector2Array()) -> void:
 	if theme_id == "desert" and berm:
 		var fractions: Array[float] = [0.0,0.28,0.60,1.0]
 		var heights: Array[float] = [0.0,0.10,0.16,0.0]
 		for band: int in range(3):
 			for pair: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
 				var point: Vector2 = a.lerp(outer_a,fractions[pair.y]) if pair.x == 0 else b.lerp(outer_b,fractions[pair.y])
-				var rough: float = sin(point.x*8.1+point.y*3.7)*sin(point.y*9.3-point.x*2.1)
+				var rough: float = sin(point.x*3.1+point.y*1.7)*sin(point.y*4.3-point.x*1.1)
+				var taper: float = _berm_envelope(a if pair.x == 0 else b,points)
 				tool.set_uv(Vector2(0.0,fractions[pair.y]))
-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.6)))
+				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.35)*taper))
 		return
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]

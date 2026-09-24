@@ -98,10 +98,10 @@ void fragment() {
             float ridge = smoothstep(0.28,0.43,UV.y)*(1.0-smoothstep(0.55,0.76,UV.y));
             float contact = 1.0-smoothstep(0.25,0.43,UV.y);
             float stones = smoothstep(0.65,0.79,clods);
-            ALBEDO *= 0.76-contact*0.12+ridge*(clods*0.25-0.03)-stones*0.08;
-            ALBEDO *= 1.0-smoothstep(0.02,0.22,bank_slope)*0.16;
+            ALBEDO *= 0.76-contact*0.12+ridge*(clods*0.35+0.015)-stones*0.08;
+            ALBEDO *= 1.0-smoothstep(0.02,0.22,bank_slope)*0.10;
         }
-		float fringe = (packed_sand ? smoothstep(0.69,1.0,UV.y + (texture(surface_factors,world_position.xz/14.0).g-0.5)*0.12) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
+		float fringe = (packed_sand ? smoothstep(0.50,1.0,UV.y + (texture(surface_factors,world_position.xz/14.0).g-0.5)*0.32) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;

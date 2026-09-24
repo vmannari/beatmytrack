@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: kit 64 tapers berm height over 3 m at actual curved-run boundaries, reduces coarse rib shading and broadens irregular outer shoulder blending. Approved directional road material retained. CaptureDesert 50 checks pass; screenshot inspected. See docs/DESERT_TAPER.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 63 restores the owner-preferred curve-bank pattern, leaves straight shoulders flat/darker and maps compacted road grain along/across each road piece. Bounded road subdivision avoids warped interpolation through bends. CaptureDesert 50 checks pass; gameplay evidence inspected. See docs/DESERT_DIRECTIONAL.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 62 replaces corrugated desert banks with a broader four-band transition: worn contact, low deposited sand ridge and loose grit into dunes. Road-edge blending widens to 0.56 m; shoulder width 1.8-2.4 m. CaptureDesert 50 and TestSurfaces 50 pass; screenshot inspected. See docs/DESERT_TRANSITION.md.

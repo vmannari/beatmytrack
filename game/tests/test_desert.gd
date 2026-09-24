@@ -129,6 +129,28 @@ func run() -> void:
 		check(track.cells == original_cells,"dune presentation leaves canonical surfaces unchanged")
 		var sim: VehicleSimulation = race.get("sim")
 		state = sim.state
+		var restored_position: Vector2 = state.position
+		var restored_heading: float = state.heading
+		var apron_folder: String = "res://../docs/evidence/desert-apron"
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(apron_folder))
+		check(root.get_texture().get_image().save_png(apron_folder+"/start-straight.png") == OK,"apron straight evidence")
+		print("DESERT_CLODS: ",race.get("track_ground").get_meta("desert_clod_count",0))
+		for fraction: float in [0.35,0.70]:
+			var route_index: int = int(track.route.size()*fraction)
+			state.position = track.route[route_index]
+			var direction: Vector2 = (track.route[(route_index+1)%track.route.size()]-state.position).normalized()
+			state.heading = atan2(direction.x,direction.y)
+			race.set("previous_position",state.position)
+			race.set("previous_heading",state.heading)
+			(race.get("camera") as FollowCamera).follow(state.position,Vector2.ZERO,state.heading,0.0,true)
+			for frame: int in range(5): await process_frame
+			await RenderingServer.frame_post_draw
+			check(root.get_texture().get_image().save_png(apron_folder+"/route-"+str(int(fraction*100))+".png") == OK,"apron route evidence")
+		state.position = restored_position
+		state.heading = restored_heading
+		race.set("previous_position",state.position)
+		race.set("previous_heading",state.heading)
+		(race.get("camera") as FollowCamera).follow(state.position,Vector2.ZERO,state.heading,0.0,true)
 		state.velocity = state.forward()*12.0
 		var start_index: int = track.nearest_route(state.position)
 		for i: int in range(240):

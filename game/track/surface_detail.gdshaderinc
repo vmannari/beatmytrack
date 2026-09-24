@@ -4,6 +4,7 @@ uniform bool icy_road = false;
 uniform bool wet_road = false;
 uniform bool packed_sand = false;
 uniform bool desert_dunes = false;
+uniform sampler2D desert_apron : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D dune_factors : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D dune_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 
@@ -60,9 +61,7 @@ vec3 sand_detail(vec3 base, vec2 p) {
 
 // Coarse desert roadside gravel, distinct from both compacted road and dunes.
 vec3 desert_shoulder(vec3 base, vec2 p) {
- vec3 grit = texture(surface_factors,p/16.0).rgb;
- float stones = smoothstep(0.53,0.70,grit.g);
- return base * (0.80 + grit.b*0.30 + stones*0.10);
+ return texture(desert_apron,p/6.0).rgb*vec3(0.59,0.64,0.71);
 }
 
 // Shared world-space baked asphalt. Random repair/crack shapes are removed;

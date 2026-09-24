@@ -92,3 +92,6 @@ The owner accepted dune ground and requests reference-informed compacted desert 
 
 ## Desert berm reference override (2026-09-24)
 The owner supplied a sand-berm reference, superseding striped/stone desert kerb presentation. Use irregular low sand banks at bends, compacted shoulders and soft straight transitions. See docs/DESERT_BERMS.md.
+
+## Desert apron approach override (2026-09-24)
+The owner rejected continuous raised berm ribbons and requested a different approach closer to the supplied reference. Kit 65 uses a flat textured sandy apron with independent clustered opaque sand clods. The approved directional road texture is retained. See docs/DESERT_APRON.md.

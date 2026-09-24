@@ -1,4 +1,4 @@
-param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile, [switch]$GrassProfile, [switch]$DesertProfile,
+param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile, [switch]$GrassProfile, [switch]$DesertProfile, [switch]$DesertCostProfile,
     [switch]$Baseline, [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -20,13 +20,14 @@ if (-not $SkipInstall) { Adb @('install','-r',"$root/build/android/circuit01-deb
 Get-FileHash "$root/build/android/circuit01-debug.apk" | Format-List | Out-File "$evidence/apk-hash.txt"
 try {
     $profileTracks = @(@('ajorata','track_acf29166cceaaa42'),@('storm','track_f7dc946b49ce9ea8'))
-    if ($DesertProfile) { $profileTracks = ,@('desert','track_3e26605a8a90165e') }
+    if ($DesertProfile -or $DesertCostProfile) { $profileTracks = ,@('desert','track_3e26605a8a90165e') }
     foreach ($track in $profileTracks) {
         if ($StormOnly -and $track[0] -ne 'storm') { continue }
         $config = @{track_id=$track[1]; seconds=$Seconds; sustained=$true; use_game_scale=$true; feature_profile=$true; touch_stress=$true; features=@('baseline','telemetry','shadows','particles','trails','hud','weather','half_scale','baseline')}
         if ($SurfaceProfile) { $config.features = @('baseline','asphalt_previous','baseline','directional_off','baseline','road_flat','baseline','terrain_flat','baseline') }
         if ($GrassProfile) { $config.features = @('grass_original','baseline','grass_original','grass_material','baseline','grass_original') }
         if ($DesertProfile) { $config.features = @('desert_original','baseline','desert_original','baseline','desert_original') }
+        if ($DesertCostProfile) { $config.features = @('baseline','particles','baseline') }
         if ($Baseline) { $config.features = @('baseline') }
         $stageCount = $config.features.Count
         $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$($track[0])-config.json" -Encoding ASCII
@@ -52,7 +53,7 @@ try {
             if ($done -eq $stageCount) { break }
         }
         if ($done -ne $stageCount) { throw "Incomplete $($track[0]) profile: $done/$stageCount stages" }
-        if ($GrassProfile -or $DesertProfile) {
+        if ($GrassProfile -or $DesertProfile -or $DesertCostProfile) {
             # All timing windows have ended and the probe restored production materials.
             Adb @('shell','screencap','-p','/data/local/tmp/grass-review.png')
             Adb @('pull','/data/local/tmp/grass-review.png',"$evidence/$($track[0])-phone.png")

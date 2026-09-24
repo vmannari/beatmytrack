@@ -93,15 +93,12 @@ void fragment() {
 	if (gravel) {
 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
 		if (packed_sand) {
-            // Worn contact band, broken deposited sand, then scattered loose grit.
-            float clods = texture(surface_factors,world_position.xz/9.0).g;
-            float ridge = smoothstep(0.28,0.43,UV.y)*(1.0-smoothstep(0.55,0.76,UV.y));
-            float contact = 1.0-smoothstep(0.25,0.43,UV.y);
-            float stones = smoothstep(0.65,0.79,clods);
-            ALBEDO *= 0.76-contact*0.12+ridge*(clods*0.35+0.015)-stones*0.08;
-            ALBEDO *= 1.0-smoothstep(0.02,0.22,bank_slope)*0.10;
-        }
-		float fringe = (packed_sand ? smoothstep(0.50,1.0,UV.y + (texture(surface_factors,world_position.xz/14.0).g-0.5)*0.32) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
+			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
+			ALBEDO *= 1.0-contact*0.16;
+			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
+		}
+		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
+		if (packed_sand && UV.x < -0.5) { fringe = 0.0; }
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;
@@ -109,5 +106,5 @@ void fragment() {
 	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
-	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? grass_fringe(UV.y,world_position.xz)*(1.0-sand) : 0.0));
+	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel && UV.x >= 0.0 ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
 }

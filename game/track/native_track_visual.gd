@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-64"
+const VERSION: String = "track-kit-65"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -10,6 +10,7 @@ const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/meadow_grass_v2.p
 const GRASS_MACRO: Texture2D = preload("res://assets/textures/grass_macro_mask.png")
 const GRASS_NORMAL: Texture2D = preload("res://assets/textures/grass_normal.png")
 const DUNE_FACTORS: Texture2D = preload("res://assets/textures/desert_dunes_v1.png")
+const DESERT_APRON: Texture2D = preload("res://assets/textures/desert_apron_v1.png")
 const DUNE_ALBEDO: Texture2D = preload("res://assets/textures/desert_sand_v2.png")
 
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
@@ -34,6 +35,7 @@ var editor_cover: NativeTrackVisual
 func _bind_grass(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("desert_dunes",theme_id == "desert")
 	material.set_shader_parameter("dune_factors",DUNE_FACTORS)
+	material.set_shader_parameter("desert_apron",DESERT_APRON)
 	material.set_shader_parameter("dune_albedo",DUNE_ALBEDO)
 	material.set_shader_parameter("hybrid_grass",theme_id in ["pine","storm"])
 	material.set_shader_parameter("grass_albedo",GRASS_ALBEDO)
@@ -198,6 +200,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	for tool: SurfaceTool in [shoulders,asphalt,asphalt_fringe,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var fringe_count: int = 0
+	var sand_clods: int = 0
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
 		if _menu_yield_due():
@@ -221,7 +224,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var road_outline: PackedVector2Array = _trim_join_outline(RoadPieces.section_outline(pieces,index),cuts)
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
-		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,2.6 if theme_id == "desert" else 1.8,Geometry2D.JOIN_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,3.7 if theme_id == "desert" else 1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.16,Geometry2D.JOIN_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012,points)
@@ -260,14 +263,24 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_shoulder_quad(shoulders,p,q,outer_p,outer_q,is_kerb,points)
+						_shoulder_quad(shoulders,p,q,outer_p,outer_q)
 						counts[0] += 1
+						if theme_id == "desert" and sand_clods < 1800:
+							var seed_value: int = absi(int(midpoint.x*1731.0+midpoint.y*7919.0))
+							var taper: float = _berm_envelope(midpoint,points) if is_kerb else 0.0
+							if seed_value%100 < (52 if is_kerb else 4) and (not is_kerb or taper > 0.08):
+								var normal: Vector2 = (normal_p+normal_q)*0.5
+								var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
+								var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
+								_sand_clod(shoulders,center,(q-p).angle(),size,seed_value)
+								sand_clods += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
 					if dirt or theme_id == "desert": continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
+	set_meta("desert_clod_count",sand_clods)
 	_build_kerbs(track)
 	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
@@ -313,7 +326,7 @@ func _shoulder_width(point: Vector2) -> float:
 	# Broad erosion lobes instead of a serrated fringe. World position keeps
 	# neighbouring sections continuous; only the cosmetic outer edge moves.
 	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
-	return (1.75 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
+	return (3.0 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
 func _berm_envelope(point: Vector2, points: PackedVector2Array) -> float:
@@ -342,23 +355,30 @@ func _sand_bend_sample(points: PackedVector2Array, index: int) -> bool:
 	return ((points[index+1]-points[index]).normalized()-(points[index]-points[index-1]).normalized()).length_squared() >= 0.0001
 
 
-func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false, points: PackedVector2Array = PackedVector2Array()) -> void:
-	if theme_id == "desert" and berm:
-		var fractions: Array[float] = [0.0,0.28,0.60,1.0]
-		var heights: Array[float] = [0.0,0.10,0.16,0.0]
-		for band: int in range(3):
-			for pair: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
-				var point: Vector2 = a.lerp(outer_a,fractions[pair.y]) if pair.x == 0 else b.lerp(outer_b,fractions[pair.y])
-				var rough: float = sin(point.x*3.1+point.y*1.7)*sin(point.y*4.3-point.x*1.1)
-				var taper: float = _berm_envelope(a if pair.x == 0 else b,points)
-				tool.set_uv(Vector2(0.0,fractions[pair.y]))
-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.35)*taper))
-		return
+func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
 	for i: int in range(6):
 		tool.set_uv(Vector2(0.0,edge_weight[i]))
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
+
+
+func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, seed_value: int) -> void:
+	# Independent low collapsed sand clods: eighteen opaque facets, no raised ribbon.
+	var ring := PackedVector3Array()
+	var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*-0.012
+	for i: int in range(6):
+		var angle: float = TAU*float(i)/6.0
+		var irregular: float = 0.82+float((seed_value+i*17)%11)*0.025
+		var offset := Vector2(cos(angle)*0.28,sin(angle)*0.22).rotated(turn)*size*irregular
+		ring.append(origin+Vector3(offset.x,0.018,-offset.y))
+	var crown: Vector3 = origin+Vector3(0.025,0.20*size,0.01)
+	for i: int in range(6):
+		var next: int = (i+1)%6
+		var middle: Vector3 = (ring[i]+ring[next]+crown)/3.0+Vector3.UP*(0.025*size)
+		for vertex: Vector3 in [ring[i],ring[next],middle,ring[next],crown,middle, crown,ring[i],middle]:
+			tool.set_uv(Vector2(-1.0,0.35))
+			tool.add_vertex(vertex)
 
 
 func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array) -> void:

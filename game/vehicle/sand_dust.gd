@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-7"
+const PRESENTATION_VERSION: String = "desert-dust-8"
 
 const SAND_SURFACE: int = 2
 const REAR_AXLE: float = -1.0
@@ -98,9 +98,9 @@ func _rotation_from_growth(growth: CurveTexture) -> CurveTexture:
 		var point: Vector2 = growth.curve.get_point_position(i)
 		# Pinned Godot 4.7 curve branch integrates directly into CUSTOM.x
 		# (radians), unlike its constant-speed degrees-to-radians branch.
-		# Convert here, then slow quadratically as the cloud expands.
+		# Convert here, then slow proportionally as the cloud expands.
 		var ratio: float = initial_size / maxf(point.y,0.01)
-		curve.add_point(Vector2(point.x,deg_to_rad(1.0) * ratio * ratio))
+		curve.add_point(Vector2(point.x,deg_to_rad(1.0) * ratio))
 	var texture := CurveTexture.new()
 	texture.curve = curve
 	return texture
@@ -241,8 +241,8 @@ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: 
 	process.gravity = Vector3(0,0.060 if mode == MODE_DUST else 0.025,0) if mode in [MODE_DUST,MODE_SMOKE] else Vector3(0,-5.0 if mode != MODE_CLIPPING else -7.0,0)
 	process.damping_min = 0.75 if mode in [MODE_DUST,MODE_SMOKE] else 3.5
 	process.damping_max = 1.25 if mode in [MODE_DUST,MODE_SMOKE] else 6.0
-	process.angular_velocity_min = -4.0 if mode == MODE_DUST else -110.0
-	process.angular_velocity_max = 4.0 if mode == MODE_DUST else 110.0
+	process.angular_velocity_min = 10.0 if mode == MODE_DUST else -110.0
+	process.angular_velocity_max = 14.0 if mode == MODE_DUST else 110.0
 	process.scale_min = 0.72
 	process.scale_max = 1.28
 	process.color = Color(tint.r,tint.g,tint.b,1.0)
@@ -336,7 +336,10 @@ uniform float intersection_fade = 0.45;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 varying float puff_angle;
 void vertex() {
-	puff_angle = INSTANCE_CUSTOM.x;
+	// Each particle gets a stable engine-random speed magnitude at spawn.
+	// Separate direction from magnitude so none receive near-zero spin.
+	float turn_direction = (INSTANCE_ID % 2 == 0) ? -1.0 : 1.0;
+	puff_angle = INSTANCE_CUSTOM.x * turn_direction;
 	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
 }

@@ -78,3 +78,14 @@ Actual pinned scripts/dev.ps1: CaptureDesert with saved track track_3e26605a8a90
 Changed implementation: game/vehicle/sand_dust.gd. This report and new evidence folder record the correction. Unrelated pending editor, start-line and status changes are excluded from this checkpoint. Remaining: owner motion review and physical-device performance measurement; no new phone driving/profile run.
 
 Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks and exported the APK; `-Action InstallAndroid` succeeded on DN2103. Existing build-tools fallback and ObjectDB warnings remain. Status/phase entries were updated locally and remain unstaged alongside unrelated pending entries.
+
+
+## Visible rotation with per-particle variation ? desert-dust-8
+
+Owner found revision 7 almost stationary and requested slightly different speeds for different particles. Requirements V02/V04/V05/Q01. Dust angular-speed magnitude is now engine-randomized once per particle spawn between 10 and 14 degrees/s (12 +/- 2), with stable clockwise/counterclockwise direction selected separately by particle index. This avoids near-zero samples from a signed interval. The variation is across particles, not time-varying jitter.
+
+Correct radian conversion remains. Size-based slowdown is inverse growth rather than inverse-square, producing calculated mature lingering speeds of 2.6-3.64 degrees/s and mature tyre-puff speeds of 4.7-6.6 degrees/s. These values follow authored growth rather than individual random size multipliers. Density, onset, counts and persistence are unchanged.
+
+Implementation: game/vehicle/sand_dust.gd. Actual pinned `scripts/dev.ps1 -Action CaptureDesert -Track track_3e26605a8a90165e`: 61 checks passed, including current concurrent start-line checks. [Desktop screenshot](evidence/desert-dust-variation-2026-09-24/dense-dust.png) inspected; it verifies rendering, not measured angular motion. No new tests for this small tuning change. Owner motion review and device profiling remain pending. Unrelated pending work and historical captures are excluded from the checkpoint; status/phase notes are updated locally.
+
+Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks; APK exported. `-Action InstallAndroid` succeeded on attached DN2103. No phone driving or profiling performed. Build-tools fallback remains. `git diff --check` passed for implementation/report.

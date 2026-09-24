@@ -52,13 +52,13 @@ func run() -> void:
 	check(NativeTrackVisual.WINTER_ICE.get_image().has_mipmaps(),"ice has mipmaps")
 	var ground: Node = game.get("track_ground")
 	check(ground.get_node_or_null("WinterSnowBanks") != null,"snowbanks rendered")
-	check(int(ground.get_meta("winter_clump_count",0)) > 0,"broken deposits generated")
+	check(int(ground.get_meta("winter_smooth_sections",0)) > 0,"analytic smooth snowbank sections generated")
 	for child: Node in ground.get_children():
 		if child is MeshInstance3D and child.material_override is ShaderMaterial:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-surfaces"
+	var folder: String = "res://../docs/evidence/winter-smooth"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
 	game.set_process(false)
@@ -69,7 +69,7 @@ func run() -> void:
 	camera.size = 29.0
 	for frame: int in range(3): await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(folder+"/bend-detail.png") == OK)
-	print("WINTER_CAPTURE: surfaces/contacts preserved, mipmaps, banks/clumps, no edge stripes, two captures PASS; clumps=",ground.get_meta("winter_clump_count"))
+	print("WINTER_CAPTURE: surfaces/contacts preserved, mipmaps, smooth banks, no edge stripes, two captures PASS; sections=",ground.get_meta("winter_smooth_sections"))
 	game.queue_free()
 	await process_frame
 	print("WINTER_CHECKS: %d checks, %d failures" % [checks,failures])

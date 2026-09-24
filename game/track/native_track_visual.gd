@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-73"
+const VERSION: String = "track-kit-74"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
@@ -197,6 +197,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
 	var texture: ImageTexture = ImageTexture.create_from_image(mask)
 	var road_texture: ImageTexture = ImageTexture.create_from_image(_creator_road_mask(track))
+	var winter_bank := SurfaceTool.new()
+	winter_bank.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var winter_sections: int = 0
 	var shoulders := SurfaceTool.new()
 	var asphalt := SurfaceTool.new()
 	var asphalt_fringe := SurfaceTool.new()
@@ -261,6 +264,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Probe beyond this road edge. Testing the stripe itself would
 					# leave a gap where adjacent sections' rounded end caps overlap.
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
+					if theme_id == "winter" and not dirt:
+						_winter_bank_section(winter_bank,p,q,normal_p,normal_q,points)
+						winter_sections += 1
 					_asphalt_fringe_quad(asphalt_fringe,
 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
@@ -287,11 +293,14 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
+	if winter_sections > 0:
+		_commit_winter_bank(winter_bank,texture,track.half_extent)
+		set_meta("winter_smooth_sections",winter_sections)
 	set_meta("desert_clod_count",sand_clods)
 	_build_kerbs(track)
 	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
-	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id not in ["desert","winter"]: _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
 	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 
@@ -1165,12 +1174,13 @@ func _build_kerbs(track: NativeTrack) -> void:
 
 
 func _build_snow_banks(track: NativeTrack) -> void:
+	if has_meta("winter_smooth_sections"): return
 	if track.snow_banks.triangles.is_empty(): return
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: Dictionary in track.snow_banks.triangles:
 		var points := PackedVector3Array()
-		for i: int in range(3): points.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.025+triangle.heights[i]*(0.92+0.15*sin(triangle.points[i].x*2.7)*sin(triangle.points[i].y*3.1))))
+		for i: int in range(3): points.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.025+triangle.heights[i]*(0.94+0.12*sin(triangle.points[i].x*0.65)*sin(triangle.points[i].y*0.51))))
 		var normal: Vector3 = (points[2]-points[0]).cross(points[1]-points[0]).normalized()
 		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
 		if normal.y < 0.0: normal = -normal
@@ -1183,7 +1193,8 @@ func _build_snow_banks(track: NativeTrack) -> void:
 	material.shader = preload("res://track/winter_bank.gdshader")
 	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
 	mesh.material_override = material
-	_build_snow_clumps(track,tool)
+	tool.index()
+	tool.generate_normals()
 	mesh.mesh = tool.commit()
 	add_child(mesh)
 
@@ -1192,36 +1203,37 @@ func _menu_yield_due() -> bool:
 	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000
 
 
-func _build_snow_clumps(track: NativeTrack, tool: SurfaceTool) -> void:
-	# Visual-only broken plough deposits, spatially bounded and batched with bank.
-	var occupied: Dictionary = {}
-	var count: int = 0
-	for triangle: Dictionary in track.snow_banks.triangles:
-		if count >= 6000: break
-		var center: Vector2 = (triangle.points[0]+triangle.points[1]+triangle.points[2])/3.0
-		var height: float = track.snow_banks.height_at(center)
-		if height < 0.16: continue
-		var key := Vector2i(floori(center.x/0.70),floori(center.y/0.70))
-		if occupied.has(key): continue
-		occupied[key] = true
-		var seed_value: int = absi(key.x*1731+key.y*7919)
-		if seed_value%7 == 0: continue
-		var radius: float = 0.13+float(seed_value%17)*0.018
-		if track.cell_at(center) == 0: continue
-		var ring := PackedVector3Array()
-		var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*(height*0.67)
-		for i: int in range(6):
-			var angle: float = TAU*float(i)/6.0+float(seed_value%19)
-			var spread: float = radius*(0.82+float((seed_value+i*7)%9)*0.04)
-			ring.append(origin+Vector3(cos(angle)*spread,0.0,sin(angle)*spread))
-		var crown: Vector3 = origin+Vector3(radius*0.15,radius*(0.55+float(seed_value%7)*0.09),-radius*0.12)
-		for i: int in range(6):
-			var a: Vector3 = ring[i]
-			var b: Vector3 = ring[(i+1)%6]
-			var top_a: Vector3 = a.lerp(crown,0.58)+Vector3.UP*radius*0.18
-			var top_b: Vector3 = b.lerp(crown,0.58)+Vector3.UP*radius*0.18
-			for face: Array in [[a,b,top_b],[a,top_b,top_a],[top_a,top_b,crown]]:
-				tool.set_normal((Vector3(face[2])-Vector3(face[0])).cross(Vector3(face[1])-Vector3(face[0])).normalized())
-				for point: Vector3 in face: tool.add_vertex(point)
-		count += 1
-	set_meta("winter_clump_count",count)
+func _winter_bank_section(tool: SurfaceTool, a: Vector2, b: Vector2, na: Vector2, nb: Vector2, points: PackedVector2Array) -> void:
+	# Analytic road edge instead of raster contour: broad drift variation, rounded profile.
+	for band: int in range(8):
+		for corner: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
+			var anchor: Vector2 = a if corner.x == 0 else b
+			var outward: Vector2 = na if corner.x == 0 else nb
+			var t: float = float(corner.y)/8.0
+			var drift: float = sin(anchor.x*0.55+anchor.y*0.31)*sin(anchor.y*0.43-anchor.x*0.24)
+			var offset: float = lerpf(-0.62,1.65,t)+drift*0.10*sin(t*PI)
+			var point: Vector2 = anchor+outward*offset
+			var rise: float = maxf(0.0,sin(clampf((t-0.28)/0.72,0.0,1.0)*PI))
+			var height: float = 0.022+rise*rise*(0.28+drift*0.045)
+			var slope: float = 0.0
+			if t > 0.28: slope = sin((t-0.28)/0.72*TAU)*PI/0.72*(0.28+drift*0.045)/2.27
+			tool.set_normal(Vector3(-outward.x*slope,1.0,outward.y*slope).normalized())
+			tool.set_uv(Vector2(t,0.0))
+			tool.set_uv2(_sand_coordinates(point,points))
+			tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
+
+
+func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2) -> void:
+	var mesh := MeshInstance3D.new()
+	mesh.name = "WinterSnowBanks"
+	mesh.mesh = tool.commit()
+	var material := ShaderMaterial.new()
+	material.shader = preload("res://track/winter_bank.gdshader")
+	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
+	material.set_shader_parameter("ice_albedo",WINTER_ICE)
+	material.set_shader_parameter("smooth_road_bank",true)
+	material.set_shader_parameter("overlay_mask",mask)
+	material.set_shader_parameter("map_extent",extent)
+	mesh.material_override = material
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mesh)

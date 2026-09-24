@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 74 refines winter ice scale, replaces sawtooth road-piece banks with rounded analytic profiles and blends ice gradually into snow. CaptureWinter 10, TestIce 69 and TestSurfaces 50 checks pass; driving/hairpin screenshots inspected. No Android export/device test. See docs/WINTER_SURFACES.md.
+
 2026-09-24 Q01/V05/G01: race-start hitch investigation and reproducible startup diagnostic; Speedy desktop/phone measurements completed, root cause and owner acceptance remain open. See [RACE_START_HITCH.md](RACE_START_HITCH.md).
 
 2026-09-24 V02/V04/V05/Q01: visual kit 73 adds original directional winter ice, detailed snow ground and irregular batched snowbank clumps; removes winter edge stripes. Ice 69, surfaces 50, shader profile 928 and final winter capture 11 checks pass. Desktop driving/hairpin evidence inspected. No Android export/device test. See docs/WINTER_SURFACES.md.

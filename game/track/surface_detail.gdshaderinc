@@ -92,7 +92,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 		return mix(base,base*1.22+vec3(0.035,0.045,0.055),sheen*0.45);
 	}
 	if (road && icy_road) {
-		return texture(ice_albedo,p/12.0).rgb*0.79;
+		return texture(ice_albedo,p/6.0).rgb*0.79;
 	}
 	if (road) { return dry_asphalt_detail(base,p); }
 
@@ -155,5 +155,5 @@ vec3 painted_grass(vec3 base, vec2 p) {
 }
 
 vec3 winter_wear(vec3 base, vec2 uv) {
-	return texture(ice_albedo,uv.yx/vec2(9.0,18.0)).rgb*0.79;
+	return texture(ice_albedo,uv.yx/vec2(5.0,9.0)).rgb*0.79;
 }

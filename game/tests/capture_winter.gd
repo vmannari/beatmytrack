@@ -53,12 +53,13 @@ func run() -> void:
 	var ground: Node = game.get("track_ground")
 	check(ground.get_node_or_null("WinterSnowBanks") != null,"snowbanks rendered")
 	check(int(ground.get_meta("winter_smooth_sections",0)) > 0,"analytic smooth snowbank sections generated")
+	check(int(ground.get_meta("winter_deposits",0)) > 0,"outer snow deposits generated")
 	for child: Node in ground.get_children():
 		if child is MeshInstance3D and child.material_override is ShaderMaterial:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-smooth"
+	var folder: String = "res://../docs/evidence/winter-piled"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
 	game.set_process(false)

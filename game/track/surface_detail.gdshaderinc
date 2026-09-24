@@ -1,3 +1,4 @@
+#include "res://track/winter_ice.gdshaderinc"
 uniform sampler2D ice_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool winter_snow = false;
 uniform sampler2D snow_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -92,7 +93,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 		return mix(base,base*1.22+vec3(0.035,0.045,0.055),sheen*0.45);
 	}
 	if (road && icy_road) {
-		return texture(ice_albedo,p/6.0).rgb*0.79;
+		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);
 	}
 	if (road) { return dry_asphalt_detail(base,p); }
 
@@ -155,5 +156,5 @@ vec3 painted_grass(vec3 base, vec2 p) {
 }
 
 vec3 winter_wear(vec3 base, vec2 uv) {
-	return texture(ice_albedo,uv.yx/vec2(5.0,9.0)).rgb*0.79;
+	return quiet_winter_ice(texture(ice_albedo,uv.yx/vec2(5.0,9.0)).rgb);
 }

@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-74"
+const VERSION: String = "track-kit-75"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
@@ -200,6 +200,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var winter_bank := SurfaceTool.new()
 	winter_bank.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var winter_sections: int = 0
+	var winter_piles: Dictionary = {}
 	var shoulders := SurfaceTool.new()
 	var asphalt := SurfaceTool.new()
 	var asphalt_fringe := SurfaceTool.new()
@@ -267,6 +268,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					if theme_id == "winter" and not dirt:
 						_winter_bank_section(winter_bank,p,q,normal_p,normal_q,points)
 						winter_sections += 1
+						_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
 					_asphalt_fringe_quad(asphalt_fringe,
 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
@@ -296,6 +298,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if winter_sections > 0:
 		_commit_winter_bank(winter_bank,texture,track.half_extent)
 		set_meta("winter_smooth_sections",winter_sections)
+		set_meta("winter_deposits",winter_piles.size())
 	set_meta("desert_clod_count",sand_clods)
 	_build_kerbs(track)
 	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
@@ -1213,11 +1216,12 @@ func _winter_bank_section(tool: SurfaceTool, a: Vector2, b: Vector2, na: Vector2
 			var drift: float = sin(anchor.x*0.55+anchor.y*0.31)*sin(anchor.y*0.43-anchor.x*0.24)
 			var offset: float = lerpf(-0.62,1.65,t)+drift*0.10*sin(t*PI)
 			var point: Vector2 = anchor+outward*offset
-			var rise: float = maxf(0.0,sin(clampf((t-0.28)/0.72,0.0,1.0)*PI))
-			var height: float = 0.022+rise*rise*(0.28+drift*0.045)
-			var slope: float = 0.0
-			if t > 0.28: slope = sin((t-0.28)/0.72*TAU)*PI/0.72*(0.28+drift*0.045)/2.27
-			tool.set_normal(Vector3(-outward.x*slope,1.0,outward.y*slope).normalized())
+			var height: float = _winter_pile_height(anchor,t)
+			var slope: float = (_winter_pile_height(anchor,t+0.01)-_winter_pile_height(anchor,t-0.01))/0.0454
+			var tangent: Vector2 = outward.normalized().orthogonal()
+			var along: float = (_winter_pile_height(anchor+tangent*0.04,t)-_winter_pile_height(anchor-tangent*0.04,t))/0.08
+			var gradient: Vector2 = outward.normalized()*slope+tangent*along
+			tool.set_normal(Vector3(-gradient.x,1.0,gradient.y).normalized())
 			tool.set_uv(Vector2(t,0.0))
 			tool.set_uv2(_sand_coordinates(point,points))
 			tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
@@ -1237,3 +1241,40 @@ func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2) ->
 	mesh.material_override = material
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mesh)
+
+
+func _winter_pile_height(anchor: Vector2, t: float) -> float:
+	# Deposited snow masses vary along/across the crown; the road toe stays smooth.
+	var rise: float = sin(clampf((t-0.28)/0.72,0.0,1.0)*PI)
+	var broad: float = sin(anchor.x*1.13+anchor.y*0.79)+sin(anchor.y*1.47-anchor.x*0.67)
+	var chunks: float = sin(anchor.x*3.1+anchor.y*2.3+t*9.0)*sin(anchor.y*2.9-anchor.x*1.7-t*7.0)
+	return 0.022+rise*rise*(0.40+broad*0.085+chunks*0.12)
+
+
+func _winter_deposit(tool: SurfaceTool, anchor: Vector2, outward: Vector2, occupied: Dictionary) -> void:
+	var center: Vector2 = anchor+outward*1.0
+	var key := Vector2i(floori(center.x/0.72),floori(center.y/0.72))
+	if occupied.has(key) or occupied.size() >= 1800: return
+	var seed_value: int = absi(key.x*73856093 ^ key.y*19349663)
+	if seed_value%10 < 1: return
+	occupied[key] = true
+	center += outward*(float(seed_value%13)/13.0-0.5)*0.22
+	var radius: float = 0.22+float(seed_value%17)*0.018
+	var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*0.22
+	var lower := PackedVector3Array()
+	var upper := PackedVector3Array()
+	for i: int in range(7):
+		var angle: float = TAU*float(i)/7.0+float(seed_value%31)
+		var irregular: float = 0.80+float((seed_value+i*11)%17)*0.022
+		var radial := Vector3(cos(angle)*radius*irregular,0,sin(angle)*radius*irregular)
+		lower.append(origin+radial)
+		upper.append(origin+radial*0.70+Vector3(radius*0.12,radius*(0.60+float((seed_value+i*7)%9)*0.035),0))
+	var top: Vector3 = origin+Vector3(-radius*0.1,radius*0.94,radius*0.08)
+	for i: int in range(7):
+		var j: int = (i+1)%7
+		for face: Array in [[lower[i],lower[j],upper[j]],[lower[i],upper[j],upper[i]],[upper[i],upper[j],top]]:
+			var normal: Vector3 = (Vector3(face[2])-Vector3(face[0])).cross(Vector3(face[1])-Vector3(face[0])).normalized()
+			tool.set_normal(normal.lerp(Vector3.UP,0.42).normalized())
+			tool.set_uv(Vector2(0.70,0.0))
+			tool.set_uv2(Vector2.ZERO)
+			for point: Vector3 in face: tool.add_vertex(point)

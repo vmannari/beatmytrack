@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode diffuse_burley, specular_disabled, cull_disabled;
+#include "res://track/winter_ice.gdshaderinc"
 uniform sampler2D snow_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D ice_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
@@ -13,10 +14,12 @@ void fragment() {
 	if (smooth_road_bank) {
 		vec2 map_uv = (world_position.xz+map_extent)/(map_extent*2.0);
 		if (texture(overlay_mask,map_uv).r < 0.5) discard;
-		vec3 ice = texture(ice_albedo,UV2.yx/vec2(5.0,9.0)).rgb*0.79;
+		vec3 ice = quiet_winter_ice(texture(ice_albedo,UV2.yx/vec2(5.0,9.0)).rgb);
 		float powder = texture(snow_albedo,world_position.xz/4.0).r;
 		float coverage = smoothstep(0.0,0.68,UV.x+(powder-0.65)*0.12*sin(UV.x*3.14159));
-		ALBEDO = mix(ice,snow,coverage);
+		float crest = smoothstep(0.35,0.60,UV.x)*(1.0-smoothstep(0.78,1.0,UV.x));
+		vec3 piled = texture(snow_albedo,world_position.xz/4.0).rgb*vec3(0.83,0.83,0.84);
+		ALBEDO = mix(ice,mix(snow,piled,crest*0.70),coverage);
 	}
 	ROUGHNESS = 1.0;
 }

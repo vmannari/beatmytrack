@@ -1,5 +1,16 @@
 # Winter road, snowbanks and ground
 
+## Owner refinement: kit 75
+
+2026-09-24, V02/V04/V05/Q01. Owner requested less distracting road detail and banks closer to the original ploughed-snow reference. A shared pigment function retains 28% of ice artwork contrast around a muted blue-grey base, consistently on creator roads, raster roads and the bank transition. Texture scale remains kit 74. Banks gain an uneven 0.40 m nominal crown, broad and local height variation, gradient normals, and clustered irregular outer snow deposits. Deposits sit around 1 m beyond the inset analytic edge, separate from its soft road-side toe. Their seven-sided irregular geometry has 21 triangles per deposit, capped at 1,800 in the existing bank batch. Crown artwork is brighter and finer than the surrounding ground. Existing generated assets are reused; no new raster artwork or dependency.
+
+Changed runtime files: `game/track/native_track_visual.gd`, `surface_detail.gdshaderinc`, `winter_bank.gdshader`, new shared `winter_ice.gdshaderinc`. Capture fixture `game/tests/capture_winter.gd` additionally checks deposit generation. Canonical contacts, grip, camera and road widths remain unchanged.
+
+Actual pinned-engine commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`: `-Action CaptureWinter` 11 checks, `-Action TestIce` 69 checks, `-Action TestSurfaces` 50 checks, all zero failures. `git diff --check` passes. Final [driving](evidence/winter-piled/driving.png) and [hairpin](evidence/winter-piled/bend-detail.png) desktop captures saved; driving capture inspected after the final deposit shading adjustment. Prior iterations showed overly dark deposit side faces; normals now soften these while retaining the varied silhouette.
+
+No Android export, installation, phone test or performance comparison performed. Owner approval of road readability and reference resemblance, moving-camera review and device performance remain. Piled deposits apply to creator road-piece banks; raster-only banks retain the earlier fallback. These cosmetic deposits do not introduce additional collision. Concurrent menu-loading work in other files is outside this checkpoint.
+
+
 ## Owner refinement: kit 74
 
 2026-09-24, V02/V04/V05/Q01. Owner rejected oversized-looking ice detail, sawtooth edges and abrupt road/bank transitions. Creator road banks now follow exposed analytic road outlines rather than raster contact triangles. Eight cross-section bands form a rounded 0.28 m nominal bank with broad, low-amplitude drift variation and smooth shading. Small faceted clumps are removed. A 2.27 m strip starts 0.62 m inside the inset outline; its first approximately 1.54 m blends directional ice into the shared ground snow, then the bank settles into the ground. Shader material respects the creator paint overlay. Bridge pieces and covered/internal edges remain excluded by the existing outline/exposure logic. Canonical bank contacts, road cells, width, camera and winter handling are unchanged. Legacy/raster-only layouts retain their contour geometry with smooth normals and broader height variation; analytic edge reconstruction applies to road-piece tracks.

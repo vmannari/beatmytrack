@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 75 reduces winter road artwork contrast to 28%, adds varied piled-snow crowns and clustered outer deposits while retaining the smooth road toe. CaptureWinter 11, TestIce 69, TestSurfaces 50 pass; desktop evidence inspected. No phone test/export. See docs/WINTER_SURFACES.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 74 refines winter ice scale, replaces sawtooth road-piece banks with rounded analytic profiles and blends ice gradually into snow. CaptureWinter 10, TestIce 69 and TestSurfaces 50 checks pass; driving/hairpin screenshots inspected. No Android export/device test. See docs/WINTER_SURFACES.md.
 
 2026-09-24 Q01/V05/G01: race-start hitch investigation and reproducible startup diagnostic; Speedy desktop/phone measurements completed, root cause and owner acceptance remain open. See [RACE_START_HITCH.md](RACE_START_HITCH.md).

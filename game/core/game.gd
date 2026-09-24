@@ -132,6 +132,7 @@ func _ready() -> void:
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	world.add_child(car)
+	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
 	trails = SkidTrails.new()
 	trails.wheelbase = handling.wheelbase
 	trails.track_width = handling.track_width

@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: night headlights use one bounded shadow-free spotlight and batched illuminated lenses across five vehicles. Headlights 31 headless/31 graphical, biomes 107, vehicle batching 35 and quick Android export checks pass. Installed/tested on DN2103: moving on 16.659/16.682 ms median versus off 16.779 ms; p95 20.11-20.51 ms. Initial paused sample excluded. Screenshots inspected, normal play restored; no thermal-soak/fleet acceptance. See docs/NIGHT_HEADLIGHTS.md.
+
 2026-09-24 R01/V03/V05: Create biome cards use one image-independent selected treatment: full-bright artwork and a square yellow label band; unselected artwork is uniformly subdued, with no selected outer-border highlight. CaptureBiomes passes 107 checks and desktop evidence was inspected. No phone test/export. See docs/BIOME_CREATION.md.
 
 2026-09-24 R01/V03/V05/Q01: Race Complete Next Tracks cards show saved local star ratings and vote counts, matching Play. CaptureResults passes 204 checks across three sizes; desktop evidence inspected. No phone test/export. See docs/TRACK_RATINGS.md.

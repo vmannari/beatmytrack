@@ -257,6 +257,7 @@ func _process(_delta: float) -> void:
 func _configure_stage() -> void:
 	if not feature_stages.is_empty():
 		var feature: String = feature_stages[stage]
+		(game.get("car") as CarVisual).set_night_headlights(probe_track.metadata.get("theme","pine") == "night_city" and feature != "headlights")
 		surface_probe.apply(feature)
 		game.set("profile_skip_telemetry",feature == "telemetry")
 		_set_particles_enabled(feature != "particles")

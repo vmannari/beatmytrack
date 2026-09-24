@@ -4,6 +4,51 @@ extends Node3D
 
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
+var headlights: Node3D
+
+
+func set_night_headlights(enabled: bool) -> void:
+	if headlights != null:
+		headlights.visible = enabled
+		return
+	if not enabled: return
+	headlights = Node3D.new()
+	headlights.name = "NightHeadlights"
+	body.add_child(headlights)
+	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
+	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"kart":Vector3(0.33,0.25,-1.38)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+	var beam := SpotLight3D.new()
+	beam.name = "SharedHeadlightBeam"
+	beam.position = Vector3(0,mount.y,mount.z-0.06)
+	beam.rotation_degrees.x = -8.0
+	beam.light_color = Color("fff0d2")
+	beam.light_energy = 5.0
+	beam.spot_range = 22.0
+	beam.spot_angle = 34.0
+	beam.spot_angle_attenuation = 1.8
+	beam.spot_attenuation = 0.7
+	beam.shadow_enabled = false
+	beam.light_bake_mode = Light3D.BAKE_DISABLED
+	headlights.add_child(beam)
+	var lens := StandardMaterial3D.new()
+	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	lens.albedo_color = Color("fff0d2")
+	for side: float in [-1.0,1.0]:
+		if vehicle_id == "compact":
+			for offset: float in [0.405,0.651]:
+				var x: float = side*offset
+				var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.071,0.018,Vector3(x,0.798,CompactDetail._nose_z(x)-0.04),lens)
+				round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+				round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			continue
+		if vehicle_id == "classic":
+			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.14,0.012,Vector3(side*mount.x,mount.y,mount.z),lens)
+			round_lens.rotation.x = PI*0.38
+			round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			continue
+		var mesh: MeshInstance3D = VisualGeometry.box(headlights,Vector3(0.24,0.13,0.025),Vector3(side*mount.x,mount.y,mount.z),lens)
+		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	VisualGeometry.batch_static_parts(headlights)
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
 var rolling_wheels: Array[Node3D] = []

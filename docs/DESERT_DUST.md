@@ -56,3 +56,12 @@ Actual pinned scripts/dev.ps1 commands: `-Action CaptureDesert -Track track_3e26
 Changed files: game/vehicle/sand_dust.gd, game/tests/test_desert.gd, this report, status/phase notes and onset evidence folder. Historical scenery captures and unrelated creator edits are excluded from this checkpoint. Remaining acceptance: owner driving review and physical-device frame-time measurement. Earlier opacity/size increases near-car coverage; unchanged counts do not prove unchanged GPU cost.
 
 `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks; APK exported. `-Action InstallAndroid` succeeded on attached DN2103. No phone driving or profiling was performed. Existing build-tools fallback and driving ObjectDB shutdown warnings remain.
+
+
+## Size-dependent slow rotation ? desert-dust-6
+
+Owner requested slower rotation, then clarified that larger clouds should rotate slower. Requirements V02/V04/V05/Q01. Base dust angular velocity is random -12..12 degrees/second, previously -110..110. A particle-process angular-speed curve is derived from inverse authored growth, reducing lingering-cloud maximum speed to about 3.1 degrees/second at full size and short tyre puffs to about 5.6. The relation follows authored growth, not per-particle random scale differences. Angular speed is integrated by particle simulation; displayed angle is not divided by changing size, avoiding backwards unwinding. Density, onset, growth, lifetime and counts remain unchanged; other debris retains its angular velocity.
+
+Changed implementation: game/vehicle/sand_dust.gd. Updated this report, status/phase notes and [desktop screenshot](evidence/desert-dust-rotation-2026-09-24/dense-dust.png). Actual pinned `scripts/dev.ps1 -Action CaptureDesert -Track track_3e26605a8a90165e`: 57 checks passed on final revision; screenshot inspected. The intermediate constant-speed revision also passed 57 checks and Android export and was installed before the owner clarification. A still image verifies rendering, not angular speed in motion. Owner motion acceptance and physical-device performance remain outstanding; no new tests were added for this presentation adjustment.
+
+Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks; APK exported. `-Action InstallAndroid` succeeded on attached DN2103. No phone driving or profiling was performed. Existing build-tools fallback and driving ObjectDB shutdown warnings remain.

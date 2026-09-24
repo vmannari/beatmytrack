@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-4"
+const PRESENTATION_VERSION: String = "desert-dust-6"
 
 const SAND_SURFACE: int = 2
 const REAR_AXLE: float = -1.0
@@ -34,6 +34,7 @@ func _ready() -> void:
 		var tyre := _emitter("TyreDust%d" % wheel,48,1.1,Vector2(1.4,1.4),Color(0.80,0.72,0.57,0.65),MODE_DUST)
 		var tyre_process: ParticleProcessMaterial = tyre.process_material
 		tyre_process.scale_curve = _bounded_growth([0.8,1.1,1.4,1.7])
+		tyre_process.angular_velocity_curve = _rotation_from_growth(tyre_process.scale_curve)
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("intersection_fade",0.18)
 		tyre_emitters.append(tyre)
@@ -74,6 +75,7 @@ func _set_desert_profile(enabled: bool) -> void:
 		if enabled:
 			material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
 			(material.scale_curve as CurveTexture).curve.set_point_offset(1,0.025)
+		material.angular_velocity_curve = _rotation_from_growth(material.scale_curve) if enabled else null
 
 
 func _bounded_growth(values: Array[float]) -> CurveTexture:
@@ -81,6 +83,20 @@ func _bounded_growth(values: Array[float]) -> CurveTexture:
 	curve.max_value = 3.0
 	for i: int in range(4):
 		curve.add_point(Vector2([0.0,0.12,0.42,1.0][i],values[i]))
+	var texture := CurveTexture.new()
+	texture.curve = curve
+	return texture
+
+
+func _rotation_from_growth(growth: CurveTexture) -> CurveTexture:
+	# Angular speed decreases with the cloud's authored size over its lifetime.
+	# Apply this in particle simulation: dividing the displayed angle by size
+	# would unwind rotation as a cloud expands.
+	var curve := Curve.new()
+	var initial_size: float = growth.curve.get_point_position(0).y
+	for i: int in range(growth.curve.point_count):
+		var point: Vector2 = growth.curve.get_point_position(i)
+		curve.add_point(Vector2(point.x,initial_size / maxf(point.y,0.01)))
 	var texture := CurveTexture.new()
 	texture.curve = curve
 	return texture
@@ -221,8 +237,8 @@ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: 
 	process.gravity = Vector3(0,0.060 if mode == MODE_DUST else 0.025,0) if mode in [MODE_DUST,MODE_SMOKE] else Vector3(0,-5.0 if mode != MODE_CLIPPING else -7.0,0)
 	process.damping_min = 0.75 if mode in [MODE_DUST,MODE_SMOKE] else 3.5
 	process.damping_max = 1.25 if mode in [MODE_DUST,MODE_SMOKE] else 6.0
-	process.angular_velocity_min = -110.0
-	process.angular_velocity_max = 110.0
+	process.angular_velocity_min = -12.0 if mode == MODE_DUST else -110.0
+	process.angular_velocity_max = 12.0 if mode == MODE_DUST else 110.0
 	process.scale_min = 0.72
 	process.scale_max = 1.28
 	process.color = Color(tint.r,tint.g,tint.b,1.0)

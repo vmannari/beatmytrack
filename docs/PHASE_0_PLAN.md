@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 78 adapts desert worn/translucent finish checkers to winter frost-white and slate-blue pigments. CaptureWinter 143 and TestDesert 53 checks pass; desktop screenshot inspected. No phone test/export. See docs/WINTER_SURFACES.md.
+
 2026-09-24 V02/V04/V05/Q01: winter-specific ice scuffs, loose/packed snow ruts, slush wakes, tyre chips/powder and pooled snowbank-impact clouds. CaptureWinter 138, TestSoil 163, TestIce 69 and TestDesert 53 checks pass; desktop effects evidence inspected. No phone test/export. See docs/WINTER_TYRE_EFFECTS.md.
 
 2026-09-24 R01/G01/V03/V05/Q01: measured Play selection optimization with unchanged compiled track output, LRU cache and safe cached-choice supersession. Desktop/attached-phone measurements and regression outcomes, including the unresolved old free-editor UI assertion: [MENU_SELECTION_2026_09_24.md](MENU_SELECTION_2026_09_24.md). Intermittent race hitch remains a separate open investigation.

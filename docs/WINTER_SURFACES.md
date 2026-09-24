@@ -1,5 +1,14 @@
 # Winter road, snowbanks and ground
 
+## Winter finish marking: kit 78
+
+2026-09-24, V02/V04/V05/Q01. Owner requests the desert finish style adapted to winter. The same two-row 0.54 m worn checker geometry and abrasion shader now accept a winter palette (#d1dee5 frost white / #647987 slate blue). Translucent pigment exposes the approved icy road; timing center, direction and width remain unchanged. Winter marking height is 0.030 m to sit above the road's soft snow transition. Desert palette and geometry remain intact.
+
+Changed files: `game/track/native_track_visual.gd` (shared faded-finish builder and winter palette), `game/tests/capture_winter.gd` (material/node checks and evidence destination), status/plan/report and screenshots. No new artwork or dependencies.
+
+Actual commands through pinned Godot 4.7.2: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureWinter` passes 143 checks; `-Action TestDesert` passes 53 checks. [Winter finish gameplay screenshot](evidence/winter-finish/driving.png) inspected. `git diff --cached --check` passes. No phone test or Android export/install; owner contrast approval and device visibility remain pending. The low-contrast slate pigment intentionally blends into the icy road.
+
+
 ## Owner tint adjustment: kit 77
 
 2026-09-24, V02/V04/V05/Q01. Owner requests a hint of blue in the pale road. Shared `winter_ice.gdshaderinc` base changes to linear RGB (0.435, 0.475, 0.515), retaining luminance-only subdued texture. `native_track_visual.gd` increments kit version and `capture_winter.gd` saves separate evidence. No geometry/handling changes or new artwork.

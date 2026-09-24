@@ -2,8 +2,9 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-77"
+const VERSION: String = "track-kit-78"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const WINTER_ICE: Texture2D = preload("res://assets/textures/winter_ice_v1.png")
@@ -1015,8 +1016,8 @@ func _build_finish(track: NativeTrack) -> void:
 			widths[0 if direction < 0 else 1] = distance
 	var authored: bool = not RoadPieces.road_frame(track.metadata.get("creator_document",{}).get("pieces",[]),track.finish_center,track.finish_forward).is_empty()
 	if authored: widths = Vector2.ONE*track.finish_half_width
-	if theme_id == "desert":
-		_build_faded_desert_finish(track,side,widths)
+	if theme_id in ["desert","winter"]:
+		_build_faded_finish(track,side,widths)
 		return
 	for row: int in range(2):
 		for i: int in range(ceili(track.finish_half_width * 2 / size)):
@@ -1040,7 +1041,9 @@ func _build_finish(track: NativeTrack) -> void:
 	if counts[1]: _commit(dark, STANDARD_FINISH_COLORS[1], "FinishDark")
 
 
-func _build_faded_desert_finish(track: NativeTrack, side: Vector2, widths: Vector2) -> void:
+func _build_faded_finish(track: NativeTrack, side: Vector2, widths: Vector2) -> void:
+	var palette: Array[Color] = WINTER_FINISH_COLORS if theme_id == "winter" else DESERT_FINISH_COLORS
+	var prefix: String = "WinterSnowFinish" if theme_id == "winter" else "DesertSandFinish"
 	var pale := SurfaceTool.new()
 	var dark := SurfaceTool.new()
 	pale.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -1060,7 +1063,7 @@ func _build_faded_desert_finish(track: NativeTrack, side: Vector2, widths: Vecto
 			var across_wear: float = (float((column*7+row*3)%5)-2.0)*0.008
 			var along_wear: float = (float((column*3+row*5)%5)-2.0)*0.007
 			var center2: Vector2 = track.finish_center+side*((low+high)*0.5+across_wear)+track.finish_forward*((float(row)-0.5)*cell+along_wear)
-			var center: Vector3 = VisualGeometry.world(center2)+Vector3.UP*0.017
+			var center: Vector3 = VisualGeometry.world(center2)+Vector3.UP*(0.030 if theme_id == "winter" else 0.017)
 			var across: Vector3 = VisualGeometry.world(side)*maxf(0.02,across_half)
 			var along: Vector3 = VisualGeometry.world(track.finish_forward)*maxf(0.02,along_half)
 			var tool: SurfaceTool = pale if (column+row)%2 == 0 else dark
@@ -1069,13 +1072,13 @@ func _build_faded_desert_finish(track: NativeTrack, side: Vector2, widths: Vecto
 			for index: int in [0,2,1,0,3,2]:
 				tool.set_uv(texcoords[index])
 				tool.add_vertex(corners[index])
-	_commit(pale,DESERT_FINISH_COLORS[0],"DesertSandFinishPale")
-	_commit(dark,DESERT_FINISH_COLORS[1],"DesertSandFinishDark")
-	for marking_name: String in ["DesertSandFinishPale","DesertSandFinishDark"]:
+	_commit(pale,palette[0],prefix+"Pale")
+	_commit(dark,palette[1],prefix+"Dark")
+	for marking_name: String in [prefix+"Pale",prefix+"Dark"]:
 		var marking := get_node(marking_name) as MeshInstance3D
 		var pigment := ShaderMaterial.new()
 		pigment.shader = preload("res://track/desert_finish.gdshader")
-		pigment.set_shader_parameter("pigment_color",DESERT_FINISH_COLORS[0 if marking_name.ends_with("Pale") else 1])
+		pigment.set_shader_parameter("pigment_color",palette[0 if marking_name.ends_with("Pale") else 1])
 		pigment.set_shader_parameter("wear_texture",SURFACE_FACTORS)
 		marking.material_override = pigment
 		marking.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF

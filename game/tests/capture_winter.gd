@@ -51,6 +51,13 @@ func run() -> void:
 	check(NativeTrackVisual.WINTER_SNOW.get_image().has_mipmaps(),"snow has mipmaps")
 	check(NativeTrackVisual.WINTER_ICE.get_image().has_mipmaps(),"ice has mipmaps")
 	var ground: Node = game.get("track_ground")
+	for suffix: String in ["Pale","Dark"]:
+		var marking: MeshInstance3D = ground.get_node_or_null("WinterSnowFinish"+suffix)
+		check(marking != null,"winter worn checker mesh "+suffix)
+		if marking != null:
+			check(marking.material_override is ShaderMaterial,"winter finish uses abrasion shader")
+	check(ground.get_node_or_null("FinishDark") == null,"winter omits opaque black finish")
+
 	check(ground.get_node_or_null("WinterSnowBanks") != null,"snowbanks rendered")
 	check(int(ground.get_meta("winter_smooth_sections",0)) > 0,"analytic smooth snowbank sections generated")
 	check(int(ground.get_meta("winter_deposits",0)) > 0,"outer snow deposits generated")
@@ -59,7 +66,7 @@ func run() -> void:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-cool-white"
+	var folder: String = "res://../docs/evidence/winter-finish"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
 	game.set_process(false)

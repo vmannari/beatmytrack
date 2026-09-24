@@ -77,7 +77,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 		vec3 grains = texture(surface_factors,p/32.0).rgb;
 		float broad = texture(surface_factors,p/64.0).g;
 		float gravel = texture(surface_factors,p/12.0).g;
-		return base * (0.86 + grains.b*0.23 + broad*0.06 + smoothstep(0.48,0.72,gravel)*0.035);
+		return base * (0.96 + grains.b*0.045 + broad*0.025);
 	}
 	if (road && wet_road) {
 		float sheen = smoothstep(0.48,0.75,pigment(p*0.24 + vec2(3.2,7.6)));
@@ -103,13 +103,10 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 }
 
 // Filter baked grain along the local road axis for compacted sandy wear.
-vec3 packed_wear(vec3 base, vec2 p, vec2 axis) {
- float angle = atan(axis.y,axis.x+0.000001)*0.5;
- vec2 along = vec2(cos(angle),sin(angle));
- float worn = texture(surface_factors,p/10.0).g*0.40;
- worn += texture(surface_factors,(p+along*0.42)/10.0).g*0.30;
- worn += texture(surface_factors,(p-along*0.42)/10.0).g*0.30;
- return base*(0.94+worn*0.12);
+vec3 packed_wear(vec3 base, vec2 road_uv) {
+ float tracks = texture(surface_factors,road_uv/vec2(45.0,4.0)).g;
+ float broad = texture(surface_factors,road_uv/vec2(140.0,32.0)).g;
+ return base*(0.955+tracks*0.065+broad*0.025);
 }
 
 // Short, broken laying/wear grain aligned to the local road tangent. Sample

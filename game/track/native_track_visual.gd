@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-62"
+const VERSION: String = "track-kit-63"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -313,19 +313,19 @@ func _shoulder_width(point: Vector2) -> float:
 	# Broad erosion lobes instead of a serrated fringe. World position keeps
 	# neighbouring sections continuous; only the cosmetic outer edge moves.
 	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
-	return (2.1 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
+	return (1.75 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
 func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false) -> void:
-	if theme_id == "desert":
-		var fractions: Array[float] = [0.0,0.30,0.49,0.66,1.0]
-		var heights: Array[float] = [0.0,0.01,0.115 if berm else 0.035,0.035,0.0]
-		for band: int in range(4):
+	if theme_id == "desert" and berm:
+		var fractions: Array[float] = [0.0,0.28,0.60,1.0]
+		var heights: Array[float] = [0.0,0.10,0.16,0.0]
+		for band: int in range(3):
 			for pair: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
 				var point: Vector2 = a.lerp(outer_a,fractions[pair.y]) if pair.x == 0 else b.lerp(outer_b,fractions[pair.y])
-				var rough: float = sin(point.x*1.3+point.y*0.7)*sin(point.y*1.7-point.x*0.9)
+				var rough: float = sin(point.x*8.1+point.y*3.7)*sin(point.y*9.3-point.x*2.1)
 				tool.set_uv(Vector2(0.0,fractions[pair.y]))
-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(0.8+rough*0.7)))
+				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.6)))
 		return
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
@@ -364,12 +364,56 @@ func _asphalt_axis(point: Vector2, points: PackedVector2Array) -> Vector2:
 	return axis
 
 
+func _sand_coordinates(point: Vector2, points: PackedVector2Array) -> Vector2:
+	var best: float = INF
+	var result := Vector2.ZERO
+	var distance_along: float = 0.0
+	for i: int in range(points.size()-1):
+		var delta: Vector2 = points[i+1]-points[i]
+		var length: float = delta.length()
+		if length < 0.00001: continue
+		var direction: Vector2 = delta/length
+		var projected: float = clampf((point-points[i]).dot(direction),0.0,length)
+		var nearest: Vector2 = points[i]+direction*projected
+		var distance: float = point.distance_squared_to(nearest)
+		if distance < best:
+			best = distance
+			result = Vector2(distance_along+projected,(point-nearest).dot(direction.orthogonal()))
+		distance_along += length
+	return result
+
+
 func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float, points: PackedVector2Array = PackedVector2Array()) -> int:
 	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
-	for index: int in indices:
-		tool.set_uv2(_asphalt_axis(polygon[index],points))
-		tool.add_vertex(VisualGeometry.world(polygon[index])+Vector3.UP*height)
+	if theme_id == "desert" and not points.is_empty():
+		for i: int in range(0,indices.size(),3):
+			_sand_triangle(tool,polygon[indices[i]],polygon[indices[i+1]],polygon[indices[i+2]],height,points,0)
+	else:
+		for index: int in indices:
+			tool.set_uv2(_asphalt_axis(polygon[index],points))
+			tool.add_vertex(VisualGeometry.world(polygon[index])+Vector3.UP*height)
 	return indices.size()/3
+
+
+func _sand_triangle(tool: SurfaceTool, a: Vector2, b: Vector2, c: Vector2, height: float, points: PackedVector2Array, depth: int) -> void:
+	var ab: float = a.distance_squared_to(b)
+	var bc: float = b.distance_squared_to(c)
+	var ca: float = c.distance_squared_to(a)
+	if maxf(ab,maxf(bc,ca)) > 4.0 and depth < 12:
+		if bc >= ab and bc >= ca:
+			_sand_triangle(tool,b,c,a,height,points,depth+1)
+		elif ca > ab:
+			_sand_triangle(tool,c,a,b,height,points,depth+1)
+		else:
+			var middle: Vector2 = (a+b)*0.5
+			_sand_triangle(tool,a,middle,c,height,points,depth+1)
+			_sand_triangle(tool,middle,b,c,height,points,depth+1)
+		return
+	for point: Vector2 in [a,b,c]:
+		tool.set_uv(_sand_coordinates(point,points))
+		tool.set_uv2(_asphalt_axis(point,points))
+		tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
+
 
 
 func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary], pieces: Array = []) -> bool:

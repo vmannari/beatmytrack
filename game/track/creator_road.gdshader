@@ -53,7 +53,7 @@ void fragment() {
 	float sand = 0.0;
 	if (grass || gravel) { sand = sand_coverage(map_uv); }
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
-	if (asphalt_surface && packed_sand) { ALBEDO = packed_wear(ALBEDO,world_position.xz,UV2); }
+	if (asphalt_surface && packed_sand && !edge_fringe) { ALBEDO = packed_wear(ALBEDO,UV); }
 	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
 	}
@@ -98,7 +98,7 @@ void fragment() {
             float ridge = smoothstep(0.28,0.43,UV.y)*(1.0-smoothstep(0.55,0.76,UV.y));
             float contact = 1.0-smoothstep(0.25,0.43,UV.y);
             float stones = smoothstep(0.65,0.79,clods);
-            ALBEDO *= 0.91-contact*0.20+ridge*(clods*0.46-0.17)-stones*0.18;
+            ALBEDO *= 0.76-contact*0.12+ridge*(clods*0.25-0.03)-stones*0.08;
             ALBEDO *= 1.0-smoothstep(0.02,0.22,bank_slope)*0.16;
         }
 		float fringe = (packed_sand ? smoothstep(0.69,1.0,UV.y + (texture(surface_factors,world_position.xz/14.0).g-0.5)*0.12) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);

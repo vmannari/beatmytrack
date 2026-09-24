@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 63 restores the owner-preferred curve-bank pattern, leaves straight shoulders flat/darker and maps compacted road grain along/across each road piece. Bounded road subdivision avoids warped interpolation through bends. CaptureDesert 50 checks pass; gameplay evidence inspected. See docs/DESERT_DIRECTIONAL.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 62 replaces corrugated desert banks with a broader four-band transition: worn contact, low deposited sand ridge and loose grit into dunes. Road-edge blending widens to 0.56 m; shoulder width 1.8-2.4 m. CaptureDesert 50 and TestSurfaces 50 pass; screenshot inspected. See docs/DESERT_TRANSITION.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 61 replaces visible desert creator kerbs with low irregular sand banks, softens straight shoulders and adds road-axis filtered wear. CaptureDesert 50 and TestSurfaces 50 checks pass. Desktop evidence inspected; see docs/DESERT_BERMS.md for scope and device limits.

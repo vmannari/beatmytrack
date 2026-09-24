@@ -62,7 +62,7 @@ void fragment() {
 		// curves never inherit the coarse canonical surface-grid staircase.
 		float breakup = pigment(world_position.xz * 5.5 + vec2(4.1, 13.7));
 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
-		float asphalt_coverage = 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.12) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
 	}
@@ -92,8 +92,16 @@ void fragment() {
 	}
 	if (gravel) {
 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
-		if (packed_sand) { ALBEDO *= 1.0-smoothstep(0.02,0.32,bank_slope)*0.38; }
-		float fringe = (packed_sand ? smoothstep(0.30,1.0,UV.y) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
+		if (packed_sand) {
+            // Worn contact band, broken deposited sand, then scattered loose grit.
+            float clods = texture(surface_factors,world_position.xz/9.0).g;
+            float ridge = smoothstep(0.28,0.43,UV.y)*(1.0-smoothstep(0.55,0.76,UV.y));
+            float contact = 1.0-smoothstep(0.25,0.43,UV.y);
+            float stones = smoothstep(0.65,0.79,clods);
+            ALBEDO *= 0.91-contact*0.20+ridge*(clods*0.46-0.17)-stones*0.18;
+            ALBEDO *= 1.0-smoothstep(0.02,0.22,bank_slope)*0.16;
+        }
+		float fringe = (packed_sand ? smoothstep(0.69,1.0,UV.y + (texture(surface_factors,world_position.xz/14.0).g-0.5)*0.12) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;

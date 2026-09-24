@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-61"
+const VERSION: String = "track-kit-62"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -221,7 +221,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var road_outline: PackedVector2Array = _trim_join_outline(RoadPieces.section_outline(pieces,index),cuts)
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
-		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,1.8,Geometry2D.JOIN_ROUND):
+		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,2.6 if theme_id == "desert" else 1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.16,Geometry2D.JOIN_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012,points)
@@ -253,7 +253,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
 					_asphalt_fringe_quad(asphalt_fringe,
 						p+normal_p*0.36,q+normal_q*0.36,
-						p+normal_p*0.56,q+normal_q*0.56,points)
+						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
 					if not is_kerb or theme_id == "desert":
@@ -313,19 +313,19 @@ func _shoulder_width(point: Vector2) -> float:
 	# Broad erosion lobes instead of a serrated fringe. World position keeps
 	# neighbouring sections continuous; only the cosmetic outer edge moves.
 	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
-	return 1.35 + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
+	return (2.1 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
 func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false) -> void:
-	if theme_id == "desert" and berm:
-		var fractions: Array[float] = [0.0,0.28,0.60,1.0]
-		var heights: Array[float] = [0.0,0.10,0.16,0.0]
-		for band: int in range(3):
+	if theme_id == "desert":
+		var fractions: Array[float] = [0.0,0.30,0.49,0.66,1.0]
+		var heights: Array[float] = [0.0,0.01,0.115 if berm else 0.035,0.035,0.0]
+		for band: int in range(4):
 			for pair: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
 				var point: Vector2 = a.lerp(outer_a,fractions[pair.y]) if pair.x == 0 else b.lerp(outer_b,fractions[pair.y])
-				var rough: float = sin(point.x*8.1+point.y*3.7)*sin(point.y*9.3-point.x*2.1)
+				var rough: float = sin(point.x*1.3+point.y*0.7)*sin(point.y*1.7-point.x*0.9)
 				tool.set_uv(Vector2(0.0,fractions[pair.y]))
-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.6)))
+				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(0.8+rough*0.7)))
 		return
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]

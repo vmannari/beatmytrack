@@ -58,6 +58,13 @@ vec3 sand_detail(vec3 base, vec2 p) {
 	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
 }
 
+// Coarse desert roadside gravel, distinct from both compacted road and dunes.
+vec3 desert_shoulder(vec3 base, vec2 p) {
+ vec3 grit = texture(surface_factors,p/16.0).rgb;
+ float stones = smoothstep(0.53,0.70,grit.g);
+ return base * (0.62 + grit.b*0.62 + stones*0.24);
+}
+
 // Shared world-space baked asphalt. Random repair/crack shapes are removed;
 // binder variation and mineral grain remain presentation-only.
 vec3 dry_asphalt_detail(vec3 base, vec2 p) {
@@ -68,8 +75,9 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
 	if (road && packed_sand) {
 		vec3 grains = texture(surface_factors,p/32.0).rgb;
-		float broad = texture(surface_factors,p/96.0).b;
-		return base * (0.85 + grains.r*0.12 + grains.b*0.08 + broad*0.08);
+		float broad = texture(surface_factors,p/64.0).g;
+		float gravel = texture(surface_factors,p/12.0).g;
+		return base * (0.79 + grains.b*0.36 + broad*0.08 + smoothstep(0.48,0.72,gravel)*0.07);
 	}
 	if (road && wet_road) {
 		float sheen = smoothstep(0.48,0.75,pigment(p*0.24 + vec2(3.2,7.6)));

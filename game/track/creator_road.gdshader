@@ -60,7 +60,7 @@ void fragment() {
 		float breakup = pigment(world_position.xz * 5.5 + vec2(4.1, 13.7));
 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
 		float asphalt_coverage = 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
-		vec3 shoulder = sand_detail(sand_color.rgb, world_position.xz);
+		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
 	}
 	if (road_marking) {
@@ -88,7 +88,7 @@ void fragment() {
 		ALBEDO = mix(road_color.rgb,kerb_pale.rgb,pale);
 	}
 	if (gravel) {
-		ALBEDO = sand_detail(road_color.rgb,world_position.xz);
+		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
 		float fringe = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
@@ -97,5 +97,5 @@ void fragment() {
 	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
-	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
+	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? grass_fringe(UV.y,world_position.xz)*(1.0-sand) : 0.0));
 }

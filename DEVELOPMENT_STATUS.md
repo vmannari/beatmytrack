@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: kit 60 restores a distinct rough gravel shoulder between desert road and dunes, including behind stone kerbs, and strengthens baked road grain/wear. CaptureDesert 50 and TestSurfaces 50 checks pass. Gameplay screenshot inspected. See docs/DESERT_SHOULDERS.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 59 gives desert roads muted compacted sand/gravel, sandstone kerbs and no white edge stripes. Normal daylight supersedes the sunset request; dune pigment is retuned for daylight. Saved-track CaptureDesert 50, TestSurfaces 50 and TestBiomes 92 pass; Android quick export passes 74 driving, 18 catalog and 22 menu checks. Desktop screenshot inspected. See docs/DESERT_DAYLIGHT.md for device status and acceptance.
 
 2026-09-24 V02/V04/V05/Q01: kit 58 adds original dune/ripple sand artwork, baked slope lighting and sparse opaque dry scrub for desert ground. Roads, sunset, dust, camera and canonical handling remain unchanged. Desert 31, saved-track capture 52, surfaces 50, grass 15, biomes 92 and shader profile 928 checks pass. Desktop screenshots inspected; fresh Android APK exported and installed. DN2103 was locked, so phone profile timed out with 0/5 stages; diagnostics cleaned up, performance acceptance pending. See docs/DESERT_DUNES.md.

@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-59"
+const VERSION: String = "track-kit-60"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -256,7 +256,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						p+normal_p*0.56,q+normal_q*0.56,points)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
-					if not is_kerb:
+					if not is_kerb or theme_id == "desert":
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
@@ -269,7 +269,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
 	_build_kerbs(track)
-	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+	if counts[0]: _commit_creator_road(shoulders,Color("817866") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
 	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id != "desert": _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
@@ -444,7 +444,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("verge_blend_mask",mask)
 	material.set_shader_parameter("road_mask",road_mask)
 	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
-	material.set_shader_parameter("sand_color",colors[2].darkened(0.20))
+	material.set_shader_parameter("sand_color",Color("817866") if theme_id == "desert" else colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
 	material.set_shader_parameter("asphalt_base_color",colors[0])

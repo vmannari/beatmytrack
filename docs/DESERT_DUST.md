@@ -43,3 +43,16 @@ Changed implementation: game/vehicle/sand_dust.gd. Documentation: this report, D
 Phone was attached but locked (NotificationShade, mDreamingLockscreen=true). No new phone driving test or benchmark was performed. Owner visual acceptance, road occlusion in motion and sustained phone frame pacing remain unverified. The overhead single-car view cannot reproduce the perspective and accumulated multi-car plume in the reference exactly.
 
 Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks and produced the APK; `-Action InstallAndroid` succeeded on DN2103. Existing build-tools fallback and ObjectDB shutdown warnings remain. `git diff --check` passed for this slice.
+
+
+## Immediate onset correction ? desert-dust-4
+
+Owner reported that the car had already left before dust became noticeable. Requirements V02/V04/V05/Q01. The nine-second cloud previously took 0.72 seconds to reach peak alpha and 1.08 seconds to reach 1.4x scale. Those times are now 0.108 and 0.225 seconds. Initial scale increases from 0.4 to 0.65. This changes early growth only; nine-second life, mature cloud scale and 256 lingering particles remain.
+
+The existing 192 short tyre particles use 1.4 m cards (previously 0.8 m), stronger initial size and 0.65 peak alpha (previously 0.24). Their ground intersection fade is reduced to 0.18 m; lingering clouds use 0.45 m instead of 0.9 m. This makes young grounded dust visible while retaining soft intersections. No new emitter or canonical handling change.
+
+Actual pinned scripts/dev.ps1 commands: `-Action CaptureDesert -Track track_3e26605a8a90165e` passed 57 checks, including new early-opacity/growth checks and five-car exact replay; `-Action TestSoil` passed 163. Desktop capture inspected: plume now connects to the rear of the car. [Immediate wake](evidence/desert-dust-onset-2026-09-24/dense-dust.png), [lingering cloud](evidence/desert-dust-onset-2026-09-24/lingering-dust.png).
+
+Changed files: game/vehicle/sand_dust.gd, game/tests/test_desert.gd, this report, status/phase notes and onset evidence folder. Historical scenery captures and unrelated creator edits are excluded from this checkpoint. Remaining acceptance: owner driving review and physical-device frame-time measurement. Earlier opacity/size increases near-car coverage; unchanged counts do not prove unchanged GPU cost.
+
+`-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks; APK exported. `-Action InstallAndroid` succeeded on attached DN2103. No phone driving or profiling was performed. Existing build-tools fallback and driving ObjectDB shutdown warnings remain.

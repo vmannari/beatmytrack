@@ -70,6 +70,8 @@ func run() -> void:
 	check(growth.sample(0.42) >= 1.5 and growth.sample(1.0) <= 2.5,"desert clouds expand within bounded overdraw budget")
 	check(dust.dust_emitters[0].amount * 4 <= 384 and dust.tyre_emitters[0].emitting,"bounded lingering cloud population and separate tyre puffs")
 	check(cloud.spread > 90.0 and cloud.damping_max < 0.75,"desert dust spreads sideways rather than remaining at tyre width")
+	check((cloud.color_ramp as GradientTexture1D).gradient.sample(0.15 / 9.0).a > 0.8,"cloud becomes dense within 150 ms rather than trailing a second behind")
+	check(growth.sample(0.25 / 9.0) >= 1.4,"cloud fills the near wake within 250 ms")
 	dust._stop()
 	check(not dust.dust_emitters[0].emitting,"stopping ends emission without restarting existing clouds")
 	dust.queue_free()

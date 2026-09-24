@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-3"
+const PRESENTATION_VERSION: String = "desert-dust-4"
 
 const SAND_SURFACE: int = 2
 const REAR_AXLE: float = -1.0
@@ -31,10 +31,11 @@ func _ready() -> void:
 		var dust := _emitter("Dust%d" % wheel,360,5.20,Vector2(2.05,2.05),Color(0.82,0.70,0.50,0.48),MODE_DUST)
 		dust_emitters.append(dust)
 		add_child(dust)
-		var tyre := _emitter("TyreDust%d" % wheel,48,1.1,Vector2(0.8,0.8),Color(0.70,0.59,0.43,0.24),MODE_DUST)
+		var tyre := _emitter("TyreDust%d" % wheel,48,1.1,Vector2(1.4,1.4),Color(0.80,0.72,0.57,0.65),MODE_DUST)
 		var tyre_process: ParticleProcessMaterial = tyre.process_material
-		tyre_process.scale_curve = _bounded_growth([0.35,0.65,1.0,1.5])
+		tyre_process.scale_curve = _bounded_growth([0.8,1.1,1.4,1.7])
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
+		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("intersection_fade",0.18)
 		tyre_emitters.append(tyre)
 		add_child(tyre)
 		var clipping := _emitter("Clippings%d" % wheel,120,1.05,Vector2(0.075,0.30),Color(0.54,0.64,0.13,0.94),MODE_CLIPPING)
@@ -71,7 +72,8 @@ func _set_desert_profile(enabled: bool) -> void:
 		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
 		cloud_material.set_shader_parameter("billowing",enabled)
 		if enabled:
-			material.scale_curve = _bounded_growth([0.4,1.4,2.1,2.5])
+			material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
+			(material.scale_curve as CurveTexture).curve.set_point_offset(1,0.025)
 
 
 func _bounded_growth(values: Array[float]) -> CurveTexture:
@@ -86,7 +88,7 @@ func _bounded_growth(values: Array[float]) -> CurveTexture:
 
 func _desert_alpha() -> GradientTexture1D:
 	var gradient := Gradient.new()
-	gradient.offsets = PackedFloat32Array([0.0,0.08,0.35,0.72,1.0])
+	gradient.offsets = PackedFloat32Array([0.0,0.012,0.35,0.72,1.0])
 	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,0.88),Color(1,1,1,0.82),Color(1,1,1,0.55),Color(1,1,1,0)])
 	var texture := GradientTexture1D.new()
 	texture.gradient = gradient
@@ -310,6 +312,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 uniform sampler2D dust_texture : source_color, filter_linear_mipmap_anisotropic;
 uniform float alpha_softness = 0.42;
 uniform bool billowing = false;
+uniform float intersection_fade = 0.45;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 varying float puff_angle;
 void vertex() {
@@ -342,7 +345,7 @@ void fragment() {
 		vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0,depth);
 #endif
 		vec4 scene = INV_PROJECTION_MATRIX * vec4(ndc,1.0);
-		alpha *= smoothstep(0.0,0.9,VERTEX.z-scene.z/scene.w);
+		alpha *= smoothstep(0.0,intersection_fade,VERTEX.z-scene.z/scene.w);
 	}
 	ALPHA = COLOR.a * alpha;
 }

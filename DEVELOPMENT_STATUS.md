@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: desert-dust-4 brings cloud onset to the car: peak opacity at 0.108 s, earlier growth, stronger tyre puffs and narrower soft-intersection fade. Counts unchanged. CaptureDesert 57, soil 163 and quick Android export pass; APK installed, no phone driving/profiling. See docs/DESERT_DUST.md.
+
 2026-09-24 V02/V04/V05/Q01: desert-dust-3 responds to owner rally-dust reference with a connected occluding beige plume, 256 lingering particles, stronger sustained density and soft depth intersections. CaptureDesert 55, soil 163 and Android quick export pass; APK installed. Phone remains locked; no performance measurement. See docs/DESERT_DUST.md.
 
 2026-09-24 R01/T01-T04/V03/V05: creator Road palette adds asymmetric Taper pieces with one straight verge, a converging opposite verge, Flip side selection, direct wide/narrow/length controls, snapping, automatic-route widths and creator-track-v5 persistence. Focused road/workflow/capture checks pass; desktop evidence inspected. No phone test/export. See docs/ROAD_TAPERS.md.

@@ -1,12 +1,36 @@
 # Development status
 
+2026-09-24 R01/V03/V05: Create biome cards use one image-independent selected treatment: full-bright artwork and a square yellow label band; unselected artwork is uniformly subdued, with no selected outer-border highlight. CaptureBiomes passes 107 checks and desktop evidence was inspected. No phone test/export. See docs/BIOME_CREATION.md.
+
+2026-09-24 R01/V03/V05/Q01: Race Complete Next Tracks cards show saved local star ratings and vote counts, matching Play. CaptureResults passes 204 checks across three sizes; desktop evidence inspected. No phone test/export. See docs/TRACK_RATINGS.md.
+
 2026-09-24 V02/V04/V05/Q01: desert-bridge-2 fixes recessed-looking railing caps with flat face normals and narrower stone bevels. CaptureDesertBridge passes; desktop evidence inspected, collision/clearance assertions pass. No phone test/export. See docs/DESERT_BRIDGES.md.
 
 2026-09-24 V02/V04/V05/Q01: grass-clippings-2 replaces bright box debris with folded tapered blades, natural lit colours and low two-axis tumbling; capacity reduced 20%. Soil 163, graphical soil 172, desert 53 and graphical grass 32 checks pass. Desktop evidence inspected; no device test/export. See docs/GRASS_CLIPPINGS.md.
 
 2026-09-24 V02/V04/V05/Q01: desert-bridge-1 replaces desert steel rails with sandstone parapets, bevelled coping, capped posts and clearance-preserving shallow arches. Construction 82, bridge contacts 16 and desert 53 checks pass; two desktop captures inspected. No phone test/export. See docs/DESERT_BRIDGES.md.
 
+2026-09-24 V02/V04/V05/Q01: desert road-edge kerb cells now select sand trails/dust instead of dark rubber/smoke. Saved-track CaptureDesert 79 and TestSoil 163 checks pass; desktop capture inspected. No phone test/export. See docs/DESERT_OFF_TRACK.md.
+
+2026-09-24 V02/V04/V05/Q01: desert-dust-9 fixes green off-track tyre marks and grass clippings with sandy grooves, low tan grain spray and lingering dust. CaptureDesert 67 and TestSoil 163 checks pass; two desktop captures inspected. No phone test/export or performance measurement. See docs/DESERT_OFF_TRACK.md.
+
+2026-09-24 V02/V04/V05/Q01: vehicle shells now have opaque black underside caps; kart floor is black. TestVehicleBatch: 35 checks pass; all five inverted desktop captures inspected. No phone test/export. See docs/VEHICLE_UNDERSIDES.md.
+
+2026-09-24 V02/V04/V05/Q01: kit 72 enlarges desert finish checker pitch 29%, cools the sand pigments and adds patchy abrasion/eroded edges after owner rejection of kit 71. Final CaptureDesert: 61 checks pass, desktop evidence inspected. No phone test/export. See docs/DESERT_START_FINISH.md.
+
+2026-09-24 V02/V04/V05/Q01: kit 71 uses two rows of translucent, grain-worn sand finish checkers. CaptureDesert: 61 checks pass; desktop screenshot inspected. No phone test/export. See docs/DESERT_START_FINISH.md.
+
+2026-09-24 V02/V04/V05/Q01: visual kit 70 follows the owner's in-game reference with a faded, low-contrast three-row sand checker and worn exposed-sand edges. See docs/DESERT_START_FINISH.md.
+
+2026-09-24 V02/V04/V05/Q01: desert-dust-8 gives each particle a stable randomized 10-14 degrees/s birth speed, slowing with growth to 2.6-3.64 degrees/s for mature clouds. CaptureDesert 61 and Android quick export pass; APK installed, no phone driving/profile test. See docs/DESERT_DUST.md.
+
 2026-09-24 R01/V03/V05/Q01: configurable touch layout editor, three steering methods, independent analog pedals, presets/reset, safe normalized geometry and atomic settings. 199 headless / 202 graphical layout checks (plus 72 synthetic viewport checks), 555 mobile-input and 53 record checks pass; final Android quick export passes and APK installed. Phone attached but locked; no physical multitouch/iOS test. Older TestApp stops on obsolete menu-button assumptions. See docs/TOUCH_CONTROL_LAYOUT.md.
+
+2026-09-24 V02/V04/V05/Q01: visual kit 69 replaces the rejected filled Desert checker with an actual sand drawing: irregular raked grid grooves, diagonal stick marks and displaced sunlit ridges. See docs/DESERT_START_FINISH.md.
+
+2026-09-24 V02/V04/V05/Q01: desert-dust-7 corrects angular-curve radian units and uses stronger size-dependent slowing (calculated mature maximum ~0.27 degrees/s). CaptureDesert 61 and quick Android export pass; APK installed on DN2103, no phone motion/profile test. See docs/DESERT_DUST.md.
+
+2026-09-24 V02/V04/V05/Q01: visual kit 68 gives Desert a weathered sand-chalk/ochre start-finish marking with exposed packed-sand seams; other biomes and timing geometry remain unchanged. See docs/DESERT_START_FINISH.md.
 
 2026-09-24 V02/V04/V05/Q01: desert-dust-6 slows cloud rotation with inverse growth: at most 12 degrees/s initially, about 3.1 degrees/s for mature clouds. CaptureDesert 57 and Android quick export pass; APK installed, no phone driving/profiling. See docs/DESERT_DUST.md.
 

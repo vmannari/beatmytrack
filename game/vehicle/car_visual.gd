@@ -5,9 +5,13 @@ extends Node3D
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
 var headlights: Node3D
+var night_lights_enabled: bool = false
+var rear_braking: bool = false
 
 
 func set_night_headlights(enabled: bool) -> void:
+	night_lights_enabled = enabled
+	_update_rear_lights()
 	if headlights != null:
 		headlights.visible = enabled
 		return
@@ -185,7 +189,18 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 		var heading: float = angle - pivot.rotation.y
 		var distance: float = travel.dot(Vector2(sin(heading), cos(heading)))
 		rotor.rotation.x = wrapf(rotor.rotation.x - distance / wheel_radii[i], -PI, PI)
-	brake_material.albedo_color = Color("f17158") if frame.brake > 0 else Color("802d2b")
+	var braking: bool = frame.brake > 0
+	if braking != rear_braking:
+		rear_braking = braking
+		_update_rear_lights()
+
+
+func _update_rear_lights() -> void:
+	# Self-lit lenses reuse the existing material/batch: no extra Light3D or pass.
+	brake_material.albedo_color = Color("f17158") if rear_braking else Color("802d2b")
+	brake_material.emission_enabled = night_lights_enabled
+	brake_material.emission = Color("e02b1d")
+	brake_material.emission_energy_multiplier = 1.0 if rear_braking else 0.32
 
 
 func register_rolling_wheel(pivot: Node3D, radius: float) -> void:

@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: faint night rear lamps reuse emissive brake materials; braking brightens them and release restores running glow. Kart gains two batched rear lenses; no added dynamic lights. CaptureHeadlights 51, vehicle batch 35 and quick export checks pass. Installed/tested on DN2103: 213.6 m, median 16.785 ms/p95 20.511 ms. Desktop running/braking and phone captures inspected; normal play restored. See docs/NIGHT_HEADLIGHTS.md.
+
 2026-09-24 V02/V04/V05/Q01: night headlight cone begins wider at the bumper using a recessed virtual origin and softer angular falloff, retaining one shadow-free light. Final CaptureHeadlights 31 and quick export driving/catalog/menu checks pass; desktop comparison inspected. Revised APK installed/tested on DN2103: on medians 16.732/16.789 ms, off 16.760 ms; no material difference. Phone evidence inspected, normal play restored. See docs/NIGHT_HEADLIGHTS.md.
 
 2026-09-24 V02/V04/V05/Q01: night headlights use one bounded shadow-free spotlight and batched illuminated lenses across five vehicles. Headlights 31 headless/31 graphical, biomes 107, vehicle batching 35 and quick Android export checks pass. Installed/tested on DN2103: moving on 16.659/16.682 ms median versus off 16.779 ms; p95 20.11-20.51 ms. Initial paused sample excluded. Screenshots inspected, normal play restored; no thermal-soak/fleet acceptance. See docs/NIGHT_HEADLIGHTS.md.

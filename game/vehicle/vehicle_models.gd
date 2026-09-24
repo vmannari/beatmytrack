@@ -150,6 +150,8 @@ static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Materi
 		car._seam(car.body,Vector3(side*0.76,0.15,1.08),Vector3(side*0.76,0.15,1.25),0.065,trim)
 	for end: float in [-1.0,1.0]:
 		car._seam(car.body,Vector3(-0.76,0.16,end*1.13),Vector3(0.76,0.16,end*1.13),0.065,steel)
+	for side: float in [-1.0,1.0]:
+		_box(car,Vector3(0.14,0.075,0.035),Vector3(side*0.55,0.21,1.15),car.brake_material)
 	car._seam(car.body,Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88),0.055,steel)
 	var nose := Node3D.new()
 	car.body.add_child(nose)

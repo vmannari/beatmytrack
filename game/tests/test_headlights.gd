@@ -27,6 +27,16 @@ func run() -> void:
 		check(not lamp.is_visible_in_tree(),"off disables the beam: "+id)
 		car.set_night_headlights(true)
 		check(car.find_children("*","Light3D",true,false).size() == 1,"toggle reuses light: "+id)
+		var state := VehicleState.new()
+		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,0))
+		var running_energy: float = car.brake_material.emission_energy_multiplier
+		check(car.brake_material.emission_enabled and running_energy > 0 and running_energy < 0.5,"faint night rear lamps: "+id)
+		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,1))
+		check(car.brake_material.emission_energy_multiplier > running_energy*2,"braking remains clearly brighter: "+id)
+		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,0))
+		check(is_equal_approx(car.brake_material.emission_energy_multiplier,running_energy),"brake release restores faint lamps: "+id)
+		car.set_night_headlights(false)
+		check(not car.brake_material.emission_enabled,"daytime disables rear glow: "+id)
 		car.free()
 	var document: Dictionary = TrackDocument.create_default()
 	document.theme = "night_city"
@@ -46,6 +56,15 @@ func run() -> void:
 			for i: int in range(8): await process_frame
 			await RenderingServer.frame_post_draw
 			root.get_texture().get_image().save_png(folder+("/on.png" if enabled else "/off.png"))
+		var rear_folder: String = ProjectSettings.globalize_path("res://../docs/evidence/taillights-2026-09-24")
+		DirAccess.make_dir_recursive_absolute(rear_folder)
+		game.sim.state.heading = 0.0
+		game.previous_heading = 0.0
+		for braking: bool in [false,true]:
+			game.frame = DriveFrame.sample(0,0,1 if braking else 0)
+			for i: int in range(8): await process_frame
+			await RenderingServer.frame_post_draw
+			root.get_texture().get_image().save_png(rear_folder+("/braking.png" if braking else "/running.png"))
 	game.free()
 	await process_frame
 	print("Headlights: ",checks," checks, ",failures," failures")

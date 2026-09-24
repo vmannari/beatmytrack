@@ -1,5 +1,9 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: desert-dust-3 responds to owner rally-dust reference with a connected occluding beige plume, 256 lingering particles, stronger sustained density and soft depth intersections. CaptureDesert 55, soil 163 and Android quick export pass; APK installed. Phone remains locked; no performance measurement. See docs/DESERT_DUST.md.
+
+2026-09-24 R01/T01-T04/V03/V05: creator Road palette adds asymmetric Taper pieces with one straight verge, a converging opposite verge, Flip side selection, direct wide/narrow/length controls, snapping, automatic-route widths and creator-track-v5 persistence. Focused road/workflow/capture checks pass; desktop evidence inspected. No phone test/export. See docs/ROAD_TAPERS.md.
+
 2026-09-24 V02/V04/V05/Q01: desert-dust-2 splits short tyre puffs from 384 bounded lingering particles, softens shading and enables texture mipmaps. Final CaptureDesert 55, soil 163 and Android quick checks pass; final APK installed on DN2103. Phone profiling obtained no measurements while locked. See docs/DESERT_DUST.md for evidence and acceptance.
 
 2026-09-24 V02/V04/V05/Q01: kit 67 replaces fine desert road-edge breakup with broader approximately 5.6 m variation, constrained to existing blend strip endpoints. CaptureDesert 53 and quick Android export checks pass; gameplay capture inspected. See docs/DESERT_EDGE_VARIATION.md.

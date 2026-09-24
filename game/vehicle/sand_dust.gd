@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-2"
+const PRESENTATION_VERSION: String = "desert-dust-3"
 
 const SAND_SURFACE: int = 2
 const REAR_AXLE: float = -1.0
@@ -57,21 +57,21 @@ func _set_desert_profile(enabled: bool) -> void:
 	desert_profile = enabled
 	for emitter: GPUParticles3D in dust_emitters:
 		emitter.lifetime = 9.0 if enabled else 5.2
-		emitter.amount = 96 if enabled else 360
-		(emitter.draw_pass_1 as QuadMesh).size = Vector2.ONE * (2.6 if enabled else 2.05)
+		emitter.amount = 64 if enabled else 360
+		(emitter.draw_pass_1 as QuadMesh).size = Vector2.ONE * (4.0 if enabled else 2.05)
 		var material: ParticleProcessMaterial = emitter.process_material
-		material.color = Color("cbb58e") if enabled else Color(0.82,0.70,0.50)
+		material.color = Color("d3c19f") if enabled else Color(0.82,0.70,0.50)
 		material.color_ramp = _desert_alpha() if enabled else _alpha_ramp(0.48,MODE_DUST)
 		material.scale_curve = _scale_curve(MODE_DUST)
 		material.spread = 110.0 if enabled else 72.0
-		material.initial_velocity_max = 3.2 if enabled else 1.65
+		material.initial_velocity_max = 2.2 if enabled else 1.65
 		material.damping_min = 0.30 if enabled else 0.75
 		material.damping_max = 0.65 if enabled else 1.25
-		material.gravity = Vector3(0,0.13 if enabled else 0.06,0)
+		material.gravity = Vector3(0,0.24 if enabled else 0.06,0)
 		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
 		cloud_material.set_shader_parameter("billowing",enabled)
 		if enabled:
-			material.scale_curve = _bounded_growth([0.4,0.9,1.7,2.5])
+			material.scale_curve = _bounded_growth([0.4,1.4,2.1,2.5])
 
 
 func _bounded_growth(values: Array[float]) -> CurveTexture:
@@ -87,7 +87,7 @@ func _bounded_growth(values: Array[float]) -> CurveTexture:
 func _desert_alpha() -> GradientTexture1D:
 	var gradient := Gradient.new()
 	gradient.offsets = PackedFloat32Array([0.0,0.08,0.35,0.72,1.0])
-	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,0.60),Color(1,1,1,0.45),Color(1,1,1,0.22),Color(1,1,1,0)])
+	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,0.88),Color(1,1,1,0.82),Color(1,1,1,0.55),Color(1,1,1,0)])
 	var texture := GradientTexture1D.new()
 	texture.gradient = gradient
 	return texture
@@ -310,6 +310,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 uniform sampler2D dust_texture : source_color, filter_linear_mipmap_anisotropic;
 uniform float alpha_softness = 0.42;
 uniform bool billowing = false;
+uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 varying float puff_angle;
 void vertex() {
 	puff_angle = INSTANCE_CUSTOM.x;
@@ -331,8 +332,17 @@ void fragment() {
 	if (billowing) {
 		// Soft density with restrained texture variation, without baked dark lobes.
 		vec2 p = UV * 2.0 - 1.0;
-		alpha = (1.0-smoothstep(0.05,1.0,length(p))) * mix(0.65,1.0,puff.a);
+		alpha = (1.0-smoothstep(0.42,1.0,length(p))) * mix(0.80,1.0,puff.a);
 		ALBEDO = COLOR.rgb * mix(0.94,1.04,value);
+		// Soften intersections with the road/car instead of cutting a billboard in half.
+		float depth = texture(scene_depth,SCREEN_UV).r;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+		vec3 ndc = vec3(SCREEN_UV,depth) * 2.0 - 1.0;
+#else
+		vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0,depth);
+#endif
+		vec4 scene = INV_PROJECTION_MATRIX * vec4(ndc,1.0);
+		alpha *= smoothstep(0.0,0.9,VERTEX.z-scene.z/scene.w);
 	}
 	ALPHA = COLOR.a * alpha;
 }

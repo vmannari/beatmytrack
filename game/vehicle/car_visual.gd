@@ -29,8 +29,8 @@ func set_night_headlights(enabled: bool) -> void:
 	beam.rotation_degrees.x = -12.0
 	beam.light_color = Color("fff0d2")
 	beam.light_energy = 5.0
-	beam.spot_range = 12.0
-	beam.spot_angle = 48.0
+	beam.spot_range = 20.4
+	beam.spot_angle = 42.0
 	beam.spot_angle_attenuation = 1.2
 	beam.spot_attenuation = 0.7
 	beam.shadow_enabled = false

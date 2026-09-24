@@ -21,7 +21,7 @@ func run() -> void:
 		var lamps: Array[Node] = car.find_children("*","Light3D",true,false)
 		check(lamps.size() == 1,"one shared light budget: "+id)
 		var lamp := lamps[0] as SpotLight3D
-		check(not lamp.shadow_enabled and lamp.spot_range <= 12.0,"short bounded shadow-free light: "+id)
+		check(not lamp.shadow_enabled and is_equal_approx(lamp.spot_range,12.0*1.7),"owner 1.7x range with no shadows: "+id)
 		var hood_point := Vector3(0,0.8,-1.0)
 		check((hood_point-lamp.position).dot(-lamp.basis.z) < 0,"hood stays behind the beam: "+id)
 		check(lamp.position.z < 0 and lamp.transform.basis.z.y > 0,"beam faces nose and road: "+id)

@@ -1,5 +1,7 @@
 # Desert dunes and dry scrub — 2026-09-24
 
+2026-09-24 follow-up: [Desert daylight and road](DESERT_DAYLIGHT.md) supersedes sunset lighting, ground colour compensation and road/kerb appearance below.
+
 Requirements V02/V04/V05/Q01. Owner supplied desert photographs and requested sand with dunes, continuing the preceding mobile-performance constraint. Kit 58.
 
 ## Appearance and scope

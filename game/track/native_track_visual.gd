@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-58"
+const VERSION: String = "track-kit-59"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -264,7 +264,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						counts[0] += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
-					if dirt: continue
+					if dirt or theme_id == "desert": continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
@@ -272,7 +272,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if counts[0]: _commit_creator_road(shoulders,colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
 	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
-	if counts[2]: _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
+	if counts[2] and theme_id != "desert": _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
 	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 
 
@@ -984,6 +984,9 @@ func _build_kerbs(track: NativeTrack) -> void:
 	mesh.mesh = tool.commit()
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/kerb.gdshader")
+	if theme_id == "desert":
+		material.set_shader_parameter("red",Color("8e8069"))
+		material.set_shader_parameter("pale_color",Color("bbae91"))
 	var mask := Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,track.kerbs.blocked)
 	# Canonical bytes are 0/1; shader samples normalized bytes.
 	for y: int in range(track.grid_height):

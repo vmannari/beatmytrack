@@ -5,7 +5,7 @@ extends RefCounted
 
 const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
 const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
-const DESERT: Array[Color] = [Color("934923"), Color("765633"), Color("99451e"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT: Array[Color] = [Color("96866d"), Color("b59a70"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 
 
 static func normalized(theme: String) -> String:
@@ -48,17 +48,12 @@ static func stone(theme: String) -> Color:
 
 
 static func apply_lighting(theme: String, environment: Environment, light: DirectionalLight3D) -> void:
-	light.rotation_degrees = Vector3(-22,-55,0) if theme == "desert" else Vector3(-58,-35,0)
+	light.rotation_degrees = Vector3(-58,-35,0)
 	var night: bool = normalized(theme) == "night_city"
 	environment.ambient_light_color = Color("7288b0") if night else Color("bac8ce")
 	environment.ambient_light_energy = 0.045 if night else 0.35
 	light.light_color = Color("8299cc") if night else Color("e7f2ff") if theme == "winter" else Color("fff1d8")
 	light.light_energy = 0.025 if night else 0.50 if theme == "storm" else 1.0
-	if theme == "desert":
-		environment.ambient_light_color = Color("b87538")
-		environment.ambient_light_energy = 0.30
-		light.light_color = Color("ff873c")
-		light.light_energy = 0.82
 	if theme == "storm":
 		environment.ambient_light_color = Color("93a9bd")
 		environment.ambient_light_energy = 0.42

@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: kit 59 gives desert roads muted compacted sand/gravel, sandstone kerbs and no white edge stripes. Normal daylight supersedes the sunset request; dune pigment is retuned for daylight. Saved-track CaptureDesert 50, TestSurfaces 50 and TestBiomes 92 pass; Android quick export passes 74 driving, 18 catalog and 22 menu checks. Desktop screenshot inspected. See docs/DESERT_DAYLIGHT.md for device status and acceptance.
+
 2026-09-24 V02/V04/V05/Q01: kit 58 adds original dune/ripple sand artwork, baked slope lighting and sparse opaque dry scrub for desert ground. Roads, sunset, dust, camera and canonical handling remain unchanged. Desert 31, saved-track capture 52, surfaces 50, grass 15, biomes 92 and shader profile 928 checks pass. Desktop screenshots inspected; fresh Android APK exported and installed. DN2103 was locked, so phone profile timed out with 0/5 stages; diagnostics cleaned up, performance acceptance pending. See docs/DESERT_DUNES.md.
 
 2026-09-23 V02/V04/V05/Q01: kit 57 adds original meadow blade/clump artwork and shaded opaque tufts instead of restoring old leafy grass. Fresh APK installed on DN2103; 18 comparison stages completed. Ajorata median unchanged; repeated Storm +0.20?0.24 ms (1.2?1.4%), lower p95. First Storm pass showed device-wide slowdown affecting original grass too; all results retained. Desktop/device evidence and acceptance limits: docs/GRASS_PERFORMANCE.md.

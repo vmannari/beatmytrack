@@ -86,3 +86,6 @@ The owner authorizes removing random road cracks, baking surface detail and redu
 
 ## Desert sand and sunset override (2026-09-22)
 The owner requests desert roads to always be a distinct, more drivable compacted sand, with dense dust during ordinary driving that causes considerable obstruction and lingers. This explicitly supersedes the earlier brief/unobstructive dust art constraint for desert. Desert lighting uses a red-orange sunset and longer shadows. See docs/DESERT_SUNSET.md for implementation and acceptance limits.
+
+## Desert daylight and road override (2026-09-24)
+The owner accepted dune ground and requests reference-informed compacted desert roads and suitable kerbs. Normal daylight supersedes the red-orange sunset until a later lighting pass. Dust and canonical packed-sand driving remain unchanged. See docs/DESERT_DAYLIGHT.md.

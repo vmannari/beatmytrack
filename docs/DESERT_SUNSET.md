@@ -1,5 +1,7 @@
 # Desert compacted sand and sunset ? 2026-09-22
 
+2026-09-24 follow-up: [Desert daylight and road](DESERT_DAYLIGHT.md) supersedes sunset lighting, ground colour compensation and road/kerb appearance below.
+
 2026-09-24: [Dune ground update](DESERT_DUNES.md) replaces the loose-ground appearance; sunset, compacted road and dust behavior remain unchanged.
 
 Requirements: G01/G03 (surface handling), R01/R03/R07 (determinism/versioning), V02/V04/V05 (biome materials, dust and lighting), Q01 (validation). Owner request makes desert roads firm sand and deliberately permits lingering visibility obstruction, overriding the older brief/unobstructive dust guideline for this biome.

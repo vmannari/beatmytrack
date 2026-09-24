@@ -9,8 +9,8 @@ uniform sampler2D dune_albedo : source_color, filter_linear_mipmap_anisotropic, 
 
 vec3 dune_sand(vec2 p) {
 	// Original irregular dune art carries readable crests and swept gaps.
-	// Neutral sand pigment offsets the existing strongly orange sunset light.
-	return texture(dune_albedo,p/24.0).rgb*vec3(0.60,0.92,1.45);
+	// Natural ochre pigment under the shared daylight rig.
+	return texture(dune_albedo,p/24.0).rgb*vec3(0.56,0.60,0.65);
 }
 
 vec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) {
@@ -67,7 +67,9 @@ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
 vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
 	if (road && packed_sand) {
-		return base * (0.94 + texture(surface_factors,p/32.0).b * 0.12);
+		vec3 grains = texture(surface_factors,p/32.0).rgb;
+		float broad = texture(surface_factors,p/96.0).b;
+		return base * (0.85 + grains.r*0.12 + grains.b*0.08 + broad*0.08);
 	}
 	if (road && wet_road) {
 		float sheen = smoothstep(0.48,0.75,pigment(p*0.24 + vec2(3.2,7.6)));

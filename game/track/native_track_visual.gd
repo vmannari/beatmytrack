@@ -2,7 +2,9 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-67"
+const VERSION: String = "track-kit-72"
+const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -996,6 +998,9 @@ func _build_finish(track: NativeTrack) -> void:
 			widths[0 if direction < 0 else 1] = distance
 	var authored: bool = not RoadPieces.road_frame(track.metadata.get("creator_document",{}).get("pieces",[]),track.finish_center,track.finish_forward).is_empty()
 	if authored: widths = Vector2.ONE*track.finish_half_width
+	if theme_id == "desert":
+		_build_faded_desert_finish(track,side,widths)
+		return
 	for row: int in range(2):
 		for i: int in range(ceili(track.finish_half_width * 2 / size)):
 			var offset: float = -track.finish_half_width + (i + 0.5) * size
@@ -1007,26 +1012,70 @@ func _build_finish(track: NativeTrack) -> void:
 			if not authored and track.cell_at(point) not in [0, 2, 5, 6]:
 				continue
 			var center: Vector3 = VisualGeometry.world(point) + Vector3.UP * 0.024
-			var across: Vector3 = VisualGeometry.world(side) * (high-low) * 0.5
-			var along: Vector3 = VisualGeometry.world(track.finish_forward) * size * 0.5
+			var across_half: float = (high-low) * 0.5
+			var along_half: float = size * 0.5
+			var across: Vector3 = VisualGeometry.world(side) * across_half
+			var along: Vector3 = VisualGeometry.world(track.finish_forward) * along_half
 			var parity: int = (row+i)%2
 			_quad(light if parity == 0 else dark, center-across-along, center+across-along, center+across+along, center-across+along)
 			counts[parity] += 1
-	if counts[0]: _commit(light, Color("d4d5c5"))
-	if counts[1]: _commit(dark, Color("252f32"))
+	if counts[0]: _commit(light, STANDARD_FINISH_COLORS[0], "FinishLight")
+	if counts[1]: _commit(dark, STANDARD_FINISH_COLORS[1], "FinishDark")
+
+
+func _build_faded_desert_finish(track: NativeTrack, side: Vector2, widths: Vector2) -> void:
+	var pale := SurfaceTool.new()
+	var dark := SurfaceTool.new()
+	pale.begin(Mesh.PRIMITIVE_TRIANGLES)
+	dark.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var cell: float = 0.54
+	var columns: int = ceili((widths.x+widths.y)/cell)
+	# Muted mineral pigment is worked into the road surface. Small deterministic
+	# gaps and uneven edges let the packed sand show through like a worn marking.
+	for row: int in range(2):
+		for column: int in range(columns):
+			var low: float = -widths.x+column*cell
+			var high: float = minf(widths.y,low+cell)
+			if high <= low: continue
+			var edge_wear: float = 0.006+float((column*5+row*7)%4)*0.003
+			var along_half: float = cell*0.5-edge_wear
+			var across_half: float = (high-low)*0.5-edge_wear*0.7
+			var across_wear: float = (float((column*7+row*3)%5)-2.0)*0.008
+			var along_wear: float = (float((column*3+row*5)%5)-2.0)*0.007
+			var center2: Vector2 = track.finish_center+side*((low+high)*0.5+across_wear)+track.finish_forward*((float(row)-0.5)*cell+along_wear)
+			var center: Vector3 = VisualGeometry.world(center2)+Vector3.UP*0.017
+			var across: Vector3 = VisualGeometry.world(side)*maxf(0.02,across_half)
+			var along: Vector3 = VisualGeometry.world(track.finish_forward)*maxf(0.02,along_half)
+			var tool: SurfaceTool = pale if (column+row)%2 == 0 else dark
+			var corners: Array[Vector3] = [center-across-along,center+across-along,center+across+along,center-across+along]
+			var texcoords: Array[Vector2] = [Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN]
+			for index: int in [0,2,1,0,3,2]:
+				tool.set_uv(texcoords[index])
+				tool.add_vertex(corners[index])
+	_commit(pale,DESERT_FINISH_COLORS[0],"DesertSandFinishPale")
+	_commit(dark,DESERT_FINISH_COLORS[1],"DesertSandFinishDark")
+	for marking_name: String in ["DesertSandFinishPale","DesertSandFinishDark"]:
+		var marking := get_node(marking_name) as MeshInstance3D
+		var pigment := ShaderMaterial.new()
+		pigment.shader = preload("res://track/desert_finish.gdshader")
+		pigment.set_shader_parameter("pigment_color",DESERT_FINISH_COLORS[0 if marking_name.ends_with("Pale") else 1])
+		pigment.set_shader_parameter("wear_texture",SURFACE_FACTORS)
+		marking.material_override = pigment
+		marking.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
 func _quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
 	for v: Vector3 in [a,c,b,a,d,c]: tool.add_vertex(v)
 
 
-func _commit(tool: SurfaceTool, color: Color) -> void:
+func _commit(tool: SurfaceTool, color: Color, node_name: String = "") -> void:
 	tool.generate_normals()
 	var instance := MeshInstance3D.new()
 	instance.mesh = tool.commit()
 	var material := VisualGeometry.material(color)
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	instance.material_override = material
+	if not node_name.is_empty(): instance.name = node_name
 	add_child(instance)
 
 func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:

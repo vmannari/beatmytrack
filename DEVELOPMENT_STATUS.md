@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: desert-dust-2 splits short tyre puffs from 384 bounded lingering particles, softens shading and enables texture mipmaps. Final CaptureDesert 55, soil 163 and Android quick checks pass; final APK installed on DN2103. Phone profiling obtained no measurements while locked. See docs/DESERT_DUST.md for evidence and acceptance.
+
 2026-09-24 V02/V04/V05/Q01: kit 67 replaces fine desert road-edge breakup with broader approximately 5.6 m variation, constrained to existing blend strip endpoints. CaptureDesert 53 and quick Android export checks pass; gameplay capture inspected. See docs/DESERT_EDGE_VARIATION.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 66 warms/darkens desert road pigment toward surrounding sand, extends shoulder blending 0.91 m farther inward and raises inner-bend clods 65%. CaptureDesert 53, TestSurfaces 50 and quick Android export checks pass. Desktop capture inspected. See docs/DESERT_COLOUR_HEIGHT.md.

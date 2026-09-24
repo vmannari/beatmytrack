@@ -67,7 +67,8 @@ func run() -> void:
 	check(dust.dust_emitters[0].lifetime == 9.0,"dust persists nine seconds")
 	var cloud: ParticleProcessMaterial = dust.dust_emitters[0].process_material
 	var growth: Curve = (cloud.scale_curve as CurveTexture).curve
-	check(growth.sample(0.42) >= 4.0 and growth.sample(1.0) >= 7.0,"desert clouds grow into broad mature billows")
+	check(growth.sample(0.42) >= 1.5 and growth.sample(1.0) <= 2.5,"desert clouds expand within bounded overdraw budget")
+	check(dust.dust_emitters[0].amount * 4 <= 384 and dust.tyre_emitters[0].emitting,"bounded lingering cloud population and separate tyre puffs")
 	check(cloud.spread > 90.0 and cloud.damping_max < 0.75,"desert dust spreads sideways rather than remaining at tyre width")
 	dust._stop()
 	check(not dust.dust_emitters[0].emitting,"stopping ends emission without restarting existing clouds")
@@ -162,6 +163,7 @@ func run() -> void:
 			race.set("previous_position",state.position)
 			race.set("previous_heading",state.heading)
 			effect.sample(state,DriveFrame.new(),track)
+			if i == 239: check(effect.last_strengths[0] > 0.0,"captured moving plume is emitting")
 			await create_timer(1.0/60.0).timeout
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/dense-dust.png") == OK,"dust obstruction evidence")

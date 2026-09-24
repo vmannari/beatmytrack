@@ -53,6 +53,7 @@ void fragment() {
 	float sand = 0.0;
 	if (grass || gravel) { sand = sand_coverage(map_uv); }
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
+	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear(ALBEDO,UV); }
 	if (asphalt_surface && packed_sand && !edge_fringe) { ALBEDO = packed_wear(ALBEDO,UV); }
 	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);

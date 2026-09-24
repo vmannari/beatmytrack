@@ -2,10 +2,12 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-72"
+const VERSION: String = "track-kit-73"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
+const WINTER_ICE: Texture2D = preload("res://assets/textures/winter_ice_v1.png")
+const WINTER_SNOW: Texture2D = preload("res://assets/textures/winter_snow_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/meadow_grass_v2.png")
@@ -35,6 +37,9 @@ var editor_cover: NativeTrackVisual
 
 
 func _bind_grass(material: ShaderMaterial) -> void:
+	material.set_shader_parameter("winter_snow",theme_id == "winter")
+	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
+	material.set_shader_parameter("ice_albedo",WINTER_ICE)
 	material.set_shader_parameter("desert_dunes",theme_id == "desert")
 	material.set_shader_parameter("dune_factors",DUNE_FACTORS)
 	material.set_shader_parameter("desert_apron",DESERT_APRON)
@@ -261,7 +266,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
-					if not is_kerb or theme_id == "desert":
+					if not is_kerb or theme_id in ["desert","winter"]:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
@@ -278,7 +283,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 								sand_clods += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
-					if dirt or theme_id == "desert": continue
+					if dirt or theme_id in ["desert","winter"]: continue
 					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
@@ -287,7 +292,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
 	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
-	if counts[2] and theme_id != "desert": _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
+	if counts[2] and theme_id not in ["desert","winter"]: _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
 	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 
 
@@ -434,7 +439,7 @@ func _sand_coordinates(point: Vector2, points: PackedVector2Array) -> Vector2:
 
 func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float, points: PackedVector2Array = PackedVector2Array()) -> int:
 	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
-	if theme_id == "desert" and not points.is_empty():
+	if theme_id in ["desert","winter"] and not points.is_empty():
 		for i: int in range(0,indices.size(),3):
 			_sand_triangle(tool,polygon[indices[i]],polygon[indices[i+1]],polygon[indices[i+2]],height,points,0)
 	else:
@@ -1117,6 +1122,7 @@ func update_light_props(state: VehicleState) -> void:
 
 
 func _build_kerbs(track: NativeTrack) -> void:
+	if theme_id == "winter": return # Ploughed snow covers the retained canonical kerbs.
 	if track.kerbs.triangles.is_empty(): return
 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
 	var tool := SurfaceTool.new()
@@ -1164,7 +1170,7 @@ func _build_snow_banks(track: NativeTrack) -> void:
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: Dictionary in track.snow_banks.triangles:
 		var points := PackedVector3Array()
-		for i: int in range(3): points.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.025+triangle.heights[i]))
+		for i: int in range(3): points.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.025+triangle.heights[i]*(0.92+0.15*sin(triangle.points[i].x*2.7)*sin(triangle.points[i].y*3.1))))
 		var normal: Vector3 = (points[2]-points[0]).cross(points[1]-points[0]).normalized()
 		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
 		if normal.y < 0.0: normal = -normal
@@ -1173,10 +1179,49 @@ func _build_snow_banks(track: NativeTrack) -> void:
 			tool.add_vertex(points[i])
 	var mesh := MeshInstance3D.new()
 	mesh.name = "WinterSnowBanks"
+	var material := ShaderMaterial.new()
+	material.shader = preload("res://track/winter_bank.gdshader")
+	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
+	mesh.material_override = material
+	_build_snow_clumps(track,tool)
 	mesh.mesh = tool.commit()
-	mesh.material_override = VisualGeometry.material(Color("93a7b2"))
 	add_child(mesh)
 
 
 func _menu_yield_due() -> bool:
 	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000
+
+
+func _build_snow_clumps(track: NativeTrack, tool: SurfaceTool) -> void:
+	# Visual-only broken plough deposits, spatially bounded and batched with bank.
+	var occupied: Dictionary = {}
+	var count: int = 0
+	for triangle: Dictionary in track.snow_banks.triangles:
+		if count >= 6000: break
+		var center: Vector2 = (triangle.points[0]+triangle.points[1]+triangle.points[2])/3.0
+		var height: float = track.snow_banks.height_at(center)
+		if height < 0.16: continue
+		var key := Vector2i(floori(center.x/0.70),floori(center.y/0.70))
+		if occupied.has(key): continue
+		occupied[key] = true
+		var seed_value: int = absi(key.x*1731+key.y*7919)
+		if seed_value%7 == 0: continue
+		var radius: float = 0.13+float(seed_value%17)*0.018
+		if track.cell_at(center) == 0: continue
+		var ring := PackedVector3Array()
+		var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*(height*0.67)
+		for i: int in range(6):
+			var angle: float = TAU*float(i)/6.0+float(seed_value%19)
+			var spread: float = radius*(0.82+float((seed_value+i*7)%9)*0.04)
+			ring.append(origin+Vector3(cos(angle)*spread,0.0,sin(angle)*spread))
+		var crown: Vector3 = origin+Vector3(radius*0.15,radius*(0.55+float(seed_value%7)*0.09),-radius*0.12)
+		for i: int in range(6):
+			var a: Vector3 = ring[i]
+			var b: Vector3 = ring[(i+1)%6]
+			var top_a: Vector3 = a.lerp(crown,0.58)+Vector3.UP*radius*0.18
+			var top_b: Vector3 = b.lerp(crown,0.58)+Vector3.UP*radius*0.18
+			for face: Array in [[a,b,top_b],[a,top_b,top_a],[top_a,top_b,crown]]:
+				tool.set_normal((Vector3(face[2])-Vector3(face[0])).cross(Vector3(face[1])-Vector3(face[0])).normalized())
+				for point: Vector3 in face: tool.add_vertex(point)
+		count += 1
+	set_meta("winter_clump_count",count)

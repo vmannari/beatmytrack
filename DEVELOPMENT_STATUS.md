@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: visual kit 73 adds original directional winter ice, detailed snow ground and irregular batched snowbank clumps; removes winter edge stripes. Ice 69, surfaces 50, shader profile 928 and final winter capture 11 checks pass. Desktop driving/hairpin evidence inspected. No Android export/device test. See docs/WINTER_SURFACES.md.
+
 2026-09-24 V02/V04/V05/Q01: owner headlight tuning sets range to 20.4 model metres (1.7x) and narrows cone from 48 to 42 degrees, retaining hood clearance. CaptureHeadlights 56 and quick export checks pass. Installed/tested on DN2103: 160.5 m, median 16.722 ms/p95 20.449 ms; desktop/phone evidence inspected, normal play restored. See docs/NIGHT_HEADLIGHTS.md.
 
 2026-09-24 V02/V04/V05/Q01: corrected headlight hood spill by moving the source ahead of the nose, raising/widening its road footprint and shortening range to 12 model metres. CaptureHeadlights 56 and quick Android export checks pass. Updated APK tested on DN2103: 160.1 m driven, median 16.739 ms/p95 20.506 ms; desktop/phone screenshots inspected and normal play restored. See docs/NIGHT_HEADLIGHTS.md.

@@ -3,7 +3,7 @@ extends RefCounted
 ## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
 ## Road pieces are geometry; race routing is an explicit, separate operation.
 
-const KINDS: Array[String] = ["straight", "curve", "s_bend", "hairpin", "bridge"]
+const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge"]
 const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
 const S_END_LENGTH: float = 2.0
 const MAX_PIECES: int = 96
@@ -13,18 +13,24 @@ const JOIN_ANGLE: float = 2.0
 
 
 static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
-	return {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
+	var piece: Dictionary = {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
 		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 0.0 if kind in ["hairpin","curve"] else S_END_LENGTH, "radius":12.0 if kind == "hairpin" else 16.0,
 		"width":clampf(width,6.0,20.0), "flip":false}
+	if kind == "taper":
+		piece.length = 28.0
+		piece.narrow_width = minf(6.0,float(piece.width))
+	return piece
 
 
 static func validate(piece: Variant) -> Array[String]:
-	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) or not piece.has_all(KEYS):
+	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) or not piece.has_all(KEYS):
 		return ["Invalid road section."]
+	if piece.kind == "taper" and (not piece.has("narrow_width") or not _number(piece.narrow_width) or float(piece.narrow_width) < 6.0 or float(piece.narrow_width) > float(piece.width)): return ["Taper narrow width must be 6 metres or more and no wider than its wide end."]
+	if piece.has("narrow_width") and piece.kind != "taper": return ["Only taper sections can have a narrow width."]
 	if piece.has("curvature") and (piece.kind != "curve" or not _number(piece.curvature) or absf(float(piece.curvature)) > 0.3): return ["Curve curvature must be between -0.3 and 0.3."]
 	if piece.has("angle") and (not _number(piece.angle) or float(piece.angle) < 5 or float(piece.angle) > 270): return ["Curve angle must be 5 to 270 degrees."]
 	if piece.has("height") and (piece.kind != "s_bend" or not _number(piece.height) or float(piece.height) < 2.0 or float(piece.height) > 60.0): return ["S-bend height must be 2 to 60 metres."]
-	if piece.kind not in KINDS: return ["Choose Straight, Curve, S-bend or Hairpin."]
+	if piece.kind not in KINDS: return ["Choose a built-in road section."]
 	if not piece.position is Array or piece.position.size() != 2: return ["Road sections need two coordinates."]
 	for value: Variant in piece.position:
 		if not _number(value) or absf(float(value)) > 120.0: return ["Keep road sections inside the map."]
@@ -69,6 +75,9 @@ static func samples(piece: Dictionary) -> PackedVector2Array:
 	if piece.kind == "s_bend":
 		var height_scale: float = height(piece)/(2.0*radius*(1.0-cos(PI*0.25)))
 		for i: int in range(local.size()): local[i].y *= height_scale
+	elif piece.kind == "taper":
+		var shift: float = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
+		for i: int in range(local.size()): local[i].y += shift*float(i)/maxf(1.0,float(local.size()-1))
 	var result := PackedVector2Array()
 	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
 	for point: Vector2 in local: result.append(origin+point.rotated(deg_to_rad(float(piece.heading))))
@@ -102,6 +111,7 @@ static func end_pose(piece: Dictionary) -> Dictionary:
 	if piece.kind == "curve": local += Vector2(radius*sin(deg_to_rad(turn)),side*radius*(1.0-cos(deg_to_rad(turn))))
 	elif piece.kind == "hairpin": local = Vector2(0.0,side*2.0*radius)
 	elif piece.kind == "s_bend": local = Vector2(2.0*S_END_LENGTH+2.0*radius*sin(PI*0.25),side*height(piece))
+	elif piece.kind == "taper": local.y = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
 	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
 	return {"position":origin+local.rotated(deg_to_rad(float(piece.heading))), "heading":fposmod(float(piece.heading)+turn*side,360.0)}
 
@@ -178,6 +188,14 @@ static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> 
 	var old_chord: Vector2 = end-start
 	var chord: Vector2 = target-start if endpoint == 1 else end-target
 	if chord.length() < 0.01 or old_chord.length() < 0.01: return {}
+	if piece.kind == "taper":
+		var lateral: float = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
+		if chord.length() <= absf(lateral): return {}
+		result.length = sqrt(chord.length_squared()-lateral*lateral)
+		var local := Vector2(float(result.length),lateral)
+		result.heading = fposmod(rad_to_deg(chord.angle()-local.angle()),360.0)
+		if endpoint == 0: result.position = [target.x,target.y]
+		return result if validate(result).is_empty() else {}
 	if piece.kind == "s_bend":
 		# Scale only the curved span; the two 2 m tangents never scale.
 		var x: float = 2.0*float(piece.radius)*sin(PI*0.25)
@@ -240,11 +258,15 @@ static func connected_route(pieces: Array) -> Dictionary:
 	var endpoint: int = 0
 	while index not in visited:
 		visited.append(index)
-		var section: PackedVector2Array = samples(pieces[index])
-		if endpoint == 1: section.reverse()
+		var geometry: Dictionary = section_geometry(pieces,index)
+		var section: PackedVector2Array = geometry.points
+		var section_widths: PackedFloat32Array = geometry.widths
+		if endpoint == 1:
+			section.reverse()
+			section_widths.reverse()
 		for i: int in range(section.size()-1):
 			points.append(section[i])
-			widths.append(float(pieces[index].width))
+			widths.append(section_widths[i])
 		var partner: Array = _partner(pieces,index,1-endpoint)[0]
 		index = int(partner[0])
 		endpoint = int(partner[1])
@@ -363,12 +385,17 @@ static func _paths(pieces: Array) -> Array[Dictionary]:
 			var closed: bool = false
 			while index not in visited:
 				visited.append(index)
-				var section: PackedVector2Array = samples(pieces[index])
-				if endpoint == 1: section.reverse()
-				for point: Vector2 in section:
+				var geometry: Dictionary = section_geometry(pieces,index)
+				var section: PackedVector2Array = geometry.points
+				var section_widths: PackedFloat32Array = geometry.widths
+				if endpoint == 1:
+					section.reverse()
+					section_widths.reverse()
+				for section_index: int in range(section.size()):
+					var point: Vector2 = section[section_index]
 					if not points.is_empty() and points[-1].distance_to(point) < 0.01: continue
 					points.append(point)
-					widths.append(float(pieces[index].width))
+					widths.append(section_widths[section_index])
 				var matches: Array = _partner(pieces,index,1-endpoint)
 				if matches.size() != 1: break
 				index = int(matches[0][0])
@@ -428,16 +455,20 @@ static func section_geometry(pieces: Array, index: int) -> Dictionary:
 	var distances := PackedFloat32Array([0.0])
 	for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
 	var total: float = distances[-1]
-	var ends: Array[float] = [float(piece.width),float(piece.width)]
+	var authored_ends: Array[float] = [float(piece.width),float(piece.get("narrow_width",piece.width))]
+	var ends: Array[float] = authored_ends.duplicate()
 	for endpoint: int in range(2):
 		var matches: Array = _partner(pieces,index,endpoint)
 		if matches.size() == 1:
-			ends[endpoint] = (float(piece.width)+float(pieces[int(matches[0][0])].width))*0.5
+			var other: Dictionary = pieces[int(matches[0][0])]
+			var other_width: float = float(other.get("narrow_width",other.width)) if int(matches[0][1]) == 1 else float(other.width)
+			ends[endpoint] = (authored_ends[endpoint]+other_width)*0.5
 	var reach: float = minf(total*0.5,maxf(8.0,absf(ends[1]-ends[0])*4.0))
 	for distance: float in distances:
-		var width: float = float(piece.width)
-		width += (ends[0]-float(piece.width))*(1.0-smoothstep(0.0,reach,distance))
-		width += (ends[1]-float(piece.width))*(1.0-smoothstep(0.0,reach,total-distance))
+		var fraction: float = distance/maxf(total,0.0001)
+		var width: float = lerpf(authored_ends[0],authored_ends[1],fraction)
+		width += (ends[0]-authored_ends[0])*(1.0-smoothstep(0.0,reach,distance))
+		width += (ends[1]-authored_ends[1])*(1.0-smoothstep(0.0,reach,total-distance))
 		widths.append(width)
 	return {"points":points,"widths":widths}
 
@@ -450,6 +481,7 @@ static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> P
 	var right := PackedVector2Array()
 	for i: int in range(points.size()):
 		var tangent: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(0,i-1)]).normalized()
+		if pieces[index].kind == "taper": tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
 		if i == 0: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
 		if i == points.size()-1: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(end_pose(pieces[index]).heading)))
 		var normal := Vector2(-tangent.y,tangent.x)

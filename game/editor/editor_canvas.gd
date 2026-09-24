@@ -839,13 +839,16 @@ func pending_road_pieces() -> Array:
 	return pending
 
 func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
-	var points: PackedVector2Array = RoadPieces.samples(piece)
+	var geometry: Dictionary = RoadPieces.section_geometry([piece],0)
+	var points: PackedVector2Array = geometry.points
+	var widths: PackedFloat32Array = geometry.widths
 	var line := PackedVector2Array()
 	var left := PackedVector2Array()
 	var right := PackedVector2Array()
 	for i: int in range(points.size()):
 		var direction: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(i-1,0)]).normalized()
-		var normal := Vector2(-direction.y,direction.x)*float(piece.width)*0.5
+		if piece.kind == "taper": direction = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
+		var normal := Vector2(-direction.y,direction.x)*widths[i]*0.5
 		line.append(to_screen(points[i]))
 		left.append(to_screen(points[i]+normal))
 		right.append(to_screen(points[i]-normal))
@@ -955,6 +958,7 @@ func piece_accept_rect(piece: Dictionary) -> Rect2:
 
 func geometry_keys(piece: Dictionary) -> Array[String]:
 	if piece.kind == "straight": return ["width"]
+	if piece.kind == "taper": return ["width","narrow_width","length"]
 	if piece.kind == "curve": return ["width","curvature","angle"]
 	if piece.kind == "s_bend": return ["width","radius","height"]
 	if piece.kind == "hairpin": return ["width","radius","length"]
@@ -967,7 +971,7 @@ func geometry_keys(piece: Dictionary) -> Array[String]:
 	return keys
 
 func geometry_caption(piece: Dictionary, key: String) -> String:
-	var title: String = "Rotate" if key == "heading" else "Straight" if key == "length" and piece.kind not in ["straight","bridge"] else key.capitalize()
+	var title: String = "Rotate" if key == "heading" else "Narrow width" if key == "narrow_width" else "Straight" if key == "length" and piece.kind not in ["straight","taper","bridge"] else key.capitalize()
 	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
 	return ("%s %.0f deg" if key in ["angle","heading"] else "%s %.1f m") % [title,value]
 
@@ -1043,6 +1047,10 @@ func _geometry_anchor(piece: Dictionary, key: String) -> Vector2:
 		return points[0]+local.rotated(deg_to_rad(float(piece.heading)))
 	if key == "heading": return points[0]+forward*maxf(12.0,float(piece.length))
 	if key == "length": return points[0]+forward*float(piece.length)
+	if key == "narrow_width":
+		var end_forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
+		var end_normal := Vector2(-end_forward.y,end_forward.x)*(-1.0 if piece.flip else 1.0)
+		return points[-1]-end_normal*float(piece.narrow_width)*0.5
 	if key == "height": return points[-1]
 	if key in ["radius","angle"]: return points[-1]
 	var middle: int = points.size()/2

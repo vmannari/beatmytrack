@@ -54,6 +54,10 @@ func _draw() -> void:
 		var image_size: Vector2 = illustration.get_size()
 		var fitted_size: Vector2 = image_size * minf(bounds.x/image_size.x,bounds.y/image_size.y)
 		draw_texture_rect(illustration,Rect2(center-fitted_size*0.5,fitted_size),false,Color(1,1,1,0.35 if disabled else 1.0))
+	elif glyph == "taper":
+		var road := PackedVector2Array([center+Vector2(-18,-15),center+Vector2(18,-7),center+Vector2(18,7),center+Vector2(-18,15)])
+		draw_colored_polygon(road,Color("59656a"))
+		draw_polyline(road+PackedVector2Array([road[0]]),ink,2,true)
 	elif glyph == "paint_line":
 		draw_line(center+Vector2(-14,13),center+Vector2(14,-13),ink,3.5,true)
 	elif glyph == "paint_area":

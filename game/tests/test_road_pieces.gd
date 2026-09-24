@@ -16,6 +16,7 @@ func check(condition: bool, message: String) -> void:
 
 
 func run() -> void:
+	_taper_geometry()
 	_shape_dimensions()
 	_attachment_pivots()
 	_curvature_circuit()
@@ -31,6 +32,24 @@ func run() -> void:
 	_practice_start()
 	print("ROAD_PIECES_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+
+func _taper_geometry() -> void:
+	var taper: Dictionary = RoadPieces.create("taper",Vector2.ZERO,0.0,14.0)
+	check(taper.narrow_width == 6.0 and RoadPieces.validate(taper).is_empty(),"taper defaults to a valid 14-to-6 metre transition")
+	var geometry: Dictionary = RoadPieces.section_geometry([taper],0)
+	check(is_equal_approx(float(geometry.widths[0]),14.0) and is_equal_approx(float(geometry.widths[-1]),6.0),"taper width converges along its length")
+	var outline: PackedVector2Array = RoadPieces.section_outline([taper],0)
+	var count: int = geometry.points.size()
+	check(absf(outline[0].y-outline[count-1].y)<0.001,"taper keeps one road edge straight")
+	check(absf(outline[count].y-outline[-1].y)>7.9,"opposite taper edge narrows by the authored amount")
+	var end: Vector2 = RoadPieces.end_pose(taper).position
+	check(end.is_equal_approx(geometry.points[-1]) and is_equal_approx(end.y,4.0),"taper endpoint follows the shifted road centre")
+	taper.flip = true
+	var mirrored: PackedVector2Array = RoadPieces.section_outline([taper],0)
+	check(absf(mirrored[count].y-mirrored[-1].y)<0.001,"flip chooses the opposite straight edge")
+	taper.narrow_width = 15.0
+	check(not RoadPieces.validate(taper).is_empty(),"taper narrow end cannot exceed its wide end")
 
 
 func _geometry() -> void:
@@ -508,7 +527,7 @@ func _attachment_pivots() -> void:
 			var neighbor: Dictionary = RoadPieces.create("straight",pose.position,0)
 			check(RoadPieces.attached_end(piece,[piece,neighbor],0) == endpoint,kind+" detects either connected end")
 			var trial: Dictionary = piece.duplicate(true)
-			if kind in ["straight","bridge"]: trial.length += 8.0
+			if kind in ["straight","taper","bridge"]: trial.length += 8.0
 			else: trial.radius += 5.0
 			trial = RoadPieces.keep_attachment(piece,trial,endpoint)
 			var after: Dictionary = RoadPieces._pose(trial,endpoint)

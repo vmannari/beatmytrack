@@ -65,3 +65,16 @@ Owner requested slower rotation, then clarified that larger clouds should rotate
 Changed implementation: game/vehicle/sand_dust.gd. Updated this report, status/phase notes and [desktop screenshot](evidence/desert-dust-rotation-2026-09-24/dense-dust.png). Actual pinned `scripts/dev.ps1 -Action CaptureDesert -Track track_3e26605a8a90165e`: 57 checks passed on final revision; screenshot inspected. The intermediate constant-speed revision also passed 57 checks and Android export and was installed before the owner clarification. A still image verifies rendering, not angular speed in motion. Owner motion acceptance and physical-device performance remain outstanding; no new tests were added for this presentation adjustment.
 
 Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks; APK exported. `-Action InstallAndroid` succeeded on attached DN2103. No phone driving or profiling was performed. Existing build-tools fallback and driving ObjectDB shutdown warnings remain.
+
+
+## Rotation unit correction ? desert-dust-7
+
+Owner observed that large clouds still spun rapidly. Requirements V02/V04/V05/Q01. The previous claimed 12/3.1 degrees-per-second rates were incorrect for the angular-velocity curve path. [Godot 4.7 source](https://raw.githubusercontent.com/godotengine/godot/4.7/scene/resources/particle_process_material.cpp) integrates angular_velocity_texture * DELTA * angular_velocity directly into the radian accumulator, whereas the no-curve branch converts degrees to radians. The previous unconverted curve could therefore run about 57.3 times too fast.
+
+The growth-derived curve now includes degrees-to-radians conversion and inverse-square slowing. Base dust speed drops to +/-4, yielding intended peak angular speed 4 degrees/s at birth and approximately 0.27 degrees/s for mature lingering clouds; tyre puffs end at approximately 0.89 degrees/s. These are calculated bounds from engine source and configured curves, not measured GPU motion. Density, onset, population and plume geometry are unchanged. Random individual scale differences are still not part of the growth-based speed curve.
+
+Actual pinned scripts/dev.ps1: CaptureDesert with saved track track_3e26605a8a90165e passed 61 checks (includes concurrent start-line assertions), screenshot inspected. A subsequent temporary attempt to retrieve generated shader code through RenderingServer stalled and was stopped; temporary test instrumentation was removed, preserving concurrent edits. No claim of successful local shader readback. [Rendered evidence](evidence/desert-dust-units-2026-09-24/dense-dust.png) is a still image, not angular-speed measurement.
+
+Changed implementation: game/vehicle/sand_dust.gd. This report and new evidence folder record the correction. Unrelated pending editor, start-line and status changes are excluded from this checkpoint. Remaining: owner motion review and physical-device performance measurement; no new phone driving/profile run.
+
+Final `-Action ExportAndroid -QuickValidation` passed startup, 74 driving, 18 catalog and 22 menu checks and exported the APK; `-Action InstallAndroid` succeeded on DN2103. Existing build-tools fallback and ObjectDB warnings remain. Status/phase entries were updated locally and remain unstaged alongside unrelated pending entries.

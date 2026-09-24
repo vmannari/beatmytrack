@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: grass-clippings-2 replaces bright box debris with folded tapered blades, natural lit colours and low two-axis tumbling; capacity reduced 20%. Soil 163, graphical soil 172, desert 53 and graphical grass 32 checks pass. Desktop evidence inspected; no device test/export. See docs/GRASS_CLIPPINGS.md.
+
 2026-09-24 V02/V04/V05/Q01: desert-bridge-1 replaces desert steel rails with sandstone parapets, bevelled coping, capped posts and clearance-preserving shallow arches. Construction 82, bridge contacts 16 and desert 53 checks pass; two desktop captures inspected. No phone test/export. See docs/DESERT_BRIDGES.md.
 
 2026-09-24 R01/V03/V05/Q01: configurable touch layout editor, three steering methods, independent analog pedals, presets/reset, safe normalized geometry and atomic settings. 199 headless / 202 graphical layout checks (plus 72 synthetic viewport checks), 555 mobile-input and 53 record checks pass; final Android quick export passes and APK installed. Phone attached but locked; no physical multitouch/iOS test. Older TestApp stops on obsolete menu-button assumptions. See docs/TOUCH_CONTROL_LAYOUT.md.

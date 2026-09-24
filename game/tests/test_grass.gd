@@ -113,6 +113,31 @@ func run() -> void:
 		game.set_process(false)
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/hybrid-detail.png") == OK,"grass detail evidence saved")
+		# Review actual wheel-driven debris in the rendered meadow, at driving
+		# scale and a separate detail camera. Simulation and production camera stay untouched.
+		var debris := SandDust.new()
+		game.add_child(debris)
+		var review_car := CarVisual.new()
+		game.add_child(review_car)
+		var state := VehicleState.new()
+		state.velocity = Vector2(5,14)
+		state.yaw_rate = 0.7
+		var grass_position: Vector2 = track.spawn+Vector2(-8,0)
+		var review_folder: String = "res://../docs/evidence/grass-clippings"
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(review_folder))
+		for view: String in ["driving","detail"]:
+			debris.clear()
+			camera.size = 28.0 if view == "driving" else 10.0
+			for tick: int in range(60):
+				state.position = grass_position + Vector2(0,-4+tick*0.08)
+				debris.sample(state,DriveFrame.new(),track)
+				review_car.present(state.position,0.0,state,DriveFrame.new())
+				focus = VisualGeometry.world(state.position)
+				camera.position = focus+Vector3(0,18,13)
+				camera.look_at(focus)
+				await create_timer(1.0/60.0).timeout
+				await RenderingServer.frame_post_draw
+			check(root.get_texture().get_image().save_png(review_folder+"/"+view+".png") == OK,"clipping "+view+" evidence saved")
 		game.queue_free()
 		await process_frame
 	print("GRASS: %d checks, %d failures" % [checks,failures])

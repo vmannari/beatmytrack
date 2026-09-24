@@ -3,6 +3,7 @@ extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
 const PRESENTATION_VERSION: String = "desert-dust-8"
+const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
 const REAR_AXLE: float = -1.0
@@ -39,7 +40,7 @@ func _ready() -> void:
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("intersection_fade",0.18)
 		tyre_emitters.append(tyre)
 		add_child(tyre)
-		var clipping := _emitter("Clippings%d" % wheel,120,1.05,Vector2(0.075,0.30),Color(0.54,0.64,0.13,0.94),MODE_CLIPPING)
+		var clipping := _emitter("Clippings%d" % wheel,96,0.72,Vector2(0.045,0.24),Color("71834b"),MODE_CLIPPING)
 		clipping_emitters.append(clipping)
 		add_child(clipping)
 		var smoke := _emitter("Smoke%d" % wheel,900,1.50,Vector2(0.72,0.72),Color(0.80,0.82,0.80,0.040),MODE_SMOKE)
@@ -248,12 +249,24 @@ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: 
 	process.color = Color(tint.r,tint.g,tint.b,1.0)
 	process.color_ramp = _alpha_ramp(tint.a,mode)
 	process.scale_curve = _scale_curve(mode)
+	if mode == MODE_CLIPPING:
+		process.direction = Vector3(0,0.55,-1).normalized()
+		process.spread = 48.0
+		process.initial_velocity_min = 1.8
+		process.initial_velocity_max = 4.8
+		process.damping_min = 1.8
+		process.damping_max = 3.2
+		process.scale_min = 0.55
+		process.scale_max = 1.35
+		process.angle_min = -180.0
+		process.angle_max = 180.0
+		process.angular_velocity_min = -260.0
+		process.angular_velocity_max = 260.0
+		process.scale_curve = null
 	particles.process_material = process
 	var mesh: Mesh
 	if mode == MODE_CLIPPING:
-		var clipping_mesh := BoxMesh.new()
-		clipping_mesh.size = Vector3(size.x,0.025,size.y)
-		mesh = clipping_mesh
+		mesh = _clipping_mesh(size)
 	elif mode in [MODE_MUD,MODE_SAND_SPRAY]:
 		var grain_mesh := SphereMesh.new()
 		grain_mesh.radius = size.x*0.5
@@ -270,6 +283,20 @@ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: 
 	particles.draw_pass_1 = mesh
 	particles.emitting = false
 	return particles
+
+
+func _clipping_mesh(size: Vector2) -> ArrayMesh:
+	# Five triangles: torn base, folded ridge and asymmetric tapered tip.
+	# Actual geometry keeps a fine silhouette without transparent texture cards.
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var points: Array[Vector3] = [Vector3(-0.36,0,-0.5),Vector3(0.42,0,-0.43),Vector3(-0.5,0,0.08),Vector3(0,0.24,0.02),Vector3(0.40,0,0.14),Vector3(0.19,0.12,0.5)]
+	for index: int in [0,2,3,0,3,1,1,3,4,2,5,3,3,5,4]:
+		var point: Vector3 = points[index]
+		tool.set_uv(Vector2(point.x+0.5,point.z+0.5))
+		tool.add_vertex(Vector3(point.x*size.x,point.y*size.x,point.z*size.y))
+	tool.generate_normals()
+	return tool.commit()
 
 
 func _alpha_ramp(maximum: float, mode: int) -> GradientTexture1D:
@@ -297,7 +324,9 @@ func _scale_curve(mode: int) -> CurveTexture:
 func _particle_material(mode: int) -> ShaderMaterial:
 	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
 	var shader := Shader.new()
-	if mode in [MODE_CLIPPING,MODE_MUD,MODE_SAND_SPRAY]:
+	if mode == MODE_CLIPPING:
+		shader = preload("res://vehicle/grass_clipping.gdshader")
+	elif mode in [MODE_MUD,MODE_SAND_SPRAY]:
 		shader.code = """
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;

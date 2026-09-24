@@ -308,7 +308,8 @@ func _run() -> void:
 	world.add_child(dust)
 	check(dust.dust_emitters.size() == 4 and dust.spray_emitters.size() == 2,"sand effect has four wheel clouds and two rear-wheel spray emitters")
 	check(dust.clipping_emitters.size() == 4 and dust.mud_emitters.size() == 2 and dust.smoke_emitters.size() == 4,"grass and asphalt effects follow four wheel contacts with rear-biased heavy debris")
-	check(dust.clipping_emitters[0].draw_pass_1 is BoxMesh and dust.mud_emitters[0].draw_pass_1 is SphereMesh,"grass blades and mud are real 3D fragments rather than camera-facing pasted cards")
+	var blade: Mesh = dust.clipping_emitters[0].draw_pass_1
+	check(blade is ArrayMesh and blade.get_aabb().size.y > 0.005 and blade.get_faces().size() == 15 and dust.mud_emitters[0].draw_pass_1 is SphereMesh,"folded grass blades and mud are real bounded 3D fragments rather than camera-facing pasted cards")
 	check(dust.smoke_emitters[0].amount >= 900 and dust.smoke_emitters[0].lifetime >= 1.5,"asphalt smoke uses many faint overlapping particles for a continuous restrained haze")
 	check(dust.smoke_emitters[0].fixed_fps == VehicleSimulation.TICK_RATE and dust.dust_emitters[0].fixed_fps == 30,"smoke samples fast wheel motion at 120 Hz without raising every effect's simulation rate")
 	var smoke_quad: QuadMesh = dust.smoke_emitters[0].draw_pass_1 as QuadMesh

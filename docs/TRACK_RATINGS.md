@@ -1,5 +1,13 @@
 # Personal track ratings — 2026-09-23
 
+## Race Complete recommendation ratings — 2026-09-24
+
+Owner request / R01, V03, V05, Q01: every Next Tracks card now shows its saved personal rating and local vote count beside the category. Filled gold star and `4.0 (1)` indicate a rated track; an outline star and `— (0)` indicate an unrated track. Uses each recommended entry's identity, matching the Play gallery. Tooltips identify votes as local to this device. Online aggregate ratings remain unconnected.
+
+Changed files: `game/ui/race_complete.gd`, `game/tests/test_race_results.gd` (isolated rated/unrated capture fixture), this document and the status/phase logs. Existing card height is preserved. An initial additional-row layout failed three viewport-fit checks and was replaced with the compact header badge.
+
+Validation: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureResults` — 204 checks, zero failures at 1280×720, 1920×1080 and 2400×1080. [Race Complete evidence](evidence/race-results/race-complete-1280x720.png) inspected on desktop. No phone test or Android export performed; phone readability/touch and owner visual acceptance remain pending.
+
 Requirements: owner request; R01 (local persistence), V03/V05 (responsive menu UI), Q01 (regression evidence). Personal local ratings are authorized by this request; online aggregate ratings remain deferred.
 
 Owner correction: offer the rating directly on the on-track Race Complete screen, not as a Results popup. After 0.75 seconds, a black-and-gold rating section fades in beneath the existing sign over 0.25 seconds. Unrated finishes wait for a star, Skip, or tap-to-continue; already-rated finishes retain their existing automatic transition. A star saves immediately and continues to Results. Skip writes nothing and allows another prompt after a later race. Already-rated track identities are suppressed across cars, physics versions and application restarts. Retry/navigation guards prevent a delayed prompt appearing during another race. Editor practice does not prompt.

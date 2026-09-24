@@ -185,7 +185,13 @@ func _recommendations() -> void:
 		stack.add_theme_constant_override("separation",4)
 		stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		margin.add_child(stack)
-		stack.add_child(MenuStyle.label("RECOMMENDED" if i == 0 else ("DIFFERENT SCENERY" if item.category == "different_biome" else "LOCAL TRACK"),13,true))
+		var card_header := HBoxContainer.new()
+		card_header.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		stack.add_child(card_header)
+		var category := MenuStyle.label("RECOMMENDED" if i == 0 else ("DIFFERENT SCENERY" if item.category == "different_biome" else "LOCAL TRACK"),13,true)
+		category.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		category.clip_text = true
+		card_header.add_child(category)
 		var detail := HBoxContainer.new()
 		detail.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		stack.add_child(detail)
@@ -206,6 +212,24 @@ func _recommendations() -> void:
 		var reason := MenuStyle.label(item.reason,12,true)
 		reason.clip_text = true
 		copy.add_child(reason)
+		var score: int = 0
+		if rating_records != null:
+			score = int(rating_records.settings.get("track_ratings",{}).get(str(item.entry.id),0))
+		var rating_line := HBoxContainer.new()
+		rating_line.name = "RecommendationRating"
+		rating_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rating_line.add_theme_constant_override("separation",5)
+		card_header.add_child(rating_line)
+		var star := TextureRect.new()
+		star.texture = MenuIcon.texture("star_filled" if score > 0 else "star")
+		star.custom_minimum_size = Vector2(16,16)
+		star.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		star.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		star.modulate = MenuStyle.ACCENT if score > 0 else MenuStyle.MUTED
+		star.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rating_line.add_child(star)
+		rating_line.add_child(MenuStyle.label("%.1f (1)" % score if score > 0 else "\u2014 (0)",14,score == 0))
+		button.tooltip_text = "%.1f (1) — local votes on this device" % score if score > 0 else "Unrated (0) — local votes on this device"
 
 func _actions() -> void:
 	var row := HBoxContainer.new()

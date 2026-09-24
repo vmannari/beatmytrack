@@ -231,6 +231,9 @@ func run() -> void:
 		panel.mode_buttons[0].pressed.emit()
 		await screenshot("sectors-"+str(size.x)+"x"+str(size.y))
 		panel.select_mode("Speed")
+	# Show both rated and unrated recommendation states in the isolated UI fixture.
+	single_catalog.add_local("results_fixture_0")
+	store.settings.track_ratings[str(single_catalog.entries[0].id)] = 4
 	panel.next_button.pressed.emit()
 	var animated_page: RaceComplete = (app.get("root_ui") as Node).find_child("RaceComplete",true,false)
 	animated_page.reward_reveal.pause()

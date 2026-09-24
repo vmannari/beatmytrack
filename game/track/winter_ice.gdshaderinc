@@ -1,4 +1,5 @@
-// Shared road/apron pigment: retain 28% of artwork contrast for car readability.
+// Pale neutral ice; preserve subdued luminance detail without the blue pigment.
 vec3 quiet_winter_ice(vec3 artwork) {
-	return mix(vec3(0.23,0.30,0.37),artwork*0.79,0.28);
+	float grain = dot(artwork,vec3(0.2126,0.7152,0.0722));
+	return vec3(0.47,0.48,0.49)+(grain-0.30)*0.22;
 }

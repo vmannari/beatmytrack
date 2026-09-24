@@ -59,7 +59,7 @@ func run() -> void:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-piled"
+	var folder: String = "res://../docs/evidence/winter-white"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
 	game.set_process(false)

@@ -1,5 +1,12 @@
 # Winter road, snowbanks and ground
 
+## Owner colour adjustment: kit 76
+
+2026-09-24, V02/V04/V05/Q01. Road pigment moves toward neutral icy white: shared `winter_ice.gdshaderinc` replaces blue artwork colour with luminance-only detail around linear RGB (0.47, 0.48, 0.49). The same helper covers creator roads, raster roads and bank transitions. Subdued grain remains; geometry and handling are unchanged. `native_track_visual.gd` increments the visual kit; `capture_winter.gd` saves new evidence without overwriting previous captures.
+
+Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureWinter`, pinned Godot 4.7.2: 11 checks, zero failures. [Driving capture](evidence/winter-white/driving.png) inspected; [hairpin capture](evidence/winter-white/bend-detail.png) also saved. `git diff --check` passes. No Android export or physical-device test performed; owner colour approval and phone review remain. No new assets generated. Status/plan and this report updated; unrelated concurrent menu work excluded.
+
+
 ## Owner refinement: kit 75
 
 2026-09-24, V02/V04/V05/Q01. Owner requested less distracting road detail and banks closer to the original ploughed-snow reference. A shared pigment function retains 28% of ice artwork contrast around a muted blue-grey base, consistently on creator roads, raster roads and the bank transition. Texture scale remains kit 74. Banks gain an uneven 0.40 m nominal crown, broad and local height variation, gradient normals, and clustered irregular outer snow deposits. Deposits sit around 1 m beyond the inset analytic edge, separate from its soft road-side toe. Their seven-sided irregular geometry has 21 triangles per deposit, capped at 1,800 in the existing bank batch. Crown artwork is brighter and finer than the surrounding ground. Existing generated assets are reused; no new raster artwork or dependency.

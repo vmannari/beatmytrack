@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-24 V02/V04/V05/Q01: kit 76 shifts winter roads from blue to pale neutral icy white using luminance-only artwork detail. CaptureWinter 11 checks pass; desktop driving evidence inspected. No Android export/device test. See docs/WINTER_SURFACES.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 75 reduces winter road artwork contrast to 28%, adds varied piled-snow crowns and clustered outer deposits while retaining the smooth road toe. CaptureWinter 11, TestIce 69, TestSurfaces 50 pass; desktop evidence inspected. No phone test/export. See docs/WINTER_SURFACES.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 74 refines winter ice scale, replaces sawtooth road-piece banks with rounded analytic profiles and blends ice gradually into snow. CaptureWinter 10, TestIce 69 and TestSurfaces 50 checks pass; driving/hairpin screenshots inspected. No Android export/device test. See docs/WINTER_SURFACES.md.

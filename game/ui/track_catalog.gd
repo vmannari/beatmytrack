@@ -17,10 +17,17 @@ func cached_track(entry: Dictionary) -> NativeTrack:
 	if _resolved_revision != indexed_revision or indexed_revision != library.revision:
 		_resolved.clear()
 		_resolved_revision = indexed_revision
-	return _resolved.get(str(entry.id))
+	var id: String = str(entry.id)
+	var track: NativeTrack = _resolved.get(id)
+	if track != null:
+		# Keep recently revisited tracks when browsing beyond the four-slot cache.
+		_resolved.erase(id)
+		_resolved[id] = track
+	return track
 
 func remember_track(entry: Dictionary, track: NativeTrack) -> void:
 	cached_track(entry) # Apply the same revision invalidation before writing.
+	_resolved.erase(str(entry.id))
 	if _resolved.size() >= 4: _resolved.erase(_resolved.keys()[0])
 	_resolved[str(entry.id)] = track
 

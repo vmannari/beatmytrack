@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 R01/G01/V03/V05/Q01: Play selection removes duplicate raster coverage work and improves four-track LRU/cache supersession. Final desktop cold selection 510→375 ms (Speedy), 601→481 ms (Knot); attached DN2103 cold 691/874 ms, cached 36 ms. Compiler equivalence 27, menu loading 19, road pieces 362 and quick Android checks pass; APK installed and normal play restored. Older free-editor UI assertion still fails. Race hitch remains unconfirmed. See docs/MENU_SELECTION_2026_09_24.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 77 restores a faint blue tint to the pale winter road, retaining subdued texture. CaptureWinter 11 checks pass; desktop driving screenshot inspected. No phone test/export. See docs/WINTER_SURFACES.md.
 
 2026-09-24 V02/V04/V05/Q01: kit 76 shifts winter roads from blue to pale neutral icy white using luminance-only artwork detail. CaptureWinter 11 checks pass; desktop driving evidence inspected. No Android export/device test. See docs/WINTER_SURFACES.md.

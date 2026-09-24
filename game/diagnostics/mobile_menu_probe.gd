@@ -20,7 +20,7 @@ func _run() -> void:
 	report.detail_costs = browser.detail_costs
 	while browser.loading: await get_tree().process_frame
 	report.index_ready_ms = (Time.get_ticks_usec()-started)/1000.0
-	for title: String in ["Ajorata","Knot","Ajorata"]:
+	for title: String in ["Speedy","Knot","Speedy"]:
 		await get_tree().create_timer(2.0).timeout
 		if not is_instance_valid(browser):
 			_abort()

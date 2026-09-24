@@ -40,6 +40,29 @@ func run() -> void:
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
+	var third: Dictionary = second.duplicate(true)
+	third.id = "third_track"
+	check(library.save_document(third) == OK,"third fixture saved")
+	# Refresh index revision and seed the known compiled selection.
+	browser.catalog.indexed_revision = library.revision
+	browser.catalog.remember_track(a,browser.selected_track)
+	browser._select(TrackCatalog.local_metadata(third))
+	check(browser.selecting,"cold third selection begins")
+	browser._select(a)
+	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"cached choice is immediate during unrelated active compilation")
+	check(browser.race_button.disabled,"race cannot begin with superseded menu work still active")
+	while browser._resolve_thread != null: await process_frame
+	check(browser.selected_track.identity == "creator_"+str(first.id),"superseded worker cannot replace cached choice")
+	check(not browser.race_button.disabled,"race unlocks after superseded worker is drained")
+	var retained: NativeTrack = browser.selected_track
+	browser.catalog.clear_resolved()
+	browser.catalog.remember_track(a,retained)
+	for id: String in ["cache_b","cache_c","cache_d"]: browser.catalog.remember_track({"id":id},retained)
+	check(browser.catalog.cached_track(a) == retained,"cache touch revisits first entry")
+	browser.catalog.remember_track({"id":"cache_e"},retained)
+	check(browser.catalog.cached_track(a) == retained and browser.catalog.cached_track({"id":"cache_b"}) == null,"least recently used entry is evicted")
+	browser.catalog.remember_track(a,retained)
+	check(browser.catalog._resolved.size() == 4,"updating existing cached track does not evict another entry")
 	first.name = "Edited"
 	check(library.save_document(first) == OK,"save changes revision")
 	check(browser.catalog.cached_track(a) == null,"saved changes invalidate compiled cache")

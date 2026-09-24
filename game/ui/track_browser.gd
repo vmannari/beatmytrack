@@ -261,6 +261,18 @@ func _random() -> void:
 func _select(entry: Dictionary) -> void:
 	_selection_serial += 1
 	_requested_entry = entry
+	var cached: NativeTrack = catalog.cached_track(entry)
+	if cached != null:
+		# A cached choice must not wait behind a superseded cold compilation.
+		_requested_entry = {}
+		_finish_selection({"track":cached,"draft":{}})
+		# Do not carry an unrelated menu worker into live racing.
+		race_button.disabled = _resolve_thread != null
+		for tile: Node in grid.get_children():
+			if tile is TrackTile:
+				tile.selected = tile.entry.id == entry.id
+				tile.queue_redraw()
+		return
 	selecting = true
 	race_button.disabled = true
 	# A new request replaces any pending request. The worker never touches UI,
@@ -275,7 +287,7 @@ func _select(entry: Dictionary) -> void:
 	_start_selection()
 
 func _start_selection() -> void:
-	if _resolve_thread != null: return
+	if _resolve_thread != null or _requested_entry.is_empty(): return
 	_working_entry = _requested_entry
 	_working_serial = _selection_serial
 	var cached: NativeTrack = catalog.cached_track(_working_entry)
@@ -302,6 +314,7 @@ func _process(_delta: float) -> void:
 	if result.track != null: catalog.remember_track(_working_entry,result.track)
 	if _working_serial != _selection_serial:
 		_start_selection()
+		if _requested_entry.is_empty(): race_button.disabled = false
 		return
 	_finish_selection(result)
 

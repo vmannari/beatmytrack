@@ -75,13 +75,11 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 		var road_mask: PackedInt32Array = cells.duplicate()
 		_stamp_objects(document,cells,grid,extent,cell_size,true)
 		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
-		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true)
-		_raster_road(road_route,road_widths,road_kind,road_mask,grid,extent,cell_size,true)
+		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask)
 		for section: Dictionary in sections:
 			if section.bridge: continue
 			var section_widths: PackedFloat32Array = section.widths
-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false)
-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,road_mask,grid,extent,cell_size,false)
+			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask)
 		_paint(document.paint,cells,grid,extent,cell_size,road_mask)
 		if preview_cache.get("enabled",false):
 			preview_cache.key = raster_key.duplicate(true)
@@ -191,7 +189,8 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
 
 
-static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool) -> void:
+static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array()) -> void:
+	var has_mask: bool = not road_mask.is_empty()
 	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
 	for i: int in range(segment_count):
 		var a: Vector2 = road_route[i]
@@ -205,12 +204,18 @@ static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloa
 		var y1: int = mini(grid.y-1, ceili((extent.y-minf(a.y,b.y)+margin)/cell_size))
 		for y: int in range(y0,y1+1):
 			for x: int in range(x0,x1+1):
+				var at: int = y*grid.x+x
+				# Overlapping samples cannot change an already-painted road cell.
+				# Keep other kinds (including kerbs) in the exact coverage test.
+				if cells[at] == road_kind and (not has_mask or road_mask[at] == road_kind): continue
 				var p := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
 				var closest: Vector2 = Geometry2D.get_closest_point_to_segment(p,a,b)
 				var distance: float = p.distance_squared_to(closest)
 				var local_radius: float = lerpf(radius_a,radius_b,clampf((closest-a).dot(b-a)/maxf(0.0001,a.distance_squared_to(b)),0,1))
-				var at: int = y*grid.x+x
 				if distance <= local_radius*local_radius:
 					cells[at] = road_kind
-				elif distance <= (local_radius+1.0)*(local_radius+1.0) and cells[at] in [1,2,3] and cells[at] != road_kind:
-					cells[at] = 5
+					if has_mask: road_mask[at] = road_kind
+				elif distance <= (local_radius+1.0)*(local_radius+1.0):
+					if cells[at] in [1,2,3] and cells[at] != road_kind: cells[at] = 5
+					# Terrain objects affect cells but not the road-protection mask.
+					if has_mask and road_mask[at] in [1,2,3] and road_mask[at] != road_kind: road_mask[at] = 5

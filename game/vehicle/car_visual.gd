@@ -23,14 +23,14 @@ func set_night_headlights(enabled: bool) -> void:
 	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"kart":Vector3(0.33,0.25,-1.38)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
 	var beam := SpotLight3D.new()
 	beam.name = "SharedHeadlightBeam"
-	# Recess the virtual cone apex so the road beam already spans both lamps
-	# at the bumper, instead of starting at a single point ahead of the nose.
-	beam.position = Vector3(0,mount.y,mount.z+minf(1.5,-mount.z*0.8))
-	beam.rotation_degrees.x = -8.0
+	# Keep the entire hood behind the cone. A higher, wider short-range beam
+	# spreads across the road just ahead of the bumper without lighting the body.
+	beam.position = Vector3(0,maxf(mount.y,0.8)+0.35,mount.z-0.18)
+	beam.rotation_degrees.x = -12.0
 	beam.light_color = Color("fff0d2")
 	beam.light_energy = 5.0
-	beam.spot_range = 22.0
-	beam.spot_angle = 34.0
+	beam.spot_range = 12.0
+	beam.spot_angle = 48.0
 	beam.spot_angle_attenuation = 1.2
 	beam.spot_attenuation = 0.7
 	beam.shadow_enabled = false

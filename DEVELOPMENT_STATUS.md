@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: corrected headlight hood spill by moving the source ahead of the nose, raising/widening its road footprint and shortening range to 12 model metres. CaptureHeadlights 56 and quick Android export checks pass. Updated APK tested on DN2103: 160.1 m driven, median 16.739 ms/p95 20.506 ms; desktop/phone screenshots inspected and normal play restored. See docs/NIGHT_HEADLIGHTS.md.
+
 2026-09-24 V02/V04/V05/Q01: faint night rear lamps reuse emissive brake materials; braking brightens them and release restores running glow. Kart gains two batched rear lenses; no added dynamic lights. CaptureHeadlights 51, vehicle batch 35 and quick export checks pass. Installed/tested on DN2103: 213.6 m, median 16.785 ms/p95 20.511 ms. Desktop running/braking and phone captures inspected; normal play restored. See docs/NIGHT_HEADLIGHTS.md.
 
 2026-09-24 V02/V04/V05/Q01: night headlight cone begins wider at the bumper using a recessed virtual origin and softer angular falloff, retaining one shadow-free light. Final CaptureHeadlights 31 and quick export driving/catalog/menu checks pass; desktop comparison inspected. Revised APK installed/tested on DN2103: on medians 16.732/16.789 ms, off 16.760 ms; no material difference. Phone evidence inspected, normal play restored. See docs/NIGHT_HEADLIGHTS.md.

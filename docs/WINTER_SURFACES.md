@@ -1,5 +1,12 @@
 # Winter road, snowbanks and ground
 
+## Owner tint adjustment: kit 77
+
+2026-09-24, V02/V04/V05/Q01. Owner requests a hint of blue in the pale road. Shared `winter_ice.gdshaderinc` base changes to linear RGB (0.435, 0.475, 0.515), retaining luminance-only subdued texture. `native_track_visual.gd` increments kit version and `capture_winter.gd` saves separate evidence. No geometry/handling changes or new artwork.
+
+Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureWinter`: 11 checks, zero failures on pinned Godot 4.7.2. [Driving](evidence/winter-cool-white/driving.png) inspected; [hairpin](evidence/winter-cool-white/bend-detail.png) saved. `git diff --cached --check` passed. No Android export or physical-phone test; owner tint acceptance remains. Status/plan/report updated; unrelated concurrent work excluded.
+
+
 ## Owner colour adjustment: kit 76
 
 2026-09-24, V02/V04/V05/Q01. Road pigment moves toward neutral icy white: shared `winter_ice.gdshaderinc` replaces blue artwork colour with luminance-only detail around linear RGB (0.47, 0.48, 0.49). The same helper covers creator roads, raster roads and bank transitions. Subdued grain remains; geometry and handling are unchanged. `native_track_visual.gd` increments the visual kit; `capture_winter.gd` saves new evidence without overwriting previous captures.

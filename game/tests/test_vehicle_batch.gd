@@ -77,6 +77,13 @@ func run() -> void:
 		await process_frame
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png("res://../docs/evidence/mobile-followup/batch-"+id+".png") == OK,"comparison capture saved")
+		# Inspect the same production batching from below during a rollover.
+		source.rotation.z = PI
+		batched.rotation.z = PI
+		await process_frame
+		await RenderingServer.frame_post_draw
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/undersides"))
+		check(root.get_texture().get_image().save_png("res://../docs/evidence/undersides/"+id+".png") == OK,"underside capture saved")
 		source.queue_free()
 		batched.queue_free()
 		await process_frame

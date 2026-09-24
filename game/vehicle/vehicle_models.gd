@@ -141,7 +141,7 @@ static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Materi
 	var steel: StandardMaterial3D = VisualGeometry.material(Color("536674"))
 	var suit: StandardMaterial3D = VisualGeometry.material(Color("263e53"))
 	VisualGeometry.ink(suit)
-	_box(car,Vector3(0.85,0.055,1.92),Vector3(0,0.16,-0.08),trim)
+	_box(car,Vector3(0.85,0.055,1.92),Vector3(0,0.16,-0.08),car.underside_material)
 	for side: float in [-1.0,1.0]:
 		car._seam(car.body,Vector3(side*0.47,0.16,-1.12),Vector3(side*0.47,0.16,1.07),0.065,steel)
 		car._seam(car.body,Vector3(side*0.66,0.22,-0.88),Vector3(side*0.40,0.21,-0.50),0.038,steel)

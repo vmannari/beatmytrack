@@ -2,6 +2,7 @@ class_name CarVisual
 extends Node3D
 ## Base 4.25 x 1.8 m compact scaled by HandlingConfig.BODY_SCALE; +Z rear, -Z nose. Presentation only.
 
+var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
@@ -304,6 +305,20 @@ func _shell(parent: Node3D, sections: Array[Vector3], surface: Material) -> void
 	instance.mesh = tool.commit()
 	instance.material_override = surface
 	parent.add_child(instance)
+	# Close the shell at its actual lower outline. Reversed top winding faces
+	# downwards, so a rolling car cannot expose the backfaces of its bodywork.
+	var bottom: PackedVector3Array = rings.front()
+	var floor_tool := SurfaceTool.new()
+	floor_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i: int in range(1, 7):
+		for vertex: Vector3 in [bottom[0], bottom[i + 1], bottom[i]]:
+			floor_tool.set_normal(Vector3.DOWN)
+			floor_tool.add_vertex(vertex)
+	var underside := MeshInstance3D.new()
+	underside.name = "BlackUnderside"
+	underside.mesh = floor_tool.commit()
+	underside.material_override = underside_material
+	parent.add_child(underside)
 
 
 func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: Material) -> void:

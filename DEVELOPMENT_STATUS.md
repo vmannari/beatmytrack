@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-24 V02/V04/V05/Q01: desert-bridge-2 fixes recessed-looking railing caps with flat face normals and narrower stone bevels. CaptureDesertBridge passes; desktop evidence inspected, collision/clearance assertions pass. No phone test/export. See docs/DESERT_BRIDGES.md.
+
 2026-09-24 V02/V04/V05/Q01: grass-clippings-2 replaces bright box debris with folded tapered blades, natural lit colours and low two-axis tumbling; capacity reduced 20%. Soil 163, graphical soil 172, desert 53 and graphical grass 32 checks pass. Desktop evidence inspected; no device test/export. See docs/GRASS_CLIPPINGS.md.
 
 2026-09-24 V02/V04/V05/Q01: desert-bridge-1 replaces desert steel rails with sandstone parapets, bevelled coping, capped posts and clearance-preserving shallow arches. Construction 82, bridge contacts 16 and desert 53 checks pass; two desktop captures inspected. No phone test/export. See docs/DESERT_BRIDGES.md.

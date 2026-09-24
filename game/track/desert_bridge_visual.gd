@@ -1,11 +1,13 @@
 class_name DesertBridgeVisual
 extends RefCounted
 ## Original sandstone masonry. Cosmetic only, within the existing rail footprint.
-const REVISION: String = "desert-bridge-1"
+const REVISION: String = "desert-bridge-2"
 const STONE: Color = Color("a89b83")
 const CAP: Color = Color(0.74,0.69,0.59,0.0)
 
 static func append(tool: SurfaceTool, deck: SurfaceTool, span: Dictionary) -> void:
+	# Coping is cut stone: do not average normals across its top and bevels.
+	tool.set_smooth_group(-1)
 	var length: float = span.length
 	var half: float = float(span.width)*0.5
 	var count: int = ceili(length/0.4)
@@ -50,7 +52,7 @@ static func underside(span: Dictionary, u: float) -> float:
 	return maxf(CreatorBridges.UNDERPASS_CLEARANCE-height,-0.42-0.65*(1.0-sin(t*PI)))
 
 static func block(tool: SurfaceTool, span: Dictionary, a: float, b: float, inner: float, outer: float, low: float, high: float, color: Color) -> void:
-	var bevel: float = minf(0.055,(high-low)*0.3)
+	var bevel: float = minf(0.022,(high-low)*0.15)
 	var inset: float = signf(outer-inner)*bevel
 	var shoulder: float = high-bevel
 	face(tool,span,Vector3(a+bevel,high,inner+inset),Vector3(b-bevel,high,inner+inset),Vector3(b-bevel,high,outer-inset),Vector3(a+bevel,high,outer-inset),color)

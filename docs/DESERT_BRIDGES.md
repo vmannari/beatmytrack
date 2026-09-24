@@ -17,3 +17,9 @@ Actual commands, run using `powershell -NoProfile -ExecutionPolicy Bypass -File 
 Desktop evidence inspected: [gameplay](evidence/desert-bridges/gameplay.png), [overview](evidence/desert-bridges/overview.png). This is an isolated synthetic crossing fixture, not a player save. The overview camera is capture-only. No player files are written.
 
 Remaining acceptance: owner's visual review, phone driving under/over bridges and GPU/frame-time measurements. No phone test, Android export, installation or device discovery performed. Long spans use a shallow uninterrupted arch to preserve arbitrary ground crossings rather than the reference's multiple supported arches. No claim of exact hand-painted reference fidelity or measured mobile cost.
+
+## Railing cap correction ? desert-bridge-2
+
+Owner rejected the recessed tile appearance on the tops. Disabled shared smoothing on the desert stone batch so planar tops and bevels have independent normals; reduced bevel width from up to 5.5 cm to 2.2 cm. Changed `game/track/desert_bridge_visual.gd`; refreshed both evidence PNGs and progress documents. Requirements V02/V04/V05/Q01.
+
+Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureDesertBridge` passed on pinned Godot 4.7.2. Gameplay image inspected: flat solid coping tops, narrow edge highlights, no former bowl-like shading. Capture also asserts unchanged collision cells and sampled underpass clearance. No physics change or new regression suite required for this shading/bevel correction. No phone test/export performed; owner visual acceptance and device review remain.

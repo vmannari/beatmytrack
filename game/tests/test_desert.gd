@@ -79,7 +79,26 @@ func run() -> void:
 	TrackTheme.apply_lighting("pine",environment,light)
 	check(is_equal_approx(light.rotation_degrees.x,-58),"leaving desert restores daylight angle")
 	light.free()
+	for theme: String in TrackTheme.IDS:
+		var visual := NativeTrackVisual.new()
+		visual.theme_id = theme
+		var material := ShaderMaterial.new()
+		material.shader = preload("res://track/ground.gdshader")
+		visual._bind_grass(material)
+		check(material.get_shader_parameter("desert_dunes") == (theme == "desert"),theme+" dune material isolation")
+		visual.free()
+	check(NativeTrackVisual.DUNE_FACTORS.get_image().has_mipmaps(),"dune slope map is mip filtered")
+	check(NativeTrackVisual.DUNE_ALBEDO.get_image().has_mipmaps(),"dune artwork is mip filtered")
 	if "--capture" in OS.get_cmdline_user_args():
+		var capture_track: String = ""
+		for argument: String in OS.get_cmdline_user_args():
+			if argument.begins_with("--track="): capture_track = argument.trim_prefix("--track=")
+		if not capture_track.is_empty():
+			var saved: Dictionary = TrackLibrary.new().load_document(capture_track)
+			check(not saved.is_empty(),"saved desert capture track exists")
+			if saved.is_empty(): quit(1); return
+			track = TrackCompiler.compile(saved)
+		var original_cells: PackedInt32Array = track.cells.duplicate()
 		var race: Node = load("res://core/game.tscn").instantiate()
 		race.initial_track = track
 		race.production_mode = true
@@ -94,6 +113,20 @@ func run() -> void:
 		for i: int in range(10): await process_frame
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/sunset-road.png") == OK,"sunset evidence")
+		var comparison_folder: String = "res://../docs/evidence/desert-dunes"
+		if not capture_track.is_empty(): comparison_folder += "/"+capture_track.validate_filename()
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(comparison_folder))
+		var probe = preload("res://diagnostics/surface_material_probe.gd").new()
+		probe.collect(race.get("track_ground"))
+		for mode: String in ["desert_original","baseline"]:
+			probe.apply(mode)
+			await RenderingServer.frame_post_draw
+			for entry: Dictionary in probe.entries:
+				var active: ShaderMaterial = entry.mesh.material_override
+				check(active.get_shader_parameter("desert_dunes") == (mode == "baseline"),"dune comparison material binding")
+			check(root.get_texture().get_image().save_png(comparison_folder+"/"+mode+".png") == OK,"dune comparison evidence")
+		probe.restore()
+		check(track.cells == original_cells,"dune presentation leaves canonical surfaces unchanged")
 		var sim: VehicleSimulation = race.get("sim")
 		state = sim.state
 		state.velocity = state.forward()*12.0

@@ -65,5 +65,6 @@ void fragment() {
 	}
 	ALBEDO = blended;
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
+	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
 	ROUGHNESS = 1.0;
 }

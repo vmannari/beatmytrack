@@ -2,13 +2,15 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-57"
+const VERSION: String = "track-kit-58"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
 const GRASS_ALBEDO: Texture2D = preload("res://assets/textures/meadow_grass_v2.png")
 const GRASS_MACRO: Texture2D = preload("res://assets/textures/grass_macro_mask.png")
 const GRASS_NORMAL: Texture2D = preload("res://assets/textures/grass_normal.png")
+const DUNE_FACTORS: Texture2D = preload("res://assets/textures/desert_dunes_v1.png")
+const DUNE_ALBEDO: Texture2D = preload("res://assets/textures/desert_sand_v2.png")
 
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
@@ -30,6 +32,9 @@ var editor_cover: NativeTrackVisual
 
 
 func _bind_grass(material: ShaderMaterial) -> void:
+	material.set_shader_parameter("desert_dunes",theme_id == "desert")
+	material.set_shader_parameter("dune_factors",DUNE_FACTORS)
+	material.set_shader_parameter("dune_albedo",DUNE_ALBEDO)
 	material.set_shader_parameter("hybrid_grass",theme_id in ["pine","storm"])
 	material.set_shader_parameter("grass_albedo",GRASS_ALBEDO)
 	material.set_shader_parameter("grass_macro_mask",GRASS_MACRO)
@@ -624,9 +629,16 @@ func _build_low_cover(track: NativeTrack) -> void:
 		var center := Vector3((cell.x+0.5)*track.cell_size-track.half_extent.x, 0.014, (cell.y+0.5)*track.cell_size-track.half_extent.y)
 		var scale_value: float = 0.8 + (seed_value % 11) * 0.035
 		var turn: float = (seed_value % 37) * 0.17
+		# Grid strides are multiples of four, so low seed bits always selected
+		# stones here. Use higher bits for sparse desert scrub (about one in five).
+		var desert_scrub: bool = theme_id == "desert" and (seed_value >> 8) % 5 == 0
 		# Trees are exclusively compiled solid objects; tiny cover is decorative.
 		var color: Color = stone if seed_value % 4 == 0 else foliage
 		var height: float = 0.08 if seed_value % 4 == 0 else 0.22
+		if desert_scrub:
+			_desert_scrub(scenery,center,scale_value,turn)
+			scenic_count += 1
+			continue
 		_mound(scenery, center, Vector3(0.18 if seed_value % 4 == 0 else 0.4, height, 0.14 if seed_value % 4 == 0 else 0.3) * scale_value, turn, color)
 		_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
 		scenic_count += 1
@@ -640,6 +652,22 @@ func _build_low_cover(track: NativeTrack) -> void:
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		instance.material_override = material
 		add_child(instance)
+
+
+func _desert_scrub(tool: SurfaceTool, center: Vector3, size: float, turn: float) -> void:
+	# Sparse original 3D dry grass fans; 18 opaque triangles per existing site.
+	# Dark roots and straw tips replace the rounded green low-cover mounds.
+	for blade: int in range(9):
+		var angle: float = turn+float(blade)*2.399
+		var axis := Vector3(cos(angle),0,sin(angle))
+		var side := Vector3(-axis.z,0,axis.x)*0.036*size
+		var base: Vector3 = center+axis*0.04*size
+		var knee: Vector3 = center+(axis*0.13+Vector3.UP*0.19)*size
+		var tip: Vector3 = center+(axis*(0.28+float(blade%3)*0.04)+Vector3.UP*(0.13+float(blade%4)*0.04))*size
+		for vertex: Vector3 in [base-side,knee,tip,knee,base+side,tip]:
+			var factor: float = clampf((vertex-center).length()/(0.35*size),0.0,1.0)
+			tool.set_color(Color("575d32").lerp(Color("b1a36a"),factor))
+			tool.add_vertex(vertex)
 
 
 func _scenery_sites(track: NativeTrack, stride: int) -> Array[Vector2i]:

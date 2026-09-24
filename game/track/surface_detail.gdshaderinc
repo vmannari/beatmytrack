@@ -3,6 +3,22 @@ uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_ena
 uniform bool icy_road = false;
 uniform bool wet_road = false;
 uniform bool packed_sand = false;
+uniform bool desert_dunes = false;
+uniform sampler2D dune_factors : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dune_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+
+vec3 dune_sand(vec2 p) {
+	// Original irregular dune art carries readable crests and swept gaps.
+	// Neutral sand pigment offsets the existing strongly orange sunset light.
+	return texture(dune_albedo,p/24.0).rgb*vec3(0.60,0.92,1.45);
+}
+
+vec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) {
+	if (!desert_dunes || weight <= 0.001) return original;
+	vec2 slope = (texture(dune_factors,p/32.0).gb-0.5)*0.38;
+	vec3 relief = normalize(vec3(-slope.x,1.0,-slope.y));
+	return normalize(mix(original,(view*vec4(relief,0.0)).xyz,clamp(weight,0.0,1.0)));
+}
 // Original world-space pigment pattern. Derivative filtering limits distant shimmer.
 uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool hybrid_grass = false;
@@ -38,6 +54,7 @@ float grass_fringe(float coverage, vec2 p) {
 // Matte sand shared by terrain paint and roadside shoulders. Grain is
 // isotropic (no grass-like diagonal strokes), with filtered fine minerals.
 vec3 sand_detail(vec3 base, vec2 p) {
+	if (desert_dunes) return dune_sand(p);
 	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
 }
 
@@ -92,6 +109,7 @@ vec3 directional_asphalt(vec3 base, vec2 p, vec2 encoded_axis) {
 }
 
 vec3 painted_grass(vec3 base, vec2 p) {
+	if (desert_dunes) return dune_sand(p);
 	if (hybrid_grass) {
 		vec3 macro = texture(grass_macro_mask,p/32.0).rgb;
 		// Actual narrow-blade meadow clumps with visible root depth. The

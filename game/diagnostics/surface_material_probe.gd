@@ -21,10 +21,10 @@ func apply(mode: String) -> void:
 		grass.visible = mode not in ["grass_original","grass_material"]
 	for entry: Dictionary in entries:
 		var material: ShaderMaterial = entry.original
-		if mode == "grass_original":
+		if mode in ["grass_original","desert_original"]:
 			if not entry.variants.has(mode):
 				var legacy: ShaderMaterial = material.duplicate()
-				legacy.set_shader_parameter("hybrid_grass",false)
+				legacy.set_shader_parameter("hybrid_grass" if mode == "grass_original" else "desert_dunes",false)
 				entry.variants[mode] = legacy
 			entry.mesh.material_override = entry.variants[mode]
 			changed_count += 1
@@ -41,7 +41,7 @@ func apply(mode: String) -> void:
 			if mode == "asphalt_previous":
 				# Historical shared detail predates packed sand and grass relief.
 				# Adapt its interface explicitly; this mode restores historical grass too.
-				var compatibility: String = "\nuniform bool packed_sand = false;\nvec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n"
+				var compatibility: String = "\nuniform bool packed_sand = false;\nvec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n"
 				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + compatibility)
 			elif mode == "directional_off":
 				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")
@@ -65,6 +65,7 @@ func apply(mode: String) -> void:
 			var replacement: ShaderMaterial = material.duplicate()
 			replacement.shader = shader
 			if mode in ["road_flat","terrain_flat"]: replacement.set_shader_parameter("hybrid_grass",false)
+			if mode in ["road_flat","terrain_flat"]: replacement.set_shader_parameter("desert_dunes",false)
 			entry.variants[mode] = replacement
 		entry.mesh.material_override = entry.variants[mode]
 		changed_count += 1

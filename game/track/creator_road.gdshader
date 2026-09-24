@@ -96,4 +96,6 @@ void fragment() {
 	float relief_weight = grass ? (1.0-sand) : 0.0;
 	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
+	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
+	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
 }

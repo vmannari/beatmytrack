@@ -19,8 +19,10 @@ uniform bool road_marking = false;
 uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
 uniform vec4 grass_color : source_color;
 varying vec3 world_position;
+varying float bank_slope;
 
 void vertex() {
+	bank_slope = 1.0-NORMAL.y;
 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
@@ -51,6 +53,7 @@ void fragment() {
 	float sand = 0.0;
 	if (grass || gravel) { sand = sand_coverage(map_uv); }
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
+	if (asphalt_surface && packed_sand) { ALBEDO = packed_wear(ALBEDO,world_position.xz,UV2); }
 	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
 	}
@@ -89,7 +92,8 @@ void fragment() {
 	}
 	if (gravel) {
 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
-		float fringe = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
+		if (packed_sand) { ALBEDO *= 1.0-smoothstep(0.02,0.32,bank_slope)*0.38; }
+		float fringe = (packed_sand ? smoothstep(0.30,1.0,UV.y) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;

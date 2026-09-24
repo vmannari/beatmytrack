@@ -89,3 +89,6 @@ The owner requests desert roads to always be a distinct, more drivable compacted
 
 ## Desert daylight and road override (2026-09-24)
 The owner accepted dune ground and requests reference-informed compacted desert roads and suitable kerbs. Normal daylight supersedes the red-orange sunset until a later lighting pass. Dust and canonical packed-sand driving remain unchanged. See docs/DESERT_DAYLIGHT.md.
+
+## Desert berm reference override (2026-09-24)
+The owner supplied a sand-berm reference, superseding striped/stone desert kerb presentation. Use irregular low sand banks at bends, compacted shoulders and soft straight transitions. See docs/DESERT_BERMS.md.

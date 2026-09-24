@@ -2,6 +2,8 @@ shader_type spatial;
 render_mode diffuse_toon, specular_disabled;
 uniform sampler2D exclusion : filter_nearest, repeat_disable;
 uniform vec2 map_extent;
+uniform bool sand_berm = false;
+uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec4 red : source_color = vec4(0.651,0.243,0.188,1.0);
 uniform vec4 pale_color : source_color = vec4(0.87,0.867,0.827,1.0);
 varying vec3 world_position;
@@ -35,5 +37,10 @@ void fragment() {
  float foot_strength = UV.y < 0.0 ? 0.12 : 0.35;
  float tone = mix(0.78, side_tone, bevel) * (1.0 - foot * bevel * foot_strength);
  ALBEDO = mix(red.rgb,pale_color.rgb,pale) * tone;
+ if (sand_berm) {
+  vec3 grit = texture(surface_factors,world_position.xz/12.0).rgb;
+  float clods = texture(surface_factors,world_position.xz/5.0).g;
+  ALBEDO = red.rgb * (0.68+grit.b*0.40+clods*0.26) * mix(1.0,0.70,bevel);
+ }
  ROUGHNESS = 1.0;
 }

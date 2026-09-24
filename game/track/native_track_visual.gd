@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-60"
+const VERSION: String = "track-kit-61"
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -260,7 +260,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						# Only the outer contour varies; road/paint stay fixed.
 						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
 						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_shoulder_quad(shoulders,p,q,outer_p,outer_q)
+						_shoulder_quad(shoulders,p,q,outer_p,outer_q,is_kerb)
 						counts[0] += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
@@ -269,7 +269,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
 					counts[2] += 1
 	_build_kerbs(track)
-	if counts[0]: _commit_creator_road(shoulders,Color("817866") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
 	if fringe_count and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id != "desert": _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
@@ -316,7 +316,17 @@ func _shoulder_width(point: Vector2) -> float:
 	return 1.35 + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
 
 
-func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
+func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, berm: bool = false) -> void:
+	if theme_id == "desert" and berm:
+		var fractions: Array[float] = [0.0,0.28,0.60,1.0]
+		var heights: Array[float] = [0.0,0.10,0.16,0.0]
+		for band: int in range(3):
+			for pair: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
+				var point: Vector2 = a.lerp(outer_a,fractions[pair.y]) if pair.x == 0 else b.lerp(outer_b,fractions[pair.y])
+				var rough: float = sin(point.x*8.1+point.y*3.7)*sin(point.y*9.3-point.x*2.1)
+				tool.set_uv(Vector2(0.0,fractions[pair.y]))
+				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*(-0.02+heights[pair.y]*(1.0+rough*0.6)))
+		return
 	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
 	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
 	for i: int in range(6):
@@ -428,7 +438,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 		if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
 			order = [triangle,triangle+2,triangle+1]
 		for index: int in order:
-			flat.set_normal(Vector3.UP)
+			flat.set_normal((vertices[order[2]]-vertices[order[0]]).cross(vertices[order[1]]-vertices[order[0]]).normalized() if theme_id == "desert" and gravel else Vector3.UP)
 			if not uv.is_empty(): flat.set_uv(uv[index])
 			if not uv2.is_empty(): flat.set_uv2(uv2[index])
 			flat.add_vertex(vertices[index])
@@ -444,7 +454,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("verge_blend_mask",mask)
 	material.set_shader_parameter("road_mask",road_mask)
 	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
-	material.set_shader_parameter("sand_color",Color("817866") if theme_id == "desert" else colors[2].darkened(0.20))
+	material.set_shader_parameter("sand_color",Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
 	material.set_shader_parameter("asphalt_base_color",colors[0])
@@ -968,11 +978,19 @@ func update_light_props(state: VehicleState) -> void:
 
 func _build_kerbs(track: NativeTrack) -> void:
 	if track.kerbs.triangles.is_empty(): return
+	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: Dictionary in track.kerbs.triangles:
 		var vertices := PackedVector3Array()
-		for i: int in range(3): vertices.append(VisualGeometry.world(triangle.points[i])+Vector3.UP*(0.018+triangle.heights[i]))
+		for i: int in range(3):
+			var point: Vector3 = VisualGeometry.world(triangle.points[i])
+			var height: float = triangle.heights[i]
+			if theme_id == "desert":
+				# Keep the canonical footprint; irregular low sand crowns are cosmetic.
+				var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
+				height *= 1.25+rough*0.55
+			vertices.append(point+Vector3.UP*(0.018+height))
 		var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
 		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
 		if normal.y < 0.0: normal = -normal
@@ -985,7 +1003,9 @@ func _build_kerbs(track: NativeTrack) -> void:
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/kerb.gdshader")
 	if theme_id == "desert":
-		material.set_shader_parameter("red",Color("8e8069"))
+		material.set_shader_parameter("sand_berm",true)
+		material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
+		material.set_shader_parameter("red",Color("ad8955"))
 		material.set_shader_parameter("pale_color",Color("bbae91"))
 	var mask := Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,track.kerbs.blocked)
 	# Canonical bytes are 0/1; shader samples normalized bytes.

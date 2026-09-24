@@ -62,7 +62,7 @@ vec3 sand_detail(vec3 base, vec2 p) {
 vec3 desert_shoulder(vec3 base, vec2 p) {
  vec3 grit = texture(surface_factors,p/16.0).rgb;
  float stones = smoothstep(0.53,0.70,grit.g);
- return base * (0.62 + grit.b*0.62 + stones*0.24);
+ return base * (0.80 + grit.b*0.30 + stones*0.10);
 }
 
 // Shared world-space baked asphalt. Random repair/crack shapes are removed;
@@ -77,7 +77,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 		vec3 grains = texture(surface_factors,p/32.0).rgb;
 		float broad = texture(surface_factors,p/64.0).g;
 		float gravel = texture(surface_factors,p/12.0).g;
-		return base * (0.79 + grains.b*0.36 + broad*0.08 + smoothstep(0.48,0.72,gravel)*0.07);
+		return base * (0.86 + grains.b*0.23 + broad*0.06 + smoothstep(0.48,0.72,gravel)*0.035);
 	}
 	if (road && wet_road) {
 		float sheen = smoothstep(0.48,0.75,pigment(p*0.24 + vec2(3.2,7.6)));
@@ -100,6 +100,16 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	blade *= step(0.72,seed) * visibility;
 	float plane = smoothstep(0.35,0.65,pigment(p*0.12));
 	return base * (0.97 + plane*0.055 - blade*0.09);
+}
+
+// Filter baked grain along the local road axis for compacted sandy wear.
+vec3 packed_wear(vec3 base, vec2 p, vec2 axis) {
+ float angle = atan(axis.y,axis.x+0.000001)*0.5;
+ vec2 along = vec2(cos(angle),sin(angle));
+ float worn = texture(surface_factors,p/10.0).g*0.40;
+ worn += texture(surface_factors,(p+along*0.42)/10.0).g*0.30;
+ worn += texture(surface_factors,(p-along*0.42)/10.0).g*0.30;
+ return base*(0.94+worn*0.12);
 }
 
 // Short, broken laying/wear grain aligned to the local road tangent. Sample

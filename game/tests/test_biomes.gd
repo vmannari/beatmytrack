@@ -38,6 +38,11 @@ func run() -> void:
 		check(choice != null and picture != null and picture.texture != null and choice.size.y>=260,"large track-gallery scenic biome choice")
 		check(overlay != null and overlay.position.y > choice.size.y*0.5,"biome label row overlays lower artwork")
 		check(overlay != null and absf(choice.size.y-overlay.get_rect().end.y-8.0)<1.0,"thin artwork strip remains below biome label")
+		var card_style: StyleBoxFlat = choice.get_theme_stylebox("normal") as StyleBoxFlat
+		var label_style: StyleBoxFlat = overlay.get_theme_stylebox("panel") as StyleBoxFlat if overlay != null else null
+		check(card_style != null and card_style.border_width_left == 1 and card_style.border_color == MenuStyle.BORDER,"biome cards keep a neutral frame without selected border highlight")
+		check(label_style != null and label_style.corner_radius_top_left == 0 and label_style.corner_radius_top_right == 0 and label_style.corner_radius_bottom_left == 0 and label_style.corner_radius_bottom_right == 0,"biome labels have square corners")
+		check(label_style != null and label_style.bg_color == (MenuStyle.ACCENT if biome == str(doc.theme) else Color("091720f2")),"selected biome has an image-independent yellow label band")
 		check(choice.find_child("BiomeIcon",true,false) != null,"biome card has themed icon")
 		if biome=="pine" and "--capture" in OS.get_cmdline_user_args():
 			for i: int in range(3): await RenderingServer.frame_post_draw

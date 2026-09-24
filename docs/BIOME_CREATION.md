@@ -1,5 +1,11 @@
 # Required biome selection ? 2026-09-18
 
+## Consistent selected-card treatment - 2026-09-24
+
+Requirements R01/V03/V05. Biome selection no longer depends on how a thin highlight reads against each scenic image. Every unselected image now receives the same subdued tint, while the selected image stays full brightness and gains a solid yellow label band with dark icon and text. The yellow outer selection frame was removed by owner follow-up; every card retains the same neutral 1 px edge. The treatment is identical for Grass, Desert, Night City, Winter and Storm. Biome label bands have square corners.
+
+Changed `game/core/app.gd`, `game/tests/test_biomes.gd`, this document, status/phase notes and the refreshed picker evidence. Actual command `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureBiomes` used pinned Godot 4.7.2 and passed 107 checks with zero failures. The refreshed desktop [picker](evidence/biomes/picker.png) was visually inspected; the selected state remains distinct from Storm and the other dark artwork. No phone test or Android export was performed; physical-device readability/touch acceptance remains.
+
 ## Reference menu icon match - 2026-09-23
 
 R01/V03/V05: owner's clarification targets only the small biome symbols in the supplied Create reference. Revised the existing vector artwork to its curved folded leaf, narrow rounded cactus, crescent with scalloped clouds and small sparkle stars, delicate six-arm snowflake, and rounded rain cloud with the requested added lightning bolt. Card and summary symbols share the reference's pale blue, with an off-white Night symbol. These are vector recreations rather than screenshot crops. Scenic art and heading remain as accepted.

@@ -772,7 +772,7 @@ func _build_editor_tools() -> void:
 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
 		if piece.is_empty():
 			_context_button("Start line","race",canvas.choose_start_line)
-			for pair: Array in [["straight","Straight"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"]]:
+			for pair: Array in [["straight","Straight"],["taper","Taper"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"]]:
 				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
 			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
 		elif editor_geometry != "" and piece.kind == "bridge":
@@ -1765,15 +1765,17 @@ func _choose_biome() -> void:
 		card.text = ""
 		var selected: bool = biome == selected_biome
 		var card_style := MenuStyle.box(Color.TRANSPARENT,0)
-		card_style.border_color = MenuStyle.ACCENT if selected else MenuStyle.BORDER
-		card_style.set_border_width_all(3 if selected else 1)
-		card.add_theme_stylebox_override("normal",card_style)
+		card_style.set_corner_radius_all(0)
+		card_style.border_color = MenuStyle.BORDER
+		card_style.set_border_width_all(1)
+		for state: String in ["normal","hover","pressed","focus"]:
+			card.add_theme_stylebox_override(state,card_style)
 		var picture := TextureRect.new()
 		picture.name = "BiomePicture"
 		picture.texture = TrackTile.scenery_texture(biome)
 		picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-		picture.modulate = Color(0.8,0.85,0.9)
+		picture.modulate = Color.WHITE if selected else Color(0.62,0.68,0.72)
 		picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		MenuStyle.fill(picture)
 		card.add_child(picture)
@@ -1786,7 +1788,9 @@ func _choose_biome() -> void:
 		label_panel.anchor_bottom = 1.0
 		label_panel.offset_top = -72
 		label_panel.offset_bottom = -8
-		label_panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720e8"),0))
+		var label_style := MenuStyle.box(MenuStyle.ACCENT if selected else Color("091720f2"),0)
+		label_style.set_corner_radius_all(0)
+		label_panel.add_theme_stylebox_override("panel",label_style)
 		var label_center := CenterContainer.new()
 		label_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		label_panel.add_child(label_center)
@@ -1796,7 +1800,7 @@ func _choose_biome() -> void:
 		label_center.add_child(label_row)
 		var icon := TextureRect.new()
 		icon.name = "BiomeIcon"
-		icon.modulate = Color("c7dfff") if biome != "night_city" else Color("f1f4f3")
+		icon.modulate = MenuStyle.INK if selected else (Color("c7dfff") if biome != "night_city" else Color("f1f4f3"))
 		icon.texture = MenuIcon.texture({"pine":"leaf","desert":"cactus","night_city":"night","winter":"snowflake","storm":"storm"}.get(biome,"biomes"))
 		icon.custom_minimum_size = Vector2(30,30)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1805,6 +1809,7 @@ func _choose_biome() -> void:
 		label_row.add_child(icon)
 		var label := MenuStyle.label(TrackTheme.title(biome).to_upper(),26)
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		if selected: label.add_theme_color_override("font_color",MenuStyle.INK)
 		label_row.add_child(label)
 		card.add_child(label_panel)
 		card.pressed.connect(_preview_creation_biome.bind(biome))

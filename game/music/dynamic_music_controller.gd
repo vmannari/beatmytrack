@@ -4,8 +4,9 @@ extends Node
 var analyzer := TrackMusicAnalyzer.new()
 var trajectory := TrajectoryMusicAnalyzer.new()
 var clock := BeatClock.new()
-var state := Vector3(0.5,0.1,0.5)
-var target := Vector3(0.5,0.1,0.5)
+var progression := DrivingMusicProgress.new()
+var state := Vector3(0.12,0.08,0.1)
+var target := Vector3(0.12,0.08,0.1)
 var distance: float = 0.0
 var speed: float = 0.0
 var lookahead_distance: float = 0.0
@@ -44,7 +45,9 @@ func start(value: NativeTrack) -> void:
 	if value != track:
 		track = value
 		if track != null: analyzer.build(track,profile)
-	state = Vector3(0.5,0.1,0.5); target = state; context = 0
+	state = Vector3(0.12,0.08,0.1); target = state; context = 0
+	progression.reset()
+	cooldown = 0.0
 	player.stop()
 	# The MVP deliberately has only Grass; other biomes wait for ear acceptance.
 	if not available or (track != null and track.metadata.get("theme","pine") != "pine"): return
@@ -62,7 +65,9 @@ func present(vehicle: VehicleState, session: TrackSession, delta: float, paused:
 	if track == null or not player.playing: return
 	var begin: int = Time.get_ticks_usec()
 	context = (1 if session.completed_laps>=session.target_laps-1 else 0) | (2 if session.finished else 0) | (4 if paused else 0)
-	cooldown -= delta
+	progression.advance(maxf(0.0,vehicle.velocity.dot(vehicle.forward())),vehicle.collision_count,delta,paused or session.finished,profile)
+	if progression.melancholy: context |= 8
+	if not paused: cooldown -= delta
 	if cooldown <= 0.0 and not paused:
 		cooldown = 0.1
 		distance = track.route_progress(vehicle.position,vehicle.route_index)
@@ -78,13 +83,12 @@ func present(vehicle: VehicleState, session: TrackSession, delta: float, paused:
 			var corridor: Vector3 = analyzer.sample(distance+lookahead_distance*ahead/6.0)
 			target.y = maxf(target.y,corridor.y*0.85)
 		var risk: float = trajectory.analyze(vehicle,track,analyzer,profile.lookahead_seconds)
-		target.x = clampf(target.x*0.8+0.2*smoothstep(2.0,32.0,speed),0.0,1.0)
-		if session.completed_laps == 0: target.x *= 0.9
-		target.y = clampf(target.y+risk*profile.trajectory_influence,0.0,1.0)
-		if context&1:
-			target.x = maxf(target.x,0.8)
-			var progress: float = fposmod(distance-track.route_progress(track.finish_center),analyzer.length)/analyzer.length
-			if progress > 0.8: target.z = maxf(target.z,0.85)
+		# The clean-driving arc leads; geometry only colours the earned arrangement.
+		target.x = 0.12+progression.intensity*(0.70+0.18*target.x)
+		target.y = (target.y+risk*profile.trajectory_influence)*(0.15+0.65*progression.intensity)
+		target.z = 0.10+progression.intensity*(0.60+0.30*target.z)
+	if progression.recovery_seconds > 0.0:
+		target = Vector3(0.12,0.08,0.1)
 	update_audio(delta if not paused else 0.0)
 	controller_us = Time.get_ticks_usec()-begin
 

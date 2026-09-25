@@ -1,6 +1,10 @@
 # Beat My Track procedural music — Grass listening milestone
 
-2026-09-25. MUSIC_ENGINE_VERSION **4**. Requirement IDs below describe this owner-requested local slice; R01/V03/V05/Q01 also apply. Canonical handling, race rules and track formats are unchanged.
+2026-09-25. MUSIC_ENGINE_VERSION **5**. Requirement IDs below describe this owner-requested local slice; R01/V03/V05/Q01 also apply. Canonical handling, race rules and track formats are unchanged.
+
+## Current progression override (v5)
+
+The owner now wants sustained clean driving to lead the musical arc. [Clean-driving progression](MUSIC_DRIVING_PROGRESSION.md) documents the calm opening, speed-average qualification, gradual build, collision recovery, tuning and current checks. This supersedes the v4 geometry-led intensity and automatic final-lap boost described historically below. The existing rock instrument family, predictive track shading, sample clock and finish cadence remain.
 
 ## Try it
 

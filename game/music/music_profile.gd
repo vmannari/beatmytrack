@@ -14,3 +14,12 @@ extends Resource
 @export_range(-40.0,0.0) var volume_db: float = -9.0
 @export var curvature_full_tension: float = 0.12
 @export var target_lateral_acceleration: float = 9.0
+
+@export_group("Clean driving progression")
+@export_range(1.0,30.0) var clean_speed_mps: float = 10.0
+@export_range(0.2,10.0) var speed_average_seconds: float = 3.0
+@export_range(0.0,3.0) var speed_hysteresis_mps: float = 1.0
+@export_range(0.0,15.0) var speed_qualification_seconds: float = 4.0
+@export_range(4.0,90.0) var clean_build_seconds: float = 24.0
+@export_range(1.0,60.0) var slow_decay_seconds: float = 12.0
+@export_range(0.0,15.0) var collision_recovery_seconds: float = 5.0

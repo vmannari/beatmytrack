@@ -21,6 +21,30 @@ func run() -> void:
 	track.metadata = {"theme":"pine"}
 	track._build_route_distance()
 	var profile := MusicProfile.new()
+
+	var arc := DrivingMusicProgress.new()
+	check(arc.intensity==0.0,"calm start")
+	for i in range(30): arc.advance(20,0,.1,false,profile)
+	check(arc.intensity==0.0,"short speed burst cannot build")
+	for i in range(320): arc.advance(20,0,.1,false,profile)
+	check(arc.intensity>.95,"sustained clean speed builds fully")
+	arc.advance(20,1,.1,false,profile)
+	check(arc.intensity==0 and arc.melancholy and arc.recovery_seconds==5,"collision resets into recovery")
+	arc.advance(20,1,10,true,profile)
+	check(arc.recovery_seconds==5,"pause freezes recovery")
+	for i in range(40): arc.advance(20,1,.1,false,profile)
+	check(arc.intensity==0,"recovery cannot be bypassed with speed")
+	for i in range(360): arc.advance(20,1,.1,false,profile)
+	check(arc.intensity>.95 and not arc.melancholy,"clean driving recovers from collision")
+	for i in range(300): arc.advance(0,1,.1,false,profile)
+	check(arc.intensity==0,"stopping gradually calms music")
+	var arc_slow := DrivingMusicProgress.new()
+	var arc_fast := DrivingMusicProgress.new()
+	for i in range(400): arc_slow.advance(18,0,.05,false,profile)
+	for i in range(2400): arc_fast.advance(18,0,1.0/120,false,profile)
+	check(absf(arc_slow.intensity-arc_fast.intensity)<.005,"progression stable across display rates")
+	arc.reset()
+	check(arc.average_speed==0 and not arc.melancholy,"retry clears progression")
 	var map := TrackMusicAnalyzer.new()
 	map.build(track,profile)
 	check(map.states.size()==120,"2m cached sampling")
@@ -64,6 +88,12 @@ func run() -> void:
 	controller.present(vehicle,TrackSession.new(),.1,false)
 	check(controller.player.playing and controller.telemetry.has("beat_position"),"native playback and telemetry")
 	check(controller.telemetry.get("engine_version",0) == TrackMusicAnalyzer.MUSIC_ENGINE_VERSION,"native and track fingerprint versions agree")
+	controller.progression.intensity = 1.0
+	vehicle.collision_count = 1
+	var final_session := TrackSession.new()
+	final_session.completed_laps = final_session.target_laps-1
+	controller.present(vehicle,final_session,.1,false)
+	check(controller.target.x<.2 and controller.context&8,"collision remains calm even on final lap")
 	controller.queue_free()
 	await process_frame
 	await create_timer(.15).timeout
@@ -83,7 +113,7 @@ func run() -> void:
 		check(game.music.clock.beat_position>8.0,"audio clock advances during driving")
 		print("MUSIC_DRIVE: ",game.music.telemetry," controller_us=",game.music.controller_us)
 		await RenderingServer.frame_post_draw
-		root.get_texture().get_image().save_png("res://../docs/evidence/music-rock/music-drive.png")
+		root.get_texture().get_image().save_png("res://../docs/evidence/music-progression/music-drive.png")
 		game.queue_free()
 		await process_frame
 		await create_timer(.2).timeout

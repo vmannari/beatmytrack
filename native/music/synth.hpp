@@ -6,7 +6,7 @@
 #include <cstdint>
 namespace bmt {
 constexpr float TAU=6.28318530718f;
-constexpr int MUSIC_ENGINE_VERSION=4, VOICES=24;
+constexpr int MUSIC_ENGINE_VERSION=5, VOICES=24;
 struct Controls {
  std::atomic<uint32_t> state{0x00ff20d9},context{0},bpm{128},seed{1};
  std::atomic<uint32_t> brightness{650},metallicity{350},decay{650},width{450};
@@ -43,6 +43,8 @@ class Synth {
  int ring_size=1024,mode=1,variant=0,active_count=0;
  float energy=.85f,tension=.12f,hook=1,gate_scale=1,width=.65f;
  float kd, kp, sd, hd, bd, sl, hl, excitation;
+ bool melancholy=false,recovery_requested=false;
+ float expression=.12f,expression_slew=.0001f;
  bool muted=false,final_requested=false,final_on=false,finish_pending=false,finished=false,hook_on=true;
  double finish_beat=0;
  float kick=0,kick_pitch=0,kick_phase=0,snare=0,snare_low=0,snare_body=0;
@@ -71,18 +73,19 @@ class Synth {
  void sequence(int step) {
   int s=step%8,absolute_bar=step/8,bar=absolute_bar%4;
   if(s==0) {
-   if(energy>.72f) mode=2; else if(energy<.60f) mode=1;
-   if(energy<.30f) mode=0;
-   if(absolute_bar%4==0) {if(hook>.62f)hook_on=true;else if(hook<.38f)hook_on=false;}
+   melancholy=recovery_requested;
+   if(!melancholy && energy>.72f) mode=2; else if(energy<.60f) mode=1;
+   if(energy<.30f || melancholy) mode=0;
+   if(absolute_bar%4==0 || melancholy) {if(hook>.62f)hook_on=true;else if(hook<.38f)hook_on=false;}
    if(absolute_bar%8==0)final_on=final_requested;
   }
   if(finish_pending && step%2==0 && !finished) {
    finished=true;finish_beat=beats();chord(40,1.5f,1);kick=1;kick_pitch=1;kick_phase=0;return;
   }
   if(finished)return;
-  if(s==0 || (s==4 && mode>0) || ((mode==2 || final_on) && bar%2==1 && s==7)) {kick=1;kick_pitch=1;kick_phase=0;}
-  if(s==2 || s==6)snare=mode==0?.65f:1.f;
-  if(mode>0 || s%2==0)hat=s%2?.65f:1.f;
+  if(s==0 || (s==4 && mode>0) || ((mode==2) && bar%2==1 && s==7)) {kick=1;kick_pitch=1;kick_phase=0;}
+  if((s==2 && mode>0) || s==6)snare=mode==0?.30f:1.f;
+  if(mode>0 || s%2==0)hat=mode==0?.35f:(s%2?.65f:1.f);
   if(tension>.65f && mode==2 && s==7 && bar==3)snare=.2f;
   // Authored E-minor/blues power-chord rhythm, not the reference's riff/melody.
   constexpr int riffs[4][8]={{40,40,-1,43,40,-1,45,43},
@@ -93,11 +96,19 @@ class Synth {
   // Track fingerprints select a small authored pickup, never runtime-random notes.
   if(variant==1 && bar==3 && s==6)pitch=45;
   if(variant==2 && bar==1 && s==7)pitch=43;
+  if(mode==0) {
+   // Calm opening stays on E; recovery answers with a low E-D-C-D descent.
+   constexpr int recovery_roots[4]={40,38,36,38};
+   if(s==0 || s==4)chord(melancholy?recovery_roots[bar]:40,.70f*gate_scale,.45f);
+   return;
+  }
+  if(mode==1 && s%2==1)return;
   if(pitch>=0)chord(pitch,((s==1 || s==3)?.24f:.42f)*gate_scale*(1-.15f*tension),s%2?.8f:1.f);
  }
 public:
  double rate=48000; uint32_t bpm=128;
  explicit Synth(double sample_rate=48000,uint32_t track_seed=1):rate(std::clamp(sample_rate,8000.,192000.)) {
+  expression_slew=float(1-std::exp(-1./(rate*.25)));
   seed=track_seed?track_seed:1;variant=int(track_seed%3);
   ring_size=rate<=80000?1024:rate<=160000?2048:4096;
   auto decay=[&](float c){return float(std::pow(c,48000./rate));};
@@ -107,7 +118,7 @@ public:
  }
  void controls(uint32_t state,uint32_t context,uint32_t tempo,float bright=.65f,float drive=.35f,float decay=.65f,float stereo=.45f) {
   energy=float(state&255)/255;tension=float((state>>8)&255)/255;hook=float((state>>16)&255)/255;
-  muted=context&4;final_requested=context&1;finish_pending=context&2;bpm=std::clamp(tempo,60u,180u);
+  muted=context&4;recovery_requested=context&8;final_requested=context&1;finish_pending=context&2;bpm=std::clamp(tempo,60u,180u);
   gate_scale=.675f+.5f*std::clamp(decay,0.f,1.f);width=std::clamp(.2f+stereo,0.f,1.f);
   for(auto *amp:{&left_amp,&right_amp}) {amp->drive=3.6f+4*std::clamp(drive,0.f,1.f);amp->cut=float(1-std::pow(1-(.128f+.08f*std::clamp(bright,0.f,1.f)),48000./rate));}
  }
@@ -116,12 +127,13 @@ public:
  int voice_count()const{return active_count;}
  int drum_pattern()const{return mode;}
  int bass_pattern()const{return variant;}
- int hook_pattern()const{return hook_on?variant:3;}
+ int hook_pattern()const{return mode==0?(melancholy?5:4):(hook_on?variant:3);}
  int peak_voices()const{return peak;}
  void render(float &l,float &r) {
   if(muted){l=r=0;return;}
   int step=int(beat_units*2/(uint64_t(rate)*60));
   if(step!=last_step){sequence(step);last_step=step;}
+  expression+=(energy-expression)*expression_slew;
   float gl=0,gr=0;int active=0;
   for(auto &v:voices) {
    if(!v.active)continue;++active;++v.age;
@@ -149,7 +161,7 @@ public:
   float fade=std::min(1.f,float(sample_count)/float(rate*.012f));
   if(kick<1e-12f)kick=0;if(snare<1e-12f)snare=0;if(hat<1e-12f)hat=0;if(bass_env<1e-12f)bass_env=0;
   if(finished)fade*=float(std::clamp(1.-(beats()-finish_beat)/3.,0.,1.));
-  l=fade*(left_amp.tick(gl)*.58f+bass+drums);r=fade*(right_amp.tick(gr)*.58f+bass+drums);
+  l=fade*(left_amp.tick(gl*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));r=fade*(right_amp.tick(gr*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));
   l=.45f*l/(1+std::abs(l));r=.45f*r/(1+std::abs(r));++sample_count;beat_units+=bpm;
  }
 };

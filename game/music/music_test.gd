@@ -3,6 +3,8 @@ var controller: DynamicMusicController
 var sliders: Array[HSlider] = []
 var risk_slider: HSlider
 var status: Label
+var clean_trial: bool = false
+var trial_collisions: int = 0
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var background := ColorRect.new()
@@ -31,7 +33,7 @@ func _ready() -> void:
 		label.text = name_value
 		panel.add_child(label)
 		var slider := HSlider.new()
-		slider.min_value = 0; slider.max_value = 1; slider.step = 0.01; slider.value = 0.5
+		slider.min_value = 0; slider.max_value = 1; slider.step = 0.01; slider.value = Vector3(.12,.08,.1)[mini(sliders.size(),2)]
 		slider.custom_minimum_size.y = 26
 		panel.add_child(slider)
 		if sliders.size()<3: sliders.append(slider)
@@ -54,33 +56,49 @@ func _ready() -> void:
 	var scenarios: Dictionary = {"Straight":Vector3(.9,.1,1),"Gentle curve":Vector3(.8,.3,.7),"S-curve":Vector3(.9,.55,.5),"Hairpin":Vector3(.6,.9,.1),"Corner exit":Vector3(1,.15,1),"Bridge":Vector3(.6,.2,.6)}
 	for label: String in scenarios:
 		var button := Button.new()
-		button.text = label; button.custom_minimum_size = Vector2(160,42)
+		button.text = label; button.custom_minimum_size = Vector2(160,36)
 		grid.add_child(button)
 		button.pressed.connect(func() -> void:
+			clean_trial = false
+			controller.context &= ~8
 			var value: Vector3 = scenarios[label]
 			for i: int in range(3): sliders[i].value = value[i])
-	for label: String in ["Off-track risk","Final lap","Finish","Restart","Mute"]:
+	for label: String in ["Off-track risk","Final lap","Finish","Restart","Mute","Collision","Clean build"]:
 		var button := Button.new()
-		button.text = label; button.custom_minimum_size.y = 42
+		button.text = label; button.custom_minimum_size.y = 36
 		grid.add_child(button)
 		button.pressed.connect(func() -> void:
 			match label:
 				"Off-track risk": risk_slider.value = 1.0
 				"Final lap": controller.context |= 1
 				"Finish": controller.context |= 2
-				"Restart": controller.start(null)
+				"Restart":
+					controller.start(null)
+					clean_trial = false
+					trial_collisions = 0
+				"Clean build": clean_trial = true
+				"Collision":
+					clean_trial = true
+					trial_collisions += 1
+					controller.context |= 8
+					for i: int in range(3): sliders[i].value = Vector3(.12,.08,.1)[i]
 				"Mute": controller.player.volume_db = -80.0 if controller.player.volume_db > -70.0 else controller.profile.volume_db
 		)
 	status = Label.new()
-	status.text = "F8 debug / rock riff 4 bars / final-lap phrases 8 bars"
+	status.text = "Clean build: 65 km/h trial / Collision: calm reset"
 	panel.add_child(status)
 	if "--music-capture" in OS.get_cmdline_user_args():
 		await get_tree().create_timer(2.0).timeout
-		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music-rock/music-lab.png")
+		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music-progression/music-lab.png")
 		get_tree().quit()
 
 func _process(delta: float) -> void:
 	if controller == null or sliders.size()!=3: return
 	controller.target = Vector3(sliders[0].value,minf(1.0,sliders[1].value+risk_slider.value*controller.profile.trajectory_influence),sliders[2].value)
 	controller.trajectory.driving_risk = risk_slider.value
+	if clean_trial:
+		controller.progression.advance(18.0,trial_collisions,delta,false,controller.profile)
+		var amount: float = controller.progression.intensity
+		controller.target = Vector3(.12+.88*amount,.08+.12*amount,.1+.9*amount)
+		controller.context = (controller.context & ~8) | (8 if controller.progression.melancholy else 0)
 	controller.update_audio(delta)

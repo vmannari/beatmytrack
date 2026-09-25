@@ -40,6 +40,18 @@ int main(int argc,char **argv) {
  hysteresis->render(l,r);assert(hysteresis->drum_pattern()==2);
  while(hysteresis->beats()<8.01) hysteresis->render(l,r);
  assert(hysteresis->drum_pattern()==1);delete hysteresis;
+ auto calm=new bmt::Synth(rate,7), full=new bmt::Synth(rate,7);
+ calm->controls(0x19141f,0,128);full->controls(0xff20ff,0,128);
+ double calm_power=0,full_power=0;
+ for(int i=0;i<rate*6;++i) {float x,y;guard=true;calm->render(l,r);full->render(x,y);guard=false;calm_power+=l*l;full_power+=x*x;}
+ assert(calm->drum_pattern()==0 && calm->hook_pattern()==4);
+ assert(calm_power<full_power*.7);
+ full->controls(0xff20ff,8,128); // Collision mood wins even over high energy.
+ while(full->beats()<16.01)full->render(l,r);
+ assert(full->drum_pattern()==0 && full->hook_pattern()==5);
+ full->controls(0xff20ff,0,128);
+ while(full->beats()<20.01)full->render(l,r);
+ assert(full->drum_pattern()==2);delete calm;delete full;
  for(int hz:{44100,96000,192000}) {
   auto probe=new bmt::Synth(hz,1987);probe->controls(0xff20ff,0,128);
   guard=true;

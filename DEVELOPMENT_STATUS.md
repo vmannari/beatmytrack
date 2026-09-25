@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 V02/V04/V05/Q01: owner clarified brighter sunlit areas, restoring 24% cloud contrast and raising Grass direct sun 6%; contact-lighting-4 / kit 82. CaptureContactShading 45 passes. Concurrent music broke shared export; isolated quick export/install/launch succeeds on DN2103 with existing winter frost preserved. No new phone driving/profile test. See docs/CONTACT_LIGHTING.md (Brighter sunlit areas).
+
 2026-09-25 V02/V04/V05/Q01: owner brightness adjustment lowers Grass cloud opacity from 24% to 20%; patch size/motion unchanged, contact-lighting-3 / kit 81. CaptureContactShading 45 and quick deployment checks pass; desktop capture inspected, APK installed/launched on attached DN2103. No fresh phone driving/profile test. See docs/CONTACT_LIGHTING.md (Slightly brighter cloud shade).
 
 2026-09-25 V02/V04/V05/Q01: owner could not see clouds; contact-lighting-2 / kit 80 increases cloud opacity to 24%, reduces patch scale to 18 m and doubles drift speed. CaptureContactShading 45 and quick Android export checks pass. Installed/tested on DN2103: 176.2 m, median 16.555 ms/p95 20.456 ms; desktop/phone captures inspected, normal play restored. Grass only. See docs/CONTACT_LIGHTING.md (Cloud visibility follow-up).

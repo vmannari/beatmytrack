@@ -14,7 +14,7 @@ const MODE_CLIPPING: int = 2
 const MODE_MUD: int = 3
 const MODE_SMOKE: int = 4
 
-const WINTER_PRESENTATION_VERSION: String = "winter-spray-2"
+const WINTER_PRESENTATION_VERSION: String = "winter-spray-3"
 var snow_chips: Array[GPUParticles3D] = []
 var snow_powder: Array[GPUParticles3D] = []
 var snow_impacts: Array[GPUParticles3D] = []
@@ -470,26 +470,26 @@ func _ensure_snow() -> void:
 		snow_powder.append(powder)
 		add_child(powder)
 	for index: int in range(2):
-		var burst: GPUParticles3D = _emitter("SnowBankImpact%d" % index,32,0.42,Vector2(1.2,1.2),Color(0.91,0.96,1.0,0.62),MODE_DUST)
+		var burst: GPUParticles3D = _emitter("SnowBankImpact%d" % index,64,0.42,Vector2(0.12,0.17),Color(0.91,0.96,1.0,1.0),MODE_SAND_SPRAY)
 		burst.one_shot = true
 		burst.explosiveness = 1.0
 		burst.randomness = 0.0
 		burst.fixed_fps = VehicleSimulation.TICK_RATE
 		var process: ParticleProcessMaterial = burst.process_material
 		process.direction = Vector3.UP
-		process.spread = 85.0
-		process.initial_velocity_min = 1.1
-		process.initial_velocity_max = 3.8
-		process.gravity = Vector3(0,-7.5,0)
+		process.spread = 28.0
+		process.initial_velocity_min = 4.0
+		process.initial_velocity_max = 8.0
+		process.gravity = Vector3(0,-12.0,0)
+		process.damping_min = 0.3
+		process.damping_max = 0.8
 		process.scale_curve = _bounded_growth([0.75,0.95,1.1,0.85])
 		var gradient := Gradient.new()
 		gradient.offsets = PackedFloat32Array([0.0,0.12,0.50,1.0])
-		gradient.colors = PackedColorArray([Color(1,1,1,0.70),Color(1,1,1,0.60),Color(1,1,1,0.27),Color(1,1,1,0)])
+		gradient.colors = PackedColorArray([Color(1,1,1,1.0),Color(1,1,1,1.0),Color(1,1,1,0.85),Color(1,1,1,0)])
 		var ramp := GradientTexture1D.new()
 		ramp.gradient = gradient
 		process.color_ramp = ramp
-		(burst.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
-		(burst.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("intersection_fade",0.10)
 		snow_impacts.append(burst)
 		add_child(burst)
 
@@ -501,7 +501,7 @@ func _sample_snow(wheel: int, contact: Vector2, at: Vector3, velocity: Vector2, 
 	var moving: float = smoothstep(0.8,13.0,speed)
 	var drifting: float = smoothstep(0.07,0.35,absf(state.slip_angle()))
 	var chips: float = moving*(0.35+scrub*0.65) if loose else moving*(0.35+scrub*0.65)*drifting if kind == 8 else 0.0
-	var powder: float = chips*0.62
+	var powder: float = chips*0.62 if loose else 0.0
 	var bank_height: float = 0.0 if state.track_elevated else track.snow_banks.height_at(contact)
 	var origin: Vector3 = at+Vector3.UP*(bank_height+0.04)
 	_configure(snow_chips[wheel],origin,velocity,chips)
@@ -536,6 +536,11 @@ func _sample_bank_impact(state: VehicleState, track: NativeTrack) -> void:
 		snow_impact_position = entry
 		burst.position = VisualGeometry.world(entry)+Vector3.UP*(track.snow_banks.height_at(entry)+0.35)
 		burst.amount_ratio = clampf(state.velocity.length()/12.0,0.25,1.0)
+		var impact_process: ParticleProcessMaterial = burst.process_material
+		var travel: Vector3 = VisualGeometry.world(state.velocity.normalized())
+		impact_process.direction = (travel+Vector3.UP*0.55).normalized()
+		impact_process.initial_velocity_min = clampf(state.velocity.length()*0.45,3.0,8.0)
+		impact_process.initial_velocity_max = clampf(state.velocity.length()*0.85,5.0,14.0)
 		burst.restart()
 		burst.emitting = true
 		snow_last_burst = state.tick

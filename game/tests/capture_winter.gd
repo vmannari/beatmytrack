@@ -104,7 +104,7 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	state.velocity = Vector2(3,-9)
 	state.heading = PI
 	var frame: DriveFrame = DriveFrame.sample(0,1,0)
-	var folder: String = "res://../docs/evidence/winter-response"
+	var folder: String = "res://../docs/evidence/winter-directional"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	game.set_process(false)
 	trails.clear()
@@ -132,6 +132,9 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 			check(root.get_texture().get_image().save_png(folder+"/bank-contact.png") == OK)
 			check(effects.snow_impact_position.distance_to(state.position) > effects.collision_radius-0.3,"impact originates on body perimeter")
 			check(track.snow_banks.height_at(effects.snow_impact_position) > 0.035,"impact origin is actual bank contact")
+			var impact_process: ParticleProcessMaterial = effects.snow_impacts[0].process_material
+			check(impact_process.direction.dot(VisualGeometry.world(state.velocity.normalized())) > 0.8,"snow launches in impact travel direction")
+			check(effects.snow_impacts[0].draw_pass_1 is SphereMesh,"impact uses snow fragments instead of cloud billboards")
 			captured_impact = true
 			impact_frame = index
 		if index == impact_frame+1: check(root.get_texture().get_image().save_png(folder+"/bank-impact.png") == OK)
@@ -162,6 +165,7 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	state.velocity = Vector2(9,-9)
 	effects.sample(state,frame,probe)
 	var ice_spray: float = effects.snow_chips[0].amount_ratio
+	check(not effects.snow_powder[0].emitting and not effects.smoke_emitters[0].emitting,"ice drift emits chips without tyre clouds")
 	check(ice_spray > 0.3,"drifting on ice throws substantial snow chips")
 	probe.cells.fill(1)
 	effects.sample(state,frame,probe)

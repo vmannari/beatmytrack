@@ -21,9 +21,9 @@ void vertex() {
 }
 void fragment() {
 	vec3 world = shadow_world_position(depth_map, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	// Distinct soft-edged 18 m patches cross the view at 0.91 m/s. Clear gaps
+	// Distinct soft-edged 18 m patches drift slowly at 0.30 m/s. Clear gaps
 	// between patches keep this readable as cloud shade rather than a global tint.
-	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.85, 0.32)*elapsed) / 18.0;
+	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.28, 0.105)*elapsed) / 18.0;
 	float mask = smoothstep(0.40, 0.68, cloud_noise(p)*0.75 + cloud_noise(p*2.03+7.1)*0.25);
 	ALBEDO = vec3(0.025, 0.035, 0.05);
 	ALPHA = strength * mask;

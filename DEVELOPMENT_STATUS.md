@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 V02/V04/V05/Q01: owner requests brighter sun and slower clouds. Grass sun energy 1.06 to 1.20, cloud drift 0.91 to 0.30 m/s; contrast retained, contact-lighting-5 / kit 83. CaptureContactShading 45 and quick deployment checks pass, desktop screenshot inspected. Updated APK installed/launched on DN2103; no fresh phone driving/profile test. See docs/CONTACT_LIGHTING.md.
+
 2026-09-25 MUS01/MUS03/MUS09: owner sets Peer Gunt Backseat as inspiration. Added an isolated original 15-second riff-led rock audition: physically modelled strings, amp/cabinet, bass and dry drums; no upper synth melody. Deterministic/finite/bounded render passes, 12/24 peak string voices. Not integrated; ear/mobile acceptance pending, no Android/device test. See docs/MUSIC_REFERENCE_REVISION.md.
 
 2026-09-25 MUS01/MUS03/MUS09: owner rejected revision 2 instruments, especially the higher voice. Offline revision 3 removes upper lead/pluck/tension activity and delay, softens percussion, and supplies two 8-second same-gain backing/low-register-keyboard comparisons. Native safety/timing/determinism checks pass (11 peak voices). Ear acceptance remains open; production audio unchanged, no Android/device test. See docs/MUSIC_REFERENCE_REVISION.md.

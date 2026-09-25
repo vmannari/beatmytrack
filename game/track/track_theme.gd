@@ -54,8 +54,8 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 	environment.ambient_light_energy = 0.045 if night else 0.35
 	light.light_color = Color("8299cc") if night else Color("e7f2ff") if theme == "winter" else Color("fff1d8")
 	light.light_energy = 0.025 if night else 0.50 if theme == "storm" else 1.0
-	# Grass: slightly brighter direct sun while retaining cloud contrast.
-	if theme == "pine": light.light_energy = 1.06
+	# Grass: brighter sunlit areas while retaining cloud contrast.
+	if theme == "pine": light.light_energy = 1.20
 	if theme == "storm":
 		environment.ambient_light_color = Color("93a9bd")
 		environment.ambient_light_energy = 0.42

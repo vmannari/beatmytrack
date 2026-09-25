@@ -50,6 +50,7 @@ var impact_cracks: Control
 var trails: SkidTrails
 var sand_dust: SandDustEffect
 var tire_audio: TireAudio
+var music: DynamicMusicController
 var hud: PlaygroundHUD
 var paused: bool = false
 var previous_position: Vector2
@@ -149,6 +150,8 @@ func _ready() -> void:
 	world.add_child(sand_dust)
 	tire_audio = TireAudio.new()
 	add_child(tire_audio)
+	music = DynamicMusicController.new()
+	add_child(music)
 	camera = FollowCamera.new()
 	world.add_child(camera)
 	camera.current = true
@@ -315,6 +318,8 @@ func _process(delta: float) -> void:
 	if sim == null:
 		return
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+	if music != null and track_session != null:
+		music.present(presented.state,track_session,delta,paused or countdown_ticks > 0)
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
 	if cloud_shadow != null and not paused:
@@ -409,6 +414,7 @@ func restart() -> void:
 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
 	track_session = TrackSession.new()
+	if music != null: music.start(native_track)
 	practice_validation = TrackSession.new(120,1)
 	practice_validation_eligible = true
 	checkpoint_marker.previous_gate = -2

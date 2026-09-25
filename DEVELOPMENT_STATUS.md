@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 MUS01-MUS10/R01/V03/V05/Q01: Grass procedural-music listening slice adds native 32-voice synthesis, sample clock/sequencer, track fingerprint/map, predictive controller and F8 diagnostics/Music Lab. Native determinism/allocation/bounds/timing tests, 23 music checks, 25 graphical driving checks, 12x64 immediate-exit stress runs and quick Android export pass. Final desktop mix 170 us (peak 316 us), zero render overruns; attached phone not tested or installed. Immediate-exit pending-object warnings and ear/device acceptance remain. See docs/PROCEDURAL_MUSIC.md.
+
 2026-09-25 V02/V04/V05/Q01: owner clarified brighter sunlit areas, restoring 24% cloud contrast and raising Grass direct sun 6%; contact-lighting-4 / kit 82. CaptureContactShading 45 passes. Concurrent music broke shared export; isolated quick export/install/launch succeeds on DN2103 with existing winter frost preserved. No new phone driving/profile test. See docs/CONTACT_LIGHTING.md (Brighter sunlit areas).
 
 2026-09-25 V02/V04/V05/Q01: owner brightness adjustment lowers Grass cloud opacity from 24% to 20%; patch size/motion unchanged, contact-lighting-3 / kit 81. CaptureContactShading 45 and quick deployment checks pass; desktop capture inspected, APK installed/launched on attached DN2103. No fresh phone driving/profile test. See docs/CONTACT_LIGHTING.md (Slightly brighter cloud shade).

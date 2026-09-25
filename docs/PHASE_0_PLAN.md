@@ -725,3 +725,5 @@ G01/R03/R07/T02/V05: constructed-hairpin interior crossing detection bypasses th
 
 
 2026-09-22 G01/V03/V05/R01/R03/R07/Q01: five accumulating red race lights and simultaneous lights-out start replace road signals. Owner-supplied lamp artwork replaces procedural housings via one precomposited atlas draw, normalized to the supplied green housing geometry. The later owner-supplied race-complete panel replaces the waving flag with one texture draw and guarded tap-to-continue while retaining the automatic Results fallback. Evidence in docs/RACE_FLOW.md. No phone test/export.
+
+2026-09-25 MUS01-MUS10/R01/V03/V05/Q01: Grass procedural-music listening slice adds native 32-voice synthesis, sample clock/sequencer, track fingerprint/map, predictive controller and F8 diagnostics/Music Lab. Native determinism/allocation/bounds/timing tests, 23 music checks, 25 graphical driving checks, 12x64 immediate-exit stress runs and quick Android export pass. Final desktop mix 170 us (peak 316 us), zero render overruns; attached phone not tested or installed. Immediate-exit pending-object warnings and ear/device acceptance remain. See PROCEDURAL_MUSIC.md.

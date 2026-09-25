@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-25 R01/V04/V05/Q01: Knot profiling reproduces steering-haptic stalls without collisions; bounded Android worker reduces 30-second frames >33 ms from 184 to 0/2. Stationary tyre solver saves ~20% in an 85-stack desktop microbenchmark; 13,200 exact equivalence checks pass. Corrected synthetic-touch probe, installed APK, phone evidence and known editor/model test failures: docs/KNOT_PERFORMANCE.md.
+
 2026-09-25 R01/V03/V05/Q01: Settings directly exposes Buttons, Analog slider and Analog joystick, preserving saved layout geometry. Layout 211 + 72 synthetic and graphical menus 502 checks pass; compact screenshot inspected. Quick Android export/install/launch succeed; physical touch acceptance pending. See docs/ANALOG_STEERING_MENU.md.
 
 2026-09-25 R01/V03/V05/Q01: Settings adds saved Off/Light/Medium/Strong steering haptics with preview. Menu 26, records 53, layout 199 + 72 synthetic and graphical menus 493 checks pass; compact evidence inspected. Android quick export/install/launch succeed; physical feel pending. See docs/STEERING_HAPTICS.md.

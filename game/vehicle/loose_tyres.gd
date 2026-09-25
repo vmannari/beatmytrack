@@ -55,6 +55,19 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 				normal = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
 		car_normals.append(normal)
 		if normal != Vector2.ZERO or velocities[index] != Vector2.ZERO: solver_active = true
+	# Separated, stationary stacks cannot change this tick: the swept car test
+	# above also excludes car separation. Keep overlapping piles on the complete
+	# solver path, including sub-ULP overlaps, to preserve exact contact results.
+	if not solver_active:
+		var separated: bool = true
+		for pair: Vector2i in pairs:
+			if (points[pair.y]-points[pair.x]).length() < 1.0:
+				separated = false
+				break
+		if separated:
+			for tyre: Array in state.loose_tyres:
+				tyre[4] = fposmod(float(tyre[4]),TAU)
+			return
 	var pair_deltas: Array[Vector2] = []
 	var pair_normals: Array[Vector2] = []
 	var pair_touching: Array[bool] = []

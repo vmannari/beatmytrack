@@ -101,5 +101,18 @@ func run() -> void:
 		check(before.mark_colors == after.mark_colors and before.mark_custom == after.mark_custom and before.mark_transforms == after.mark_transforms,"early distance rejection preserves every mark exactly")
 		before.free()
 		after.free()
+	var haptics = preload("res://platform/steering_haptics.gd")
+	var gate := Semaphore.new()
+	haptics._submit(func() -> void: gate.wait())
+	var pending: int = haptics.pending_task
+	check(not WorkerThreadPool.is_task_completed(pending),"slow haptic service does not block caller")
+	haptics._submit(func() -> void: pass)
+	check(haptics.pending_task == pending,"busy haptic worker drops extra pulses without queue growth")
+	gate.post()
+	while not WorkerThreadPool.is_task_completed(pending): await process_frame
+	haptics._submit(func() -> void: pass)
+	check(haptics.pending_task != pending,"completed task is reaped before accepting a fresh pulse")
+	WorkerThreadPool.wait_for_task_completion(haptics.pending_task)
+	haptics.pending_task = -1
 	print("PERFORMANCE_TESTS checks=%d failures=%d" % [checks,failures])
 	quit(1 if failures else 0)

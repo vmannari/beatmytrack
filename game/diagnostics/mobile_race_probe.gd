@@ -145,11 +145,16 @@ func _process(_delta: float) -> void:
 		var active: Array[int] = [0,3]
 		if alternate_controls:
 			active = [int(elapsed*4.0)%2,2 if int(elapsed)%5 == 0 else 3]
-			for index: int in range(4): touch.driver.release_touch(900+index)
+		for index: int in range(4):
+			if index not in active and touch.driver.touches.has(900+index):
+				var release := InputEventScreenTouch.new()
+				release.index = 900+index
+				touch._input(release)
 		for index: int in active:
-			var event := InputEventScreenTouch.new()
+			var held: bool = touch.driver.touches.has(900+index)
+			var event: InputEvent = InputEventScreenDrag.new() if held else InputEventScreenTouch.new()
 			event.index = 900+index
-			event.pressed = true
+			if not held: event.pressed = true
 			event.position = touch.zones()[index].get_center()+Vector2(sin(elapsed*8.0)*4.0,0)
 			touch._input(event)
 	var now: int = Time.get_ticks_usec()
@@ -238,6 +243,7 @@ func _process(_delta: float) -> void:
 	output.close()
 	stage += 1
 	if stage == scales.size():
+		TouchControls.SteeringHaptics.diagnostic_synchronous = false
 		surface_probe.restore()
 		_set_particles_enabled(true)
 		(game.get("trails") as SkidTrails).visible = true
@@ -274,6 +280,8 @@ func _process(_delta: float) -> void:
 func _configure_stage() -> void:
 	if not feature_stages.is_empty():
 		var feature: String = feature_stages[stage]
+		TouchControls.SteeringHaptics.diagnostic_synchronous = feature == "haptics_sync"
+		(game.get("hud") as PlaygroundHUD).touch.haptic_strength = 0.0 if feature == "haptics_off" else TouchControls.SteeringHaptics.AMPLITUDE
 		(game.get("car") as CarVisual).set_night_headlights(probe_track.metadata.get("theme","pine") == "night_city" and feature != "headlights")
 		surface_probe.apply(feature)
 		game.set("profile_skip_telemetry",feature == "telemetry")

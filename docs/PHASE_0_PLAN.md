@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-25 V02/V04/V05/Q01: owner brightness adjustment lowers Grass cloud opacity from 24% to 20%; patch size/motion unchanged, contact-lighting-3 / kit 81. CaptureContactShading 45 and quick deployment checks pass; desktop capture inspected, APK installed/launched on attached DN2103. No fresh phone driving/profile test. See docs/CONTACT_LIGHTING.md (Slightly brighter cloud shade).
+
 2026-09-25 V02/V04/V05/Q01: owner could not see clouds; contact-lighting-2 / kit 80 increases cloud opacity to 24%, reduces patch scale to 18 m and doubles drift speed. CaptureContactShading 45 and quick Android export checks pass. Installed/tested on DN2103: 176.2 m, median 16.555 ms/p95 20.456 ms; desktop/phone captures inspected, normal play restored. Grass only. See docs/CONTACT_LIGHTING.md (Cloud visibility follow-up).
 
 2026-09-25 V02/V04/V05/Q01: contact-lighting-1 / kit 79 adds car and fixed-scenery contact shading, layer-aware bridge under-shadows and Grass-only drifting cloud shadows. CaptureContactShading 44, bridge contacts 16, construction 82, vehicle batch 35 and quick export checks pass. Installed/tested on DN2103: enabled median 16.599/16.675 ms vs hidden 16.622 ms on Knot; desktop/phone evidence inspected, normal play restored. See docs/CONTACT_LIGHTING.md for measured limits and owner acceptance.

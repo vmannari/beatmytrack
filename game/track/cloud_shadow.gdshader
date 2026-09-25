@@ -3,7 +3,7 @@ render_mode unshaded, fog_disabled, cull_disabled, depth_draw_never, depth_test_
 #include "res://track/shadow_depth.gdshaderinc"
 uniform sampler2D depth_map : hint_depth_texture, repeat_disable, filter_nearest;
 uniform float elapsed = 0.0;
-uniform float strength = 0.24;
+uniform float strength = 0.20;
 float cloud_hash(vec2 p) {
 	p = fract(p * vec2(0.1031, 0.1030));
 	p += dot(p, p.yx + 33.33);

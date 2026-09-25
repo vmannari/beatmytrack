@@ -3,7 +3,7 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 var graphical: bool = false
-const FOLDER: String = "res://../docs/evidence/contact-lighting/"
+const FOLDER: String = "res://../docs/evidence/contact-lighting-2/"
 
 func _initialize() -> void:
 	graphical = DisplayServer.get_name() != "headless"
@@ -116,8 +116,9 @@ func capture_views(game: Node, bridges: Array[Node]) -> void:
 	cloud.show()
 	var cloudy: Image = await shot("clouds-0s")
 	check(changed_pixels(shaded,cloudy) > 1000,"clouds shade world geometry")
-	(cloud.material_override as ShaderMaterial).set_shader_parameter("elapsed",45.0)
-	var moved: Image = await shot("clouds-45s")
+	check(visible_shade_pixels(shaded,cloudy) > 1000,"cloud patches darken a visible area by at least ten percent")
+	(cloud.material_override as ShaderMaterial).set_shader_parameter("elapsed",8.0)
+	var moved: Image = await shot("clouds-8s")
 	check(changed_pixels(cloudy,moved) > 1000,"cloud field visibly moves")
 	# Test a genuinely opaque CanvasLayer swatch; an empty corner is world,
 	# and translucent HUD backgrounds legitimately reveal the moving shade.
@@ -194,4 +195,13 @@ func changed_pixels(a: Image, b: Image) -> int:
 	for y: int in range(0,a.get_height(),3):
 		for x: int in range(0,a.get_width(),3):
 			if pixel_difference(a,b,Vector2i(x,y)) > 0.015: count += 1
+	return count
+
+func visible_shade_pixels(clear: Image, shaded: Image) -> int:
+	var count: int = 0
+	for y: int in range(180,650,3):
+		for x: int in range(180,1200,3):
+			var before: float = clear.get_pixel(x,y).get_luminance()
+			var after: float = shaded.get_pixel(x,y).get_luminance()
+			if before > 0.10 and (before-after)/before > 0.10: count += 1
 	return count

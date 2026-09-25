@@ -1,6 +1,8 @@
 class_name TouchControls
 extends Control
 
+const SteeringHaptics = preload("res://platform/steering_haptics.gd")
+
 const ACTIONS: Array[StringName] = [&"steer_left", &"steer_right", &"brake", &"accelerate"]
 const LABELS: Array[String] = ["LEFT", "RIGHT", "BRAKE", "THROTTLE"]
 var vehicle_id: String = "compact":
@@ -219,6 +221,8 @@ func _input(event: InputEvent) -> void:
 							owners.erase(finger)
 				owners[event.index] = action
 				_update_finger(event.index,local)
+				if action in [&"steer_left", &"steer_right"]:
+					SteeringHaptics.press()
 	elif event is InputEventScreenDrag and enabled and driver.touches.has(event.index):
 		# Diagnostic/platform adapters may seed a touch directly through DriverInput.
 		if not owners.has(event.index): owners[event.index] = driver.touches[event.index]

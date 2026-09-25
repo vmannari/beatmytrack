@@ -430,6 +430,26 @@ func _settings() -> void:
 	settings.add_child(MenuStyle.button("Customize layout", _customize_controls, true))
 	settings.add_child(MenuStyle.label("Drag steering, gas and brake into place.\nChoose buttons, horizontal steering or joystick.",18,true))
 	settings.add_child(HSeparator.new())
+	settings.add_child(MenuStyle.label("STEERING HAPTICS",16,true))
+	var haptics := HBoxContainer.new()
+	haptics.add_theme_constant_override("separation",10)
+	settings.add_child(haptics)
+	var strength: float = float(records.settings.get("steering_haptics",0.2))
+	var choices: Array[String] = ["Off", "Light", "Medium", "Strong"]
+	var amplitudes: Array[float] = [0.0, 0.2, 0.5, 1.0]
+	for index: int in range(choices.size()):
+		var amplitude: float = amplitudes[index]
+		var option: Button = MenuStyle.button(choices[index],func() -> void:
+			records.settings.steering_haptics = amplitude
+			var error: Error = records.save_records()
+			_show_screen("settings")
+			if error != OK:
+				_notice("Haptic setting could not be saved. Please try again.")
+			else:
+				TouchControls.SteeringHaptics.press(amplitude),is_equal_approx(strength,amplitude))
+		option.name = "Haptics"+choices[index]
+		option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		haptics.add_child(option)
 	settings.add_child(MenuStyle.label("KEYBOARD",16,true))
 	for hint: String in ["WASD / arrows   Steer and accelerate", "Space   Brake     ·     R   Retry     ·     Esc   Pause", "Editor: drag to move, scroll or pinch to zoom."]:
 		var label := MenuStyle.label(hint,18,true)
@@ -1230,6 +1250,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	var hud: PlaygroundHUD = game.get("hud")
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
+	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
 	hud.touch.layout = ControlLayout.from_settings(records.settings)
 
 func _edit_here(position: Vector2) -> void:

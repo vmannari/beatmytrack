@@ -28,10 +28,18 @@ func run() -> void:
 	var store := LocalRecords.new(folder.path_join("records.json"))
 	store.settings["last_track"] = "starter_circuit"
 	store.settings["favorites"] = ["starter_circuit"]
+	store.settings["steering_haptics"] = 0.0
 	check(store.save_records() == OK,"resume identity and favorites share the recoverable save")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
 	check(reloaded.settings.get("last_track") == "starter_circuit","the last raced circuit survives relaunch")
+	check(reloaded.settings.get("steering_haptics") == 0.0,"disabled haptics survives relaunch")
+	store.settings.steering_haptics = 0.5
+	check(store.save_records() == OK,"haptic strength can be saved")
+	reloaded.load_records()
+	check(reloaded.settings.get("steering_haptics") == 0.5,"custom haptic strength survives relaunch")
+	store.settings.steering_haptics = 1.1
+	check(store.save_records() == ERR_INVALID_DATA and store.settings.steering_haptics == 0.5,"invalid haptic strength rolls back to committed value")
 	store.settings["last_track"] = "../outside"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "starter_circuit","invalid resume identifiers cannot overwrite saved preferences")
 	var provider := TrackDiscoveryProvider.new()

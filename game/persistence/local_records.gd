@@ -161,6 +161,9 @@ static func _normalize(data: Variant) -> Dictionary:
 		elif field == "left_handed":
 			if not preferences[field] is bool:
 				return {}
+		elif field == "steering_haptics":
+			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > 1.0:
+				return {}
 		elif field == "touch_scale":
 			if not _number(preferences[field]) or float(preferences[field]) < 1.0 or float(preferences[field]) > 1.4:
 				return {}

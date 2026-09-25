@@ -1,5 +1,15 @@
 # Steering press haptics — 2026-09-25
 
+## Menu configuration follow-up
+
+Settings now provides **Off / Light / Medium / Strong** steering haptics. Light remains the default. Each successful selection previews its 12 ms pulse on handheld devices; Off sends no vibration. The selected choice is yellow. Race and practice controls receive the saved strength at creation.
+
+Persistence contract: optional `settings.steering_haptics`, finite number in [0,1], default 0.2. Menu presets are 0 / 0.2 / 0.5 / 1. Existing schema-2 saves without this field retain their previous behavior. The existing atomic save and rollback apply; failed saves show an error and restore the committed selection.
+
+Changed: `game/core/app.gd`, `game/ui/touch_controls.gd`, `game/platform/steering_haptics.gd`, `game/persistence/local_records.gd`, `game/tests/test_menu_presentation.gd`, this document, status/plan and screenshot evidence.
+
+Actual follow-up commands using the same dev.ps1 prefix below: `TestMenus` passes 26 checks including disabled/strength reload and invalid-value rollback; `TestRecords` passes 53; `TestControlLayout` passes 199 plus 72 synthetic viewport checks; `CaptureMenus` passes 493 checks across three sizes. Compact [Settings screenshot](evidence/steering-haptics/settings-960x540.png) inspected. `ExportAndroid -QuickValidation` succeeds with startup/driving/catalog/menu checks and the existing SDK fallback; `InstallAndroid` and `LaunchAndroid` succeed on the attached phone. `git diff --check` passes. No physical touchscreen or vibration-feel test performed; verify all four choices, preview, restart persistence and race/practice feedback on the phone. iOS remains untested.
+
 Requirements: owner-requested subtle steering feedback; R01/V03/V05/Q01 input usability and platform validation.
 
 Each accepted new touchscreen steering press requests one 12 ms pulse at amplitude 0.2. This includes buttons, horizontal steering and joystick acquisition. Holding, dragging, releasing, canceled events, disabled controls and pedal presses do not request pulses. There is no continuous vibration or direction-crossing pulse. Canonical inputs, physics and replay rules are unchanged.

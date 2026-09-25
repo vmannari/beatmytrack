@@ -10,6 +10,7 @@ var vehicle_id: String = "compact":
 		vehicle_id = value
 		queue_redraw()
 var driver: DriverInput
+var haptic_strength: float = SteeringHaptics.AMPLITUDE
 var enabled: bool = true:
 	set(value):
 		enabled = value
@@ -222,7 +223,7 @@ func _input(event: InputEvent) -> void:
 				owners[event.index] = action
 				_update_finger(event.index,local)
 				if action in [&"steer_left", &"steer_right"]:
-					SteeringHaptics.press()
+					SteeringHaptics.press(haptic_strength)
 	elif event is InputEventScreenDrag and enabled and driver.touches.has(event.index):
 		# Diagnostic/platform adapters may seed a touch directly through DriverInput.
 		if not owners.has(event.index): owners[event.index] = driver.touches[event.index]

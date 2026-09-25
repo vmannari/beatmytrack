@@ -1,7 +1,7 @@
 class_name MusicProfile
 extends Resource
 ## Grass MVP. Shared tuning resource, never canonical vehicle configuration.
-@export_range(128,135,1) var bpm: int = 132
+@export_range(128,135,1) var bpm: int = 128
 @export_range(1.0,3.0) var lookahead_seconds: float = 2.0
 @export_range(0.0,1.0) var lookahead_weight: float = 0.6
 @export_range(0.1,4.0) var smoothing_seconds: float = 0.8

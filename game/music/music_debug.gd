@@ -12,8 +12,8 @@ func _draw() -> void:
 		"Energy %.2f   Tension %.2f   Hook %.2f" % [c.state.x,c.state.y,c.state.z],
 		"Risk %.2f  Off %.2f  Over %.2f  Slip %.2f" % [c.trajectory.driving_risk,c.trajectory.off_track_risk,c.trajectory.overspeed_risk,c.trajectory.slip_risk],
 		"Beat %.2f   Bar %d   Phrase %d" % [c.clock.beat_position,c.clock.current_bar+1,c.clock.current_phrase+1],
-		"Drum %s   Bass %s   Hook %s" % [c.telemetry.get("drum_pattern","-"),c.telemetry.get("bass_pattern","-"),c.telemetry.get("hook_pattern","-")],
-		"Voices %s / peak %s / 32" % [c.telemetry.get("active_voices",0),c.telemetry.get("peak_voices",0)],
+		"Drum %s   Bass %s   Riff %s" % [c.telemetry.get("drum_pattern","-"),c.telemetry.get("bass_pattern","-"),c.telemetry.get("hook_pattern","-")],
+		"Voices %s / peak %s / 28" % [c.telemetry.get("active_voices",0),c.telemetry.get("peak_voices",0)],
 		"Mix %s us (%.1f%%)  control %d us" % [c.telemetry.get("mix_us",0),float(c.telemetry.get("mix_us",0))*float(c.telemetry.get("sample_rate",48000))/maxf(1.0,float(c.telemetry.get("buffer_frames",512)))/10000.0,c.controller_us],
 		"Buffer %s   render overruns %s" % [c.telemetry.get("buffer_frames",0),c.telemetry.get("render_budget_overruns",0)],
 		"Native DSP unavailable" if not c.available else "Seed %d / engine v%d" % [c.analyzer.seed_value,TrackMusicAnalyzer.MUSIC_ENGINE_VERSION]]

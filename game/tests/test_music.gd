@@ -63,16 +63,11 @@ func run() -> void:
 	await create_timer(.2).timeout
 	controller.present(vehicle,TrackSession.new(),.1,false)
 	check(controller.player.playing and controller.telemetry.has("beat_position"),"native playback and telemetry")
+	check(controller.telemetry.get("engine_version",0) == TrackMusicAnalyzer.MUSIC_ENGINE_VERSION,"native and track fingerprint versions agree")
 	controller.queue_free()
 	await process_frame
 	await create_timer(.15).timeout
-	var retired: Array[WeakRef] = []
-	for i: int in range(16):
-		var transient := DynamicMusicController.new()
-		root.add_child(transient)
-		transient.start(null)
-		retired.append(weakref(transient.player.get_stream_playback()))
-		transient.free()
+	var retired: Array[WeakRef] = create_retirement_probes()
 	await create_timer(.25).timeout
 	check(retired.all(func(value: WeakRef) -> bool: return value.get_ref()==null),"audio mixer retires freed playback pools")
 	if "--capture-drive" in OS.get_cmdline_user_args():
@@ -88,9 +83,21 @@ func run() -> void:
 		check(game.music.clock.beat_position>8.0,"audio clock advances during driving")
 		print("MUSIC_DRIVE: ",game.music.telemetry," controller_us=",game.music.controller_us)
 		await RenderingServer.frame_post_draw
-		root.get_texture().get_image().save_png("res://../docs/evidence/music/music-drive.png")
+		root.get_texture().get_image().save_png("res://../docs/evidence/music-rock/music-drive.png")
 		game.queue_free()
 		await process_frame
 		await create_timer(.2).timeout
 	print("MUSIC: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures else 0)
+
+# End the creating stack frame before inspecting weak references: GDScript can
+# retain temporary playback references in the frame containing get_stream_playback.
+func create_retirement_probes() -> Array[WeakRef]:
+	var retired: Array[WeakRef] = []
+	for i: int in range(16):
+		var transient := DynamicMusicController.new()
+		root.add_child(transient)
+		transient.start(null)
+		retired.append(weakref(transient.player.get_stream_playback()))
+		transient.free()
+	return retired

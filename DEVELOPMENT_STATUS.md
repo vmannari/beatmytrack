@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 MUS01-MUS10/R01/V03/V05/Q01: owner accepts original rock audition for driving trial. Runtime v4 replaces high synth voices with physical strings/amp, bass and dry drums at 128 BPM, retaining predictive track controls. Native safety/timing/rate tests, 24 music and 26 graphical drive checks, three exit stress runs and quick Android export pass. Installed on attached DN2103; 20-second driving smoke advances 176.597 m with zero observed render-budget overruns. Normal play restored. Listening/thermal acceptance remains; see docs/PROCEDURAL_MUSIC.md.
+
 2026-09-25 V02/V04/V05/Q01: owner requests brighter sun and slower clouds. Grass sun energy 1.06 to 1.20, cloud drift 0.91 to 0.30 m/s; contrast retained, contact-lighting-5 / kit 83. CaptureContactShading 45 and quick deployment checks pass, desktop screenshot inspected. Updated APK installed/launched on DN2103; no fresh phone driving/profile test. See docs/CONTACT_LIGHTING.md.
 
 2026-09-25 MUS01/MUS03/MUS09: owner sets Peer Gunt Backseat as inspiration. Added an isolated original 15-second riff-led rock audition: physically modelled strings, amp/cabinet, bass and dry drums; no upper synth melody. Deterministic/finite/bounded render passes, 12/24 peak string voices. Not integrated; ear/mobile acceptance pending, no Android/device test. See docs/MUSIC_REFERENCE_REVISION.md.

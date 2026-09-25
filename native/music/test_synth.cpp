@@ -40,8 +40,18 @@ int main(int argc,char **argv) {
  hysteresis->render(l,r);assert(hysteresis->drum_pattern()==2);
  while(hysteresis->beats()<8.01) hysteresis->render(l,r);
  assert(hysteresis->drum_pattern()==1);delete hysteresis;
+ for(int hz:{44100,96000,192000}) {
+  auto probe=new bmt::Synth(hz,1987);probe->controls(0xff20ff,0,128);
+  guard=true;
+  for(int i=0;i<hz*3;++i) {probe->render(l,r);assert(std::isfinite(l)&&std::isfinite(r)&&std::abs(l)<.45f&&std::abs(r)<.45f);}
+  guard=false;
+  assert(std::abs(probe->beats()-6.4)<1e-9);
+  probe->controls(0xff20ff,0,135);
+  for(int i=0;i<hz;++i)probe->render(l,r);
+  assert(std::abs(probe->beats()-8.65)<1e-9);delete probe;
+ }
  // Drift check across block sizes is implicit: render has no block-dependent timing.
  auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();
- std::printf("PASS: 60s exact seeded PCM, variant difference, allocation guard, bounds, clock, pause, finish, bar scheduling, hysteresis. peak=%d rms=%.6f max=%.6f; three renders + WAV %lld ms\n",a->peak_voices(),std::sqrt(square/frames),max_sample,(long long)ms);
+ std::printf("PASS: 60s exact seeded PCM, variant difference, allocation guard, bounds, clock, pause, finish, bar scheduling, hysteresis, 44.1/96/192 kHz and tempo change. peak=%d rms=%.6f max=%.6f; three renders + WAV %lld ms\n",a->peak_voices(),std::sqrt(square/frames),max_sample,(long long)ms);
  delete a;delete b;delete other;
 }

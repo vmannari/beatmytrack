@@ -2,7 +2,7 @@ class_name BeatClock
 extends RefCounted
 ## Read model of the native sample clock. Never integrates frame delta.
 var beat_position: float = 0.0
-var bpm: float = 132.0
+var bpm: float = 128.0
 var current_beat: int: get = _beat
 var current_bar: int: get = _bar
 var current_phrase: int: get = _phrase

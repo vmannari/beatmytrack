@@ -32,7 +32,7 @@ public:
   return frames;
  }
  Dictionary telemetry() const {
-  Dictionary d;d["beat_position"]=beat_milli.load()/1000.;d["active_voices"]=voices.load();d["peak_voices"]=peak.load();
+  Dictionary d;d["engine_version"]=bmt::MUSIC_ENGINE_VERSION;d["beat_position"]=beat_milli.load()/1000.;d["active_voices"]=voices.load();d["peak_voices"]=peak.load();
   d["mix_us"]=cpu_us.load();d["max_mix_us"]=max_us.load();d["render_budget_overruns"]=budget_misses.load();d["buffer_frames"]=buffer_frames.load();d["sample_rate"]=synth->rate;
   d["drum_pattern"]=patterns.load()&255;d["bass_pattern"]=(patterns.load()>>8)&255;d["hook_pattern"]=(patterns.load()>>16)&255;return d;
  }

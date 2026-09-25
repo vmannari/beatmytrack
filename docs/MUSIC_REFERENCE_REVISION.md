@@ -1,5 +1,9 @@
 # Reference-led music audition, 2026-09-25
 
+## Runtime trial follow-up
+
+The owner accepted revision 4 for an in-game trial. Runtime MUSIC_ENGINE_VERSION is now 4, including track seeds and native telemetry; Windows/Android manifests use v4 library names. The original audition and measurements below remain historical evidence. Current architecture, tests and remaining listening acceptance are in [PROCEDURAL_MUSIC.md](PROCEDURAL_MUSIC.md).
+
 ## Revision 4: Peer Günt “Backseat” direction
 
 The owner named **Peer Günt, “Backseat”** as the musical inspiration. This supersedes the attempted synth/keyboard palette for the next listening candidate. The working brief is a low-register riff-led hard-rock instrumental: distorted rhythm guitar, bass following the riff, and dry backbeat drums, with no exposed upper synth melody. Reference identity verified through [Apple Music](https://music.apple.com/us/song/252143243); [Songsterr's instrument listing](https://www.songsterr.com/a/wsa/peer-gunt-backseat-tab-s78211) identifies distortion guitar. Neither page provides verified listening access here; this is a style interpretation, not a claim to have listened to the recording. No lyric, riff transcription, melody, sample or recording from the song is used.

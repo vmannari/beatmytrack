@@ -42,7 +42,7 @@ func _ready() -> void:
 	tempo_label.text = "BPM (restart phrase)"
 	tempo.add_child(tempo_label)
 	var bpm := SpinBox.new()
-	bpm.min_value = 128; bpm.max_value = 135; bpm.value = 132
+	bpm.min_value = 128; bpm.max_value = 135; bpm.value = 128
 	tempo.add_child(bpm)
 	bpm.value_changed.connect(func(value: float) -> void:
 		controller.profile = controller.profile.duplicate()
@@ -72,11 +72,11 @@ func _ready() -> void:
 				"Mute": controller.player.volume_db = -80.0 if controller.player.volume_db > -70.0 else controller.profile.volume_db
 		)
 	status = Label.new()
-	status.text = "F8 debug / harmonic cycle 8 bars / arrangement cycle 16 bars"
+	status.text = "F8 debug / rock riff 4 bars / final-lap phrases 8 bars"
 	panel.add_child(status)
 	if "--music-capture" in OS.get_cmdline_user_args():
 		await get_tree().create_timer(2.0).timeout
-		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music/music-lab.png")
+		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music-rock/music-lab.png")
 		get_tree().quit()
 
 func _process(delta: float) -> void:

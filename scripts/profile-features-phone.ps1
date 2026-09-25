@@ -1,5 +1,5 @@
 param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile, [switch]$GrassProfile, [switch]$DesertProfile, [switch]$DesertCostProfile, [switch]$HapticsProfile, [switch]$AlternateControls,
-    [switch]$WinterStress, [switch]$WinterProfile, [switch]$HeadlightsProfile, [switch]$Baseline, [string]$TrackId = '', [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
+    [switch]$WinterStress, [switch]$WinterProfile, [switch]$HeadlightsProfile, [switch]$ContactLightingProfile, [switch]$Baseline, [string]$TrackId = '', [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
@@ -33,6 +33,7 @@ try {
         if ($DesertCostProfile) { $config.features = @('baseline','particles','baseline') }
         if ($HeadlightsProfile) { $config.features = @('headlights','baseline','headlights','baseline') }
         if ($WinterProfile) { $config.features = @('baseline','particles','baseline') }
+        if ($ContactLightingProfile) { $config.features = @('baseline','contact_lighting','baseline') }
         if ($WinterStress) { $config.winter_stress = $true; $config.touch_stress = $false }
         if ($Baseline) { $config.features = @('baseline') }
         if ($HapticsProfile) { $config.features = @('haptics_sync','baseline','haptics_off','baseline'); $config.alternate_controls = $true }

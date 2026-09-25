@@ -246,6 +246,7 @@ func _process(_delta: float) -> void:
 		TouchControls.SteeringHaptics.diagnostic_synchronous = false
 		surface_probe.restore()
 		_set_particles_enabled(true)
+		game.call("set_contact_lighting_enabled",true)
 		(game.get("trails") as SkidTrails).visible = true
 		(game.get("hud") as PlaygroundHUD).visible = true
 		if game.get("storm_weather") != null: game.get("storm_weather").visible = true
@@ -280,6 +281,7 @@ func _process(_delta: float) -> void:
 func _configure_stage() -> void:
 	if not feature_stages.is_empty():
 		var feature: String = feature_stages[stage]
+		game.call("set_contact_lighting_enabled",feature != "contact_lighting")
 		TouchControls.SteeringHaptics.diagnostic_synchronous = feature == "haptics_sync"
 		(game.get("hud") as PlaygroundHUD).touch.haptic_strength = 0.0 if feature == "haptics_off" else TouchControls.SteeringHaptics.AMPLITUDE
 		(game.get("car") as CarVisual).set_night_headlights(probe_track.metadata.get("theme","pine") == "night_city" and feature != "headlights")

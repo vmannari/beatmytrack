@@ -7,6 +7,7 @@ const RAIL_SIDE: Color = Color("60635f")
 
 static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> void:
 	if bridges.is_empty(): return
+	ContactShading.build_bridges(parent,bridges)
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var deck := SurfaceTool.new()

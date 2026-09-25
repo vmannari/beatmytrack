@@ -41,6 +41,10 @@ var driver := DriverInput.new()
 var frame := DriveFrame.new()
 var recorder := HandlingRecorder.new()
 var car: CarVisual
+var contact_shadow: MeshInstance3D
+var cloud_shadow: MeshInstance3D
+var cloud_elapsed: float = 0.0
+var contact_lighting_enabled: bool = true
 var camera: FollowCamera
 var impact_cracks: Control
 var trails: SkidTrails
@@ -132,6 +136,7 @@ func _ready() -> void:
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	world.add_child(car)
+	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
 	trails = SkidTrails.new()
 	trails.wheelbase = handling.wheelbase
@@ -147,6 +152,7 @@ func _ready() -> void:
 	camera = FollowCamera.new()
 	world.add_child(camera)
 	camera.current = true
+	_update_cloud_shadows()
 	hud = PlaygroundHUD.new()
 	hud.production_mode = production_mode
 	hud.editor_test = editor_test
@@ -311,6 +317,9 @@ func _process(delta: float) -> void:
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
+	if cloud_shadow != null and not paused:
+		cloud_elapsed += delta
+		(cloud_shadow.material_override as ShaderMaterial).set_shader_parameter("elapsed",cloud_elapsed)
 	if profile_enabled: profile_weather_us += Time.get_ticks_usec() - profile_start
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
 	var section_start: int = profile_start
@@ -340,6 +349,8 @@ func _process(delta: float) -> void:
 		car.rotation.x += presented.state.kerb_offset.y
 		car.rotation.z = presented.state.kerb_offset.z
 	car.present_roll(presented.state, weight)
+	ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation)
+	if not contact_lighting_enabled: contact_shadow.hide()
 	if profile_enabled:
 		profile_car_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
@@ -588,6 +599,7 @@ func _capture_frame() -> void:
 
 
 func _update_weather() -> void:
+	_update_cloud_shadows()
 	if weather_layer != null:
 		remove_child(weather_layer)
 		weather_layer.queue_free()
@@ -602,3 +614,22 @@ func _update_weather() -> void:
 	storm_weather.name = "StormWeather"
 	storm_weather.light = biome_light
 	weather_layer.add_child(storm_weather)
+
+
+func _update_cloud_shadows() -> void:
+	if camera == null: return
+	var grass: bool = native_track != null and str(native_track.metadata.get("theme","pine")) == "pine"
+	if grass and cloud_shadow == null:
+		cloud_elapsed = 0.0
+		cloud_shadow = ContactShading.cloud_shadow(camera)
+	elif not grass and cloud_shadow != null:
+		cloud_shadow.get_parent().remove_child(cloud_shadow)
+		cloud_shadow.queue_free()
+		cloud_shadow = null
+
+
+func set_contact_lighting_enabled(enabled: bool) -> void:
+	# Diagnostic comparison only; normal races always enable the visual kit.
+	contact_lighting_enabled = enabled
+	for effect: Node3D in get_tree().get_nodes_in_group("contact_lighting"):
+		if is_ancestor_of(effect): effect.visible = enabled

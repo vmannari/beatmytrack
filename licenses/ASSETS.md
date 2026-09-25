@@ -81,3 +81,5 @@ Original code-authored geometry in creator_prop_visual.gd and native_track_visua
 2026-09-19: `game/track/storm_wet_glass.gdshader` adapts the layered procedural bead/hash/refraction approach in the owner-supplied shader attachment (2381afe3-faca-46be-ab17-8031a0e5b942/pasted-text.txt), with project-authored occupancy, rivulets, pause-aware clock integration and lighting. Supplied mockup is a visual reference only and is not shipped. No external media or packages imported.
 
 2026-09-19: `game/assets/menu/discovery-storm.png` is original built-in image_gen artwork for Storm menu track cards. No third-party reference assets supplied or shipped. Prompt and generation record: `docs/STORM_MENU_PROMPT.md`.
+
+2026-09-25 contact-lighting-1: contact/bridge/cloud shadow shaders and depth-volume geometry are project-authored procedural code. Cloud patterns use mathematical value noise; no external texture, reference artwork, generated raster asset or runtime service is shipped. See docs/CONTACT_LIGHTING.md.

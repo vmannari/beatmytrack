@@ -46,9 +46,21 @@ int main(int argc,char **argv) {
  for(int i=0;i<rate*6;++i) {float x,y;guard=true;calm->render(l,r);full->render(x,y);guard=false;calm_power+=l*l;full_power+=x*x;}
  assert(calm->drum_pattern()==0 && calm->hook_pattern()==4);
  assert(calm_power<full_power*.7);
+ assert(calm->layer_mask()==1 && full->layer_mask()==63);
+ assert(calm->peak_voices()<=2);
+ auto stages=new bmt::Synth(rate,7);
+ constexpr uint32_t levels[5]={90,128,166,204,242};
+ constexpr int masks[5]={3,7,15,31,63};
+ for(int stage=0;stage<5;++stage){
+  stages->controls(0xff1400|levels[stage],0,128);
+  double until=stages->beats()+4.01;
+  while(stages->beats()<until){guard=true;stages->render(l,r);guard=false;}
+  assert(stages->layer_mask()==masks[stage]);
+ }
+ delete stages;
  full->controls(0xff20ff,8,128); // Collision mood wins even over high energy.
  while(full->beats()<16.01)full->render(l,r);
- assert(full->drum_pattern()==0 && full->hook_pattern()==5);
+ assert(full->drum_pattern()==0 && full->hook_pattern()==5 && full->layer_mask()==1);
  full->controls(0xff20ff,0,128);
  while(full->beats()<20.01)full->render(l,r);
  assert(full->drum_pattern()==2);delete calm;delete full;
@@ -64,6 +76,6 @@ int main(int argc,char **argv) {
  }
  // Drift check across block sizes is implicit: render has no block-dependent timing.
  auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();
- std::printf("PASS: 60s exact seeded PCM, variant difference, allocation guard, bounds, clock, pause, finish, bar scheduling, hysteresis, 44.1/96/192 kHz and tempo change. peak=%d rms=%.6f max=%.6f; three renders + WAV %lld ms\n",a->peak_voices(),std::sqrt(square/frames),max_sample,(long long)ms);
+ std::printf("PASS: 60s exact seeded PCM, variant difference, allocation guard, bounds, clock, pause, finish, bar scheduling, hysteresis, solo-only intro, five ensemble stages, recovery, 44.1/96/192 kHz and tempo change. peak=%d rms=%.6f max=%.6f; three renders + WAV %lld ms\n",a->peak_voices(),std::sqrt(square/frames),max_sample,(long long)ms);
  delete a;delete b;delete other;
 }

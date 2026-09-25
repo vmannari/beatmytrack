@@ -11,7 +11,7 @@ class BMTPlayback : public AudioStreamPlayback {
  GDCLASS(BMTPlayback,AudioStreamPlayback)
  std::unique_ptr<bmt::Synth> synth;
  std::shared_ptr<bmt::Controls> controls;
- std::atomic<uint32_t> running{0}, beat_milli{0}, voices{0}, peak{0}, cpu_us{0}, max_us{0}, budget_misses{0}, buffer_frames{0}, patterns{0};
+ std::atomic<uint32_t> running{0}, beat_milli{0}, voices{0}, peak{0}, cpu_us{0}, max_us{0}, budget_misses{0}, buffer_frames{0}, patterns{0}, layers{1};
 protected:
  static void _bind_methods() { ClassDB::bind_method(D_METHOD("telemetry"),&BMTPlayback::telemetry); }
 public:
@@ -25,6 +25,7 @@ public:
   synth->controls(controls->state.load(),controls->context.load(),controls->bpm.load(),controls->brightness.load()/1000.f,controls->metallicity.load()/1000.f,controls->decay.load()/1000.f,controls->width.load()/1000.f);
   for(int i=0;i<frames;++i) {float l=0,r=0;if(running.load(std::memory_order_relaxed)) synth->render(l,r);buffer[i].left=l;buffer[i].right=r;}
   beat_milli.store(uint32_t(synth->beats()*1000)); voices.store(synth->voice_count());peak.store(synth->peak_voices());
+  layers.store(synth->layer_mask());
   patterns.store(synth->drum_pattern() | synth->bass_pattern()<<8 | synth->hook_pattern()<<16);
   uint32_t us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());
   cpu_us.store(us);max_us.store(std::max(us,max_us.load()));buffer_frames.store(frames);
@@ -32,7 +33,7 @@ public:
   return frames;
  }
  Dictionary telemetry() const {
-  Dictionary d;d["engine_version"]=bmt::MUSIC_ENGINE_VERSION;d["beat_position"]=beat_milli.load()/1000.;d["active_voices"]=voices.load();d["peak_voices"]=peak.load();
+  Dictionary d;d["layers"]=layers.load();d["engine_version"]=bmt::MUSIC_ENGINE_VERSION;d["beat_position"]=beat_milli.load()/1000.;d["active_voices"]=voices.load();d["peak_voices"]=peak.load();
   d["mix_us"]=cpu_us.load();d["max_mix_us"]=max_us.load();d["render_budget_overruns"]=budget_misses.load();d["buffer_frames"]=buffer_frames.load();d["sample_rate"]=synth->rate;
   d["drum_pattern"]=patterns.load()&255;d["bass_pattern"]=(patterns.load()>>8)&255;d["hook_pattern"]=(patterns.load()>>16)&255;return d;
  }

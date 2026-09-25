@@ -89,7 +89,7 @@ func _ready() -> void:
 	panel.add_child(status)
 	if "--music-capture" in OS.get_cmdline_user_args():
 		await get_tree().create_timer(2.0).timeout
-		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music-progression/music-lab.png")
+		get_viewport().get_texture().get_image().save_png("res://../docs/evidence/music-ensemble/music-lab.png")
 		get_tree().quit()
 
 func _process(delta: float) -> void:

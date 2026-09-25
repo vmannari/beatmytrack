@@ -5,6 +5,8 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 func _draw() -> void:
 	var c: DynamicMusicController = controller
+	var stages: Dictionary = {1:"Solo",3:"Harmony",7:"Bass",15:"Rhythm",31:"Guitar",63:"Full ensemble"}
+	var stage: String = str(stages.get(c.telemetry.get("layers",1),"Transition"))
 	var font: Font = ThemeDB.fallback_font
 	draw_rect(Rect2(12,65,390,535),Color(0.025,0.04,0.07,0.94))
 	var lines: Array[String] = ["MUSIC  /  Grass MVP  /  F8", "%.1f m   %.1f m/s   ahead %.1f m" % [c.distance,c.speed,c.lookahead_distance],
@@ -14,8 +16,8 @@ func _draw() -> void:
 		"Avg %.1f km/h  build %.0f%%  wait %.1fs" % [c.progression.average_speed*3.6,c.progression.intensity*100,c.progression.recovery_seconds],
 		"Clean qualifying %.1fs / %s" % [c.progression.qualifying_seconds,"recovery" if c.progression.melancholy else "building" if c.progression.fast else "below pace"],
 		"Beat %.2f   Bar %d   Phrase %d" % [c.clock.beat_position,c.clock.current_bar+1,c.clock.current_phrase+1],
-		"Drum %s   Bass %s   Riff %s" % [c.telemetry.get("drum_pattern","-"),c.telemetry.get("bass_pattern","-"),c.telemetry.get("hook_pattern","-")],
-		"Voices %s / peak %s / 28" % [c.telemetry.get("active_voices",0),c.telemetry.get("peak_voices",0)],
+		"%s / drum %s / riff %s" % [stage,c.telemetry.get("drum_pattern","-"),c.telemetry.get("hook_pattern","-")],
+		"Voices %s / peak %s / 32" % [c.telemetry.get("active_voices",0),c.telemetry.get("peak_voices",0)],
 		"Mix %s us (%.1f%%)  control %d us" % [c.telemetry.get("mix_us",0),float(c.telemetry.get("mix_us",0))*float(c.telemetry.get("sample_rate",48000))/maxf(1.0,float(c.telemetry.get("buffer_frames",512)))/10000.0,c.controller_us],
 		"Buffer %s   render overruns %s" % [c.telemetry.get("buffer_frames",0),c.telemetry.get("render_budget_overruns",0)],
 		"Native DSP unavailable" if not c.available else "Seed %d / engine v%d" % [c.analyzer.seed_value,TrackMusicAnalyzer.MUSIC_ENGINE_VERSION]]

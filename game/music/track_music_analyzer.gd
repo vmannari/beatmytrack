@@ -1,6 +1,6 @@
 class_name TrackMusicAnalyzer
 extends RefCounted
-const MUSIC_ENGINE_VERSION: int = 5
+const MUSIC_ENGINE_VERSION: int = 6
 var length: float = 0.0
 var spacing: float = 2.0
 var seed_value: int = 1

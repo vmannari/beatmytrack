@@ -1,5 +1,7 @@
 # Clean-driving music progression
 
+Current sound revision: [v6 solo-to-ensemble arrangement](MUSIC_ENSEMBLE.md) replaces the v5 opening beat while retaining the clean-driving state model.
+
 2026-09-25, MUSIC_ENGINE_VERSION 5. Owner request supersedes geometry-led intensity and automatic final-lap maximum energy. MUS01/MUS03/MUS05/MUS08/MUS09/MUS10; R01/V03/V05/Q01 remain applicable. Grass only, rock instrument identity retained.
 
 ## Behaviour and tuning

@@ -88,6 +88,7 @@ func run() -> void:
 	controller.present(vehicle,TrackSession.new(),.1,false)
 	check(controller.player.playing and controller.telemetry.has("beat_position"),"native playback and telemetry")
 	check(controller.telemetry.get("engine_version",0) == TrackMusicAnalyzer.MUSIC_ENGINE_VERSION,"native and track fingerprint versions agree")
+	check(controller.telemetry.get("layers",0)==1,"race begins with solo instrument only")
 	controller.progression.intensity = 1.0
 	vehicle.collision_count = 1
 	var final_session := TrackSession.new()
@@ -113,7 +114,7 @@ func run() -> void:
 		check(game.music.clock.beat_position>8.0,"audio clock advances during driving")
 		print("MUSIC_DRIVE: ",game.music.telemetry," controller_us=",game.music.controller_us)
 		await RenderingServer.frame_post_draw
-		root.get_texture().get_image().save_png("res://../docs/evidence/music-progression/music-drive.png")
+		root.get_texture().get_image().save_png("res://../docs/evidence/music-ensemble/music-drive.png")
 		game.queue_free()
 		await process_frame
 		await create_timer(.2).timeout

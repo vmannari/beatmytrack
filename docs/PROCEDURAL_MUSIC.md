@@ -1,6 +1,8 @@
 # Beat My Track procedural music — Grass listening milestone
 
-2026-09-25. MUSIC_ENGINE_VERSION **5**. Requirement IDs below describe this owner-requested local slice; R01/V03/V05/Q01 also apply. Canonical handling, race rules and track formats are unchanged.
+Current sound revision: [v6 solo-to-ensemble arrangement](MUSIC_ENSEMBLE.md) replaces the v5 opening beat while retaining the clean-driving state model.
+
+2026-09-25. MUSIC_ENGINE_VERSION **6**. Requirement IDs below describe this owner-requested local slice; R01/V03/V05/Q01 also apply. Canonical handling, race rules and track formats are unchanged.
 
 ## Current progression override (v5)
 

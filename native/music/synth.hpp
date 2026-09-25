@@ -6,7 +6,7 @@
 #include <cstdint>
 namespace bmt {
 constexpr float TAU=6.28318530718f;
-constexpr int MUSIC_ENGINE_VERSION=5, VOICES=24;
+constexpr int MUSIC_ENGINE_VERSION=6, VOICES=18;
 struct Controls {
  std::atomic<uint32_t> state{0x00ff20d9},context{0},bpm{128},seed{1};
  std::atomic<uint32_t> brightness{650},metallicity{350},decay{650},width{450};
@@ -34,7 +34,27 @@ struct Cabinet {
   last=pre_low;return sum*.5f;
  }
 };
+struct SoftVoice {
+ float phase=0,increment=0,age=0,gate=0,gain=0,pan=0; bool active=false;
+};
 class Synth {
+ std::array<SoftVoice,10> soft_voices{};
+ std::array<float,4097> sine{};
+ int layers=1;
+ float soft_slew=0,ensemble=0;
+ float wave(float phase)const {
+  phase-=std::floor(phase);float p=phase*4096;int i=int(p);
+  return sine[i]+(sine[i+1]-sine[i])*(p-i);
+ }
+ void soft_note(int pitch,float beats,float level,float pan) {
+  SoftVoice *v=&soft_voices[0];
+  for(auto &candidate:soft_voices){if(!candidate.active){v=&candidate;break;}if(candidate.age>v->age)v=&candidate;}
+  *v=SoftVoice{};v->active=true;v->increment=float(440*std::pow(2.,(pitch-69)/12.)/rate);
+  v->gate=beats*60/bpm;v->gain=level;v->pan=pan;
+ }
+ void bass_note(int pitch) {
+  bass_inc=440.f*std::pow(2.f,(pitch-12-69)/12.f)/rate;bass_env=1;bass_age=0;
+ }
  std::array<StringVoice,VOICES> voices{};
  Cabinet left_amp,right_amp;
  uint32_t seed=92173;
@@ -68,7 +88,7 @@ class Synth {
    string_note(pitch+7,beats*60/bpm,pan,velocity*.72f,side?.018f:-.018f);
    string_note(pitch+12,beats*60/bpm,pan,velocity*(hook_on?.38f:.18f),side?.012f:-.012f);
   }
-  bass_inc=440.f*std::pow(2.f,(pitch-12-69)/12.f)/rate;bass_env=1;bass_age=0;
+  bass_note(pitch);
  }
  void sequence(int step) {
   int s=step%8,absolute_bar=step/8,bar=absolute_bar%4;
@@ -76,6 +96,15 @@ class Synth {
    melancholy=recovery_requested;
    if(!melancholy && energy>.72f) mode=2; else if(energy<.60f) mode=1;
    if(energy<.30f || melancholy) mode=0;
+   // Add distinct roles, rather than starting with the whole band turned down.
+   layers=1;
+   if(!melancholy) {
+    if(energy>.28f)layers|=2; // sustained inner harmony
+    if(energy>.44f)layers|=4; // low foundation
+    if(energy>.60f)layers|=8; // rhythm arrives late
+    if(energy>.74f)layers|=16; // accepted rhythm-guitar riff
+    if(energy>.86f)layers|=32; // restrained answering voice
+   }
    if(absolute_bar%4==0 || melancholy) {if(hook>.62f)hook_on=true;else if(hook<.38f)hook_on=false;}
    if(absolute_bar%8==0)final_on=final_requested;
   }
@@ -83,10 +112,23 @@ class Synth {
    finished=true;finish_beat=beats();chord(40,1.5f,1);kick=1;kick_pitch=1;kick_phase=0;return;
   }
   if(finished)return;
-  if(s==0 || (s==4 && mode>0) || ((mode==2) && bar%2==1 && s==7)) {kick=1;kick_pitch=1;kick_phase=0;}
-  if((s==2 && mode>0) || s==6)snare=mode==0?.30f:1.f;
-  if(mode>0 || s%2==0)hat=mode==0?.35f:(s%2?.65f:1.f);
-  if(tension>.65f && mode==2 && s==7 && bar==3)snare=.2f;
+  constexpr int melody[4]={52,55,59,57};
+  constexpr int recovery[4]={52,50,48,50};
+  if(s==0) {
+   soft_note(melancholy?recovery[bar]:melody[bar],3.65f,.17f,0);
+   if(layers&2) {
+    // Em, Em7, Cmaj7, Am7: close, low voicings under the motif.
+    constexpr int harmony[4][3]={{47,55,59},{50,55,59},{48,52,55},{45,52,55}};
+    for(int i=0;i<3;++i)soft_note(harmony[bar][i],3.15f,.050f,(i-1)*.5f);
+   }
+  }
+  if((layers&32) && s==4)soft_note(bar==2?55:52,1.6f,.065f,-.35f);
+  if((layers&4) && !(layers&16) && (s==0 || s==4))bass_note(bar==2?48:bar==3?45:40);
+  if(layers&8) {
+   if(s==0 || (s==4 && mode>0) || (mode==2 && bar%2==1 && s==7)) {kick=1;kick_pitch=1;kick_phase=0;}
+   if(s==2 || s==6)snare=mode==2?.8f:.45f;
+   if(s%2==0 || mode==2)hat=s%2?.35f:.55f;
+  }
   // Authored E-minor/blues power-chord rhythm, not the reference's riff/melody.
   constexpr int riffs[4][8]={{40,40,-1,43,40,-1,45,43},
                             {40,-1,40,43,45,-1,43,40},
@@ -96,18 +138,14 @@ class Synth {
   // Track fingerprints select a small authored pickup, never runtime-random notes.
   if(variant==1 && bar==3 && s==6)pitch=45;
   if(variant==2 && bar==1 && s==7)pitch=43;
-  if(mode==0) {
-   // Calm opening stays on E; recovery answers with a low E-D-C-D descent.
-   constexpr int recovery_roots[4]={40,38,36,38};
-   if(s==0 || s==4)chord(melancholy?recovery_roots[bar]:40,.70f*gate_scale,.45f);
-   return;
-  }
-  if(mode==1 && s%2==1)return;
+  if(!(layers&16))return;
   if(pitch>=0)chord(pitch,((s==1 || s==3)?.24f:.42f)*gate_scale*(1-.15f*tension),s%2?.8f:1.f);
  }
 public:
  double rate=48000; uint32_t bpm=128;
  explicit Synth(double sample_rate=48000,uint32_t track_seed=1):rate(std::clamp(sample_rate,8000.,192000.)) {
+  for(int i=0;i<=4096;++i)sine[i]=std::sin(TAU*i/4096.f);
+  soft_slew=1.f/float(rate);
   expression_slew=float(1-std::exp(-1./(rate*.25)));
   seed=track_seed?track_seed:1;variant=int(track_seed%3);
   ring_size=rate<=80000?1024:rate<=160000?2048:4096;
@@ -124,6 +162,7 @@ public:
  }
  double beats()const{return double(beat_units)/(rate*60.);}
  uint64_t samples()const{return sample_count;}
+ int layer_mask()const{return layers;}
  int voice_count()const{return active_count;}
  int drum_pattern()const{return mode;}
  int bass_pattern()const{return variant;}
@@ -147,6 +186,19 @@ public:
    float output=value*v.gain*attack*release;
    gl+=output*(1-v.pan)*.5f;gr+=output*(1+v.pan)*.5f;
   }
+  float warm_l=0,warm_r=0;
+  for(auto &v:soft_voices) {
+   if(!v.active)continue;
+   v.age+=soft_slew;
+   float release=std::clamp(1.f-(v.age-v.gate)/.65f,0.f,1.f);
+   if(release<=0){v.active=false;continue;}
+   ++active;
+   float attack=std::clamp(v.age/.32f,0.f,1.f);attack=attack*attack*(3-2*attack);
+   release=release*release*(3-2*release);
+   float tone=(wave(v.phase)+.18f*wave(v.phase*2)+.06f*wave(v.phase*3))*v.gain*attack*release;
+   v.phase+=v.increment;v.phase-=std::floor(v.phase);
+   warm_l+=tone*(1-v.pan)*.5f;warm_r+=tone*(1+v.pan)*.5f;
+  }
   active_count=active+(bass_env>.0001f)+(kick>.0001f)+(snare>.0001f)+(hat>.0001f);peak=std::max(peak,active_count);
   float bass=std::sin(TAU*bass_phase)+.55f*std::sin(TAU*bass_phase*2)+.20f*std::sin(TAU*bass_phase*3);
   bass_phase+=bass_inc;bass_phase-=std::floor(bass_phase);bass_age+=1.f/rate;bass_env*=bd;
@@ -161,7 +213,7 @@ public:
   float fade=std::min(1.f,float(sample_count)/float(rate*.012f));
   if(kick<1e-12f)kick=0;if(snare<1e-12f)snare=0;if(hat<1e-12f)hat=0;if(bass_env<1e-12f)bass_env=0;
   if(finished)fade*=float(std::clamp(1.-(beats()-finish_beat)/3.,0.,1.));
-  l=fade*(left_amp.tick(gl*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));r=fade*(right_amp.tick(gr*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));
+  l=fade*(warm_l+left_amp.tick(gl*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));r=fade*(warm_r+right_amp.tick(gr*(.2f+.8f*expression))*.58f+bass*(.45f+.55f*expression)+drums*(.5f+.5f*expression));
   l=.45f*l/(1+std::abs(l));r=.45f*r/(1+std::abs(r));++sample_count;beat_units+=bpm;
  }
 };

@@ -7,7 +7,7 @@
 
 namespace bmt {
 // Offline ear-review candidate. Not included by extension.cpp or shipping builds.
-constexpr int MUSIC_ENGINE_VERSION = 2;
+constexpr int MUSIC_ENGINE_VERSION = 3;
 constexpr double TAU = 6.283185307179586;
 constexpr int VOICES = 32;
 enum Instrument { KICK, SNARE, HAT, OPEN_HAT, PERC, BASS, PLUCK, PAD, PULSE, LEAD, ACCENT };
@@ -44,6 +44,7 @@ class Synth {
  float energy=.6f,tension=.2f,hook=.7f, brightness=.65f,metal=.35f,decay_preset=.65f,width=.45f;
  float out_gain=0, dc_l=0,dc_r=0,last_l=0,last_r=0;
  int seed_variant=0,drum_variant=0,voicing=0; uint64_t sample_count=0; int active=0, peak=0;
+ bool backing_only=false;
  float sin_lut(float phase) const {
   phase-=std::floor(phase); float p=phase*4096; int i=int(p);
   return sine[i]+(sine[i+1]-sine[i])*(p-i);
@@ -62,13 +63,13 @@ class Synth {
   v->increment=float(440*std::pow(2.,(pitch-69)/12.)/rate); v->pan=pan*width;v->env=1;
   float seconds=.20f, cutoff=2000;
   if(kind==KICK) {seconds=.075f;v->attack=.001f;}
-  if(kind==SNARE) {seconds=.085f;cutoff=5200;v->attack=.0008f;}
-  if(kind==HAT) {seconds=.017f;cutoff=5800;v->attack=.0004f;}
-  if(kind==OPEN_HAT) {seconds=.085f;cutoff=5800;v->attack=.0004f;}
+  if(kind==SNARE) {seconds=.085f;cutoff=2600;v->attack=.002f;}
+  if(kind==HAT) {seconds=.017f;cutoff=3200;v->attack=.002f;}
+  if(kind==OPEN_HAT) {seconds=.085f;cutoff=3200;v->attack=.002f;}
   if(kind==BASS) {seconds=.8f;cutoff=700+brightness*700;v->release=.045f;}
   if(kind==PLUCK) {seconds=.15f+.16f*decay_preset;cutoff=900+brightness*1300;v->release=.10f;}
   if(kind==PAD) {seconds=12.f;cutoff=1400;v->attack=.08f;v->release=.18f;}
-  if(kind==LEAD) {seconds=2.f;cutoff=1500;v->attack=.02f;v->release=.12f;}
+  if(kind==LEAD) {seconds=.32f;cutoff=750;v->attack=.035f;v->release=.15f;}
   if(kind==PULSE) {seconds=.10f;cutoff=1100;}
   v->decay=std::exp(-1.f/(float(rate)*std::max(.01f,seconds)));
   v->alpha=1-std::exp(-float(TAU)*cutoff/float(rate));
@@ -95,9 +96,8 @@ class Synth {
   float variation=.96f+float(((step%256)*13+seed_variant*7)%9)*.005f;
   if(s%4==0 && (bar_mode>0 || s%8==0)) note(KICK,36,.44f*variation,.18f);
   if(bar_mode==2 && bar%2==1 && s==(drum_variant==1?7:14)) note(KICK,36,.20f,.13f);
-  if(s==4 || s==12) note(SNARE,54,.38f*variation,.19f);
-  if(s%2==0) note(HAT,90,(s%4==2?.15f:.075f)*variation,.05f,-.3f);
-  if(bar_mode==2 && s==14) note(OPEN_HAT,87,.07f,.14f,.3f);
+  if(s==4 || s==12) note(SNARE,54,.28f*variation,.19f);
+  if(s%2==0) note(HAT,90,(s%4==2?.06f:.035f)*variation,.05f,-.3f);
   if(tension>.60f && bar%2==1 && s==15) note(PERC,62,.055f,.07f,.4f);
   if(BASS_MASK[seed_variant%3] & (1u<<s)) {
    int bass_pitch=root-12+(s==14 && bar%2==1?7:0);
@@ -109,19 +109,19 @@ class Synth {
    for(int i=0;i<4;++i) note(PAD,CHORDS[(bar/2)%4][i],.15f,7.45f*beat_seconds,(i%2?1:-1)*.45f);
   }
   int hook_variant=bar%8==6?2:seed_variant%2;
-  for(const auto &n:HOOKS[hook_variant]) if(n.step==step%32) {
+  for(const auto &n:HOOKS[hook_variant]) if(!backing_only && n.step==step%32) {
    // Same motif, same tonal centre. Later phrases answer a third lower.
    int pitch=n.pitch;
    if(bar%8==4 && n.step==18) pitch=67;
-   note(LEAD,pitch,n.velocity*(hook_on?.29f:.11f),n.length*beat_seconds,-.12f);
+   note(LEAD,pitch-12,n.velocity*(hook_on?.24f:.10f),n.length*beat_seconds,-.12f);
   }
-  if(bar%2==1 && (s==6 || s==14)) note(PLUCK,CHORDS[(bar/2)%4][2]+12,.12f,.25f*beat_seconds,.3f);
-  if(tension>.45f && s%4==2) note(PULSE,root,.075f*tension,.14f*beat_seconds,.15f);
+  // No upper-register pluck answer or tension ostinato in this timbre review.
   if(bar%8==7 && s==15) note(SNARE,54,.075f,.08f);
  }
  bool final_requested=false;
 public:
  double rate=48000; uint32_t bpm=132;
+ void set_backing_only(bool value) {backing_only=value;}
  explicit Synth(double sample_rate=48000,uint32_t seed=1):rate(sample_rate) {
   for(int i=0;i<=4096;++i) sine[i]=float(std::sin(TAU*i/4096.));
   random=seed?seed:1;seed_variant=int(seed%3);drum_variant=int((seed/3)%3);voicing=int((seed/9)%2);
@@ -167,8 +167,11 @@ public:
      x=.8f*sin_lut(v.phase+metal*.10f*v.transient*sin_lut(v.phase*2))+.24f*saw(v.phase,v.increment);
      v.filter+=v.alpha*(x-v.filter);x=v.filter*env;v.phase+=v.increment;break;
     case LEAD:
-     x=.75f*osc+.35f*sin_lut(v.phase*2)+.18f*sin_lut(v.phase*3)+.13f*saw(v.phase,v.increment);
-     v.filter+=v.alpha*(x-v.filter);x=v.filter*env;v.phase+=v.increment;break;
+     // Short, softly attacked midrange chord-key tone, replacing the exposed
+     // sine/harmonic upper lead. Two-pole damping; no FM or bright transient.
+     x=.65f*saw(v.phase,v.increment)+.35f*saw(v.phase2,v.increment*1.001f);
+     v.filter+=v.alpha*(x-v.filter);v.filter2+=v.alpha*(v.filter-v.filter2);
+     x=v.filter2*env;v.phase+=v.increment;v.phase2+=v.increment*1.001f;break;
     case PULSE:
      x=(osc+.18f*sin_lut(v.phase*2))*env;v.phase+=v.increment;break;
     case ACCENT:
@@ -176,7 +179,7 @@ public:
    }
    v.phase-=std::floor(v.phase);v.phase2-=std::floor(v.phase2);
    x*=v.gain; float vl=x*(1-v.pan)*.5f,vr=x*(1+v.pan)*.5f;l+=vl;r+=vr;
-   if(v.kind==PLUCK || v.kind==LEAD) {send_l+=vl;send_r+=vr;}
+   // Dry comparison: no repeating upper-note delay cloud.
   }
   peak=std::max(peak,active);
   uint32_t read=(delay_cursor+16384-std::min(16383u,uint32_t(rate*60/bpm*.375)))%16384;

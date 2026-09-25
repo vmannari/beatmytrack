@@ -1,5 +1,16 @@
 # Reference-led music audition, 2026-09-25
 
+## Revision 3: rejected upper instrument
+
+The owner also rejected revision 2's instrument sound, especially the higher-frequency part. Revision 2 remains evidence of a rejected direction, not an accepted score. The current offline candidate removes its upper lead register, pluck answers, tension ostinato and repeating lead delay. The replacement moves the foreground down an octave, uses a short, softly attacked detuned band-limited waveform with two-pole 750 Hz damping, and reduces hat/snare brightness. This is an intended muted midrange keyboard character, not a verified listening description.
+
+- [Backing only, 8 seconds](evidence/music-reference/revision-03-backing.wav).
+- [Same backing with replacement midrange instrument, 8 seconds](evidence/music-reference/revision-03-warm.wav).
+
+Both use 120 BPM and exactly the same offline gain (1.8); removing the melody does not normalize the backing louder. Measured RMS is -18.59 / -18.40 dBFS, with peaks -7.99 / -7.91 dBFS. Production engine v1 remains unchanged. The candidate's internal version is now 3; `audition_v2.hpp` retains its path to keep the experiment isolated from shipping code.
+
+Actual commands: compile `test_synth.cpp` with `-DBMT_REFERENCE_AUDITION`, run `build/music-reference-tests.exe`; compile `render_audition.cpp`; render `revision-03-backing.wav 120 backing` and `revision-03-warm.wav 120 warm`; analyze both through `scripts/analyze_music_reference.py`. Native determinism, allocation guard, output bounds, clock, pause/finish, bar scheduling and hysteresis pass (11 peak voices). Preview peaks are 8/9 voices. See `native-tests-v3.log` and the matching JSON files. No game UI change, Android build, installation or device test. Phone attachment was not checked this turn. Timbre/ear acceptance remains unresolved; numeric tests do not approve the sound.
+
 The owner rejected the first soundtrack's instruments, melody and composition as a whole, and supplied `wizard-f3b25f658f06473f9b1f60ee300f461e-00-TRACK_01-audio_base64-3a7322c1aac3bea2.wav` from Downloads as a closer reference. This is a replacement sound/composition audition for MUS01/MUS03/MUS09, not a claim that the original Grass score is accepted.
 
 ## Reviewable result

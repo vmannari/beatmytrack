@@ -1,5 +1,7 @@
 # Solo opening and growing ensemble
 
+Owner subsequently rejected this opening/finale. Current listening work is the [compatible background-music bank](MUSIC_MODULAR_BANK.md); the v6 runtime has not yet been replaced.
+
 2026-09-25, MUSIC_ENGINE_VERSION 6. MUS01/MUS03/MUS08/MUS09/MUS10. The owner rejected the v5 opening beat and requested a smoother single-instrument opening that develops into fuller harmony. This replaces v5's quiet-but-already-complete band. Clean-driving qualification, collision reset and track lookahead remain unchanged; no handling edits.
 
 ## Musical design

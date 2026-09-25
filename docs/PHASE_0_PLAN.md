@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-25 MUS01/MUS03/MUS06/MUS09/MUS10: owner requests interchangeable per-race phrases and unobtrusive background music after rejecting v6 timbres. Offline bank v1 provides three options for five compatible roles (243 combinations), with brisk rounded notes and no rock finale. All 243 structural/render checks and four 30 s auditions pass numeric checks (10/24 peak voices). Production unchanged pending listening; no UI, Android export or device test. See docs/MUSIC_MODULAR_BANK.md.
+
 2026-09-25 MUS01/MUS03/MUS08-MUS10: v6 replaces the rejected opening beat with a single sustained low-register melody, then adds inner harmony, bass, drums, guitar and an answering line as clean-driving intensity rises. Collision recovery returns to solo. Production-core 48 s preview, native layer/allocation/timing tests, 36 music / 38 driving checks and quick Android export pass. No phone attached; no installation or device/listening acceptance. See docs/MUSIC_ENSEMBLE.md.
 
 2026-09-25 MUS01/MUS03/MUS05/MUS08-MUS10: music v5 starts calmly and builds from sustained clean forward speed (3 s average, 36 km/h threshold, 4 s qualification, 24 s build). Collisions reset into a 5 s recovery and sparse descending minor phrase; final lap cannot override it. Native tests, 35 music / 37 driving checks and quick Android export pass. ADB has no attached device; new APK not installed or phone-tested. Tuning/ear acceptance remains; see docs/MUSIC_DRIVING_PROGRESSION.md.

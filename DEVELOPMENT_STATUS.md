@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 MUS01/MUS03/MUS09: owner sets Peer Gunt Backseat as inspiration. Added an isolated original 15-second riff-led rock audition: physically modelled strings, amp/cabinet, bass and dry drums; no upper synth melody. Deterministic/finite/bounded render passes, 12/24 peak string voices. Not integrated; ear/mobile acceptance pending, no Android/device test. See docs/MUSIC_REFERENCE_REVISION.md.
+
 2026-09-25 MUS01/MUS03/MUS09: owner rejected revision 2 instruments, especially the higher voice. Offline revision 3 removes upper lead/pluck/tension activity and delay, softens percussion, and supplies two 8-second same-gain backing/low-register-keyboard comparisons. Native safety/timing/determinism checks pass (11 peak voices). Ear acceptance remains open; production audio unchanged, no Android/device test. See docs/MUSIC_REFERENCE_REVISION.md.
 
 2026-09-25 MUS01/MUS03/MUS09: owner rejected the whole soundtrack and supplied a WAV reference. Added an isolated original v2 composition/DSP audition at 120 and 128 BPM: coherent minor-key motif, explicit chord releases, fuller bass/pads and reduced metallic activity. Native determinism/allocation/timing/bounds tests pass, peak 13 voices. Production music remains v1 pending ear review; no runtime rebuild, Android export or device test. See docs/MUSIC_REFERENCE_REVISION.md.

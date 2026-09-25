@@ -1,5 +1,23 @@
 # Reference-led music audition, 2026-09-25
 
+## Revision 4: Peer Günt “Backseat” direction
+
+The owner named **Peer Günt, “Backseat”** as the musical inspiration. This supersedes the attempted synth/keyboard palette for the next listening candidate. The working brief is a low-register riff-led hard-rock instrumental: distorted rhythm guitar, bass following the riff, and dry backbeat drums, with no exposed upper synth melody. Reference identity verified through [Apple Music](https://music.apple.com/us/song/252143243); [Songsterr's instrument listing](https://www.songsterr.com/a/wsa/peer-gunt-backseat-tab-s78211) identifies distortion guitar. Neither page provides verified listening access here; this is a style interpretation, not a claim to have listened to the recording. No lyric, riff transcription, melody, sample or recording from the song is used.
+
+[Original rock-direction audition, 15 seconds](evidence/music-reference/revision-04-rock.wav). Eight bars at **128 BPM** (chosen within the original game range, not claimed as the reference's tempo), with a new E-minor/blues power-chord rhythm. Synthetic damped string delay lines feed a two-times-oversampled saturator and cabinet filter. Two lightly detuned rhythm parts occupy the sides; additive bass and synthetic kick/snare/hat remain central. There is no pad, high synth lead or metallic pluck layer.
+
+Changed files: `native/music/rock_audition.cpp`, this brief, status/phase notes, WAV/JSON/test log under `docs/evidence/music-reference`. This is an isolated offline sound prototype, **not integrated into the game**; it has no gameplay-state controls yet. Production engine remains v1. MUS01/MUS03/MUS09 apply; acceptance of the earlier proposed signature pluck is superseded by this listening direction, not presumed granted to the new guitar tone.
+
+Actual commands:
+
+```powershell
+g++ -std=c++17 -O2 -static native/music/rock_audition.cpp -o build/rock-audition.exe
+./build/rock-audition.exe docs/evidence/music-reference/revision-04-rock.wav
+python scripts/analyze_music_reference.py docs/evidence/music-reference/revision-04-rock.wav docs/evidence/music-reference/revision-04-rock.json
+```
+
+Actual checks: two independent synthesizers produce identical stereo samples across 15 seconds; all samples are finite and bounded; output is non-silent; peak 12 of 24 string voices. Offline normalization gives -18 dBFS RMS and -8.02 dBFS peak. Logs/measurement JSON are retained. Allocation tracing, mobile callback profiling, long-running drift, game integration and listening acceptance are not claimed for this separate prototype. No UI change/screenshot, Android export, installation or phone test; attachment not rechecked. The next acceptance question is whether the guitar/drum timbre is suitable, before expanding the arrangement or replacing runtime instruments.
+
 ## Revision 3: rejected upper instrument
 
 The owner also rejected revision 2's instrument sound, especially the higher-frequency part. Revision 2 remains evidence of a rejected direction, not an accepted score. The current offline candidate removes its upper lead register, pluck answers, tension ostinato and repeating lead delay. The replacement moves the foreground down an octave, uses a short, softly attacked detuned band-limited waveform with two-pole 750 Hz damping, and reduces hat/snare brightness. This is an intended muted midrange keyboard character, not a verified listening description.

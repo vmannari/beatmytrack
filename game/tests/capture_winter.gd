@@ -104,7 +104,7 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	state.velocity = Vector2(3,-9)
 	state.heading = PI
 	var frame: DriveFrame = DriveFrame.sample(0,1,0)
-	var folder: String = "res://../docs/evidence/winter-effects"
+	var folder: String = "res://../docs/evidence/winter-response"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	game.set_process(false)
 	trails.clear()
@@ -112,6 +112,8 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	camera.position = Vector3(0,22,42)
 	camera.look_at(Vector3(0,0,24))
 	camera.size = 23.0
+	var captured_impact: bool = false
+	var impact_frame: int = -100
 	for index: int in range(105):
 		state.tick = index*2
 		state.position = Vector2(0,-18.0-float(index)*0.12)
@@ -126,7 +128,14 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 		camera.size = 23.0
 		await create_timer(0.016).timeout
 		await RenderingServer.frame_post_draw
-		if index == 64: check(root.get_texture().get_image().save_png(folder+"/bank-impact.png") == OK)
+		if not captured_impact and effects.snow_burst_count > 0:
+			check(root.get_texture().get_image().save_png(folder+"/bank-contact.png") == OK)
+			check(effects.snow_impact_position.distance_to(state.position) > effects.collision_radius-0.3,"impact originates on body perimeter")
+			check(track.snow_banks.height_at(effects.snow_impact_position) > 0.035,"impact origin is actual bank contact")
+			captured_impact = true
+			impact_frame = index
+		if index == impact_frame+1: check(root.get_texture().get_image().save_png(folder+"/bank-impact.png") == OK)
+		if index == 20: check(root.get_texture().get_image().save_png(folder+"/ice-drift.png") == OK)
 	check(effects.snow_burst_count > 0,"crossing bank emits impact snow")
 	check(effects.snow_burst_count <= 3,"bank cloud cooldown prevents sustained burst spam")
 	check(effects.snow_chips.size() == 4 and effects.snow_impacts.size() == 2,"bounded wheel emitters and impact pool")
@@ -143,6 +152,24 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	check(effects.snow_burst_count == bursts,"elevated wheels cannot strike ground snowbanks")
 	effects.clear()
 	check(effects.snow_burst_count == 0 and not effects.snow_impacts[0].emitting,"restart clears snow impacts")
+	check(effects.snow_impacts[0].lifetime <= 0.45,"bank burst settles within half a second")
+	check(effects.snow_impacts[0].explosiveness == 1.0,"impact particles spawn together immediately")
+	var burst_process: ParticleProcessMaterial = effects.snow_impacts[0].process_material
+	check((burst_process.color_ramp as GradientTexture1D).gradient.get_color(0).a > 0.5,"impact starts visible without dust fade-in")
+	state.track_elevated = false
+	state.position = Vector2.ZERO
+	probe.cells.fill(0)
+	state.velocity = Vector2(9,-9)
+	effects.sample(state,frame,probe)
+	var ice_spray: float = effects.snow_chips[0].amount_ratio
+	check(ice_spray > 0.3,"drifting on ice throws substantial snow chips")
+	probe.cells.fill(1)
+	effects.sample(state,frame,probe)
+	check(absf(effects.snow_chips[0].amount_ratio-ice_spray) < 0.05,"full ice drift uses off-track snow emission strength")
+	probe.cells.fill(0)
+	state.velocity = state.forward()*12.0
+	effects.sample(state,frame,probe)
+	check(not effects.snow_chips[0].emitting,"straight ice driving does not spray loose snow")
 	state.track_elevated = false
 	state.position = Vector2.ZERO
 	probe.cells.fill(1)

@@ -140,6 +140,7 @@ func _ready() -> void:
 	sand_dust = SandDustEffect.new()
 	sand_dust.wheelbase = handling.wheelbase
 	sand_dust.track_width = handling.track_width
+	sand_dust.collision_radius = handling.collision_radius
 	world.add_child(sand_dust)
 	tire_audio = TireAudio.new()
 	add_child(tire_audio)

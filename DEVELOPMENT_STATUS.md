@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 V02/V04/V05/Q01: winter-spray-2 uses off-track snow chips during ice drift and a short 0.42-second burst at the swept body/bank contact. CaptureWinter 153, TestSoil 163 and TestIce 69 checks pass. Desktop captures inspected; no phone test/export. See docs/WINTER_TYRE_EFFECTS.md.
+
 2026-09-24 V02/V04/V05/Q01: kit 78 adapts desert worn/translucent finish checkers to winter frost-white and slate-blue pigments. CaptureWinter 143 and TestDesert 53 checks pass; desktop screenshot inspected. No phone test/export. See docs/WINTER_SURFACES.md.
 
 2026-09-24 V02/V04/V05/Q01: winter-specific ice scuffs, loose/packed snow ruts, slush wakes, tyre chips/powder and pooled snowbank-impact clouds. CaptureWinter 138, TestSoil 163, TestIce 69 and TestDesert 53 checks pass; desktop effects evidence inspected. No phone test/export. See docs/WINTER_TYRE_EFFECTS.md.

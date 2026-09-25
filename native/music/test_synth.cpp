@@ -1,4 +1,8 @@
+#ifdef BMT_REFERENCE_AUDITION
+#include "audition_v2.hpp"
+#else
 #include "synth.hpp"
+#endif
 #include <cassert>
 #include <chrono>
 #include <cstdio>

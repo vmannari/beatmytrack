@@ -183,6 +183,17 @@ func run() -> void:
 	await process_frame
 	app.call("_show_screen","settings")
 	await process_frame
+	var menu_layout_before: Dictionary = ControlLayout.from_settings(app.get("records").settings)
+	for choice: String in ["Analog slider","Analog joystick","Buttons","Analog slider"]:
+		var mode_button: Button = _button(app.get("root_ui"),choice)
+		check(mode_button != null,"Settings exposes "+choice)
+		mode_button.pressed.emit()
+		await process_frame
+		var stored := LocalRecords.new(path)
+		stored.load_records()
+		var expected: String = "horizontal" if choice == "Analog slider" else "joystick" if choice == "Analog joystick" else "buttons"
+		check(stored.settings.control_layout.steering_type == expected,"menu mode persists: "+choice)
+		check(stored.settings.control_layout.accelerator == menu_layout_before.accelerator,"changing mode preserves pedal geometry")
 	var customize: Button = _button(app.get("root_ui"),"Customize layout")
 	check(customize != null,"Settings exposes Customize layout")
 	customize.pressed.emit()

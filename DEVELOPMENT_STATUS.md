@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-25 R01/V03/V05/Q01: Settings directly exposes Buttons, Analog slider and Analog joystick, preserving saved layout geometry. Layout 211 + 72 synthetic and graphical menus 502 checks pass; compact screenshot inspected. Quick Android export/install/launch succeed; physical touch acceptance pending. See docs/ANALOG_STEERING_MENU.md.
+
 2026-09-25 R01/V03/V05/Q01: Settings adds saved Off/Light/Medium/Strong steering haptics with preview. Menu 26, records 53, layout 199 + 72 synthetic and graphical menus 493 checks pass; compact evidence inspected. Android quick export/install/launch succeed; physical feel pending. See docs/STEERING_HAPTICS.md.
 
 2026-09-25 R01/V03/V05/Q01: subtle steering-touch haptics (12 ms, amplitude 0.2), handheld adapter and Android vibration permission. Mobile input 555, layout 199 plus 72 synthetic checks and quick Android export pass; APK installed on attached phone. Physical haptic feel remains owner acceptance. See docs/STEERING_HAPTICS.md.

@@ -76,7 +76,7 @@ func _ready() -> void:
 		_changed())
 	top.add_child(presets)
 	method = OptionButton.new()
-	for title: String in ["Left / right buttons","Horizontal steering","Joystick"]: method.add_item(title)
+	for title: String in ["Left / right buttons","Analog slider","Analog joystick"]: method.add_item(title)
 	method.custom_minimum_size = Vector2(240,48)
 	method.select(ControlLayout.METHODS.find(touch.layout.steering_type))
 	method.item_selected.connect(func(index: int) -> void:

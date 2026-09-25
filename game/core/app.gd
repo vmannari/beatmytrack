@@ -423,12 +423,29 @@ func _settings() -> void:
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	columns.add_child(panel)
 	var settings := VBoxContainer.new()
-	settings.add_theme_constant_override("separation",14)
+	settings.add_theme_constant_override("separation",10)
 	panel.add_child(settings)
 	settings.add_child(MenuStyle.label("DRIVING CONTROLS",28))
 	settings.add_child(MenuStyle.label("Set up your touch controls for a comfortable reach.",18,true))
+	var steering_modes := HBoxContainer.new()
+	steering_modes.add_theme_constant_override("separation",10)
+	settings.add_child(steering_modes)
+	var current_layout: Dictionary = ControlLayout.from_settings(records.settings)
+	var steering_titles: Array[String] = ["Buttons", "Analog slider", "Analog joystick"]
+	for index: int in range(ControlLayout.METHODS.size()):
+		var method: String = ControlLayout.METHODS[index]
+		var option: Button = MenuStyle.button(steering_titles[index],func() -> void:
+			var config: Dictionary = ControlLayout.from_settings(records.settings)
+			config.steering_type = method
+			records.settings.control_layout = config
+			var error: Error = records.save_records()
+			_show_screen("settings")
+			if error != OK: _notice("Steering mode could not be saved. Please try again."),current_layout.steering_type == method)
+		option.name = "Steering_"+method
+		option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		steering_modes.add_child(option)
 	settings.add_child(MenuStyle.button("Customize layout", _customize_controls, true))
-	settings.add_child(MenuStyle.label("Drag steering, gas and brake into place.\nChoose buttons, horizontal steering or joystick.",18,true))
+	settings.add_child(MenuStyle.label("Analog: slide farther left or right to steer more.\nCustomize layout to move and resize your controls.",18,true))
 	settings.add_child(HSeparator.new())
 	settings.add_child(MenuStyle.label("STEERING HAPTICS",16,true))
 	var haptics := HBoxContainer.new()
@@ -461,7 +478,7 @@ func _customize_controls() -> void:
 	editor.records = records
 	root_ui.visible = false
 	add_child(editor)
-	editor.closed.connect(func() -> void: root_ui.visible = true)
+	editor.closed.connect(func() -> void: _show_screen("settings"))
 
 func _save_settings() -> void:
 	records.settings.touch_scale = ui_touch_scale

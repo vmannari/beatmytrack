@@ -34,6 +34,10 @@ var compare_trails: bool = false
 var probe_track: NativeTrack
 var compare_particles: bool = false
 var particle_modes: Array[bool] = [true,true,true]
+var winter_stress: bool = false
+var winter_reset_cycle: int = -1
+var snow_chip_frames: int = 0
+var snow_powder_frames: int = 0
 
 func _ready() -> void:
 	set_process(false)
@@ -61,6 +65,7 @@ func _start() -> void:
 			shadows = [true]
 		sample_seconds = clampf(float(config.get("seconds",45.0)),10.0,180.0)
 		record_samples = true
+	winter_stress = config is Dictionary and config.get("winter_stress",false)
 	touch_stress = config is Dictionary and config.get("touch_stress",false)
 	if config is Dictionary and config.get("compare_lights",false):
 		scales = [0.667,0.667,0.667]
@@ -133,6 +138,7 @@ func _start() -> void:
 	print("MOBILE_PROBE_START scale=", scales[stage])
 
 func _process(_delta: float) -> void:
+	if winter_stress: _winter_excursion()
 	if compare_trails and not trail_modes[stage]: (game.get("trails") as SkidTrails).clear()
 	if touch_stress:
 		var touch: TouchControls = (game.get("hud") as PlaygroundHUD).touch
@@ -158,6 +164,10 @@ func _process(_delta: float) -> void:
 		if float(tyre[2]) != 0.0 or float(tyre[3]) != 0.0: moving += 1
 	peak_moving_tyres = maxi(peak_moving_tyres,moving)
 	if elapsed > warmup_seconds:
+		var snow: SandDust = game.get("sand_dust")
+		if snow.visible:
+			if snow.snow_chips.any(func(emitter: GPUParticles3D) -> bool: return emitter.emitting): snow_chip_frames += 1
+			if snow.snow_powder.any(func(emitter: GPUParticles3D) -> bool: return emitter.emitting): snow_powder_frames += 1
 		speeds.append(game.get("sim").state.velocity.length()*3.6)
 		frame_ms.append(duration)
 		process_ms.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
@@ -206,6 +216,10 @@ func _process(_delta: float) -> void:
 	report.tyre_impact = tyre_impact
 	report.trails_saturated = trail_modes[stage]
 	report.particles_enabled = particle_modes[stage]
+	report.winter_stress = winter_stress
+	report.snow_chip_frames = snow_chip_frames
+	report.snow_powder_frames = snow_powder_frames
+	report.snow_bank_bursts = (game.get("sand_dust") as SandDust).snow_burst_count
 	report.trail_instances = (game.get("trails") as SkidTrails).instances.visible_instance_count
 	report.peak_moving_tyres = peak_moving_tyres
 	report.collisions = game.get("sim").state.collision_count
@@ -239,6 +253,9 @@ func _process(_delta: float) -> void:
 		queue_free()
 		return
 	elapsed = 0.0
+	winter_reset_cycle = -1
+	snow_chip_frames = 0
+	snow_powder_frames = 0
 	frame_ms.clear()
 	process_ms.clear()
 	physics_ms.clear()
@@ -297,3 +314,33 @@ func _set_particles_enabled(enabled: bool) -> void:
 	effect.visible = enabled
 	for emitter: GPUParticles3D in effect.get_children():
 		emitter.speed_scale = 1.0 if enabled else 0.0
+
+
+func _winter_excursion() -> void:
+	# Explicit debug-only workload: real physics drives across banks every six seconds.
+	# Reset between excursions so it cannot become a stationary off-map benchmark.
+	var cycle: int = int(elapsed/6.0)
+	if cycle == winter_reset_cycle: return
+	winter_reset_cycle = cycle
+	game.set("ai_enabled",false)
+	game.set("countdown_ticks",0)
+	var index: int = (cycle*17)%probe_track.route.size()
+	var point: Vector2 = probe_track.route[index]
+	var tangent: Vector2 = (probe_track.route[(index+1)%probe_track.route.size()]-point).normalized()
+	var travel: Vector2 = (tangent+tangent.orthogonal()*0.8).normalized()
+	var sim: VehicleSimulation = game.get("sim")
+	var tick: int = sim.state.tick
+	sim.reset(point,atan2(tangent.x,tangent.y))
+	sim.state.tick = tick
+	sim.state.velocity = travel*22.0
+	sim.state.route_index = index
+	game.set("previous_position",point)
+	game.set("previous_heading",sim.state.heading)
+	last_position = point
+	var driver: DriverInput = game.get("driver")
+	for touch: int in [900,901,902,903,999]: driver.release_touch(touch)
+	driver.set_touch(999,&"accelerate")
+	(game.get("camera") as FollowCamera).follow(point,Vector2.ZERO,sim.state.heading,0.0,true)
+	# Preserve burst count but prevent a teleport from sweeping across the entire track.
+	(game.get("sand_dust") as SandDust).snow_previous_valid = false
+	(game.get("sand_dust") as SandDust).snow_in_bank = false

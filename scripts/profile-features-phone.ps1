@@ -1,5 +1,5 @@
 param([int]$Seconds = 20, [switch]$StormOnly, [switch]$SkipInstall, [switch]$SurfaceProfile, [switch]$GrassProfile, [switch]$DesertProfile, [switch]$DesertCostProfile,
-    [switch]$HeadlightsProfile, [switch]$Baseline, [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
+    [switch]$WinterStress, [switch]$WinterProfile, [switch]$HeadlightsProfile, [switch]$Baseline, [ValidatePattern('^[a-zA-Z0-9-]*$')][string]$ReportName = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
@@ -22,6 +22,7 @@ try {
     $profileTracks = @(@('ajorata','track_acf29166cceaaa42'),@('storm','track_f7dc946b49ce9ea8'))
     if ($DesertProfile -or $DesertCostProfile) { $profileTracks = ,@('desert','track_3e26605a8a90165e') }
     if ($HeadlightsProfile) { $profileTracks = ,@('night','track_c7ad183a78f7a033') }
+    if ($WinterProfile) { $profileTracks = ,@('winter','track_b5d3f29314a7ae53') }
     foreach ($track in $profileTracks) {
         if ($StormOnly -and $track[0] -ne 'storm') { continue }
         $config = @{track_id=$track[1]; seconds=$Seconds; sustained=$true; use_game_scale=$true; feature_profile=$true; touch_stress=$true; features=@('baseline','telemetry','shadows','particles','trails','hud','weather','half_scale','baseline')}
@@ -30,6 +31,8 @@ try {
         if ($DesertProfile) { $config.features = @('desert_original','baseline','desert_original','baseline','desert_original') }
         if ($DesertCostProfile) { $config.features = @('baseline','particles','baseline') }
         if ($HeadlightsProfile) { $config.features = @('headlights','baseline','headlights','baseline') }
+        if ($WinterProfile) { $config.features = @('baseline','particles','baseline') }
+        if ($WinterStress) { $config.winter_stress = $true; $config.touch_stress = $false }
         if ($Baseline) { $config.features = @('baseline') }
         $stageCount = $config.features.Count
         $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$($track[0])-config.json" -Encoding ASCII
@@ -55,7 +58,7 @@ try {
             if ($done -eq $stageCount) { break }
         }
         if ($done -ne $stageCount) { throw "Incomplete $($track[0]) profile: $done/$stageCount stages" }
-        if ($HeadlightsProfile -or $GrassProfile -or $DesertProfile -or $DesertCostProfile) {
+        if ($WinterProfile -or $HeadlightsProfile -or $GrassProfile -or $DesertProfile -or $DesertCostProfile) {
             # All timing windows have ended and the probe restored production materials.
             Adb @('shell','screencap','-p','/data/local/tmp/grass-review.png')
             Adb @('pull','/data/local/tmp/grass-review.png',"$evidence/$($track[0])-phone.png")

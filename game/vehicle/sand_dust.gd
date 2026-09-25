@@ -517,20 +517,28 @@ func _sample_bank_impact(state: VehicleState, track: NativeTrack) -> void:
 	var entry := Vector2.INF
 	var touching: bool = false
 	var direction: float = state.velocity.angle()
+	var half_length: float = maxf(collision_radius,wheelbase*0.5+0.80*HandlingConfig.BODY_SCALE)
+	var half_width: float = track_width*0.5+0.12*HandlingConfig.BODY_SCALE
+	var forward: Vector2 = state.forward()
+	var right: Vector2 = state.right()
+	var offsets := PackedVector2Array()
+	for index: int in range(12):
+		var offset: int = (index+1)/2 * (1 if index%2 == 1 else -1)
+		var ray: Vector2 = Vector2.from_angle(direction+float(offset)*TAU/12.0)
+		var along: float = ray.dot(forward)/half_length
+		var across: float = ray.dot(right)/half_width
+		offsets.append(ray/sqrt(along*along+across*across))
 	# Sweep a body envelope with bumper overhang, leading edge first, not wheel positions.
 	for step: int in range(1,steps+1):
 		var center: Vector2 = start.lerp(state.position,float(step)/steps)
 		touching = false
-		for index: int in range(12):
-			var offset: int = (index+1)/2 * (1 if index%2 == 1 else -1)
-			var ray: Vector2 = Vector2.from_angle(direction+float(offset)*TAU/12.0)
-			var half_length: float = maxf(collision_radius,wheelbase*0.5+0.80*HandlingConfig.BODY_SCALE)
-			var half_width: float = track_width*0.5+0.12*HandlingConfig.BODY_SCALE
-			var radius: float = 1.0/sqrt(pow(ray.dot(state.forward())/half_length,2.0)+pow(ray.dot(state.right())/half_width,2.0))
-			var point: Vector2 = center+ray*radius
+		for offset: Vector2 in offsets:
+			var point: Vector2 = center+offset
 			if track.snow_banks.height_at(point) <= 0.035: continue
 			touching = true
 			if entry == Vector2.INF: entry = point
+			# Only the first hit and whether this sweep position touches are needed.
+			break
 	if entry != Vector2.INF and not snow_in_bank and state.velocity.length() > 2.5 and state.tick-snow_last_burst > 50:
 		var burst: GPUParticles3D = snow_impacts[snow_burst_count%2]
 		snow_impact_position = entry

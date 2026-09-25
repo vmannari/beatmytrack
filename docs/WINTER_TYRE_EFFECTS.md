@@ -48,3 +48,7 @@ Changed files: `game/vehicle/sand_dust.gd`, `game/tests/capture_winter.gd`, stat
 Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureWinter` passed 156 checks; the same entry point with `-Action TestSoil` passed 163 checks. Capture tests additionally verify cloud-free ice drift, fragment geometry and launch alignment with travel. `git diff --cached --check` passed.
 
 Desktop [drift chips](evidence/winter-directional/ice-drift.png) and [directional bank spray](evidence/winter-directional/bank-impact.png) captured and inspected using the existing synthetic crossing fixture. Real-driving visual acceptance and phone performance remain outstanding; no physical-device test or Android export/install was performed.
+
+## 2026-09-25: physical-phone profiling
+
+Tested on attached DN2103 and optimised snowbank presentation queries without changing fragment density or appearance. Stress particle CPU mean improved 21.3%, p99 29.7%; 25 bank bursts before and after. Final APK installed and normal play restored. See [phone performance report](WINTER_PHONE_PERFORMANCE.md) for exact commands, separate steady-driving/stress measurements, screenshots and limitations. This supersedes the earlier no-device-test status for this effect version.

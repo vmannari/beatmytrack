@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-25 V02/V04/V05/Q01: physical DN2103 winter profiling found bank-query overhead; presentation-only optimisation cuts stress particle CPU mean 21.3% and p99 29.7%, retaining 25 bank bursts. Final two-minute drive median 16.812 ms; actual-present window median 16.838/p99 17.057 ms. CaptureWinter 156 and quick export checks pass; APK installed, diagnostics removed, normal play restored. See docs/WINTER_PHONE_PERFORMANCE.md.
+
 2026-09-25 V02/V04/V05/Q01: winter-spray-3 removes ice-drift tyre powder and replaces bank cloud billboards with immediate directional snow fragments. CaptureWinter 156 and TestSoil 163 checks pass; desktop evidence inspected. No device test/export. See docs/WINTER_TYRE_EFFECTS.md.
 
 2026-09-25 V02/V04/V05/Q01: winter-spray-2 uses off-track snow chips during ice drift and a short 0.42-second burst at the swept body/bank contact. CaptureWinter 153, TestSoil 163 and TestIce 69 checks pass. Desktop captures inspected; no phone test/export. See docs/WINTER_TYRE_EFFECTS.md.

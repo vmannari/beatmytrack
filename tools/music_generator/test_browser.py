@@ -18,7 +18,9 @@ with sync_playwright() as p:
     page.wait_for_selector('.track')
     page.click('#add')
     page.wait_for_function("document.querySelectorAll('.track').length === 2")
-    page.locator('.track select').nth(1).select_option('5')
+    # Fixture stages must not depend on whichever bank sorts last in the catalog.
+    page.locator('.track > label select').nth(0).select_option('0')
+    page.locator('.track > label select').nth(1).select_option('5')
     page.click('#play')
     page.wait_for_function('workbench.getState().position > .3')
     assert page.evaluate('workbench.getState().playing')

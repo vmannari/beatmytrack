@@ -36,6 +36,9 @@ def catalog():
     return {"items": items, "errors": errors}
 
 class Handler(SimpleHTTPRequestHandler):
+    # Keep local audio transfers on reusable connections (all replies are length-delimited).
+    protocol_version = "HTTP/1.1"
+
     def setup(self):
         super().setup()
         self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

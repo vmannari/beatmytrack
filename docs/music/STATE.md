@@ -4,7 +4,7 @@ _Last updated: 2026-09-27_
 
 ## Status
 Mode: explore
-Current baseline: production v6 remains installed. Owner rejected the 2026-09-27 Magenta workbench auditions as unsuitable for the game; no replacement composition is accepted.
+Current baseline: production v6 remains installed. Owner rejected the initial Magenta auditions as unsuitable and R2's separate state mixes as disconnected; no replacement composition is accepted.
 Approved release assets: no new release approval established by this installation
 
 ## Source hierarchy
@@ -18,7 +18,8 @@ Approved release assets: no new release approval established by this installatio
 These are preferences, not permanent rules.
 
 - Primary function: unobtrusive background music during racing.
-- Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. Current audition round uses two options at all six stages.
+- Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. R3 offers three alternatives per instrument at all six stages.
+- Latest alternative: one simpler tune starts, then distinct instruments join cumulatively. All options must share musical timing and harmony. Preserve R2 for comparison.
 - New conceptual arc: Low Roar intimacy/atmosphere → CCR groove → Green Day urgency → the triumphant melodic payoff of The Final Countdown.
 - Additional reference palette: Peer Gunt, Lynyrd Skynyrd, ZZ Top, Muse, Audioslave, Blondie and Molly Hatchet.
 - These are conceptual references, not literal artist-by-artist sections. Proposed interpretation: one identifiable theme develops from reflective to grounded, propulsive and finally anthemic.
@@ -55,7 +56,7 @@ Collision/reset/recovery contract: VERIFY IN PROJECT DOCS/CODE BEFORE CHANGING.
 - treating old assistant proposals as approvals
 
 ## Next experiment
-Owner now authorizes the next generation and multiple stage options. Round R2 explores two alternate complete mixes per stage, using concise differentiated directions and stage-matched audition loudness. These are direction studies, not compatible stems or a verified shared melody. See `rounds/2026-09-27-reference-arc-r2.md` for actual results; artistic approval remains pending.
+R3 replaces independent generation with an original exact score rendered as sampled isolated instruments. Six roles × three alternatives, 729 combinations, shared 120 BPM / eight-bar Dm–Bb–F–C phrase. Score, sample-clock, export headroom and cumulative browser behavior verified; no subjective listening claimed. See `rounds/2026-09-27-additive-r3.md`. Review timbres, motif, groove, development and transitions before further expansion or runtime integration. R2 remains available as historical comparison.
 
 ## Approvals
 This template asserts no approvals. Preserve documented scoped approvals; unresolved history stays unverified.

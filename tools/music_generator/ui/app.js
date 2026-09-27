@@ -105,6 +105,9 @@ function restartSources() { if (playing) { position = playhead(); stopSources();
 function field(tag, options = {}) { const node = document.createElement(tag); Object.assign(node, options); return node; }
 function renderTracks() {
   $('tracks').replaceChildren(); $('count').textContent = tracks.length; $('empty').hidden = tracks.length > 0;
+  $('warning').textContent = tracks.length && tracks.every(t => t.family === 'shared_road_r3')
+    ? 'R3: isolated instruments share one 120 BPM score and 16-second loop. Earlier instruments keep playing as new ones join. Musical taste and transitions still need your listening review.'
+    : 'Generated full arrangements have unverified timing and harmony. Only the R3 instrument bank shares an exact score; arbitrary recordings may not layer together.';
   for (const t of tracks) {
     const row = field('div', {className: 'track'}); row.dataset.track = t.id;
     const title = field('div', {className: 'track-title'});
@@ -117,6 +120,29 @@ function renderTracks() {
       l.append(input, document.createTextNode(label)); toggles.append(l);
     }
     title.append(toggles);
+    if (t.family === 'shared_road_r3') {
+      const choice = field('select'); choice.setAttribute('aria-label', `Variation ${t.name}`);
+      const options = catalog.filter(i => i.family === t.family && i.run === t.run && i.state_index === t.role);
+      for (const item of options) choice.append(field('option', {value:item.id, textContent:`Variation ${'ABC'[item.variant-1]}`}));
+      choice.value = t.asset;
+      choice.onchange = guard(async () => {
+        if (loading) { choice.value = t.asset; return; }
+        loading = true;
+        try {
+          const item = options.find(i => i.id === choice.value);
+          let buffer = buffers.get(item.id);
+          if (!buffer) {
+            const response = await fetch(item.url, {signal:AbortSignal.timeout(60000)});
+            if (!response.ok) throw new Error('Recording unavailable');
+            buffer = await ensureAudio().decodeAudioData(await response.arrayBuffer()); buffers.set(item.id, buffer);
+          }
+          if (!tracks.includes(t)) return;
+          t.asset = item.id; t.name = item.name; t.buffer = buffer;
+          restartSources(); renderTracks(); status('Instrument variation changed; musical position preserved.');
+        } finally { loading = false; }
+      });
+      title.append(choice);
+    }
     const stageLabel = field('label', {textContent: 'Entry stage'}), select = field('select');
     names.forEach((name, i) => select.append(field('option', {textContent: name, value: i})));
     select.value = t.stage; select.onchange = () => { t.stage = Number(select.value); applyMix(); }; stageLabel.append(select);
@@ -156,6 +182,7 @@ async function addRecording(item, file, settings = {}) {
   if (buffer.duration < .04) throw new Error('Recording is too short.');
   position = playhead(); stopSources();
   const t = {id: nextId++, asset: item.id, name: item.name, kind: item.kind || 'imported audio', alignment: item.alignment || 'unverified',
+    family: item.family, run: item.run, role: item.state_index,
     buffer, stage: item.state_index ?? 0, volume: .65, enabled: true, solo: false, trimStart: 0, trimEnd: buffer.duration, ...settings};
   tracks.push(t); if (playing) startSources(); renderTracks(); status('Added ' + item.name);
 }
@@ -254,6 +281,31 @@ for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · N
   iterationControls.append(button);
 }
 $('pair').before(iterationControls);
+let previousR3 = [];
+for (const [label, choice] of [['R3 · New drive', 0], ['All A', 1], ['All B', 2], ['All C', 3]]) {
+  const button = field('button', {className:choice ? 'small' : 'primary', textContent:label});
+  button.dataset.r3 = choice;
+  button.onclick = guard(async () => {
+    if (loading) return;
+    loading = true;
+    try {
+      await refresh();
+      const available = catalog.filter(i => i.family === 'shared_road_r3');
+      const run = available.map(i => i.run).sort().at(-1);
+      const options = Array.from({length:6}, (_, stage) => available.filter(i => i.run === run && i.state_index === stage));
+      if (options.some(items => items.length !== 3 || new Set(items.map(i => i.variant)).size !== 3)) throw new Error('The complete R3 instrument bank is not available.');
+      const random = crypto.getRandomValues(new Uint32Array(6));
+      const choices = options.map((_, stage) => choice || 1 + random[stage] % 3);
+      if (!choice && choices.every((v,i) => v === previousR3[i])) choices[random[0] % 6] = choices[random[0] % 6] % 3 + 1;
+      const selected = options.map((items,stage) => items.find(i => i.variant === choices[stage]));
+      $('clear').click(); streak = 0; recovery = 0; $('mode').value = 'layers'; updateMode();
+      for (const item of selected) await addRecording(item, null, {volume:1});
+      previousR3 = choices;
+      status('R3 instruments: ' + choices.map(v => 'ABC'[v-1]).join(' / ') + '. Press Play, then scrub the streak. Choices stay fixed for this drive.');
+    } finally { loading = false; }
+  });
+  $('r3Controls').append(button);
+}
 $('pair').onclick = guard(async () => {
   if (loading) return;
   await refresh();

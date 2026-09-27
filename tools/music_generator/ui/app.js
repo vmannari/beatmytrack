@@ -223,6 +223,37 @@ $('seek').oninput = () => { stopSources(); position = Number($('seek').value); i
 $('master').oninput = () => { if (master) master.gain.setTargetAtTime(numeric('master', .5), context.currentTime, .03); $('masterValue').textContent = Math.round(numeric('master', .5) * 100) + '%'; };
 for (const id of ['build', 'qualify', 'hold', 'fade']) $(id).onchange = () => { $(id).value = clamp(numeric(id, Number($(id).min)), Number($(id).min), Number($(id).max)); applyMix(); renderTime(); };
 $('mode').onchange = updateMode; $('refresh').onclick = guard(refresh); $('recording').onchange = recordingInfo;
+const iterationControls = field('div', {className:'buttons'});
+let previousR2 = [];
+for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · New drive', 0]]) {
+  const button = field('button', {className:'small', textContent:label});
+  button.dataset.r2 = choice;
+  button.onclick = guard(async () => {
+    if (loading) return;
+    loading = true;
+    try {
+      await refresh();
+      const available = catalog.filter(i => i.family === 'night_signal_r2_review');
+      // Choose one complete batch; never silently combine different revisions.
+      const run = available.map(i => i.run).sort().at(-1);
+      const bank = available.filter(i => i.run === run);
+      const options = Array.from({length:6}, (_, stage) => bank.filter(i => i.state_index === stage));
+      if (options.some(items => items.length !== 2)) throw new Error('The complete R2 review bank is not ready yet.');
+      const random = crypto.getRandomValues(new Uint32Array(6));
+      const choices = options.map((_, stage) => choice || 1 + random[stage] % 2);
+      if (!choice && choices.every((v, i) => v === previousR2[i])) {
+        const change = random[0] % 6; choices[change] = 3 - choices[change];
+      }
+      const selection = options.map((items, stage) => items.find(i => i.variant === choices[stage]));
+      $('clear').click(); streak = 0; recovery = 0; $('mode').value = 'arrangement'; updateMode();
+      for (const item of selection) await addRecording(item);
+      previousR2 = choices;
+      status('R2 stages: ' + selection.map(i => i.variant === 1 ? 'A' : 'B').join(' / ') + '. Choices stay fixed until you load another drive.');
+    } finally { loading = false; }
+  });
+  iterationControls.append(button);
+}
+$('pair').before(iterationControls);
 $('pair').onclick = guard(async () => {
   if (loading) return;
   await refresh();

@@ -14,6 +14,13 @@ Stop the server with Ctrl+C. The VS Code task **Music: Open workbench** does the
 
 ## Listening
 
+**Reference arc R2:** use **R2 · All A**, **R2 · All B**, or **R2 · New drive**.
+These load one of two options at each of six stages. New drive draws a new
+combination, preventing an identical consecutive lineup; selections stay fixed
+through stage changes, collision recovery and restart. Use Save setup to retain
+a preferred combination. These are complete mix studies, not compatible stems.
+Each stage's A/B files are matched separately for audition loudness.
+
 1. **Load Focus / Breakthrough pair** loads the latest prepared endpoints.
 2. Press **Play**. Change **Build to full** and **Qualification**, scrub **Clean
    streak**, or click a named stage. Disable **Advance while playing** to hold a
@@ -74,6 +81,20 @@ The supplied CLI has no output or generation-seed flag. The adapter therefore
 uses its installed public Python API and `Waveform.write` to an explicit path;
 it loads the model once per batch. It never searches the home directory or
 touches the CLI's shared output WAV.
+
+R2 generation and review (local FFmpeg on PATH or at
+`~/.local/share/bmt-music-tools/ffmpeg` required for review):
+
+```powershell
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/generate.py layers --config tools/music_generator/configs/reference_arc_r2.yaml
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/review_iteration.py build/music/raw/reference_arc_r2/<run>/manifest.json
+```
+
+`variant_prompts` supplies one explicit musical direction per variant, placed
+before the common stage brief. Review uses the existing adaptive-music skill's
+`scripts/review_pack.py`, once per stage, preserving raw sources and exporting
+constant-gain comparisons with a -2 dBTP ceiling. It does not repair source
+clipping, enforce beats/harmony or imply approval.
 
 **Prompt correction:** installed MusicCoCa accepts only 127 text tokens after
 the start token. The original common-prefix prompts produced identical audio

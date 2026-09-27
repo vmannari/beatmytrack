@@ -45,6 +45,15 @@ class ToolkitTests(unittest.TestCase):
         _, jobs = generate.prepare_jobs(config, "layers", 1, ['s5'])
         self.assertEqual(jobs[0]['state_index'], 5)
 
+    def test_variants_have_distinct_explicit_directions(self):
+        cfg = {'variants_per_state': 2, 'states': [{'name':'focus', 'prompt':'common theme',
+                'variant_prompts':['fingerpicked guitar', 'felt piano']}]}
+        _, jobs = generate.prepare_jobs(cfg, 'layers')
+        self.assertTrue(jobs[0]['prompt'].startswith('fingerpicked guitar'))
+        self.assertTrue(jobs[1]['prompt'].startswith('felt piano'))
+        cfg['states'][0]['variant_prompts'] = ['only one']
+        with self.assertRaises(ValueError): generate.prepare_jobs(cfg, 'layers')
+
     def test_failed_job_is_recorded(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-27 MUS03/MUS06/MUS09/MUS10/V03/V05/Q01: reference arc R2 generates two options at each of six stages (12 distinct 16-second mixes). Per-stage A/B loudness comparisons and All A/All B/New drive workbench controls; choices remain fixed per drive. 10 toolkit tests and 9 R2 browser checks pass; screenshot and manifests retained. Musical approval/compatibility pending; runtime unchanged, no Android/device test. See docs/music/rounds/2026-09-27-reference-arc-r2.md.
+
 2026-09-27 MUS03/MUS06/MUS09/MUS10/R01/V03/V05/Q01: offline Magenta workflow and standalone browser music workbench. Reused WSL GPU/model; corrected prompt truncation that produced duplicate recordings. Four distinct concepts, Focus/Breakthrough and prepared audition pair; 9 toolkit tests and 19 browser checks pass with screenshots. Runtime unchanged; musical approval and compatible stems remain pending. No Android/device test. See docs/MUSIC_TOOLKIT.md.
 
 2026-09-25 MUS01/MUS03/MUS06/MUS09/MUS10: owner requests interchangeable per-race phrases and unobtrusive background music after rejecting v6 timbres. Offline bank v1 provides three options for five compatible roles (243 combinations), with brisk rounded notes and no rock finale. All 243 structural/render checks and four 30 s auditions pass numeric checks (10/24 peak voices). Production unchanged pending listening; no UI, Android export or device test. See docs/MUSIC_MODULAR_BANK.md.

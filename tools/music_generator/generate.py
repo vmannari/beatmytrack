@@ -64,10 +64,15 @@ def prepare_jobs(cfg, command, limit=None, names=None):
             raise ValueError("Duration must be finite and 0.04..120 seconds")
         if not isinstance(item.get("prompt"), str) or not item["prompt"].strip():
             raise ValueError("Non-empty prompt required")
+        alternatives = item.get('variant_prompts', [])
+        if alternatives and (not isinstance(alternatives, list) or len(alternatives) != variants or
+                             not all(isinstance(p, str) and p.strip() for p in alternatives)):
+            raise ValueError('variant_prompts must contain one non-empty instruction per variant')
         for variant in range(1, variants + 1):
             # MusicCoCa 2.0.3 keeps only 127 text tokens. Distinguishing musical
             # directions must precede the shared identity and palette.
-            prompt = ". ".join(p.strip() for p in [item["prompt"], *prefix] if p.strip())
+            variation = alternatives[variant - 1] if alternatives else ''
+            prompt = ". ".join(p.strip() for p in [variation, item["prompt"], *prefix] if p.strip())
             jobs.append({"name": name, "variant": variant, "prompt": prompt,
                 "duration_requested": duration, "frames": round(duration * 25),
                 "style_seed": variant - 1, "state_index": index if command == "layers" else None,

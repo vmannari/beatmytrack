@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-27 MUS03/MUS06/MUS09/MUS10/R01/V03/V05/Q01: offline Magenta workflow and standalone browser music workbench. Reused WSL GPU/model; corrected prompt truncation that produced duplicate recordings. Four distinct concepts, Focus/Breakthrough and prepared audition pair; 9 toolkit tests and 19 browser checks pass with screenshots. Runtime unchanged; musical approval and compatible stems remain pending. No Android/device test. See docs/MUSIC_TOOLKIT.md.
+
 2026-09-25 MUS01/MUS03/MUS06/MUS09/MUS10: owner requests interchangeable per-race phrases and unobtrusive background music after rejecting v6 timbres. Offline bank v1 provides three options for five compatible roles (243 combinations), with brisk rounded notes and no rock finale. All 243 structural/render checks and four 30 s auditions pass numeric checks (10/24 peak voices). Production unchanged pending listening; no UI, Android export or device test. See docs/MUSIC_MODULAR_BANK.md.
 
 2026-09-25 MUS01/MUS03/MUS08-MUS10: v6 replaces the rejected opening beat with a single sustained low-register melody, then adds inner harmony, bass, drums, guitar and an answering line as clean-driving intensity rises. Collision recovery returns to solo. Production-core 48 s preview, native layer/allocation/timing tests, 36 music / 38 driving checks and quick Android export pass. No phone attached; no installation or device/listening acceptance. See docs/MUSIC_ENSEMBLE.md.

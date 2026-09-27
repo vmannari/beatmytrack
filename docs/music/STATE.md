@@ -20,6 +20,7 @@ These are preferences, not permanent rules.
 - Primary function: unobtrusive background music during racing.
 - Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. R3 offers three alternatives per instrument at all six stages.
 - Latest alternative: one simpler tune starts, then distinct instruments join cumulatively. All options must share musical timing and harmony. Preserve R2 for comparison.
+- Additional mode requested: the same music evolves and BPM rises with each state. R4 re-renders the R3 score at 90/102/114/126/138/150 BPM, maintaining original pitch and per-drive choices. Fixed-tempo R3 remains available.
 - New conceptual arc: Low Roar intimacy/atmosphere → CCR groove → Green Day urgency → the triumphant melodic payoff of The Final Countdown.
 - Additional reference palette: Peer Gunt, Lynyrd Skynyrd, ZZ Top, Muse, Audioslave, Blondie and Molly Hatchet.
 - These are conceptual references, not literal artist-by-artist sections. Proposed interpretation: one identifiable theme develops from reflective to grounded, propulsive and finally anthemic.
@@ -57,6 +58,8 @@ Collision/reset/recovery contract: VERIFY IN PROJECT DOCS/CODE BEFORE CHANGING.
 
 ## Next experiment
 R3 replaces independent generation with an original exact score rendered as sampled isolated instruments. Six roles × three alternatives, 729 combinations, shared 120 BPM / eight-bar Dm–Bb–F–C phrase. Score, sample-clock, export headroom and cumulative browser behavior verified; no subjective listening claimed. See `rounds/2026-09-27-additive-r3.md`. Review timbres, motif, groove, development and transitions before further expansion or runtime integration. R2 remains available as historical comparison.
+
+R4 adds the requested rising-tempo mode using exactly the same score. Technical export and browser checks pass, including musical-position continuity and original-pitch playback. Review the six-state tempo curve and transitions; no artistic approval inferred. See `rounds/2026-09-27-evolving-tempo-r4.md`.
 
 ## Approvals
 This template asserts no approvals. Preserve documented scoped approvals; unresolved history stays unverified.

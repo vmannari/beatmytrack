@@ -5,6 +5,37 @@ let context, master, analyser, catalog = [], tracks = [], playing = false;
 let position = 0, startTime = 0, lastTime = 0, streak = 0, recovery = 0;
 let nextId = 1, loading = false;
 const buffers = new Map();
+const tempoBuffers = new Map();
+const tempoStages = [90, 102, 114, 126, 138, 150];
+let activeBpm = 120;
+const tempoKey = (asset, bpm) => `${asset}@${bpm}`;
+async function prepareTempos(selection = tracks) {
+  if (!selection.length || selection.some(t => t.family !== 'shared_road_r3' || t.trimStart !== 0 || Math.abs(t.trimEnd - 16) > .001)) throw new Error('Load an R3 drive with full loops before using evolving tempo.');
+  const available = catalog.filter(i => i.family === 'evolving_r4');
+  const run = available.map(i => i.run).sort().at(-1);
+  const selected = selection.flatMap(t => tempoStages.map(bpm => {
+    const item = available.find(i => i.run === run && i.source_asset === t.asset && i.bpm === bpm);
+    if (!item) throw new Error('The matching six-tempo bank is unavailable.');
+    return {item, key:tempoKey(t.asset, bpm)};
+  }));
+  for (const {item, key} of selected) {
+    if (tempoBuffers.has(key)) continue;
+    status(`Loading evolving score · ${item.bpm} BPM · ${item.name}…`);
+    const response = await fetch(item.url, {signal:AbortSignal.timeout(60000)});
+    if (!response.ok) throw new Error('Tempo recording unavailable');
+    tempoBuffers.set(key, await ensureAudio().decodeAudioData(await response.arrayBuffer()));
+  }
+  const keep = new Set(selected.map(i => i.key));
+  for (const key of tempoBuffers.keys()) if (!keep.has(key)) tempoBuffers.delete(key);
+}
+function syncTempo() {
+  const bpm = $('mode').value === 'tempo' && tracks.length && tracks.every(t => tempoBuffers.has(tempoKey(t.asset, tempoStages[stageAt(streak)]))) ? tempoStages[stageAt(streak)] : 120;
+  if (bpm === activeBpm) return;
+  position = playhead();
+  if (playing) stopSources(true);
+  activeBpm = bpm;
+  if (playing) startSources(context.currentTime);
+}
 const meterData = new Float32Array(2048);
 const numeric = (id, fallback) => Number.isFinite($(id).valueAsNumber) ? $(id).valueAsNumber : fallback;
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
@@ -19,7 +50,7 @@ function ensureAudio() {
   }
   return context;
 }
-function playhead() { return playing ? position + Math.max(0, context.currentTime - startTime) : position; }
+function playhead() { return playing ? position + Math.max(0, context.currentTime - startTime) * activeBpm / 120 : position; }
 function stageAt(seconds) {
   if (recovery > 0) return 0;
   const fraction = clamp((seconds - numeric('qualify', 4)) / numeric('build', 24), 0, 1);
@@ -38,11 +69,12 @@ function targets() {
     }, null);
   }
   return tracks.map(t => {
-    const audible = eligible.includes(t) && (mode === 'manual' || (mode === 'layers' && t.stage <= stage) || (mode === 'arrangement' && t === chosen));
+    const audible = eligible.includes(t) && (mode === 'manual' || (['layers', 'tempo'].includes(mode) && t.stage <= stage) || (mode === 'arrangement' && t === chosen));
     return audible ? t.volume : 0;
   });
 }
 function applyMix(immediate = false) {
+  syncTempo();
   const values = targets();
   tracks.forEach((t, i) => {
     const value = values[i];
@@ -57,19 +89,30 @@ function applyMix(immediate = false) {
     if (row) { row.classList.toggle('playing', value > 0); row.querySelector('.audible').textContent = value > 0 ? 'In mix' : 'Silent'; }
   });
 }
-function stopSources() {
-  tracks.forEach(t => { if (t.source) { t.source.stop(); t.source.disconnect(); t.gain.disconnect(); t.source = null; t.gain = null; } });
+function stopSources(fade = false) {
+  tracks.forEach(t => { if (t.source) {
+    const source = t.source, gain = t.gain;
+    if (fade) {
+      gain.gain.cancelAndHoldAtTime(context.currentTime);
+      gain.gain.linearRampToValueAtTime(0, context.currentTime + .02);
+      source.stop(context.currentTime + .02);
+      source.onended = () => { source.disconnect(); gain.disconnect(); };
+    } else { source.stop(); source.disconnect(); gain.disconnect(); }
+    t.source = null; t.gain = null;
+  } });
 }
-function startSources() {
-  const when = context.currentTime + .04;
+function startSources(when = context.currentTime + .04) {
   startTime = when; lastTime = when;
   for (const t of tracks) {
     const source = context.createBufferSource(), gain = context.createGain();
-    source.buffer = t.buffer; source.loop = true;
-    source.loopStart = t.trimStart; source.loopEnd = t.trimEnd;
-    const length = t.trimEnd - t.trimStart;
+    const tempoBuffer = $('mode').value === 'tempo' ? tempoBuffers.get(tempoKey(t.asset, activeBpm)) : null;
+    source.buffer = tempoBuffer || t.buffer; source.loop = true;
+    source.loopStart = tempoBuffer ? 0 : t.trimStart; source.loopEnd = tempoBuffer ? tempoBuffer.duration : t.trimEnd;
+    const length = source.loopEnd - source.loopStart;
     source.connect(gain); gain.connect(master); gain.gain.value = 0;
-    source.start(when, t.trimStart + position % length);
+    const offset = source.loopStart + (position * (tempoBuffer ? 120 / activeBpm : 1)) % length;
+    source.start(when, offset);
+    t.startedAt = when; t.startedOffset = offset;
     t.source = source; t.gain = gain;
   }
   applyMix(true);
@@ -83,6 +126,7 @@ function renderTime() {
   $('recovery').textContent = recovery > 0 ? `Collision recovery · ${recovery.toFixed(1)} s` : (stageAt(streak) === 5 ? 'Full clean-streak payoff' : 'Building from qualifying driving');
   $('seek').max = Math.max(120, p + 1); $('seek').value = p; $('seekValue').textContent = p.toFixed(1) + ' s';
   const stage = stageAt(streak); $('stage').textContent = names[stage];
+  $('tempoReadout').textContent = $('mode').value === 'tempo' ? `${activeBpm} BPM · score beat ${(p * 2 % 32 + 1).toFixed(1)} / 32` : 'Fixed tempo · R3: 120 BPM';
   [...$('stages').children].forEach((b, i) => { b.classList.toggle('active', i === stage); b.setAttribute('aria-pressed', String(i === stage)); });
 }
 function tick() {
@@ -108,6 +152,7 @@ function renderTracks() {
   $('warning').textContent = tracks.length && tracks.every(t => t.family === 'shared_road_r3')
     ? 'R3: isolated instruments share one 120 BPM score and 16-second loop. Earlier instruments keep playing as new ones join. Musical taste and transitions still need your listening review.'
     : 'Generated full arrangements have unverified timing and harmony. Only the R3 instrument bank shares an exact score; arbitrary recordings may not layer together.';
+  if ($('mode').value === 'tempo') tempoNotice();
   for (const t of tracks) {
     const row = field('div', {className: 'track'}); row.dataset.track = t.id;
     const title = field('div', {className: 'track-title'});
@@ -137,6 +182,8 @@ function renderTracks() {
             buffer = await ensureAudio().decodeAudioData(await response.arrayBuffer()); buffers.set(item.id, buffer);
           }
           if (!tracks.includes(t)) return;
+          if ($('mode').value === 'tempo') await prepareTempos(tracks.map(x => x === t ? {...t, asset:item.id} : x));
+          if (!tracks.includes(t)) return;
           t.asset = item.id; t.name = item.name; t.buffer = buffer;
           restartSources(); renderTracks(); status('Instrument variation changed; musical position preserved.');
         } finally { loading = false; }
@@ -152,6 +199,7 @@ function renderTracks() {
     for (const [key, label] of [['trimStart', 'Loop in, s'], ['trimEnd', 'Loop out, s']]) {
       const l = field('label', {textContent: label}), input = field('input', {type: 'number', min: 0, max: t.buffer.duration, step: .01, value: t[key].toFixed(2)});
       input.onchange = () => {
+        if ($('mode').value === 'tempo') { input.value = t[key]; status('Switch to fixed-tempo layers before editing loop trims.', true); return; }
         const value = Number(input.value);
         if (!Number.isFinite(value) || value < 0 || value > t.buffer.duration || (key === 'trimStart' ? value >= t.trimEnd - .02 : value <= t.trimStart + .02)) { input.value = t[key]; status('Loop out must follow loop in by at least 0.02 s.', true); return; }
         t[key] = value; restartSources();
@@ -166,6 +214,7 @@ function renderTracks() {
   applyMix();
 }
 async function addRecording(item, file, settings = {}) {
+  if ($('mode').value === 'tempo') throw new Error('Switch to fixed-tempo layers before adding recordings.');
   if (tracks.length >= 12) throw new Error('Maximum 12 audition tracks; remove one first.');
   const ctx = ensureAudio();
   let buffer = buffers.get(item.id);
@@ -210,7 +259,7 @@ function saveSetup() {
 async function loadSetup(file) {
   if (!file) return;
   const data = JSON.parse(await file.text());
-  if (data.schema !== 'bmt-audition-1' || !Array.isArray(data.tracks) || data.tracks.length > 12 || !['arrangement', 'layers', 'manual'].includes(data.mode)) throw new Error('Unsupported audition setup');
+  if (data.schema !== 'bmt-audition-1' || !Array.isArray(data.tracks) || data.tracks.length > 12 || !['arrangement', 'layers', 'manual', 'tempo'].includes(data.mode)) throw new Error('Unsupported audition setup');
   const missing = data.tracks.filter(t => !catalog.some(i => i.id === t.asset) && !buffers.has(t.asset));
   if (missing.length) throw new Error('Reselect missing imported audio before loading: ' + missing.map(t => t.asset).join(', '));
   for (const t of data.tracks) {
@@ -222,7 +271,7 @@ async function loadSetup(file) {
   if (![data.streak, data.position].every(x => Number.isFinite(x) && x >= 0 && x <= 86400)) throw new Error('Invalid timeline');
   stopSources(); playing = false; $('play').textContent = 'Play'; tracks = [];
   for (const id of ['build', 'qualify', 'hold', 'fade', 'master']) $(id).value = data.settings[id];
-  $('master').dispatchEvent(new Event('input')); $('mode').value = data.mode; updateMode();
+  $('master').dispatchEvent(new Event('input')); $('mode').value = data.mode === 'tempo' ? 'layers' : data.mode; updateMode();
   streak = data.streak; position = data.position; recovery = 0;
   for (const t of data.tracks) {
     const item = catalog.find(i => i.id === t.asset) || {id: t.asset, name: t.asset.replace('local:', ''), kind: 'imported audio'};
@@ -231,11 +280,18 @@ async function loadSetup(file) {
     const last = tracks.at(-1);
     if (last.trimEnd > last.buffer.duration + .001) { tracks.pop(); renderTracks(); throw new Error('Loop range exceeds recording duration'); }
   }
+  if (data.mode === 'tempo') { await prepareTempos(); $('mode').value = 'tempo'; updateMode(); }
   renderTime(); status('Setup loaded. Press Play to audition.');
 }
 function updateMode() {
   $('modeHelp').textContent = {arrangement: 'Assign one arrangement to each stage. Missing stages hold the nearest lower available stage. The first added take wins ties.', layers: 'Selected layers enter cumulatively at their assigned stage. Use aligned stems for musical synchronization.', manual: 'All enabled tracks play together. Solo isolates selected tracks. Clean streak is a reference only in this mode.'}[$('mode').value];
+  if ($('mode').value === 'tempo') $('modeHelp').textContent = 'Same score and instrument choices; more parts and faster tempo at each state. 90 → 102 → 114 → 126 → 138 → 150 BPM. Original pitch; phrase position continues. Playback position is score time at 120 BPM.';
+  if ($('mode').value === 'tempo') tempoNotice();
+  else if (tracks.length && tracks.every(t => t.family === 'shared_road_r3')) $('warning').textContent = 'R3: isolated instruments share one 120 BPM score and 16-second loop. Musical taste and transitions still need your listening review.';
   applyMix();
+}
+function tempoNotice() {
+  $('warning').textContent = 'Evolving tempo: the same 32-beat score is rendered at six tempos, with original pitch. Track details below identify the 120 BPM source parts. Tempo changes preserve phrase position with a short crossfade; listening review remains pending.';
 }
 names.forEach((name, i) => { const button = field('button', {textContent: name}); button.onclick = () => { recovery = 0; streak = i ? numeric('qualify', 4) + numeric('build', 24) * i / 5 + .000001 : 0; applyMix(); renderTime(); }; $('stages').append(button); });
 $('play').onclick = guard(async () => {
@@ -249,7 +305,20 @@ $('streak').oninput = () => { streak = Number($('streak').value); recovery = 0; 
 $('seek').oninput = () => { stopSources(); position = Number($('seek').value); if (playing) startSources(); renderTime(); };
 $('master').oninput = () => { if (master) master.gain.setTargetAtTime(numeric('master', .5), context.currentTime, .03); $('masterValue').textContent = Math.round(numeric('master', .5) * 100) + '%'; };
 for (const id of ['build', 'qualify', 'hold', 'fade']) $(id).onchange = () => { $(id).value = clamp(numeric(id, Number($(id).min)), Number($(id).min), Number($(id).max)); applyMix(); renderTime(); };
-$('mode').onchange = updateMode; $('refresh').onclick = guard(refresh); $('recording').onchange = recordingInfo;
+$('mode').onchange = guard(async () => {
+  if ($('mode').value === 'tempo') {
+    try { await prepareTempos(); } catch (error) { $('mode').value = 'layers'; updateMode(); throw error; }
+  }
+  updateMode();
+});
+$('evolve').onclick = guard(async () => {
+  if (loading) return;
+  if (!tracks.length || tracks.some(t => t.family !== 'shared_road_r3')) await document.querySelector('[data-r3="0"]').onclick();
+  loading = true;
+  try { await prepareTempos(); $('mode').value = 'tempo'; updateMode(); status('Evolving tempo ready. Press Play and move through the states.'); }
+  finally { loading = false; }
+});
+$('refresh').onclick = guard(refresh); $('recording').onchange = recordingInfo;
 const iterationControls = field('div', {className:'buttons'});
 let previousR2 = [];
 for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · New drive', 0]]) {

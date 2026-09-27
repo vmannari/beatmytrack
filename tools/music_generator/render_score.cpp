@@ -7,12 +7,16 @@
 #include <vector>
 struct Event { int frame, key; float velocity; };
 int main(int argc, char** argv) {
-    if (argc != 6) return 2;
+    if (argc != 6 && argc != 7) return 2;
+    const double bpm = argc == 7 ? std::stod(argv[6]) : 120;
+    if (bpm < 40 || bpm > 240) return 2;
     tsf* font = tsf_load_filename(argv[1]);
     if (!font) return 3;
     const int preset = tsf_get_presetindex(font, std::stoi(argv[3]), std::stoi(argv[4]));
     if (preset < 0) { tsf_close(font); return 4; }
-    constexpr int rate = 48000, length = 16 * rate;
+    constexpr int rate = 48000;
+    const double samples_per_beat = rate * 60.0 / bpm;
+    const int length = int(32 * samples_per_beat + .5);
     tsf_set_output(font, TSF_STEREO_INTERLEAVED, rate, -6);
     std::ifstream score(argv[2]);
     if (!score) return 5;
@@ -20,8 +24,8 @@ int main(int argc, char** argv) {
     double beat, duration; int key; float velocity;
     while (score >> beat >> duration >> key >> velocity) {
         for (int cycle = 0; cycle < 3; ++cycle) {
-            events.push_back({cycle * length + int(beat * rate / 2 + .5), key, velocity});
-            events.push_back({cycle * length + int((beat + duration) * rate / 2 + .5), key, 0});
+            events.push_back({cycle * length + int(beat * samples_per_beat + .5), key, velocity});
+            events.push_back({cycle * length + int((beat + duration) * samples_per_beat + .5), key, 0});
         }
     }
     // Off before on when a pitch is retriggered at the same sample.

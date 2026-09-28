@@ -140,9 +140,12 @@ func _ready() -> void:
 	if not capture_path.is_empty():
 		_show_screen(capture_screen)
 	else:
-		_show_screen("account")
+		var restoring: bool = online.client.has_saved_session()
+		_show_screen("restoring" if restoring else "account")
 		await online.start_session()
-		if screen == "account" and online.client.signed_in() and not online.needs_username():
+		if restoring:
+			_show_screen("play" if online.client.signed_in() and not online.needs_username() else "account")
+		elif screen == "account" and online.client.signed_in() and not online.needs_username():
 			_show_screen("play")
 	startup_complete = true
 	print("APP_READY")
@@ -173,6 +176,23 @@ func _show_screen(next: String) -> void:
 	MenuStyle.fill(root_ui)
 	root_ui.theme = MenuStyle.theme()
 	menu_layer.add_child(root_ui)
+	if screen == "restoring":
+		account_button = null
+		var backdrop := ColorRect.new()
+		backdrop.color = Color("101a26")
+		MenuStyle.fill(backdrop)
+		root_ui.add_child(backdrop)
+		var center := CenterContainer.new()
+		MenuStyle.fill(center)
+		root_ui.add_child(center)
+		var column := VBoxContainer.new()
+		column.add_theme_constant_override("separation", 24)
+		center.add_child(column)
+		column.add_child(MenuBrand.new())
+		var loading := MenuStyle.label("Loading...", 20, true)
+		loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		column.add_child(loading)
+		return
 	if screen == "account":
 		account_button = null
 		_account()

@@ -42,3 +42,20 @@ Actual commands and results:
 compact and account-state captures are in the same folder. No art changes.
 Real Google interaction, physical Android testing and release secure-storage
 integration were not performed. No production deployment or physics change.
+
+
+## No login flash during restoration
+
+Owner follow-up, B01/B19/V03/Q01: `game/core/app.gd` now chooses a neutral
+branded loading screen when a saved session exists. It does not construct the
+account panel during restoration. Valid completed profiles go directly to Home;
+failed restoration or unfinished name selection opens the account screen only
+after the result is known. First-time users still start at sign-in.
+
+`game/tests/test_account.gd` checks every restoration frame for the absence of
+login controls and verifies the final Home route. The headless HTTP/Godot run
+passed 56 checks. Graphical validation passed 65 checks using the same test with
+`BMT_CAPTURE_ACCOUNT=docs/evidence/startup-no-flash`; the neutral loading layout
+is explicitly held for its screenshot after the live startup assertions.
+[Loading screen](evidence/startup-no-flash/remembered-startup.png) inspected.
+No phone test, Android export, backend or physics change.

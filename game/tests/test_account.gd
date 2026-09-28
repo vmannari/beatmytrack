@@ -122,7 +122,16 @@ func run() -> void:
 	restarted.records = LocalRecords.new(folder.path_join("records.json"))
 	restarted.library = TrackLibrary.new(folder)
 	root.add_child(restarted)
-	while not restarted.startup_complete: await process_frame
+	check(restarted.screen == "restoring", "remembered startup begins on neutral loading screen")
+	var login_flashed: bool = false
+	while not restarted.startup_complete:
+		login_flashed = login_flashed or restarted.screen == "account" or restarted.root_ui.find_child("GoogleSignIn", true, false) != null
+		await process_frame
+	check(not login_flashed, "successful session restoration never constructs login controls")
+	if not OS.get_environment("BMT_CAPTURE_ACCOUNT").is_empty():
+		restarted._show_screen("restoring")
+		await capture("remembered-startup")
+		restarted._show_screen("play")
 	check(restarted.records.settings.get("track_ratings",{}).get("profile_test",0) == 5, "same player recovers ratings after restart")
 	check(restarted.library.load_wip(owned_document.id).get("creator", "") == "Beat My Track", "same player recovers drafts after restart")
 	check(restarted.screen == "play" and restarted.online.player_name() == "Beat My Track", "fresh app restores identity and opens Home")

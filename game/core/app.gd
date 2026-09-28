@@ -436,12 +436,7 @@ func _open_library(section: String) -> void:
 	if section == "random": browser_state.random_on_open = true
 	_show_screen("tracks")
 
-func _tracks() -> void:
-	var began: int = Time.get_ticks_usec()
-	var browser := TrackBrowser.new()
-	var created: int = Time.get_ticks_usec()
-	browser.name = "TrackBrowser"
-	browser.library = library
+func _ensure_track_catalog() -> void:
 	if track_catalog == null:
 		track_catalog = TrackCatalog.new(library)
 		if library.directory != guest_library.directory:
@@ -451,6 +446,14 @@ func _tracks() -> void:
 			for profile: String in profiles.get_directories():
 				if profile == active_profile: continue
 				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
+
+func _tracks() -> void:
+	var began: int = Time.get_ticks_usec()
+	var browser := TrackBrowser.new()
+	var created: int = Time.get_ticks_usec()
+	browser.name = "TrackBrowser"
+	browser.library = library
+	_ensure_track_catalog()
 	browser.catalog = track_catalog
 	browser.discovery = discovery_provider
 	browser.records = records
@@ -1468,19 +1471,12 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	page.rating_records = records
 	page.rating_track_id = (game.get("native_track") as NativeTrack).identity
 	page.facts = results.get_meta("reward_facts",{})
-	if track_catalog == null:
-		track_catalog = TrackCatalog.new(library)
-		if library.directory != guest_library.directory:
-			track_catalog.shared_directories.append(guest_library.directory)
-		var profiles := DirAccess.open(profile_root.path_join("players"))
-		if profiles != null:
-			for profile: String in profiles.get_directories():
-				if profile == active_profile: continue
-				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
+	_ensure_track_catalog()
 	if track_catalog.indexed_revision != library.revision:
 		track_catalog.entries.clear()
 		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
 		for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
+		track_catalog.add_shared_tracks()
 		track_catalog.indexed_revision = library.revision
 	page.recommendations = RaceRecommendations.suggest(track_catalog,game.get("native_track"))
 	page.back_requested.connect(func() -> void:

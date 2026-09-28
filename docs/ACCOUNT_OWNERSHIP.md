@@ -70,3 +70,27 @@ remains account-specific. Existing unassigned local data is intentionally not
 automatically migrated to whichever person signs in first. Real Google interaction
 and physical-phone testing were not performed. OS-vault session encryption remains
 the previously documented platform limitation.
+
+
+## Race results follow-up
+
+The owner reported shared tracks visible in Play but absent from race results.
+Results rebuilt its catalog without shared entries, and recommendations loaded
+saved documents from the private library instead of each entry's source directory.
+`app.gd` now shares catalog setup between both screens and includes shared entries
+when results rebuilds the index. `TrackCatalog.load_entry_document` supplies the
+same source-aware lookup to recommendation validation and race resolution.
+
+Requirements B02/B19/R01/Q01. Changed `game/core/app.gd`,
+`game/ui/track_catalog.gd`, `game/ui/race_recommendations.gd` and
+`game/tests/test_race_results.gd`. The fixture now uses an empty private library
+with circuits in the shared directory; it checks results before Play has populated
+the catalog, results after Play, and actually launching a shared recommendation.
+
+`TestResults` initially exposed two overly restrictive new assertions that expected
+all recommendations to be shared, although built-in circuits remain valid. Updated
+those assertions to permit built-ins while requiring shared entries and a shared
+race launch. `scripts/dev.ps1 -Action CaptureResults` then passed all 207 checks,
+including a real five-lap AI race and existing results/rating/navigation checks.
+[Results screenshot](evidence/shared-results/race-complete-1280x720.png) inspected.
+No physics changes, phone test, Android export or deployment.

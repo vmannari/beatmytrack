@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-28 B02/B19/R01/Q01: race results now includes shared circuits and loads recommendation documents from their actual source directory, matching Play. Common catalog setup; empty-private/shared-library regression covers cold results, after-Play results and launching the selected shared track. CaptureResults passed 207 checks; screenshot inspected. No phone/export/physics change. See docs/ACCOUNT_OWNERSHIP.md.
+
 2026-09-28 B01-B07/B19/R01/Q01: local ratings, records, preferences and editable track storage now follow stable account identity. Creator names are account-derived and server-stamped; developer races as Beat My Track (migration 0004). Fixed initial visibility regression: all 20 existing PC circuits remain playable as shared content, without inheriting ownership or votes. Native account, records/catalog and actual-PC checks passed; no device test/cloud sync added. See docs/ACCOUNT_OWNERSHIP.md.
 
 2026-09-28 B01/B19/R01/Q01: startup now opens sign-in for guests and restores a server-validated remembered session before entering Home. Rotating refresh token is stored separately from local records; menu account offers logout and clears saved credentials. Native restart/rotation/logout checks and actual-PC account checks passed. See docs/REMEMBERED_SIGN_IN.md; real Google and physical-device acceptance remain.

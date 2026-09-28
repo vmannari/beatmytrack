@@ -48,6 +48,10 @@ func run() -> void:
 	app.set("library",library)
 	app.set("records",LocalRecords.new(directory.path_join("records.json")))
 	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	# Signed-in storage topology: empty private library, existing circuits shared.
+	app.library = TrackLibrary.new(directory.path_join("private_tracks"))
+	app.track_catalog = null
 	await settle()
 	var race_doc: Dictionary = TrackDocument.create_default()
 	race_doc.name = "Crescent Run"
@@ -250,6 +254,7 @@ func run() -> void:
 	check(page != null and page.visible and not panel.visible,"Continue opens Race Complete")
 	check(app.get("game") == game,"Continue preserves completed race without starting another")
 	check((page as RaceComplete).recommendations.size() == 3,"Race Complete recommends real local tracks")
+	check((page as RaceComplete).recommendations.all(func(item: Dictionary) -> bool: return item.entry.source == "builtin" or (item.entry.get("read_only",false) and item.entry.library_directory == library.directory)), "cold results catalog recommends shared circuits from original directory")
 	var rating_row: TrackRating = page.find_child("TrackRating",true,false)
 	check(rating_row.value() == 4,"standings show stored personal rating")
 	rating_row.stars[2].pressed.emit()
@@ -285,8 +290,13 @@ func run() -> void:
 	panel.next_button.pressed.emit()
 	await settle()
 	var complete_page: RaceComplete = (app.get("root_ui") as Node).find_child("RaceComplete",true,false)
-	complete_page.cards[1].pressed.emit()
-	var recommended_id: String = complete_page.recommendations[1].entry.id
+	var shared_index: int = -1
+	for index: int in range(complete_page.recommendations.size()):
+		if complete_page.recommendations[index].entry.get("read_only",false): shared_index = index
+	check(shared_index >= 0, "shared recommendation is available to launch")
+	complete_page.cards[maxi(0, shared_index)].pressed.emit()
+	check(complete_page.recommendations.any(func(item: Dictionary) -> bool: return item.entry.get("read_only",false)), "results reuse shared circuits after opening Play")
+	var recommended_id: String = complete_page.recommendations[maxi(0, shared_index)].entry.id
 	complete_page.race_button.pressed.emit()
 	await settle()
 	var recommended_game: Node = app.get("game")
@@ -402,7 +412,8 @@ func screenshot(label: String) -> void:
 	root.push_input(pointer,true)
 	await settle()
 	await RenderingServer.frame_post_draw
-	var path: String = ProjectSettings.globalize_path("res://../docs/evidence/race-results")
+	var path: String = OS.get_environment("BMT_RESULTS_EVIDENCE")
+	if path.is_empty(): path = ProjectSettings.globalize_path("res://../docs/evidence/race-results")
 	DirAccess.make_dir_recursive_absolute(path)
 	check(root.get_texture().get_image().save_png(path.path_join(label+".png")) == OK,"saved "+label)
 

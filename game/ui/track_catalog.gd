@@ -125,10 +125,13 @@ func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 		return str(a.id) < str(b.id) if comparison == 0 else comparison < 0)
 	return result
 
+func load_entry_document(entry: Dictionary) -> Dictionary:
+	var source := TrackLibrary.new(str(entry.get("library_directory", library.directory)))
+	return source.load_document(entry.local_id)
+
 func resolve(entry: Dictionary) -> NativeTrack:
 	if entry.source == "builtin": return NativeTrack.read(entry.path)
-	var source := TrackLibrary.new(str(entry.get("library_directory", library.directory)))
-	var data: Dictionary = source.load_document(entry.local_id)
+	var data: Dictionary = load_entry_document(entry)
 	return null if data.is_empty() else TrackCompiler.compile(data)
 
 static func random_entry(matches: Array[Dictionary], current_id: String, rng: RandomNumberGenerator) -> Dictionary:

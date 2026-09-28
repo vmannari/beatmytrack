@@ -18,7 +18,7 @@ static func suggest(catalog: TrackCatalog, current: NativeTrack) -> Array[Dictio
 	for item: Dictionary in candidates:
 		if result.size() == 3: break
 		if item.entry.source == "saved":
-			var document: Dictionary = catalog.library.load_document(item.entry.local_id)
+			var document: Dictionary = catalog.load_entry_document(item.entry)
 			if document.is_empty() or not TrackDocument.validate(document).is_empty(): continue
 			item.route = TrackDocument.smooth_points(document)
 			item.estimated_seconds = TrackDocument.route_length(item.route)/22.0*RaceRules.LAPS

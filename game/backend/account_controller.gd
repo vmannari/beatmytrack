@@ -14,14 +14,19 @@ var open_browser: Callable = OS.shell_open
 
 func _ready() -> void:
 	add_child(client)
+	_load_configuration()
+
+func _load_configuration() -> void:
 	var config := ConfigFile.new()
 	config.load("user://backend.cfg")
-	var url: String = str(config.get_value("backend", "url", "http://127.0.0.1:8080" if OS.is_debug_build() else ""))
+	var url: String = str(config.get_value("backend", "url", "http://127.0.0.1:18181" if OS.is_debug_build() else ""))
 	if OS.has_environment("BMT_API_URL"): url = OS.get_environment("BMT_API_URL")
 	if OS.is_debug_build():
 		_development_key = OS.get_environment("BMT_DEV_AUTH_KEY")
 		if _development_key.is_empty(): _development_key = str(config.get_value("backend", "development_key", ""))
-	configured = not url.is_empty() and client.configure(url) == OK
+	if url != client._base_url:
+		capabilities = {}
+		configured = not url.is_empty() and client.configure(url) == OK
 	if not configured: message = "Online sign-in is not configured yet."
 
 func player_name() -> String:
@@ -30,11 +35,28 @@ func player_name() -> String:
 func show_development() -> bool:
 	return OS.is_debug_build() and bool(capabilities.get("development_auth", true))
 
-func refresh_options() -> void:
-	if busy or not configured: return
-	busy = true
-	changed.emit()
+func google_available() -> bool:
+	return bool(capabilities.get("google_browser_configured", false))
+
+func _check_service() -> Dictionary:
 	var result: Dictionary = await client.request_api("/bootstrap")
+	if result.ok and (result.data.get("service", "") != "beat-my-track" or result.data.get("api_version", "") != "v1"):
+		capabilities = {}
+		return {"ok":false,"error":"WRONG_SERVICE"}
+	if result.ok: capabilities = result.data
+	else: capabilities = {}
+	return result
+
+func refresh_options() -> void:
+	if busy: return
+	_load_configuration()
+	if not configured:
+		changed.emit()
+		return
+	busy = true
+	message = "Connecting to sign-in…"
+	changed.emit()
+	var result: Dictionary = await _check_service()
 	if result.ok:
 		capabilities = result.data
 		if client.signed_in():
@@ -56,7 +78,8 @@ func sign_in_developer() -> void:
 		busy = true
 		message = "Signing in as developer…"
 		changed.emit()
-		var result: Dictionary = await client.developer_login(_development_key)
+		var result: Dictionary = await _check_service()
+		if result.ok: result = await client.developer_login(_development_key)
 		message = "Signed in as " + player_name() + "." if result.ok else _error_text(result)
 		busy = false
 	changed.emit()
@@ -72,7 +95,9 @@ func sign_in_google(username: String) -> void:
 	_cancelled = false
 	message = "Opening Google sign-in…"
 	changed.emit()
-	var result: Dictionary = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST, {"display_name":username})
+	var result: Dictionary = await _check_service()
+	if result.ok and not google_available(): result = {"ok":false,"error":"GOOGLE_SIGN_IN_NOT_CONFIGURED"}
+	if result.ok: result = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST, {"display_name":username})
 	if not result.ok:
 		message = _error_text(result)
 		busy = false
@@ -138,4 +163,6 @@ func _error_text(result: Dictionary) -> String:
 		"RATE_LIMITED": return "Too many sign-in attempts. Please wait a minute and try again."
 		"ACCOUNT_DISABLED": return "This account is disabled."
 		"NOT_CONFIGURED": return "Online sign-in is not configured yet."
+		"WRONG_SERVICE", "INVALID_RESPONSE": return "The sign-in address points to another service. Check the PC backend setup."
+		"NETWORK_ERROR", "REQUEST_START_FAILED": return "The game backend is not running or cannot be reached. Start the PC backend and retry."
 		_: return "Could not sign in. Check your connection and try again."

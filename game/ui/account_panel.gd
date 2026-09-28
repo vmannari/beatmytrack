@@ -9,6 +9,7 @@ var logout_button: Button
 var cancel_button: Button
 var refresh_button: Button
 var username_label: Label
+var google_status: Label
 
 func _ready() -> void:
 	var column := VBoxContainer.new()
@@ -27,9 +28,13 @@ func _ready() -> void:
 	username.max_length = 40
 	username.custom_minimum_size.y = 54
 	column.add_child(username)
-	google_button = MenuStyle.button("Continue with Google", func() -> void: account.sign_in_google(username.text), true)
+	google_button = preload("res://ui/google_sign_in_button.gd").new()
+	google_button.pressed.connect(func() -> void: account.sign_in_google(username.text))
 	google_button.name = "GoogleSignIn"
 	column.add_child(google_button)
+	google_status = MenuStyle.label("", 17, true)
+	google_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(google_status)
 	development_button = MenuStyle.button("Development · developer", account.sign_in_developer)
 	development_button.name = "DevelopmentSignIn"
 	column.add_child(development_button)
@@ -50,6 +55,8 @@ func _update() -> void:
 	username.editable = not account.busy
 	google_button.visible = not signed_in
 	google_button.disabled = account.busy or not account.configured
+	google_status.visible = not signed_in and not account.capabilities.is_empty() and not account.google_available()
+	google_status.text = "Google sign-in is awaiting setup. Development is available for PC testing." if account.show_development() else "Google sign-in is awaiting setup."
 	development_button.visible = not signed_in and account.show_development()
 	development_button.disabled = account.busy or not account.configured
 	logout_button.visible = signed_in

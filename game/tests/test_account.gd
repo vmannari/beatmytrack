@@ -5,6 +5,14 @@ var app: Node
 var folder: String
 var browser_mode: String = "complete"
 
+class WrongServiceClient extends "res://backend/backend_client.gd":
+	var sent_credentials: bool = false
+	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
+		return {"ok":true,"data":{"api_version":"v1","service":"another-app"}}
+	func developer_login(_key: String) -> Dictionary:
+		sent_credentials = true
+		return {"ok":false,"error":"WRONG_SERVICE"}
+
 func open_fixture_browser(url: String) -> Error:
 	if browser_mode == "cancel":
 		app.online.cancel_google.call_deferred()
@@ -97,6 +105,16 @@ func run() -> void:
 	online.changed.emit()
 	check(not app.root_ui.find_child("DevelopmentSignIn", true, false).visible, "removing server development option hides button")
 	await capture("google-only-960")
+	var real_client: Node = online.client
+	var wrong := WrongServiceClient.new()
+	root.add_child(wrong)
+	online.client = wrong
+	online.capabilities = {"development_auth":true}
+	await online.sign_in_developer()
+	check(not wrong.sent_credentials and online.capabilities.is_empty(), "wrong service never receives development credentials")
+	check("another service" in online.message, "wrong service gives actionable feedback")
+	online.client = real_client
+	wrong.queue_free()
 	app.queue_free()
 	await process_frame
 	# Only files created in the isolated test folder are removed.

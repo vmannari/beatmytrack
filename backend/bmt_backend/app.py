@@ -64,6 +64,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     @app.get("/v1/bootstrap", tags=["compatibility"])
     def bootstrap():
         return {
+            "service": "beat-my-track",
             "api_version": "v1",
             "auth": "google",
             "google_configured": bool(settings.google_client_ids),

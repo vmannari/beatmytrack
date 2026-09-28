@@ -1,5 +1,76 @@
 # Google and Development sign-in
 
+## PC fix and current setup (2026-09-28)
+
+The first PC attempt failed because port 8080 belonged to the owner's Crane CMS,
+not this game's API, and no `user://backend.cfg` existed. The mock-backed tests
+did not exercise this missing workstation setup. The actual PC now has a separate
+`bmt-pc-dev` Compose project: PostgreSQL, migrations, API and worker, with a durable
+database/object volume and API bound only to `127.0.0.1:18181`. It is left running
+for the owner's tests. Existing services on 8080 were not changed.
+
+Start/restart the local setup with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendStart
+```
+
+This uses Ubuntu WSL Docker and the previously validated `bmt-backend:local` image
+(build it with the deployment runbook first on a new workstation). Current backend
+Python code is mounted read-only; the image supplies dependencies and the pinned
+canonical verifier. The launcher generates private ignored `.tools/bmt-pc.env`
+once, reuses its key on later starts, runs migrations and writes the matching URL/key
+to `%APPDATA%/Circuit01Lab/backend.cfg`. Normal editor/game launches read that file.
+Reopen Sign in or restart the game, then choose Development. No environment-variable
+copying is required. `BackendStop` stops only this project and retains its data.
+Restart policies resume services when Docker/WSL is running; Windows reboot alone
+does not guarantee Docker has started. Use BackendStart if it has not.
+
+The client checks the service identity before sending development credentials,
+reloads saved configuration when reopening the account screen, and reports wrong
+services separately from connection failures. Default debug port is now 18181.
+Google uses an unmodified pre-approved button PNG with preserved aspect ratio,
+colors, logo and typography; [asset provenance](../game/assets/auth/PROVENANCE.md).
+The screen explicitly says when Google is awaiting configuration.
+
+To obtain a client ID with your existing Google account:
+
+1. Create/select a **Beat my track** project in Google Cloud Console.
+2. In **Google Auth Platform → Branding**, set the app name and support email.
+3. Set **Audience → External** for personal Gmail testing; add your account as a
+   test user when prompted.
+4. In **Clients → Create client**, choose **Web application**.
+5. Add JavaScript origins `http://localhost`, `http://localhost:18181`, and
+   `http://127.0.0.1:18181`. Redirect URIs remain empty for the JavaScript callback flow.
+6. Copy the public Client ID ending in `.apps.googleusercontent.com`. No secret is
+   needed. Put that ID in both `BMT_GOOGLE_CLIENT_IDS` and `BMT_GOOGLE_WEB_CLIENT_ID`
+   in `.tools/bmt-pc.env`, then run BackendStart again. The owner can instead send
+   the public ID to the coding agent to configure it.
+
+These steps follow [Google's setup guide](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+A personal Google account alone does not configure the game's OAuth client.
+Real Google acceptance remains pending that ID and an interactive sign-in.
+
+Actual follow-up verification:
+
+- `scripts/dev.ps1 -Action BackendStart` passed twice against the real PC stack;
+  the repeated start preserved configuration and existing services.
+- `scripts/dev.ps1 -Action CapturePCAccount`: **8 checks, zero failures**, using
+  the saved PC config and real PostgreSQL/API, without injected URL/key or a fake
+  Google verifier. Verified developer login, sign-out and durable account reuse.
+- `python -m pytest backend/tests/test_account_client.py backend/tests/test_browser_auth.py backend/tests/test_auth.py -q`:
+  **43 passed** in 21.37 s.
+- Final wrong-service/configuration regressions:
+  `python -m pytest backend/tests/test_account_client.py backend/tests/test_pc_development.py -q -s`:
+  **4 passed** in 14.12 s; **22 headless Godot checks**, zero failures. This includes
+  refusing to send development credentials to a different service.
+- Pinned Godot import and Ruff passed. No phone test or Android export performed.
+- Current real-PC screenshots: [options](evidence/pc-sign-in/pc-options.png),
+  [authenticated developer](evidence/pc-sign-in/pc-developer.png), both inspected.
+
+The earlier implementation record follows; its manual port-8080 setup remains an
+option for separately configured API development, not this workstation's default.
+
 2026-09-28 owner follow-up, requirements B01/B19/R01/V03/Q01. The menu now has a
 **Sign in** account entry. Its two options are **Continue with Google** and
 **Development · developer**. Local driving remains available without signing in.

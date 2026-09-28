@@ -13,6 +13,13 @@ menus are still local.
 
 Local API development (Python 3.10+; deployment image uses 3.12):
 
+For this Windows PC, use `scripts/dev.ps1 -Action BackendStart`. It starts the
+isolated WSL Docker stack at `http://127.0.0.1:18181` and saves the game's connection
+and development key for normal editor launches. `BackendStop` stops the stack
+without deleting data. This avoids the existing unrelated service on port 8080.
+See [PC setup and Google client-ID steps](../docs/ACCOUNT_SIGN_IN.md).
+The generic manual API setup below is for other separately configured environments.
+
 ```powershell
 python -m venv .tools/backend-venv
 .tools/backend-venv/Scripts/python -m pip install -r backend/requirements.lock

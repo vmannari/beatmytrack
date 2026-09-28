@@ -10,7 +10,7 @@ with sync_playwright() as p:
     page = browser.new_page(viewport={'width':1440,'height':1000})
     errors=[]
     page.on('pageerror',lambda e:errors.append(str(e)))
-    page.goto('http://127.0.0.1:18765')
+    page.goto('http://127.0.0.1:18765/lab.html'); page.locator('.presets summary').click()
     for choice in (1,2,3):
         page.locator(f'[data-r3="{choice}"]').click()
         page.wait_for_function('tracks.length === 6 && !loading')

@@ -7,7 +7,7 @@ with sync_playwright() as p:
     browser=p.chromium.launch(channel='msedge',headless=True,args=['--autoplay-policy=no-user-gesture-required'])
     page=browser.new_page(viewport={'width':1440,'height':1000});page.set_default_timeout(60000)
     errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-    page.goto('http://127.0.0.1:18765');page.click('#evolve')
+    page.goto('http://127.0.0.1:18765/lab.html'); page.locator('.presets summary').click();page.click('#evolve')
     page.wait_for_function('!loading && document.querySelector("#mode").value==="tempo"')
     assert page.evaluate('tempoBuffers.size')==36
     selected=page.evaluate('tracks.map(t=>t.asset)')

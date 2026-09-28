@@ -1,4 +1,4 @@
-# Offline music workbench
+# Local music studio
 
 Run from the Windows repository root:
 
@@ -12,7 +12,29 @@ The server listens only on loopback and exposes its UI and `build/music` audio.
 Port 8765 is reserved on this machine; `-Port` can select another port.
 Stop the server with Ctrl+C. The VS Code task **Music: Open workbench** does the same.
 
-## Listening
+## Generate, listen and keep
+
+The opening **Create music** screen now runs Magenta RT2 directly. Give the take
+a working title, write a prompt, choose its duration and optionally assign a
+musical state. **Generate a take** uses the existing local WSL GPU installation.
+Keep the server running while it works; browser reloads are safe.
+
+Listen with the waveform/player, then **Save to library** or **Discard take**.
+Discarded takes can be restored from the inbox. In **Your library**, select a
+saved track, edit its name or state and click **Save changes**. Assignments persist
+on disk and appear in **Mix lab**. **Earlier recordings** contains previous
+experiments that you can audition and save. State labels organize music; they do
+not change the generated audio or automatically integrate it into the game.
+
+Back up `build/music` to retain both the recordings and
+`workbench/library.json`. Prompt drafts are kept in browser local storage.
+The server exposes no source deletion action. Generation errors retain the
+prompt and expose retry information. See [implementation and actual checks](../../docs/MUSIC_STUDIO.md).
+
+## Mix lab
+
+Open **Mix lab** for the existing driving-arc and arrangement tools. Expand
+**Earlier arrangement studies** to access the previous banks and endpoint pair.
 
 **Reference arc R2:** use **R2 · All A**, **R2 · All B**, or **R2 · New drive**.
 These load one of two options at each of six stages. New drive draws a new

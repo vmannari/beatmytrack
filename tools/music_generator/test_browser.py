@@ -12,7 +12,7 @@ with sync_playwright() as p:
     page.set_default_timeout(30000)
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
-    page.goto('http://127.0.0.1:18765')
+    page.goto('http://127.0.0.1:18765/lab.html'); page.locator('.presets summary').click()
     page.wait_for_function("document.querySelector('#recording').options.length > 1")
     page.click('#add')
     page.wait_for_selector('.track')

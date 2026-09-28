@@ -194,7 +194,16 @@ def main():
         output, jobs = prepare_jobs(cfg, args.command, args.limit, args.names)
         print(json.dumps({"output": str(output), "jobs": jobs}, indent=2))
     else:
-        generate(cfg, args.command, args.limit, args.names)
+        # Includes CLI batches and UI jobs; a restarted server cannot overlap a
+        # still-finishing WSL job and exhaust GPU memory.
+        import fcntl
+        BUILD.mkdir(parents=True, exist_ok=True)
+        with (BUILD / '.generation.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError('Another Magenta job is using the GPU. Wait for it to finish and retry.')
+            generate(cfg, args.command, args.limit, args.names)
 
 if __name__ == "__main__":
     main()

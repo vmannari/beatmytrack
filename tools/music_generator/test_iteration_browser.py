@@ -11,7 +11,7 @@ with sync_playwright() as p:
     page = browser.new_page(viewport={'width':1440, 'height':1000})
     errors=[]
     page.on('pageerror', lambda e: errors.append(str(e)))
-    page.goto('http://127.0.0.1:18765')
+    page.goto('http://127.0.0.1:18765/lab.html'); page.locator('.presets summary').click()
     page.locator('[data-r2="1"]').click()
     page.wait_for_function('workbench.getState().tracks.length === 6 && !loading')
     assert page.evaluate('tracks.every(t => t.asset.endsWith("01.wav"))')

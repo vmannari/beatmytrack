@@ -3,6 +3,8 @@
 _Last updated: 2026-09-28_
 
 ## Status
+Tooling: owner requests direct RT2 prompting, audition/save/discard and editable state assignments. The redesigned local studio implements this workflow; real GPU/browser checks pass. This authorizes tooling, not a new composition or release asset. See `../MUSIC_STUDIO.md`.
+
 Mode: explore
 Current baseline: production v6 remains installed. Owner rejected the initial Magenta auditions as unsuitable and R2's separate state mixes as disconnected; no replacement composition is accepted.
 Owner explicitly rejected the R3/R4 acoustic motif: too high, too brief and disturbing. R5 replaces it; approval remains pending.

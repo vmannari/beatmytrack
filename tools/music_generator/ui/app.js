@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const names = ['Focus', 'Momentum', 'Drive', 'Flow', 'Lift', 'Breakthrough'];
+const sourceState = item => ({...item, state_index: item.source_state_index ?? item.state_index});
 let context, master, analyser, catalog = [], tracks = [], playing = false;
 let position = 0, startTime = 0, lastTime = 0, streak = 0, recovery = 0;
 let nextId = 1, loading = false;
@@ -11,7 +12,7 @@ let activeBpm = 120;
 const tempoKey = (asset, bpm) => `${asset}@${bpm}`;
 async function prepareTempos(selection = tracks) {
   if (!selection.length || selection.some(t => t.family !== 'shared_road_r3' || t.trimStart !== 0 || Math.abs(t.trimEnd - 16) > .001)) throw new Error('Load an R3 drive with full loops before using evolving tempo.');
-  const available = catalog.filter(i => i.family === 'evolving_r4');
+  const available = catalog.filter(i => i.family === 'evolving_r4').map(sourceState);
   const run = available.map(i => i.run).sort().at(-1);
   const selected = selection.flatMap(t => tempoStages.map(bpm => {
     const item = available.find(i => i.run === run && i.source_asset === t.asset && i.bpm === bpm);
@@ -167,7 +168,7 @@ function renderTracks() {
     title.append(toggles);
     if (t.family === 'shared_road_r3') {
       const choice = field('select'); choice.setAttribute('aria-label', `Variation ${t.name}`);
-      const options = catalog.filter(i => i.family === t.family && i.run === t.run && i.state_index === t.role);
+      const options = catalog.map(sourceState).filter(i => i.family === t.family && i.run === t.run && i.state_index === t.role);
       for (const item of options) choice.append(field('option', {value:item.id, textContent:`Variation ${'ABC'[item.variant-1]}`}));
       choice.value = t.asset;
       choice.onchange = guard(async () => {
@@ -231,13 +232,13 @@ async function addRecording(item, file, settings = {}) {
   if (buffer.duration < .04) throw new Error('Recording is too short.');
   position = playhead(); stopSources();
   const t = {id: nextId++, asset: item.id, name: item.name, kind: item.kind || 'imported audio', alignment: item.alignment || 'unverified',
-    family: item.family, run: item.run, role: item.state_index,
+    family: item.family, run: item.run, role: item.source_state_index ?? item.state_index,
     buffer, stage: item.state_index ?? 0, volume: .65, enabled: true, solo: false, trimStart: 0, trimEnd: buffer.duration, ...settings};
   tracks.push(t); if (playing) startSources(); renderTracks(); status('Added ' + item.name);
 }
 async function refresh() {
   const response = await fetch('/api/catalog'); if (!response.ok) throw new Error('Cannot load audio catalog');
-  const result = await response.json(); catalog = result.items;
+  const result = await response.json(); catalog = result.items.map(item => ({...item, name: item.title || item.name}));
   const selection = $('recording').value;
   $('recording').replaceChildren(field('option', {value: '', textContent: 'Select a recording…'}));
   for (const item of catalog) $('recording').append(field('option', {value: item.id, textContent: `${item.name} · v${item.variant} · ${item.metrics?.duration?.toFixed(1) ?? '?'} s · ${item.run}`}));
@@ -329,7 +330,7 @@ for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · N
     loading = true;
     try {
       await refresh();
-      const available = catalog.filter(i => i.family === 'night_signal_r2_review');
+      const available = catalog.filter(i => i.family === 'night_signal_r2_review').map(sourceState);
       // Choose one complete batch; never silently combine different revisions.
       const run = available.map(i => i.run).sort().at(-1);
       const bank = available.filter(i => i.run === run);
@@ -349,7 +350,8 @@ for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · N
   });
   iterationControls.append(button);
 }
-$('pair').before(iterationControls);
+$('r2Controls').append(iterationControls);
+$('pairSlot').append($('pair'));
 let previousR3 = [];
 for (const [label, choice] of [['Revised · New drive', 0], ['All A', 1], ['All B', 2], ['All C', 3]]) {
   const button = field('button', {className:choice ? 'small' : 'primary', textContent:label});
@@ -359,7 +361,7 @@ for (const [label, choice] of [['Revised · New drive', 0], ['All A', 1], ['All 
     loading = true;
     try {
       await refresh();
-      const available = catalog.filter(i => i.family === 'shared_road_r3');
+      const available = catalog.filter(i => i.family === 'shared_road_r3').map(sourceState);
       const run = available.map(i => i.run).sort().at(-1);
       const options = Array.from({length:6}, (_, stage) => available.filter(i => i.run === run && i.state_index === stage));
       if (options.some(items => items.length !== 3 || new Set(items.map(i => i.variant)).size !== 3)) throw new Error('The complete R3 instrument bank is not available.');

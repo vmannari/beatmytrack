@@ -2,6 +2,7 @@ extends Node
 ## Local navigation and editor composition. Racing simulation stays in Game.
 
 const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
+const AccountController = preload("res://backend/account_controller.gd")
 var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
 var screen: String = "play"
 var menu_open_costs: Dictionary = {}
@@ -48,6 +49,8 @@ var pending_menu_notice: String = ""
 var editor_preview_thread: Thread
 var editor_preview_document: Dictionary = {}
 var editor_raster_cache: Dictionary = {"enabled":true}
+var online: AccountController
+var account_button: Button
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -106,6 +109,9 @@ func _ready() -> void:
 		add_child(game)
 		return
 	records.load_records()
+	online = AccountController.new()
+	add_child(online)
+	online.changed.connect(_account_changed)
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
 	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
 	ui_left_handed = bool(records.settings.get("left_handed", false))
@@ -195,9 +201,13 @@ func _show_screen(next: String) -> void:
 		button.custom_minimum_size.y = 64
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
-	var identity := MenuStyle.label("SMALL TRACKS.\nBIG STORIES.", 15, true)
-	identity.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	nav.add_child(identity)
+	account_button = MenuStyle.button(online.player_name() if online.client.signed_in() else "Sign in", _open_account)
+	account_button.name = "MenuAccount"
+	account_button.custom_minimum_size.x = 110
+	account_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	account_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	account_button.clip_text = true
+	nav.add_child(account_button)
 	var settings: Button = MenuStyle.button("",_show_screen.bind("play" if screen == "settings" else "settings"))
 	settings.icon = MenuIcon.texture("settings")
 	settings.tooltip_text = "Back to Home" if screen == "settings" else "Settings"
@@ -216,7 +226,30 @@ func _show_screen(next: String) -> void:
 		"create": _editor()
 		"garage": _garage()
 		"settings": _settings()
+		"account": _account()
 		_: _home()
+
+func _account_changed() -> void:
+	if is_instance_valid(account_button):
+		account_button.text = online.player_name() if online.client.signed_in() else "Sign in"
+
+func _open_account() -> void:
+	_show_screen("account")
+	online.refresh_options()
+
+func _account() -> void:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.add_child(scroll)
+	var center := CenterContainer.new()
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(center)
+	var panel := preload("res://ui/account_panel.gd").new()
+	panel.account = online
+	panel.custom_minimum_size.x = 500
+	center.add_child(panel)
 
 func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> void:
 	if parent == null: parent = content

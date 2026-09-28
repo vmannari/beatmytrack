@@ -14,7 +14,7 @@ def main() -> None:
             f"POSTGRES_PASSWORD={secrets.token_hex(32)}\n"
             f"BMT_DB_PASSWORD={secrets.token_hex(32)}\n"
             "BMT_PUBLIC_BASE_URL=https://race.example.com\n"
-            "BMT_GOOGLE_CLIENT_IDS=\nBMT_PORT=8080\nBMT_TRUSTED_PROXY_IPS=127.0.0.1\nGODOT_SHA256=\n"
+            "BMT_GOOGLE_CLIENT_IDS=\nBMT_GOOGLE_WEB_CLIENT_ID=\nBMT_PORT=8080\nBMT_TRUSTED_PROXY_IPS=127.0.0.1\nGODOT_SHA256=\n"
             "BMT_IMAGE=bmt-backend:local\n"
         )
     print(

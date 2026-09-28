@@ -1,5 +1,10 @@
 # DS925+ deployment and cloud migration
 
+Account-menu follow-up: migrate to `0002_browser_login` and set
+`BMT_GOOGLE_WEB_CLIENT_ID` as well as `BMT_GOOGLE_CLIENT_IDS` for browser sign-in.
+The game's API URL and `BMT_PUBLIC_BASE_URL` must be the same origin registered in
+Google's Authorized JavaScript origins. See [account setup](../../docs/ACCOUNT_SIGN_IN.md).
+
 This is a deployment package, not evidence of a deployed server. Run commands from
 the repository root on the Linux container host unless stated otherwise. The NAS
 must have Synology Container Manager and a Compose version supporting health-based

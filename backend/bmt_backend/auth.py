@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_session
 from .identity_models import Identity, LoginChallenge, Player, SessionFamily, SessionToken, now
-from .security import current_player, digest
+from .security import current_player, development_session_disabled, digest
 
 router = APIRouter(tags=["identity"])
 
@@ -49,6 +49,17 @@ def public_player(player: Player) -> dict:
     return {"id": player.id, "display_name": player.display_name, "created_at": player.created_at}
 
 
+@router.post("/auth/developer", include_in_schema=False)
+def developer_login(
+    request: Request,
+    x_dev_auth_key: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    return development_login(
+        DevelopmentLogin(subject="developer", display_name="developer"), request, x_dev_auth_key, session
+    )
+
+
 @router.post("/auth/development", include_in_schema=False)
 def development_login(
     body: DevelopmentLogin,
@@ -85,6 +96,8 @@ def development_login(
             player = session.get(Player, identity.player_id)
     if player.disabled:
         raise HTTPException(403, "ACCOUNT_DISABLED")
+    if body.subject == "developer":
+        player.display_name = "developer"
     family = SessionFamily(player_id=player.id, expires_at=now() + settings.refresh_ttl_seconds)
     session.add(family)
     session.flush()
@@ -144,8 +157,12 @@ def google_login(body: GoogleLogin, request: Request, session: Session = Depends
     )
     if consumed.rowcount != 1:
         raise HTTPException(401, "INVALID_LOGIN_CHALLENGE")
+    return complete_google_login(claims["sub"], body.display_name, request, session)
+
+
+def complete_google_login(subject: str, display_name: str, request: Request, session: Session):
     identity = session.scalar(
-        select(Identity).where(Identity.provider == "google", Identity.subject == claims["sub"])
+        select(Identity).where(Identity.provider == "google", Identity.subject == subject)
     )
     if identity:
         player = session.get(Player, identity.player_id)
@@ -153,14 +170,14 @@ def google_login(body: GoogleLogin, request: Request, session: Session = Depends
         # Savepoint handles two valid Google sign-ins creating the same identity concurrently.
         try:
             with session.begin_nested():
-                player = Player(display_name=body.display_name)
+                player = Player(display_name=display_name)
                 session.add(player)
                 session.flush()
-                session.add(Identity(player_id=player.id, provider="google", subject=claims["sub"]))
+                session.add(Identity(player_id=player.id, provider="google", subject=subject))
                 session.flush()
         except IntegrityError:
             identity = session.scalar(
-                select(Identity).where(Identity.provider == "google", Identity.subject == claims["sub"])
+                select(Identity).where(Identity.provider == "google", Identity.subject == subject)
             )
             if identity is None:
                 raise
@@ -193,7 +210,12 @@ def refresh_session(body: RefreshBody, request: Request, session: Session = Depe
         family.revoked = True
         session.commit()  # Replayed refresh revokes the replacement too.
         raise HTTPException(401, "REFRESH_REUSE_DETECTED")
-    if family.revoked or family.expires_at <= now() or player.disabled:
+    if (
+        family.revoked
+        or family.expires_at <= now()
+        or player.disabled
+        or development_session_disabled(request, session, player)
+    ):
         raise HTTPException(401, "INVALID_SESSION")
     token.consumed = True
     result = issue_tokens(session, family, player, request.app.state.settings)
@@ -226,6 +248,15 @@ def me(player: Player = Depends(current_player)):
 def profile(
     body: ProfileBody, player: Player = Depends(current_player), session: Session = Depends(get_session)
 ):
+    developer = session.scalar(
+        select(Identity).where(
+            Identity.player_id == player.id,
+            Identity.provider == "development",
+            Identity.subject == "developer",
+        )
+    )
+    if developer and body.display_name != "developer":
+        raise HTTPException(403, "DEVELOPER_NAME_FIXED")
     player.display_name = body.display_name
     session.commit()
     return public_player(player)

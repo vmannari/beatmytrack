@@ -7,7 +7,7 @@ from sqlalchemy import delete
 
 from .config import Settings
 from .db import make_engine, make_session_factory
-from .identity_models import LoginChallenge, RateBucket, SessionFamily, now
+from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
 
 
 def cleanup(factory) -> dict:
@@ -15,6 +15,7 @@ def cleanup(factory) -> dict:
     with factory() as session:
         result = {}
         for name, model in (
+            ("browser_logins", BrowserLogin),
             ("rate_buckets", RateBucket),
             ("login_challenges", LoginChallenge),
             ("session_families", SessionFamily),

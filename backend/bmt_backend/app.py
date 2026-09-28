@@ -14,7 +14,7 @@ from .storage import LocalBlobStore
 
 
 def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
-    from . import runs, tracks
+    from . import browser_auth, runs, tracks
     from .verifier import GodotVerifier
 
     settings = settings or Settings.from_env()
@@ -28,6 +28,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
     app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory)
     app.include_router(auth.router, prefix="/v1")
+    app.include_router(browser_auth.router, prefix="/v1")
     app.include_router(tracks.router, prefix="/v1")
     app.include_router(runs.router, prefix="/v1")
 
@@ -53,7 +54,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         try:
             with app.state.engine.connect() as connection:
                 revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                if revision != "0001_backend":
+                if revision != "0002_browser_login":
                     raise HTTPException(503, "SCHEMA_NOT_READY")
             app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
         except (SQLAlchemyError, OSError) as exc:
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "api_version": "v1",
             "auth": "google",
             "google_configured": bool(settings.google_client_ids),
+            "google_browser_configured": bool(settings.google_web_client_id),
             "development_auth": settings.dev_auth_enabled,
             "track_schema": "creator-track-v5",
             "replay_schema": "bmt-replay-v1",

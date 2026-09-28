@@ -1,5 +1,10 @@
 # Backend v1: architecture, contract and acceptance
 
+**Sign-in follow-up:** [ACCOUNT_SIGN_IN.md](ACCOUNT_SIGN_IN.md) supersedes this
+initial checkpoint's statements that menus/authentication are unconnected.
+Google browser sign-in and the fixed `developer` menu option now exist. Other
+online game-menu integration and the original NAS/real-Google acceptance remain.
+
 Owner request: **2026-09-28**. Implement the first backend for authentication, shared
 tracks, ratings and leaderboards, initially on a Synology DS925+ and later in the
 cloud. The owner subsequently selected Google sign-in and requested a development

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_session
-from .identity_models import Player, SessionFamily, SessionToken, now
+from .identity_models import Identity, Player, SessionFamily, SessionToken, now
 
 
 def digest(value: str) -> str:
@@ -53,6 +53,18 @@ class GoogleIdentityVerifier:
 bearer = HTTPBearer(auto_error=False)
 
 
+def development_session_disabled(request: Request, session: Session, player: Player) -> bool:
+    settings = request.app.state.settings
+    if settings.environment == "development" and settings.dev_auth_enabled:
+        return False
+    return (
+        session.scalar(
+            select(Identity.id).where(Identity.player_id == player.id, Identity.provider == "development")
+        )
+        is not None
+    )
+
+
 def current_player(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
@@ -75,6 +87,7 @@ def current_player(
         or family.expires_at <= now()
         or token.access_expires_at <= now()
         or token.consumed
+        or development_session_disabled(request, session, player)
     ):
         raise HTTPException(401, "INVALID_SESSION")
     request.state.session_family_id = family.id

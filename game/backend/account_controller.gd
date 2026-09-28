@@ -1,0 +1,141 @@
+extends Node
+## Presentation-side sign-in. No credentials in records, exports, URLs or logs.
+signal changed
+const Client = preload("res://backend/backend_client.gd")
+var client := Client.new()
+var busy: bool = false
+var waiting_for_google: bool = false
+var message: String = "Choose how to sign in."
+var capabilities: Dictionary = {}
+var configured: bool = false
+var _development_key: String = ""
+var _cancelled: bool = false
+var open_browser: Callable = OS.shell_open
+
+func _ready() -> void:
+	add_child(client)
+	var config := ConfigFile.new()
+	config.load("user://backend.cfg")
+	var url: String = str(config.get_value("backend", "url", "http://127.0.0.1:8080" if OS.is_debug_build() else ""))
+	if OS.has_environment("BMT_API_URL"): url = OS.get_environment("BMT_API_URL")
+	if OS.is_debug_build():
+		_development_key = OS.get_environment("BMT_DEV_AUTH_KEY")
+		if _development_key.is_empty(): _development_key = str(config.get_value("backend", "development_key", ""))
+	configured = not url.is_empty() and client.configure(url) == OK
+	if not configured: message = "Online sign-in is not configured yet."
+
+func player_name() -> String:
+	return str(client.player.get("display_name", ""))
+
+func show_development() -> bool:
+	return OS.is_debug_build() and bool(capabilities.get("development_auth", true))
+
+func refresh_options() -> void:
+	if busy or not configured: return
+	busy = true
+	changed.emit()
+	var result: Dictionary = await client.request_api("/bootstrap")
+	if result.ok:
+		capabilities = result.data
+		if client.signed_in():
+			var profile: Dictionary = await client.request_api("/me", HTTPClient.METHOD_GET, {}, "", true)
+			if profile.ok: client.player = profile.data
+		message = "Choose how to sign in." if not client.signed_in() else "Signed in as " + player_name() + "."
+	else:
+		message = _error_text(result)
+	busy = false
+	changed.emit()
+
+func sign_in_developer() -> void:
+	if busy: return
+	if not configured:
+		message = "Online sign-in is not configured yet."
+	elif not show_development() or _development_key.is_empty():
+		message = "Development sign-in is not configured on this device."
+	else:
+		busy = true
+		message = "Signing in as developer…"
+		changed.emit()
+		var result: Dictionary = await client.developer_login(_development_key)
+		message = "Signed in as " + player_name() + "." if result.ok else _error_text(result)
+		busy = false
+	changed.emit()
+
+func sign_in_google(username: String) -> void:
+	if busy: return
+	username = username.strip_edges()
+	if username.is_empty() or username.length() > 40:
+		message = "Choose a username between 1 and 40 characters."
+		changed.emit()
+		return
+	busy = true
+	_cancelled = false
+	message = "Opening Google sign-in…"
+	changed.emit()
+	var result: Dictionary = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST, {"display_name":username})
+	if not result.ok:
+		message = _error_text(result)
+		busy = false
+		changed.emit()
+		return
+	var poll_token: String = str(result.data.get("poll_token", ""))
+	var browser_url: String = str(result.data.get("browser_url", ""))
+	# Only open this configured backend's browser endpoint, never arbitrary server URLs.
+	if not browser_url.begins_with(client._base_url + "/v1/auth/google/browser#") or poll_token.is_empty():
+		message = "The sign-in service returned an invalid response."
+		busy = false
+		changed.emit()
+		return
+	if open_browser.call(browser_url) != OK:
+		await client.request_api("/auth/google/browser/cancel", HTTPClient.METHOD_POST, {"token":poll_token})
+		message = "Your browser could not be opened. Please try again."
+		busy = false
+		changed.emit()
+		return
+	waiting_for_google = true
+	message = "Finish signing in with Google in your browser, then return here."
+	changed.emit()
+	var deadline: int = Time.get_ticks_msec() + 300000
+	while not _cancelled and Time.get_ticks_msec() < deadline:
+		await get_tree().create_timer(5.0).timeout
+		if _cancelled: break
+		result = await client.poll_google(poll_token)
+		if not result.ok:
+			message = _error_text(result)
+			break
+		if client.signed_in():
+			message = "Signed in as " + player_name() + "."
+			break
+	if _cancelled or not client.signed_in():
+		if client.signed_in(): await client.logout()
+		await client.request_api("/auth/google/browser/cancel", HTTPClient.METHOD_POST, {"token":poll_token})
+		if _cancelled: message = "Sign-in cancelled."
+		elif Time.get_ticks_msec() >= deadline: message = "Sign-in expired. Please try again."
+	waiting_for_google = false
+	busy = false
+	changed.emit()
+
+func cancel_google() -> void:
+	_cancelled = true
+	message = "Cancelling sign-in…"
+	changed.emit()
+
+func sign_out() -> void:
+	if busy: return
+	busy = true
+	changed.emit()
+	var result: Dictionary = await client.logout()
+	message = "Signed out." if result.ok else "Signed out on this device. The server could not be reached."
+	busy = false
+	changed.emit()
+
+func _error_text(result: Dictionary) -> String:
+	match str(result.get("error", "")):
+		"GOOGLE_SIGN_IN_NOT_CONFIGURED", "GOOGLE_PUBLIC_URL_NOT_CONFIGURED": return "Google sign-in is not configured yet."
+		"INVALID_DEVELOPMENT_KEY": return "Development sign-in is not configured correctly on this device."
+		"INVALID_INPUT": return "Choose a visible username between 1 and 40 characters."
+		"LOGIN_EXPIRED": return "Sign-in expired. Please try again."
+		"RATE_LIMITED": return "Too many sign-in attempts. Please wait a minute and try again."
+		"ACCOUNT_DISABLED": return "This account is disabled."
+		"NOT_CONFIGURED": return "Online sign-in is not configured yet."
+		_: return "Could not sign in. Check your connection and try again."

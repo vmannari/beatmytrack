@@ -1,6 +1,6 @@
 extends Node
 ## Optional online adapter. The local game and canonical step never depend on it.
-## Google SDK acquisition/UI and secure platform token persistence are separate.
+## Browser sign-in and UI live in account_controller.gd. Tokens stay in memory.
 const MAX_RESPONSE_BYTES: int = 8388608
 var _base_url: String = ""
 var _access_token: String = ""
@@ -83,6 +83,23 @@ func _remember(response: Dictionary) -> Dictionary:
 
 func google_challenge() -> Dictionary:
 	return await request_api("/auth/google/challenge",HTTPClient.METHOD_POST)
+
+func developer_login(development_key: String) -> Dictionary:
+	if _busy: return _failure("BUSY")
+	if "\n" in development_key or "\r" in development_key: return _failure("INVALID_DEVELOPMENT_KEY")
+	_busy = true
+	clear_session()
+	var response: Dictionary = _remember(await _send("/auth/developer",HTTPClient.METHOD_POST,{},false,"",PackedStringArray(["X-Dev-Auth-Key: "+development_key])))
+	_busy = false
+	return response
+
+func poll_google(poll_token: String) -> Dictionary:
+	if _busy: return _failure("BUSY")
+	_busy = true
+	var response: Dictionary = await _send("/auth/google/browser/poll",HTTPClient.METHOD_POST,{"token":poll_token},false)
+	if response.ok and response.data.get("status", "") != "pending": response = _remember(response)
+	_busy = false
+	return response
 
 func google_login(id_token: String, challenge_id: String, display_name: String = "Racer") -> Dictionary:
 	if _busy: return _failure("BUSY")

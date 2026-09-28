@@ -40,6 +40,18 @@ class LoginChallenge(Base):
     used: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class BrowserLogin(Base):
+    __tablename__ = "browser_logins"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    browser_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    poll_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    nonce: Mapped[str] = mapped_column(String(64))
+    display_name: Mapped[str] = mapped_column(String(40))
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[int] = mapped_column(Integer, index=True)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class SessionFamily(Base):
     __tablename__ = "session_families"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

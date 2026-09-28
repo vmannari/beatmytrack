@@ -7,7 +7,9 @@ storage. The same containers run on the DS925+ and a future cloud VM/container h
 
 See [architecture and requirements](../docs/BACKEND_V1.md) and the
 [deployment runbook](deploy/README.md). Neither a NAS deployment nor Google OAuth
-credentials are included. Game menus are not yet connected to this service.
+credentials are included. The menu's **Sign in** opens Google and Development options;
+see [account setup and acceptance](../docs/ACCOUNT_SIGN_IN.md). Track/rating/leaderboard
+menus are still local.
 
 Local API development (Python 3.10+; deployment image uses 3.12):
 
@@ -32,8 +34,10 @@ Readiness does not prove that Google login or the external verifier is configure
 Missing Google client IDs disable Google sign-in. Missing/wrong Godot prevents valid
 track/record verification; no claimed client time becomes a verified record.
 
-The requested development login uses `POST /v1/auth/development` with
-`X-Dev-Auth-Key`, `subject` and `display_name`. It requires all three settings:
+The game's Development button uses `POST /v1/auth/developer` with
+`X-Dev-Auth-Key`. The backend always selects the fixed `developer` account.
+The lower-level `/auth/development` endpoint retains separate test identities for
+multi-player API fixtures. Both require all three settings:
 `BMT_ENVIRONMENT=development`, `BMT_DEV_AUTH_ENABLED=true`, and a random
 `BMT_DEV_AUTH_KEY` of at least 32 characters. Use an isolated development database
 on loopback. Production mode rejects development bypass configuration at startup;
@@ -51,16 +55,18 @@ $env:BMT_DEV_AUTH_KEY = (& .tools/backend-venv/Scripts/python -c 'import secrets
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendRun
 
 # Second session: set the same BMT_DEV_AUTH_KEY privately, then sign in.
-$body = @{ subject = 'local-racer'; display_name = 'Local racer' } | ConvertTo-Json
-$login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/v1/auth/development' `
-  -ContentType 'application/json' -Headers @{ 'X-Dev-Auth-Key' = $env:BMT_DEV_AUTH_KEY } -Body $body
+$login = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/v1/auth/developer' `
+  -ContentType 'application/json' -Headers @{ 'X-Dev-Auth-Key' = $env:BMT_DEV_AUTH_KEY } -Body '{}'
 Invoke-RestMethod -Uri 'http://127.0.0.1:8080/v1/me' `
   -Headers @{ Authorization = "Bearer $($login.access_token)" }
 ```
 
 The first command remains running, so the two parts are intentionally separate
-sessions. The key/tokens are not saved by these commands. The optional GDScript adapter
-can use the same isolated endpoint; the shipping game does not enable the bypass.
+sessions. The key/tokens are not saved by these commands. Launch the debug game from
+a terminal with the same `BMT_DEV_AUTH_KEY` and `BMT_API_URL=http://127.0.0.1:8080`
+using `scripts/dev.ps1 -Action Run`; select **Sign in → Development · developer**.
+Release exports hide Development. Disabling server development auth also rejects
+previously issued development access/refresh tokens.
 
 Tests and dependency checking:
 

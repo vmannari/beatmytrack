@@ -12,6 +12,7 @@ class Settings:
     public_base_url: str = "http://localhost:8080"
     object_dir: str = "./var/objects"
     google_client_ids: tuple[str, ...] = field(default_factory=tuple)
+    google_web_client_id: str = ""
     godot_bin: str = ""
     game_project: str = str(Path(__file__).resolve().parents[2] / "game")
     verifier_timeout_seconds: int = 90
@@ -25,6 +26,8 @@ class Settings:
     write_limit_per_minute: int = 90
 
     def __post_init__(self):
+        if self.google_web_client_id and self.google_web_client_id not in self.google_client_ids:
+            raise ValueError("Google web client ID must also be in BMT_GOOGLE_CLIENT_IDS")
         for name in (
             "verifier_timeout_seconds",
             "job_lease_seconds",

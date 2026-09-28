@@ -7,6 +7,7 @@ import secrets
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,43 @@ from bmt_backend.identity_models import Identity, Player, SessionFamily, Session
 from bmt_backend.migrate import upgrade
 
 pytestmark = pytest.mark.postgres
+
+
+def test_browser_poll_is_single_use_under_concurrency(postgres_auth):
+    app, client = postgres_auth
+    app.state.settings = replace(
+        app.state.settings, google_web_client_id="test-client", public_base_url="https://game.example"
+    )
+    started = client.post("/v1/auth/google/browser/start", json={"display_name": "Chosen name"}).json()
+    browser = started["browser_url"].split("#")[1]
+    config = client.post("/v1/auth/google/browser/prepare", json={"token": browser}).json()
+    token = secrets.token_urlsafe(32)
+    app.state.identity_verifier.claims[token] = {
+        "sub": "browser-player",
+        "aud": "test-client",
+        "nonce": config["nonce"],
+    }
+    assert (
+        client.post(
+            "/v1/auth/google/browser/complete", json={"token": browser, "id_token": token}
+        ).status_code
+        == 200
+    )
+    barrier = threading.Barrier(2)
+
+    def poll():
+        with TestClient(app) as other:
+            barrier.wait(timeout=10)
+            return other.post(
+                "/v1/auth/google/browser/poll", json={"token": started["poll_token"]}
+            ).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(poll) for _ in range(2)]
+        assert sorted(f.result(timeout=20) for f in futures) == [200, 401]
+    with app.state.session_factory() as session:
+        assert len(session.scalars(select(SessionFamily)).all()) == 1
+        assert session.scalar(select(Player)).display_name == "Chosen name"
 
 
 class IsolatedGoogle:
@@ -139,7 +177,7 @@ def test_postgres_migration_second_pass_preserves_schema_and_data(postgres_auth)
     upgrade(app.state.engine)
     assert inspect(app.state.engine).get_table_names() == before
     with app.state.engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0001_backend"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002_browser_login"
     assert (
         client.get(
             "/v1/me", headers={"Authorization": "Bearer " + signed_in.json()["access_token"]}

@@ -19,10 +19,21 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
-def assignment(value):
-    if value is not None and (type(value) is not int or value not in range(6)):
+def assignment(value, count=6):
+    if value is not None and (type(value) is not int or value not in range(count)):
         raise ValueError('Choose a valid musical state or Unassigned.')
     return value
+
+
+def state_names(values):
+    if not isinstance(values, list) or not 1 <= len(values) <= 12:
+        raise ValueError('Choose between 1 and 12 states.')
+    if not all(isinstance(v, str) and 1 <= len(v.strip()) <= 40 for v in values):
+        raise ValueError('Each state needs a name of 1–40 characters.')
+    values = [v.strip() for v in values]
+    if len({v.casefold() for v in values}) != len(values):
+        raise ValueError('Give each state a different name.')
+    return values
 
 
 def title(value):
@@ -56,6 +67,14 @@ class Workbench:
         self.lock = threading.RLock()
         self.runner = runner or self.run_generator
         self.data = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {'schema': 1, 'jobs': [], 'tracks': {}}
+        if self.data['schema'] == 1:
+            if self.path.exists():
+                backup = self.folder / 'library-schema-1-backup.json'
+                if not backup.exists():
+                    atomic_json(backup, self.data)
+            self.data.update(schema=2, states=STATES.copy(), packages={}, trash={})
+        if self.data['schema'] != 2:
+            raise ValueError('Unsupported music library schema.')
         for job in self.data['jobs']:
             if job['status'] in ACTIVE:
                 job.update(status='failed', error='Server stopped during generation. You can generate this prompt again.')
@@ -70,6 +89,17 @@ class Workbench:
         items = self.catalog()['items']
         by_id = {i['id']: i for i in items}
         result['tracks'] = [{**by_id.get(key, {'id': key, 'missing': True}), **value} for key, value in result['tracks'].items()]
+        result['trash'] = [{**by_id.get(key, {'id': key, 'missing': True}), **value} for key, value in result['trash'].items()]
+        result['packages'] = list(result['packages'].values())
+        available = {t['id'] for t in result['tracks'] if not t.get('missing')}
+        for package in result['packages']:
+            package['issues'] = []
+            for stage in package['states']:
+                if not stage['pool']:
+                    package['issues'].append(stage['name'] + ': add at least one track.')
+                elif any(asset not in available for asset in stage['pool']):
+                    package['issues'].append(stage['name'] + ': a track is unavailable.')
+            package['ready'] = not package['issues']
         for job in result['jobs']:
             job['item'] = by_id.get(job.get('asset'))
             if job['status'] in ACTIVE:
@@ -81,7 +111,6 @@ class Workbench:
                             job['status'] = state
                     except (OSError, ValueError, KeyError):
                         pass
-        result['states'] = STATES
         return result
 
     def start(self, payload):
@@ -92,8 +121,8 @@ class Workbench:
         duration = payload.get('duration')
         if type(duration) is not int or not 4 <= duration <= 120:
             raise ValueError('Duration must be a whole number from 4 to 120 seconds.')
-        state = assignment(payload.get('state_index'))
         with self.lock:
+            state = assignment(payload.get('state_index'), len(self.data['states']))
             if any(j['status'] in ACTIVE for j in self.data['jobs']):
                 raise RuntimeError('A take is already generating. Wait for it to finish.')
             job_id = uuid.uuid4().hex
@@ -153,11 +182,13 @@ class Workbench:
 
     def save(self, payload):
         name = title(payload.get('title'))
-        state = assignment(payload.get('state_index'))
         asset = payload.get('id')
         if not isinstance(asset, str) or asset not in {i['id'] for i in self.catalog()['items']}:
             raise ValueError('Recording is unavailable. Refresh and try again.')
         with self.lock:
+            state = assignment(payload.get('state_index'), len(self.data['states']))
+            if asset in self.data['trash']:
+                raise ValueError('Restore this track from Trash before editing it.')
             if any(j.get('asset') == asset and j['status'] == 'discarded' for j in self.data['jobs']):
                 raise ValueError('Restore this discarded take before saving it.')
             previous = self.data['tracks'].get(asset)
@@ -176,6 +207,91 @@ class Workbench:
                     job['status'] = status
                 raise
         return {'ok': True}
+
+    def commit_edit(self, edit):
+        """Apply a registry transaction without invalidating in-flight job references."""
+        with self.lock:
+            updated = copy.deepcopy(self.data)
+            result = edit(updated)
+            atomic_json(self.path, updated)
+            # Workers hold references to existing job dictionaries.
+            for old, new in zip(self.data['jobs'], updated['jobs']):
+                old.clear()
+                old.update(new)
+            for key in ('schema', 'states', 'tracks', 'packages', 'trash'):
+                self.data[key] = updated[key]
+            return result or {'ok': True}
+
+    def configure_states(self, payload):
+        names = state_names(payload.get('states'))
+        def edit(data):
+            data['states'] = names
+            for item in [*data['tracks'].values(), *data['trash'].values(), *data['jobs']]:
+                if item.get('state_index') is not None and item['state_index'] >= len(names):
+                    item['state_index'] = None
+        return self.commit_edit(edit)
+
+    def delete_track(self, payload):
+        def edit(data):
+            asset = payload.get('id')
+            if not isinstance(asset, str) or asset not in data['tracks']:
+                raise ValueError('Select a saved track to delete.')
+            data['trash'][asset] = {**data['tracks'].pop(asset), 'deleted_at': time.time()}
+            for package in data['packages'].values():
+                for stage in package['states']:
+                    stage['pool'] = [x for x in stage['pool'] if x != asset]
+            for job in data['jobs']:
+                if job.get('asset') == asset:
+                    job['status'] = 'deleted'
+        return self.commit_edit(edit)
+
+    def restore_track(self, payload):
+        def edit(data):
+            asset = payload.get('id')
+            if not isinstance(asset, str) or asset not in data['trash']:
+                raise ValueError('Select a track in Trash to restore.')
+            restored = data['trash'].pop(asset)
+            restored.pop('deleted_at', None)
+            data['tracks'][asset] = restored
+            for job in data['jobs']:
+                if job.get('asset') == asset:
+                    job['status'] = 'saved'
+        return self.commit_edit(edit)
+
+    def save_package(self, payload):
+        name = title(payload.get('name'))
+        mode = payload.get('mode')
+        if mode not in ('layers', 'arrangement'):
+            raise ValueError('Choose Layer stack or Switch tracks.')
+        stages = payload.get('states')
+        if not isinstance(stages, list) or not all(isinstance(s, dict) for s in stages):
+            raise ValueError('Define the package states.')
+        names = state_names([s.get('name') for s in stages])
+        package_id = payload.get('id') or uuid.uuid4().hex
+        if not isinstance(package_id, str) or len(package_id) != 32 or any(c not in '0123456789abcdef' for c in package_id):
+            raise ValueError('Invalid package ID.')
+        def edit(data):
+            pools = []
+            for stage in stages:
+                pool = stage.get('pool')
+                if not isinstance(pool, list) or len(pool) > 100 or not all(isinstance(a, str) and a in data['tracks'] for a in pool):
+                    raise ValueError('Pools may contain only saved, non-deleted tracks (up to 100 each).')
+                if len(set(pool)) != len(pool):
+                    raise ValueError('A track cannot appear twice in the same pool.')
+                pools.append(pool)
+            package = {'id': package_id, 'name': name, 'mode': mode,
+                       'states': [{'name': n, 'pool': p} for n, p in zip(names, pools)], 'updated_at': time.time()}
+            data['packages'][package_id] = package
+            return package
+        return self.commit_edit(edit)
+
+    def delete_package(self, payload):
+        def edit(data):
+            package_id = payload.get('id')
+            if not isinstance(package_id, str) or package_id not in data['packages']:
+                raise ValueError('Package not found.')
+            del data['packages'][package_id]
+        return self.commit_edit(edit)
 
     def discard(self, payload):
         with self.lock:

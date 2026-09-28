@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const names = ['Focus', 'Momentum', 'Drive', 'Flow', 'Lift', 'Breakthrough'];
+const defaultNames = ['Focus', 'Momentum', 'Drive', 'Flow', 'Lift', 'Breakthrough'];
+let names = defaultNames.slice();
 const sourceState = item => ({...item, state_index: item.source_state_index ?? item.state_index});
 let context, master, analyser, catalog = [], tracks = [], playing = false;
 let position = 0, startTime = 0, lastTime = 0, streak = 0, recovery = 0;
@@ -11,7 +12,7 @@ const tempoStages = [90, 102, 114, 126, 138, 150];
 let activeBpm = 120;
 const tempoKey = (asset, bpm) => `${asset}@${bpm}`;
 async function prepareTempos(selection = tracks) {
-  if (!selection.length || selection.some(t => t.family !== 'shared_road_r3' || t.trimStart !== 0 || Math.abs(t.trimEnd - 16) > .001)) throw new Error('Load an R3 drive with full loops before using evolving tempo.');
+  if (names.length !== 6 || !selection.length || selection.some(t => t.family !== 'shared_road_r3' || t.trimStart !== 0 || Math.abs(t.trimEnd - 16) > .001)) throw new Error('Load the six-state R3 drive with full loops before using evolving tempo.');
   const available = catalog.filter(i => i.family === 'evolving_r4').map(sourceState);
   const run = available.map(i => i.run).sort().at(-1);
   const selected = selection.flatMap(t => tempoStages.map(bpm => {
@@ -55,7 +56,8 @@ function playhead() { return playing ? position + Math.max(0, context.currentTim
 function stageAt(seconds) {
   if (recovery > 0) return 0;
   const fraction = clamp((seconds - numeric('qualify', 4)) / numeric('build', 24), 0, 1);
-  return fraction === 1 ? 5 : Math.min(4, Math.floor(fraction * 5));
+  const last = names.length - 1;
+  return fraction === 1 ? last : Math.min(last, Math.floor(fraction * last));
 }
 function targets() {
   const stage = stageAt(streak), mode = $('mode').value;
@@ -124,7 +126,7 @@ function renderTime() {
   $('streak').max = Math.max(60, numeric('build', 24) + numeric('qualify', 4) + 10, streak);
   $('streak').value = streak;
   $('streakValue').innerHTML = `${streak.toFixed(1)}<span>s</span>`;
-  $('recovery').textContent = recovery > 0 ? `Collision recovery · ${recovery.toFixed(1)} s` : (stageAt(streak) === 5 ? 'Full clean-streak payoff' : 'Building from qualifying driving');
+  $('recovery').textContent = recovery > 0 ? `Collision recovery · ${recovery.toFixed(1)} s` : (stageAt(streak) === names.length - 1 ? 'Full clean-streak payoff' : 'Building from qualifying driving');
   $('seek').max = Math.max(120, p + 1); $('seek').value = p; $('seekValue').textContent = p.toFixed(1) + ' s';
   const stage = stageAt(streak); $('stage').textContent = names[stage];
   $('tempoReadout').textContent = $('mode').value === 'tempo' ? `${activeBpm} BPM · score beat ${(p * 2 % 32 + 1).toFixed(1)} / 32` : 'Fixed tempo · R3: 120 BPM';
@@ -233,7 +235,7 @@ async function addRecording(item, file, settings = {}) {
   position = playhead(); stopSources();
   const t = {id: nextId++, asset: item.id, name: item.name, kind: item.kind || 'imported audio', alignment: item.alignment || 'unverified',
     family: item.family, run: item.run, role: item.source_state_index ?? item.state_index,
-    buffer, stage: item.state_index ?? 0, volume: .65, enabled: true, solo: false, trimStart: 0, trimEnd: buffer.duration, ...settings};
+    buffer, stage: Math.min(item.state_index ?? 0, names.length - 1), volume: .65, enabled: true, solo: false, trimStart: 0, trimEnd: buffer.duration, ...settings};
   tracks.push(t); if (playing) startSources(); renderTracks(); status('Added ' + item.name);
 }
 async function refresh() {
@@ -241,16 +243,16 @@ async function refresh() {
   const result = await response.json(); catalog = result.items.map(item => ({...item, name: item.title || item.name}));
   const selection = $('recording').value;
   $('recording').replaceChildren(field('option', {value: '', textContent: 'Select a recording…'}));
-  for (const item of catalog) $('recording').append(field('option', {value: item.id, textContent: `${item.name} · v${item.variant} · ${item.metrics?.duration?.toFixed(1) ?? '?'} s · ${item.run}`}));
+  for (const item of catalog) $('recording').append(field('option', {value: item.id, textContent: `${item.name}${item.variant ? ' · v' + item.variant : ''} · ${item.metrics?.duration?.toFixed(1) ?? '?'} s · ${item.run}`}));
   $('recording').value = catalog.some(x => x.id === selection) ? selection : catalog.at(-1)?.id || '';
   recordingInfo(); status(`${catalog.length} recordings available.${result.errors.length ? ' Some manifests could not be read.' : ''}`);
 }
 function recordingInfo() {
   const item = catalog.find(x => x.id === $('recording').value);
-  $('recordingInfo').textContent = item ? `${item.family} · ${item.kind} · ${item.alignment}. ${item.metrics?.near_full_scale_samples || item.source_near_full_scale_samples ? 'Source contains near-full-scale samples; inspect for clipping. ' : ''}${item.prompt}` : 'Generate a concept or import your own audio to begin.';
+  $('recordingInfo').textContent = item ? `${item.kind || 'Recording'} · ${item.alignment || 'alignment unverified'}. ${item.metrics?.near_full_scale_samples || item.source_near_full_scale_samples ? 'Source contains near-full-scale samples; inspect for clipping. ' : ''}${item.prompt || ''}` : 'Generate a concept or import your own audio to begin.';
 }
 function saveSetup() {
-  const data = {schema: 'bmt-audition-1', mode: $('mode').value, streak, position: playhead(),
+  const data = {schema: 'bmt-audition-2', states: names.slice(), mode: $('mode').value, streak, position: playhead(),
     settings: Object.fromEntries(['build', 'qualify', 'hold', 'fade', 'master'].map(id => [id, numeric(id, 0)])),
     tracks: tracks.map(({asset, stage, volume, enabled, solo, trimStart, trimEnd}) => ({asset, stage, volume, enabled, solo, trimStart, trimEnd}))};
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
@@ -260,17 +262,20 @@ function saveSetup() {
 async function loadSetup(file) {
   if (!file) return;
   const data = JSON.parse(await file.text());
-  if (data.schema !== 'bmt-audition-1' || !Array.isArray(data.tracks) || data.tracks.length > 12 || !['arrangement', 'layers', 'manual', 'tempo'].includes(data.mode)) throw new Error('Unsupported audition setup');
+  if (!['bmt-audition-1', 'bmt-audition-2'].includes(data.schema) || !Array.isArray(data.tracks) || data.tracks.length > 12 || !['arrangement', 'layers', 'manual', 'tempo'].includes(data.mode)) throw new Error('Unsupported audition setup');
+  const setupNames = data.schema === 'bmt-audition-1' ? defaultNames : data.states;
+  if (!Array.isArray(setupNames) || setupNames.length < 1 || setupNames.length > 12 || setupNames.some(n => typeof n !== 'string' || !n.trim() || n.length > 40)) throw new Error('Invalid setup states');
   const missing = data.tracks.filter(t => !catalog.some(i => i.id === t.asset) && !buffers.has(t.asset));
   if (missing.length) throw new Error('Setup uses missing or retired recordings; load a revised drive: ' + missing.map(t => t.asset).join(', '));
   for (const t of data.tracks) {
-    if (!Number.isInteger(t.stage) || t.stage < 0 || t.stage > 5 || !Number.isFinite(t.volume) || t.volume < 0 || t.volume > 1 || !Number.isFinite(t.trimStart) || !Number.isFinite(t.trimEnd) || t.trimStart < 0 || t.trimEnd - t.trimStart < .02) throw new Error('Invalid track settings');
+    if (!Number.isInteger(t.stage) || t.stage < 0 || t.stage >= setupNames.length || !Number.isFinite(t.volume) || t.volume < 0 || t.volume > 1 || !Number.isFinite(t.trimStart) || !Number.isFinite(t.trimEnd) || t.trimStart < 0 || t.trimEnd - t.trimStart < .02) throw new Error('Invalid track settings');
   }
   for (const id of ['build', 'qualify', 'hold', 'fade', 'master']) {
     const value = data.settings?.[id]; if (!Number.isFinite(value) || value < Number($(id).min) || value > Number($(id).max)) throw new Error('Invalid setting: ' + id);
   }
   if (![data.streak, data.position].every(x => Number.isFinite(x) && x >= 0 && x <= 86400)) throw new Error('Invalid timeline');
   stopSources(); playing = false; $('play').textContent = 'Play'; tracks = [];
+  setStateNames(setupNames);
   for (const id of ['build', 'qualify', 'hold', 'fade', 'master']) $(id).value = data.settings[id];
   $('master').dispatchEvent(new Event('input')); $('mode').value = data.mode === 'tempo' ? 'layers' : data.mode; updateMode();
   streak = data.streak; position = data.position; recovery = 0;
@@ -294,7 +299,17 @@ function updateMode() {
 function tempoNotice() {
   $('warning').textContent = 'Evolving tempo: the same 32-beat score is rendered at six tempos, with original pitch. Track details below identify the 120 BPM source parts. Tempo changes preserve phrase position with a short crossfade; listening review remains pending.';
 }
-names.forEach((name, i) => { const button = field('button', {textContent: name}); button.onclick = () => { recovery = 0; streak = i ? numeric('qualify', 4) + numeric('build', 24) * i / 5 + .000001 : 0; applyMix(); renderTime(); }; $('stages').append(button); });
+function setStateNames(labels) {
+  names = labels.slice(); $('labStateCount').value = names.length; $('stages').replaceChildren();
+  names.forEach((name, i) => { const button = field('button', {textContent: name}); button.onclick = () => { recovery = 0; streak = i ? numeric('qualify', 4) + numeric('build', 24) * i / (names.length - 1) + .000001 : 0; applyMix(); renderTime(); }; $('stages').append(button); });
+  tracks.forEach(t => t.stage = Math.min(t.stage, names.length - 1)); renderTracks(); renderTime();
+}
+setStateNames(names);
+$('labStateCount').onchange = () => {
+  if (!$('labStateCount').reportValidity()) return;
+  if ($('mode').value === 'tempo') { $('labStateCount').value = 6; status('The earlier evolving score uses six authored states. Choose another mode to change the count.', true); return; }
+  setStateNames(Array.from({length: Number($('labStateCount').value)}, (_, i) => names[i] || `State ${i + 1}`));
+};
 $('play').onclick = guard(async () => {
   if (playing) { position = playhead(); stopSources(); playing = false; $('play').textContent = 'Play'; return; }
   if (!tracks.length) throw new Error('Add a recording first.');
@@ -342,7 +357,7 @@ for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · N
         const change = random[0] % 6; choices[change] = 3 - choices[change];
       }
       const selection = options.map((items, stage) => items.find(i => i.variant === choices[stage]));
-      $('clear').click(); streak = 0; recovery = 0; $('mode').value = 'arrangement'; updateMode();
+      $('clear').click(); setStateNames(defaultNames); streak = 0; recovery = 0; $('mode').value = 'arrangement'; updateMode();
       for (const item of selection) await addRecording(item);
       previousR2 = choices;
       status('R2 stages: ' + selection.map(i => i.variant === 1 ? 'A' : 'B').join(' / ') + '. Choices stay fixed until you load another drive.');
@@ -369,7 +384,7 @@ for (const [label, choice] of [['Revised · New drive', 0], ['All A', 1], ['All 
       const choices = options.map((_, stage) => choice || 1 + random[stage] % 3);
       if (!choice && choices.every((v,i) => v === previousR3[i])) choices[random[0] % 6] = choices[random[0] % 6] % 3 + 1;
       const selected = options.map((items,stage) => items.find(i => i.variant === choices[stage]));
-      $('clear').click(); streak = 0; recovery = 0; $('mode').value = 'layers'; updateMode();
+      $('clear').click(); setStateNames(defaultNames); streak = 0; recovery = 0; $('mode').value = 'layers'; updateMode();
       for (const item of selected) await addRecording(item, null, {volume:1});
       previousR3 = choices;
       status('R3 instruments: ' + choices.map(v => 'ABC'[v-1]).join(' / ') + '. Press Play, then scrub the streak. Choices stay fixed for this drive.');
@@ -387,7 +402,7 @@ $('pair').onclick = guard(async () => {
   if (pair.some(i => !i)) throw new Error('Generate Focus and Breakthrough first, then refresh.');
   loading = true; $('pair').disabled = true;
   try {
-    $('clear').click(); streak = 0; recovery = 0; $('mode').value = 'arrangement'; updateMode();
+    $('clear').click(); setStateNames(defaultNames); streak = 0; recovery = 0; $('mode').value = 'arrangement'; updateMode();
     for (const item of pair) await addRecording(item);
     status('Endpoint pair loaded. Press Play; jump between Focus and Breakthrough to compare.');
   } finally { loading = false; $('pair').disabled = false; }

@@ -1,5 +1,10 @@
 # Local music studio redesign — 2026-09-28
 
+Follow-up: [soundtrack packages, custom state counts, shared sidebar and
+saved-track deletion](MUSIC_PACKAGES.md) supersedes the fixed-six-state,
+schema-1 and no-saved-deletion descriptions below. This document records the
+initial studio checkpoint and its actual tests.
+
 The owner requests direct Magenta RT2 prompting, listening, saving/discarding,
 editable state assignments and a complete workbench UI/UX redesign.
 Requirements: **MUS03/MUS06/MUS09/MUS10, R01/V03/V05/Q01**. This is the local

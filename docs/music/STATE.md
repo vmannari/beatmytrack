@@ -3,23 +3,17 @@
 _Last updated: 2026-09-28_
 
 ## Status
-Tooling: owner requests direct RT2 prompting, audition/save/discard and editable state assignments. The redesigned local studio implements this workflow; real GPU/browser checks pass. This authorizes tooling, not a new composition or release asset. See `../MUSIC_STUDIO.md`.
+Tooling: local RT2 studio supports prompting, audition, saved-track deletion, configurable states and soundtrack packages. Owner confirmed one compatible subset per package: select package first, then one track per pool, fixed per drive. Browser/service checks pass; no new music approval. See `../MUSIC_PACKAGES.md` and `../MUSIC_STUDIO.md`.
 
 Mode: explore
 Current baseline: production v6 remains installed. Owner rejected the initial Magenta auditions as unsuitable and R2's separate state mixes as disconnected; no replacement composition is accepted.
 Owner explicitly rejected the R3/R4 acoustic motif: too high, too brief and disturbing. R5 replaces it; approval remains pending.
-Approved release assets: no new release approval established by this installation
+Approved release assets: no new approval
 
 ## Source hierarchy
-1. Latest explicit user feedback
-2. Current project docs/code (`docs/MUSIC_MODULAR_BANK.md`, `docs/music/`, runtime controller)
-3. This state file
-4. Skill reference guidance
-5. Older proposals / experiments
+Latest owner feedback, current code/docs, this state, skill guidance, then historical experiments.
 
 ## Active preferences
-These are preferences, not permanent rules.
-
 - Primary function: unobtrusive background music during racing.
 - Do not reuse high, short, plucked acoustic opening figures like R3/R4. Latest response uses low, long-held tones with softened attacks; tone and instrument choice remain subject to listening review.
 - Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. R3 offers three alternatives per instrument at all six stages.
@@ -61,10 +55,10 @@ Collision/reset/recovery contract: VERIFY IN PROJECT DOCS/CODE BEFORE CHANGING.
 - treating old assistant proposals as approvals
 
 ## Next experiment
-R5 replaces all acoustic-opening options with low sustained cello, four D3–A3 tones per phrase. Every tempo is revised; the rejected openings are removed from the catalog. Backing performances retained at a shared 0.85 gain for headroom. Score/export and fixed/tempo browser checks pass. No subjective listening claimed. Review this focused replacement before further expansion. See `rounds/2026-09-28-low-opening-r5.md`.
+R5 replaces the rejected acoustic opening with low sustained cello across all tempos. Backing remains at 0.85 gain. Tests pass; no subjective listening claimed. Review before musical expansion. See `rounds/2026-09-28-low-opening-r5.md`.
 
 ## Approvals
-This template asserts no approvals. Preserve documented scoped approvals; unresolved history stays unverified.
+Preserve scoped approvals; unresolved history stays unverified.
 
 ## Reconciled project evidence
-`docs/MUSIC_MODULAR_BANK.md` records rejection of the slow solo and distorted-rock finale, and the request for interchangeable per-race phrases and unobtrusive background music. The earlier rock driving trial was authorized, but does not approve later revisions. The subsequent owner request authorized offline generator/workbench steps 1–4; `docs/MUSIC_TOOLKIT.md` records delivered auditions, now rejected artistically. Runtime replacement remains outside that slice.
+`docs/MUSIC_MODULAR_BANK.md` and recorded rounds retain earlier rejections/approvals. The rock driving trial and later tooling requests do not approve replacement release music. Runtime replacement remains outside the current authoring slice.

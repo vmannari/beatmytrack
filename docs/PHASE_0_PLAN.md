@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-28 MUS03/MUS06/MUS09/MUS10/R01/V03/V05/Q01: soundtrack packages define compatible per-state pools with package-first fixed drive selections; custom 1-12 states, saved-track Trash/restore and shared Mix Lab sidebar. Schema-2 migration; 14 service, 10 toolkit, 11 package-browser and existing browser regressions pass. Desktop/390px evidence inspected. Local authoring only; no new generation, game/device test or musical approval. See docs/MUSIC_PACKAGES.md.
+
 2026-09-28 MUS03/MUS06/MUS09/MUS10/R01/V03/V05/Q01: redesigned local music studio adds direct Magenta RT2 prompts, persistent take inbox, audition/save/discard/restore, editable saved-track states and a separate Mix lab. Two real GPU renders; 8 service, 10 toolkit, 10 real-browser groups, 5 simulated-failure groups and all four existing browser suites pass. Desktop/tablet/390px evidence inspected; owner UX/music acceptance remains. No runtime or physical-device test. See docs/MUSIC_STUDIO.md.
 
 2026-09-28 MUS03/MUS06/MUS09/MUS10/V03/V05/Q01: rejected high/short acoustic opening replaced by low sustained cello in fixed and evolving modes; all three alternatives and six tempos revised. Rejected takes excluded from catalog. Nine opening checks, six fixed/five tempo export checks, 15/19 browser checks and 10 toolkit tests pass. Listening approval pending; no runtime/device test. See docs/music/rounds/2026-09-28-low-opening-r5.md.

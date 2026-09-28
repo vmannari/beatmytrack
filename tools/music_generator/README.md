@@ -31,6 +31,22 @@ Back up `build/music` to retain both the recordings and
 The server exposes no source deletion action. Generation errors retain the
 prompt and expose retry information. See [implementation and actual checks](../../docs/MUSIC_STUDIO.md).
 
+## Soundtrack packages and states
+
+Use **Soundtracks → New soundtrack** to create one compatible subset. Choose
+**Layer stack** or **Switch tracks**, define 1–12 named states, and fill each
+state's pool with saved recordings. Save, then **Try in Mix lab → New drive**.
+The workbench selects a package first (specific or random), then one recording
+per pool. Those choices stay fixed as states change. **Free mix** unlocks manual
+experimentation. Packages persist locally and may be renamed, duplicated or deleted.
+
+**Manage states** changes library labels/count independently of package states.
+**Delete track** in Your library moves a recording to **Trash** and removes it
+from package pools; Restore recovers the library entry. Source files stay on
+disk. Empty pools must be repaired before package auditioning.
+
+See [package contracts, tests and screenshots](../../docs/MUSIC_PACKAGES.md).
+
 ## Mix lab
 
 Open **Mix lab** for the existing driving-arc and arrangement tools. Expand

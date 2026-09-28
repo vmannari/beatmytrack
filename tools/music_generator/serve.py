@@ -63,9 +63,10 @@ class Handler(SimpleHTTPRequestHandler):
             result = catalog()
             library = self.server.workbench.snapshot()
             saved = {i['id']: i for i in library['tracks']}
+            deleted = {i['id'] for i in library['trash']}
             # Only saved workbench takes enter the advanced mix catalog.
             result['items'] = [{**i, **saved.get(i['id'], {}), 'source_state_index': i.get('state_index')} for i in result['items']
-                               if not i['id'].startswith('workbench/') or i['id'] in saved]
+                               if i['id'] not in deleted and (not i['id'].startswith('workbench/') or i['id'] in saved)]
             self.json_reply(result)
             return
         if path.startswith("/audio/"):
@@ -73,7 +74,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not target.is_relative_to(ASSETS.resolve()) or target.suffix.lower() not in (".wav", ".ogg", ".mp3", ".flac"):
                 self.send_error(403)
                 return
-        elif path not in ("/", "/index.html", "/app.js", "/style.css", "/studio.js", "/studio.css", "/lab.html", "/favicon.ico"):
+        elif path not in ("/", "/index.html", "/app.js", "/style.css", "/studio.js", "/studio.css", "/lab.html", "/favicon.ico", '/shell.js', '/packages.html', '/packages.js', '/packages.css', '/states.html', '/states.js', '/lab-packages.js'):
             self.send_error(404)
             return
         super().do_GET()
@@ -93,7 +94,7 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', '0'))
         except ValueError:
             length = 0
-        if not 0 < length <= 16384:
+        if not 0 < length <= 262144:
             self.close_connection = True
             self.json_reply({'error': 'Expected a small JSON request.'}, 400)
             return
@@ -115,7 +116,12 @@ class Handler(SimpleHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError('Expected a JSON object.')
             action = {'/api/generate': self.server.workbench.start, '/api/save': self.server.workbench.save,
-                      '/api/discard': self.server.workbench.discard}.get(self.path)
+                      '/api/discard': self.server.workbench.discard,
+                      '/api/states': self.server.workbench.configure_states,
+                      '/api/tracks/delete': self.server.workbench.delete_track,
+                      '/api/tracks/restore': self.server.workbench.restore_track,
+                      '/api/packages/save': self.server.workbench.save_package,
+                      '/api/packages/delete': self.server.workbench.delete_package}.get(self.path)
             if not action:
                 self.json_reply({'error': 'Unknown action.'}, 404)
                 return

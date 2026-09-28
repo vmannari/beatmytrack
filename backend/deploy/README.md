@@ -1,6 +1,6 @@
 # DS925+ deployment and cloud migration
 
-Account-menu follow-up: migrate to `0003_profile_name` and set
+Account-menu follow-up: migrate to `0004_developer_name` and set
 `BMT_GOOGLE_WEB_CLIENT_ID` as well as `BMT_GOOGLE_CLIENT_IDS` for browser sign-in.
 The game's API URL and `BMT_PUBLIC_BASE_URL` must be the same origin registered in
 Google's Authorized JavaScript origins. See [account setup](../../docs/ACCOUNT_SIGN_IN.md).

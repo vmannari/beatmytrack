@@ -194,6 +194,7 @@ func _load_catalog() -> void:
 			await get_tree().process_frame
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
+	catalog.add_shared_tracks()
 	loading = false
 	catalog.indexed_revision = revision
 	_refresh()
@@ -302,7 +303,7 @@ func _start_selection() -> void:
 		notice.emit("The track could not be loaded. Please try again.")
 
 static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
-	var source := TrackLibrary.new(directory)
+	var source := TrackLibrary.new(str(entry.get("library_directory", directory)))
 	if entry.source == "builtin": return {"track":NativeTrack.read(entry.path),"draft":{}}
 	var draft: Dictionary = source.load_document(entry.local_id)
 	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft),"draft":draft}

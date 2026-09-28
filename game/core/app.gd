@@ -52,6 +52,10 @@ var editor_raster_cache: Dictionary = {"enabled":true}
 var online: AccountController
 var account_button: Button
 var startup_complete: bool = false
+var profile_root: String
+var guest_records: LocalRecords
+var guest_library: TrackLibrary
+var active_profile: String = ""
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -109,7 +113,11 @@ func _ready() -> void:
 		game = GAME_SCENE.instantiate()
 		add_child(game)
 		return
+	guest_records = records
+	guest_library = library
+	profile_root = records.path.get_base_dir()
 	records.load_records()
+	library.owner_name = "Guest"
 	online = AccountController.new()
 	online.client.session_path = records.path.get_base_dir().path_join("account_session.cfg")
 	add_child(online)
@@ -243,8 +251,56 @@ func _show_screen(next: String) -> void:
 		_: _home()
 
 func _account_changed() -> void:
+	_select_player_storage()
 	if is_instance_valid(account_button):
 		account_button.text = online.player_name() if online.client.signed_in() else "Sign in"
+
+func _select_player_storage() -> void:
+	var identity: String = str(online.client.player.get("id", "")) if online.client.signed_in() else ""
+	var scope: String = (online.client._base_url + "/" + identity).sha256_text() if not identity.is_empty() else ""
+	if scope == active_profile:
+		library.owner_name = online.player_name() if not identity.is_empty() else "Guest"
+		return
+	_finish_preview_thread()
+	active_profile = scope
+	if scope.is_empty():
+		records = guest_records
+		library = guest_library
+	else:
+		var directory: String = profile_root.path_join("players").path_join(scope)
+		DirAccess.make_dir_recursive_absolute(directory)
+		records = LocalRecords.new(directory.path_join("records.json"))
+		library = TrackLibrary.new(directory.path_join("tracks"))
+	records.load_records()
+	library.owner_name = online.player_name() if not identity.is_empty() else "Guest"
+	document = {}
+	history.clear()
+	redo_history.clear()
+	editor_view.clear()
+	object_browser_state.clear()
+	browser_state.clear()
+	track_catalog = null
+	discovery_provider = TrackDiscoveryProvider.new()
+	test_document_snapshot = {}
+	test_return_to_drafts = false
+	returning_to_editor = false
+	pending_menu_notice = ""
+	selected_track = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
+	var last: String = str(records.settings.get("last_track", ""))
+	if last in BUILTIN_IDS:
+		selected_track = NativeTrack.read("res://resources/tracks/" + last + ".json")
+	elif last.begins_with("creator_"):
+		var saved: Dictionary = library.load_document(last.trim_prefix("creator_"))
+		if saved.is_empty(): saved = guest_library.load_document(last.trim_prefix("creator_"))
+		if not saved.is_empty():
+			var track: NativeTrack = TrackCompiler.compile(saved)
+			if track != null: selected_track = track
+	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
+	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
+	ui_left_handed = bool(records.settings.get("left_handed", false))
+
+func _stamp_creator() -> void:
+	if not document.is_empty(): document["creator"] = library.owner_name
 
 func _open_account() -> void:
 	_show_screen("account")
@@ -386,7 +442,15 @@ func _tracks() -> void:
 	var created: int = Time.get_ticks_usec()
 	browser.name = "TrackBrowser"
 	browser.library = library
-	if track_catalog == null: track_catalog = TrackCatalog.new(library)
+	if track_catalog == null:
+		track_catalog = TrackCatalog.new(library)
+		if library.directory != guest_library.directory:
+			track_catalog.shared_directories.append(guest_library.directory)
+		var profiles := DirAccess.open(profile_root.path_join("players"))
+		if profiles != null:
+			for profile: String in profiles.get_directories():
+				if profile == active_profile: continue
+				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
 	browser.catalog = track_catalog
 	browser.discovery = discovery_provider
 	browser.records = records
@@ -557,6 +621,7 @@ func _new_document() -> void:
 	canvas = null
 	document = TrackDocument.create_blank()
 	document.id = TrackLibrary.unique_id()
+	_stamp_creator()
 	history.clear()
 	redo_history.clear()
 	_show_screen("biome")
@@ -564,9 +629,11 @@ func _new_document() -> void:
 	object_browser_state.clear()
 
 func _editor() -> void:
+	_stamp_creator()
 	if document.is_empty():
 		document = TrackDocument.create_blank()
 		document.id = TrackLibrary.unique_id()
+		_stamp_creator()
 	editor_world = EditorWorld.new()
 	root_ui.add_child(editor_world)
 	MenuStyle.fill(editor_world)
@@ -641,6 +708,10 @@ func _editor() -> void:
 	track_name.add_theme_font_size_override("font_size",20)
 	track_name.add_theme_color_override("font_color",EditorStyle.INK)
 	title.add_child(track_name)
+	var creator_label := MenuStyle.label("by " + library.owner_name, 16, true)
+	creator_label.name = "TrackCreator"
+	creator_label.custom_minimum_size.x = 160
+	title.add_child(creator_label)
 	var pencil: Button=EditorButton.make("","pencil",_rename_track)
 	EditorStyle.transparent_button(pencil)
 	pencil.name="RenameTrack"
@@ -1107,23 +1178,7 @@ func _duplicate_object() -> void:
 	_commit_selection()
 
 func _creator_name() -> void:
-	var dialog := ConfirmationDialog.new()
-	dialog.title = "Track creator"
-	var input := LineEdit.new()
-	input.placeholder_text = "Creator name (shown in track search)"
-	input.text = str(document.get("creator",""))
-	input.max_length = 40
-	input.custom_minimum_size = Vector2(450,60)
-	dialog.add_child(input)
-	dialog.confirmed.connect(func() -> void:
-		var value: String = input.text.strip_edges()
-		if not value.is_empty():
-			_remember()
-			document["creator"] = value
-			_save_draft())
-	_own_dialog(dialog)
-	dialog.popup_centered()
-	input.grab_focus()
+	_notice("Track creator: " + library.owner_name + ". This comes from your racing account.")
 
 func _remember() -> void:
 	history.append(document.duplicate(true))
@@ -1131,7 +1186,7 @@ func _remember() -> void:
 	redo_history.clear()
 
 func _set_document_value(key: String, value: Variant) -> void:
-	if key in ["theme", "biome"]: return
+	if key in ["theme", "biome", "creator"]: return
 	_remember()
 	document[key] = value
 	_save_draft()
@@ -1162,6 +1217,7 @@ func _refresh_editor() -> void:
 func _save_draft(background_preview: bool = false) -> Error:
 	if not background_preview: _finish_preview_thread()
 	if document.is_empty(): return ERR_INVALID_DATA
+	_stamp_creator()
 	if not document.pieces.is_empty():
 		var auto_route: Dictionary = RoadPieces.route_from_pieces(document)
 		if auto_route.ok:
@@ -1284,6 +1340,7 @@ func _accept_import(imported: Dictionary) -> void:
 	document = imported.duplicate(true)
 	# Import as a new local draft: never replace an existing author's work by ID.
 	document.id = TrackLibrary.unique_id()
+	_stamp_creator()
 	history.clear()
 	redo_history.clear()
 	_save_draft()
@@ -1411,7 +1468,15 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	page.rating_records = records
 	page.rating_track_id = (game.get("native_track") as NativeTrack).identity
 	page.facts = results.get_meta("reward_facts",{})
-	if track_catalog == null: track_catalog = TrackCatalog.new(library)
+	if track_catalog == null:
+		track_catalog = TrackCatalog.new(library)
+		if library.directory != guest_library.directory:
+			track_catalog.shared_directories.append(guest_library.directory)
+		var profiles := DirAccess.open(profile_root.path_join("players"))
+		if profiles != null:
+			for profile: String in profiles.get_directories():
+				if profile == active_profile: continue
+				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
 	if track_catalog.indexed_revision != library.revision:
 		track_catalog.entries.clear()
 		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
@@ -1837,6 +1902,7 @@ func _choose_biome() -> void:
 	if document.is_empty():
 		document = TrackDocument.create_blank()
 		document.id = TrackLibrary.unique_id()
+		_stamp_creator()
 	var heading_row := HBoxContainer.new()
 	heading_row.add_theme_constant_override("separation",20)
 	content.add_child(heading_row)
@@ -1845,6 +1911,7 @@ func _choose_biome() -> void:
 	heading_copy.add_theme_constant_override("separation",2)
 	heading_row.add_child(heading_copy)
 	_heading("NEW TRACK", "Select biome",heading_copy)
+	heading_copy.add_child(MenuStyle.label("Creator: " + library.owner_name, 18, true))
 	var load_track := MenuStyle.button("LOAD TRACK",_open_drafts)
 	load_track.name = "LoadTrack"
 	load_track.icon = MenuIcon.texture("folder")

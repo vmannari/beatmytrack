@@ -77,7 +77,9 @@ def _payload(request: Request, session: Session, version: TrackVersion) -> dict:
     return track_payload(version, track, owner.display_name, request.app.state.settings.public_base_url)
 
 
-def _validate_and_store(request: Request, payload: UploadTrack) -> tuple[str, dict]:
+def _validate_and_store(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
+    # Authenticated ownership is authoritative, including the downloadable document.
+    payload.document = {**payload.document, "creator": player.display_name}
     try:
         encoded = json.dumps(
             payload.document, allow_nan=False, ensure_ascii=False, separators=(",", ":")
@@ -107,7 +109,7 @@ def create_track(payload: UploadTrack, request: Request, session: DB, player: Au
     old = replay_response(session, player.id, "create_track", key, body)
     if old is not None:
         return old
-    content_hash, manifest = _validate_and_store(request, payload)
+    content_hash, manifest = _validate_and_store(request, payload, player)
     track = Track(owner_id=player.id)
     session.add(track)
     session.flush()
@@ -132,7 +134,7 @@ def create_version(
     )
     if track is None:
         raise HTTPException(404, "Track not found")
-    content_hash, manifest = _validate_and_store(request, payload)
+    content_hash, manifest = _validate_and_store(request, payload, player)
     number = (
         session.scalar(select(func.max(TrackVersion.number)).where(TrackVersion.track_id == track_id)) + 1
     )

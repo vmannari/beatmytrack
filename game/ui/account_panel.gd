@@ -49,7 +49,7 @@ func _ready() -> void:
 	google_button.custom_minimum_size.y = 80
 	google_status = centered_label("Google sign-in is awaiting setup.", 16, true)
 	column.add_child(google_status)
-	development_button = MenuStyle.button("Development · developer", account.sign_in_developer)
+	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
 	development_button.name = "DevelopmentSignIn"
 	development_button.custom_minimum_size = Vector2(360, 60)
 	development_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER

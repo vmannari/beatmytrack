@@ -170,7 +170,7 @@ def test_fixed_developer_account_and_removal(auth_app, sign_in):
         first = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": "k" * 32}).json()
         second = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": "k" * 32}).json()
         assert first["player"] == second["player"]
-        assert first["player"]["display_name"] == "developer"
+        assert first["player"]["display_name"] == "Beat My Track"
         assert first["player"]["needs_username"] is False
         assert first["player"]["id"] != google["player"]["id"]
         headers = {"Authorization": "Bearer " + first["access_token"]}

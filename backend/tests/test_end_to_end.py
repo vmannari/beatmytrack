@@ -113,7 +113,10 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
         creator_run, board = race(creator, fixture["replay"])
         assert creator_run["status"] == "verified", creator_run
         assert write(f"/v1/track-versions/{version}/publish", {}, creator).status_code == 200
-        assert client.get(f"/v1/track-versions/{version}/document").json() == fixture["document"]
+        assert client.get(f"/v1/track-versions/{version}/document").json() == {
+            **fixture["document"],
+            "creator": creator["player"]["display_name"],
+        }
         assert client.get("/v1/tracks", params={"q": "oval"}).json()["items"][0]["version_id"] == version
         racer_run, same_board = race(racer, fixture["replay"])
         assert racer_run["status"] == "verified" and same_board == board

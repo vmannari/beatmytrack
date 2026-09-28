@@ -202,7 +202,8 @@ def test_upload_is_idempotent_and_documents_are_immutable(domain):
     assert changed.json()["version"] == 2
     assert changed.json()["content_hash"] != version["content_hash"]
     assert domain.client.get(f"/v1/track-versions/{version['version_id']}/document").json() == {
-        "shape": "oval"
+        "shape": "oval",
+        "creator": "Creator",
     }
     assert (
         domain.client.put(f"/v1/track-versions/{version['version_id']}", json={"document": {}}).status_code
@@ -580,3 +581,17 @@ def test_concurrent_postgres_submissions_cannot_exceed_player_queue_budget(domai
     assert sorted(response.status_code for response in responses) == [202] * 8 + [429], [
         response.text for response in responses
     ]
+
+
+def test_uploaded_document_cannot_spoof_creator(domain):
+    version = upload(domain, document={"shape": "oval", "creator": "Alice"})
+    assert version["creator"] == "Creator"
+    assert version["creator_id"] == domain.players["Creator"]
+    stored = domain.app.state.blobs.get_json(version["content_hash"])
+    assert stored["creator"] == "Creator"
+    denied = domain.client.post(
+        f"/v1/tracks/{version['track_id']}/versions",
+        json={"name": "Hijack", "document": {"shape": "oval", "creator": "Creator"}},
+        headers=headers(domain, "Alice"),
+    )
+    assert denied.status_code == 404

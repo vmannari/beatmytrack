@@ -61,7 +61,7 @@ def developer_login(
     session: Session = Depends(get_session),
 ):
     return development_login(
-        DevelopmentLogin(subject="developer", display_name="developer"), request, x_dev_auth_key, session
+        DevelopmentLogin(subject="developer", display_name="Beat My Track"), request, x_dev_auth_key, session
     )
 
 
@@ -102,7 +102,7 @@ def development_login(
     if player.disabled:
         raise HTTPException(403, "ACCOUNT_DISABLED")
     if body.subject == "developer":
-        player.display_name = "developer"
+        player.display_name = "Beat My Track"
     family = SessionFamily(player_id=player.id, expires_at=now() + settings.refresh_ttl_seconds)
     session.add(family)
     session.flush()
@@ -260,7 +260,7 @@ def profile(
             Identity.subject == "developer",
         )
     )
-    if developer and body.display_name != "developer":
+    if developer and body.display_name != "Beat My Track":
         raise HTTPException(403, "DEVELOPER_NAME_FIXED")
     player.display_name = body.display_name
     player.needs_username = False

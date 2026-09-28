@@ -56,6 +56,9 @@ func run() -> void:
 	app.library = TrackLibrary.new(folder)
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	var legacy_document: Dictionary = TrackDocument.create_default()
+	legacy_document.id = "legacy_playable"
+	check(app.library.save_document(legacy_document) == OK, "existing local circuit fixture saved")
 	var online: Node = app.online
 	check(not online.client.signed_in(), "startup stays signed out")
 	check(app.screen == "account", "first launch opens sign-in")
@@ -80,15 +83,37 @@ func run() -> void:
 	check(not online.client.signed_in() and not online.busy, "wrong key never produces a local fake login")
 	online._development_key = key
 	await online.sign_in_developer()
-	check(online.client.signed_in() and online.player_name() == "developer", "actual server authenticates developer")
+	check(online.client.signed_in() and online.player_name() == "Beat My Track", "actual server authenticates developer")
 	await online.refresh_options()
-	check(online.client.signed_in() and online.player_name() == "developer", "account refresh checks authenticated profile")
+	check(online.client.signed_in() and online.player_name() == "Beat My Track", "account refresh checks authenticated profile")
 	var player_id: String = online.client.player.id
+	app._show_screen("tracks")
+	var browser: Node = app.root_ui.find_child("TrackBrowser", true, false)
+	while browser.loading: await process_frame
+	check(app.track_catalog.entries.any(func(entry: Dictionary) -> bool: return entry.id == "creator_legacy_playable" and entry.get("read_only",false)), "existing tracks remain playable after signing in")
+	check(app.track_catalog.query({"section":"saved"}, []).is_empty(), "shared existing tracks are not claimed as My tracks")
+	for entry: Dictionary in app.track_catalog.entries:
+		if entry.id == "creator_legacy_playable":
+			check(app.track_catalog.resolve(entry) != null, "shared circuit resolves to a drivable track")
+	await capture("existing-tracks")
+	app._show_screen("account")
+	var developer_records_path: String = app.records.path
+	app.records.settings.track_ratings = {"profile_test":5}
+	check(app.records.save_records() == OK, "rating saves into developer profile")
+	var owned_document: Dictionary = TrackDocument.create_blank()
+	owned_document["creator"] = "Impersonated name"
+	check(app.library.save_wip(owned_document) == OK, "owned draft saves: " + app.library.last_error)
+	check(app.library.load_wip(owned_document.id).get("creator", "") == "Beat My Track", "track storage stamps authenticated author")
+	app._new_document()
+	check(app.document["creator"] == "Beat My Track", "new track uses racing name")
+	await capture("developer-creator")
+	app._show_screen("account")
+
 	check(not online.needs_username(), "developer never needs name selection")
 	check(not app.root_ui.find_child("GoogleSignIn", true, false).visible, "signed-in screen hides login actions")
 	await capture("developer-960")
 	app._show_screen("tracks")
-	check(app.root_ui.find_child("MenuAccount", true, false).text == "developer", "menu displays developer")
+	check(app.root_ui.find_child("MenuAccount", true, false).text == "Beat My Track", "menu displays developer")
 	app._show_screen("account")
 	check(online.client.signed_in(), "session survives menu navigation")
 	check(online.client.has_saved_session(), "login stores a refresh session")
@@ -98,7 +123,9 @@ func run() -> void:
 	restarted.library = TrackLibrary.new(folder)
 	root.add_child(restarted)
 	while not restarted.startup_complete: await process_frame
-	check(restarted.screen == "play" and restarted.online.player_name() == "developer", "fresh app restores identity and opens Home")
+	check(restarted.records.settings.get("track_ratings",{}).get("profile_test",0) == 5, "same player recovers ratings after restart")
+	check(restarted.library.load_wip(owned_document.id).get("creator", "") == "Beat My Track", "same player recovers drafts after restart")
+	check(restarted.screen == "play" and restarted.online.player_name() == "Beat My Track", "fresh app restores identity and opens Home")
 	check(restarted.online.client.has_saved_session(), "rotation replaces saved refresh token")
 	var stored: String = FileAccess.get_file_as_string(saved_path)
 	check(not restarted.online.client._refresh_token.is_empty() and restarted.online.client._refresh_token != online.client._refresh_token, "restore rotates refresh token")
@@ -128,10 +155,13 @@ func run() -> void:
 	check(not online.client.signed_in() and online.client.player.is_empty(), "sign out clears session")
 	await online.sign_in_developer()
 	check(online.client.player.id == player_id, "repeated development sign-in reuses the account")
+	check(app.records.path == developer_records_path and app.records.settings.track_ratings.profile_test == 5, "switching back restores developer data")
 	await online.sign_out()
 	online.open_browser = open_fixture_browser
 	await online.sign_in_google()
 	check(online.client.signed_in() and online.needs_username(), "Google authenticates before name selection")
+	check(app.records.path != developer_records_path and app.records.settings.get("track_ratings",{}).is_empty(), "Google player cannot inherit developer ratings")
+	check(app.library.load_wip(owned_document.id).is_empty() and app.document.is_empty(), "Google player cannot inherit developer draft or editor state")
 	check(app.root_ui.find_child("PlayerUsername", true, false).visible, "only new authenticated players see name field")
 	check(not app.root_ui.find_child("GoogleSignIn", true, false).visible, "name selection does not mix provider choices")
 	await capture("choose-name-960")

@@ -1,5 +1,7 @@
 # Google and Development sign-in
 
+Latest ownership update: development identity `developer` now races as **Beat My Track**. Local player data is account-scoped; creator names come from the account. Existing circuits remain playable. See [account ownership](ACCOUNT_OWNERSHIP.md).
+
 Startup now shows sign-in unless a saved session can be restored. Open the player-name button in the menu to sign out. See [remembered sign-in](REMEMBERED_SIGN_IN.md) for persistence and verification.
 
 ## Provider-first redesign (2026-09-28)

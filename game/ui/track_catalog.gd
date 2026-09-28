@@ -4,6 +4,7 @@ extends RefCounted
 
 var entries: Array[Dictionary] = []
 var library: TrackLibrary
+var shared_directories: Array[String] = []
 var indexed_revision: int = -1
 var source_metadata: Dictionary = {}
 var _resolved: Dictionary = {}
@@ -73,6 +74,19 @@ func add_local(id: String) -> void:
 		entries.append(entry)
 		return
 
+func add_shared_tracks() -> void:
+	var known: Dictionary = {}
+	for entry: Dictionary in entries: known[entry.id] = true
+	for directory: String in shared_directories:
+		var shared := TrackCatalog.new(TrackLibrary.new(directory))
+		for id: String in shared.local_ids(): shared.add_local(id)
+		for entry: Dictionary in shared.entries:
+			if known.has(entry.id): continue
+			entry["library_directory"] = directory
+			entry["read_only"] = true
+			entries.append(entry)
+			known[entry.id] = true
+
 static func local_metadata(data: Dictionary) -> Dictionary:
 	if data.get("schema") != TrackDocument.SCHEMA: return {}
 	if data.get("base_track","") != "" and str(data.base_track) not in BuiltinTracks.ids(): return {}
@@ -98,7 +112,7 @@ func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 	for id: String in favorites: favorite_ids[id] = true
 	for entry: Dictionary in entries:
 		if state.get("section","all") == "favorites" and not favorite_ids.has(entry.id): continue
-		if state.get("section","all") == "saved" and entry.source != "saved": continue
+		if state.get("section","all") == "saved" and (entry.source != "saved" or entry.get("read_only", false)): continue
 		if state.get("theme","all") != "all" and entry.theme != state.theme: continue
 		if not name_query.is_empty() and not str(entry.name).to_lower().contains(name_query): continue
 		if not creator_query.is_empty() and not str(entry.creator).to_lower().contains(creator_query): continue
@@ -113,7 +127,8 @@ func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 
 func resolve(entry: Dictionary) -> NativeTrack:
 	if entry.source == "builtin": return NativeTrack.read(entry.path)
-	var data: Dictionary = library.load_document(entry.local_id)
+	var source := TrackLibrary.new(str(entry.get("library_directory", library.directory)))
+	var data: Dictionary = source.load_document(entry.local_id)
 	return null if data.is_empty() else TrackCompiler.compile(data)
 
 static func random_entry(matches: Array[Dictionary], current_id: String, rng: RandomNumberGenerator) -> Dictionary:

@@ -5,6 +5,7 @@ extends RefCounted
 var directory: String
 var last_error: String = ""
 var revision: int = 0
+var owner_name: String = ""
 
 
 func _init(root: String = "user://tracks") -> void:
@@ -37,6 +38,7 @@ func list_documents() -> Array[Dictionary]:
 
 
 func save_document(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
 	if is_published(str(document.get("id",""))):
 		last_error = "Published tracks are locked against editing."
 		return ERR_UNAUTHORIZED
@@ -72,6 +74,7 @@ func load_document(id: String) -> Dictionary:
 
 
 func export_document(document: Dictionary, path: String) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
 	if not TrackDocument.validate(document).is_empty():
 		last_error = "Fix the route before exporting it."
 		return ERR_INVALID_DATA
@@ -161,18 +164,21 @@ func delete_document(id: String) -> Error:
 
 
 func save_wip(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
 	if is_published(str(document.get("id",""))):
 		last_error = "Published tracks are locked against editing."
 		return ERR_UNAUTHORIZED
 	var review_error: Error = invalidate_test_if_changed(document)
 	if review_error != OK: return review_error
 	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
 	var error: Error=drafts.save_document(document)
 	last_error=drafts.last_error
 	return error
 
 func load_wip(id: String) -> Dictionary:
 	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
 	var result: Dictionary=drafts.load_document(id)
 	last_error=drafts.last_error
 	return result
@@ -210,6 +216,7 @@ func delete_editable(id: String) -> Error:
 	var review_error: Error = _test_library().delete_document(id)
 	if review_error != OK: return review_error
 	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
 	var error: Error = drafts.delete_document(id)
 	if error != OK:
 		last_error = drafts.last_error
@@ -229,6 +236,7 @@ func is_tested(document: Dictionary) -> bool:
 	return not snapshot.is_empty() and draft_fingerprint(snapshot) == draft_fingerprint(document)
 
 func mark_tested(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
 	if not TrackDocument.validate(document).is_empty(): return ERR_INVALID_DATA
 	if not document.has("start_line") or not RoadPieces.route_from_pieces(document).ok:
 		last_error = "Connect the roads and place a start line before completing a test."
@@ -252,6 +260,7 @@ func is_published(id: String) -> bool:
 	return not TrackLibrary.new(directory.path_join(".published")).load_document(id).is_empty()
 
 func publish_document(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
 	if is_published(str(document.get("id",""))): return ERR_ALREADY_EXISTS
 	if not is_tested(document):
 		last_error = "Complete test run to publish"

@@ -64,13 +64,16 @@ func run() -> void:
 	check(online.show_development(), "development offered by configured test server")
 	check(app.root_ui.find_child("GoogleSignIn", true, false) != null, "Google option exists")
 	check(app.root_ui.find_child("DevelopmentSignIn", true, false).visible, "Development option visible")
+	check(not app.root_ui.find_child("PlayerUsername", true, false).visible, "provider choice has no username field")
+	check(app.root_ui.find_child("MenuNavigation", true, false) == null, "sign-in is a focused standalone screen")
+	app.root_ui.find_child("ContinueWithoutSignIn", true, false).pressed.emit()
+	check(app.screen == "play" and not online.client.signed_in(), "guest action returns to local play without an account")
+	app._show_screen("account")
 	for physical: Vector2i in [Vector2i(1280,720), Vector2i(960,540)]:
 		root.size = physical
 		await process_frame
 		await process_frame
 		await capture("sign-in-%d" % physical.x)
-	await online.sign_in_google("   ")
-	check(not online.busy and not online.client.signed_in(), "blank Google username rejected before browser")
 	var key: String = online._development_key
 	online._development_key = "incorrect"
 	await online.sign_in_developer()
@@ -81,10 +84,11 @@ func run() -> void:
 	await online.refresh_options()
 	check(online.client.signed_in() and online.player_name() == "developer", "account refresh checks authenticated profile")
 	var player_id: String = online.client.player.id
-	check(app.root_ui.find_child("MenuAccount", true, false).text == "developer", "menu displays developer")
+	check(not online.needs_username(), "developer never needs name selection")
 	check(not app.root_ui.find_child("GoogleSignIn", true, false).visible, "signed-in screen hides login actions")
 	await capture("developer-960")
 	app._show_screen("tracks")
+	check(app.root_ui.find_child("MenuAccount", true, false).text == "developer", "menu displays developer")
 	app._show_screen("account")
 	check(online.client.signed_in(), "session survives menu navigation")
 	await online.sign_out()
@@ -93,13 +97,23 @@ func run() -> void:
 	check(online.client.player.id == player_id, "repeated development sign-in reuses the account")
 	await online.sign_out()
 	online.open_browser = open_fixture_browser
-	await online.sign_in_google("Chosen racer")
-	check(online.client.signed_in() and online.player_name() == "Chosen racer", "browser handoff signs Google player in with chosen name")
+	await online.sign_in_google()
+	check(online.client.signed_in() and online.needs_username(), "Google authenticates before name selection")
+	check(app.root_ui.find_child("PlayerUsername", true, false).visible, "only new authenticated players see name field")
+	check(not app.root_ui.find_child("GoogleSignIn", true, false).visible, "name selection does not mix provider choices")
+	await capture("choose-name-960")
+	await online.save_username("   ")
+	check(online.needs_username() and not online.busy, "blank name cannot finish onboarding")
+	await online.save_username("Chosen racer")
+	check(online.player_name() == "Chosen racer" and not online.needs_username(), "profile saves chosen name after Google authentication")
 	check(online.client.player.id != player_id, "Google identity is independent of developer")
 	await capture("google-player-960")
 	await online.sign_out()
+	await online.sign_in_google()
+	check(online.player_name() == "Chosen racer" and not online.needs_username(), "returning Google player skips name selection")
+	await online.sign_out()
 	browser_mode = "cancel"
-	await online.sign_in_google("Cancelled name")
+	await online.sign_in_google()
 	check(not online.client.signed_in() and not online.busy, "cancelled Google login stays signed out")
 	online.capabilities.development_auth = false
 	online.changed.emit()

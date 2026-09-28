@@ -6,6 +6,7 @@ var client := Client.new()
 var busy: bool = false
 var waiting_for_google: bool = false
 var message: String = "Choose how to sign in."
+var retry_available: bool = false
 var capabilities: Dictionary = {}
 var configured: bool = false
 var _development_key: String = ""
@@ -38,6 +39,12 @@ func show_development() -> bool:
 func google_available() -> bool:
 	return bool(capabilities.get("google_browser_configured", false))
 
+func needs_username() -> bool:
+	return client.signed_in() and bool(client.player.get("needs_username", false))
+
+func _signed_in_message() -> String:
+	return "Choose the name other racers will see." if needs_username() else "Signed in as " + player_name() + "."
+
 func _check_service() -> Dictionary:
 	var result: Dictionary = await client.request_api("/bootstrap")
 	if result.ok and (result.data.get("service", "") != "beat-my-track" or result.data.get("api_version", "") != "v1"):
@@ -54,6 +61,7 @@ func refresh_options() -> void:
 		changed.emit()
 		return
 	busy = true
+	retry_available = false
 	message = "Connecting to sign-in…"
 	changed.emit()
 	var result: Dictionary = await _check_service()
@@ -62,9 +70,10 @@ func refresh_options() -> void:
 		if client.signed_in():
 			var profile: Dictionary = await client.request_api("/me", HTTPClient.METHOD_GET, {}, "", true)
 			if profile.ok: client.player = profile.data
-		message = "Choose how to sign in." if not client.signed_in() else "Signed in as " + player_name() + "."
+		message = "" if not client.signed_in() else _signed_in_message()
 	else:
 		message = _error_text(result)
+		retry_available = true
 	busy = false
 	changed.emit()
 
@@ -80,24 +89,19 @@ func sign_in_developer() -> void:
 		changed.emit()
 		var result: Dictionary = await _check_service()
 		if result.ok: result = await client.developer_login(_development_key)
-		message = "Signed in as " + player_name() + "." if result.ok else _error_text(result)
+		message = _signed_in_message() if result.ok else _error_text(result)
 		busy = false
 	changed.emit()
 
-func sign_in_google(username: String) -> void:
+func sign_in_google() -> void:
 	if busy: return
-	username = username.strip_edges()
-	if username.is_empty() or username.length() > 40:
-		message = "Choose a username between 1 and 40 characters."
-		changed.emit()
-		return
 	busy = true
 	_cancelled = false
 	message = "Opening Google sign-in…"
 	changed.emit()
 	var result: Dictionary = await _check_service()
 	if result.ok and not google_available(): result = {"ok":false,"error":"GOOGLE_SIGN_IN_NOT_CONFIGURED"}
-	if result.ok: result = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST, {"display_name":username})
+	if result.ok: result = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST)
 	if not result.ok:
 		message = _error_text(result)
 		busy = false
@@ -129,7 +133,7 @@ func sign_in_google(username: String) -> void:
 			message = _error_text(result)
 			break
 		if client.signed_in():
-			message = "Signed in as " + player_name() + "."
+			message = _signed_in_message()
 			break
 	if _cancelled or not client.signed_in():
 		if client.signed_in(): await client.logout()
@@ -137,6 +141,22 @@ func sign_in_google(username: String) -> void:
 		if _cancelled: message = "Sign-in cancelled."
 		elif Time.get_ticks_msec() >= deadline: message = "Sign-in expired. Please try again."
 	waiting_for_google = false
+	busy = false
+	changed.emit()
+
+func save_username(username: String) -> void:
+	if busy or not needs_username(): return
+	username = username.strip_edges()
+	if username.is_empty() or username.length() > 40:
+		message = "Choose a name between 1 and 40 characters."
+		changed.emit()
+		return
+	busy = true
+	message = "Saving your name…"
+	changed.emit()
+	var result: Dictionary = await client.request_api("/me", HTTPClient.METHOD_PATCH, {"display_name":username}, "", true)
+	if result.ok: client.player = result.data
+	message = _signed_in_message() if result.ok else _error_text(result)
 	busy = false
 	changed.emit()
 

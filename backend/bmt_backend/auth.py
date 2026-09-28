@@ -46,7 +46,12 @@ class DevelopmentLogin(ProfileBody):
 
 
 def public_player(player: Player) -> dict:
-    return {"id": player.id, "display_name": player.display_name, "created_at": player.created_at}
+    return {
+        "id": player.id,
+        "display_name": player.display_name,
+        "created_at": player.created_at,
+        "needs_username": player.needs_username,
+    }
 
 
 @router.post("/auth/developer", include_in_schema=False)
@@ -160,7 +165,7 @@ def google_login(body: GoogleLogin, request: Request, session: Session = Depends
     return complete_google_login(claims["sub"], body.display_name, request, session)
 
 
-def complete_google_login(subject: str, display_name: str, request: Request, session: Session):
+def complete_google_login(subject: str, display_name: str | None, request: Request, session: Session):
     identity = session.scalar(
         select(Identity).where(Identity.provider == "google", Identity.subject == subject)
     )
@@ -170,7 +175,7 @@ def complete_google_login(subject: str, display_name: str, request: Request, ses
         # Savepoint handles two valid Google sign-ins creating the same identity concurrently.
         try:
             with session.begin_nested():
-                player = Player(display_name=display_name)
+                player = Player(display_name=display_name or "Racer", needs_username=display_name is None)
                 session.add(player)
                 session.flush()
                 session.add(Identity(player_id=player.id, provider="google", subject=subject))
@@ -258,5 +263,6 @@ def profile(
     if developer and body.display_name != "developer":
         raise HTTPException(403, "DEVELOPER_NAME_FIXED")
     player.display_name = body.display_name
+    player.needs_username = False
     session.commit()
     return public_player(player)

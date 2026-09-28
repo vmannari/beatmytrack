@@ -59,6 +59,59 @@ def test_chosen_username_and_existing_google_identity(browser):
     assert second["player"] == first.json()["player"]
 
 
+def test_google_without_name_then_profile_and_returning_login(browser):
+    client, app = browser
+
+    def unnamed_login():
+        response = client.post("/v1/auth/google/browser/start", json={})
+        assert response.status_code == 201
+        data = response.json()
+        assert complete(client, app, data["browser_url"].split("#")[1]).status_code == 200
+        return client.post("/v1/auth/google/browser/poll", json={"token": data["poll_token"]}).json()
+
+    first = unnamed_login()
+    assert first["player"]["needs_username"] is True
+    headers = {"Authorization": "Bearer " + first["access_token"]}
+    assert client.get("/v1/me", headers=headers).json()["needs_username"] is True
+    refresh = client.post("/v1/auth/refresh", json={"refresh_token": first["refresh_token"]}).json()
+    assert refresh["player"]["needs_username"] is True
+    # Leaving onboarding unfinished must not turn the temporary name into a chosen name.
+    second = unnamed_login()
+    assert second["player"]["id"] == first["player"]["id"]
+    assert second["player"]["needs_username"] is True
+    headers = {"Authorization": "Bearer " + second["access_token"]}
+    assert client.patch("/v1/me", headers=headers, json={"display_name": "  "}).status_code == 422
+    saved = client.patch("/v1/me", headers=headers, json={"display_name": "My chosen racer"})
+    assert saved.status_code == 200
+    assert saved.json()["needs_username"] is False
+    assert saved.json()["display_name"] == "My chosen racer"
+    returning = unnamed_login()
+    assert returning["player"] == saved.json()
+
+
+def test_name_migration_preserves_existing_accounts(tmp_path):
+    from alembic import command
+    from sqlalchemy import create_engine, text
+
+    from bmt_backend.migrate import configuration, upgrade
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    command.upgrade(configuration(engine), "0002_browser_login")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO players (id,display_name,disabled,created_at) VALUES ('legacy','Existing racer',false,0)"
+            )
+        )
+    upgrade(engine)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT display_name,needs_username FROM players WHERE id='legacy'")
+        ).one()
+        assert row[0] == "Existing racer" and row[1] == 0
+    engine.dispose()
+
+
 @pytest.mark.parametrize("wrong", [{"nonce": "wrong"}, {"nonce": "väärä"}, {"aud": "other-client"}])
 def test_browser_rejects_wrong_nonce_or_audience(browser, wrong):
     client, app = browser
@@ -118,6 +171,7 @@ def test_fixed_developer_account_and_removal(auth_app, sign_in):
         second = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": "k" * 32}).json()
         assert first["player"] == second["player"]
         assert first["player"]["display_name"] == "developer"
+        assert first["player"]["needs_username"] is False
         assert first["player"]["id"] != google["player"]["id"]
         headers = {"Authorization": "Bearer " + first["access_token"]}
         assert client.patch("/v1/me", headers=headers, json={"display_name": "renamed"}).status_code == 403

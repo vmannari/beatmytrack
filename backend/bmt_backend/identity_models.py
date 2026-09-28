@@ -1,7 +1,7 @@
 import time
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -19,6 +19,9 @@ class Player(Base):
     __tablename__ = "players"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     display_name: Mapped[str] = mapped_column(String(40), default="Racer")
+    needs_username: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 

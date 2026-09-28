@@ -1,5 +1,9 @@
 # Google and Development sign-in
 
+## Provider-first redesign (2026-09-28)
+
+The sign-in screen now follows the owner's scenic reference with a separate focused card. Google requires no name before authentication. Only new Google accounts see a subsequent racing-name step; returning accounts retain their saved name. Development remains the fixed `developer` account, and Play as guest returns to local racing without an account. See [design, evidence and validation](SIGN_IN_REDESIGN.md).
+
 ## Google client configured (2026-09-28)
 
 The owner-supplied OAuth Web client ID is now set in both Google settings in the
@@ -8,7 +12,7 @@ local API/worker and completed successfully; existing development credentials an
 data were preserved. A live HTTP check passed readiness, both enabled sign-in
 options, browser start/page/prepare, the exact supplied client ID and nonce, and
 pending polling. The diagnostic handoff was cancelled without creating an account.
-The owner can reopen Sign in, enter a username and choose Google. Real interactive
+The owner can reopen Sign in and choose Google; new players choose their name afterwards. Real interactive
 Google acceptance and the Cloud Console origin registration cannot be verified by
 these HTTP checks. No phone test, Android export or production deployment occurred.
 

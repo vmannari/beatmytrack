@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import Field
+from pydantic import Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,16 @@ class BrowserCredential(HandoffToken):
     id_token: str = Field(min_length=20, max_length=16384)
 
 
+class BrowserStart(StrictBody):
+    # Legacy callers may still supply a name; the menu now authenticates first.
+    display_name: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_name(cls, value):
+        return ProfileBody(display_name=value).display_name if value is not None else None
+
+
 def configured(request):
     settings = request.app.state.settings
     url = urlsplit(settings.public_base_url)
@@ -42,14 +52,14 @@ def configured(request):
 
 
 @router.post("/auth/google/browser/start", status_code=201)
-def start(body: ProfileBody, request: Request, session: Session = Depends(get_session)):
+def start(body: BrowserStart, request: Request, session: Session = Depends(get_session)):
     settings = configured(request)
     browser, poll = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     row = BrowserLogin(
         browser_hash=digest(browser),
         poll_hash=digest(poll),
         nonce=secrets.token_urlsafe(32),
-        display_name=body.display_name,
+        display_name=body.display_name or "",
         expires_at=now() + 300,
     )
     session.add(row)
@@ -137,7 +147,7 @@ def poll(body: HandoffToken, request: Request, session: Session = Depends(get_se
     )
     if claimed.rowcount != 1:
         raise HTTPException(401, "LOGIN_EXPIRED")
-    return complete_google_login(row.subject, row.display_name, request, session)
+    return complete_google_login(row.subject, row.display_name or None, request, session)
 
 
 @router.post("/auth/google/browser/cancel", status_code=204)
@@ -184,7 +194,7 @@ async function post(action, data) {
 async function begin() {
   try {
     const config = await post('prepare', {});
-    status.textContent = 'Your new player name: ' + config.display_name + '. Existing accounts keep their saved name.';
+    status.textContent = 'Continue with your Google account. New players choose their racing name in the game afterwards.';
     google.accounts.id.initialize({client_id:config.client_id,nonce:config.nonce,auto_select:false,
       callback:async result => {
         try {

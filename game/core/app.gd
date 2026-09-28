@@ -156,6 +156,10 @@ func _show_screen(next: String) -> void:
 	MenuStyle.fill(root_ui)
 	root_ui.theme = MenuStyle.theme()
 	menu_layer.add_child(root_ui)
+	if screen == "account":
+		account_button = null
+		_account()
+		return
 	if screen == "create":
 		_editor()
 		return
@@ -238,18 +242,36 @@ func _open_account() -> void:
 	online.refresh_options()
 
 func _account() -> void:
+	var background := preload("res://ui/account_backdrop.gd").new()
+	MenuStyle.fill(background)
+	root_ui.add_child(background)
+	var margin := MarginContainer.new()
+	MenuStyle.fill(margin)
+	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 24)
+	root_ui.add_child(margin)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	content.add_child(scroll)
+	margin.add_child(scroll)
 	var center := CenterContainer.new()
 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(center)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 20)
+	center.add_child(column)
+	var brand_space := Control.new()
+	brand_space.custom_minimum_size.y = 94
+	column.add_child(brand_space)
+	var brand := MenuBrand.new()
+	brand.scale = Vector2(1.5, 1.5)
+	brand_space.add_child(brand)
+	brand_space.resized.connect(func() -> void: brand.position = Vector2((brand_space.size.x - 294) * 0.5, 0))
 	var panel := preload("res://ui/account_panel.gd").new()
 	panel.account = online
-	panel.custom_minimum_size.x = 500
-	center.add_child(panel)
+	panel.custom_minimum_size.x = 520
+	panel.continue_requested.connect(_show_screen.bind("play"))
+	column.add_child(panel)
 
 func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> void:
 	if parent == null: parent = content

@@ -1,12 +1,15 @@
 extends Node
 ## Optional online adapter. The local game and canonical step never depend on it.
-## Browser sign-in and UI live in account_controller.gd. Tokens stay in memory.
+## Browser sign-in and UI live in account_controller.gd. Only the rotating refresh token is persisted in the private application directory.
 const MAX_RESPONSE_BYTES: int = 8388608
 var _base_url: String = ""
 var _access_token: String = ""
 var _refresh_token: String = ""
 var _busy: bool = false
 var player: Dictionary = {}
+# Empty disables persistence for standalone adapters/tests. Never include in exports.
+var session_path: String = ""
+var persistence_error: bool = false
 
 func configure(base_url: String) -> Error:
 	if _busy: return ERR_BUSY
@@ -15,14 +18,56 @@ func configure(base_url: String) -> Error:
 	var loopback: bool = url.begins_with("http://127.0.0.1:") or url.begins_with("http://localhost:")
 	if not (url.begins_with("https://") or loopback) or "@" in url or "?" in url or "#" in url or "\n" in url or "\r" in url:
 		return ERR_INVALID_PARAMETER
-	clear_session()
+	if not _base_url.is_empty(): clear_session()
 	_base_url = url
 	return OK
 
 func clear_session() -> void:
+	_forget_saved_session()
 	_access_token = ""
 	_refresh_token = ""
 	player = {}
+
+func _forget_saved_session() -> void:
+	if session_path.is_empty(): return
+	for suffix: String in ["", ".tmp"]:
+		if FileAccess.file_exists(session_path + suffix):
+			DirAccess.remove_absolute(session_path + suffix)
+
+func _save_session() -> void:
+	if session_path.is_empty(): return
+	var config := ConfigFile.new()
+	config.set_value("session", "url", _base_url)
+	config.set_value("session", "refresh_token", _refresh_token)
+	var temporary: String = session_path + ".tmp"
+	persistence_error = config.save(temporary) != OK
+	if not persistence_error:
+		persistence_error = DirAccess.rename_absolute(temporary, session_path) != OK
+	if persistence_error: _forget_saved_session()
+
+func has_saved_session() -> bool:
+	return not session_path.is_empty() and FileAccess.file_exists(session_path)
+
+func restore_session() -> Dictionary:
+	if _busy: return _failure("BUSY")
+	var config := ConfigFile.new()
+	if not has_saved_session() or config.load(session_path) != OK:
+		_forget_saved_session()
+		return _failure("SIGN_IN_REQUIRED")
+	if str(config.get_value("session", "url", "")) != _base_url:
+		clear_session()
+		return _failure("SIGN_IN_REQUIRED")
+	var token: String = str(config.get_value("session", "refresh_token", ""))
+	if token.is_empty():
+		clear_session()
+		return _failure("SIGN_IN_REQUIRED")
+	_busy = true
+	# Rotation is single-use: consume locally before sending, including ambiguous failures.
+	_forget_saved_session()
+	var response: Dictionary = _remember(await _send("/auth/refresh", HTTPClient.METHOD_POST, {"refresh_token":token}, false))
+	if not response.ok: clear_session()
+	_busy = false
+	return response
 
 func signed_in() -> bool:
 	return not _access_token.is_empty()
@@ -74,6 +119,7 @@ func _remember(response: Dictionary) -> Dictionary:
 	_access_token = data.access_token
 	_refresh_token = data.refresh_token
 	player = data.player.duplicate(true)
+	_save_session()
 	# Callers receive player/expiry, never copies of bearer credentials.
 	var safe: Dictionary = data.duplicate(true)
 	safe.erase("access_token")
@@ -136,6 +182,7 @@ func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET
 
 func logout() -> Dictionary:
 	if _busy: return _failure("BUSY")
+	_forget_saved_session()
 	var response: Dictionary = await request_api("/auth/logout",HTTPClient.METHOD_POST,{},"",true)
 	clear_session()
 	return response

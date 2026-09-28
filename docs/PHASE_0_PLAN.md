@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-28 B01/B19/R01/Q01: startup now opens sign-in for guests and restores a server-validated remembered session before entering Home. Rotating refresh token is stored separately from local records; menu account offers logout and clears saved credentials. Native restart/rotation/logout checks and actual-PC account checks passed. See docs/REMEMBERED_SIGN_IN.md; real Google and physical-device acceptance remain.
+
 2026-09-28 B01/B19/R01/V03/Q01: provider-first sign-in redesign separates Google authentication from first-time racing-name selection; fixed developer and local guest options remain independent. Original alpine backdrop, dedicated card and editable controls; existing names preserved by migration 0003. 112 non-PostgreSQL tests, 4 PostgreSQL auth tests, 38 native account checks and 8 actual-PC checks passed; desktop screenshots inspected. PC API migrated/restarted. Real Google interaction and physical-phone acceptance remain; no Android export or production deployment. See docs/SIGN_IN_REDESIGN.md.
 
 2026-09-28 B01/B19: owner-supplied Google Web client ID configured in ignored PC settings; BackendStart recreated the healthy API/worker. Live readiness, enabled providers, browser handoff, exact client ID/nonce and pending-poll checks passed; diagnostic cancelled. Interactive Google sign-in and console origin acceptance remain for owner testing. No phone/export/production deployment. See docs/ACCOUNT_SIGN_IN.md.

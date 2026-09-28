@@ -1,5 +1,7 @@
 # Google and Development sign-in
 
+Startup now shows sign-in unless a saved session can be restored. Open the player-name button in the menu to sign out. See [remembered sign-in](REMEMBERED_SIGN_IN.md) for persistence and verification.
+
 ## Provider-first redesign (2026-09-28)
 
 The sign-in screen now follows the owner's scenic reference with a separate focused card. Google requires no name before authentication. Only new Google accounts see a subsequent racing-name step; returning accounts retain their saved name. Development remains the fixed `developer` account, and Play as guest returns to local racing without an account. See [design, evidence and validation](SIGN_IN_REDESIGN.md).

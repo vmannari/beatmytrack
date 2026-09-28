@@ -51,6 +51,7 @@ var editor_preview_document: Dictionary = {}
 var editor_raster_cache: Dictionary = {"enabled":true}
 var online: AccountController
 var account_button: Button
+var startup_complete: bool = false
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -110,6 +111,7 @@ func _ready() -> void:
 		return
 	records.load_records()
 	online = AccountController.new()
+	online.client.session_path = records.path.get_base_dir().path_join("account_session.cfg")
 	add_child(online)
 	online.changed.connect(_account_changed)
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
@@ -127,7 +129,14 @@ func _ready() -> void:
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 20
 	add_child(menu_layer)
-	_show_screen(capture_screen)
+	if not capture_path.is_empty():
+		_show_screen(capture_screen)
+	else:
+		_show_screen("account")
+		await online.start_session()
+		if screen == "account" and online.client.signed_in() and not online.needs_username():
+			_show_screen("play")
+	startup_complete = true
 	print("APP_READY")
 	if OS.is_debug_build() and FileAccess.file_exists("user://mobile_probe.json"):
 		var probe: Node = load("res://diagnostics/mobile_race_probe.gd").new()

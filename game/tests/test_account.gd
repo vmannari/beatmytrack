@@ -55,10 +55,10 @@ func run() -> void:
 	app.records = LocalRecords.new(folder.path_join("records.json"))
 	app.library = TrackLibrary.new(folder)
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	var online: Node = app.online
 	check(not online.client.signed_in(), "startup stays signed out")
-	check(app.root_ui.find_child("MenuAccount", true, false).text == "Sign in", "menu offers sign in")
+	check(app.screen == "account", "first launch opens sign-in")
 	app._show_screen("account")
 	await online.refresh_options()
 	check(online.show_development(), "development offered by configured test server")
@@ -91,6 +91,39 @@ func run() -> void:
 	check(app.root_ui.find_child("MenuAccount", true, false).text == "developer", "menu displays developer")
 	app._show_screen("account")
 	check(online.client.signed_in(), "session survives menu navigation")
+	check(online.client.has_saved_session(), "login stores a refresh session")
+	var saved_path: String = online.client.session_path
+	var restarted: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
+	restarted.records = LocalRecords.new(folder.path_join("records.json"))
+	restarted.library = TrackLibrary.new(folder)
+	root.add_child(restarted)
+	while not restarted.startup_complete: await process_frame
+	check(restarted.screen == "play" and restarted.online.player_name() == "developer", "fresh app restores identity and opens Home")
+	check(restarted.online.client.has_saved_session(), "rotation replaces saved refresh token")
+	var stored: String = FileAccess.get_file_as_string(saved_path)
+	check(not restarted.online.client._refresh_token.is_empty() and restarted.online.client._refresh_token != online.client._refresh_token, "restore rotates refresh token")
+	check(not restarted.online.client._access_token in stored and not key in stored, "saved session excludes access token and development key")
+	restarted.root_ui.find_child("MenuAccount", true, false).pressed.emit()
+	while restarted.online.busy: await process_frame
+	check(restarted.screen == "account" and restarted.root_ui.find_child("SignOut", true, false).visible, "menu account provides logout")
+	await restarted.online.sign_out()
+	check(not restarted.online.client.has_saved_session(), "logout removes remembered login")
+	restarted.queue_free()
+	await process_frame
+	var after_logout: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
+	after_logout.records = LocalRecords.new(folder.path_join("records.json"))
+	after_logout.library = TrackLibrary.new(folder)
+	root.add_child(after_logout)
+	while not after_logout.startup_complete: await process_frame
+	check(after_logout.screen == "account" and not after_logout.online.client.signed_in(), "restart after logout requires sign-in")
+	var invalid := ConfigFile.new()
+	invalid.set_value("session", "url", online.client._base_url)
+	invalid.set_value("session", "refresh_token", "expired-or-invalid")
+	invalid.save(saved_path)
+	await after_logout.online.start_session()
+	check(not after_logout.online.client.signed_in() and not FileAccess.file_exists(saved_path), "invalid saved session cannot authenticate and is removed")
+	after_logout.queue_free()
+	await process_frame
 	await online.sign_out()
 	check(not online.client.signed_in() and online.client.player.is_empty(), "sign out clears session")
 	await online.sign_in_developer()

@@ -30,6 +30,19 @@ func _load_configuration() -> void:
 		configured = not url.is_empty() and client.configure(url) == OK
 	if not configured: message = "Online sign-in is not configured yet."
 
+func start_session() -> void:
+	if not configured: return
+	busy = true
+	message = "Checking saved sign-in?"
+	changed.emit()
+	var result: Dictionary = await _check_service()
+	if result.ok and client.has_saved_session():
+		result = await client.restore_session()
+	message = _signed_in_message() if client.signed_in() else ("" if result.ok else _error_text(result))
+	retry_available = not result.ok
+	busy = false
+	changed.emit()
+
 func player_name() -> String:
 	return str(client.player.get("display_name", ""))
 
@@ -67,6 +80,8 @@ func refresh_options() -> void:
 	var result: Dictionary = await _check_service()
 	if result.ok:
 		capabilities = result.data
+		if not client.signed_in() and client.has_saved_session():
+			await client.restore_session()
 		if client.signed_in():
 			var profile: Dictionary = await client.request_api("/me", HTTPClient.METHOD_GET, {}, "", true)
 			if profile.ok: client.player = profile.data

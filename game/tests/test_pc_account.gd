@@ -28,6 +28,7 @@ func run() -> void:
 	app.records = LocalRecords.new(folder.path_join("records.json"))
 	app.library = TrackLibrary.new(folder)
 	root.add_child(app)
+	while not app.startup_complete: await process_frame
 	app._show_screen("account")
 	await app.online.refresh_options()
 	check(app.online.capabilities.get("service", "") == "beat-my-track", "connects to game backend")

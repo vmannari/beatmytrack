@@ -98,6 +98,7 @@ func _ready() -> void:
 	footer = centered_label("You can sign in whenever you're ready.", 16, true)
 	column.add_child(footer)
 	logout_button = MenuStyle.button("Sign out", account.sign_out)
+	logout_button.name = "SignOut"
 	column.add_child(logout_button)
 	account.changed.connect(_update)
 	_update()

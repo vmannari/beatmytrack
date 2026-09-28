@@ -1,0 +1,112 @@
+name: ${COMPOSE_PROJECT_NAME:-bmt}
+
+x-runtime: &runtime
+  image: ${BMT_IMAGE:-bmt-backend:local}
+  build:
+    context: ../..
+    dockerfile: backend/Dockerfile
+    args:
+      GODOT_SHA256: ${GODOT_SHA256:?Set the independently verified Linux Godot binary SHA256}
+  init: true
+  read_only: true
+  user: "10001:10001"
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  pids_limit: 160
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  environment: &environment
+    BMT_ENVIRONMENT: production
+    BMT_DEV_AUTH_ENABLED: "false"
+    BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD:?Generate a database app password}@db:5432/bmt
+    BMT_PUBLIC_BASE_URL: ${BMT_PUBLIC_BASE_URL:?Set the public HTTPS API origin}
+    BMT_GOOGLE_CLIENT_IDS: ${BMT_GOOGLE_CLIENT_IDS:-}
+    BMT_GODOT_BIN: /usr/local/bin/godot
+    BMT_GAME_PROJECT: /opt/bmt/game
+    BMT_OBJECT_DIR: /var/lib/bmt/objects
+    BMT_VERIFIER_TIMEOUT_SECONDS: "90"
+    BMT_JOB_LEASE_SECONDS: "240"
+    BMT_MAX_JOB_ATTEMPTS: "3"
+
+services:
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: bmt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate a distinct database admin password}
+      BMT_DB_PASSWORD: ${BMT_DB_PASSWORD:?Generate a database app password}
+    command: [postgres, -c, shared_buffers=128MB, -c, max_connections=40, -c, work_mem=4MB, -c, log_min_duration_statement=500, -c, log_parameter_max_length=0, -c, log_parameter_max_length_on_error=0]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/10-bmt.sh:ro
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d bmt"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 768m
+    cpus: "1.5"
+    shm_size: 128m
+    logging: *logging
+
+  migrate:
+    <<: *runtime
+    command: [python, -m, bmt_backend.migrate]
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy}
+    networks: [backend]
+    mem_limit: 256m
+    cpus: "0.5"
+
+  api:
+    <<: *runtime
+    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --proxy-headers, --forwarded-allow-ips, "${BMT_TRUSTED_PROXY_IPS:-127.0.0.1}", --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
+    restart: unless-stopped
+    stop_grace_period: 100s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    ports:
+      - "127.0.0.1:${BMT_PORT:-8080}:8080"
+    volumes:
+      - objects:/var/lib/bmt/objects
+    networks: [backend, edge]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=4).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    mem_limit: 640m
+    cpus: "1.0"
+
+  worker:
+    <<: *runtime
+    command: [python, -m, bmt_backend.worker]
+    restart: unless-stopped
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    volumes:
+      - objects:/var/lib/bmt/objects:ro
+    networks: [backend]
+    stop_grace_period: 210s
+    mem_limit: 768m
+    cpus: "1.0"
+
+networks:
+  backend:
+    internal: true
+  edge: {}
+
+volumes:
+  postgres_data: {}
+  objects: {}

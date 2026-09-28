@@ -1,0 +1,192 @@
+"""Fail-closed adapter to the pinned canonical Godot simulation.
+
+Untrusted JSON is data only. Every verification starts a fresh headless process,
+track, vehicle and checkpoint session; no client timing or state is accepted.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import re
+import subprocess
+import tempfile
+import threading
+from pathlib import Path
+from typing import Any
+
+REPLAY_SCHEMA = "bmt-replay-v1"
+MAX_FRAMES = 216_000  # 30 minutes at the canonical 120 Hz.
+MAX_TRACK_BYTES = 524_288
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+_ENGINE_SLOT = threading.BoundedSemaphore(1)
+
+
+class VerificationError(ValueError):
+    """The submitted track or replay is invalid, or did not finish legally."""
+
+
+class VerifierUnavailable(RuntimeError):
+    """The trusted verifier could not execute; never publish a result."""
+
+
+def _json_bytes(value: Any, limit: int) -> bytes:
+    # Bound nesting before the encoder/engine encounters malicious recursion.
+    stack = [(value, 0)]
+    nodes = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if depth > 12 or nodes > 1_000_000:
+            raise VerificationError("JSON structure exceeds verification bounds")
+        if type(item) is dict:
+            if any(type(key) is not str or len(key) > 80 for key in item):
+                raise VerificationError("Invalid JSON field name")
+            stack.extend((child, depth + 1) for child in item.values())
+        elif type(item) is list:
+            stack.extend((child, depth + 1) for child in item)
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise VerificationError("Numbers must be finite")
+        elif type(item) not in (str, int, bool, type(None)):
+            raise VerificationError("Only JSON data is accepted")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    except (ValueError, OverflowError, RecursionError, UnicodeError) as exc:
+        raise VerificationError("Invalid JSON data") from exc
+    if len(encoded) > limit:
+        raise VerificationError("JSON exceeds verification byte limit")
+    return encoded
+
+
+def validate_replay(replay: dict) -> None:
+    if type(replay) is not dict or set(replay) != {"schema", "frames"} or replay["schema"] != REPLAY_SCHEMA:
+        raise VerificationError("Unsupported replay envelope")
+    frames = replay["frames"]
+    if type(frames) is not list or not 1 <= len(frames) <= MAX_FRAMES:
+        raise VerificationError("Replay needs 1 to 216000 canonical input frames")
+    for frame in frames:
+        if type(frame) is not list or len(frame) != 3 or any(type(value) is not int for value in frame):
+            raise VerificationError("Each replay frame needs exactly three quantized integers")
+        if not -127 <= frame[0] <= 127 or not 0 <= frame[1] <= 255 or not 0 <= frame[2] <= 255:
+            raise VerificationError("Replay input outside quantized range")
+
+
+class GodotVerifier:
+    def __init__(self, settings: Any):
+        self.binary = str(settings.godot_bin)
+        self.project = Path(settings.game_project).resolve()
+        self.timeout = float(settings.verifier_timeout_seconds)
+        self._versions: dict | None = None
+        self._engine_checked = False
+
+    def _check_engine(self) -> None:
+        if self._engine_checked:
+            return
+        try:
+            pinned = (self.project.parent / "godot-version.txt").read_text(encoding="utf-8-sig").strip()
+            result = subprocess.run([self.binary, "--version"], capture_output=True, timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise VerifierUnavailable("Pinned Godot verifier is unavailable") from exc
+        if result.returncode != 0 or result.stdout.decode("utf-8", "replace").strip() != pinned:
+            raise VerifierUnavailable("Godot executable does not match godot-version.txt")
+        self._engine_checked = True
+
+    def _invoke(self, payload: dict) -> dict:
+        # Shared by all adapter instances within one API/worker process. Reject
+        # overload immediately rather than accumulating costly engine children.
+        if not _ENGINE_SLOT.acquire(blocking=False):
+            raise VerifierUnavailable("Canonical verifier is busy; retry later")
+        try:
+            return self._invoke_locked(payload)
+        finally:
+            _ENGINE_SLOT.release()
+
+    def _invoke_locked(self, payload: dict) -> dict:
+        request = _json_bytes(payload, MAX_REQUEST_BYTES)
+        self._check_engine()
+        with tempfile.TemporaryDirectory(prefix="bmt-verify-") as folder:
+            directory = Path(folder)
+            input_path, output_path = directory / "input.json", directory / "output.json"
+            input_path.write_bytes(request)
+            command = [
+                self.binary,
+                "--headless",
+                "--path",
+                str(self.project),
+                "--script",
+                "res://backend/runner.gd",
+                "--",
+                f"--input={input_path}",
+                f"--output={output_path}",
+            ]
+            try:
+                with (directory / "engine.log").open("wb") as log:
+                    process = subprocess.run(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        timeout=self.timeout,
+                        check=False,
+                    )
+                log_path = directory / "engine.log"
+                if log_path.stat().st_size > 65536:
+                    raise VerifierUnavailable("Verifier exceeded diagnostic output limit")
+                diagnostics = log_path.read_text(encoding="utf-8", errors="replace")
+                if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
+                    raise VerifierUnavailable("Canonical verifier reported an engine error")
+                if not output_path.is_file() or output_path.stat().st_size > 65536:
+                    raise VerifierUnavailable("Canonical verifier returned no bounded result")
+                response = json.loads(output_path.read_text(encoding="utf-8"))
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                raise VerifierUnavailable("Canonical verification could not complete") from exc
+            if type(response) is not dict or type(response.get("ok")) is not bool:
+                raise VerifierUnavailable("Invalid canonical verifier response")
+            if process.returncode == 2 and response["ok"] is False:
+                raise VerificationError(str(response.get("error", "Verification rejected"))[:500])
+            if (
+                process.returncode != 0
+                or response["ok"] is not True
+                or type(response.get("result")) is not dict
+            ):
+                raise VerifierUnavailable("Canonical verifier failed closed")
+            return response["result"]
+
+    def manifest(self) -> dict:
+        if self._versions is None:
+            self._versions = self._invoke({"operation": "manifest"})
+        return copy.deepcopy(self._versions)
+
+    def validate_track(self, document: dict) -> dict:
+        if type(document) is not dict:
+            raise VerificationError("Track must be a JSON object")
+        _json_bytes(document, MAX_TRACK_BYTES)
+        return self._invoke({"operation": "track", "document": document})
+
+    def verify_run(self, document: dict, replay: dict, vehicle_id: str) -> dict:
+        if type(document) is not dict:
+            raise VerificationError("Track must be a JSON object")
+        _json_bytes(document, MAX_TRACK_BYTES)
+        validate_replay(replay)
+        if type(vehicle_id) is not str or vehicle_id not in self.manifest()["vehicles"]:
+            raise VerificationError("Unsupported vehicle")
+        result = self._invoke(
+            {"operation": "run", "document": document, "replay": replay, "vehicle_id": vehicle_id}
+        )
+        ticks, laps, milliseconds = result.get("time_ticks"), result.get("lap_ticks"), result.get("time_ms")
+        if (
+            type(ticks) is not int
+            or ticks != len(replay["frames"])
+            or type(milliseconds) is not int
+            or milliseconds <= 0
+            or type(laps) is not list
+            or len(laps) != 5
+            or any(type(tick) is not int or tick <= 0 for tick in laps)
+            or sum(laps) != ticks
+        ):
+            raise VerifierUnavailable("Canonical result failed timing invariants")
+        return result

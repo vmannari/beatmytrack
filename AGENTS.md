@@ -95,3 +95,6 @@ The owner supplied a sand-berm reference, superseding striped/stone desert kerb 
 
 ## Desert apron approach override (2026-09-24)
 The owner rejected continuous raised berm ribbons and requested a different approach closer to the supplied reference. Kit 65 uses a flat textured sandy apron with independent clustered opaque sand clods. The approved directional road texture is retained. See docs/DESERT_APRON.md.
+
+## Backend first-version override (2026-09-28)
+The owner authorizes the first backend for authentication, immutable track sharing, ratings and verified leaderboards, targeting the DS925+ first and cloud hosting later. Google sign-in is the selected first provider. The owner explicitly requests development authentication without Google validation; keep that bypass explicitly configured for development and separate from real Google identities. This supersedes the earlier online-service deferral for this slice. The supplied future requirements inventory does not authorize economy, commerce, social or real-time multiplayer implementation. See docs/BACKEND_V1.md and backend/deploy/README.md for architecture, actual verification and outstanding client/NAS acceptance. Production deployment still requires owner authorization.

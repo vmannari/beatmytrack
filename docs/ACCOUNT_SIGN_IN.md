@@ -1,5 +1,17 @@
 # Google and Development sign-in
 
+## Google client configured (2026-09-28)
+
+The owner-supplied OAuth Web client ID is now set in both Google settings in the
+ignored `.tools/bmt-pc.env`. `scripts/dev.ps1 -Action BackendStart` recreated the
+local API/worker and completed successfully; existing development credentials and
+data were preserved. A live HTTP check passed readiness, both enabled sign-in
+options, browser start/page/prepare, the exact supplied client ID and nonce, and
+pending polling. The diagnostic handoff was cancelled without creating an account.
+The owner can reopen Sign in, enter a username and choose Google. Real interactive
+Google acceptance and the Cloud Console origin registration cannot be verified by
+these HTTP checks. No phone test, Android export or production deployment occurred.
+
 ## PC fix and current setup (2026-09-28)
 
 The first PC attempt failed because port 8080 belonged to the owner's Crane CMS,

@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-28 B01/B19: owner-supplied Google Web client ID configured in ignored PC settings; BackendStart recreated the healthy API/worker. Live readiness, enabled providers, browser handoff, exact client ID/nonce and pending-poll checks passed; diagnostic cancelled. Interactive Google sign-in and console origin acceptance remain for owner testing. No phone/export/production deployment. See docs/ACCOUNT_SIGN_IN.md.
+
 2026-09-28 B01/B19/R01/V03/Q01: PC sign-in failure traced to port 8080 serving Crane CMS and missing local auth configuration. Dedicated persistent PC stack now runs on loopback18181; BackendStart/Stop and saved editor config added. Development verified against actual PostgreSQL/API (8 live checks), wrong-service credential guard and 43 auth/4 follow-up tests pass. Official Google button artwork and real-PC screenshots inspected. Google awaits owner-created OAuth client ID; no phone/export/NAS test. See docs/ACCOUNT_SIGN_IN.md.
 
 2026-09-28 B01/B19/R01/V03/Q01: account menu adds Google browser sign-in with the chosen username and a fixed temporary `developer` login. Session/logout/cancellation and server-side development retirement tested; PostgreSQL concurrency, backend suite, real HTTP/Godot account flow and menu presentation pass. Desktop screenshots inspected. Old TestApp still fails obsolete navigation labels. OAuth client/origin configuration and real-Google/NAS/phone acceptance remain; no Android export/device test. See docs/ACCOUNT_SIGN_IN.md.

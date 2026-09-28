@@ -1,10 +1,11 @@
 # Beat my track — Music State
 
-_Last updated: 2026-09-27_
+_Last updated: 2026-09-28_
 
 ## Status
 Mode: explore
 Current baseline: production v6 remains installed. Owner rejected the initial Magenta auditions as unsuitable and R2's separate state mixes as disconnected; no replacement composition is accepted.
+Owner explicitly rejected the R3/R4 acoustic motif: too high, too brief and disturbing. R5 replaces it; approval remains pending.
 Approved release assets: no new release approval established by this installation
 
 ## Source hierarchy
@@ -18,6 +19,7 @@ Approved release assets: no new release approval established by this installatio
 These are preferences, not permanent rules.
 
 - Primary function: unobtrusive background music during racing.
+- Do not reuse high, short, plucked acoustic opening figures like R3/R4. Latest response uses low, long-held tones with softened attacks; tone and instrument choice remain subject to listening review.
 - Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. R3 offers three alternatives per instrument at all six stages.
 - Latest alternative: one simpler tune starts, then distinct instruments join cumulatively. All options must share musical timing and harmony. Preserve R2 for comparison.
 - Additional mode requested: the same music evolves and BPM rises with each state. R4 re-renders the R3 score at 90/102/114/126/138/150 BPM, maintaining original pitch and per-drive choices. Fixed-tempo R3 remains available.
@@ -30,7 +32,7 @@ These are preferences, not permanent rules.
 - Desired: a recognizable musical identity and meaningful development without crowding vehicle audio.
 - Adaptive climax/intensity: still subject to listening approval; do not assume “more rock” or “more instruments” is better.
 
-Latest source: owner feedback recorded in `rounds/2026-09-27-reference-arc.md`; older `docs/MUSIC_MODULAR_BANK.md` remains historical evidence.
+Latest source: `rounds/2026-09-28-low-opening-r5.md`; older rounds and `docs/MUSIC_MODULAR_BANK.md` are historical evidence.
 
 ## Runtime behaviour
 Preserve current implementation unless explicitly redesigning it.
@@ -57,9 +59,7 @@ Collision/reset/recovery contract: VERIFY IN PROJECT DOCS/CODE BEFORE CHANGING.
 - treating old assistant proposals as approvals
 
 ## Next experiment
-R3 replaces independent generation with an original exact score rendered as sampled isolated instruments. Six roles × three alternatives, 729 combinations, shared 120 BPM / eight-bar Dm–Bb–F–C phrase. Score, sample-clock, export headroom and cumulative browser behavior verified; no subjective listening claimed. See `rounds/2026-09-27-additive-r3.md`. Review timbres, motif, groove, development and transitions before further expansion or runtime integration. R2 remains available as historical comparison.
-
-R4 adds the requested rising-tempo mode using exactly the same score. Technical export and browser checks pass, including musical-position continuity and original-pitch playback. Review the six-state tempo curve and transitions; no artistic approval inferred. See `rounds/2026-09-27-evolving-tempo-r4.md`.
+R5 replaces all acoustic-opening options with low sustained cello, four D3–A3 tones per phrase. Every tempo is revised; the rejected openings are removed from the catalog. Backing performances retained at a shared 0.85 gain for headroom. Score/export and fixed/tempo browser checks pass. No subjective listening claimed. Review this focused replacement before further expansion. See `rounds/2026-09-28-low-opening-r5.md`.
 
 ## Approvals
 This template asserts no approvals. Preserve documented scoped approvals; unresolved history stays unverified.

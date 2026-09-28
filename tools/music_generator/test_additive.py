@@ -28,7 +28,7 @@ bound = float(max(upper.max(),-lower.min()))
 assert bound < .681
 result = {'result':'PASS','bank':manifest_path.parent.name,
           'checks':['all score alternatives follow exact harmonic grid',
-                    'all melody/answer combinations have separate note-on windows',
+                    'low foundation and organ answer are separated by at least an octave',
                     '18 distinct nonzero finite stereo PCM exports',
                     'all stems exactly 768000 frames / 16 seconds / 48000 Hz',
                     'each loop boundary delta below .002',

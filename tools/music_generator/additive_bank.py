@@ -20,26 +20,25 @@ TOOL = ROOT / '.tools/music-layer-renderer'
 TSF = '853a0a171759f1ddba0de1442133a75912bbeffa'
 GS = '684543d5e5efaef08d02be50dcda8d552478fa60'
 RATE, FRAMES = 48000, 768000
-ROLES = [('Acoustic motif', 24, .8), ('Finger bass', 33, .85),
+ROLES = [('Low cello', 42, .32), ('Finger bass', 33, .85),
          ('Warm piano', 0, .45), ('Acoustic drums', 0, .65),
          ('Muted guitar', 28, .5), ('Organ answer', 16, .32)]
 # Two bars each: D minor, B flat, F major, C major. All variants use these exact voicings.
 CHORDS = [(62, 65, 69), (58, 62, 65), (60, 65, 69), (60, 64, 67)]
 
 def notes(role, variant):
+    if role == 0:
+        # Owner rejected the high, clipped acoustic figure. A sustained low foundation:
+        # four held tones per phrase, D3-A3, no upper-octave plucks or rapid attacks.
+        contours = [(50, 50, 53, 52), (53, 53, 53, 55), (57, 53, 57, 55)]
+        return [[i * 8, 6.8, key, .42] for i, key in enumerate(contours[variant])]
     events = []
     def add(beat, duration, key, velocity):
         events.append([round(beat, 4), round(duration, 4), key, round(velocity, 4)])
     for bar in range(8):
         chord = CHORDS[bar // 2]
         start = bar * 4
-        # Foreground motif occupies beats 0..2; organ responds only in beats 2.5..4.
-        if role == 0:
-            rhythms = [(0, .75, 1.5), (0, 1, 1.75), (.25, .75, 1.5)][variant]
-            contour = [(0, 2, 1), (2, 1, 0), (1, 2, 0)][(bar + variant) % 3]
-            for i, beat in enumerate(rhythms):
-                add(start + beat, min(.48, 2.15 - beat), chord[contour[i]] + 12, .62 + .07 * (i == 0))
-        elif role == 1:
+        if role == 1:
             root = [38, 34, 41, 36][bar // 2]
             for beat, key in [(0, root), (2, root + (7 if variant == 1 else 0))]:
                 add(start + beat, 1.55 if variant == 0 else 1.2, key, .7)
@@ -76,9 +75,24 @@ def validate_score():
                 assert key % 12 in allowed, (role, variant, b, key)
                 assert int(b // 8) == int((b+d-1e-6) // 8), 'note crosses harmony change'
         assert len({json.dumps(notes(role, v)) for v in range(3)}) == 3
-    # Every combination observes harmonic and foreground constraints by construction.
+    # Sustained foundation and upper answer are separated by register, not short slots.
     for motif, answer in itertools.product(range(3), repeat=2):
-        assert all(a+d <= b or b+e <= a for a,d,_,_ in notes(0,motif) for b,e,_,_ in notes(5,answer))
+        assert max(e[2] for e in notes(0,motif)) + 12 <= min(e[2] for e in notes(5,answer))
+
+def soften_opening(samples,bpm):
+    # Periodic low-pass with a smooth roll-off; no pitch shifting.
+    frequencies=np.fft.rfftfreq(len(samples),1/RATE)
+    spectrum=np.fft.rfft(samples,axis=0)
+    samples=np.fft.irfft(spectrum/(1+(frequencies/1400)**4)[:,None],n=len(samples),axis=0)
+    # Slow attacks and releases in seconds remain gentle even at 150 BPM.
+    envelope=np.zeros(len(samples))
+    for i in range(4):
+        begin=round(i*8*60/bpm*RATE);end=round((i*8+7.8)*60/bpm*RATE)
+        n=end-begin;ramp_in=round(.25*RATE);ramp_out=round(.4*RATE)
+        curve=np.ones(n);curve[:ramp_in]=np.sin(np.linspace(0,np.pi/2,ramp_in))**2
+        curve[-ramp_out:]=np.cos(np.linspace(0,np.pi/2,ramp_out))**2
+        envelope[begin:end]=curve
+    return samples*envelope[:,None]
 
 def main():
     validate_score()
@@ -111,7 +125,9 @@ def main():
             (out / f'{stem}.score').write_text('\n'.join(' '.join(map(str,e)) for e in score))
             subprocess.run([str(renderer), str(TOOL/'GeneralUser-GS.sf2'), str(out/f'{stem}.score'),
                             '128' if role == 3 else '0', str(program), str(out/f'{stem}.f32')], check=True)
-            samples = np.fromfile(out/f'{stem}.f32', dtype='<f4').reshape(FRAMES,2) * gain
+            samples = np.fromfile(out/f'{stem}.f32', dtype='<f4').reshape(FRAMES,2)
+            if role == 0: samples = soften_opening(samples, 120)
+            samples *= gain
             assert np.isfinite(samples).all() and np.max(np.abs(samples)) > .001
             alternatives.append(samples)
             jobs.append({'status':'complete', 'name':f'{name} · {"ABC"[variant]}', 'file':f'{stem}.wav',

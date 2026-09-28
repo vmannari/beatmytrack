@@ -7,7 +7,7 @@ import uuid
 import wave
 from datetime import datetime, timezone
 import numpy as np
-from additive_bank import ROOT, TOOL, RATE, ROLES
+from additive_bank import ROOT, TOOL, RATE, ROLES, soften_opening
 
 BPMS = [90, 102, 114, 126, 138, 150]
 
@@ -28,7 +28,9 @@ def main():
             stem=f"{bpm}-{j['state_index']}-{j['variant']}"
             score=out/(stem+'.score'); shutil.copyfile(source.parent/j['score'],score)
             subprocess.run([str(renderer),str(TOOL/'GeneralUser-GS.sf2'),str(score),str(j['bank']),str(j['program']),str(out/(stem+'.f32')),str(bpm)],check=True)
-            a=np.fromfile(out/(stem+'.f32'),dtype='<f4').reshape(-1,2)*ROLES[j['state_index']][2]
+            a=np.fromfile(out/(stem+'.f32'),dtype='<f4').reshape(-1,2)
+            if j['state_index']==0: a=soften_opening(a,bpm)
+            a*=ROLES[j['state_index']][2]
             assert np.isfinite(a).all() and np.max(np.abs(a))>.001
             samples.append(a)
             jobs.append({**j,'family':'evolving_r4','file':stem+'.wav','score':score.name,'bpm':bpm,

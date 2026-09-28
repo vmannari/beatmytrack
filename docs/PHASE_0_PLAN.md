@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-28 MUS03/MUS06/MUS09/MUS10/V03/V05/Q01: rejected high/short acoustic opening replaced by low sustained cello in fixed and evolving modes; all three alternatives and six tempos revised. Rejected takes excluded from catalog. Nine opening checks, six fixed/five tempo export checks, 15/19 browser checks and 10 toolkit tests pass. Listening approval pending; no runtime/device test. See docs/music/rounds/2026-09-28-low-opening-r5.md.
+
 2026-09-27 MUS03/MUS06/MUS09/MUS10/V03/V05/Q01: evolving-tempo audition mode preserves the R3 score and choices across 90/102/114/126/138/150 BPM. 108 pitch-preserving renders; synchronized phrase transitions, BPM display and persisted mode. Five export checks, 19 R4 browser checks and existing workbench/R2/R3 regressions pass; default renderer byte-identical. Listening approval pending; no game change or phone test. See docs/music/rounds/2026-09-27-evolving-tempo-r4.md.
 
 2026-09-27 MUS03/MUS06/MUS09/MUS10/V03/V05/Q01: additive music R3 adds six synchronized instruments with three alternatives each (729 combinations), original shared score, sampled offline rendering and random/manual workbench selection. Six export/score checks, 15 R3 browser checks, existing 19 workbench/9 R2 checks and 10 toolkit tests pass. Artistic approval and shipping provenance review pending; no runtime change or phone/device test. See docs/music/rounds/2026-09-27-additive-r3.md.

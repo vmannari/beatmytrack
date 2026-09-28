@@ -23,6 +23,10 @@ def catalog():
             if manifest.get('approval') == 'superseded':
                 continue
             for job in manifest.get("jobs", []):
+                # Owner explicitly rejected this high, short acoustic opening.
+                # Retain source files, but never offer it in the active audition catalog.
+                if job.get('family') in ('shared_road_r3', 'evolving_r4') and job.get('state_index') == 0 and job.get('program') == 24:
+                    continue
                 if job.get("status") != "complete":
                     continue
                 path = (manifest_path.parent / job["file"]).resolve()

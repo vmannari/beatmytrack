@@ -261,7 +261,7 @@ async function loadSetup(file) {
   const data = JSON.parse(await file.text());
   if (data.schema !== 'bmt-audition-1' || !Array.isArray(data.tracks) || data.tracks.length > 12 || !['arrangement', 'layers', 'manual', 'tempo'].includes(data.mode)) throw new Error('Unsupported audition setup');
   const missing = data.tracks.filter(t => !catalog.some(i => i.id === t.asset) && !buffers.has(t.asset));
-  if (missing.length) throw new Error('Reselect missing imported audio before loading: ' + missing.map(t => t.asset).join(', '));
+  if (missing.length) throw new Error('Setup uses missing or retired recordings; load a revised drive: ' + missing.map(t => t.asset).join(', '));
   for (const t of data.tracks) {
     if (!Number.isInteger(t.stage) || t.stage < 0 || t.stage > 5 || !Number.isFinite(t.volume) || t.volume < 0 || t.volume > 1 || !Number.isFinite(t.trimStart) || !Number.isFinite(t.trimEnd) || t.trimStart < 0 || t.trimEnd - t.trimStart < .02) throw new Error('Invalid track settings');
   }
@@ -351,7 +351,7 @@ for (const [label, choice] of [['R2 · All A', 1], ['R2 · All B', 2], ['R2 · N
 }
 $('pair').before(iterationControls);
 let previousR3 = [];
-for (const [label, choice] of [['R3 · New drive', 0], ['All A', 1], ['All B', 2], ['All C', 3]]) {
+for (const [label, choice] of [['Revised · New drive', 0], ['All A', 1], ['All B', 2], ['All C', 3]]) {
   const button = field('button', {className:choice ? 'small' : 'primary', textContent:label});
   button.dataset.r3 = choice;
   button.onclick = guard(async () => {

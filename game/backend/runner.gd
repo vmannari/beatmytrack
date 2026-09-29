@@ -107,8 +107,9 @@ func compile_track(doc: Dictionary) -> Dictionary:
 	return {"track":track,"manifest":info}
 
 func replay_error(replay: Variant) -> String:
-	if not replay is Dictionary or replay.size() != 2 or replay.get("schema") != REPLAY_SCHEMA or not replay.get("frames") is Array:
+	if not replay is Dictionary or not replay.get("frames") is Array:
 		return "Unsupported replay envelope"
+	if not ((replay.size() == 2 and replay.get("schema") == REPLAY_SCHEMA) or (replay.size() == 3 and replay.get("schema") == "bmt-replay-v2" and replay.get("rewinds") is Array)): return "Unsupported replay envelope"
 	if replay.frames.is_empty() or replay.frames.size() > MAX_FRAMES: return "Replay frame count outside bounds"
 	for frame: Variant in replay.frames:
 		if not frame is Array or frame.size() != 3: return "Malformed quantized frame"
@@ -116,6 +117,22 @@ func replay_error(replay: Variant) -> String:
 			if not number(value) or float(value) != floorf(float(value)): return "Replay inputs must be quantized integers"
 		if frame[0] < -127 or frame[0] > 127 or frame[1] < 0 or frame[1] > 255 or frame[2] < 0 or frame[2] > 255:
 			return "Replay input outside quantized range"
+	var offset: int = 0
+	var tick: int = 0
+	var receipts: Array = []
+	var events: Array = replay.get("rewinds",[])
+	if events.size() > 3 or (replay.schema == "bmt-replay-v2" and events.is_empty()): return "One to three rewinds required"
+	for event: Variant in events:
+		if not event is Dictionary or event.size() != 4: return "Malformed rewind"
+		if not event.get("receipt_id") is String or event.receipt_id.length() != 36 or event.receipt_id in receipts: return "Invalid resume receipt"
+		receipts.append(event.receipt_id)
+		for key: String in ["input_offset","from_tick","to_tick"]:
+			if not number(event.get(key)) or float(event[key]) != floorf(float(event[key])): return "Invalid rewind tick"
+		if event.input_offset <= offset or event.input_offset >= replay.frames.size(): return "Invalid rewind input offset"
+		if event.from_tick != tick+int(event.input_offset)-offset: return "Invalid rewind timeline"
+		if event.to_tick < 0 or event.from_tick-event.to_tick < 1 or event.from_tick-event.to_tick > 2400: return "Rewind exceeds 20 seconds"
+		offset = int(event.input_offset)
+		tick = int(event.to_tick)
 	return ""
 
 func initial_simulation(track: NativeTrack, vehicle: String) -> VehicleSimulation:
@@ -133,9 +150,31 @@ func initial_simulation(track: NativeTrack, vehicle: String) -> VehicleSimulatio
 func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dictionary) -> void:
 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
 	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
+	session._configure(track)
 	var lap_ticks: Array[int] = []
 	var last_lap_tick: int = 0
+	var events: Array = replay.get("rewinds",[])
+	var targets: Array[int] = []
+	for event: Dictionary in events: targets.append(int(event.to_tick))
+	var saved: Dictionary = {}
+	var next_event: int = 0
+	var offset: int = 0
 	for values: Array in replay.frames:
+		if sim.state.tick in targets:
+			saved[sim.state.tick] = {"state":RewindHistory.properties(sim.state),"session":RewindHistory.properties(session,true),"laps":lap_ticks.duplicate(),"last_lap":last_lap_tick}
+		if next_event < events.size() and int(events[next_event].input_offset) == offset:
+			var event: Dictionary = events[next_event]
+			if session.finished or sim.state.tick != int(event.from_tick) or not saved.has(int(event.to_tick)):
+				respond({},"Cannot rewind this race state"); return
+			var checkpoint: Dictionary = saved[int(event.to_tick)]
+			RewindHistory.restore(sim.state,checkpoint.state)
+			RewindHistory.restore(session,checkpoint.session)
+			lap_ticks.assign(checkpoint.laps)
+			last_lap_tick = int(checkpoint.last_lap)
+			for key: int in saved.keys():
+				if key > sim.state.tick: saved.erase(key)
+			next_event += 1
+		offset += 1
 		if session.finished:
 			respond({},"Replay contains frames after the race finished")
 			return

@@ -2,6 +2,7 @@ class_name PlaygroundHUD
 extends CanvasLayer
 
 signal restart_requested
+signal rewind_requested
 signal pause_requested
 signal profile_requested(index: int)
 signal handling_menu_opened
@@ -26,6 +27,7 @@ var lap_total: Label
 var race_timer: Label
 var shortcut_penalty_label: Label
 var shortcut_notice_label: Label
+var rewind_button: Button
 var pause_button: Button
 var handling_button: MenuButton
 
@@ -197,6 +199,11 @@ func _ready() -> void:
 		popup.id_pressed.connect(func(id: int) -> void:
 			if id == 0: restart_requested.emit()
 			else: exit_requested.emit())
+	if production_mode and not editor_test:
+		_button(actions,"Rewind · 0 / 3",func() -> void: rewind_requested.emit())
+		rewind_button = actions.get_child(actions.get_child_count()-1) as Button
+		rewind_button.name = "RewindButton"
+		rewind_button.tooltip_text = "Choose a point in the last 20 seconds (Backspace)"
 	var secondary := HBoxContainer.new()
 	secondary.alignment = BoxContainer.ALIGNMENT_END
 	actions.add_child(secondary)

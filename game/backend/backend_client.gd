@@ -196,7 +196,7 @@ func upload_track(name_value: String, document: Dictionary, key: String) -> Dict
 func race_ticket(version_id: String, vehicle_id: String, key: String) -> Dictionary:
 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id},key,true)
 
-func submit_run(ticket_id: String, frames: Array, key: String) -> Dictionary:
+func submit_run(ticket_id: String, frames: Array, key: String, rewinds: Array = []) -> Dictionary:
 	# Godot's JSON parser returns floats, including integers restored from the outbox.
 	# Preserve the strict wire schema without accepting fractional/corrupt controls.
 	var packed: Array = []
@@ -207,7 +207,18 @@ func submit_run(ticket_id: String, frames: Array, key: String) -> Dictionary:
 			if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)): return _failure("INVALID_REPLAY")
 			values.append(int(value))
 		packed.append(values)
-	return await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":{"schema":"bmt-replay-v1","frames":packed}},key,true)
+	var replay: Dictionary = {"schema":"bmt-replay-v1","frames":packed}
+	if not rewinds.is_empty():
+		replay.schema = "bmt-replay-v2"
+		replay.rewinds = []
+		for source: Dictionary in rewinds:
+			var event: Dictionary = {"receipt_id":str(source.get("receipt_id",""))}
+			for field: String in ["input_offset","from_tick","to_tick"]:
+				var value: Variant = source.get(field)
+				if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)): return _failure("INVALID_REPLAY")
+				event[field] = int(value)
+			replay.rewinds.append(event)
+	return await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
 
 func rate_track(version_id: String, score: int, key: String) -> Dictionary:
 	return await request_api("/track-versions/"+version_id.uri_encode()+"/rating",HTTPClient.METHOD_PUT,{"score":score},key,true)

@@ -28,6 +28,16 @@ var finish_sim: VehicleSimulation
 var finish_ticks: int = 0
 var rating_records: LocalRecords
 var online_frames: Array = []
+var online_rewinds: Array = []
+var resume_client: Node
+var resume_ticket_id: String = ""
+var resume_credits: Node
+var rewind_history := RewindHistory.new()
+var rewind_panel: CanvasLayer
+var rewind_origin: Dictionary = {}
+var rewind_choices: Array[Dictionary] = []
+var rewind_selected: int = 0
+var rewind_was_paused: bool = false
 var finish_rating_pending: bool = false
 const FINISH_TICKS: int = 216
 
@@ -165,7 +175,10 @@ func _ready() -> void:
 	add_child(hud)
 	impact_cracks = ImpactCracksEffect.new()
 	add_child(impact_cracks)
-	hud.restart_requested.connect(restart)
+	hud.restart_requested.connect(func() -> void:
+		if production_mode and not editor_test: retry_requested.emit()
+		else: restart())
+	hud.rewind_requested.connect(open_rewind)
 	hud.pause_requested.connect(toggle_pause)
 	hud.profile_requested.connect(select_profile)
 	hud.handling_menu_opened.connect(_open_handling_menu)
@@ -196,6 +209,9 @@ func _ready() -> void:
 	debug_layer.add_child(countdown_label)
 	race_cues = preload("res://ui/race_cues.gd").new()
 	debug_layer.add_child(race_cues)
+	resume_credits = preload("res://platform/resume_credits.gd").new()
+	resume_credits.client = resume_client
+	add_child(resume_credits)
 	restart()
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
@@ -257,6 +273,7 @@ func _physics_process(_delta: float) -> void:
 			lap_telemetry.observe_incidents(track_session, native_track, sim.state, handling)
 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
+		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry)
 		if production_mode and track_session.finished:
 			_begin_finish()
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
@@ -375,6 +392,9 @@ func _process(delta: float) -> void:
 	if profile_enabled:
 		profile_camera_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
+	if hud.rewind_button != null:
+		hud.rewind_button.disabled = countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3
+		hud.rewind_button.text = "Rewind · %d / 3" % online_rewinds.size()
 	hud.set_track(native_track)
 	hud.update_values(presented.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
@@ -402,7 +422,11 @@ func _process(delta: float) -> void:
 
 
 func restart() -> void:
+	if is_instance_valid(rewind_panel): return
 	online_frames.clear()
+	online_rewinds.clear()
+	rewind_history = RewindHistory.new()
+	if resume_credits != null: resume_credits.begin(resume_ticket_id)
 	recorder.active = false
 	driver.clear()
 	frame = DriveFrame.new()
@@ -434,6 +458,9 @@ func restart() -> void:
 		sim.state.track_elevated = native_track.elevated_at(sim.state.position, sim.state.route_index)
 		if CreatorBridges.at_any(native_track.creator_bridges,sim.state.position):
 			sim.state.track_elevated = CreatorBridges.initial_layer(native_track.creator_bridges,sim.state.position,sim.state.heading)
+	if production_mode and not editor_test and native_track != null:
+		track_session._configure(native_track)
+		rewind_history.capture(sim.state,track_session,true,lap_telemetry)
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	trails.clear()
@@ -472,6 +499,7 @@ func _close_handling_menu() -> void:
 
 
 func toggle_pause() -> void:
+	if is_instance_valid(rewind_panel): return
 	if production_mode and not editor_test and track_session.finished: return
 	paused = not paused
 	driver.clear()
@@ -505,8 +533,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if production_mode and not editor_test and track_session.finished and event.is_action_pressed("restart"):
 		retry_requested.emit()
 		return
+	if is_instance_valid(rewind_panel):
+		if event.is_action_pressed("pause"): cancel_rewind()
+		return
+	if event is InputEventKey and event.physical_keycode == KEY_BACKSPACE:
+		open_rewind()
+		return
 	if event.is_action_pressed("restart"):
-		restart()
+		if production_mode and not editor_test: retry_requested.emit()
+		else: restart()
 	elif event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("debug_hud"):
@@ -650,3 +685,104 @@ func set_contact_lighting_enabled(enabled: bool) -> void:
 	contact_lighting_enabled = enabled
 	for effect: Node3D in get_tree().get_nodes_in_group("contact_lighting"):
 		if is_ancestor_of(effect): effect.visible = enabled
+
+
+func open_rewind() -> void:
+	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3: return
+	rewind_choices = rewind_history.choices(sim.state.tick)
+	if rewind_choices.is_empty(): return
+	rewind_was_paused = paused
+	paused = true
+	driver.clear()
+	frame = DriveFrame.new()
+	hud.touch.enabled = false
+	hud.hide()
+	trails.hide()
+	sand_dust.hide()
+	rewind_origin = {"state":RewindHistory.properties(sim.state),"session":RewindHistory.properties(track_session,true)}
+	rewind_panel = preload("res://ui/rewind_panel.gd").new()
+	add_child(rewind_panel)
+	rewind_panel.selected.connect(preview_rewind)
+	rewind_panel.cancelled.connect(cancel_rewind)
+	rewind_panel.confirmed.connect(confirm_rewind)
+	rewind_panel.slider.max_value = rewind_choices.size()-1
+	rewind_selected = maxi(0,rewind_choices.size()-31)
+	rewind_panel.slider.value = rewind_selected
+	preview_rewind(rewind_selected)
+	var panel: CanvasLayer = rewind_panel
+	var result: Dictionary = await resume_credits.refresh()
+	if not is_instance_valid(panel) or panel != rewind_panel: return
+	if result.ok: panel.show_balance(result.data,online_rewinds.size())
+	else:
+		panel.status.text = "Could not check resumes: "+str(result.get("error","Connection unavailable"))+". Cancel and retry."
+
+func preview_rewind(index: int) -> void:
+	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
+	rewind_selected = clampi(index,0,rewind_choices.size()-1)
+	rewind_panel.slider.set_value_no_signal(rewind_selected)
+	var item: Dictionary = rewind_choices[rewind_selected]
+	RewindHistory.restore(sim.state,item.state)
+	RewindHistory.restore(track_session,item.session)
+	previous_position = sim.state.position
+	previous_heading = sim.state.heading
+	camera.follow(sim.state.position,sim.state.velocity,sim.state.heading,0.0,true)
+	rewind_panel.details.text = "−%.1f s   ·   Lap %d   ·   %.2f s" % [(int(rewind_origin.state.tick)-sim.state.tick)/120.0,track_session.completed_laps+1,track_session.race_time_seconds()]
+
+func cancel_rewind() -> void:
+	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
+	if not resume_credits.pending.is_empty():
+		exit_requested.emit()
+		return
+	RewindHistory.restore(sim.state,rewind_origin.state)
+	RewindHistory.restore(track_session,rewind_origin.session)
+	_close_rewind(rewind_was_paused)
+
+func confirm_rewind() -> void:
+	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
+	var target: Dictionary = rewind_choices[rewind_selected]
+	var from_tick: int = int(rewind_origin.state.tick)
+	rewind_panel.set_busy(true)
+	rewind_panel.status.text = "Confirming resume…"
+	var result: Dictionary = await resume_credits.consume(from_tick,int(target.tick),online_frames.size())
+	if not is_instance_valid(rewind_panel): return
+	if not result.ok:
+		rewind_panel.set_busy(false)
+		rewind_panel.status.text = str(result.get("error","Connection unavailable"))
+		if not resume_credits.pending.is_empty():
+			rewind_panel.slider.editable = false
+			rewind_panel.cancel.text = "Leave race"
+			rewind_panel.status.text += " · Retry to resolve the pending resume, or leave. It may already be spent."
+		return
+	online_rewinds.append({"receipt_id":str(result.data.receipt_id),"input_offset":online_frames.size(),"from_tick":from_tick,"to_tick":int(target.tick)})
+	RewindHistory.restore(sim.state,target.state)
+	RewindHistory.restore(track_session,target.session)
+	RewindHistory.restore(lap_telemetry,target.telemetry)
+	rewind_history.branch(int(target.tick))
+	trails.clear()
+	sand_dust.clear()
+	impact_cracks.clear_effect()
+	car.last_tick = -1
+	car.ramp_tick = -1
+	car.wheel_last_tick = -1
+	car.suspension = Vector3.ZERO
+	car.suspension_speed = Vector3.ZERO
+	checkpoint_marker.previous_gate = -2
+	if music != null: music.start(native_track)
+	_close_rewind(false)
+
+func _close_rewind(stay_paused: bool) -> void:
+	remove_child(rewind_panel)
+	rewind_panel.queue_free()
+	rewind_panel = null
+	rewind_origin = {}
+	rewind_choices.clear()
+	previous_position = sim.state.position
+	previous_heading = sim.state.heading
+	camera.follow(sim.state.position,sim.state.velocity,sim.state.heading,0.0,true)
+	driver.clear()
+	frame = DriveFrame.new()
+	paused = stay_paused
+	hud.show()
+	hud.touch.enabled = not paused
+	trails.show()
+	sand_dust.show()

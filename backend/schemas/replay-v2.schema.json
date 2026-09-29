@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Beat my track replay with authorized rewinds",
+  "description": "Chronological input, including discarded branches. Each rewind occurs after input_offset frames, restoring the state at to_tick. Cross-field timeline bounds and race-bound receipts are validated by the API and canonical verifier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "frames", "rewinds"],
+  "properties": {
+    "schema": {"const": "bmt-replay-v2"},
+    "frames": {
+      "type": "array", "minItems": 1, "maxItems": 216000,
+      "items": {
+        "type": "array", "minItems": 3, "maxItems": 3,
+        "prefixItems": [
+          {"type": "integer", "minimum": -127, "maximum": 127},
+          {"type": "integer", "minimum": 0, "maximum": 255},
+          {"type": "integer", "minimum": 0, "maximum": 255}
+        ],
+        "items": false
+      }
+    },
+    "rewinds": {
+      "type": "array", "minItems": 1, "maxItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["receipt_id", "input_offset", "from_tick", "to_tick"],
+        "properties": {
+          "receipt_id": {"type": "string", "minLength": 36, "maxLength": 36},
+          "input_offset": {"type": "integer", "minimum": 1, "maximum": 215999},
+          "from_tick": {"type": "integer", "minimum": 1, "maximum": 216000},
+          "to_tick": {"type": "integer", "minimum": 0, "maximum": 215999}
+        }
+      }
+    }
+  }
+}

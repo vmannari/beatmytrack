@@ -1464,6 +1464,8 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
 	game.set("production_mode", true)
+	game.set("resume_client",online.client)
+	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
 	game.set("rating_records", null if track.metadata.has("cloud_version") else records)
 	game.set("editor_test", from_editor)
 	game.connect("exit_requested", _leave_race)
@@ -1502,7 +1504,7 @@ func _results() -> void:
 	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor
 	var online_queued: bool = false
 	if clean and session.finished and not cloud_ticket.is_empty():
-		online_queued = cloud.queue_run(cloud_ticket,game.get("online_frames"),cloud_publish_version)
+		online_queued = cloud.queue_run(cloud_ticket,game.get("online_frames"),cloud_publish_version,game.get("online_rewinds"))
 		if not online_queued:
 			pending_menu_notice = "The race could not be queued for upload. Check free storage."
 		cloud_ticket = {}
@@ -1631,6 +1633,7 @@ func _retry_race() -> void:
 			return
 	root_ui.visible = false
 	(game.get("hud") as PlaygroundHUD).show()
+	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
 	game.call("restart")
 
 static func track_title(track: NativeTrack) -> String:

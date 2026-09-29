@@ -45,6 +45,20 @@ def check(project: Path, binary: str = "godot", fixture: Path | None = None) -> 
         ]:
             raise SystemExit("Canonical replay differs from the pinned Windows regression fixture")
         print(f"Canonical regression fixture passed: {result['time_ticks']} ticks, five laps")
+        # Exercise the versioned rewind envelope in the stripped Linux project,
+        # including restoring ordered gates after a full twenty-second branch.
+        frames = saved["replay"]["frames"]
+        rewind = {
+            "schema": "bmt-replay-v2",
+            "frames": frames[:3600] + frames[1200:],
+            "rewinds": [{
+                "receipt_id": "00000000-0000-0000-0000-000000000001",
+                "input_offset": 3600, "from_tick": 3600, "to_tick": 1200,
+            }],
+        }
+        if verifier.verify_run(saved["document"], rewind, saved["vehicle_id"]) != result:
+            raise SystemExit("Canonical rewind differs from the original race result")
+        print("Canonical twenty-second rewind regression passed")
 
 
 if __name__ == "__main__":

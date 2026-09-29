@@ -63,7 +63,10 @@ def _json_bytes(value: Any, limit: int) -> bytes:
 
 
 def validate_replay(replay: dict) -> None:
-    if type(replay) is not dict or set(replay) != {"schema", "frames"} or replay["schema"] != REPLAY_SCHEMA:
+    if type(replay) is not dict or not (
+        (set(replay) == {"schema", "frames"} and replay.get("schema") == REPLAY_SCHEMA)
+        or (set(replay) == {"schema", "frames", "rewinds"} and replay.get("schema") == "bmt-replay-v2")
+    ):
         raise VerificationError("Unsupported replay envelope")
     frames = replay["frames"]
     if type(frames) is not list or not 1 <= len(frames) <= MAX_FRAMES:
@@ -73,6 +76,28 @@ def validate_replay(replay: dict) -> None:
             raise VerificationError("Each replay frame needs exactly three quantized integers")
         if not -127 <= frame[0] <= 127 or not 0 <= frame[1] <= 255 or not 0 <= frame[2] <= 255:
             raise VerificationError("Replay input outside quantized range")
+
+    events = replay.get("rewinds", [])
+    if type(events) is not list or len(events) > 3 or (replay["schema"] == "bmt-replay-v2" and not events):
+        raise VerificationError("Replay must contain one to three rewinds")
+    offset, tick = 0, 0
+    receipts = set()
+    for event in events:
+        if type(event) is not dict or set(event) != {"receipt_id", "input_offset", "from_tick", "to_tick"}:
+            raise VerificationError("Malformed rewind")
+        receipt = event["receipt_id"]
+        if type(receipt) is not str or len(receipt) != 36 or receipt in receipts:
+            raise VerificationError("Invalid or duplicate resume receipt")
+        receipts.add(receipt)
+        if any(type(event[k]) is not int for k in ("input_offset", "from_tick", "to_tick")):
+            raise VerificationError("Rewind ticks must be integers")
+        if not offset < event["input_offset"] < len(frames):
+            raise VerificationError("Rewind input offsets must increase within replay")
+        if event["from_tick"] != tick + event["input_offset"] - offset:
+            raise VerificationError("Rewind timeline mismatch")
+        if event["to_tick"] < 0 or not 1 <= event["from_tick"] - event["to_tick"] <= 2400:
+            raise VerificationError("Rewind exceeds 20 seconds")
+        offset, tick = event["input_offset"], event["to_tick"]
 
 
 class GodotVerifier:
@@ -180,7 +205,7 @@ class GodotVerifier:
         ticks, laps, milliseconds = result.get("time_ticks"), result.get("lap_ticks"), result.get("time_ms")
         if (
             type(ticks) is not int
-            or ticks != len(replay["frames"])
+            or ticks != len(replay["frames"]) - sum(e["from_tick"] - e["to_tick"] for e in replay.get("rewinds", []))
             or type(milliseconds) is not int
             or milliseconds <= 0
             or type(laps) is not list

@@ -14,7 +14,7 @@ from .storage import LocalBlobStore
 
 
 def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
-    from . import browser_auth, runs, tracks
+    from . import browser_auth, resumes, runs, tracks
     from .verifier import GodotVerifier
 
     settings = settings or Settings.from_env()
@@ -31,6 +31,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.include_router(browser_auth.router, prefix="/v1")
     app.include_router(tracks.router, prefix="/v1")
     app.include_router(runs.router, prefix="/v1")
+    app.include_router(resumes.router, prefix="/v1")
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, _error):
@@ -54,7 +55,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         try:
             with app.state.engine.connect() as connection:
                 revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                if revision != "0005_unique_username":
+                if revision != "0006_resumes":
                     raise HTTPException(503, "SCHEMA_NOT_READY")
             app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
         except (SQLAlchemyError, OSError) as exc:
@@ -72,6 +73,8 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "development_auth": settings.dev_auth_enabled,
             "track_schema": "creator-track-v5",
             "replay_schema": "bmt-replay-v1",
+            "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2"],
+            "rewind_policy": "rewind-1",
             "verification": "canonical-replay",
             "max_request_bytes": settings.max_body_bytes,
         }

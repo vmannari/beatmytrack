@@ -23,7 +23,7 @@ SCRIPTS = {
     ),
     "input": ("drive_frame", "route_driver"),
     "persistence": ("track_library",),
-    "race": ("race_rules", "track_session"),
+    "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry"),
     "track": (
         "builtin_tracks",
         "creator_bridges",

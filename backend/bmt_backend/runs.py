@@ -162,21 +162,12 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
 
 
 def validate_replay(replay: dict) -> None:
-    if set(replay) != {"schema", "frames"} or replay.get("schema") != "bmt-replay-v1":
-        raise HTTPException(422, "Expected bmt-replay-v1 schema and frames only")
-    frames = replay.get("frames")
-    if not isinstance(frames, list) or not 1 <= len(frames) <= MAX_FRAMES:
-        raise HTTPException(422, "Replay must contain 1..216000 input frames")
-    for frame in frames:
-        if (
-            not isinstance(frame, list)
-            or len(frame) != 3
-            or any(type(value) is not int for value in frame)
-            or not (-127 <= frame[0] <= 127 and 0 <= frame[1] <= 255 and 0 <= frame[2] <= 255)
-        ):
-            raise HTTPException(
-                422, "Replay frames must be integer [steer -127..127, throttle 0..255, brake 0..255]"
-            )
+    from .verifier import VerificationError
+    from .verifier import validate_replay as validate
+    try:
+        validate(replay)
+    except VerificationError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @router.post("/runs", status_code=202)
@@ -186,6 +177,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     old = replay_response(session, player.id, "submit_run", key, body)
     if old is not None:
         return old
+    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
     ticket = session.scalar(
         select(RunTicket)
         .where(RunTicket.id == payload.ticket_id, RunTicket.player_id == player.id)
@@ -211,6 +203,8 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
         raise HTTPException(
             429, "Verification queue is full for this player; retry after a pending result completes"
         )
+    from .resumes import validate_receipts
+    validate_receipts(session, ticket.id, payload.replay)
     replay_hash = request.app.state.blobs.put_json(payload.replay)
     if replay_hash != body["replay_hash"]:
         raise HTTPException(503, "Replay storage hash mismatch")

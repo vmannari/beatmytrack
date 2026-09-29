@@ -181,13 +181,13 @@ func upload_draft(document: Dictionary) -> Dictionary:
 func outbox_path() -> String:
 	return cache_root().path_join("players").path_join(str(client.player.get("id","")).sha256_text()).path_join("outbox.json")
 
-func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "") -> bool:
+func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
 	if ticket_data.is_empty() or not client.signed_in(): return false
 	var path: String = outbox_path()
 	var box: Dictionary = _read(path)
 	var jobs: Array = box.get("jobs",[])
 	jobs = jobs.filter(func(job: Dictionary) -> bool: return not job.has("done"))
-	jobs.append({"ticket":ticket_data.ticket_id,"frames":frames,"key":Client.new_idempotency_key(),"publish":publish_version,"publish_key":Client.new_idempotency_key()})
+	jobs.append({"ticket":ticket_data.ticket_id,"frames":frames,"rewinds":rewinds,"key":Client.new_idempotency_key(),"publish":publish_version,"publish_key":Client.new_idempotency_key()})
 	var saved: bool = _write(path,{"jobs":jobs})
 	if saved:
 		status = "Race saved · upload pending"
@@ -211,7 +211,7 @@ func flush_outbox() -> void:
 		if job.has("done") or job.has("failure"): continue
 		var response: Dictionary
 		if not job.has("run_id"):
-			response = await client.submit_run(str(job.ticket),job.frames,str(job.key))
+			response = await client.submit_run(str(job.ticket),job.frames,str(job.key),job.get("rewinds",[]))
 			if not response.ok:
 				if int(response.status) in [400,403,404,409,410,422]: job.failure = str(response.error)
 				status = ("Score upload rejected: " if job.has("failure") else "Score upload pending: ")+str(response.error)

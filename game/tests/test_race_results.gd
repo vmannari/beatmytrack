@@ -49,6 +49,9 @@ func run() -> void:
 	app.set("records",LocalRecords.new(directory.path_join("records.json")))
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	# This local recommendation fixture must not inherit the owner's public cloud cache.
+	app.cloud.root_override = directory.path_join("cloud")
+	app.cloud.load_cached()
 	# Signed-in storage topology: empty private library, existing circuits shared.
 	app.library = TrackLibrary.new(directory.path_join("private_tracks"))
 	app.track_catalog = null

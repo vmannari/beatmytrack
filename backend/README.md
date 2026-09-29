@@ -91,3 +91,10 @@ listening at `localhost:55439`. Its ignored `.tools/backend-postgres.env` contai
 `BMT_TEST_DATABASE_URL` for test discovery. It is stopped when testing finishes;
 restart only that fixture with `wsl -d Ubuntu -- docker start bmt-backend-test` before
 PostgreSQL tests, and stop it afterward. Its credentials are not production settings.
+
+## Administrative Control Room
+
+See [BACKEND_UI.md](../docs/BACKEND_UI.md) for the live `/admin` console, owner/analyst
+configuration, supported workflows, verification and remaining prototype scope.
+The PC launcher generates separate administrator credentials in its ignored env file.
+Production administrator roles are disabled until their distinct keys are configured.

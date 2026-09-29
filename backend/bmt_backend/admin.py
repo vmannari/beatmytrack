@@ -1,0 +1,269 @@
+"""Same-origin administrative console with bounded queries and explicit commands."""
+
+import hmac
+from pathlib import Path
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
+
+from .admin_models import AdminAudit
+from .identity_models import Identity, Player, SessionFamily
+from .resume_models import ResumeGrant, ResumeWallet
+from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
+
+router = APIRouter(tags=["administration"])
+UI = Path(__file__).with_name("admin_ui")
+
+
+def access(request: Request):
+    settings = request.app.state.settings
+    supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
+    for role, key in (("owner", settings.admin_owner_key), ("analyst", settings.admin_analyst_key)):
+        if key and hmac.compare_digest(supplied.encode(), key.encode()):
+            return role
+    raise HTTPException(401, "ADMIN_AUTH_REQUIRED")
+
+
+Access = Annotated[str, Depends(access)]
+
+
+@router.get("/admin", include_in_schema=False)
+@router.get("/admin/", include_in_schema=False)
+def console():
+    return FileResponse(
+        UI / "index.html",
+        headers={
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+@router.get("/admin/assets/{name}", include_in_schema=False)
+def asset(name: str):
+    if name not in ("app.js", "style.css"):
+        raise HTTPException(404)
+    return FileResponse(UI / name)
+
+
+# Explicit projections exclude provider subjects, session secrets and worker lease tokens.
+FIELDS = {
+    "players": (Player, "id display_name disabled needs_username created_at"),
+    "tracks": (
+        TrackVersion,
+        "id track_id number name content_hash state created_at published_at rating_sum rating_count",
+    ),
+    "races": (
+        Run,
+        "id player_id board_id status created_at finished_at attempts time_ticks lap_ticks failure_code replay_hash",
+    ),
+    "jobs": (Run, "id player_id status attempts created_at finished_at failure_code"),
+    "audit": (AdminAudit, "id actor action entity_id reason before after request_id created_at"),
+    "grants": (ResumeGrant, "id player_id source quantity created_at"),
+}
+
+
+def record(kind, row):
+    return {key: getattr(row, key) for key in FIELDS[kind][1].split()}
+
+
+@router.get("/v1/admin/overview")
+def overview(request: Request, role: Access, days: int = Query(7, ge=1, le=90)):
+    since = now() - days * 86400
+    with request.app.state.session_factory() as db:
+        count = lambda model, *where: db.scalar(select(func.count()).select_from(model).where(*where))
+        states = dict(
+            db.execute(
+                select(Run.status, func.count()).where(Run.created_at >= since).group_by(Run.status)
+            ).all()
+        )
+        utc_day = func.floor(Run.created_at / 86400)
+        daily = db.execute(
+            select(utc_day, func.count()).where(Run.created_at >= since).group_by(utc_day)
+        ).all()
+        return {
+            "role": role,
+            "environment": request.app.state.settings.environment,
+            "as_of": now(),
+            "days": days,
+            "players": count(Player),
+            "tracks": count(Track),
+            "versions": count(TrackVersion),
+            "racers": db.scalar(
+                select(func.count(func.distinct(Run.player_id))).where(Run.created_at >= since)
+            ),
+            "states": states,
+            "daily": [{"day": int(day), "count": n} for day, n in daily],
+            "pending": count(Run, Run.status.in_(["queued", "verifying"])),
+            "disabled": count(Player, Player.disabled.is_(True)),
+            "database": "reachable",
+            "schema": "0007_admin_audit",
+        }
+
+
+@router.get("/v1/admin/entities/{kind}")
+def entities(
+    kind: str,
+    request: Request,
+    role: Access,
+    q: str = Query("", max_length=100),
+    state: str = Query("", max_length=32),
+    offset: int = Query(0, ge=0, le=1000000),
+    limit: int = Query(25, ge=1, le=100),
+):
+    if kind not in FIELDS:
+        raise HTTPException(404)
+    model, fields = FIELDS[kind]
+    conditions = []
+    if q:
+        search_fields = [
+            getattr(model, key)
+            for key in fields.split()
+            if key in ("id", "display_name", "name", "player_id", "entity_id")
+        ]
+        conditions.append(or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
+    if state:
+        if kind == "players":
+            if state not in ("active", "disabled"):
+                raise HTTPException(422, "INVALID_STATE")
+            conditions.append(Player.disabled == (state == "disabled"))
+        elif kind in ("races", "jobs", "tracks"):
+            conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
+    with request.app.state.session_factory() as db:
+        total = db.scalar(select(func.count()).select_from(model).where(*conditions))
+        rows = db.scalars(
+            select(model)
+            .where(*conditions)
+            .order_by(model.created_at.desc(), model.id)
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        items = [record(kind, row) for row in rows]
+        if kind == "tracks":
+            tracks = {
+                t.id: t for t in db.scalars(select(Track).where(Track.id.in_([r.track_id for r in rows])))
+            }
+            for item in items:
+                parent = tracks[item["track_id"]]
+                item.update(hidden=parent.hidden, owner_id=parent.owner_id)
+        return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
+@router.get("/v1/admin/entities/{kind}/{entity_id}")
+def detail(kind: str, entity_id: str, request: Request, role: Access):
+    if kind not in FIELDS:
+        raise HTTPException(404)
+    with request.app.state.session_factory() as db:
+        row = db.get(FIELDS[kind][0], entity_id)
+        if row is None:
+            raise HTTPException(404, "ENTITY_NOT_FOUND")
+        result = record(kind, row)
+        if kind == "players":
+            result["providers"] = list(
+                db.scalars(select(Identity.provider).where(Identity.player_id == row.id))
+            )
+            wallet = db.get(ResumeWallet, row.id)
+            result["permanent_resume_balance"] = wallet.balance if wallet else 0
+            result["recent_races"] = [
+                record("races", r)
+                for r in db.scalars(
+                    select(Run)
+                    .where(Run.player_id == row.id)
+                    .order_by(Run.created_at.desc(), Run.id)
+                    .limit(20)
+                )
+            ]
+        if kind == "tracks":
+            parent = db.get(Track, row.track_id)
+            try:
+                document = request.app.state.blobs.get_json(row.content_hash)
+                result["route_preview"] = {
+                    "theme": document.get("theme"),
+                    "points": document.get("points", []),
+                }
+            except (OSError, ValueError):
+                result["route_preview"] = {"unavailable": True}
+            result.update(
+                owner_id=parent.owner_id,
+                hidden=parent.hidden,
+                manifest=row.manifest,
+                creator_test_run_id=row.creator_test_run_id,
+            )
+        if kind == "races":
+            board = db.get(Board, row.board_id)
+            result.update(
+                manifest=board.manifest,
+                vehicle_id=board.vehicle_id,
+                version_id=board.version_id,
+                is_personal_best=db.scalar(
+                    select(func.count()).select_from(PersonalBest).where(PersonalBest.run_id == row.id)
+                )
+                > 0,
+            )
+        return result
+
+
+class Command(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_id: UUID
+    action: Literal["player_restriction", "track_visibility"]
+    entity_id: UUID
+    expected: bool
+    value: bool
+    reason: str = Field(min_length=8, max_length=500)
+    acknowledged: Literal[True]
+
+
+@router.post("/v1/admin/commands")
+def command(body: Command, request: Request, role: Access):
+    if role != "owner":
+        raise HTTPException(403, "OWNER_REQUIRED")
+    if len(body.reason.strip()) < 8:
+        raise HTTPException(422, "REASON_REQUIRED")
+    entity_id, command_id = str(body.entity_id), str(body.command_id)
+    hashed = digest(body.model_dump(mode="json"))
+    model, field = (Player, "disabled") if body.action == "player_restriction" else (Track, "hidden")
+    with request.app.state.session_factory() as db:
+        prior = db.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
+        if prior:
+            if prior.request_hash != hashed:
+                raise HTTPException(409, "COMMAND_ID_REUSED")
+            return {"audit_id": prior.id, "after": prior.after}
+        changed = db.execute(
+            update(model)
+            .where(model.id == entity_id, getattr(model, field) == body.expected)
+            .values(**{field: body.value})
+        )
+        if changed.rowcount != 1:
+            prior = db.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
+            if prior and prior.request_hash == hashed:
+                return {"audit_id": prior.id, "after": prior.after}
+            raise HTTPException(409, "STATE_CHANGED_REFRESH_REQUIRED")
+        if model == Player and body.value:
+            db.execute(update(SessionFamily).where(SessionFamily.player_id == entity_id).values(revoked=True))
+        audit = AdminAudit(
+            command_id=command_id,
+            actor=role,
+            action=body.action,
+            entity_id=entity_id,
+            reason=body.reason.strip(),
+            before={field: body.expected},
+            after={field: body.value},
+            request_hash=hashed,
+            request_id=request.state.request_id,
+        )
+        db.add(audit)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            prior = db.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
+            if prior and prior.request_hash == hashed:
+                return {"audit_id": prior.id, "after": prior.after}
+            raise HTTPException(409, "COMMAND_CONFLICT") from None
+        return {"audit_id": audit.id, "after": audit.after}

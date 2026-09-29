@@ -5,6 +5,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
+    admin_owner_key: str = ""
+    admin_analyst_key: str = ""
     environment: str = "production"
     dev_auth_enabled: bool = False
     dev_auth_key: str = ""
@@ -26,6 +28,13 @@ class Settings:
     write_limit_per_minute: int = 90
 
     def __post_init__(self):
+        for key in (self.admin_owner_key, self.admin_analyst_key):
+            if key and len(key) < 32:
+                raise ValueError("Admin keys require at least 32 characters")
+        if self.admin_owner_key and self.admin_owner_key in (self.admin_analyst_key, self.dev_auth_key):
+            raise ValueError("Admin keys must be separate credentials")
+        if self.admin_analyst_key and self.admin_analyst_key == self.dev_auth_key:
+            raise ValueError("Admin keys must be separate credentials")
         if self.google_web_client_id and self.google_web_client_id not in self.google_client_ids:
             raise ValueError("Google web client ID must also be in BMT_GOOGLE_CLIENT_IDS")
         for name in (

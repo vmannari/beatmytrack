@@ -27,6 +27,11 @@ def local_configuration():
     )
     if len(config.get("BMT_DEV_AUTH_KEY", "")) < 32:
         raise RuntimeError("Invalid private development configuration")
+    for name in ("BMT_ADMIN_OWNER_KEY", "BMT_ADMIN_ANALYST_KEY"):
+        if not config.get(name):
+            config[name] = secrets.token_urlsafe(32)
+            with ENV_FILE.open("a", encoding="utf-8") as output:
+                output.write(f"\n{name}={config[name]}\n")
     return config
 
 

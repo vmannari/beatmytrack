@@ -14,7 +14,7 @@ from .storage import LocalBlobStore
 
 
 def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
-    from . import browser_auth, resumes, runs, tracks
+    from . import admin, browser_auth, resumes, runs, tracks
     from .verifier import GodotVerifier
 
     settings = settings or Settings.from_env()
@@ -27,6 +27,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
     app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory)
+    app.include_router(admin.router)
     app.include_router(auth.router, prefix="/v1")
     app.include_router(browser_auth.router, prefix="/v1")
     app.include_router(tracks.router, prefix="/v1")
@@ -55,7 +56,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         try:
             with app.state.engine.connect() as connection:
                 revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                if revision != "0006_resumes":
+                if revision != "0007_admin_audit":
                     raise HTTPException(503, "SCHEMA_NOT_READY")
             app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
         except (SQLAlchemyError, OSError) as exc:

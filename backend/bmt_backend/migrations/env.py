@@ -1,7 +1,7 @@
 from alembic import context
 from sqlalchemy import text
 
-from bmt_backend import identity_models, resume_models, track_models  # noqa: F401
+from bmt_backend import admin_models, identity_models, resume_models, track_models  # noqa: F401
 from bmt_backend.db import Base
 
 engine = context.config.attributes["engine"]

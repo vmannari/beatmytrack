@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 B01-B07/B18/B21/B23/B28/RW01-RW08/V03/Q01: owner-supplied backend concept implemented as a live Control Room at /admin: searchable players/tracks/races, pinned evidence, real operational counts, resume grants, owner/analyst authorization and atomic audited restriction/visibility commands. PC stack migrated to 0007; 177 backend tests pass / 6 expected skips, PostgreSQL concurrency and desktop/mobile-width browser checks pass. No physical-phone test or production deployment; unsupported prototype services remain explicitly unavailable. See docs/BACKEND_UI.md for commands, screenshots, scope and acceptance.
+
 2026-09-29 RW09-RW11/V03/R01/B19/Q01: reference-inspired rewind screen with gold timeline/transport, live endpoint, minimap and actual blue history cars. Resume uses a 300 ms fixed-step pacing ramp; Cancel uses only 60 ms camera easing and leaves simulation/input at full speed. Rewind 40, graphical 43 and driving 74 checks pass; real HTTP/outbox rewind verification retains 12,757 ticks. Desktop captures inspected; no phone attached, Android export or device test. See docs/REWIND.md for commands, evidence and remaining feel/device acceptance.
 
 2026-09-29 V01/V04/Q01: owner-requested clearer kerb suspension adds independent tyre travel and stronger body pitch/roll without changing simulation. Suspension 59, driving 74 and graphical kerb 40 checks pass; desktop crossing inspected. No Android export/device test; in-motion owner acceptance remains. See [KERB_SUSPENSION.md](KERB_SUSPENSION.md).

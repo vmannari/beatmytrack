@@ -177,7 +177,7 @@ def test_postgres_migration_second_pass_preserves_schema_and_data(postgres_auth)
     upgrade(app.state.engine)
     assert inspect(app.state.engine).get_table_names() == before
     with app.state.engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006_resumes"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007_admin_audit"
     assert (
         client.get(
             "/v1/me", headers={"Authorization": "Bearer " + signed_in.json()["access_token"]}

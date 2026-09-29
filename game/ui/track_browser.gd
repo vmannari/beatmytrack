@@ -36,6 +36,8 @@ var _working_entry: Dictionary = {}
 var _selection_serial: int = 0
 var _working_serial: int = 0
 var rng := RandomNumberGenerator.new()
+var cloud: Node
+var cloud_status: Label
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -47,7 +49,11 @@ func _ready() -> void:
 	add_child(title_row)
 	var title := MenuStyle.label("TRACKS",34)
 	title_row.add_child(title)
+	if cloud != null:
+		cloud.changed.connect(_cloud_changed)
+		title_row.add_child(_compact_button("Refresh",func() -> void: cloud.refresh()))
 	count_label = MenuStyle.label("Loading…",14,true)
+	if cloud != null: cloud_status = count_label
 	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	count_label.clip_text = true
 	title_row.add_child(count_label)
@@ -78,6 +84,7 @@ func _ready() -> void:
 		state.page = 0
 		_refresh())
 	filters.add_child(discover)
+	for index: int in [1,2,4]: discover.set_item_disabled(index,true)
 	sections["all"] = discover
 	for pair: Array in [["favorites","Favorites"],["saved","My tracks"]]:
 		var id: String = pair[0]
@@ -89,6 +96,14 @@ func _ready() -> void:
 		button.name = "Filter_"+id
 		sections[id] = button
 		filters.add_child(button)
+	var search_kind := OptionButton.new()
+	for caption: String in ["Name or creator","Track name","Creator"]: search_kind.add_item(caption)
+	search_kind.selected = int(state.get("search_kind",0))
+	search_kind.item_selected.connect(func(index: int) -> void:
+		state.search_kind = index
+		state.page = 0
+		_refresh())
+	filters.add_child(search_kind)
 	for field: String in ["search"]:
 		var edit := LineEdit.new()
 		edit.name = "Search_"+field
@@ -122,6 +137,7 @@ func _ready() -> void:
 	sorting.add_icon_item(MenuIcon.texture("sort"),"A-Z")
 	sorting.add_icon_item(MenuIcon.texture("sort"),"User score")
 	sorting.add_icon_item(MenuIcon.texture("sort"),"Playthroughs")
+	sorting.set_item_disabled(2,true)
 	sorting.selected = maxi(0,["name","score","plays"].find(state.get("sort","name")))
 	sorting.item_selected.connect(func(index: int) -> void:
 		state.sort = ["name","score","plays"][index]
@@ -167,9 +183,11 @@ func _compact_button(text: String, action: Callable) -> Button:
 func _load_catalog() -> void:
 	if not is_inside_tree(): return
 	if catalog.indexed_revision == library.revision:
+		if cloud != null: cloud.add_to_catalog(catalog,discovery)
 		loading = false
 		_refresh()
 		_random_on_open()
+		if cloud != null: cloud.refresh()
 		return
 	loading = true
 	catalog.clear_resolved()
@@ -195,10 +213,17 @@ func _load_catalog() -> void:
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
 	catalog.add_shared_tracks()
+	if cloud != null: cloud.add_to_catalog(catalog,discovery)
 	loading = false
 	catalog.indexed_revision = revision
 	_refresh()
 	_random_on_open()
+	if cloud != null: cloud.refresh()
+
+func _cloud_changed() -> void:
+	cloud.add_to_catalog(catalog,discovery)
+	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
+	_refresh()
 
 func _random_on_open() -> void:
 	if state.get("random_on_open",false):
@@ -237,6 +262,7 @@ func _refresh() -> void:
 		empty.custom_minimum_size.y = 166
 		grid.add_child(empty)
 	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
+	if cloud != null: count_label.text += " · "+str(cloud.status)
 	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
 	page_label.text = "%d / %d" % [int(state.page)+1,pages]
 	previous.disabled = int(state.page) == 0
@@ -261,6 +287,18 @@ func _random() -> void:
 
 func _select(entry: Dictionary) -> void:
 	_selection_serial += 1
+	if entry.source == "cloud" and cloud != null:
+		var serial: int = _selection_serial
+		selecting = true
+		race_button.disabled = true
+		_clear(detail)
+		detail.add_child(MenuStyle.label("Downloading track…",18,true))
+		var downloaded: bool = await cloud.download(entry)
+		if not is_inside_tree() or serial != _selection_serial: return
+		if not downloaded:
+			selecting = false
+			notice.emit(cloud.last_error)
+			return
 	_requested_entry = entry
 	var cached: NativeTrack = catalog.cached_track(entry)
 	if cached != null:
@@ -303,6 +341,7 @@ func _start_selection() -> void:
 		notice.emit("The track could not be loaded. Please try again.")
 
 static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
+	if entry.source == "cloud": return {"track":preload("res://backend/cloud_tracks.gd").compile_entry(entry),"draft":{}}
 	var source := TrackLibrary.new(str(entry.get("library_directory", directory)))
 	if entry.source == "builtin": return {"track":NativeTrack.read(entry.path),"draft":{}}
 	var draft: Dictionary = source.load_document(entry.local_id)
@@ -347,6 +386,48 @@ func _finish_selection(result: Dictionary) -> void:
 	selected_track = track
 	track_selected.emit(track)
 	_show_detail()
+	if cloud != null and track.metadata.has("cloud_version"): _load_cloud_detail(track)
+
+func _load_cloud_detail(track: NativeTrack) -> void:
+	var response: Dictionary = await cloud.client.request_api("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+VehicleCatalog.selected.uri_encode())
+	if not is_inside_tree() or track != selected_track: return
+	var standings: Array = []
+	if response.ok:
+		for item: Dictionary in response.data.items:
+			standings.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"race_ms":float(item.time_ticks)*1000.0/120.0})
+	var key: String = records.key_for(track,HandlingSelection.config())
+	discovery.records_by_rules_key[key] = {"friends":standings,"board_error":"" if response.ok else str(response.error)}
+	if response.ok and int(response.data.population) > 0:
+		var board: String = str(response.data.board_id)
+		var histogram: Dictionary = await cloud.client.request_api("/boards/"+board+"/histogram")
+		if not is_inside_tree() or track != selected_track: return
+		if histogram.ok:
+			var bins: Array = []
+			for bin: Dictionary in histogram.data.bins: bins.append(int(bin.count))
+			discovery.records_by_rules_key[key].race_distribution = {"bins":bins,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0}
+		if cloud.client.signed_in():
+			var own: Dictionary = await cloud.client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+			if not is_inside_tree() or track != selected_track: return
+			if own.ok and own.data.player != null:
+				discovery.records_by_rules_key[key].race_ms = float(own.data.player.time_ticks)*1000.0/120.0
+				discovery.records_by_rules_key[key].race_rank = int(own.data.player.rank)
+				discovery.records_by_rules_key[key].population = int(own.data.population)
+				if own.data.faster_than_percent != null: discovery.records_by_rules_key[key].race_top_percent = 100.0-float(own.data.faster_than_percent)
+				if histogram.ok:
+					for index: int in range(histogram.data.bins.size()):
+						var bin: Dictionary = histogram.data.bins[index]
+						if int(own.data.player.time_ticks) >= int(bin.from_ticks) and int(own.data.player.time_ticks) < int(bin.to_ticks_exclusive): discovery.records_by_rules_key[key].race_distribution.player_bin = index
+	_show_detail()
+
+func _open_scores() -> void:
+	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
+	dialog.client = cloud.client
+	dialog.version = str(selected_track.metadata.cloud_version)
+	dialog.vehicle = VehicleCatalog.selected
+	add_child(dialog)
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered()
 
 func _discovery_changed() -> void:
 	_refresh()
@@ -427,7 +508,7 @@ func _show_detail() -> void:
 	name_label.clip_text = true
 	name_label.tooltip_text = title
 	info.add_child(name_label)
-	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator"))),14,true)
+	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("cloud_creator",selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator")))),14,true)
 	creator.clip_text = true
 	info.add_child(creator)
 	var personal := VBoxContainer.new()
@@ -442,12 +523,15 @@ func _show_detail() -> void:
 		if metric == "lap": personal.add_child(HSeparator.new())
 		personal.add_child(MenuStyle.label("Best race time" if metric == "race" else "Best lap",14,true))
 		var milliseconds: int = int(pb.get("race_ms" if metric == "race" else "flying_ms",0))
+		if metric == "race" and snapshot.has("race_ms"): milliseconds = int(snapshot.race_ms)
 		var timer := MenuStyle.label(MenuStyle.time_text(milliseconds/1000.0) if milliseconds > 0 else "--",26)
 		if metric == "race": timer.name = "LibraryBestTime"
 		timer.add_theme_color_override("font_color",MenuStyle.ACCENT)
 		personal.add_child(timer)
 		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
-		personal.add_child(MenuStyle.label("Top %d%%" % ceili(percentile) if percentile >= 0 else "Unranked",12,true))
+		var rank_text: String = "Top %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
+		if metric == "race" and snapshot.has("race_rank"): rank_text = "Rank %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
+		personal.add_child(MenuStyle.label(rank_text,12,true))
 	row.add_child(VSeparator.new())
 	var distribution := VBoxContainer.new()
 	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -469,7 +553,9 @@ func _show_detail() -> void:
 		card.add_child(column)
 		_heading(column,"RACE TIME" if metric == "race" else "BEST LAP","timer")
 		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
-		column.add_child(MenuStyle.label("TOP %d%%" % ceili(percentile) if percentile >= 0 else "Unranked",13,true))
+		var rank_text: String = "TOP %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
+		if metric == "race" and snapshot.has("race_rank"): rank_text = "RANK %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
+		column.add_child(MenuStyle.label(rank_text,13,true))
 		var histogram := TrackDistribution.new()
 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
 		histogram.snapshot = snapshot.get(metric+"_distribution",{})
@@ -481,15 +567,16 @@ func _show_detail() -> void:
 	var friends := VBoxContainer.new()
 	friends.custom_minimum_size.x = 160
 	friends.add_theme_constant_override("separation",8)
+	if selected_track.metadata.has("cloud_version"): friends.add_theme_constant_override("separation",4)
 	row.add_child(friends)
-	_heading(friends,"FRIENDS","friends")
+	_heading(friends,"HIGH SCORES" if selected_track.metadata.has("cloud_version") else "FRIENDS","friends")
 	var standings: Array = snapshot.get("friends",[])
 	var friend_space := Control.new()
 	friend_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	friends.add_child(friend_space)
 	if standings.is_empty():
 		friends.add_child(ResultsIcons.view("friends",44))
-		friends.add_child(MenuStyle.label("No friend records yet",13,true))
+		friends.add_child(MenuStyle.label("No verified scores yet" if selected_track.metadata.has("cloud_version") else "No friend records yet",13,true))
 	else:
 		for index: int in range(mini(3,standings.size())):
 			var friend: Dictionary = standings[index]
@@ -500,7 +587,26 @@ func _show_detail() -> void:
 	challenge.icon = MenuIcon.texture("friends")
 	challenge.add_theme_font_size_override("font_size",17)
 	challenge.tooltip_text = "Friend challenges are not connected yet"
-	friends.add_child(challenge)
+	if selected_track.metadata.has("cloud_version"):
+		challenge.queue_free()
+		var scores_button: Button = MenuStyle.button("High scores",_open_scores)
+		scores_button.custom_minimum_size.y = 44
+		friends.add_child(scores_button)
+		if not str(snapshot.get("board_error","")).is_empty(): friends.add_child(MenuStyle.label("Scores unavailable · retry",12,true))
+		var rating := TrackRating.new()
+		rating.records = records
+		rating.track_id = selected_track.identity
+		rating.cloud_client = cloud.client if cloud != null else null
+		rating.cloud_version = str(selected_track.metadata.cloud_version)
+		rating.cloud_sync = cloud
+		friends.add_child(rating)
+		rating.caption.reparent(friends)
+		rating.caption.clip_text = true
+		rating.caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		rating.caption.add_theme_font_size_override("font_size",12)
+		rating.rated.connect(func() -> void: cloud.refresh())
+		rating.tooltip_text = "Your rating · verified completion required · no self-rating"
+	else: friends.add_child(challenge)
 	race_button.text = "RACE "+title
 	race_button.disabled = false
 	detail_costs = {"preview":0.0}

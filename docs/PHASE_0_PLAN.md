@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 B02–B07/B19/R01/V03/Q01: backend library/cache/search, ratings, per-vehicle high scores, actual replay submission/outbox and verified publishing are integrated into Play/results. Graphical HTTP/worker integration: 47 checks; exact five-lap capture verifies at 12,757 ticks. Existing local files preserved; initial catalog migration choice, physical phone and hosted deployment remain. See CLOUD_TRACKS.md for actual checks and evidence.
+
 2026-09-29 B01/B19/R01/Q01: racing names now have a unique normalized database key, preserving UUID as master identity. Case/whitespace/Unicode-compatible duplicates rejected with actionable UI feedback; concurrent claims tested, pending users choose before sharing, developer name reserved. Migration 0005 preserves both PC profiles. 120 backend, 5 PostgreSQL, 8 focused username tests and 67 native checks pass. No phone/export/production deployment. See docs/UNIQUE_USERNAMES.md.
 
 2026-09-28 B01/B19/V03/Q01: remembered startup now uses a neutral loading screen and enters Home after successful restoration without constructing/flashing login controls. New users and failed restoration retain sign-in. Frame-by-frame native startup assertions passed; loading screenshot inspected. No phone/export/backend change. See docs/REMEMBERED_SIGN_IN.md.

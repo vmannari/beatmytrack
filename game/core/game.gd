@@ -27,6 +27,7 @@ var race_cues: Control
 var finish_sim: VehicleSimulation
 var finish_ticks: int = 0
 var rating_records: LocalRecords
+var online_frames: Array = []
 var finish_rating_pending: bool = false
 const FINISH_TICKS: int = 216
 
@@ -232,6 +233,7 @@ func _physics_process(_delta: float) -> void:
 		profile_start = Time.get_ticks_usec()
 	if demo_capture:
 		frame = DriveFrame.sample(0.7 if sim.state.tick > 190 else 0.0, 1.0, 0.0)
+	if production_mode and not editor_test and online_frames.size() < 216000: online_frames.append(frame.packed())
 	sim.step(frame, yard)
 	if sim.state.collision_count > collisions_before_step:
 		var resolved_impact: Vector2 = sim.state.velocity - velocity_before_step
@@ -396,6 +398,7 @@ func _process(delta: float) -> void:
 
 
 func restart() -> void:
+	online_frames.clear()
 	recorder.active = false
 	driver.clear()
 	frame = DriveFrame.new()

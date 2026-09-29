@@ -7,6 +7,13 @@ signal race_requested(recommendation: Dictionary)
 var results: RaceResults
 var rating_records: LocalRecords
 var rating_track_id: String
+var cloud_client: Node
+var cloud_version: String = ""
+var cloud_sync: Node
+var global_rank: Label
+var global_status: Label
+var standings_busy: bool = false
+var vehicle_id: String = "compact"
 var facts: Dictionary
 var recommendations: Array[Dictionary] = []
 var cards: Array[Button] = []
@@ -147,14 +154,49 @@ func _standings(parent: Control) -> void:
 		var space := Control.new()
 		space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		card.add_child(space)
-		card.add_child(MenuStyle.label("PERCENTILE NOT AVAILABLE",22,true))
-		card.add_child(MenuStyle.label("Global comparison data is not connected yet.",15,true))
+		if not cloud_version.is_empty() and kind == "RACE TIME":
+			global_rank = MenuStyle.label("CHECKING VERIFICATION",22,true)
+			global_status = MenuStyle.label("Your race is checked before entering the board.",15,true)
+			card.add_child(global_rank)
+			card.add_child(global_status)
+		else:
+			card.add_child(MenuStyle.label("PERCENTILE NOT AVAILABLE",22,true))
+			card.add_child(MenuStyle.label("Lap rankings are not available yet." if not cloud_version.is_empty() else "Global comparison data is not connected yet.",15,true))
 		card.add_child(MenuStyle.label("Best flying lap" if kind == "BEST LAP" else "Your completed race time",13,true))
 	if rating_records != null and not results.editor:
 		var rating := TrackRating.new()
 		rating.records = rating_records
 		rating.track_id = rating_track_id
+		rating.cloud_client = cloud_client
+		rating.cloud_version = cloud_version
+		rating.cloud_sync = cloud_sync
 		body.add_child(rating)
+	if not cloud_version.is_empty():
+		call_deferred("_refresh_rank")
+		if cloud_sync != null: cloud_sync.changed.connect(_refresh_rank)
+
+func _refresh_rank() -> void:
+	if standings_busy or not is_instance_valid(global_rank) or cloud_client == null: return
+	if not cloud_client.signed_in():
+		global_rank.text = "OFFLINE RESULT"
+		global_status.text = "Sign in before racing to enter the leaderboard."
+		return
+	standings_busy = true
+	var response: Dictionary = await cloud_client.request_api("/track-versions/"+cloud_version+"/leaderboard?vehicle_id="+vehicle_id.uri_encode())
+	if not is_inside_tree(): return
+	if response.ok and int(response.data.population) > 0:
+		response = await cloud_client.request_api("/boards/"+str(response.data.board_id)+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+		if not is_inside_tree(): return
+		if response.ok and response.data.player != null:
+			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
+			global_status.text = "Verified personal best · "+VehicleCatalog.title(vehicle_id)
+		else:
+			global_rank.text = "AWAITING VERIFIED SCORE"
+			global_status.text = "Uploads retry automatically while signed in."
+	else:
+		global_rank.text = "UNRANKED"
+		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
+	standings_busy = false
 
 func _recommendations() -> void:
 	var panel: VBoxContainer = RaceResults._card(self,10)
@@ -228,8 +270,13 @@ func _recommendations() -> void:
 		star.modulate = MenuStyle.ACCENT if score > 0 else MenuStyle.MUTED
 		star.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		rating_line.add_child(star)
-		rating_line.add_child(MenuStyle.label("%.1f (1)" % score if score > 0 else "\u2014 (0)",14,score == 0))
-		button.tooltip_text = "%.1f (1) — local votes on this device" % score if score > 0 else "Unrated (0) — local votes on this device"
+		if item.entry.get("source") == "cloud":
+			var aggregate: String = "%.1f (%d)" % [float(item.entry.rating_average),int(item.entry.rating_count)] if item.entry.get("rating_average") != null else "Unrated (0)"
+			rating_line.add_child(MenuStyle.label(aggregate,14,int(item.entry.rating_count) == 0))
+			button.tooltip_text = aggregate+" · verified racers"
+		else:
+			rating_line.add_child(MenuStyle.label("%.1f (1)" % score if score > 0 else "\u2014 (0)",14,score == 0))
+			button.tooltip_text = "%.1f (1) — local votes on this device" % score if score > 0 else "Unrated (0) — local votes on this device"
 
 func _actions() -> void:
 	var row := HBoxContainer.new()

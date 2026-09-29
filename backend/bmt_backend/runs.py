@@ -287,6 +287,19 @@ def top(
     }
 
 
+@router.get("/track-versions/{version_id}/leaderboard")
+def version_board(
+    version_id: str, session: BoardDB, vehicle_id: str = Query("compact", max_length=80),
+    offset: int = Query(0, ge=0, le=10000), limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    version = published_version(session, version_id)
+    pinned = board_manifest(version, vehicle_id)
+    board_id = digest({"version_id": version.id, **pinned})
+    if session.get(Board, board_id) is None:
+        return {"board_id": board_id, "manifest": pinned, "population": 0, "items": [], "next_offset": None}
+    return top(board_id, session, offset, limit)
+
+
 @router.get("/boards/{board_id}/around-me")
 def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query(3, ge=1, le=25)) -> dict:
     public_board(session, board_id)

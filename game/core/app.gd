@@ -56,6 +56,10 @@ var profile_root: String
 var guest_records: LocalRecords
 var guest_library: TrackLibrary
 var active_profile: String = ""
+var cloud: Node
+var cloud_ticket: Dictionary = {}
+var cloud_publish_version: String = ""
+var cloud_starting: bool = false
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -121,6 +125,16 @@ func _ready() -> void:
 	online = AccountController.new()
 	online.client.session_path = records.path.get_base_dir().path_join("account_session.cfg")
 	add_child(online)
+	cloud = preload("res://backend/cloud_tracks.gd").new()
+	cloud.client = online.client
+	add_child(cloud)
+	cloud.load_cached()
+	var sync_timer := Timer.new()
+	sync_timer.wait_time = 8.0
+	sync_timer.autostart = true
+	sync_timer.timeout.connect(func() -> void:
+		if not online.busy and not cloud_starting: cloud.flush_outbox())
+	add_child(sync_timer)
 	online.changed.connect(_account_changed)
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
 	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
@@ -134,6 +148,7 @@ func _ready() -> void:
 		if not saved.is_empty():
 			var compiled: NativeTrack = TrackCompiler.compile(saved)
 			if compiled != null: selected_track = compiled
+	elif last.begins_with("cloud_"): _restore_cloud_selection(last)
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 20
 	add_child(menu_layer)
@@ -315,12 +330,23 @@ func _select_player_storage() -> void:
 		if not saved.is_empty():
 			var track: NativeTrack = TrackCompiler.compile(saved)
 			if track != null: selected_track = track
+	elif last.begins_with("cloud_"): _restore_cloud_selection(last)
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
 	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
 	ui_left_handed = bool(records.settings.get("left_handed", false))
 
 func _stamp_creator() -> void:
 	if not document.is_empty(): document["creator"] = library.owner_name
+
+func _restore_cloud_selection(identity: String) -> void:
+	if cloud == null: return
+	var catalog := TrackCatalog.new(library)
+	cloud.add_to_catalog(catalog)
+	for entry: Dictionary in catalog.entries:
+		if entry.id == identity:
+			var track: NativeTrack = catalog.resolve(entry)
+			if track != null: selected_track = track
+			return
 
 func _open_account() -> void:
 	_show_screen("account")
@@ -475,6 +501,7 @@ func _tracks() -> void:
 	browser.library = library
 	_ensure_track_catalog()
 	browser.catalog = track_catalog
+	browser.cloud = cloud
 	browser.discovery = discovery_provider
 	browser.records = records
 	browser.builtin_ids = BUILTIN_IDS
@@ -1385,7 +1412,23 @@ func _own_dialog(dialog: AcceptDialog) -> void:
 var test_return_to_drafts: bool = false
 var test_document_snapshot: Dictionary = {}
 
-func _start_race(track: NativeTrack, from_editor: bool) -> void:
+func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false) -> void:
+	if cloud_starting: return
+	cloud_ticket = {}
+	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
+	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+		cloud_starting = true
+		cloud_ticket = await cloud.ticket(track)
+		cloud_starting = false
+		if cloud_ticket.is_empty():
+			var offline_dialog := ConfirmationDialog.new()
+			offline_dialog.title = "Online race unavailable"
+			offline_dialog.dialog_text = cloud.last_error+"\nRace offline with a local time? This attempt will not enter the online leaderboard."
+			offline_dialog.ok_button_text = "Race offline"
+			_own_dialog(offline_dialog)
+			offline_dialog.confirmed.connect(_start_race.bind(track,from_editor,true))
+			offline_dialog.popup_centered()
+			return
 	returning_to_editor = from_editor
 	test_return_to_drafts = from_editor and screen == "drafts"
 	test_document_snapshot = document.duplicate(true) if from_editor else {}
@@ -1400,7 +1443,7 @@ func _start_race(track: NativeTrack, from_editor: bool) -> void:
 	game = GAME_SCENE.instantiate()
 	game.set("initial_track", track)
 	game.set("production_mode", true)
-	game.set("rating_records", records)
+	game.set("rating_records", null if track.metadata.has("cloud_version") else records)
 	game.set("editor_test", from_editor)
 	game.connect("exit_requested", _leave_race)
 	game.connect("edit_here_requested", _edit_here)
@@ -1436,6 +1479,14 @@ func _results() -> void:
 	var track: NativeTrack = game.get("native_track")
 	var total: float = session.race_time_seconds()
 	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor
+	var online_queued: bool = false
+	if clean and session.finished and not cloud_ticket.is_empty():
+		online_queued = cloud.queue_run(cloud_ticket,game.get("online_frames"),cloud_publish_version)
+		if not online_queued:
+			pending_menu_notice = "The race could not be queued for upload. Check free storage."
+		cloud_ticket = {}
+		cloud_publish_version = ""
+		cloud.flush_outbox()
 	var previous: float = records.best_for(track, game.get("handling"))
 	var previous_lap: float = float(records.records.get(records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
 	var saved: bool = not clean
@@ -1481,6 +1532,17 @@ func _results() -> void:
 	panel.retry_requested.connect(_retry_race)
 	panel.return_requested.connect(_leave_race)
 	center.add_child(panel)
+	if track.metadata.has("cloud_version"):
+		var online_status := Label.new()
+		online_status.name = "CloudRunStatus"
+		online_status.text = cloud.status if online_queued else ("Offline race · local time only" if clean else "Practice · no online score")
+		panel.add_child(online_status)
+		if online_queued:
+			var update_status: Callable = func() -> void:
+				if is_instance_valid(online_status): online_status.text = cloud.status
+			cloud.changed.connect(update_status)
+			online_status.tree_exiting.connect(func() -> void:
+				if cloud.changed.is_connected(update_status): cloud.changed.disconnect(update_status))
 	root_ui.modulate.a = 0.0
 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 
@@ -1490,6 +1552,10 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	page.results = results
 	page.rating_records = records
 	page.rating_track_id = (game.get("native_track") as NativeTrack).identity
+	page.cloud_client = online.client
+	page.cloud_sync = cloud
+	page.vehicle_id = str(game.get("vehicle_id"))
+	page.cloud_version = str((game.get("native_track") as NativeTrack).metadata.get("cloud_version",""))
 	page.facts = results.get_meta("reward_facts",{})
 	_ensure_track_catalog()
 	if track_catalog.indexed_revision != library.revision:
@@ -1497,6 +1563,7 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
 		for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
 		track_catalog.add_shared_tracks()
+		if cloud != null: cloud.add_to_catalog(track_catalog,discovery_provider)
 		track_catalog.indexed_revision = library.revision
 	page.recommendations = RaceRecommendations.suggest(track_catalog,game.get("native_track"))
 	page.back_requested.connect(func() -> void:
@@ -1515,6 +1582,9 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	parent.add_child(page)
 
 func _next_result_race(recommendation: Dictionary) -> void:
+	if recommendation.entry.source == "cloud" and not await cloud.download(recommendation.entry):
+		_notice(cloud.last_error)
+		return
 	var next_track: NativeTrack = track_catalog.resolve(recommendation.entry)
 	if next_track == null:
 		_notice("This track is no longer available. Choose another track.")
@@ -1527,6 +1597,17 @@ func _next_result_race(recommendation: Dictionary) -> void:
 	_start_race(next_track,false)
 
 func _retry_race() -> void:
+	if cloud_starting: return
+	var track: NativeTrack = game.get("native_track")
+	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
+	cloud_ticket = {}
+	if track.metadata.has("cloud_version") and online.client.signed_in():
+		cloud_starting = true
+		cloud_ticket = await cloud.ticket(track)
+		cloud_starting = false
+		if cloud_ticket.is_empty():
+			_notice("Could not start verified retry: "+cloud.last_error)
+			return
 	root_ui.visible = false
 	(game.get("hud") as PlaygroundHUD).show()
 	game.call("restart")
@@ -1783,16 +1864,25 @@ func _complete_draft_test() -> void:
 func _publish_saved_draft(id: String) -> void:
 	var loaded: Dictionary = _read_draft_for_action(id)
 	if loaded.is_empty(): return
-	if library.publish_document(loaded) != OK:
-		_notice(library.last_error)
+	if online != null and online.client.signed_in():
+		var uploaded: Dictionary = await cloud.upload_draft(loaded)
+		if not uploaded.ok:
+			_notice("Upload failed: "+str(uploaded.error))
+			return
+		var response: Dictionary = await online.client.request_api("/me/track-versions/"+str(uploaded.data.version_id)+"/document",HTTPClient.METHOD_GET,{},"",true)
+		if not response.ok:
+			_notice("Could not load the uploaded draft. Please retry.")
+			return
+		var track: NativeTrack = TrackCompiler.compile(response.data)
+		if track == null: return
+		track.metadata["cloud_version"] = str(uploaded.data.version_id)
+		track.metadata["cloud_publish"] = true
+		cloud_publish_version = str(uploaded.data.version_id)
+		selected_track = track
+		_start_race(track,false)
 		return
-	if document.get("id","") == loaded.id:
-		document = {}
-		history.clear()
-		redo_history.clear()
-		editor_view.clear()
-	_show_screen("drafts")
-	_notice("Published to Play on this device. This track is now locked against editing.")
+	_notice("Sign in to publish this track to the cloud. Your draft remains saved locally.")
+	return
 
 func _confirm_delete_draft(id: String, title: String) -> void:
 	var dialog := ConfirmationDialog.new()

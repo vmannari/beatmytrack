@@ -23,13 +23,21 @@ func query(catalog: TrackCatalog, state: Dictionary, favorites: Array) -> Array[
 	var search: String = str(state.get("search","")).strip_edges().to_lower()
 	var feed: String = str(state.get("feed","recommended"))
 	result = result.filter(func(entry: Dictionary) -> bool:
-		if not search.is_empty() and not (str(entry.name)+" "+str(entry.creator)).to_lower().contains(search): return false
+		var search_text: String = str(entry.name)+" "+str(entry.creator)
+		if int(state.get("search_kind",0)) == 1: search_text = str(entry.name)
+		if int(state.get("search_kind",0)) == 2: search_text = str(entry.creator)
+		if not search.is_empty() and not search_text.to_lower().contains(search): return false
 		if state.get("section","all") != "all" or feed == "recommended": return true
 		if not available: return false
 		var stats: Dictionary = track_stats.get(entry.id,{})
 		if feed == "rivals": return is_rival(stats.get("rival",{}))
 		return bool(stats.get({"trending":"trending","friends":"friend_created","new":"new"}.get(feed,""),false)))
 	var sort_key: String = str(state.get("sort","name"))
+	if feed == "new" and state.get("section","all") == "all":
+		result.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
+			if a.get("published_at",0) != b.get("published_at",0): return int(a.get("published_at",0)) > int(b.get("published_at",0))
+			return str(a.id) < str(b.id))
+		return result
 	if sort_key in ["score","plays"]:
 		result.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
 			var first: float = float(track_stats.get(a.id,{}).get(sort_key,-1))

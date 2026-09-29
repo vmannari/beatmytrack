@@ -1,5 +1,9 @@
 # Backend v1: architecture, contract and acceptance
 
+**2026-09-29 client integration:** [CLOUD_TRACKS.md](CLOUD_TRACKS.md) connects Play,
+verified racing, ratings, high scores, publication and a persistent track cache/outbox.
+It supersedes the historical unconnected-adapter statements below.
+
 **Sign-in follow-up:** [ACCOUNT_SIGN_IN.md](ACCOUNT_SIGN_IN.md) supersedes this
 initial checkpoint's statements that menus/authentication are unconnected.
 Google browser sign-in and the fixed `developer` menu option now exist. Other

@@ -6,6 +6,7 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from .db import get_session
 from .identity_models import Player
 from .security import current_player
+from .storage import canonical_json
 from .track_models import (
     Board,
     PersonalBest,
@@ -75,6 +77,13 @@ def _payload(request: Request, session: Session, version: TrackVersion) -> dict:
     track = session.get(Track, version.track_id)
     owner = session.get(Player, track.owner_id)
     return track_payload(version, track, owner.display_name, request.app.state.settings.public_base_url)
+
+
+def discovery_payload(request: Request, version: TrackVersion, track: Track, creator: str) -> dict:
+    result = track_payload(version, track, creator, request.app.state.settings.public_base_url)
+    document = request.app.state.blobs.get_json(version.content_hash)
+    result.update(theme=document.get("theme", "pine"), points=document.get("points", []))
+    return result
 
 
 def _validate_and_store(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
@@ -245,7 +254,7 @@ def discover(
     ).all()
     return {
         "items": [
-            track_payload(v, t, p, request.app.state.settings.public_base_url) for v, t, p in rows[:limit]
+            discovery_payload(request, v, t, p) for v, t, p in rows[:limit]
         ],
         "next_offset": offset + limit if len(rows) > limit else None,
     }
@@ -269,8 +278,21 @@ def public_version(version_id: str, request: Request, session: DB) -> dict:
 
 
 @router.get("/track-versions/{version_id}/document")
-def public_document(version_id: str, request: Request, session: DB) -> dict:
-    return request.app.state.blobs.get_json(published_version(session, version_id).content_hash)
+def public_document(version_id: str, request: Request, session: DB) -> Response:
+    document = request.app.state.blobs.get_json(published_version(session, version_id).content_hash)
+    return Response(canonical_json(document), media_type="application/json")
+
+
+@router.get("/track-versions/{version_id}/rating")
+def own_rating(version_id: str, session: DB, player: Auth) -> dict:
+    version = published_version(session, version_id)
+    rating = session.get(Rating, (version_id, player.id))
+    eligible = session.get(Track, version.track_id).owner_id != player.id and bool(session.scalar(
+        select(PersonalBest.player_id).join(Board).where(
+            Board.version_id == version_id, PersonalBest.player_id == player.id
+        ).limit(1)
+    ))
+    return {"score": rating.score if rating else 0, "eligible": eligible}
 
 
 @router.get("/me/track-versions/{version_id}/document")

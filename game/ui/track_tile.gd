@@ -35,7 +35,7 @@ func _ready() -> void:
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tooltip_text = str(entry.name)+" — "+str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
-	if not draft_mode: tooltip_text += "\n" + rating_text() + " — local votes on this device"
+	if not draft_mode: tooltip_text += "\n" + rating_text() + (" — verified racers" if entry.get("source") == "cloud" else " — local votes on this device")
 	var star := MenuStyle.button("",func() -> void: favorite_requested.emit())
 	star.name = "ToggleFavorite"
 	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
@@ -106,10 +106,13 @@ func _draw() -> void:
 		var rating_width: float = MenuStyle.BODY.get_string_size(rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+32
 		var rating_box := Rect2(size.x-rating_width-9,image_area.end.y-29,rating_width,24)
 		draw_style_box(MenuStyle.box(Color("091720ee"),0),rating_box)
-		draw_texture_rect(MenuIcon.texture("star_filled" if personal_rating > 0 else "star"),Rect2(rating_box.position+Vector2(6,4),Vector2(16,16)),false,MenuStyle.ACCENT if personal_rating > 0 else MenuStyle.MUTED)
-		draw_string(MenuStyle.BODY,rating_box.position+Vector2(27,17),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if personal_rating > 0 else MenuStyle.MUTED)
+		var rated: bool = int(entry.get("rating_count",0)) > 0 if entry.get("source") == "cloud" else personal_rating > 0
+		draw_texture_rect(MenuIcon.texture("star_filled" if rated else "star"),Rect2(rating_box.position+Vector2(6,4),Vector2(16,16)),false,MenuStyle.ACCENT if rated else MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,rating_box.position+Vector2(27,17),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if rated else MenuStyle.MUTED)
 
 func rating_text() -> String:
+	if entry.get("source") == "cloud":
+		return "%.1f (%d)" % [float(entry.rating_average),int(entry.rating_count)] if entry.get("rating_average") != null else "Unrated (0)"
 	return "%.1f (1)" % personal_rating if personal_rating > 0 else "— (0)"
 
 func _draw_terrain(area: Rect2) -> void:

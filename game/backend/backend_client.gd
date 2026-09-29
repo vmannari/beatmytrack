@@ -108,7 +108,7 @@ func _send(path: String, method: HTTPClient.Method, payload: Dictionary, authori
 	var bytes: PackedByteArray = completed[3]
 	var parsed: Variant = {} if bytes.is_empty() else JSON.parse_string(bytes.get_string_from_utf8())
 	if not parsed is Dictionary: return _failure("INVALID_RESPONSE",status)
-	return {"ok":status >= 200 and status < 300,"status":status,"data":parsed,"error":"" if status >= 200 and status < 300 else str(parsed.get("detail","HTTP_ERROR"))}
+	return {"ok":status >= 200 and status < 300,"status":status,"data":parsed,"body":bytes.get_string_from_utf8(),"error":"" if status >= 200 and status < 300 else str(parsed.get("detail","HTTP_ERROR"))}
 
 func _remember(response: Dictionary) -> Dictionary:
 	if not response.ok: return response
@@ -125,6 +125,7 @@ func _remember(response: Dictionary) -> Dictionary:
 	safe.erase("access_token")
 	safe.erase("refresh_token")
 	response.data = safe
+	response.erase("body")
 	return response
 
 func google_challenge() -> Dictionary:
@@ -165,7 +166,9 @@ func development_login(subject: String, display_name: String, development_key: S
 	return response
 
 func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, idempotency_key: String = "", authenticated: bool = false) -> Dictionary:
-	if _busy: return _failure("BUSY")
+	var identity: String = str(player.get("id",""))
+	while _busy: await get_tree().process_frame
+	if authenticated and str(player.get("id","")) != identity: return _failure("ACCOUNT_CHANGED")
 	_busy = true
 	var response: Dictionary = await _send(path,method,payload,authenticated,idempotency_key)
 	if authenticated and response.status == 401 and not _refresh_token.is_empty():
@@ -194,7 +197,17 @@ func race_ticket(version_id: String, vehicle_id: String, key: String) -> Diction
 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id},key,true)
 
 func submit_run(ticket_id: String, frames: Array, key: String) -> Dictionary:
-	return await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":{"schema":"bmt-replay-v1","frames":frames}},key,true)
+	# Godot's JSON parser returns floats, including integers restored from the outbox.
+	# Preserve the strict wire schema without accepting fractional/corrupt controls.
+	var packed: Array = []
+	for frame: Variant in frames:
+		if not frame is Array or frame.size() != 3: return _failure("INVALID_REPLAY")
+		var values: Array[int] = []
+		for value: Variant in frame:
+			if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)): return _failure("INVALID_REPLAY")
+			values.append(int(value))
+		packed.append(values)
+	return await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":{"schema":"bmt-replay-v1","frames":packed}},key,true)
 
 func rate_track(version_id: String, score: int, key: String) -> Dictionary:
 	return await request_api("/track-versions/"+version_id.uri_encode()+"/rating",HTTPClient.METHOD_PUT,{"score":score},key,true)

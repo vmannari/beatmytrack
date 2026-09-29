@@ -112,7 +112,10 @@ func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 	for id: String in favorites: favorite_ids[id] = true
 	for entry: Dictionary in entries:
 		if state.get("section","all") == "favorites" and not favorite_ids.has(entry.id): continue
-		if state.get("section","all") == "saved" and (entry.source != "saved" or entry.get("read_only", false)): continue
+		if state.get("section","all") == "saved":
+			if entry.source == "cloud":
+				if not entry.get("owned",false): continue
+			elif entry.source != "saved" or entry.get("read_only",false): continue
 		if state.get("theme","all") != "all" and entry.theme != state.theme: continue
 		if not name_query.is_empty() and not str(entry.name).to_lower().contains(name_query): continue
 		if not creator_query.is_empty() and not str(entry.creator).to_lower().contains(creator_query): continue
@@ -126,10 +129,12 @@ func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:
 	return result
 
 func load_entry_document(entry: Dictionary) -> Dictionary:
+	if entry.source == "cloud": return preload("res://backend/cloud_tracks.gd").cached_document(entry)
 	var source := TrackLibrary.new(str(entry.get("library_directory", library.directory)))
 	return source.load_document(entry.local_id)
 
 func resolve(entry: Dictionary) -> NativeTrack:
+	if entry.source == "cloud": return preload("res://backend/cloud_tracks.gd").compile_entry(entry)
 	if entry.source == "builtin": return NativeTrack.read(entry.path)
 	var data: Dictionary = load_entry_document(entry)
 	return null if data.is_empty() else TrackCompiler.compile(data)

@@ -150,6 +150,7 @@ func _show_detail() -> void:
 	row.add_child(test)
 	var publish: Button = _action("Publish","publish",func() -> void: publish_requested.emit(str(item.load_id)),true)
 	publish.name = "PublishDraft"
+	publish.tooltip_text = "Upload to the backend, then complete five timed laps for server verification and publication."
 	publish.custom_minimum_size.x = 252
 	publish.disabled = not bool(item.tested)
 	if publish.disabled:

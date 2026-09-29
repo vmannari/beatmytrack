@@ -35,4 +35,38 @@ func _initialize() -> void:
 				if absf(twice_area) > 0.0001: failures += 1
 	if absf(area-30.0) > 0.001: failures += 1
 	print("SHOULDER_TESTS: union area=%f, triangles=%d, failures=%d; nearest-road shading and no overlapping interiors" % [area,polygons.size(),failures])
+	failures += _test_joins()
 	quit(0 if failures == 0 else 1)
+
+func _test_joins() -> int:
+	var failures: int = 0
+	var checks: int = 0
+	for turn: float in [0.0,30.0,-30.0,75.0,-75.0]:
+		var first: Dictionary = RoadPieces.create("straight",Vector2(-28,0))
+		var second: Dictionary = RoadPieces.create("straight",Vector2.ZERO,fposmod(turn,360.0))
+		var pieces: Array = [first,second]
+		var before: Array = pieces.duplicate(true)
+		for margin: float in [0.0,-0.2]:
+			var left: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,0,margin)
+			var right: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,1,margin)
+			var matches: int = 0
+			var visual := NativeTrackVisual.new()
+			for i: int in range(left.polygon.size()):
+				for j: int in range(right.polygon.size()):
+					if left.polygon[i].distance_to(right.polygon[j]) > 0.0001: continue
+					matches += 1
+					var a: Vector2 = visual._roadside_miter(left.polygon,i,left.cuts)
+					var b: Vector2 = visual._roadside_miter(right.polygon,j,right.cuts)
+					checks += 1
+					if a.distance_to(b) > 0.0001: failures += 1
+			visual.free()
+			checks += 3
+			if matches != 2:
+				failures += 1
+				print("JOIN_MISMATCH turn=",turn," margin=",margin," matches=",matches)
+			if Geometry2D.triangulate_polygon(left.polygon).is_empty(): failures += 1
+			if Geometry2D.triangulate_polygon(right.polygon).is_empty(): failures += 1
+		checks += 1
+		if pieces != before: failures += 1
+	print("VISUAL_JOIN_TESTS: %d checks, %d failures; shared road/marking/shoulder endpoints, valid meshes and unchanged authored data" % [checks,failures])
+	return failures

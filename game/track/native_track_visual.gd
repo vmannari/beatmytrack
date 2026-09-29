@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-86"
+const VERSION: String = "track-kit-87"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -238,8 +238,10 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var piece: Dictionary = pieces[index]
 		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
-		var cuts: Array[Dictionary] = _join_cuts(pieces,index)
-		var road_outline: PackedVector2Array = _trim_join_outline(RoadPieces.section_outline(pieces,index),cuts)
+		var road_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index)
+		var marking_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index,-0.20)
+		var cuts: Array[Dictionary] = marking_join.cuts
+		var road_outline: PackedVector2Array = road_join.polygon
 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,3.7 if theme_id == "desert" else 1.8,Geometry2D.JOIN_ROUND):
@@ -247,7 +249,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.16,Geometry2D.JOIN_ROUND):
 			counts[1] += _road_polygon(asphalt,polygon,0.012,points)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
-		for raw_polygon: PackedVector2Array in [_trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)]:
+		for raw_polygon: PackedVector2Array in [marking_join.polygon]:
 			var polygon: PackedVector2Array = raw_polygon
 			for edge: int in range(polygon.size()):
 				if _menu_yield_due():
@@ -302,8 +304,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
 					if dirt or theme_id in ["desert","winter"]: continue
-					_quad(markings,VisualGeometry.world(p-across)+Vector3.UP*0.018,VisualGeometry.world(q-across)+Vector3.UP*0.018,
-						VisualGeometry.world(q+across)+Vector3.UP*0.018,VisualGeometry.world(p+across)+Vector3.UP*0.018)
+					_quad(markings,VisualGeometry.world(p-normal_p*0.085)+Vector3.UP*0.018,VisualGeometry.world(q-normal_q*0.085)+Vector3.UP*0.018,
+						VisualGeometry.world(q+normal_q*0.085)+Vector3.UP*0.018,VisualGeometry.world(p+normal_p*0.085)+Vector3.UP*0.018)
 					counts[2] += 1
 	if winter_sections > 0:
 		_commit_winter_bank(winter_bank,texture,track.half_extent)
@@ -342,6 +344,16 @@ func _on_join_plane(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
 
 
 func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictionary]) -> Vector2:
+	var point: Vector2 = polygon[index]
+	var before: Vector2 = polygon[(index+polygon.size()-1)%polygon.size()]
+	var after: Vector2 = polygon[(index+1)%polygon.size()]
+	if not _on_join_cut(before,point,cuts) and not _on_join_cut(point,after,cuts):
+		return RoadEdges._edge_miter(polygon,index)
+	for cut: Dictionary in cuts:
+		if absf((point-Vector2(cut.point)).dot(cut.normal)) < 0.001:
+			var normal: Vector2 = Vector2(cut.normal).orthogonal()
+			if normal.dot(point-Vector2(cut.point)) < 0: normal = -normal
+			return normal
 	return RoadEdges._roadside_miter(polygon,index,cuts)
 
 

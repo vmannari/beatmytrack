@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 V02/V04/V05/Q01: Curvy angled joins use shared cosmetic quadratic fillets and matching shoulder/marking normals. Sand gaps close and road/white-line corners soften without modifying canonical outlines. Shoulder overlap regression, 55 join checks and 928 surface checks pass; before/after desktop capture inspected. No phone attached/export/device test. See docs/CURVY_JOINS.md.
+
 2026-09-29 RW18-RW19/V03/V04/Q01: cleaner original vector ad icon now sits at the right end of the resume button. Rewind snapshots retain accumulated windshield damage: Resume removes only skipped collisions, while older cracks remain and Cancel restores entry damage. Graphical rewind 57, impact 9, presentation/performance 16 checks and real HTTP replay test pass. Screenshots inspected; no phone attached/export/device test. See docs/REWIND.md for evidence and commands.
 
 2026-09-29 RW16-RW17/V03/B19/Q01: reference resume toolbar adds race-use circles and a ticket/count or ad-icon action. Banked resumes spend first, then daily allowance; the owner-authorized temporary ad path resumes immediately without claiming an ad or adding banked credit. Three/race and ten-second bounds remain server-enforced. Native 44 / graphical 49 checks, focused HTTP/SQLite/PostgreSQL tests and receipt tamper checks pass. Local API restarted healthy. No phone attached/export/device test. See docs/REWIND.md for commands, evidence and integration cutover.

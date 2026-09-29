@@ -9,7 +9,7 @@ Owner scope (latest revision): rewind up to ten seconds, choose where to resume,
 | RW01 | Race HUD Rewind button / Backspace opens a paused world preview. Timeline selects exact saved simulation states at 0.1-second intervals within the last ten seconds, initially at the current state. Cancel restores the original state without spending. |
 | RW02 | Confirm restores vehicle dynamics, collision/hazard/loose-prop state, ordered gates, elapsed time, completed laps and telemetry. The discarded future is removed from selectable history. Presentation trails/particles and impact effects clear on resume. |
 | RW03 | Three confirmed resumes maximum per race across all sources, enforced independently by the scene and backend. Restart is a fresh race contract. |
-| RW04 | One free resume per server UTC day, reset at 00:00 UTC, no accumulation. Spend daily allowance before saved credits. Clock rollback cannot replenish a previously consumed day. UTC is the implementation convention; no timezone was specified by the owner. |
+| RW04 | One free resume per server UTC day, reset at 00:00 UTC, no accumulation. Spend saved credits first, then the daily allowance, then the owner-authorized temporary ad path. Clock rollback cannot replenish a previously consumed day. UTC is the implementation convention; no timezone was specified by the owner. |
 | RW05 | Saved credits do not expire. Internal, transaction-idempotent fulfillment supports `ad` (exactly one), `purchase`, and `award`. No daily ad-grant cap. Provider verification must precede this internal boundary. |
 | RW06 | Authenticated credits use a server clock and PostgreSQL player-row locking. Consumption returns an immutable receipt tied to the race, ordinal and rewind timeline. Retries reuse the same key. No client-facing grant endpoint exists. |
 | RW07 | `bmt-replay-v2` retains all chronological inputs, including discarded branches, plus up to three receipt-bearing rewind events. The API checks every receipt against that race; the engine verifies actual state restoration and the ordered-gate finish. Resumed results use the same leaderboard and canonical handling. |
@@ -21,7 +21,7 @@ On an ambiguous consumption response, the selection stays fixed and Retry repeat
 
 ## Integration and configuration limits
 
-Ad provider, ad placement IDs, store product IDs, resume-pack sizes and prices have not been supplied. **No live ads, billing SDK, purchase flow or provider receipt validation is implemented.** The rewind screen reports ads and packs as unavailable when the wallet is empty; no simulated reward is granted. Provider choice and product configuration remain necessary to complete that part of the request. The internal grant function is not itself proof of an ad or purchase and must only be called by a trusted, verifying adapter or authorized server-side award process.
+Ad provider, ad placement IDs, store product IDs, resume-pack sizes and prices have not been supplied. **No live ads, billing SDK, purchase flow or provider receipt validation is implemented.** The owner now explicitly authorizes an ad-icon action that resumes immediately for free until integration. It issues a race-bound `ad_preview` receipt after banked and daily credits are exhausted; it does not claim an ad was watched or mint a banked reward. Purchases remain unavailable. Provider choice and product configuration remain necessary to complete that part of the request. The internal grant function is not itself proof of an ad or purchase and must only be called by a trusted, verifying adapter or authorized server-side award process.
 
 Database migration `0006_resumes` adds wallets, grants, race sessions and receipts. Existing accounts, tracks, scores and player files are retained. API/worker must run the updated game verifier for v2 submissions. No production deployment is authorized by this implementation.
 
@@ -99,3 +99,27 @@ Actual verification:
 - Ruff on changed Python files: passed. `-Action Doctor`: matching engine/templates, no attached phone. No Android export/device test.
 
 Remaining acceptance: owner touch/feel review, phone safe areas and ghost rendering cost. Ads and billing configuration remain outstanding as described above.
+
+
+## Resource toolbar and temporary ad path (2026-09-29)
+
+**RW16 / V03:** toolbar now follows the supplied reference, with the scrubber/Cancel/play on the left and a separated RESUMES section on the right. Three circular indicators and explicit text show remaining uses in this race. Banked credit displays a ticket icon, USE RESUME and its actual count badge. When the bank is empty, the button shows an ad/clapperboard icon; the daily allowance remains separate. The play circle and resource button perform the same authorized resume and share busy/current-position/race-limit guards.
+
+**RW17 / B19:** use banked credit first, then today's expiring daily allowance. After both are exhausted, the owner-authorized temporary ad path allows immediate resume. Authenticated consumption still uses the serialized, idempotent, race-bound endpoint. Its receipt source is `ad_preview`; no grant is created and balances do not increase. `ads_available` remains false because no ad integration exists, while `ad_preview_available` advertises this distinct temporary capability. Guests use the same fallback after their persisted daily allowance. The ten-second bound, three-resume race cap and leaderboard eligibility remain intact.
+
+Cutover: disable `TEMPORARY_AD_RESUMES` in `backend/bmt_backend/resumes.py` and the guest adapter when integrating real ads; the server wallet capability already controls signed-in availability. Real ad fulfillment must verify provider proof, remain idempotent and grant exactly one credit. The temporary path is not provider verification. Daily-free-first was not assumed: the owner's new banked-first rule is implemented, and today's free allowance is consumed next without being added to the permanent bank.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/platform/resume_credits.gd`, `backend/bmt_backend/resumes.py`, `game/tests/test_rewind.gd`, `backend/tests/test_resumes.py`, `AGENTS.md`, this document and both status documents. No canonical simulation or replay format changes.
+
+Actual verification:
+
+- Pinned `scripts/dev.ps1 -Action TestRewind`: **44 passed**. The initial run correctly exposed the obsolete assertion that an exhausted guest must be denied; replaced it with the new authorized temporary path plus unchanged-balance assertions.
+- `-Action CaptureRewind`: **49 passed**. Inspected banked/ad states and 1280x720 / 960x540 layouts. Real rendered evidence: `build/rewind-banked.png`, `build/rewind.png`, `build/rewind-compact.png`, `build/rewind-current.png`. Capture balances are isolated test data, not grants to a player account.
+- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_resumes.py backend/tests/test_cloud_client.py -q --tb=short -k "not postgres"`: **14 passed, 7 deselected**; real HTTP/outbox verification still passes.
+- Same Python, `-m pytest backend/tests/test_resumes.py -q --tb=short -k postgres`: **6 passed, 1 skipped, 13 deselected**. The skip is the SQLite variant of the PostgreSQL-only concurrency test. Verified concurrent daily/temporary receipts and the three-resume race limit.
+- Extended receipt submission with an actual temporary-ad receipt, then ran `backend/tests/test_resumes.py::test_submission_requires_exact_race_receipts`: **2 passed**, SQLite and PostgreSQL. Tampered/cross-race receipts still reject. Existing Starlette/httpx deprecation warning remains.
+- Ruff checks on changed Python: passed after sorting the added test import. `git diff --check`: passed.
+- Restarted only local `bmt-pc-dev-api-1` to load the bind-mounted receipt policy; `/readyz` returns ready at schema `0007_admin_audit`. No worker/image rebuild, migration, real-player grant/consumption, or production deployment. The disposable PostgreSQL fixture was already running and was left in its original state.
+- `-Action Doctor`: matching engine/templates, **no attached phone**. No Android export or physical-device test.
+
+Remaining acceptance: phone touch/safe-area review and owner visual/feel review. Actual ad provider, product packs and billing integration remain future work; the temporary free path is intentional, not a simulated completed ad.

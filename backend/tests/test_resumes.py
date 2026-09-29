@@ -7,10 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from test_domains import domain, headers, ticket, upload  # noqa: F401
 from test_verifier import race_fixture, real_verifier  # noqa: F401
 
-from bmt_backend.resume_models import ResumeWallet
+from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
 from bmt_backend.resumes import grant_verified
 from bmt_backend.verifier import VerificationError, validate_replay
 
@@ -43,24 +44,27 @@ def test_daily_non_stacking_and_permanent_credits(domain, monkeypatch):
 
     monkeypatch.setattr(api, "now", lambda: 86400 * 100 + 123)
     race = begin(domain)
-    assert grant(domain, 5)["balance"] == 5
+    assert grant(domain, 2)["balance"] == 2
     first = spend(domain, race, key="first-resume")
     assert first.status_code == 200, first.text
-    assert first.json()["wallet"]["free"] == 0
-    assert first.json()["wallet"]["balance"] == 5
+    assert first.json()["wallet"]["free"] == 1
+    assert first.json()["wallet"]["balance"] == 1
     assert spend(domain, race, key="first-resume").json() == first.json()
-    assert spend(domain, race, 2, 240, 120, 0).json()["wallet"]["balance"] == 4
-    assert spend(domain, race, 3, 360, 120, 0).json()["wallet"]["balance"] == 3
+    assert spend(domain, race, 2, 240, 120, 0).json()["wallet"]["balance"] == 0
+    third = spend(domain, race, 3, 360, 120, 0).json()["wallet"]
+    assert third["free"] == 0 and third["balance"] == 0
     assert spend(domain, race, 3, 480, 120, 0).status_code == 409
     monkeypatch.setattr(api, "now", lambda: 86400 * 110 + 1)
     wallet = domain.client.get("/v1/resumes", headers=headers(domain)).json()
-    assert wallet["free"] == 1 and wallet["balance"] == 3
+    assert wallet["free"] == 1 and wallet["balance"] == 0
     assert wallet["reset_at"] == 86400 * 111
     next_race = begin(domain)
-    assert spend(domain, next_race).json()["wallet"]["balance"] == 3
-    # Clock rollback never replenishes an already consumed day.
+    assert spend(domain, next_race).json()["wallet"]["free"] == 0
+    grant(domain, 3)
+    # Clock rollback never replenishes an already consumed day or expires saved credits.
     monkeypatch.setattr(api, "now", lambda: 86400 * 109 + 1)
-    assert domain.client.get("/v1/resumes", headers=headers(domain)).json()["free"] == 0
+    wallet = domain.client.get("/v1/resumes", headers=headers(domain)).json()
+    assert wallet["free"] == 0 and wallet["balance"] == 3
 
 
 def test_grants_are_idempotent_nonexpiring_and_not_client_claimable(domain):
@@ -87,7 +91,7 @@ def test_invalid_or_cross_account_requests_never_spend(domain):
     assert domain.client.get("/v1/resumes", headers=headers(domain)).json()["free"] == 1
     assert spend(domain, race, source=1200, offset=1200).status_code == 200
     other = begin(domain)
-    assert spend(domain, other).status_code == 409
+    assert spend(domain, other).status_code == 200
 
 
 def test_submission_requires_exact_race_receipts(domain):
@@ -95,11 +99,15 @@ def test_submission_requires_exact_race_receipts(domain):
     race = begin(domain, issued["ticket_id"])
     assert begin(domain, issued["ticket_id"]) == race
     receipt = spend(domain, race).json()["receipt_id"]
-    frames = [[0, 255, 0]] * 300
+    ad_receipt = spend(domain, race, 2, 240, 120, 0).json()["receipt_id"]
+    frames = [[0, 255, 0]] * 420
     replay = {
         "schema": "bmt-replay-v2",
         "frames": frames,
-        "rewinds": [{"receipt_id": receipt, "input_offset": 120, "from_tick": 120, "to_tick": 0}],
+        "rewinds": [
+            {"receipt_id": receipt, "input_offset": 120, "from_tick": 120, "to_tick": 0},
+            {"receipt_id": ad_receipt, "input_offset": 240, "from_tick": 120, "to_tick": 0},
+        ],
     }
 
     def submit(value, tid=issued["ticket_id"]):
@@ -123,7 +131,10 @@ def test_postgres_daily_and_race_limit_are_serialized(domain):
     races = [begin(domain) for _ in range(6)]
     with ThreadPoolExecutor(max_workers=6) as pool:
         codes = list(pool.map(lambda race: spend(domain, race).status_code, races))
-    assert codes.count(200) == 1 and codes.count(409) == 5
+    assert codes.count(200) == 6
+    with domain.factory() as session:
+        sources = list(session.scalars(select(ResumeReceipt.source)))
+        assert sources.count("daily") == 1 and sources.count("ad_preview") == 5
     grant(domain, 20)
     race = begin(domain)
     for ordinal in range(1, 4):
@@ -187,3 +198,27 @@ def test_replay_rejects_invalid_rewind_contract(race_fixture, mutation):
         replay["rewinds"][0]["state"] = {}
     with pytest.raises(VerificationError):
         validate_replay(replay)
+
+
+def test_temporary_ad_resumes_are_idempotent_bounded_and_not_banked(domain, monkeypatch):
+    import bmt_backend.resumes as api
+
+    race = begin(domain)
+    assert spend(domain, race).status_code == 200  # daily
+    second = spend(domain, race, 2, 240, 120, 0, key="preview-2")
+    assert second.status_code == 200
+    assert second.json()["wallet"]["balance"] == 0
+    assert second.json()["wallet"]["free"] == 0
+    assert second.json()["wallet"]["ad_preview_available"] is True
+    assert spend(domain, race, 2, 240, 120, 0, key="preview-2").json() == second.json()
+    assert spend(domain, race, 3, 360, 120, 0).status_code == 200
+    assert spend(domain, race, 3, 480, 120, 0).status_code == 409
+    with domain.factory() as session:
+        sources = list(session.scalars(select(ResumeReceipt.source).where(ResumeReceipt.race_id == race)))
+        assert sources.count("daily") == 1 and sources.count("ad_preview") == 2
+    another = begin(domain)
+    monkeypatch.setattr(api, "TEMPORARY_AD_RESUMES", False)
+    assert domain.client.get("/v1/resumes", headers=headers(domain)).json()["ad_preview_available"] is False
+    assert spend(domain, another).status_code == 409
+    monkeypatch.setattr(api, "TEMPORARY_AD_RESUMES", True)
+    assert spend(domain, another).status_code == 200

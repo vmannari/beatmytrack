@@ -76,11 +76,24 @@ func run() -> void:
 		has_after = has_after or int(marker.tick) > game.sim.state.tick
 		recorded_only = recorded_only and int(marker.tick) <= 4000
 	check(has_before and has_after and recorded_only,"ghosts show recorded positions on both sides without future extrapolation")
+	game.rewind_panel.show_balance({"free":0,"balance":3,"ad_preview_available":true},1)
+	check(game.rewind_panel.resume_action.count == 3 and not game.rewind_panel.resume_action.use_ad,"banked button shows ticket icon and actual banked count")
+	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},1)
+	check(game.rewind_panel.resume_action.use_ad and not game.rewind_panel.resume_action.disabled,"empty wallet shows usable temporary ad action")
+	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},3)
+	check(game.rewind_panel.resume_action.disabled and game.rewind_panel.confirm.disabled,"both resume actions enforce the race cap")
+	game.rewind_panel.status.text = ""
+	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},0)
 	if not capture_path.is_empty():
 		await process_frame
 		await process_frame
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(capture_path) == OK,"rewind screenshot saved")
+		game.rewind_panel.show_balance({"free":0,"balance":3,"ad_preview_available":true},1)
+		await process_frame
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-banked.png") == OK,"banked resume button screenshot saved")
 		root.size = Vector2i(960,540)
 		await process_frame
 		await process_frame
@@ -97,7 +110,7 @@ func run() -> void:
 	game.preview_rewind(0)
 	var target: Dictionary = game.rewind_choices[0].duplicate(true)
 	check(int(target.tick) >= 2800,"resume remains within the ten-second window")
-	game.rewind_panel.confirm.pressed.emit()
+	game.rewind_panel.resume_action.pressed.emit()
 	check(game.online_rewinds.size() == 1 and game.resume_credits.used == 1,"confirm spends exactly one resume")
 	check(game.sim.state.tick == target.tick and not game.paused,"resume continues from selected tick")
 	check(RewindHistory.properties(game.track_session,true) == target.session,"resume restores laps, gates and race clock")
@@ -119,7 +132,7 @@ func run() -> void:
 	refreshed = await game.resume_credits.refresh()
 	check(refreshed.data.free == 0,"restarting does not replenish today's free resume")
 	var denied: Dictionary = await game.resume_credits.consume(120,0,120)
-	check(not denied.ok,"second guest daily resume is denied")
+	check(denied.ok and denied.data.wallet.free == 0 and denied.data.wallet.balance == 0,"temporary ad resume works without replenishing daily or saved credits")
 	DirAccess.remove_absolute(guest_path)
 	# A funded adapter exercises the scene's independent three-resume limit.
 	game.resume_credits.queue_free()

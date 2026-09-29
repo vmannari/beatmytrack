@@ -14,6 +14,9 @@ from .track_models import Run, RunTicket, commit_response, now, replay_response
 from .tracks import DB, Auth, Key
 
 router = APIRouter(tags=["resumes"])
+# Owner-authorized bridge until a real rewarded-ad adapter is integrated.
+# These receipts are explicitly not evidence of a watched ad or a banked grant.
+TEMPORARY_AD_RESUMES = True
 
 
 def locked_wallet(session, player_id):
@@ -33,6 +36,7 @@ def wallet_payload(wallet):
         "balance": wallet.balance,
         "reset_at": (day + 1) * 86400,
         "ads_available": False,
+        "ad_preview_available": TEMPORARY_AD_RESUMES,
         "purchases_available": False,
     }
 
@@ -141,12 +145,14 @@ def consume(race_id: str, payload: Consume, session: DB, player: Auth, key: Key)
     if payload.input_offset <= offset or payload.from_tick != tick + payload.input_offset - offset:
         raise HTTPException(422, "Resume does not follow the race input timeline")
     day = now() // 86400
-    if wallet.free_day < day:
-        source = "daily"
-        wallet.free_day = day
-    elif wallet.balance > 0:
+    if wallet.balance > 0:
         source = "balance"
         wallet.balance -= 1
+    elif wallet.free_day < day:
+        source = "daily"
+        wallet.free_day = day
+    elif TEMPORARY_AD_RESUMES:
+        source = "ad_preview"
     else:
         raise HTTPException(409, "No resumes available; daily free resume resets at 00:00 UTC")
     race.used += 1

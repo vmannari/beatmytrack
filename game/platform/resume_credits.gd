@@ -1,6 +1,7 @@
 extends Node
 ## Credits are outside the canonical simulation. Signed-in balances are server owned.
 const Client = preload("res://backend/backend_client.gd")
+const TEMPORARY_AD_RESUMES: bool = true
 var client: Node
 var guest_path: String = "user://guest_resumes.json"
 var wallet: Dictionary = {}
@@ -35,7 +36,7 @@ func refresh() -> Dictionary:
 		wallet = response.data
 	else:
 		var day: int = int(Time.get_unix_time_from_system()) / 86400
-		wallet = {"free":int(int(_guest_data().day) < day),"balance":0,"reset_at":(day+1)*86400,"ads_available":false,"purchases_available":false}
+		wallet = {"free":int(int(_guest_data().day) < day),"balance":0,"reset_at":(day+1)*86400,"ads_available":false,"ad_preview_available":TEMPORARY_AD_RESUMES,"purchases_available":false}
 	return {"ok":true,"data":wallet}
 
 func consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
@@ -69,7 +70,9 @@ func _consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
 		return result
 	var data: Dictionary = _guest_data()
 	var day: int = int(Time.get_unix_time_from_system()) / 86400
-	if int(data.day) >= day: return {"ok":false,"error":"Daily free resume used. Resets at 00:00 UTC."}
+	if int(data.day) >= day:
+		if not TEMPORARY_AD_RESUMES: return {"ok":false,"error":"Daily free resume used. Resets at 00:00 UTC."}
+		return {"ok":true,"data":{"receipt_id":Client.new_idempotency_key().left(36),"wallet":{"free":0,"balance":0,"ads_available":false,"ad_preview_available":true,"purchases_available":false}}}
 	# A guest's local allowance cannot authorize an online leaderboard receipt.
 	var file := FileAccess.open(guest_path+".tmp",FileAccess.WRITE)
 	if file == null: return {"ok":false,"error":"Could not save the daily resume allowance."}
@@ -78,4 +81,4 @@ func _consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
 	var saved: bool = file.get_error() == OK
 	file.close()
 	if not saved or DirAccess.rename_absolute(guest_path+".tmp",guest_path) != OK: return {"ok":false,"error":"Could not save the daily resume allowance."}
-	return {"ok":true,"data":{"receipt_id":Client.new_idempotency_key().left(36),"wallet":{"free":0,"balance":0,"ads_available":false,"purchases_available":false}}}
+	return {"ok":true,"data":{"receipt_id":Client.new_idempotency_key().left(36),"wallet":{"free":0,"balance":0,"ads_available":false,"ad_preview_available":TEMPORARY_AD_RESUMES,"purchases_available":false}}}

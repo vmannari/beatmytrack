@@ -111,3 +111,6 @@ The owner authorizes selecting a resume point within the last 10 seconds, with a
 
 ## Compact rewind override (2026-09-29)
 The owner reduces rewind to ten seconds, opens at the current position, and requests recorded ghosts before and after the selection without extrapolation. A single compact toolbar contains Cancel, the scrubber and a play-shaped Resume action; remove the separate Live button, playback controls and right-side cards. Existing return easing, credit rules and leaderboard eligibility remain. See docs/REWIND.md.
+
+## Resume resource toolbar and temporary ad override (2026-09-29)
+The owner supplies a toolbar with race-resume indicators and a resource button. Banked resumes are consumed first and their count is shown on the ticket button. With no banked resumes, show an ad icon; retain the daily free allowance separately, then allow an immediate free resume until ad integration exists. This explicitly supersedes the earlier unavailable-ad restriction for this temporary path only. Do not claim an ad was watched or mint banked rewards; server receipts identify the temporary source. Ten-second rewind, three resumes per race and leaderboard eligibility remain. See docs/REWIND.md.

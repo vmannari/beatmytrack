@@ -32,9 +32,10 @@ func _cells(bounds: Rect2) -> Array[Vector2i]:
 			result.append(Vector2i(x,y))
 	return result
 
-func emit(tool: SurfaceTool) -> int:
+func emit(tool: SurfaceTool, yield_budget: Callable = Callable()) -> int:
 	var count: int = 0
 	for index: int in range(triangles.size()):
+		if yield_budget.is_valid() and not await yield_budget.call(): return count
 		var source: Dictionary = triangles[index]
 		var fragments: Array[PackedVector2Array] = [source.polygon]
 		var candidates: Dictionary = {}

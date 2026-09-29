@@ -16,6 +16,7 @@ var ground_material: StandardMaterial3D
 var _last_size := Vector2.ZERO
 var _last_pan := Vector2.INF
 var _last_scale: float = -1.0
+var _building: bool = false
 var _visual_track: NativeTrack
 var _visual_cache: Array[Dictionary] = []
 
@@ -87,12 +88,13 @@ func follow_canvas(target: EditorCanvas) -> void:
 
 
 func show_track(data: NativeTrack) -> void:
-	var reuse: bool = visual != null and track != null and _same_ground(track,data)
+	var reuse: bool = not _building and visual != null and _visual_track != null and _same_ground(_visual_track,data)
 	track = data
-	if is_node_ready():
+	if is_node_ready() and not _building:
 		if reuse:
 			visual.refresh_editor_objects(track)
 			_visual_track = track
+			_mark_presented()
 			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 		else:
 			_build_track()
@@ -126,35 +128,56 @@ func _same_ground(before: NativeTrack, after: NativeTrack) -> bool:
 
 
 func _build_track() -> void:
+	if track == null or _building: return
+	var target: NativeTrack = track
+	var candidate: NativeTrackVisual
+	for index: int in range(_visual_cache.size()-1,-1,-1):
+		var entry: Dictionary = _visual_cache[index]
+		if entry.track.content_hash == target.content_hash:
+			candidate = entry.visual
+			_visual_cache.remove_at(index)
+			break
+	if candidate == null:
+		candidate = NativeTrackVisual.new()
+		candidate.editor_preview = true
+		candidate.visible = false
+		world.add_child(candidate)
+		_building = true
+		# Keep the existing scene while the replacement is built in short slices.
+		await candidate.build(target,BridgePresentation.new(target),visual != null)
+		if not is_inside_tree(): return
+		while is_instance_valid(canvas) and canvas.active_pointer != -99:
+			await get_tree().process_frame
+			if not is_inside_tree(): return
+		_building = false
+		if track != target:
+			world.remove_child(candidate)
+			candidate.queue_free()
+			_build_track()
+			return
+	else:
+		world.add_child(candidate)
+		candidate.refresh_editor_objects(target)
 	if visual != null:
 		world.remove_child(visual)
 		_visual_cache.append({"track":_visual_track,"visual":visual})
 		if _visual_cache.size() > 2:
 			var expired: Dictionary = _visual_cache.pop_front()
-			expired.visual.free()
-		visual = null
-	if track != null:
-		var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
-		TrackTheme.apply_lighting(str(track.metadata.get("theme", "pine")),environment,sunlight)
-		environment.background_color = palette[1]
-		ground_material.albedo_color = palette[1]
-		for index: int in range(_visual_cache.size()-1,-1,-1):
-			var entry: Dictionary = _visual_cache[index]
-			if entry.track.content_hash == track.content_hash:
-				visual = entry.visual
-				_visual_cache.remove_at(index)
-				break
-		if visual == null:
-			visual = NativeTrackVisual.new()
-			visual.editor_preview = true
-			world.add_child(visual)
-			visual.build(track, BridgePresentation.new(track))
-		else:
-			world.add_child(visual)
-			# Object-only previews may have temporarily changed these batches.
-			visual.refresh_editor_objects(track)
-		_visual_track = track
+			expired.visual.queue_free()
+	visual = candidate
+	visual.visible = true
+	_visual_track = target
+	var palette: Array[Color] = TrackTheme.palette(str(target.metadata.get("theme", "pine")))
+	TrackTheme.apply_lighting(str(target.metadata.get("theme", "pine")),environment,sunlight)
+	environment.background_color = palette[1]
+	ground_material.albedo_color = palette[1]
+	_mark_presented()
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+func _mark_presented() -> void:
+	if is_instance_valid(canvas):
+		canvas.visual_preview = _visual_track
+		canvas.queue_redraw()
 
 
 func _process(_delta: float) -> void:

@@ -71,11 +71,11 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	if _menu_slices and not is_inside_tree(): return
 	await _build_creator_roads(track)
 	if _menu_slices and not is_inside_tree(): return
-	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): _build_kerbs(track)
+	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): await _build_kerbs(track)
 	await _build_barriers(track)
 	if _menu_slices and not is_inside_tree(): return
 	if editor_preview:
-		refresh_editor_objects(track)
+		await refresh_editor_objects(track,true,_menu_slices)
 	else:
 		await _build_low_cover(track)
 		await _build_placed_objects(track)
@@ -84,7 +84,7 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	_build_snow_banks(track)
 
 
-func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true) -> void:
+func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, sliced: bool = false) -> void:
 	if theme_id == "night_city" and partition_night_ground and get_child_count() > 0 and get_child(0) is MeshInstance3D:
 		# Moving/scaling a lamp in the editor can expose the outer backdrop.
 		(get_child(0) as MeshInstance3D).layers = 2 if _lamps_inside_terrain(track) else 1
@@ -93,6 +93,8 @@ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true) -> v
 		editor_objects.queue_free()
 	editor_objects = NativeTrackVisual.new()
 	editor_objects.editor_preview = true
+	editor_objects._menu_slices = sliced
+	editor_objects._slice_started = Time.get_ticks_usec()
 	editor_objects.theme_id = theme_id
 	editor_objects.colors = colors
 	add_child(editor_objects)
@@ -102,11 +104,14 @@ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true) -> v
 			editor_cover.queue_free()
 		editor_cover = NativeTrackVisual.new()
 		editor_cover.editor_preview = true
+		editor_cover._menu_slices = sliced
+		editor_cover._slice_started = Time.get_ticks_usec()
 		editor_cover.theme_id = theme_id
 		editor_cover.colors = colors
 		add_child(editor_cover)
-		editor_cover._build_low_cover(track)
-	editor_objects._build_placed_objects(track)
+		await editor_cover._build_low_cover(track)
+		if sliced and not is_inside_tree(): return
+	await editor_objects._build_placed_objects(track)
 
 
 func _build_terrain(track: NativeTrack) -> void:
@@ -256,6 +261,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 				var normal_b: Vector2 = _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
 				for step: int in range(steps):
+					if _menu_yield_due():
+						await _yield_build()
+						if not is_inside_tree(): return
 					var p: Vector2 = a.lerp(b,float(step)/steps)
 					var q: Vector2 = a.lerp(b,float(step+1)/steps)
 					var normal_p: Vector2 = normal_a.lerp(normal_b,float(step)/steps)
@@ -301,14 +309,15 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		_commit_winter_bank(winter_bank,texture,track.half_extent)
 		set_meta("winter_smooth_sections",winter_sections)
 		set_meta("winter_deposits",winter_piles.size())
-	shoulder_mesh.emit(shoulders)
+	await shoulder_mesh.emit(shoulders,_yield_build if _menu_slices else Callable())
+	if _menu_slices and not is_inside_tree(): return
 	set_meta("desert_clod_count",sand_clods)
-	_build_kerbs(track)
-	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
-	if counts[1]: _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
-	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
-	if counts[2] and theme_id not in ["desert","winter"]: _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
-	if ground_count: _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
+	await _build_kerbs(track)
+	if counts[0]: await _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
+	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+	if counts[2] and theme_id not in ["desert","winter"]: await _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
+	if ground_count: await _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 
 
 
@@ -539,6 +548,8 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	var flat := SurfaceTool.new()
 	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: int in range(0,vertices.size(),3):
+		if _menu_yield_due():
+			if not await _yield_build(): return
 		var order: Array[int] = [triangle,triangle+1,triangle+2]
 		if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
 			order = [triangle,triangle+2,triangle+1]
@@ -1138,6 +1149,8 @@ func _build_kerbs(track: NativeTrack) -> void:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for triangle: Dictionary in track.kerbs.triangles:
+		if _menu_yield_due():
+			if not await _yield_build(): return
 		var vertices := PackedVector3Array()
 		for i: int in range(3):
 			var point: Vector3 = VisualGeometry.world(triangle.points[i])
@@ -1276,3 +1289,10 @@ func _winter_deposit(tool: SurfaceTool, anchor: Vector2, outward: Vector2, occup
 			tool.set_uv(Vector2(0.70,0.0))
 			tool.set_uv2(Vector2.ZERO)
 			for point: Vector3 in face: tool.add_vertex(point)
+
+func _yield_build() -> bool:
+	if not is_inside_tree(): return false
+	if _menu_yield_due():
+		await get_tree().process_frame
+		_slice_started = Time.get_ticks_usec()
+	return is_inside_tree()

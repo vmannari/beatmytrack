@@ -34,6 +34,7 @@ func run() -> void:
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.snap_enabled = false
+	var approval_started: int = Time.get_ticks_usec()
 	for i: int in range(3):
 		canvas.choose_piece("curve")
 		canvas.ghost = RoadPieces.create("curve",Vector2(-15+i*12,-8))
@@ -53,7 +54,12 @@ func run() -> void:
 		print("ROAD_APPROVAL first_frame_ms=",(Time.get_ticks_usec()-begin)/1000.0)
 	if DisplayServer.get_name() != "headless": root.get_texture().get_image().save_png("res://../build/road-approval-pending.png")
 	var deadline: int = Time.get_ticks_msec()+15000
-	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	var slowest_frame_ms: float = 0.0
+	while (app.get("editor_preview_thread") != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
+		var frame_started: int = Time.get_ticks_usec()
+		await process_frame
+		slowest_frame_ms = maxf(slowest_frame_ms,(Time.get_ticks_usec()-frame_started)/1000.0)
+	print("ROAD_APPROVAL ready_ms=",(Time.get_ticks_usec()-approval_started)/1000.0," slowest_frame_ms=",slowest_frame_ms)
 	check(app.get("editor_preview_thread") == null,"latest background preview completes")
 	check(canvas.pending_road_pieces().is_empty(),"temporary road drawing retires after the detailed scene arrives")
 	var independent: NativeTrack = TrackCompiler.compile(doc)
@@ -89,11 +95,11 @@ func run() -> void:
 	var initial_visual: NativeTrackVisual = world.visual
 	app.call("_redo")
 	deadline = Time.get_ticks_msec()+15000
-	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.get("editor_preview_thread") != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.get("editor_preview_thread") == null,"redo background preview completes")
 	app.call("_undo")
 	deadline = Time.get_ticks_msec()+15000
-	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.get("editor_preview_thread") != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(world.visual == initial_visual,"undo reuses the previously built scenery mesh")
 	check(canvas.native_preview.content_hash == TrackCompiler.compile(app.document).content_hash,"history preview matches independent compiler")
 	check(canvas.preview.surface_texture == null,"3D editor skips the unused CPU map raster")
@@ -104,12 +110,71 @@ func run() -> void:
 	check((app.root_ui.find_child("TrackName",true,false) as Label).text == original_name,"undo refreshes the title without recreating controls")
 	for command: String in ["_redo","_undo","_redo","_undo"]: app.call(command)
 	deadline = Time.get_ticks_msec()+15000
-	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.get("editor_preview_thread") != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.get("editor_preview_thread") == null and canvas.native_preview.content_hash == TrackCompiler.compile(app.document).content_hash,"rapid history supersession installs only the final document")
 	check(app.editor_compiled_cache.size() <= 3 and world._visual_cache.size() <= 2,"history caches stay bounded")
+	await _build_lifecycle(app)
 	app.queue_free()
 	await process_frame
 	for file: String in DirAccess.get_files_at(folder): DirAccess.remove_absolute(folder+"/"+file)
 	DirAccess.remove_absolute(folder)
 	print("ROAD_APPROVAL_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _mesh_signature(node: Node) -> Array:
+	var result: Array = []
+	if node is MeshInstance3D:
+		var instance := node as MeshInstance3D
+		if instance.mesh != null:
+			for surface: int in range(instance.mesh.get_surface_count()):
+				result.append([instance.transform,instance.mesh.surface_get_arrays(surface)])
+	elif node is MultiMeshInstance3D:
+		var instance := node as MultiMeshInstance3D
+		if instance.multimesh != null: result.append([instance.transform,instance.multimesh.buffer])
+	for child: Node in node.get_children(): result.append_array(_mesh_signature(child))
+	return result
+
+func _build_lifecycle(app: Node) -> void:
+	var world: EditorWorld = app.editor_world
+	var canvas: EditorCanvas = app.canvas
+	var previous: NativeTrackVisual = world.visual
+	var next_doc: Dictionary = TrackDocument.create_default()
+	next_doc.pieces = [RoadPieces.create("curve",Vector2(-15,0))]
+	var first: NativeTrack = TrackCompiler.compile(next_doc)
+	world.show_track(first)
+	check(world._building and world.visual == previous,"scenery replacement yields while retaining the complete old scene")
+	var previous_zoom: float = canvas.zoom
+	canvas.zoom_by(1.1)
+	check(canvas.zoom > previous_zoom and world._building,"editor navigation remains usable during scenery construction")
+	next_doc.pieces.append(RoadPieces.create("hairpin",Vector2(0,-20)))
+	var latest: NativeTrack = TrackCompiler.compile(next_doc)
+	world.show_track(latest)
+	var deadline: int = Time.get_ticks_msec()+15000
+	while world._building and Time.get_ticks_msec()<deadline: await process_frame
+	check(not world._building and world._visual_track == latest,"superseded scenery cannot overwrite the newest track")
+	var reference := NativeTrackVisual.new()
+	reference.editor_preview = true
+	reference.visible = false
+	root.add_child(reference)
+	reference.build(latest,BridgePresentation.new(latest))
+	check(_mesh_signature(world.visual) == _mesh_signature(reference),"sliced build preserves every mesh array and transform")
+	reference.free()
+	for theme: String in ["desert","winter"]:
+		next_doc.theme = theme
+		var themed: NativeTrack = TrackCompiler.compile(next_doc)
+		world.show_track(themed)
+		deadline = Time.get_ticks_msec()+15000
+		while world._building and Time.get_ticks_msec()<deadline: await process_frame
+		check(not world._building and world._visual_track == themed,"sliced scenery completes in "+theme)
+		reference = NativeTrackVisual.new()
+		reference.editor_preview = true
+		reference.visible = false
+		root.add_child(reference)
+		reference.build(themed,BridgePresentation.new(themed))
+		check(_mesh_signature(world.visual) == _mesh_signature(reference),"sliced mesh equivalence in "+theme)
+		reference.free()
+	world.show_track(first)
+	check(world._building,"leaving-editor regression starts with active scenery work")
+	app.call("_show_screen","home")
+	for frame: int in range(5): await process_frame
+	check(app.screen == "home","leaving during a sliced build safely cancels the old scene")

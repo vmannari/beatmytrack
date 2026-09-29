@@ -67,6 +67,7 @@ var previous_pointer := Vector2.ZERO
 var preview: TrackMap
 var fitted: bool = false
 var native_preview: NativeTrack
+var visual_preview: NativeTrack
 
 func _ready() -> void:
 	clip_contents = true
@@ -834,7 +835,8 @@ func _move_road(point: Vector2) -> void:
 func pending_road_pieces() -> Array:
 	var pending: Array = []
 	if not world_backdrop or native_preview == null: return pending
-	var compiled: Array = native_preview.metadata.get("creator_document",{}).get("pieces",[])
+	var displayed: NativeTrack = visual_preview if visual_preview != null else native_preview
+	var compiled: Array = displayed.metadata.get("creator_document",{}).get("pieces",[])
 	for index: int in range(document.pieces.size()):
 		if index >= compiled.size() or document.pieces[index] != compiled[index]: pending.append(document.pieces[index])
 	return pending

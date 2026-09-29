@@ -21,7 +21,9 @@ func run() -> void:
 	await process_frame
 	var folder: String = "user://surface_test_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
-	app.set("library",TrackLibrary.new(folder))
+	var library := TrackLibrary.new(folder)
+	library.owner_name = "Surface test"
+	app.set("library",library)
 	var doc: Dictionary = TrackDocument.create_default()
 	app.set("document",doc)
 	app.set("editor_view",{})
@@ -100,6 +102,11 @@ func run() -> void:
 	check(TrackDocument.validate(doc).is_empty(),"area document valid")
 	var track: NativeTrack = TrackCompiler.compile(doc)
 	check(track != null,"surface document compiles")
+	if track == null:
+		print("Surface fixture validation: ",TrackDocument.validate(doc))
+		app.queue_free()
+		quit(1)
+		return
 	var grid := Vector2i(100,100)
 	var cells := PackedInt32Array(); cells.resize(10000); cells.fill(1)
 	var roads := cells.duplicate()

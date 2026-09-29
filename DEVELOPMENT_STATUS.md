@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-29 R01/T01-T04/V04/V05/Q01: reproduced post-approval scenery stall (1143.9 ms frame). Editor replacement scenery now builds in cooperative slices, retains the displayed scene/pending road overlays and swaps after active gestures. Same desktop fixture: 28.8 ms worst frame, 10.9-13.9 ms approval handlers; full detail takes 1.94 s while editing stays responsive. Three-theme mesh equivalence, supersession/exit, workflow, surface, placement and shoulder checks pass. No phone attached/export/device test. See docs/ROAD_APPROVAL_SLICES.md.
+
 2026-09-29 R01/T01-T04/V04/V05/Q01: same-height creator bridge overlaps form drivable elevated junctions with clipped internal rails. Undo/redo preserve the viewport, compile previews asynchronously and reuse bounded track/scenery caches; shape/deletion edits use the same path and skip the unused map raster. Desktop fixture: 45.1 ms undo / 13.3 ms redo versus 1368.6 ms reconstructed synchronous undo. Bridge, replay, editor and raster checks pass; no phone attached, Android export or device test. See docs/BRIDGE_JUNCTIONS_AND_EDITOR_PERFORMANCE.md.
 
 2026-09-29 V02/V04/V05/Q01: Spiral shoulder seams fixed in visual kit 86: continuous sand beneath kerb tips and spatially indexed overlap clipping with nearest-road blend ownership. Focused geometry, 928 surface-profile and 53 desert checks pass; desktop Spiral captures inspected. No phone attached, Android export or device test; mobile mesh/build cost and in-motion acceptance remain. See docs/SPIRAL_SHOULDERS.md.

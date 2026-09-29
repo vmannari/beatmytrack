@@ -43,6 +43,26 @@ func _run() -> void:
 		state.tick += 1
 		car.present_suspension(state, 0.0)
 	check(car.suspension.length() < 0.0001, "body settles after force stops")
+	state.tick += 1
+	car.present_suspension(state, 0.0, true, 1.0)
+	var rough_pose := Vector2(car.body.position.y,car.body.rotation.z)
+	check(rough_pose.length() > 0.001, "off-track contact visibly agitates the sprung body")
+	check(absf(car.body.position.y) <= CarVisual.MAX_SURFACE_HEAVE*1.35 and absf(car.body.rotation.z) <= CarVisual.MAX_SURFACE_ROLL*1.30, "off-track body shake stays subtle and bounded")
+	var canonical_before_rumble: Array = state.snapshot()
+	car.present_suspension(state, 0.0, true, 1.0)
+	check(Vector2(car.body.position.y,car.body.rotation.z) == rough_pose and state.snapshot() == canonical_before_rumble, "off-track body shake is deterministic and presentation-only")
+	car.present_suspension(state, 0.0, true, 0.0)
+	check(absf(car.body.position.y) < 0.0001 and absf(car.body.rotation.z) < 0.0001, "road contact removes the surface shake")
+	state.heading = 0.0
+	car.add_collision_impact(state,Vector2(12.0,0.0))
+	check(car.suspension_speed.z > 0.1 and car.suspension_speed.length() <= CarVisual.MAX_COLLISION_SUSPENSION_SPEED, "side collision adds a bounded suspension roll impulse")
+	var side_kick: float = car.suspension_speed.z
+	car.suspension_speed = Vector3.ZERO
+	car.add_collision_impact(state,Vector2(0.0,12.0))
+	check(car.suspension_speed.y > 0.1 and absf(car.suspension_speed.z) < 0.001, "longitudinal collision adds pitch instead of side roll")
+	car.suspension_speed = Vector3.ZERO
+	car.add_collision_impact(state,Vector2(1.0,0.0))
+	check(car.suspension_speed == Vector3.ZERO and side_kick > 0.1, "minor contact does not disturb suspension")
 	state.velocity = Vector2(0, 20)
 	state.jump_height = 1.0
 	state.jump_velocity = -6.0

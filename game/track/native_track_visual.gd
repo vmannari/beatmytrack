@@ -724,11 +724,7 @@ func _build_barriers(track: NativeTrack) -> void:
 
 
 func _build_low_cover(track: NativeTrack) -> void:
-	if theme_id in ["pine","storm"]:
-		var tufts := GrassTufts.new()
-		add_child(tufts)
-		await tufts.build(track,colors[1],_menu_slices)
-		if _menu_slices and not is_inside_tree(): return
+	# Owner rejected standing grass blades; meadow uses the static surface only.
 	var scenery := SurfaceTool.new()
 	scenery.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var foliage: Color = TrackTheme.foliage(theme_id)

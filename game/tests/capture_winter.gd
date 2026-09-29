@@ -44,6 +44,20 @@ func run() -> void:
 	game.set_physics_process(false)
 	game.set("paused",true)
 	(game.get("race_cues") as Control).hide()
+	var frost_layer: CanvasLayer = game.get("weather_layer")
+	check(frost_layer.get_node_or_null("WinterFrost") != null,"winter screen frost exists")
+	check(frost_layer.layer < (game.get("hud") as CanvasLayer).layer,"frost stays below controls")
+	var frost: TextureRect = frost_layer.get_node("WinterFrost")
+	check(frost.mouse_filter == Control.MOUSE_FILTER_IGNORE,"frost cannot intercept touch")
+	var frost_image: Image = frost.texture.get_image()
+	check(frost_image.get_pixel(frost_image.get_width()/2,frost_image.get_height()/2).a == 0.0,"frost center is transparent")
+	for theme: String in ["pine","desert","storm","winter"]:
+		track.metadata["theme"] = theme
+		game.call("_update_weather")
+		var layer: CanvasLayer = game.get("weather_layer")
+		check((layer != null) == (theme in ["storm","winter"]),"weather lifecycle "+theme)
+		if layer != null:
+			check((layer.get_node_or_null("WinterFrost") != null) == (theme == "winter"),"frost exclusive to winter "+theme)
 	for frame: int in range(8):
 		game.call("_process",0.0)
 		await RenderingServer.frame_post_draw
@@ -66,9 +80,13 @@ func run() -> void:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-finish"
+	var folder: String = "res://../docs/evidence/winter-frost"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
+	root.size = Vector2i(960,540)
+	for frame: int in range(3): await RenderingServer.frame_post_draw
+	check(root.get_texture().get_image().save_png(folder+"/compact.png") == OK)
+	root.size = Vector2i(1280,720)
 	game.set_process(false)
 	var camera: Camera3D = game.get("camera")
 	var focus: Vector3 = Vector3(40,0,0)

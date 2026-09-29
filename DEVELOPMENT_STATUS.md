@@ -2,9 +2,17 @@
 
 2026-09-29 R01/T01-T04/B02/B19/Q01: upload failure traced to the running PC backend still using compiler 19. Rebuilt/restarted API and worker with compiler 20; both accept the same overlapping-bridge fixture/hash. BackendStart now builds/verifies the shared image before replacement. Construction: 102 checks; focused backend: 37 passed. Existing data retained; no production deployment, phone test or export. User upload retry remains. See docs/BACKEND_BRIDGE_VALIDATION.md.
 
+2026-09-29 T01/T04/R01/Q01: editor autosaves are now recovery-only. Closing, starting New or loading another track with unsaved changes asks Save / Discard / Cancel; Save requires a real name and Discard removes only the WIP copy. Script parse and focused creator persistence checks pass. Full TestApp remains blocked by its pre-existing account-screen startup expectation before reaching the new assertions. No Android export or device test. See docs/EDITOR_DRAFT_SAVING.md.
+
 2026-09-29 R01/T01-T04/V04/V05/Q01: reproduced post-approval scenery stall (1143.9 ms frame). Editor replacement scenery now builds in cooperative slices, retains the displayed scene/pending road overlays and swaps after active gestures. Same desktop fixture: 28.8 ms worst frame, 10.9-13.9 ms approval handlers; full detail takes 1.94 s while editing stays responsive. Three-theme mesh equivalence, supersession/exit, workflow, surface, placement and shoulder checks pass. No phone attached/export/device test. See docs/ROAD_APPROVAL_SLICES.md.
 
+2026-09-29 V01/V04/Q01: rear lamps now initialize lit on all five vehicles and stay lit in daylight/night; running emission 0.65, braking 2.2. TestHeadlights and CaptureHeadlights each pass 61 checks. Desktop evidence inspected; no Android export or physical-device test. See docs/REAR_RUNNING_LIGHTS.md.
+
 2026-09-29 R01/T01-T04/V04/V05/Q01: same-height creator bridge overlaps form drivable elevated junctions with clipped internal rails. Undo/redo preserve the viewport, compile previews asynchronously and reuse bounded track/scenery caches; shape/deletion edits use the same path and skip the unused map raster. Desktop fixture: 45.1 ms undo / 13.3 ms redo versus 1368.6 ms reconstructed synchronous undo. Bridge, replay, editor and raster checks pass; no phone attached, Android export or device test. See docs/BRIDGE_JUNCTIONS_AND_EDITOR_PERFORMANCE.md.
+
+2026-09-29 V01/V04/Q01: owner follow-up lowers/deepens the compact rear bumper (bottom 0.435 to 0.320, top 0.630 to 0.600 model units), with a flatter rear-specific wrap to cover the lower valance cleanly. CaptureCompactDetail succeeded with 10 refreshed desktop views; final rear inspected. No physical-device test or Android export. See docs/COMPACT_REAR_FIT.md.
+
+2026-09-29 V01/V04/Q01: compact rear lamps now follow the tapered/chamfered body; bumper moved inward 0.14 model units and hatch handle seated against the hatch. CaptureCompactDetail saved 10 desktop views; rear/high-rear inspected. TestHeadlights passed 56 checks. No Android export or physical-device test performed; owner visual acceptance remains. See docs/COMPACT_REAR_FIT.md.
 
 2026-09-29 V02/V04/V05/Q01: Spiral shoulder seams fixed in visual kit 86: continuous sand beneath kerb tips and spatially indexed overlap clipping with nearest-road blend ownership. Focused geometry, 928 surface-profile and 53 desert checks pass; desktop Spiral captures inspected. No phone attached, Android export or device test; mobile mesh/build cost and in-motion acceptance remain. See docs/SPIRAL_SHOULDERS.md.
 
@@ -14,9 +22,23 @@
 
 2026-09-28 B01/B19/V03/Q01: remembered startup now uses a neutral loading screen and enters Home after successful restoration without constructing/flashing login controls. New users and failed restoration retain sign-in. Frame-by-frame native startup assertions passed; loading screenshot inspected. No phone/export/backend change. See docs/REMEMBERED_SIGN_IN.md.
 
+2026-09-28 V02/V04/V05/Q01: owner rejects lighting-only grass preview; removed prototype shader/capture branch, retaining static meadow without generated blades. Source PNG car pixels were stable but GIF palette conversion changed colours; preview rejected. See docs/GRASS_WIND.md. No Android export/device test.
+
 2026-09-28 B02/B19/R01/Q01: race results now includes shared circuits and loads recommendation documents from their actual source directory, matching Play. Common catalog setup; empty-private/shared-library regression covers cold results, after-Play results and launching the selected shared track. CaptureResults passed 207 checks; screenshot inspected. No phone/export/physics change. See docs/ACCOUNT_OWNERSHIP.md.
 
+2026-09-28 G01/V01/V04/Q01: resolved collision impulses now drive the car's existing visual suspension spring. Side impacts roll the body, longitudinal impacts pitch it and all meaningful impacts briefly compress it; response is bounded and presentation-only. Script parses, suspension 35, driving 74 and track/collision 167 checks pass. No phone/export or subjective in-motion acceptance; see docs/CAMERA_SHAKE.md.
+
+2026-09-28 G01/V01/V04/Q01: off-track travel now adds a subtle speed-scaled heave and roll to the car body, in addition to the existing loose-surface camera rumble. The effect is tick-derived, bounded and presentation-only. Both changed scripts parse; suspension 32, driving 74 and soil 163 checks pass. No phone/export or subjective in-motion acceptance; see docs/CAMERA_SHAKE.md.
+
 2026-09-28 B01-B07/B19/R01/Q01: local ratings, records, preferences and editable track storage now follow stable account identity. Creator names are account-derived and server-stamped; developer races as Beat My Track (migration 0004). Fixed initial visibility regression: all 20 existing PC circuits remain playable as shared content, without inheriting ownership or votes. Native account, records/catalog and actual-PC checks passed; no device test/cloud sync added. See docs/ACCOUNT_OWNERSHIP.md.
+
+2026-09-28 V02/V04/V05/Q01: opt-in lighting-only grass prototype keeps texture coordinates fixed and blades removed; normal angles plus gentle brightness gusts. Default strength zero keeps gameplay static. Knot preview 65 checks and final static capture 21 checks pass. Preview: docs/GRASS_WIND.md. No phone attached/export/device test; awaiting visual review.
+
+2026-09-28 V02/V04/V05/Q01: owner rejects grass wind and blades. Kit 85 removes generated blade batches and restores static meadow colour/normals. Static Knot capture passes 21 checks (zero changed grass/road pixels); surface-profile 928 passes. Screenshot inspected. No phone attached, export or device test. See docs/GRASS_WIND.md; this supersedes both wind revisions.
+
+2026-09-28 V02/V04/V05/Q01: grass wind revision 2 fixes owner-rejected static-looking meadow. Kit 84 animates visible grass pigment/normals plus taller, spread-out blades. Fixed-phase, cloud-isolated driving captures pass 53 fixture/54 Knot checks with 72–74% grass samples moving and zero road samples; surface-profile 928 passes. Evidence and limits: docs/GRASS_WIND.md. No phone attached/export/device test; owner visual acceptance remains.
+
+2026-09-28 V02/V04/V05/Q01: owner-requested stronger grass wind increases tip sway to 45 mm with shared world direction and travelling gusts; density unchanged. CaptureGrass -Screen wind passes 51 checks; desktop frames inspected and animated preview saved. No Android export/device performance test; owner and phone acceptance remain. See docs/GRASS_WIND.md.
 
 2026-09-28 B01/B19/R01/Q01: startup now opens sign-in for guests and restores a server-validated remembered session before entering Home. Rotating refresh token is stored separately from local records; menu account offers logout and clears saved credentials. Native restart/rotation/logout checks and actual-PC account checks passed. See docs/REMEMBERED_SIGN_IN.md; real Google and physical-device acceptance remain.
 
@@ -69,6 +91,8 @@
 2026-09-25 V02/V04/V05/Q01: owner could not see clouds; contact-lighting-2 / kit 80 increases cloud opacity to 24%, reduces patch scale to 18 m and doubles drift speed. CaptureContactShading 45 and quick Android export checks pass. Installed/tested on DN2103: 176.2 m, median 16.555 ms/p95 20.456 ms; desktop/phone captures inspected, normal play restored. Grass only. See docs/CONTACT_LIGHTING.md (Cloud visibility follow-up).
 
 2026-09-25 V02/V04/V05/Q01: contact-lighting-1 / kit 79 adds car and fixed-scenery contact shading, layer-aware bridge under-shadows and Grass-only drifting cloud shadows. CaptureContactShading 44, bridge contacts 16, construction 82, vehicle batch 35 and quick export checks pass. Installed/tested on DN2103: enabled median 16.599/16.675 ms vs hidden 16.622 ms on Knot; desktop/phone evidence inspected, normal play restored. See docs/CONTACT_LIGHTING.md for measured limits and owner acceptance.
+
+2026-09-25 V02/V04/V05/Q01: winter-only transparent screen-edge frost beneath the HUD. CaptureWinter 167 checks pass, driving/compact desktop evidence inspected. No Android export or device test; owner/device acceptance pending. See docs/WINTER_FROST.md.
 
 2026-09-25 R01/V04/V05/Q01: Knot profiling reproduces steering-haptic stalls without collisions; bounded Android worker reduces 30-second frames >33 ms from 184 to 0/2. Stationary tyre solver saves ~20% in an 85-stack desktop microbenchmark; 13,200 exact equivalence checks pass. Corrected synthetic-touch probe, installed APK, phone evidence and known editor/model test failures: docs/KNOT_PERFORMANCE.md.
 

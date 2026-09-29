@@ -238,6 +238,7 @@ func _physics_process(_delta: float) -> void:
 	if sim.state.collision_count > collisions_before_step:
 		var resolved_impact: Vector2 = sim.state.velocity - velocity_before_step
 		camera.add_collision_impact(resolved_impact)
+		car.add_collision_impact(sim.state,resolved_impact)
 		impact_cracks.show_impact(resolved_impact)
 	var roughness: float = native_track.off_road_rumble(sim.state) if native_track != null else 0.0
 	var off_track_rumble: float = smoothstep(3.0, 22.0, sim.state.velocity.length()) * roughness
@@ -350,7 +351,10 @@ func _process(delta: float) -> void:
 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	car.rotation.z = 0.0
 	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0)
-	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005)
+	var body_rumble: float = 0.0
+	if native_track != null:
+		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble)
 	if presented.state.jump_height == 0.0:
 		car.position.y += presented.state.kerb_offset.x
 		car.rotation.x += presented.state.kerb_offset.y
@@ -615,10 +619,14 @@ func _update_weather() -> void:
 		weather_layer = null
 		storm_weather = null
 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
-	if native_track == null or native_track.metadata.get("theme","pine") != "storm": return
+	var weather_theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+	if weather_theme not in ["storm", "winter"]: return
 	weather_layer = CanvasLayer.new()
 	weather_layer.layer = 0
 	add_child(weather_layer)
+	if weather_theme == "winter":
+		weather_layer.add_child(preload("res://camera/winter_frost.gd").new())
+		return
 	storm_weather = StormWeather.new()
 	storm_weather.name = "StormWeather"
 	storm_weather.light = biome_light

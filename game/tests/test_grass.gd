@@ -85,6 +85,29 @@ func run() -> void:
 		for frame: int in range(8):
 			game.call("_process",0.0)
 			await RenderingServer.frame_post_draw
+		if "--screen=static" in OS.get_cmdline_user_args():
+			var folder: String = "res://../docs/evidence/grass-static"
+			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+			game.set_process(false)
+			var cloud: Node = game.get("cloud_shadow")
+			if cloud != null: cloud.set("visible",false)
+			var probe = preload("res://diagnostics/surface_material_probe.gd").new()
+			probe.collect(game.get("track_ground"))
+			check(probe.grass_roots.is_empty(),"no generated grass blades in race scene")
+			await RenderingServer.frame_post_draw
+			await RenderingServer.frame_post_draw
+			var before: Image = root.get_texture().get_image()
+			check(before.save_png(folder+"/static-driving.png") == OK,"static meadow evidence saved")
+			await create_timer(1.0).timeout
+			await RenderingServer.frame_post_draw
+			var after: Image = root.get_texture().get_image()
+			check(after.save_png(folder+"/static-after.png") == OK,"later static meadow evidence saved")
+			_check_static_pixels(before,after,game.get("camera"),track)
+			game.queue_free()
+			await process_frame
+			print("GRASS: %d checks, %d failures" % [checks,failures])
+			quit(1 if failures else 0)
+			return
 		var folder: String = "res://../docs/evidence/grass"
 		if not capture_track.is_empty(): folder += "/"+capture_track.validate_filename()
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
@@ -93,7 +116,7 @@ func run() -> void:
 		print("GRASS_VIEW: %d tuft origins inside driving viewport (not GPU timing)" % visible_tufts)
 		var probe = preload("res://diagnostics/surface_material_probe.gd").new()
 		probe.collect(game.get("track_ground"))
-		check(not probe.grass_roots.is_empty(),"phone probe finds grass geometry")
+		check(probe.grass_roots.is_empty(),"no generated grass blades in race scene")
 		for mode: String in ["grass_original","grass_material","baseline"]:
 			probe.apply(mode)
 			await RenderingServer.frame_post_draw
@@ -154,3 +177,26 @@ func _visible_tufts(node: Node, camera: Camera3D) -> int:
 	else:
 		for child: Node in node.get_children(): count += _visible_tufts(child,camera)
 	return count
+
+func _check_static_pixels(before: Image, after: Image, camera: Camera3D, track: NativeTrack) -> void:
+	var samples: Array[int] = [0,0]
+	var changed: Array[int] = [0,0]
+	# Sample the uncluttered central viewport; classify by canonical surface.
+	for y: int in range(180,480,3):
+		for x: int in range(300,980,3):
+			var pixel := Vector2(x,y)
+			var origin: Vector3 = camera.project_ray_origin(pixel)
+			var ray: Vector3 = camera.project_ray_normal(pixel)
+			var world: Vector3 = origin-ray*(origin.y/ray.y)
+			var point := Vector2(world.x,-world.z)
+			var kind: int = track.cell_at(point)
+			if kind not in [0,1]: continue
+			if track.cell_at(point+Vector2(0.7,0)) != kind or track.cell_at(point-Vector2(0.7,0)) != kind: continue
+			if track.cell_at(point+Vector2(0,0.7)) != kind or track.cell_at(point-Vector2(0,0.7)) != kind: continue
+			var a: Color = before.get_pixel(x,y)
+			var b: Color = after.get_pixel(x,y)
+			samples[kind] += 1
+			if maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b))) > 0.02: changed[kind] += 1
+	print("STATIC_PIXELS grass=%d/%d road=%d/%d" % [changed[1],samples[1],changed[0],samples[0]])
+	check(samples[1] > 100 and changed[1] == 0,"owner-requested static grass stays still at driving scale")
+	check(samples[0] > 100 and changed[0] < samples[0]*0.01,"road interior remains still")

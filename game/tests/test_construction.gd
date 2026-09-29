@@ -241,6 +241,15 @@ func _interaction() -> void:
 	if game != null: app.call("_leave_race")
 
 func _test_intersections() -> void:
+	# Closed automatic-route fixture also exercised by the server validator.
+	var junction: Dictionary = circuit()
+	junction.pieces[4].kind = "bridge"
+	junction = RoadPieces.route_from_pieces(junction).document
+	junction.start_line = CreatorStartLine.place(junction,Vector2(-40,0),null)
+	junction = RoadPieces.route_from_pieces(junction).document
+	check(CreatorBridges.validate(junction.pieces).is_empty(),"closed bridge junction fixture has matching deck heights")
+	var output := FileAccess.open("res://../build/backend_bridge_junction.json",FileAccess.WRITE)
+	output.store_string(JSON.stringify(junction,"\t",true)+"\n")
 	var doc: Dictionary = TrackDocument.create_default()
 	var horizontal: Dictionary = segment(Vector2(-30,0),Vector2(30,0),"bridge")
 	var vertical: Dictionary = segment(Vector2(0,-30),Vector2(0,30),"bridge")

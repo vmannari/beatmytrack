@@ -1,5 +1,7 @@
 # DS925+ deployment and cloud migration
 
+Local PC development: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendStart` builds the shared API/worker image before starting services. Python is bind-mounted, but canonical Godot validation code is baked into the image. The build checks the pinned engine and exact golden replay before replacing services; a failed build leaves the running backend intact. Accounts and tracks remain in existing volumes. See [bridge validation follow-up](../../docs/BACKEND_BRIDGE_VALIDATION.md).
+
 Account-menu follow-up: migrate to `0005_unique_username` and set
 `BMT_GOOGLE_WEB_CLIENT_ID` as well as `BMT_GOOGLE_CLIENT_IDS` for browser sign-in.
 The game's API URL and `BMT_PUBLIC_BASE_URL` must be the same origin registered in

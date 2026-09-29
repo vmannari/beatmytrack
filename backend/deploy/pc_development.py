@@ -75,6 +75,9 @@ def main():
         print("PC backend stopped; accounts and tracks retained.")
         return
     # Never print resolved Compose config: it contains development credentials.
+    # Python is bind-mounted, but the canonical Godot validator is baked into
+    # the image. Build and verify it before replacing either running service.
+    subprocess.run([*command, "build", "api"], cwd=ROOT, check=True)
     subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "90"], cwd=ROOT, check=True)
     configure_game(config)
     print(f"PC backend ready at {URL}. Reopen Sign in and choose Development.")

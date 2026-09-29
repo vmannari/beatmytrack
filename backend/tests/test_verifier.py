@@ -59,6 +59,13 @@ def test_validated_saved_route_is_compiled_without_regeneration(real_verifier, r
     assert baseline == race_fixture["expected_manifest"]
 
 
+def test_server_accepts_overlapping_bridge_decks(real_verifier):
+    document = json.loads((Path(__file__).parent / "fixtures" / "bridge_junction.json").read_text())
+    result = real_verifier.validate_track(document)
+    assert result["compiler_version"] == "creator-compiler-20"
+    assert result["laps"] == 5 and result["track_content_hash"]
+
+
 @pytest.mark.parametrize(
     "frame",
     [

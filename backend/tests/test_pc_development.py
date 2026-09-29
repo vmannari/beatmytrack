@@ -41,3 +41,28 @@ def test_external_game_configuration_not_overwritten(launcher, tmp_path):
     with pytest.raises(RuntimeError, match="another backend"):
         launcher.configure_game(launcher.local_configuration())
     assert target.read_bytes() == before
+
+
+def test_start_builds_verified_image_before_replacing_services(launcher, monkeypatch):
+    commands = []
+    monkeypatch.setattr(launcher.sys, "argv", ["pc_development.py", "start"])
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr(launcher.subprocess, "run", lambda args, **kwargs: commands.append(args))
+    launcher.main()
+    assert commands[0][-2:] == ["build", "api"]
+    assert commands[1][-5:] == ["up", "-d", "--wait", "--wait-timeout", "90"]
+
+
+def test_failed_image_build_leaves_running_backend_untouched(launcher, monkeypatch):
+    commands = []
+    monkeypatch.setattr(launcher.sys, "argv", ["pc_development.py", "start"])
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+
+    def fail(args, **kwargs):
+        commands.append(args)
+        raise launcher.subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fail)
+    with pytest.raises(launcher.subprocess.CalledProcessError):
+        launcher.main()
+    assert len(commands) == 1 and commands[0][-2:] == ["build", "api"]

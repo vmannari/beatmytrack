@@ -15,6 +15,7 @@ func run() -> void:
 		var car := CarVisual.new()
 		car.vehicle_id = id
 		root.add_child(car)
+		check(car.brake_material.emission_enabled and car.brake_material.emission_energy_multiplier > 0,"rear lamps lit immediately: "+id)
 		car.set_night_headlights(false)
 		check(car.headlights == null,"daytime allocates no lights: "+id)
 		car.set_night_headlights(true)
@@ -32,13 +33,13 @@ func run() -> void:
 		var state := VehicleState.new()
 		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,0))
 		var running_energy: float = car.brake_material.emission_energy_multiplier
-		check(car.brake_material.emission_enabled and running_energy > 0 and running_energy < 0.5,"faint night rear lamps: "+id)
+		check(car.brake_material.emission_enabled and running_energy > 0,"visible running rear lamps: "+id)
 		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,1))
 		check(car.brake_material.emission_energy_multiplier > running_energy*2,"braking remains clearly brighter: "+id)
 		car.present(Vector2.ZERO,0.0,state,DriveFrame.sample(0,0,0))
 		check(is_equal_approx(car.brake_material.emission_energy_multiplier,running_energy),"brake release restores faint lamps: "+id)
 		car.set_night_headlights(false)
-		check(not car.brake_material.emission_enabled,"daytime disables rear glow: "+id)
+		check(car.brake_material.emission_enabled and is_equal_approx(car.brake_material.emission_energy_multiplier,running_energy),"daytime retains running rear lamps: "+id)
 		car.free()
 	var document: Dictionary = TrackDocument.create_default()
 	document.theme = "night_city"
@@ -58,7 +59,7 @@ func run() -> void:
 			for i: int in range(8): await process_frame
 			await RenderingServer.frame_post_draw
 			root.get_texture().get_image().save_png(folder+("/on.png" if enabled else "/off.png"))
-		var rear_folder: String = ProjectSettings.globalize_path("res://../docs/evidence/taillights-2026-09-24")
+		var rear_folder: String = ProjectSettings.globalize_path("res://../docs/evidence/taillights-2026-09-29")
 		DirAccess.make_dir_recursive_absolute(rear_folder)
 		game.sim.state.heading = 0.0
 		game.previous_heading = 0.0

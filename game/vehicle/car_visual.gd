@@ -83,6 +83,24 @@ var ramp_pitch: float = 0.0
 var ramp_pitch_speed: float = 0.0
 var ramp_body_pitch: float = 0.0
 
+const MAX_SURFACE_HEAVE: float = 0.028
+const MAX_SURFACE_ROLL: float = 0.009
+const MAX_COLLISION_SUSPENSION_SPEED: float = 1.25
+
+
+func add_collision_impact(state: VehicleState, resolved_velocity_change: Vector2) -> void:
+	var impulse: float = resolved_velocity_change.length()
+	var strength: float = smoothstep(2.0,20.0,impulse)
+	if strength <= 0.0:
+		return
+	# The resolved velocity change points away from the contact. Compress the
+	# body and tip it along that direction, then let the existing spring settle.
+	var direction: Vector2 = resolved_velocity_change / impulse
+	suspension_speed.x -= lerpf(0.08,0.42,strength)
+	suspension_speed.y += direction.dot(state.forward()) * lerpf(0.16,0.72,strength)
+	suspension_speed.z += direction.dot(state.right()) * lerpf(0.20,0.90,strength)
+	suspension_speed = suspension_speed.limit_length(MAX_COLLISION_SUSPENSION_SPEED)
+
 
 func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
 	# Small visual unloading at crests, followed by gravity and a damped
@@ -133,6 +151,7 @@ func _ready() -> void:
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	if vehicle_id != "compact":
 		VehicleModels.build(self, vehicle_id)
+		_update_rear_lights()
 		if batch_parts: VisualGeometry.batch_static_parts(self)
 		return
 	var paint := VisualGeometry.material(Color("e0d5b5"))
@@ -150,7 +169,6 @@ func _ready() -> void:
 	_hatchback(paint, glass, trim, blue)
 	for side: float in [-1.0, 1.0]:
 		VisualGeometry.box(body,Vector3(0.055,0.22,0.035),Vector3(side*0.806,0.798,-2.005),VisualGeometry.material(Color("b77929")))
-		brake_lights.append(VisualGeometry.box(body, Vector3(0.16, 0.27, 0.07), Vector3(side * 0.73, 0.84, 2.01), brake_material))
 		for axle: float in [-1.28, 1.28]:
 			var pivot := Node3D.new()
 			pivot.position = Vector3(side * 0.83, 0.37, axle)
@@ -166,6 +184,7 @@ func _ready() -> void:
 			register_rolling_wheel(pivot, 0.37)
 	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
 	CompactDetail.build(self, blue, paint, trim, rim)
+	_update_rear_lights()
 	if batch_parts: VisualGeometry.batch_static_parts(self)
 
 
@@ -198,9 +217,9 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 func _update_rear_lights() -> void:
 	# Self-lit lenses reuse the existing material/batch: no extra Light3D or pass.
 	brake_material.albedo_color = Color("f17158") if rear_braking else Color("802d2b")
-	brake_material.emission_enabled = night_lights_enabled
+	brake_material.emission_enabled = true
 	brake_material.emission = Color("e02b1d")
-	brake_material.emission_energy_multiplier = 1.0 if rear_braking else 0.32
+	brake_material.emission_energy_multiplier = 2.2 if rear_braking else 0.65
 
 
 func register_rolling_wheel(pivot: Node3D, radius: float) -> void:
@@ -215,7 +234,7 @@ func register_rolling_wheel(pivot: Node3D, radius: float) -> void:
 	wheel_radii.append(radius * HandlingConfig.BODY_SCALE)
 
 
-func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true) -> void:
+func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0) -> void:
 	# Consume snapshots once, independent of display rate; never write to simulation.
 	if last_tick < 0 or state.tick < last_tick or state.tick - last_tick > 30:
 		suspension = Vector3.ZERO
@@ -273,9 +292,15 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		was_airborne = airborne
 		last_slope = road_pitch
 	var compliance: float = 0.30 if vehicle_id == "kart" else 1.0
-	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE
+	# Loose ground agitates the sprung body without changing the canonical pose.
+	# Tick-derived phases keep the result independent of render frame rate.
+	var rumble: float = clampf(surface_rumble, 0.0, 1.0)
+	var phase: float = state.tick / 120.0
+	var surface_heave: float = (sin(phase * 55.0) + sin(phase * 31.0) * 0.35) * MAX_SURFACE_HEAVE * rumble
+	var surface_roll: float = (sin(phase * 43.0) + cos(phase * 29.0) * 0.30) * MAX_SURFACE_ROLL * rumble
+	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE + surface_heave
 	body.rotation.x = (suspension.y + ramp_body_pitch) * compliance
-	body.rotation.z = suspension.z * compliance
+	body.rotation.z = suspension.z * compliance + surface_roll
 
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.

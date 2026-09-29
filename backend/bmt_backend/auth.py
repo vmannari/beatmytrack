@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .db import get_session
 from .identity_models import Identity, LoginChallenge, Player, SessionFamily, SessionToken, now
 from .security import current_player, development_session_disabled, digest
+from .usernames import DEVELOPER_NAME_KEY, username_key
 
 router = APIRouter(tags=["identity"])
 
@@ -43,6 +44,17 @@ class RefreshBody(StrictBody):
 class DevelopmentLogin(ProfileBody):
     display_name: str = "Test racer"
     subject: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_.-]+$")
+
+
+def require_available_name(
+    session: Session, name: str, player_id: str | None = None, developer: bool = False
+):
+    key = username_key(name)
+    if not developer and key == DEVELOPER_NAME_KEY:
+        raise HTTPException(409, "USERNAME_TAKEN")
+    owner = session.scalar(select(Player.id).where(Player.username_key == key))
+    if owner is not None and owner != player_id:
+        raise HTTPException(409, "USERNAME_TAKEN")
 
 
 def public_player(player: Player) -> dict:
@@ -85,9 +97,12 @@ def development_login(
     if identity:
         player = session.get(Player, identity.player_id)
     else:
+        name = "Beat My Track" if body.subject == "developer" else body.display_name
+        if body.subject != "developer" and username_key(name) == DEVELOPER_NAME_KEY:
+            raise HTTPException(409, "USERNAME_TAKEN")
         try:
             with session.begin_nested():
-                player = Player(display_name=body.display_name)
+                player = Player(display_name=name)
                 session.add(player)
                 session.flush()
                 session.add(Identity(player_id=player.id, provider="development", subject=body.subject))
@@ -97,7 +112,7 @@ def development_login(
                 select(Identity).where(Identity.provider == "development", Identity.subject == body.subject)
             )
             if identity is None:
-                raise
+                raise HTTPException(409, "USERNAME_TAKEN") from None
             player = session.get(Player, identity.player_id)
     if player.disabled:
         raise HTTPException(403, "ACCOUNT_DISABLED")
@@ -172,6 +187,8 @@ def complete_google_login(subject: str, display_name: str | None, request: Reque
     if identity:
         player = session.get(Player, identity.player_id)
     else:
+        if display_name is not None and username_key(display_name) == DEVELOPER_NAME_KEY:
+            raise HTTPException(409, "USERNAME_TAKEN")
         # Savepoint handles two valid Google sign-ins creating the same identity concurrently.
         try:
             with session.begin_nested():
@@ -185,7 +202,7 @@ def complete_google_login(subject: str, display_name: str | None, request: Reque
                 select(Identity).where(Identity.provider == "google", Identity.subject == subject)
             )
             if identity is None:
-                raise
+                raise HTTPException(409, "USERNAME_TAKEN") from None
             player = session.get(Player, identity.player_id)
     if player.disabled:
         session.commit()
@@ -262,7 +279,12 @@ def profile(
     )
     if developer and body.display_name != "Beat My Track":
         raise HTTPException(403, "DEVELOPER_NAME_FIXED")
+    require_available_name(session, body.display_name, player.id, developer=developer is not None)
     player.display_name = body.display_name
     player.needs_username = False
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(409, "USERNAME_TAKEN") from None
     return public_player(player)

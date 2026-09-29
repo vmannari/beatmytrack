@@ -191,6 +191,8 @@ func sign_out() -> void:
 
 func _error_text(result: Dictionary) -> String:
 	match str(result.get("error", "")):
+		"USERNAME_TAKEN": return "That racing name is already taken. Choose another name."
+		"USERNAME_REQUIRED": return "Choose your racing name before sharing tracks."
 		"GOOGLE_SIGN_IN_NOT_CONFIGURED", "GOOGLE_PUBLIC_URL_NOT_CONFIGURED": return "Google sign-in is not configured yet."
 		"INVALID_DEVELOPMENT_KEY": return "Development sign-in is not configured correctly on this device."
 		"INVALID_INPUT": return "Choose a visible username between 1 and 40 characters."

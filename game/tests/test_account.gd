@@ -176,6 +176,10 @@ func run() -> void:
 	await capture("choose-name-960")
 	await online.save_username("   ")
 	check(online.needs_username() and not online.busy, "blank name cannot finish onboarding")
+	app.root_ui.find_child("PlayerUsername", true, false).text = "beat my track"
+	await online.save_username("beat my track")
+	check(online.needs_username() and "already taken" in online.message, "duplicate name remains in onboarding with useful feedback")
+	await capture("name-taken")
 	await online.save_username("Chosen racer")
 	check(online.player_name() == "Chosen racer" and not online.needs_username(), "profile saves chosen name after Google authentication")
 	check(online.client.player.id != player_id, "Google identity is independent of developer")

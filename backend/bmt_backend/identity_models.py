@@ -1,10 +1,21 @@
 import time
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    event,
+    false,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
+from .usernames import username_key
 
 
 def new_id() -> str:
@@ -17,6 +28,10 @@ def now() -> int:
 
 class Player(Base):
     __tablename__ = "players"
+    __table_args__ = (
+        CheckConstraint("needs_username OR username_key IS NOT NULL", name="ck_player_claimed_name"),
+    )
+    username_key: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     display_name: Mapped[str] = mapped_column(String(40), default="Racer")
     needs_username: Mapped[bool] = mapped_column(
@@ -24,6 +39,12 @@ class Player(Base):
     )
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
+
+
+@event.listens_for(Player, "before_insert")
+@event.listens_for(Player, "before_update")
+def set_username_key(_mapper, _connection, player):
+    player.username_key = None if player.needs_username else username_key(player.display_name or "Racer")
 
 
 class Identity(Base):

@@ -78,6 +78,8 @@ def _payload(request: Request, session: Session, version: TrackVersion) -> dict:
 
 
 def _validate_and_store(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
+    if player.needs_username:
+        raise HTTPException(409, "USERNAME_REQUIRED")
     # Authenticated ownership is authoritative, including the downloadable document.
     payload.document = {**payload.document, "creator": player.display_name}
     try:

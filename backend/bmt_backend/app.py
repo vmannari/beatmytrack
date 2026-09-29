@@ -54,7 +54,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         try:
             with app.state.engine.connect() as connection:
                 revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                if revision != "0004_developer_name":
+                if revision != "0005_unique_username":
                     raise HTTPException(503, "SCHEMA_NOT_READY")
             app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
         except (SQLAlchemyError, OSError) as exc:

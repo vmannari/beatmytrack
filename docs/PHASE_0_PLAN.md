@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 B01/B19/R01/Q01: racing names now have a unique normalized database key, preserving UUID as master identity. Case/whitespace/Unicode-compatible duplicates rejected with actionable UI feedback; concurrent claims tested, pending users choose before sharing, developer name reserved. Migration 0005 preserves both PC profiles. 120 backend, 5 PostgreSQL, 8 focused username tests and 67 native checks pass. No phone/export/production deployment. See docs/UNIQUE_USERNAMES.md.
+
 2026-09-28 B01/B19/V03/Q01: remembered startup now uses a neutral loading screen and enters Home after successful restoration without constructing/flashing login controls. New users and failed restoration retain sign-in. Frame-by-frame native startup assertions passed; loading screenshot inspected. No phone/export/backend change. See docs/REMEMBERED_SIGN_IN.md.
 
 2026-09-28 B02/B19/R01/Q01: race results now includes shared circuits and loads recommendation documents from their actual source directory, matching Play. Common catalog setup; empty-private/shared-library regression covers cold results, after-Play results and launching the selected shared track. CaptureResults passed 207 checks; screenshot inspected. No phone/export/physics change. See docs/ACCOUNT_OWNERSHIP.md.

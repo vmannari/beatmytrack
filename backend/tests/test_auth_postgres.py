@@ -152,7 +152,7 @@ def test_postgres_simultaneous_google_identity_creation_has_one_player(postgres_
     def synchronize_identity_insert(_connection, _cursor, statement, _parameters, _context, _many):
         # Both requests must first observe no existing identity, exercising the
         # unique-constraint/savepoint race instead of sequential sign-in reuse.
-        if statement.startswith("INSERT INTO identities "):
+        if statement.startswith("INSERT INTO players "):
             inserting_identity.wait(timeout=10)
 
     event.listen(app.state.engine, "before_cursor_execute", synchronize_identity_insert)
@@ -177,7 +177,7 @@ def test_postgres_migration_second_pass_preserves_schema_and_data(postgres_auth)
     upgrade(app.state.engine)
     assert inspect(app.state.engine).get_table_names() == before
     with app.state.engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004_developer_name"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005_unique_username"
     assert (
         client.get(
             "/v1/me", headers={"Authorization": "Bearer " + signed_in.json()["access_token"]}
@@ -185,3 +185,36 @@ def test_postgres_migration_second_pass_preserves_schema_and_data(postgres_auth)
         == 200
     )
     assert client.get("/readyz").status_code == 200
+
+
+def test_postgres_concurrent_players_cannot_claim_same_username(postgres_auth):
+    app, client = postgres_auth
+    players = []
+    for subject in ["first", "second"]:
+        body = google_request(app, client, subject)
+        body["display_name"] = subject
+        players.append(client.post("/v1/auth/google", json=body).json())
+    barrier = threading.Barrier(2)
+
+    def update_name(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("UPDATE players SET"):
+            barrier.wait(timeout=10)
+
+    event.listen(app.state.engine, "before_cursor_execute", update_name)
+    try:
+
+        def claim(player):
+            return client.patch(
+                "/v1/me",
+                headers={"Authorization": "Bearer " + player["access_token"]},
+                json={"display_name": "Same Name"},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(claim, players))
+    finally:
+        event.remove(app.state.engine, "before_cursor_execute", update_name)
+    assert sorted(r.status_code for r in replies) == [200, 409]
+    assert next(r for r in replies if r.status_code == 409).json()["detail"] == "USERNAME_TAKEN"
+    with app.state.session_factory() as session:
+        assert len(session.scalars(select(Player).where(Player.username_key == "same name")).all()) == 1

@@ -73,7 +73,9 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
 
         def login(subject):
             response = client.post(
-                "/v1/auth/development", headers={"X-Dev-Auth-Key": "test-key-" * 8}, json={"subject": subject}
+                "/v1/auth/development",
+                headers={"X-Dev-Auth-Key": "test-key-" * 8},
+                json={"subject": subject, "display_name": subject},
             )
             assert response.status_code == 200, response.text
             return response.json()

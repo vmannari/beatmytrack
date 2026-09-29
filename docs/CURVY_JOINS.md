@@ -22,3 +22,11 @@ Actual validation through the pinned engine and `scripts/dev.ps1`:
 [Before](evidence/curvy-joins/before.png) / [After](evidence/curvy-joins/after.png).
 
 Remaining acceptance: owner approval of the slight rounding, moving-camera/device inspection and mobile performance measurements. Captures retain the test harness pause/countdown overlay. Other working-tree changes were preserved and excluded from this task checkpoint.
+
+## Inner-join follow-up / kit 88
+
+The owner identified the remaining sharp inner corner. The former 45%-of-first-segment limit made its fillet nearly invisible because folded-tip trimming left a very short first segment. `visual_road_join.gd` now walks along the road side, removes intermediate samples covered by the fillet, and applies the same 1 m trim on inside and outside. Short complete sides still cap trim at 45% of available length to prevent neighbouring fillets overlapping. `native_track_visual.gd` advances to kit 88; `test_shoulders.gd` now also checks visible displacement at both inner and outer corners. Canonical data remains unchanged.
+
+Actual repeated commands: `TestShoulders` (overlap regression plus **71 join checks, zero failures**), `TestSurfaceProfile` (**928 checks, zero failures**), and the same Curvy `CaptureStyle` command above (**cells preserved, zero bad normals, all captures OK**), all through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action ...`. Final view 5 inspected: the inner white line and sand now curve smoothly through the marked join. Final shoulder vertices 29,532; asphalt 5,013. Android SDK `adb.exe devices` reports no attached phone; no export or device test. Owner/device and moving-camera acceptance remain.
+
+[Inner corner before](evidence/curvy-joins/inner-before.png) / [Inner corner after](evidence/curvy-joins/inner-after.png).

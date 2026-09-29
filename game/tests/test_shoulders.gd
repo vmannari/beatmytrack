@@ -55,6 +55,12 @@ func _test_joins() -> int:
 				for j: int in range(right.polygon.size()):
 					if left.polygon[i].distance_to(right.polygon[j]) > 0.0001: continue
 					matches += 1
+					if absf(turn) >= 30.0:
+						var original: PackedVector2Array = RoadPieces.section_outline(pieces,0,margin)
+						var nearest: float = INF
+						for vertex: Vector2 in original: nearest = minf(nearest,vertex.distance_to(left.polygon[i]))
+						checks += 1
+						if nearest < 0.10: failures += 1 # Both inside and outside receive visible rounding.
 					var a: Vector2 = visual._roadside_miter(left.polygon,i,left.cuts)
 					var b: Vector2 = visual._roadside_miter(right.polygon,j,right.cuts)
 					checks += 1

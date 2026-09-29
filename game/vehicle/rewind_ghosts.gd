@@ -71,26 +71,35 @@ func present(selected: int) -> void:
 	var anchor: Vector2 = entries[index].state.position
 	var last: Vector2 = anchor
 	var picks: Array[int] = []
-	# Prefer past positions; near the beginning, show available future positions.
-	var direction: int = -1 if index >= 8 else 1
-	var cursor: int = index+direction
-	while cursor >= 0 and cursor < entries.size() and picks.size() < 4:
-		var point: Vector2 = entries[cursor].state.position
-		if point.distance_to(anchor) > 29.0: break
-		if point.distance_to(last) >= 5.5:
-			picks.append(cursor)
-			last = point
-		cursor += direction
+	# Two recorded positions on either side; use spare slots at either endpoint.
+	var sides: Array = [[],[]]
+	for side_index: int in range(2):
+		last = anchor
+		var direction: int = -1 if side_index == 0 else 1
+		var cursor: int = index+direction
+		while cursor >= 0 and cursor < entries.size() and sides[side_index].size() < 4:
+			var point: Vector2 = entries[cursor].state.position
+			if point.distance_to(anchor) > 29.0: break
+			if point.distance_to(last) >= 5.5:
+				sides[side_index].append(cursor)
+				last = point
+			cursor += direction
+	for slot: int in range(4):
+		for side: Array in sides:
+			if slot < side.size() and picks.size() < 4: picks.append(side[slot])
 	for i: int in range(picks.size()):
 		var entry: Dictionary = entries[picks[i]]
 		ghosts[i].position = world(entry.state)
 		ghosts[i].rotation.y = -float(entry.state.heading)
 		ghosts[i].show()
-		labels.append({"world":ghosts[i].position,"seconds":(origin_tick-int(entry.tick))/120.0})
+		labels.append({"world":ghosts[i].position,"seconds":(origin_tick-int(entry.tick))/120.0,"tick":int(entry.tick)})
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var start: int = mini(index,cursor+1)
-	var end: int = maxi(index,cursor-1)
+	var start: int = index
+	var end: int = index
+	for pick: int in picks:
+		start = mini(start,pick)
+		end = maxi(end,pick)
 	for i: int in range(maxi(0,start),mini(entries.size()-1,end)):
 		var a: Vector3 = world(entries[i].state)
 		var b: Vector3 = world(entries[i+1].state)

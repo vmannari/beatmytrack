@@ -1,7 +1,7 @@
 class_name RewindHistory
 extends RefCounted
 ## 10 Hz state checkpoints; bounded history, independent of render rate.
-const WINDOW_TICKS: int = 20 * VehicleSimulation.TICK_RATE
+const WINDOW_TICKS: int = 10 * VehicleSimulation.TICK_RATE
 const STRIDE: int = 12
 const MAX_RESUMES: int = 3
 var entries: Array[Dictionary] = []

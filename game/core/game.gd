@@ -717,7 +717,7 @@ func open_rewind() -> void:
 	var markers: Array[Dictionary] = rewind_choices.duplicate()
 	markers.append({"tick":sim.state.tick,"state":rewind_origin.state})
 	rewind_ghosts.configure(car,native_track,bridge_presentation,markers,sim.state.tick)
-	rewind_selected = maxi(0,rewind_choices.size()-31)
+	rewind_selected = rewind_choices.size()
 	rewind_panel.slider.value = rewind_selected
 	preview_rewind(rewind_selected)
 	var panel: CanvasLayer = rewind_panel

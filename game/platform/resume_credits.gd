@@ -40,7 +40,7 @@ func refresh() -> Dictionary:
 
 func consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
 	if busy: return {"ok":false,"error":"Please wait for the resume request."}
-	if used >= 3 or from_tick-to_tick < 1 or from_tick-to_tick > 2400: return {"ok":false,"error":"Resume limit reached."}
+	if used >= 3 or from_tick-to_tick < 1 or from_tick-to_tick > RewindHistory.WINDOW_TICKS: return {"ok":false,"error":"Resume limit reached."}
 	if client != null and str(client.player.get("id","")) != owner_id: return {"ok":false,"error":"Account changed. Start a new race."}
 	busy = true
 	var response: Dictionary = await _consume(from_tick,to_tick,input_offset)

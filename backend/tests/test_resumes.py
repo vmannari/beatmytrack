@@ -80,12 +80,12 @@ def test_grants_are_idempotent_nonexpiring_and_not_client_claimable(domain):
 def test_invalid_or_cross_account_requests_never_spend(domain):
     race = begin(domain)
     assert spend(domain, race, player="Alice").status_code == 404
-    assert spend(domain, race, source=2401, offset=2401).status_code == 422
+    assert spend(domain, race, source=1201, offset=1201).status_code == 422
     assert spend(domain, race, source=120, target=120).status_code == 422
     assert spend(domain, race, source=119).status_code == 422
     assert spend(domain, race, ordinal=2).status_code == 409
     assert domain.client.get("/v1/resumes", headers=headers(domain)).json()["free"] == 1
-    assert spend(domain, race).status_code == 200
+    assert spend(domain, race, source=1200, offset=1200).status_code == 200
     other = begin(domain)
     assert spend(domain, other).status_code == 409
 

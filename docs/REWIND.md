@@ -1,12 +1,12 @@
 # Rewind and resume — 2026-09-29
 
-Owner scope: rewind up to twenty seconds, choose where to resume, at most three resumes per race. One free resume each day, no rollover. One resume per rewarded ad with unlimited ads per day. Purchased/otherwise awarded resumes never expire. The owner explicitly permits rewind-assisted leaderboard results; the corresponding override is recorded in `AGENTS.md`. Ordinary full-race restarts remain free and unlimited.
+Owner scope (latest revision): rewind up to ten seconds, choose where to resume, at most three resumes per race. One free resume each day, no rollover. One resume per rewarded ad with unlimited ads per day. Purchased/otherwise awarded resumes never expire. The owner explicitly permits rewind-assisted leaderboard results; the corresponding override is recorded in `AGENTS.md`. Ordinary full-race restarts remain free and unlimited.
 
 ## Requirements and implemented behavior
 
 | ID | Behavior |
 | --- | --- |
-| RW01 | Race HUD Rewind button / Backspace opens a paused world preview. Timeline selects exact saved simulation states at 0.1-second intervals within the last twenty seconds. Cancel restores the original state without spending. |
+| RW01 | Race HUD Rewind button / Backspace opens a paused world preview. Timeline selects exact saved simulation states at 0.1-second intervals within the last ten seconds, initially at the current state. Cancel restores the original state without spending. |
 | RW02 | Confirm restores vehicle dynamics, collision/hazard/loose-prop state, ordered gates, elapsed time, completed laps and telemetry. The discarded future is removed from selectable history. Presentation trails/particles and impact effects clear on resume. |
 | RW03 | Three confirmed resumes maximum per race across all sources, enforced independently by the scene and backend. Restart is a fresh race contract. |
 | RW04 | One free resume per server UTC day, reset at 00:00 UTC, no accumulation. Spend daily allowance before saved credits. Clock rollback cannot replenish a previously consumed day. UTC is the implementation convention; no timezone was specified by the owner. |
@@ -15,7 +15,7 @@ Owner scope: rewind up to twenty seconds, choose where to resume, at most three 
 | RW07 | `bmt-replay-v2` retains all chronological inputs, including discarded branches, plus up to three receipt-bearing rewind events. The API checks every receipt against that race; the engine verifies actual state restoration and the ordered-gate finish. Resumed results use the same leaderboard and canonical handling. |
 | RW08 | Existing replay-v1 runs and pinned track/handling manifests remain valid. V2 is a versioned envelope extension, advertised by bootstrap; no canonical physics constants, timing rules or existing board identities changed. Durable upload outboxes preserve events and recover integer types after JSON reload. |
 
-Rewind is available during timed races after some driving history exists; countdown, completed races, results and untimed editor practice do not offer it. Scrubbing is discrete at ten checkpoints/second (at most 201 checkpoints), rather than changing the canonical 120 Hz step. Preview may therefore reach just under twenty seconds at a tick between checkpoints. The thirty-minute total-input upload bound includes discarded driving.
+Rewind is available during timed races after some driving history exists; countdown, completed races, results and untimed editor practice do not offer it. Scrubbing is discrete at ten checkpoints/second (at most 101 checkpoints), rather than changing the canonical 120 Hz step. Preview may therefore reach just under ten seconds at a tick between checkpoints. The thirty-minute total-input upload bound includes discarded driving.
 
 On an ambiguous consumption response, the selection stays fixed and Retry repeats the same request. Leave race remains available; the credit may already have been spent. A confirmed consumption remains spent if the race is abandoned or the process exits. There is no mid-race crash recovery. Guests have an atomic, device-local daily allowance only; guest saves cannot authorize ranked receipts. Signed-in resume consumption needs a working backend, while ordinary racing remains available offline.
 
@@ -80,3 +80,22 @@ Actual commands through the pinned `scripts/dev.ps1` entry point:
 Evidence: `build/rewind.png`, `build/rewind-compact.png`, `build/rewind-tests.log`, `build/rewind-capture.log`, `build/driving-tests.log`. Captures are real rendered game scenes. Source reference is not a shipped asset; no new external art was introduced.
 
 Remaining acceptance: owner's in-motion review of the proposed 300/60 ms durations, touch/safe-area checks, and mobile ghost-mesh cost. Snapshot preview remains discrete at 10 Hz. Provider fulfillment and pack configuration remain outstanding as above. No backend deployment is needed for this presentation change.
+
+
+## Compact ten-second rewind revision (2026-09-29)
+
+This owner revision supersedes RW01/RW09 presentation/window details above. **RW12:** open at the exact state where rewind was entered, with the slider at 0 seconds; no automatic jump back. **RW13:** choose up to two spatially separated recorded ghosts before and after the selected state, filling spare slots from the available side at endpoints, four maximum. All ghosts come from captured states at or before entry; no prediction/extrapolation. **RW14:** client history/credit checks and newly issued server receipts enforce 1,200 ticks (ten seconds), with at most 101 stored checkpoints. **RW15:** one approximately 120 px-high toolbar contains Cancel, timeline and a play-shaped button that confirms the selected resume. Timing and balances share its top row. Extra preview transport, speed controls, Live button and right-side cards are removed. At the unchanged current state, Resume remains disabled to avoid consuming a credit for no rewind. Error messages expand the toolbar upwards.
+
+The canonical v2 replay reader retains its historical 20-second ceiling for already-issued receipts and old queued runs. New receipts cannot exceed ten seconds, and submission still requires an exact server receipt. This does not authorize new 20-second resumes. Existing 300 ms resume ramp, 60 ms visual-only cancel easing, daily/persistent credit policies and maximum three resumes per race are unchanged.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/vehicle/rewind_ghosts.gd`, `game/core/game.gd`, `game/race/rewind_history.gd`, `game/platform/resume_credits.gd`, `backend/bmt_backend/resumes.py`, their rewind/cloud/receipt tests, `AGENTS.md`, this document and both status documents.
+
+Actual verification:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRewind`: **41 passed**.
+- Same entry point, `-Action CaptureRewind`: **45 passed**. Inspected current-position entry, both-sided historical ghosts and 1280x720 / 960x540 layouts. Evidence: `build/rewind-current.png`, `build/rewind.png`, `build/rewind-compact.png`, and rewind test/capture logs.
+- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_cloud_client.py backend/tests/test_resumes.py -q --tb=short -k "not postgres"`: **13 passed, 6 deselected**, 27.48 seconds. Includes exact ten-second acceptance, 1,201-tick rejection without spending, real HTTP/outbox verification at 12,757 final ticks, and legacy-receipt replay parity. PostgreSQL variants were not rerun for this bound/UI change. The first pass failed an old UI assertion expecting Resume enabled immediately on entry; updated it to require disabled at the current state and enabled after selecting history. Existing Starlette/httpx deprecation warning remains.
+- `-Action BackendStart`: passed; local PC API and worker rebuilt/restarted healthy, retained schema `0007_admin_audit` and existing data. Linux original and legacy-rewind verifier checks passed. `/readyz` returned ready. New server receipt limit is active locally; no production deployment.
+- Ruff on changed Python files: passed. `-Action Doctor`: matching engine/templates, no attached phone. No Android export/device test.
+
+Remaining acceptance: owner touch/feel review, phone safe areas and ghost rendering cost. Ads and billing configuration remain outstanding as described above.

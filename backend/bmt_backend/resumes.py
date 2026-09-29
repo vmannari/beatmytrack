@@ -131,8 +131,8 @@ def consume(race_id: str, payload: Consume, session: DB, player: Auth, key: Key)
             raise HTTPException(409, "Race already submitted")
     if race.used >= 3 or payload.ordinal != race.used + 1:
         raise HTTPException(409, "Maximum three resumes per race; refresh race state")
-    if not 1 <= payload.from_tick - payload.to_tick <= 2400:
-        raise HTTPException(422, "Choose a point within the last 20 seconds")
+    if not 1 <= payload.from_tick - payload.to_tick <= 1200:
+        raise HTTPException(422, "Choose a point within the last 10 seconds")
     previous = session.scalar(
         select(ResumeReceipt).where(ResumeReceipt.race_id == race.id, ResumeReceipt.ordinal == race.used)
     )

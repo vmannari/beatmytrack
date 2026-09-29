@@ -44,12 +44,18 @@ func run() -> void:
 		game.ai_enabled = true
 		game.call("_physics_process",1.0/120.0)
 	check(game.sim.state.tick == 4000,"scene advances 4000 ticks")
-	check(game.rewind_history.entries.size() <= 201,"history remains bounded at 201 checkpoints")
+	check(game.rewind_history.entries.size() <= 101,"history remains bounded at 101 checkpoints")
 	var original: Array = game.sim.state.snapshot()
 	var original_session: Dictionary = RewindHistory.properties(game.track_session,true)
 	await game.open_rewind()
 	check(game.paused and not game.hud.touch.enabled,"rewind freezes simulation and releases controls")
-	check(game.rewind_choices[0].tick >= 1600,"timeline never goes beyond twenty seconds")
+	check(game.rewind_choices[0].tick >= 2800,"timeline never goes beyond ten seconds")
+	check(game.sim.state.snapshot() == original,"rewind opens at the exact current position")
+	if not capture_path.is_empty():
+		await process_frame
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-current.png") == OK,"current-position opening screenshot saved")
 	game.preview_rewind(0)
 	check(game.sim.state.tick < 4000,"scrubbing previews the historical vehicle")
 	game.call("_physics_process",1.0/120.0)
@@ -61,11 +67,15 @@ func run() -> void:
 	await game.confirm_rewind()
 	check(game.online_rewinds.is_empty(),"programmatic confirmation at LIVE also cannot spend")
 	game.preview_rewind(0)
-	game.rewind_panel._toggle_play()
-	game.rewind_panel._process(0.8)
-	check(game.rewind_selected == 2 and game.paused,"quarter-speed transport advances recorded preview only")
-	game.rewind_panel.playing = false
-	game.preview_rewind(0)
+	game.preview_rewind(game.rewind_choices.size()/2)
+	var has_before: bool = false
+	var has_after: bool = false
+	var recorded_only: bool = true
+	for marker: Dictionary in game.rewind_ghosts.labels:
+		has_before = has_before or int(marker.tick) < game.sim.state.tick
+		has_after = has_after or int(marker.tick) > game.sim.state.tick
+		recorded_only = recorded_only and int(marker.tick) <= 4000
+	check(has_before and has_after and recorded_only,"ghosts show recorded positions on both sides without future extrapolation")
 	if not capture_path.is_empty():
 		await process_frame
 		await process_frame
@@ -86,8 +96,8 @@ func run() -> void:
 	await game.open_rewind()
 	game.preview_rewind(0)
 	var target: Dictionary = game.rewind_choices[0].duplicate(true)
-	check(int(original_session.completed_laps) > int(target.session.completed_laps),"test rewinds across a completed lap boundary")
-	await game.confirm_rewind()
+	check(int(target.tick) >= 2800,"resume remains within the ten-second window")
+	game.rewind_panel.confirm.pressed.emit()
 	check(game.online_rewinds.size() == 1 and game.resume_credits.used == 1,"confirm spends exactly one resume")
 	check(game.sim.state.tick == target.tick and not game.paused,"resume continues from selected tick")
 	check(RewindHistory.properties(game.track_session,true) == target.session,"resume restores laps, gates and race clock")
@@ -120,6 +130,7 @@ func run() -> void:
 		for i: int in range(48): game.call("_physics_process",1.0/120.0)
 		await game.open_rewind()
 		check(game.rewind_panel != null,"funded player can choose another resume")
+		game.preview_rewind(0)
 		await game.confirm_rewind()
 	check(game.online_rewinds.size() == 3,"daily and awarded resumes share the three-resume race limit")
 	await game.open_rewind()

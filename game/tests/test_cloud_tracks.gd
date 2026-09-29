@@ -117,17 +117,18 @@ func run() -> void:
 	game.paused = false
 	for tick: int in range(3600): game._physics_process(1.0/120.0)
 	await game.open_rewind()
-	check(game.rewind_panel != null and not game.rewind_panel.confirm.disabled,"signed-in daily resume offered")
+	check(game.rewind_panel != null and game.rewind_panel.confirm.disabled,"current-position entry cannot spend a signed-in resume")
 	game.preview_rewind(0)
+	check(not game.rewind_panel.confirm.disabled,"signed-in daily resume offered for a selected past position")
 	var resumed_tick: int = game.sim.state.tick
 	await game.confirm_rewind()
-	check(game.online_rewinds.size() == 1 and resumed_tick == 1200,"actual server authorizes full twenty-second rewind")
+	check(game.online_rewinds.size() == 1 and resumed_tick == 2400,"actual server authorizes full ten-second rewind")
 	input.cursor = resumed_tick
 	for tick: int in range(resumed_tick,fixture.replay.frames.size()+RewindReturn.RESUME_TICKS):
 		if input.cursor >= fixture.replay.frames.size(): break
 		game._physics_process(1.0/120.0)
 	check(game.track_session.finished and game.track_session.elapsed_ticks == 12757,"actual game race matches canonical verifier timing")
-	check(game.online_frames.size() == fixture.replay.frames.size()+2400,"audit includes original and resumed input segments")
+	check(game.online_frames.size() == fixture.replay.frames.size()+1200,"audit includes original and resumed input segments")
 	check(cloud.queue_run(race,game.online_frames,"",game.online_rewinds),"actual game replay persisted")
 	game.restart()
 	check(game.online_frames.is_empty(),"retry resets captured inputs")

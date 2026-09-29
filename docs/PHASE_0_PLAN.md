@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 V02/V04/V05/Q01: kit 89 fairs tight internal road contours and builds creator kerb visuals from the same outline, omitting isolated decorative slivers. Ajorata and Curvy desktop captures inspected; shoulder regression, 71 join, 18 contour, 31 kerb and 928 surface checks pass. Canonical contacts/cells unchanged. No phone attached/export/device test. See docs/AJORATA_JOINS.md.
+
 2026-09-29 V02/V04/V05/Q01: Curvy inner joins now use the same one-metre cosmetic rounding as outer joins, measured along the edge across short mesh segments. Shoulder regression, 71 join and 928 surface checks pass; desktop capture inspected, native cells unchanged. No phone attached/export/device test. See docs/CURVY_JOINS.md.
 
 2026-09-29 V02/V04/V05/Q01: Curvy angled joins use shared cosmetic quadratic fillets and matching shoulder/marking normals. Sand gaps close and road/white-line corners soften without modifying canonical outlines. Shoulder overlap regression, 55 join checks and 928 surface checks pass; before/after desktop capture inspected. No phone attached/export/device test. See docs/CURVY_JOINS.md.

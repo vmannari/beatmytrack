@@ -36,6 +36,7 @@ func _initialize() -> void:
 	if absf(area-30.0) > 0.001: failures += 1
 	print("SHOULDER_TESTS: union area=%f, triangles=%d, failures=%d; nearest-road shading and no overlapping interiors" % [area,polygons.size(),failures])
 	failures += _test_joins()
+	failures += _test_internal_contours()
 	quit(0 if failures == 0 else 1)
 
 func _test_joins() -> int:
@@ -75,4 +76,47 @@ func _test_joins() -> int:
 		checks += 1
 		if pieces != before: failures += 1
 	print("VISUAL_JOIN_TESTS: %d checks, %d failures; shared road/marking/shoulder endpoints, valid meshes and unchanged authored data" % [checks,failures])
+	return failures
+
+func _test_internal_contours() -> int:
+	var helper = preload("res://track/visual_road_join.gd")
+	var original := PackedVector2Array([Vector2(0,0),Vector2(4,0),Vector2(5,0.3),Vector2(5.2,0),Vector2(8,0),Vector2(8,5),Vector2(0,5)])
+	var cuts: Array[Dictionary] = [{"point":Vector2(0,2.5),"normal":Vector2.RIGHT,"span":5.0},{"point":Vector2(8,2.5),"normal":Vector2.LEFT,"span":5.0}]
+	var preserved: PackedVector2Array = original.duplicate()
+	var smooth: PackedVector2Array = helper.fair_contour(original,cuts)
+	var failures: int = 0
+	var checks: int = 0
+	checks += 3
+	if original != preserved: failures += 1
+	if smooth[2].y >= original[2].y-0.05:
+		failures += 1
+		print("NO SMOOTH ",smooth)
+	if Geometry2D.triangulate_polygon(smooth).is_empty(): failures += 1
+	for i: int in range(original.size()):
+		checks += 1
+		if original[i].distance_to(smooth[i]) > 0.25001: failures += 1
+	for i: int in [0,4,5,6]:
+		checks += 1
+		if smooth[i] != original[i]:
+			failures += 1
+			print("END MOVED ",i)
+	var document: Dictionary = TrackDocument.create_default()
+	document.pieces = [RoadPieces.create("hairpin",Vector2.ZERO)]
+	var track: NativeTrack = TrackCompiler.compile(document)
+	var contacts: Array[Dictionary] = track.kerbs.triangles.duplicate(true)
+	var cells: PackedInt32Array = track.cells.duplicate()
+	var rendered: Array[Dictionary] = helper.kerb_triangles(document)
+	checks += 3
+	if rendered.is_empty():
+		failures += 1
+		print("EMPTY RENDERED FIXTURE: ",document.get("pieces",[]).size())
+	if track.kerbs.triangles != contacts: failures += 1
+	if track.cells != cells: failures += 1
+	var fragments: bool = false
+	for triangle: Dictionary in rendered:
+		for uv: Vector2 in triangle.uv:
+			if uv.y < 2.0: fragments = true
+	checks += 1
+	if fragments: failures += 1
+	print("INTERNAL_CONTOUR_TESTS: %d checks, %d failures; bounded smoothing, fixed joins, no isolated kerb slivers, canonical contacts/cells preserved" % [checks,failures])
 	return failures

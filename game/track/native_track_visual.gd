@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-88"
+const VERSION: String = "track-kit-89"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -1154,9 +1154,14 @@ func _build_kerbs(track: NativeTrack) -> void:
 	if theme_id == "winter": return # Ploughed snow covers the retained canonical kerbs.
 	if track.kerbs.triangles.is_empty(): return
 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
+	var document: Dictionary = track.metadata.get("creator_document",{})
+	var triangles: Array[Dictionary] = track.kerbs.triangles
+	if not document.get("pieces",[]).is_empty() and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+		triangles = preload("res://track/visual_road_join.gd").kerb_triangles(document)
+	if triangles.is_empty(): return
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for triangle: Dictionary in track.kerbs.triangles:
+	for triangle: Dictionary in triangles:
 		if _menu_yield_due():
 			if not await _yield_build(): return
 		var vertices := PackedVector3Array()

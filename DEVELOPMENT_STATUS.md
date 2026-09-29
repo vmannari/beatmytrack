@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-29 V02/V04/V05/Q01: Spiral shoulder seams fixed in visual kit 86: continuous sand beneath kerb tips and spatially indexed overlap clipping with nearest-road blend ownership. Focused geometry, 928 surface-profile and 53 desert checks pass; desktop Spiral captures inspected. No phone attached, Android export or device test; mobile mesh/build cost and in-motion acceptance remain. See docs/SPIRAL_SHOULDERS.md.
+
 2026-09-29 B02–B07/B19/R01/V03/Q01: Play now reads backend track metadata, lazily downloads SHA-256-checked immutable documents and caches them for offline play. Name/creator/biome/favorite filters, server ratings, per-car paginated high scores, around-me, verified race capture/outbox, cloud publishing and results rank are connected. Real HTTP/worker/game integration passes 47 checks; actual five-lap capture matches 12,757 server ticks. PC backend updated; existing local maps preserved pending catalog-migration preference. No phone attached/export/device or production deployment. See docs/CLOUD_TRACKS.md for commands, screenshots and limits.
 
 2026-09-29 B01/B19/R01/Q01: racing names now have a unique normalized database key, preserving UUID as master identity. Case/whitespace/Unicode-compatible duplicates rejected with actionable UI feedback; concurrent claims tested, pending users choose before sharing, developer name reserved. Migration 0005 preserves both PC profiles. 120 backend, 5 PostgreSQL, 8 focused username tests and 67 native checks pass. No phone/export/production deployment. See docs/UNIQUE_USERNAMES.md.

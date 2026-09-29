@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-83"
+const VERSION: String = "track-kit-86"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -203,6 +203,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var winter_sections: int = 0
 	var winter_piles: Dictionary = {}
 	var shoulders := SurfaceTool.new()
+	var shoulder_mesh := preload("res://track/shoulder_mesh.gd").new()
 	var asphalt := SurfaceTool.new()
 	var asphalt_fringe := SurfaceTool.new()
 	var markings := SurfaceTool.new()
@@ -275,21 +276,21 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
-					if not is_kerb or theme_id in ["desert","winter"]:
-						# Only the outer contour varies; road/paint stay fixed.
-						var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
-						var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
-						_shoulder_quad(shoulders,p,q,outer_p,outer_q)
-						counts[0] += 1
-						if theme_id == "desert" and sand_clods < 1800:
-							var seed_value: int = absi(int(midpoint.x*1731.0+midpoint.y*7919.0))
-							var taper: float = _berm_envelope(midpoint,points) if is_kerb else 0.0
-							if seed_value%100 < (52 if is_kerb else 4) and (not is_kerb or taper > 0.08):
-								var normal: Vector2 = (normal_p+normal_q)*0.5
-								var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
-								var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
-								_sand_clod(shoulders,center,(q-p).angle(),size,seed_value,1.65 if is_kerb else 1.0)
-								sand_clods += 1
+					# Continuous sand beneath the tapered kerb ends.
+					# Only the outer contour varies; road/paint stay fixed.
+					var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+					shoulder_mesh.add_quad(p,q,outer_p,outer_q)
+					counts[0] += 1
+					if theme_id == "desert" and sand_clods < 1800:
+						var seed_value: int = absi(int(midpoint.x*1731.0+midpoint.y*7919.0))
+						var taper: float = _berm_envelope(midpoint,points) if is_kerb else 0.0
+						if seed_value%100 < (52 if is_kerb else 4) and (not is_kerb or taper > 0.08):
+							var normal: Vector2 = (normal_p+normal_q)*0.5
+							var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
+							var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
+							_sand_clod(shoulders,center,(q-p).angle(),size,seed_value,1.65 if is_kerb else 1.0)
+							sand_clods += 1
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
 					if dirt or theme_id in ["desert","winter"]: continue
@@ -300,6 +301,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		_commit_winter_bank(winter_bank,texture,track.half_extent)
 		set_meta("winter_smooth_sections",winter_sections)
 		set_meta("winter_deposits",winter_piles.size())
+	shoulder_mesh.emit(shoulders)
 	set_meta("desert_clod_count",sand_clods)
 	_build_kerbs(track)
 	if counts[0]: _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
@@ -373,14 +375,6 @@ func _berm_envelope(point: Vector2, points: PackedVector2Array) -> float:
 
 func _sand_bend_sample(points: PackedVector2Array, index: int) -> bool:
 	return ((points[index+1]-points[index]).normalized()-(points[index]-points[index-1]).normalized()).length_squared() >= 0.0001
-
-
-func _shoulder_quad(tool: SurfaceTool, a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
-	var vertices: Array[Vector2] = [a,outer_b,b,a,outer_a,outer_b]
-	var edge_weight: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
-	for i: int in range(6):
-		tool.set_uv(Vector2(0.0,edge_weight[i]))
-		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*-0.02)
 
 
 func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, seed_value: int, height_scale: float) -> void:

@@ -276,7 +276,7 @@ func _physics_process(_delta: float) -> void:
 			lap_telemetry.observe_incidents(track_session, native_track, sim.state, handling)
 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
-		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry)
+		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry,impact_cracks.side_damage)
 		if production_mode and track_session.finished:
 			_begin_finish()
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
@@ -705,7 +705,7 @@ func open_rewind() -> void:
 	hud.hide()
 	trails.hide()
 	sand_dust.hide()
-	rewind_origin = {"state":RewindHistory.properties(sim.state),"session":RewindHistory.properties(track_session,true)}
+	rewind_origin = {"state":RewindHistory.properties(sim.state),"session":RewindHistory.properties(track_session,true),"glass_damage":impact_cracks.side_damage}
 	rewind_panel = preload("res://ui/rewind_panel.gd").new()
 	add_child(rewind_panel)
 	rewind_panel.selected.connect(preview_rewind)
@@ -735,6 +735,7 @@ func preview_rewind(index: int) -> void:
 	var item: Dictionary = rewind_origin if live else rewind_choices[rewind_selected]
 	RewindHistory.restore(sim.state,item.state)
 	RewindHistory.restore(track_session,item.session)
+	impact_cracks.restore_damage(item.glass_damage)
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	camera.follow(sim.state.position,sim.state.velocity,sim.state.heading,0.0,true)
@@ -748,6 +749,7 @@ func cancel_rewind() -> void:
 		return
 	RewindHistory.restore(sim.state,rewind_origin.state)
 	RewindHistory.restore(track_session,rewind_origin.session)
+	impact_cracks.restore_damage(rewind_origin.glass_damage)
 	_close_rewind(rewind_was_paused)
 
 func confirm_rewind() -> void:
@@ -773,7 +775,7 @@ func confirm_rewind() -> void:
 	rewind_history.branch(int(target.tick))
 	trails.clear()
 	sand_dust.clear()
-	impact_cracks.clear_effect()
+	impact_cracks.restore_damage(target.glass_damage)
 	car.last_tick = -1
 	car.ramp_tick = -1
 	car.wheel_last_tick = -1

@@ -60,6 +60,9 @@ class ResumeButton extends Button:
 		draw_colored_polygon(PackedVector2Array([c+Vector2(-6,-11),c+Vector2(11,0),c+Vector2(-6,11)]),ink)
 
 class CreditButton extends Button:
+	const AD_ICON: Texture2D = preload("res://ui/icons/rewarded_ad.svg")
+	func _init() -> void:
+		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	var count: int = 0
 	var use_ad: bool = true
 	var caption: String = "RESUME"
@@ -71,10 +74,7 @@ class CreditButton extends Button:
 			white.a = 0.35
 		var c := Vector2(31,size.y*0.5)
 		if use_ad:
-			draw_rect(Rect2(c-Vector2(17,12),Vector2(34,24)),blue,false,2)
-			draw_colored_polygon(PackedVector2Array([c+Vector2(-4,-7),c+Vector2(8,0),c+Vector2(-4,7)]),blue)
-			draw_line(c+Vector2(-12,-18),c+Vector2(-5,-13),blue,2,true)
-			draw_line(c+Vector2(0,-18),c+Vector2(7,-13),blue,2,true)
+			draw_texture_rect(AD_ICON,Rect2(Vector2(size.x-60,c.y-20),Vector2(48,40)),false,Color(1,1,1,0.35 if disabled else 1.0))
 		else:
 			draw_set_transform(c,-0.65)
 			draw_rect(Rect2(Vector2(-17,-11),Vector2(34,22)),blue)
@@ -84,7 +84,9 @@ class CreditButton extends Button:
 			draw_set_transform(Vector2.ZERO)
 		var count_text: String = "x%d" % count
 		var badge_width: float = maxf(45,RaceHUDStyle.DISPLAY.get_string_size(count_text,HORIZONTAL_ALIGNMENT_LEFT,-1,23).x+14)
-		draw_string(RaceHUDStyle.DISPLAY,Vector2(63,c.y+8),caption,HORIZONTAL_ALIGNMENT_LEFT,size.x-75-(badge_width+3 if count > 0 else 0),24,white)
+		var text_x: float = 18.0 if use_ad else 63.0
+		var right_margin: float = 72.0 if use_ad else 12.0+(badge_width+3 if count > 0 else 0)
+		draw_string(RaceHUDStyle.DISPLAY,Vector2(text_x,c.y+8),caption,HORIZONTAL_ALIGNMENT_LEFT,size.x-text_x-right_margin,24,white)
 		if count > 0:
 			var badge := StyleBoxFlat.new()
 			badge.bg_color = blue

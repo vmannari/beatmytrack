@@ -83,8 +83,13 @@ func _update_material() -> void:
 
 
 func clear_effect() -> void:
-	visible = false
-	strength = 0.0
-	side_damage = Vector4.ZERO
+	restore_damage(Vector4.ZERO)
+
+
+func restore_damage(damage: Vector4) -> void:
+	# Restore the accumulated edges exactly; replaying impacts could redistribute overflow.
+	side_damage = damage
+	strength = maxf(maxf(damage.x,damage.y),maxf(damage.z,damage.w))
+	visible = strength > 0.0
 	modulate = Color.WHITE
 	_update_material()

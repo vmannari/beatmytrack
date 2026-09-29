@@ -7,7 +7,7 @@ Owner scope (latest revision): rewind up to ten seconds, choose where to resume,
 | ID | Behavior |
 | --- | --- |
 | RW01 | Race HUD Rewind button / Backspace opens a paused world preview. Timeline selects exact saved simulation states at 0.1-second intervals within the last ten seconds, initially at the current state. Cancel restores the original state without spending. |
-| RW02 | Confirm restores vehicle dynamics, collision/hazard/loose-prop state, ordered gates, elapsed time, completed laps and telemetry. The discarded future is removed from selectable history. Presentation trails/particles and impact effects clear on resume. |
+| RW02 | Confirm restores vehicle dynamics, collision/hazard/loose-prop state, ordered gates, elapsed time, completed laps and telemetry. The discarded future is removed from selectable history. Presentation trails/particles clear on resume; windshield cracks restore to the selected snapshot. |
 | RW03 | Three confirmed resumes maximum per race across all sources, enforced independently by the scene and backend. Restart is a fresh race contract. |
 | RW04 | One free resume per server UTC day, reset at 00:00 UTC, no accumulation. Spend saved credits first, then the daily allowance, then the owner-authorized temporary ad path. Clock rollback cannot replenish a previously consumed day. UTC is the implementation convention; no timezone was specified by the owner. |
 | RW05 | Saved credits do not expire. Internal, transaction-idempotent fulfillment supports `ad` (exactly one), `purchase`, and `award`. No daily ad-grant cap. Provider verification must precede this internal boundary. |
@@ -123,3 +123,22 @@ Actual verification:
 - `-Action Doctor`: matching engine/templates, **no attached phone**. No Android export or physical-device test.
 
 Remaining acceptance: phone touch/safe-area review and owner visual/feel review. Actual ad provider, product packs and billing integration remain future work; the temporary free path is intentional, not a simulated completed ad.
+
+
+## Ad icon polish and damage-preserving rewind (2026-09-29)
+
+**RW18 / V03:** the ad action uses an original vector video/AD icon at the right end of the button. Rounded shapes and consistent strokes replace the procedural clapper marks. `game/ui/icons/rewarded_ad.svg` was authored specifically for this UI, without external/reference artwork or fonts embedded in it; its import uses 4x raster resolution with mipmaps and linear filtering for clean scaled UI. Banked ticket/count presentation and the temporary free-ad behavior remain unchanged.
+
+**RW19 / V04:** each bounded history snapshot now also stores the four accumulated windshield-damage edges. Preview and Resume restore that exact damage state, including older collisions outside the ten-second window. Only collisions after the selected moment disappear. Cancel restores entry damage, and new rewind branches discard the skipped damage. This is presentation data only: the canonical input/replay protocol and physics are unchanged. Restart still clears all damage. Storing the accumulated vector also preserves overflow across damaged edges without reconstructing approximate collision effects.
+
+Changed files: `game/ui/rewind_panel.gd`, new `game/ui/icons/rewarded_ad.svg` and import settings, `game/camera/impact_cracks.gd`, `game/race/rewind_history.gd`, `game/core/game.gd`, `game/tests/test_rewind.gd`, this document and the two status documents.
+
+Actual verification (pinned `scripts/dev.ps1` entry point):
+
+- `-Action Import`: passed for the new icon and its 4x mipmapped import.
+- `-Action CaptureRewind`: **57 passed**. Test injects an older left-side collision before the retained history window, then a recent right-side collision. Checks exact preview damage, current endpoint, Cancel, restored shader state and repeated branches. Inspected `build/rewind.png` (new ad icon), `build/rewind-current.png` (both collisions) and `build/rewind-cracks-resumed.png` (older cracks retained, recent cracks removed). Other toolbar captures remain available in `build/rewind-banked.png` and `build/rewind-compact.png`.
+- `-Action TestPerformance`: **9 impact-crack checks and 16 presentation/performance checks passed**, including saturated damage and full clearing on restart. Desktop timings are not phone performance acceptance.
+- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_cloud_client.py -q --tb=short`: **1 passed**, 19.39 seconds; real HTTP/outbox replay verification retained. Existing Starlette/httpx deprecation warning remains.
+- `-Action Doctor`: matching engine/templates found; **no attached phone**. No Android export or device test performed. No backend deployment required for this presentation-only state.
+
+Remaining acceptance: owner visual review and physical-phone icon/touch checks. Crack changes follow the same discrete 0.1-second selected snapshots as rewind itself.

@@ -20,10 +20,10 @@ static func restore(value: Object, data: Dictionary) -> void:
 		var item: Variant = data[key]
 		value.set(key,item.duplicate(true) if item is Array or item is Dictionary else item)
 
-func capture(state: VehicleState, session: TrackSession, force: bool = false, telemetry: LapTelemetry = null) -> void:
+func capture(state: VehicleState, session: TrackSession, force: bool = false, telemetry: LapTelemetry = null, glass_damage: Vector4 = Vector4.ZERO) -> void:
 	if not force and state.tick % STRIDE != 0: return
 	if not entries.is_empty() and int(entries[-1].tick) == state.tick: return
-	entries.append({"tick":state.tick,"state":properties(state),"session":properties(session,true)})
+	entries.append({"tick":state.tick,"state":properties(state),"session":properties(session,true),"glass_damage":glass_damage})
 	if telemetry != null:
 		# Sample/event dictionaries are immutable. Copy their lists, not every point.
 		entries[-1].telemetry = {"completed":telemetry.completed.duplicate(),"samples":telemetry.samples.duplicate(),"events":telemetry.events.duplicate(),"stride":telemetry.stride,"lap_start":telemetry.lap_start,"was_off_track":telemetry.was_off_track,"collision_count":telemetry.collision_count,"last_collision_tick":telemetry.last_collision_tick}

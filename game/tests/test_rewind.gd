@@ -37,8 +37,13 @@ func run() -> void:
 	game.countdown_ticks = 0
 	game.resume_credits.guest_path = "user://rewind-test-"+str(Time.get_ticks_usec())+".json"
 	var guest_path: String = game.resume_credits.guest_path
+	var older_damage := Vector4.ZERO
 	# Replay actual race input across at least one lap boundary.
 	for i: int in range(4000):
+		if i == 1200:
+			game.impact_cracks.show_impact(Vector2(20,0))
+			older_damage = game.impact_cracks.side_damage
+		if i == 3600: game.impact_cracks.show_impact(Vector2(-20,0))
 		game.driver.clear()
 		# Use a deterministic autopilot in the scene; replay parity is tested below independently.
 		game.ai_enabled = true
@@ -47,6 +52,8 @@ func run() -> void:
 	check(game.rewind_history.entries.size() <= 101,"history remains bounded at 101 checkpoints")
 	var original: Array = game.sim.state.snapshot()
 	var original_session: Dictionary = RewindHistory.properties(game.track_session,true)
+	var original_damage: Vector4 = game.impact_cracks.side_damage
+	check(original_damage.x > 0.0 and original_damage.y > 0.0,"fixture contains old left and recent right collision cracks")
 	await game.open_rewind()
 	check(game.paused and not game.hud.touch.enabled,"rewind freezes simulation and releases controls")
 	check(game.rewind_choices[0].tick >= 2800,"timeline never goes beyond ten seconds")
@@ -57,12 +64,14 @@ func run() -> void:
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-current.png") == OK,"current-position opening screenshot saved")
 	game.preview_rewind(0)
+	check(game.impact_cracks.side_damage == older_damage and game.impact_cracks.visible,"preview retains cracks older than the rewind window and removes later collision damage")
 	check(game.sim.state.tick < 4000,"scrubbing previews the historical vehicle")
 	game.call("_physics_process",1.0/120.0)
 	check(game.sim.state.tick == game.rewind_choices[0].tick,"preview never advances physics")
 	check(not FileAccess.file_exists(guest_path),"opening and scrubbing do not spend a resume")
 	check(game.rewind_ghosts.ghosts.size() == 4 and game.rewind_ghosts.labels.size() > 0,"preview shares a bounded pool of actual history cars")
 	game.preview_rewind(game.rewind_choices.size())
+	check(game.impact_cracks.side_damage == original_damage,"current endpoint restores all original cracks")
 	check(game.sim.state.snapshot() == original and game.rewind_panel.confirm.disabled,"LIVE endpoint previews original state and cannot spend")
 	await game.confirm_rewind()
 	check(game.online_rewinds.is_empty(),"programmatic confirmation at LIVE also cannot spend")
@@ -102,6 +111,7 @@ func run() -> void:
 		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-compact.png") == OK,"compact rewind screenshot saved")
 		root.size = Vector2i(1280,720)
 	game.cancel_rewind()
+	check(game.impact_cracks.side_damage == original_damage,"Cancel preserves every original collision crack")
 	check(game.sim.state.snapshot() == original,"cancel restores exact canonical state")
 	check(RewindHistory.properties(game.track_session,true) == original_session,"cancel restores exact timing and ordered gates")
 	check(not game.paused and game.online_rewinds.is_empty(),"cancel costs no race resume")
@@ -113,6 +123,13 @@ func run() -> void:
 	game.rewind_panel.resume_action.pressed.emit()
 	check(game.online_rewinds.size() == 1 and game.resume_credits.used == 1,"confirm spends exactly one resume")
 	check(game.sim.state.tick == target.tick and not game.paused,"resume continues from selected tick")
+	check(game.impact_cracks.side_damage == older_damage and game.impact_cracks.strength > 0.0 and game.impact_cracks.visible,"resume removes only skipped collision damage")
+	check(game.impact_cracks.material.get_shader_parameter("side_damage") == older_damage,"restored damage reaches the visible glass shader")
+	if not capture_path.is_empty():
+		await process_frame
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-cracks-resumed.png") == OK,"retained older cracks after resume screenshot saved")
 	check(RewindHistory.properties(game.track_session,true) == target.session,"resume restores laps, gates and race clock")
 	check(game.lap_telemetry.samples == target.telemetry.samples and game.lap_telemetry.completed == target.telemetry.completed,"resume restores telemetry including abandoned lap data")
 	check(game.online_frames.size() == 4000,"discarded input stays in audit replay")
@@ -146,6 +163,7 @@ func run() -> void:
 		game.preview_rewind(0)
 		await game.confirm_rewind()
 	check(game.online_rewinds.size() == 3,"daily and awarded resumes share the three-resume race limit")
+	check(game.impact_cracks.side_damage == older_damage,"later rewind branches do not bring discarded collision damage back")
 	await game.open_rewind()
 	check(game.rewind_panel == null and awarded.used == 2,"fourth resume cannot open or consume credits")
 	game.queue_free()

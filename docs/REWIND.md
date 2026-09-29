@@ -21,7 +21,7 @@ On an ambiguous consumption response, the selection stays fixed and Retry repeat
 
 ## Integration and configuration limits
 
-Ad provider, ad placement IDs, store product IDs, resume-pack sizes and prices have not been supplied. **No live ads, billing SDK, purchase flow or provider receipt validation is implemented.** The two actions are visibly unavailable and no simulated reward is granted. Provider choice and product configuration remain necessary to complete that part of the request. The internal grant function is not itself proof of an ad or purchase and must only be called by a trusted, verifying adapter or authorized server-side award process.
+Ad provider, ad placement IDs, store product IDs, resume-pack sizes and prices have not been supplied. **No live ads, billing SDK, purchase flow or provider receipt validation is implemented.** The rewind screen reports ads and packs as unavailable when the wallet is empty; no simulated reward is granted. Provider choice and product configuration remain necessary to complete that part of the request. The internal grant function is not itself proof of an ad or purchase and must only be called by a trusted, verifying adapter or authorized server-side award process.
 
 Database migration `0006_resumes` adds wallets, grants, race sessions and receipts. Existing accounts, tracks, scores and player files are retained. API/worker must run the updated game verifier for v2 submissions. No production deployment is authorized by this implementation.
 
@@ -57,3 +57,26 @@ Pinned build: `4.7.2.stable.official.ed1daf0bf`, through `scripts/dev.ps1`.
 Evidence: `build/rewind.png`, `build/rewind-compact.png`, `build/rewind-tests.log`, `build/rewind-capture.log`. Build artifacts are local and export-excluded.
 
 Remaining acceptance: owner review of scrubbing/resume feel, phone touch targets and safe areas, mobile history/mesh/particle cost, provider selection and verified live ad/billing fulfillment, pack economics, and hosted deployment.
+
+
+## Reference presentation and return easing (2026-09-29)
+
+- **RW09 / V03:** owner-supplied rewind reference adapted to the live game: large title, translucent ink cards, gold resume action, lower timeline with time bubble, LIVE endpoint, minimap and recorded-preview transport (quarter, half and full speed; one-second steps; oldest/live shortcuts). Up to four blue ghost instances share the selected vehicle mesh and follow actual snapshots, with time labels and a connecting ribbon. Near the oldest moment they show the available later positions; otherwise they show preceding positions. Reference comparison, coaching and clip-export examples are not implemented features.
+- **RW10 / R01 / B19:** Resume ramps from 35% cadence to full speed over 36 fixed callbacks (300 ms). Each executed canonical step remains 1/120 second, with exactly one quantized input and one race-clock tick. Fractional render interpolation follows the ramp. Reopening rewind is disabled during this brief transition, and restart clears it.
+- **RW11 / Q01:** Cancel gets only a 60 ms camera easing. Simulation, input and scored time remain at full cadence, including repeated cancellations. This intentionally prevents using Cancel for additional slow-motion control. Both actions still release held controls. A cancelled rewind entered from Pause stays paused.
+- LIVE cannot consume a credit, including a direct confirmation call. Preview transport is locked during confirmation and ambiguous receipts retain their selected moment for retry. Existing quota, credit lifetime and leaderboard policies remain unchanged.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/vehicle/rewind_ghosts.gd` and UID, `game/race/rewind_return.gd` and UID, `game/core/game.gd`, `game/tests/test_rewind.gd`, `game/tests/test_cloud_tracks.gd`, this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
+
+Actual commands through the pinned `scripts/dev.ps1` entry point:
+
+- `-Action Import`: passed. The first TestRewind attempt preceded class registration and stopped on unknown `RewindReturn`; terminated that test process, imported the new script and reran. Import also reported recreating two unrelated existing UID files; they are not part of this checkpoint.
+- `-Action TestRewind`: **40 checks, zero failures**. Covers exact restore, quotas, LIVE guard, recorded transport, history pool cleanup, 300 ms pacing, one input per canonical tick, repeated cancellation at full speed and camera easing expiration at 30/60/120 fps.
+- `-Action CaptureRewind`: **43 checks, zero failures**. Inspected 1280x720 and 960x540 captures. First visual pass exposed incompatible source mesh indexing in flattened ghosts; expanded triangles to one vertex format and inspected the corrected captures. Final lower panel fits within the screen with a bottom margin.
+- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_cloud_client.py -q --tb=short`: **1 passed** (20.27 seconds; existing Starlette/httpx deprecation warning). Actual game/HTTP/worker flow still verifies the twenty-second rewind at **12,757 ticks**, including durable outbox reload. The test allows extra callbacks for the new pacing while consuming the same input sequence.
+- `-Action TestDriving`: **74 checks, zero failures**; existing six-instance ObjectDB exit warning. Canonical simulation code was not changed.
+- `-Action Doctor`: pinned engine and matching templates found; **no attached phone**. No Android export or physical-device test performed.
+
+Evidence: `build/rewind.png`, `build/rewind-compact.png`, `build/rewind-tests.log`, `build/rewind-capture.log`, `build/driving-tests.log`. Captures are real rendered game scenes. Source reference is not a shipped asset; no new external art was introduced.
+
+Remaining acceptance: owner's in-motion review of the proposed 300/60 ms durations, touch/safe-area checks, and mobile ghost-mesh cost. Snapshot preview remains discrete at 10 Hz. Provider fulfillment and pack configuration remain outstanding as above. No backend deployment is needed for this presentation change.

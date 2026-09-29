@@ -38,6 +38,8 @@ var rewind_origin: Dictionary = {}
 var rewind_choices: Array[Dictionary] = []
 var rewind_selected: int = 0
 var rewind_was_paused: bool = false
+var rewind_return := RewindReturn.new()
+var rewind_ghosts: Node3D
 var finish_rating_pending: bool = false
 const FINISH_TICKS: int = 216
 
@@ -235,6 +237,7 @@ func _physics_process(_delta: float) -> void:
 		countdown_label.text = ""
 		countdown_ticks -= 1
 		return
+	if not rewind_return.step_due(): return
 	race_cues.show_start(0, sim.state.tick) if production_mode and not editor_test else race_cues.reset()
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
@@ -349,6 +352,7 @@ func _process(delta: float) -> void:
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
 	var section_start: int = profile_start
 	var weight: float = Engine.get_physics_interpolation_fraction() if not paused else 1.0
+	if not paused and finish_sim == null: weight = rewind_return.interpolation(weight)
 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
@@ -389,12 +393,12 @@ func _process(delta: float) -> void:
 	if profile_enabled:
 		profile_props_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
-	camera.follow(point, presented.state.velocity, heading, delta)
+	camera.follow(point, presented.state.velocity, heading, rewind_return.visual_delta(delta) if not paused else delta)
 	if profile_enabled:
 		profile_camera_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
 	if hud.rewind_button != null:
-		hud.rewind_button.disabled = countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3
+		hud.rewind_button.disabled = countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3 or rewind_return.remaining > 0
 		hud.rewind_button.text = "Rewind · %d / 3" % online_rewinds.size()
 	hud.set_track(native_track)
 	hud.update_values(presented.state, frame, delta, paused, recorder.active)
@@ -426,6 +430,7 @@ func restart() -> void:
 	if is_instance_valid(rewind_panel): return
 	online_frames.clear()
 	online_rewinds.clear()
+	rewind_return.reset()
 	rewind_history = RewindHistory.new()
 	if resume_credits != null: resume_credits.begin(resume_ticket_id)
 	recorder.active = false
@@ -689,7 +694,7 @@ func set_contact_lighting_enabled(enabled: bool) -> void:
 
 
 func open_rewind() -> void:
-	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3: return
+	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3 or rewind_return.remaining > 0: return
 	rewind_choices = rewind_history.choices(sim.state.tick)
 	if rewind_choices.is_empty(): return
 	rewind_was_paused = paused
@@ -706,7 +711,12 @@ func open_rewind() -> void:
 	rewind_panel.selected.connect(preview_rewind)
 	rewind_panel.cancelled.connect(cancel_rewind)
 	rewind_panel.confirmed.connect(confirm_rewind)
-	rewind_panel.slider.max_value = rewind_choices.size()-1
+	rewind_panel.configure(rewind_choices,sim.state.tick,camera,native_track)
+	rewind_ghosts = preload("res://vehicle/rewind_ghosts.gd").new()
+	add_child(rewind_ghosts)
+	var markers: Array[Dictionary] = rewind_choices.duplicate()
+	markers.append({"tick":sim.state.tick,"state":rewind_origin.state})
+	rewind_ghosts.configure(car,native_track,bridge_presentation,markers,sim.state.tick)
 	rewind_selected = maxi(0,rewind_choices.size()-31)
 	rewind_panel.slider.value = rewind_selected
 	preview_rewind(rewind_selected)
@@ -719,15 +729,17 @@ func open_rewind() -> void:
 
 func preview_rewind(index: int) -> void:
 	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
-	rewind_selected = clampi(index,0,rewind_choices.size()-1)
+	rewind_selected = clampi(index,0,rewind_choices.size())
 	rewind_panel.slider.set_value_no_signal(rewind_selected)
-	var item: Dictionary = rewind_choices[rewind_selected]
+	var live: bool = rewind_selected == rewind_choices.size()
+	var item: Dictionary = rewind_origin if live else rewind_choices[rewind_selected]
 	RewindHistory.restore(sim.state,item.state)
 	RewindHistory.restore(track_session,item.session)
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	camera.follow(sim.state.position,sim.state.velocity,sim.state.heading,0.0,true)
-	rewind_panel.details.text = "−%.1f s   ·   Lap %d   ·   %.2f s" % [(int(rewind_origin.state.tick)-sim.state.tick)/120.0,track_session.completed_laps+1,track_session.race_time_seconds()]
+	rewind_ghosts.present(rewind_selected)
+	rewind_panel.show_moment(sim.state,track_session,rewind_ghosts.labels,rewind_ghosts.world(item.state),live)
 
 func cancel_rewind() -> void:
 	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
@@ -739,7 +751,7 @@ func cancel_rewind() -> void:
 	_close_rewind(rewind_was_paused)
 
 func confirm_rewind() -> void:
-	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
+	if not is_instance_valid(rewind_panel) or resume_credits.busy or rewind_selected >= rewind_choices.size(): return
 	var target: Dictionary = rewind_choices[rewind_selected]
 	var from_tick: int = int(rewind_origin.state.tick)
 	rewind_panel.set_busy(true)
@@ -750,7 +762,7 @@ func confirm_rewind() -> void:
 		rewind_panel.set_busy(false)
 		rewind_panel.status.text = str(result.get("error","Connection unavailable"))
 		if not resume_credits.pending.is_empty():
-			rewind_panel.slider.editable = false
+			rewind_panel.lock_pending()
 			rewind_panel.cancel.text = "Leave race"
 			rewind_panel.status.text += " · Retry to resolve the pending resume, or leave. It may already be spent."
 		return
@@ -769,9 +781,15 @@ func confirm_rewind() -> void:
 	car.suspension_speed = Vector3.ZERO
 	checkpoint_marker.previous_gate = -2
 	if music != null: music.start(native_track)
-	_close_rewind(false)
+	_close_rewind(false,true)
 
-func _close_rewind(stay_paused: bool) -> void:
+func _close_rewind(stay_paused: bool, resumed: bool = false) -> void:
+	if is_instance_valid(rewind_ghosts):
+		remove_child(rewind_ghosts)
+		rewind_ghosts.queue_free()
+		rewind_ghosts = null
+	if resumed: rewind_return.resume()
+	elif not stay_paused: rewind_return.cancel()
 	remove_child(rewind_panel)
 	rewind_panel.queue_free()
 	rewind_panel = null

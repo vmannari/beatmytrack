@@ -23,6 +23,7 @@ func check(ok: bool, message: String) -> void:
 		print("FAIL: "+message)
 
 func run() -> void:
+	_check_return_pacing()
 	root.size = Vector2i(1280,720)
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--capture-rewind="): capture_path = argument.trim_prefix("--capture-rewind=")
@@ -54,6 +55,17 @@ func run() -> void:
 	game.call("_physics_process",1.0/120.0)
 	check(game.sim.state.tick == game.rewind_choices[0].tick,"preview never advances physics")
 	check(not FileAccess.file_exists(guest_path),"opening and scrubbing do not spend a resume")
+	check(game.rewind_ghosts.ghosts.size() == 4 and game.rewind_ghosts.labels.size() > 0,"preview shares a bounded pool of actual history cars")
+	game.preview_rewind(game.rewind_choices.size())
+	check(game.sim.state.snapshot() == original and game.rewind_panel.confirm.disabled,"LIVE endpoint previews original state and cannot spend")
+	await game.confirm_rewind()
+	check(game.online_rewinds.is_empty(),"programmatic confirmation at LIVE also cannot spend")
+	game.preview_rewind(0)
+	game.rewind_panel._toggle_play()
+	game.rewind_panel._process(0.8)
+	check(game.rewind_selected == 2 and game.paused,"quarter-speed transport advances recorded preview only")
+	game.rewind_panel.playing = false
+	game.preview_rewind(0)
 	if not capture_path.is_empty():
 		await process_frame
 		await process_frame
@@ -70,6 +82,7 @@ func run() -> void:
 	check(game.sim.state.snapshot() == original,"cancel restores exact canonical state")
 	check(RewindHistory.properties(game.track_session,true) == original_session,"cancel restores exact timing and ordered gates")
 	check(not game.paused and game.online_rewinds.is_empty(),"cancel costs no race resume")
+	check(game.rewind_ghosts == null,"cancel removes ghost scene")
 	await game.open_rewind()
 	game.preview_rewind(0)
 	var target: Dictionary = game.rewind_choices[0].duplicate(true)
@@ -82,6 +95,14 @@ func run() -> void:
 	check(game.online_frames.size() == 4000,"discarded input stays in audit replay")
 	check(not game.attempt_practice,"resume does not disqualify leaderboard eligibility")
 	check(game.rewind_history.entries[-1].tick <= target.tick,"discarded future checkpoints are removed")
+	await game.open_rewind()
+	check(game.rewind_panel == null,"cannot reopen to interrupt the brief resume ramp")
+	var before_return: int = game.sim.state.tick
+	var before_inputs: int = game.online_frames.size()
+	for i: int in range(36): game.call("_physics_process",1.0/120.0)
+	var returned_ticks: int = game.sim.state.tick-before_return
+	check(returned_ticks > 0 and returned_ticks < 36,"resume briefly reduces cadence of complete simulation steps")
+	check(game.online_frames.size()-before_inputs == returned_ticks,"slow return records exactly one input per canonical tick")
 	var refreshed: Dictionary = await game.resume_credits.refresh()
 	check(refreshed.data.free == 0,"guest daily allowance persists")
 	game.resume_credits.begin()
@@ -108,6 +129,25 @@ func run() -> void:
 	_check_exact_restore(track,fixture.replay.frames)
 	print("Rewind: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _check_return_pacing() -> void:
+	var pacing := RewindReturn.new()
+	pacing.resume()
+	var ticks: int = 0
+	for i: int in range(36):
+		if pacing.step_due(): ticks += 1
+	check(ticks == 23 and pacing.remaining == 0,"resume ramp lasts 300 ms and executes 23 full ticks")
+	check(pacing.step_due() and pacing.speed == 1.0,"resume returns to full cadence")
+	for fps: int in [30,60,120]:
+		pacing.cancel()
+		for i: int in range(fps):
+			pacing.visual_delta(1.0/fps)
+		check(pacing.cancel_remaining == 0.0,"cancel easing expires independently of render frequency")
+	var full_speed: bool = true
+	for i: int in range(120):
+		pacing.cancel()
+		full_speed = full_speed and pacing.step_due() and pacing.speed == 1.0
+	check(full_speed,"repeated Cancel never slows simulation or input sampling")
 
 func _check_exact_restore(track: NativeTrack, frames: Array) -> void:
 	var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))

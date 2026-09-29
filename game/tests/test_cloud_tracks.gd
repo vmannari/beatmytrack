@@ -123,7 +123,9 @@ func run() -> void:
 	await game.confirm_rewind()
 	check(game.online_rewinds.size() == 1 and resumed_tick == 1200,"actual server authorizes full twenty-second rewind")
 	input.cursor = resumed_tick
-	for tick: int in range(resumed_tick,fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+	for tick: int in range(resumed_tick,fixture.replay.frames.size()+RewindReturn.RESUME_TICKS):
+		if input.cursor >= fixture.replay.frames.size(): break
+		game._physics_process(1.0/120.0)
 	check(game.track_session.finished and game.track_session.elapsed_ticks == 12757,"actual game race matches canonical verifier timing")
 	check(game.online_frames.size() == fixture.replay.frames.size()+2400,"audit includes original and resumed input segments")
 	check(cloud.queue_run(race,game.online_frames,"",game.online_rewinds),"actual game replay persisted")

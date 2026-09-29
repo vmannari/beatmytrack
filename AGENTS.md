@@ -101,3 +101,7 @@ The owner authorizes the first backend for authentication, immutable track shari
 
 ## Account-menu override (2026-09-28)
 The owner requests Google and Development sign-in choices. Development uses the fixed `developer` account and is temporary; Google uses the player's selected username. This authorizes account-menu/backend integration and browser-based Google sign-in. Keep development identities separate, never ship their key, and make disabling development authentication reject existing development sessions as well as hide the option. See docs/ACCOUNT_SIGN_IN.md for setup, migration, actual tests, screenshots and remaining real-Google/device acceptance.
+
+
+## Bridge junction and creator performance override (2026-09-29)
+The owner requests overlapping bridges with drivable intersections and creator performance improvements, especially undo. Same-height creator spans may overlap as one elevated road area; this supersedes the earlier nonoverlapping-span restriction. Unequal ramp heights and legacy native-deck merges remain unsupported. See docs/BRIDGE_JUNCTIONS_AND_EDITOR_PERFORMANCE.md for behavior, desktop timing evidence, tests and remaining device acceptance.

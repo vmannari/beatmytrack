@@ -494,7 +494,7 @@ func _escape_blocker(from: Vector2, point: Vector2, radius: float, elevated: boo
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
-			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center) and not CreatorBridges.shares_span(creator_bridges,point,center): continue
 			if cell_at(center, elevated) not in [4]: continue
 			var low: Vector2 = center - Vector2.ONE * cell_size * 0.5
 			var high: Vector2 = center + Vector2.ONE * cell_size * 0.5
@@ -528,7 +528,7 @@ func _support_plane(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	for y: int in range(cy - reach, cy + reach + 1):
 		for x: int in range(cx - reach, cx + reach + 1):
 			var center := Vector2((x+0.5)*cell_size-half_extent.x, half_extent.y-(y+0.5)*cell_size)
-			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center) and not CreatorBridges.shares_span(creator_bridges,point,center): continue
 			if cell_at(center, elevated) not in [4]: continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE*cell_size*0.5, center + Vector2.ONE*cell_size*0.5)
 			var offset: Vector2 = point - nearest
@@ -570,7 +570,7 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 			if row_inside and x >= 0 and x < grid_width and layer[row+x] != 4:
 				continue
 			var center := Vector2((x + 0.5) * cell_size - half_extent.x, half_extent.y - (y + 0.5) * cell_size)
-			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center): continue
+			if span >= 0 and not CreatorBridges.contains(creator_bridges[span],center) and not CreatorBridges.shares_span(creator_bridges,point,center): continue
 			var nearest: Vector2 = point.clamp(center - Vector2.ONE * cell_size * 0.5, center + Vector2.ONE * cell_size * 0.5)
 			var offset: Vector2 = point - nearest
 			if offset.length_squared() < radius * radius:

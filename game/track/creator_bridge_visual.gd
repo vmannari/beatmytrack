@@ -14,8 +14,10 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for span: Dictionary in bridges:
 		if theme == "desert":
-			DesertBridgeVisual.append(tool,deck,span)
+			DesertBridgeVisual.append(tool,deck,span,bridges)
 			continue
+		var rails: Dictionary = {}
+		for side: float in [-1.0,1.0]: rails[side] = CreatorBridges.rail_runs(span,bridges,0,float(span.length),side)
 		var count: int = ceili(float(span.length)/0.5)
 		var half: float = float(span.width)*0.5
 		for i: int in range(count):
@@ -23,23 +25,24 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 			var b: float = float(span.length)*(i+1)/count
 			strip(deck,span,a,b,-half,half,0.025,Color("343638"))
 			for side: float in [-1.0,1.0]:
-				var inner: float = half*side
-				var outer: float = (half+CreatorBridges.RAIL)*side
-				# Broad concrete footing, plain grey steel handrail. Both remain
-				# inside the existing solid rail footprint; the underpass stays open.
-				strip(tool,span,a,b,inner,outer,0.10,Color("afb1a5"))
-				wall(tool,span,a,b,inner,0.025,0.10,Color("626e70"))
-				wall(tool,span,a,b,outer,-0.42,0.10,Color("817e70"))
-				strip(tool,span,a,b,(half+0.63)*side,outer,-0.40,Color("b6ae99"))
-				wall(tool,span,a,b,outer,-0.42,-0.34,Color("403f38"))
-				var rail: float = (half+0.14)*side
-				var back: float = (half+0.34)*side
-				# One plain rectangular handrail, 20 cm higher than the old crown.
-				strip(tool,span,a,b,rail,back,0.85,RAIL_TOP)
-				wall(tool,span,a,b,rail,0.65,0.85,RAIL_SIDE)
-				wall(tool,span,a,b,back,0.65,0.85,RAIL_SIDE)
-				strip(tool,span,a,b,rail,back,0.65,RAIL_SIDE)
-				strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
+				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
+					var inner: float = half*side
+					var outer: float = (half+CreatorBridges.RAIL)*side
+					# Broad concrete footing, plain grey steel handrail. Both remain
+					# inside the existing solid rail footprint; the underpass stays open.
+					strip(tool,span,run.x,run.y,inner,outer,0.10,Color("afb1a5"))
+					wall(tool,span,run.x,run.y,inner,0.025,0.10,Color("626e70"))
+					wall(tool,span,run.x,run.y,outer,-0.42,0.10,Color("817e70"))
+					strip(tool,span,run.x,run.y,(half+0.63)*side,outer,-0.40,Color("b6ae99"))
+					wall(tool,span,run.x,run.y,outer,-0.42,-0.34,Color("403f38"))
+					var rail: float = (half+0.14)*side
+					var back: float = (half+0.34)*side
+					# One plain rectangular handrail, 20 cm higher than the old crown.
+					strip(tool,span,run.x,run.y,rail,back,0.85,RAIL_TOP)
+					wall(tool,span,run.x,run.y,rail,0.65,0.85,RAIL_SIDE)
+					wall(tool,span,run.x,run.y,back,0.65,0.85,RAIL_SIDE)
+					strip(tool,span,run.x,run.y,rail,back,0.65,RAIL_SIDE)
+					strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
 		# Sparse slim steel uprights, all within the existing solid rail strip.
 		var posts: int = maxi(1,ceili(float(span.length)/8.0))
@@ -47,6 +50,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 			var a: float = clampf(float(span.length)*i/posts,0,float(span.length)-0.24)
 			var b: float = a+0.24
 			for side: float in [-1.0,1.0]:
+				if CreatorBridges.clip_runs(rails[side],a,b) != [Vector2(a,b)]: continue
 				var inner: float = (half+0.16)*side
 				var outer: float = (half+0.32)*side
 				strip(tool,span,a,b,inner,outer,0.85,RAIL_SIDE)
@@ -61,6 +65,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 		# Plain end caps close the handrail.
 		for u: float in [0.0,float(span.length)]:
 			for side: float in [-1.0,1.0]:
+				if CreatorBridges.clip_runs(rails[side],u,u+0.001).is_empty(): continue
 				quad(tool,vertex(span,u,(half+0.14)*side,0.65),vertex(span,u,(half+0.34)*side,0.65),vertex(span,u,(half+0.34)*side,0.85),vertex(span,u,(half+0.14)*side,0.85),RAIL_SIDE)
 		# Small approach markings explain which ends can be driven onto.
 		for u: float in [2.0,float(span.length)-2.0]:

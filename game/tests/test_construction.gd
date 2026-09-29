@@ -78,8 +78,9 @@ func run() -> void:
 	check(CreatorBridges.validate([doc.pieces[1],diagonal]).is_empty(),"separated diagonal bridge spans are allowed")
 	var duplicate: Dictionary = doc.duplicate(true)
 	duplicate.pieces.append(doc.pieces[1].duplicate(true))
-	check(not TrackDocument.validate(duplicate).is_empty(),"overlapping elevated spans are rejected")
+	check(CreatorBridges.validate(duplicate.pieces).is_empty(),"overlapping matching elevated spans are accepted")
 	check(TrackCompiler.compile(JSON.parse_string(JSON.stringify(doc))).content_hash == track.content_hash,"bridge JSON round trip keeps identity")
+	_test_intersections()
 	_drive(track)
 	folder = "user://construction_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
@@ -92,6 +93,7 @@ func run() -> void:
 	await process_frame
 	await process_frame
 	await _interaction()
+	if capture: await _capture_intersections()
 	app.queue_free()
 	await process_frame
 	var dir := DirAccess.open(folder)
@@ -237,3 +239,72 @@ func _interaction() -> void:
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/construction-practice.png")) == OK,"bridge driving screenshot")
 	if game != null: app.call("_leave_race")
+
+func _test_intersections() -> void:
+	var doc: Dictionary = TrackDocument.create_default()
+	var horizontal: Dictionary = segment(Vector2(-30,0),Vector2(30,0),"bridge")
+	var vertical: Dictionary = segment(Vector2(0,-30),Vector2(0,30),"bridge")
+	doc.pieces = [horizontal,vertical]
+	var track: NativeTrack = TrackCompiler.compile(doc)
+	check(track != null,"crossed bridge decks compile")
+	if track == null: return
+	var reversed: Dictionary = doc.duplicate(true)
+	reversed.pieces.reverse()
+	var other: NativeTrack = TrackCompiler.compile(reversed)
+	check(other != null and track.deck_cells == other.deck_cells and track.cells == other.cells,"bridge surface union is independent of placement order")
+	var config: HandlingConfig = load("res://resources/balanced.tres")
+	for axis: Vector2 in [Vector2.RIGHT,Vector2.UP]:
+		for direction: float in [-1.0,1.0]:
+			var state := VehicleState.new()
+			state.position = axis*(-18.0*direction)
+			state.track_elevated = true
+			for step: int in range(1,145):
+				var before: Vector2 = state.position
+				state.position = axis*((-18.0+step*0.25)*direction)
+				state.velocity = axis*direction*15.0
+				track.resolve(state,before,config)
+			check(state.collision_count == 0 and state.track_elevated,"drive both directions through elevated crossing without interior rail impacts")
+	for reversed_order: bool in [false,true]:
+		var current: NativeTrack = other if reversed_order else track
+		var state := VehicleState.new()
+		state.position = Vector2(-18,0)
+		state.track_elevated = true
+		for step: int in range(1,145):
+			var before: Vector2 = state.position
+			state.position = Vector2(-18+step*0.25,0) if step <= 72 else Vector2(0,(step-72)*0.25)
+			state.velocity = (state.position-before)*60.0
+			current.resolve(state,before,config)
+		check(state.collision_count == 0 and state.track_elevated and state.position.distance_to(Vector2(0,18)) < 0.01,"turn between spans at the junction in either placement order")
+	for point: Vector2 in [Vector2(0,7.25),Vector2(7.25,0),Vector2(-7.25,0),Vector2(0,-7.25)]:
+		check(track.cell_at(point,true) == 0,"intersection opens former internal rail")
+	check(track.cell_at(Vector2(18,7.25),true) == 4,"union retains exterior rail")
+	check(CreatorBridges.rail_runs(horizontal,[horizontal,vertical],0,60,1) == [Vector2(0,23),Vector2(37,60)],"visual rails open exactly across perpendicular road")
+	var diagonal: Dictionary = segment(Vector2(-24,-24),Vector2(24,24),"bridge")
+	check(CreatorBridges.validate([horizontal,diagonal]).is_empty(),"oblique flat deck overlap accepted")
+	var ramp: Dictionary = segment(Vector2(24,-30),Vector2(24,30),"bridge")
+	check(not CreatorBridges.validate([horizontal,ramp]).is_empty(),"unequal ramp heights give actionable placement error")
+	for theme: String in ["pine","desert"]:
+		var parent := Node3D.new()
+		CreatorBridgeVisual.build(parent,[horizontal,vertical],theme)
+		check(parent.get_node_or_null("BridgeAsphalt") != null,"intersection builds shared bridge presentation in "+theme)
+		parent.free()
+
+func _capture_intersections() -> void:
+	for theme: String in ["pine","desert"]:
+		var doc: Dictionary = TrackDocument.create_default()
+		doc.name = "Bridge junction"
+		doc.layout = {}
+		doc.theme = theme
+		doc.pieces = [segment(Vector2(-30,0),Vector2(30,0),"bridge"),segment(Vector2(0,-30),Vector2(0,30),"bridge")]
+		app.set("document",doc)
+		app.call("_show_screen","create")
+		var canvas: EditorCanvas = app.get("canvas")
+		canvas.zoom = 1.5
+		canvas.pan = Vector2.ZERO
+		canvas.selected_piece = -1
+		canvas.selected_object = -1
+		app.call("_build_editor_tools")
+		canvas.queue_redraw()
+		for frame: int in range(4): await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png("res://../build/bridge-junction-"+theme+".png") == OK,"bridge junction screenshot "+theme)

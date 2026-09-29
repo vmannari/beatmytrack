@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 R01/T01-T04/V04/V05/Q01: same-height creator bridge overlaps form drivable elevated junctions with clipped internal rails. Undo/redo preserve the viewport, compile previews asynchronously and reuse bounded track/scenery caches; shape/deletion edits use the same path and skip the unused map raster. Desktop fixture: 45.1 ms undo / 13.3 ms redo versus 1368.6 ms reconstructed synchronous undo. Bridge, replay, editor and raster checks pass; no phone attached, Android export or device test. See docs/BRIDGE_JUNCTIONS_AND_EDITOR_PERFORMANCE.md.
+
 2026-09-29 V02/V04/V05/Q01: Spiral shoulder seams fixed in visual kit 86: continuous sand beneath kerb tips and spatially indexed overlap clipping with nearest-road blend ownership. Focused geometry, 928 surface-profile and 53 desert checks pass; desktop Spiral captures inspected. No phone attached, Android export or device test; mobile mesh/build cost and in-motion acceptance remain. See docs/SPIRAL_SHOULDERS.md.
 
 2026-09-29 B02–B07/B19/R01/V03/Q01: backend library/cache/search, ratings, per-vehicle high scores, actual replay submission/outbox and verified publishing are integrated into Play/results. Graphical HTTP/worker integration: 47 checks; exact five-lap capture verifies at 12,757 ticks. Existing local files preserved; initial catalog migration choice, physical phone and hosted deployment remain. See CLOUD_TRACKS.md for actual checks and evidence.

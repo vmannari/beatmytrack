@@ -126,7 +126,8 @@ func refresh() -> void:
 
 func show_native(track: NativeTrack) -> void:
 	native_preview = track
-	preview.show_track(track)
+	# The 3D editor never draws this legacy CPU-rasterized map texture.
+	if not world_backdrop: preview.show_track(track)
 	native_changed.emit(track)
 	queue_redraw()
 

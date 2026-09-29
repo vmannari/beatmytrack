@@ -49,6 +49,7 @@ var pending_menu_notice: String = ""
 var editor_preview_thread: Thread
 var editor_preview_document: Dictionary = {}
 var editor_raster_cache: Dictionary = {"enabled":true}
+var editor_compiled_cache: Array[Dictionary] = []
 var online: AccountController
 var account_button: Button
 var startup_complete: bool = false
@@ -1094,7 +1095,7 @@ func _change_piece(key: String, delta: float) -> void:
 	else:
 		_remember()
 		document.pieces[canvas.selected_piece] = piece
-		_save_draft()
+		_save_draft(true)
 	_build_editor_tools()
 
 func _delete_piece() -> void:
@@ -1103,7 +1104,7 @@ func _delete_piece() -> void:
 		_remember()
 		document.pieces.remove_at(canvas.selected_piece)
 		canvas.selected_piece = -1
-		_save_draft()
+		_save_draft(true)
 	editor_geometry = ""
 	_build_editor_tools()
 
@@ -1189,7 +1190,7 @@ func _focus_issue() -> void:
 func _commit_selection() -> void:
 	if canvas.mode in ["move","add"]: document.route_override = true
 	canvas.refresh()
-	_save_draft()
+	_save_draft(true)
 	_build_editor_tools()
 
 func _delete_selection() -> void:
@@ -1246,15 +1247,29 @@ func _undo() -> void:
 	if history.is_empty(): return
 	redo_history.append(document.duplicate(true))
 	document = history.pop_back()
-	_save_draft()
-	_show_screen("create")
+	_restore_editor_history()
 
 func _redo() -> void:
 	if redo_history.is_empty(): return
 	history.append(document.duplicate(true))
 	document = redo_history.pop_back()
-	_save_draft()
-	_show_screen("create")
+	_restore_editor_history()
+
+func _restore_editor_history() -> void:
+	# Keep the viewport, camera and controls alive; stale worker results are
+	# discarded by _process, without waiting for them in the input handler.
+	canvas.changed_in_gesture = false
+	canvas.cancel_gesture()
+	canvas.ghost.clear()
+	canvas.selected_piece = -1
+	canvas.selected_object = -1
+	canvas.document = document
+	canvas.road_approval_pending = false
+	var title: Label = root_ui.find_child("TrackName",true,false) as Label
+	if title != null: title.text = str(document.name)
+	canvas.refresh()
+	_save_draft(true)
+	_build_editor_tools()
 
 func _refresh_editor() -> void:
 	if not is_instance_valid(editor_status): return
@@ -1286,8 +1301,8 @@ func _save_draft(background_preview: bool = false) -> Error:
 	if is_instance_valid(canvas):
 		if is_instance_valid(editor_undo): editor_undo.disabled = history.is_empty()
 		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
-		if background_preview and (canvas.road_approval_pending or _objects_only_edit()):
-			if not canvas.road_approval_pending: editor_world.preview_objects(document)
+		if background_preview:
+			if _objects_only_edit(): editor_world.preview_objects(document)
 			canvas.queue_redraw()
 			test_button.disabled = true
 			_queue_editor_preview()
@@ -1932,6 +1947,17 @@ func _editor_track_preview() -> NativeTrack:
 	return _compile_editor_preview(document)
 
 func _compile_editor_preview(source: Dictionary) -> NativeTrack:
+	# Only the single preview worker (or its joined foreground replacement)
+	# accesses this bounded cache. Undo can reuse collision and route data too.
+	for entry: Dictionary in editor_compiled_cache:
+		if entry.document == source: return entry.track
+	var result: NativeTrack = _compile_editor_preview_uncached(source)
+	if result != null:
+		editor_compiled_cache.append({"document":source.duplicate(true),"track":result})
+		if editor_compiled_cache.size() > 3: editor_compiled_cache.pop_front()
+	return result
+
+func _compile_editor_preview_uncached(source: Dictionary) -> NativeTrack:
 	if TrackDocument.validate(source).is_empty(): return TrackCompiler.compile(source,editor_raster_cache)
 	if not TrackDocument.validate(source,false).is_empty(): return null
 	# A draft may have an unfinished lap. Render its actual map using a safe

@@ -415,6 +415,7 @@ func _objects_and_issues() -> void:
 	_touch(canvas,51,start_touch,true)
 	_touch(canvas,51,start_touch,false)
 	check(doc.has("start_line") and Vector2(doc.start_line.position[0],doc.start_line.position[1]).distance_to(clear_start) < 0.01, "a map tap stores the selected start line position")
+	await _wait_preview()
 	check(doc.objects == blocked_document.objects and not (app.get("test_button") as Button).disabled and TrackDocument.validate(doc).is_empty(), "moving the start resolves the issue while preserving the obstacle and a valid document")
 	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "the alternative practice start is saved with the map")
 	app.call("_undo")
@@ -422,10 +423,12 @@ func _objects_and_issues() -> void:
 	await process_frame
 	canvas = app.get("canvas")
 	doc = app.get("document")
+	await _wait_preview()
 	check(doc == blocked_document and (app.get("test_button") as Button).disabled, "Undo restores the original blocked start and its issue")
 	app.call("_focus_issue")
 	var blocked_count: int = doc.objects.size()
 	app.call("_delete_selection")
+	await _wait_preview()
 	check(doc.objects.size() == blocked_count-1 and not (app.get("test_button") as Button).disabled, "deleting the selected obstruction directly restores practice access")
 	var before_practice: Dictionary = doc.duplicate(true)
 	var compiled_before: NativeTrack = TrackCompiler.compile(doc)
@@ -667,3 +670,8 @@ func _attached_editing() -> void:
 			if not preview:
 				app.call("_undo")
 				check(app.get("document").pieces[0] == before,"anchored endpoint edit is undoable")
+
+func _wait_preview() -> void:
+	var deadline: int = Time.get_ticks_msec()+15000
+	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	check(app.get("editor_preview_thread") == null,"background collision validation finishes within deadline")

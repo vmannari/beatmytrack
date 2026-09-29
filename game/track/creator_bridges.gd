@@ -8,8 +8,48 @@ const UNDERPASS_CLEARANCE: float = 2.20 # Tallest local car (~1.73 m), 0.42 m de
 
 static var base_footprints: Dictionary = {}
 
+static func road_polygon(span: Dictionary) -> PackedVector2Array:
+	var polygon := PackedVector2Array()
+	var origin := Vector2(span.position[0],span.position[1])
+	var half: float = float(span.width)*0.5
+	for p: Vector2 in [Vector2(0,-half),Vector2(span.length,-half),Vector2(span.length,half),Vector2(0,half)]:
+		polygon.append(origin+p.rotated(deg_to_rad(float(span.heading))))
+	return polygon
+
+static func rail_runs(span: Dictionary, bridges: Array, a: float, b: float, side: float) -> Array[Vector2]:
+	# Cut rail bands at the union boundary, including oblique intersections.
+	var runs: Array[Vector2] = [Vector2(a,b)]
+	var inner: float = float(span.width)*0.5*side
+	var outer: float = (float(span.width)*0.5+RAIL)*side
+	var band := PackedVector2Array([Vector2(a,inner),Vector2(b,inner),Vector2(b,outer),Vector2(a,outer)])
+	for other: Dictionary in bridges:
+		if other == span: continue
+		var polygon := PackedVector2Array()
+		for point: Vector2 in road_polygon(other): polygon.append(local_point(span,point))
+		for overlap: PackedVector2Array in Geometry2D.intersect_polygons(band,polygon):
+			var low: float = b
+			var high: float = a
+			for point: Vector2 in overlap:
+				low = minf(low,point.x)
+				high = maxf(high,point.x)
+			var remaining: Array[Vector2] = []
+			for run: Vector2 in runs:
+				if low > run.x: remaining.append(Vector2(run.x,minf(low,run.y)))
+				if high < run.y: remaining.append(Vector2(maxf(high,run.x),run.y))
+			runs = remaining
+	return runs
+
+static func clip_runs(runs: Array, a: float, b: float) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	for run: Vector2 in runs:
+		var low: float = maxf(a,run.x)
+		var high: float = minf(b,run.y)
+		if high > low: result.append(Vector2(low,high))
+	return result
+
 static func validate(pieces: Array, base_id: String = "") -> Array[String]:
 	var footprints: Array[PackedVector2Array] = []
+	var spans: Array[Dictionary] = []
 	var legacy: Array = _base_polygons(base_id) if pieces.any(func(p: Dictionary) -> bool: return p.kind == "bridge") else []
 	for piece: Dictionary in pieces:
 		if piece.kind != "bridge": continue
@@ -18,8 +58,13 @@ static func validate(pieces: Array, base_id: String = "") -> Array[String]:
 		var half: float = float(piece.width)*0.5+RAIL
 		for p: Vector2 in [Vector2(0,-half),Vector2(piece.length,-half),Vector2(piece.length,half),Vector2(0,half)]:
 			polygon.append(origin+p.rotated(deg_to_rad(float(piece.heading))))
-		for existing: PackedVector2Array in footprints:
-			if not Geometry2D.intersect_polygons(existing,polygon).is_empty(): return ["Bridge spans cannot overlap each other. Cross a bridge with ground road."]
+		for other: Dictionary in spans:
+			for overlap: PackedVector2Array in Geometry2D.intersect_polygons(road_polygon(other),road_polygon(piece)):
+				for index: int in range(overlap.size()):
+					for point: Vector2 in [overlap[index],overlap[index].lerp(overlap[(index+1)%overlap.size()],0.5)]:
+						if absf(height(other,point)-height(piece,point)) > 0.01:
+							return ["Join bridges at matching heights: move the crossing onto their flat decks, away from the ramps."]
+		spans.append(piece)
 		for existing: PackedVector2Array in legacy:
 			if not Geometry2D.intersect_polygons(existing,polygon).is_empty(): return ["Move this span away from the existing elevated road."]
 		footprints.append(polygon)
@@ -65,6 +110,13 @@ static func span_at(bridges: Array, point: Vector2) -> int:
 		if contains(bridges[i],point): return i
 	return -1
 
+static func shares_span(bridges: Array, point: Vector2, center: Vector2) -> bool:
+	# Every supporting span contributes its exterior rail at a junction.
+	# Nearby disconnected spans still cannot push the car off its own deck.
+	for bridge: Dictionary in bridges:
+		if contains(bridge,point) and contains(bridge,center): return true
+	return false
+
 static func blocks_ground(bridge: Dictionary, point: Vector2) -> bool:
 	if not contains(bridge,point): return false
 	var p: Vector2 = local_point(bridge,point)
@@ -82,7 +134,12 @@ static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Arr
 				var point := Vector2((x+0.5)*cell-extent.x,extent.y-(y+0.5)*cell)
 				var p: Vector2 = local_point(bridge,point)
 				if p.x < 0 or p.x > float(bridge.length) or absf(p.y) > float(bridge.width)*0.5+RAIL: continue
-				deck[y*grid.x+x] = 0 if absf(p.y) <= float(bridge.width)*0.5 else 4
+				# Union the road interiors before rails: a later rail must never
+				# close an earlier span's road at an elevated intersection.
+				if absf(p.y) <= float(bridge.width)*0.5:
+					deck[y*grid.x+x] = 0
+				elif deck[y*grid.x+x] != 0:
+					deck[y*grid.x+x] = 4
 				# Only ramp approaches alter the ground. Water/road beneath
 				# the middle of a span remains exactly as authored.
 				if (p.x < 2.0 or p.x > float(bridge.length)-2.0) and absf(p.y) <= float(bridge.width)*0.5:

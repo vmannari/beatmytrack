@@ -16,6 +16,12 @@ var ground_material: StandardMaterial3D
 var _last_size := Vector2.ZERO
 var _last_pan := Vector2.INF
 var _last_scale: float = -1.0
+var _visual_track: NativeTrack
+var _visual_cache: Array[Dictionary] = []
+
+func _exit_tree() -> void:
+	for entry: Dictionary in _visual_cache: entry.visual.free()
+	_visual_cache.clear()
 
 
 func _ready() -> void:
@@ -86,6 +92,7 @@ func show_track(data: NativeTrack) -> void:
 	if is_node_ready():
 		if reuse:
 			visual.refresh_editor_objects(track)
+			_visual_track = track
 			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 		else:
 			_build_track()
@@ -121,17 +128,32 @@ func _same_ground(before: NativeTrack, after: NativeTrack) -> bool:
 func _build_track() -> void:
 	if visual != null:
 		world.remove_child(visual)
-		visual.queue_free()
+		_visual_cache.append({"track":_visual_track,"visual":visual})
+		if _visual_cache.size() > 2:
+			var expired: Dictionary = _visual_cache.pop_front()
+			expired.visual.free()
 		visual = null
 	if track != null:
 		var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 		TrackTheme.apply_lighting(str(track.metadata.get("theme", "pine")),environment,sunlight)
 		environment.background_color = palette[1]
 		ground_material.albedo_color = palette[1]
-		visual = NativeTrackVisual.new()
-		visual.editor_preview = true
-		world.add_child(visual)
-		visual.build(track, BridgePresentation.new(track))
+		for index: int in range(_visual_cache.size()-1,-1,-1):
+			var entry: Dictionary = _visual_cache[index]
+			if entry.track.content_hash == track.content_hash:
+				visual = entry.visual
+				_visual_cache.remove_at(index)
+				break
+		if visual == null:
+			visual = NativeTrackVisual.new()
+			visual.editor_preview = true
+			world.add_child(visual)
+			visual.build(track, BridgePresentation.new(track))
+		else:
+			world.add_child(visual)
+			# Object-only previews may have temporarily changed these batches.
+			visual.refresh_editor_objects(track)
+		_visual_track = track
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 

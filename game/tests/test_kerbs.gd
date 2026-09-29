@@ -146,6 +146,8 @@ func _capture(directory: String) -> void:
 	root.add_child(game)
 	game.set_physics_process(false)
 	game.set("paused",true)
+	var cues: Control = game.get("race_cues")
+	cues.hide()
 	var hud: CanvasLayer = game.get("hud")
 	hud.visible = false
 	var countdown: Label = game.get("countdown_label")

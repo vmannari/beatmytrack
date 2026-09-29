@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-29 V01/V04/Q01: owner-requested clearer kerb suspension adds independent tyre travel and stronger body pitch/roll without changing simulation. Suspension 59, driving 74 and graphical kerb 40 checks pass; desktop crossing inspected. No Android export/device test; in-motion owner acceptance remains. See [KERB_SUSPENSION.md](KERB_SUSPENSION.md).
+
 2026-09-29 RW01-RW08/R01/R03/B19/V03/Q01: owner-approved leaderboard-eligible rewind supports a selectable twenty-second window, three resumes/race, one UTC daily free resume without rollover and permanent awarded/purchased credit storage. Native/graphical rewind and driving/practice/results checks pass; full backend coverage 170 passed / 6 expected skips, plus Linux original/rewind parity. PC services updated with migration 0006. Ad/billing adapters await provider and product configuration; no phone attached/export/device test. See [REWIND.md](REWIND.md) for actual commands, screenshots, limitations and remaining acceptance.
 
 2026-09-29 R01/T01-T04/B02/B19/Q01: upload failure traced to the running PC backend still using compiler 19. Rebuilt/restarted API and worker with compiler 20; both accept the same overlapping-bridge fixture/hash. BackendStart now builds/verifies the shared image before replacement. Construction: 102 checks; focused backend: 37 passed. Existing data retained; no production deployment, phone test or export. User upload retry remains. See docs/BACKEND_BRIDGE_VALIDATION.md.

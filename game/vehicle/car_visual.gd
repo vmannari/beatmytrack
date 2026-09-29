@@ -59,6 +59,7 @@ var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
 var rolling_wheels: Array[Node3D] = []
 var wheel_radii: Array[float] = []
+var wheel_rest_positions: Array[Vector3] = []
 var wheel_last_point := Vector2.ZERO
 var wheel_last_tick: int = -1
 var brake_lights: Array[MeshInstance3D] = []
@@ -232,9 +233,10 @@ func register_rolling_wheel(pivot: Node3D, radius: float) -> void:
 		mesh.reparent(rotor, false)
 	rolling_wheels.append(rotor)
 	wheel_radii.append(radius * HandlingConfig.BODY_SCALE)
+	wheel_rest_positions.append(pivot.position)
 
 
-func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0) -> void:
+func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0, kerb_heights: Vector4 = Vector4.ZERO) -> void:
 	# Consume snapshots once, independent of display rate; never write to simulation.
 	if last_tick < 0 or state.tick < last_tick or state.tick - last_tick > 30:
 		suspension = Vector3.ZERO
@@ -301,6 +303,20 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE + surface_heave
 	body.rotation.x = (suspension.y + ramp_body_pitch) * compliance
 	body.rotation.z = suspension.z * compliance + surface_roll
+	# The canonical spring moves the chassis; each tyre follows its own contact
+	# instead of inheriting that rigid plane. Keep diagonal/single-wheel contact.
+	var kerb_pose: Vector3 = state.kerb_offset if state.jump_height == 0.0 and state.roll_ticks == 0 else Vector3.ZERO
+	var kerb_basis := Basis.from_euler(Vector3(kerb_pose.y,0.0,kerb_pose.z))
+	for i: int in range(rolling_wheels.size()):
+		var rest: Vector3 = wheel_rest_positions[i]
+		var wheel: Node3D = rolling_wheels[i].get_parent() as Node3D
+		var contact_index: int = (0 if rest.z < 0.0 else 2) + (0 if rest.x < 0.0 else 1)
+		var height: float = kerb_heights[contact_index] if state.jump_height == 0.0 and state.roll_ticks == 0 else 0.0
+		wheel.position.y = (rest.y + (height-kerb_pose.x)/HandlingConfig.BODY_SCALE - kerb_basis.x.y*rest.x - kerb_basis.z.y*rest.z)/kerb_basis.y.y
+	# Accentuate the existing damped response, preserving the contacted side and
+	# axle. The kart retains its stiffer chassis; canonical handling is untouched.
+	body.rotation.x += kerb_pose.y * 0.70 * compliance
+	body.rotation.z += kerb_pose.z * 0.70 * compliance
 
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.

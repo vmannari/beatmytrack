@@ -18,6 +18,19 @@ func _run() -> void:
 	var car := CarVisual.new()
 	world.add_child(car)
 	var state := VehicleState.new()
+	for contacts: Vector4 in [Vector4(0.1,0,0,0),Vector4(0,0.1,0,0.1),Vector4(0.1,0.1,0.1,0),Vector4.ZERO]:
+		state.kerb_offset = Vector3((contacts.x+contacts.y+contacts.z+contacts.w)*0.25,atan2((contacts.x+contacts.y-contacts.z-contacts.w)*0.5,2.26),atan2((contacts.y+contacts.w-contacts.x-contacts.z)*0.5,1.46))
+		var before: Array = state.snapshot()
+		car.present_suspension(state,0.0,true,0.0,contacts)
+		var support := Basis.from_euler(Vector3(state.kerb_offset.y,0,state.kerb_offset.z))
+		for index: int in range(car.rolling_wheels.size()):
+			var pivot: Node3D = car.rolling_wheels[index].get_parent() as Node3D
+			var rest: Vector3 = car.wheel_rest_positions[index]
+			var slot: int = (0 if rest.z < 0 else 2)+(0 if rest.x < 0 else 1)
+			var tyre_height: float = ((support*pivot.position).y-rest.y)*HandlingConfig.BODY_SCALE+state.kerb_offset.x
+			check(absf(tyre_height-contacts[slot]) < 0.00001,"each tyre follows its own kerb contact")
+		check(is_equal_approx(car.body.rotation.z,state.kerb_offset.z*0.7) and is_equal_approx(car.body.rotation.x,state.kerb_offset.y*0.7),"body accentuates the correct kerb axle and side")
+		check(state.snapshot() == before,"kerb articulation preserves canonical state")
 	car.present_suspension(state, 0.0)
 	for i: int in range(1, 121):
 		state.tick = i

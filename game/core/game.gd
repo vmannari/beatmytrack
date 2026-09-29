@@ -371,7 +371,8 @@ func _process(delta: float) -> void:
 	var body_rumble: float = 0.0
 	if native_track != null:
 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
-	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble)
+	var kerb_contacts: Vector4 = native_track.kerb_heights(presented.state,handling) if native_track != null else Vector4.ZERO
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts)
 	if presented.state.jump_height == 0.0:
 		car.position.y += presented.state.kerb_offset.x
 		car.rotation.x += presented.state.kerb_offset.y

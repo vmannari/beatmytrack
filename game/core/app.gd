@@ -50,6 +50,7 @@ var editor_preview_thread: Thread
 var editor_preview_document: Dictionary = {}
 var editor_raster_cache: Dictionary = {"enabled":true}
 var editor_compiled_cache: Array[Dictionary] = []
+var editor_saved_snapshot: Dictionary = {}
 var online: AccountController
 var account_button: Button
 var startup_complete: bool = false
@@ -665,13 +666,19 @@ func _save_settings() -> void:
 	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
 
 func _new_document() -> void:
-	_save_draft()
+	if screen == "create" and _editor_has_unsaved_changes():
+		_confirm_editor_departure(_start_new_document)
+		return
+	_start_new_document()
+
+func _start_new_document() -> void:
 	_finish_preview_thread()
 	editor_view.clear()
 	object_browser_state.clear()
 	canvas = null
 	document = TrackDocument.create_blank()
 	document.id = TrackLibrary.unique_id()
+	editor_saved_snapshot = {}
 	_stamp_creator()
 	history.clear()
 	redo_history.clear()
@@ -727,8 +734,7 @@ func _editor() -> void:
 	root_ui.add_child(overlay)
 	MenuStyle.fill(overlay)
 	var close: Button = EditorButton.make("","close",func() -> void:
-		_save_draft()
-		_show_screen("play"))
+		_request_editor_exit())
 	close.name="CloseEditor"
 	close.tooltip_text="Close editor"
 	overlay.add_child(close)
@@ -1756,19 +1762,26 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if handled: get_viewport().set_input_as_handled()
 
 func _save_track_explicit() -> void:
+	if str(document.get("name", "")).strip_edges().is_empty() or str(document.get("name", "")) == "My circuit":
+		_confirm_editor_departure(Callable(), false)
+		return
+	_save_track_now()
+
+func _save_track_now() -> bool:
 	if not canvas.paint_points.is_empty():
 		_notice("Confirm or cancel the surface preview first.")
-		return
+		return false
 	if not canvas.ghost.is_empty():
 		canvas.confirm_piece()
 		if not canvas.ghost.is_empty():
 			_notice("The preview cannot be placed here. Move or cancel it before saving.")
-			return
+			return false
 	if _save_draft() != OK:
 		_notice("Could not save: "+library.last_error)
-		return
+		return false
 	if library.save_document(document) != OK:
 		_notice("Could not save: "+library.last_error)
+		return false
 	elif not TrackDocument.validate(document).is_empty():
 		_notice("Draft saved. You can reopen it in My circuits. Before driving: "+TrackDocument.validate(document)[0])
 	else:
@@ -1778,6 +1791,56 @@ func _save_track_explicit() -> void:
 			var saved_track: NativeTrack = TrackCompiler.compile(document)
 			if saved_track != null: selected_track = saved_track
 		_notice("Saved on this device. Choose Saved tracks in the circuit library to drive it.")
+	editor_saved_snapshot = document.duplicate(true)
+	return true
+
+func _editor_has_unsaved_changes() -> bool:
+	if document.is_empty(): return false
+	return editor_saved_snapshot.is_empty() or TrackLibrary.draft_fingerprint(document) != TrackLibrary.draft_fingerprint(editor_saved_snapshot)
+
+func _request_editor_exit() -> void:
+	if not _editor_has_unsaved_changes():
+		_show_screen("play")
+		return
+	_confirm_editor_departure(_show_screen.bind("play"))
+
+func _confirm_editor_departure(after: Callable, allow_discard: bool = true) -> void:
+	if root_ui.find_child("SaveChangesDialog", true, false) != null: return
+	var dialog := ConfirmationDialog.new()
+	dialog.name = "SaveChangesDialog"
+	dialog.title = "Save this draft?"
+	dialog.dialog_text = "Enter a name to keep this draft. Discard removes the autosaved recovery copy."
+	dialog.ok_button_text = "Save"
+	dialog.cancel_button_text = "Cancel"
+	var discard := dialog.add_button("Discard", true, "discard")
+	discard.visible = allow_discard
+	var field := LineEdit.new()
+	field.name = "SaveDraftName"
+	field.placeholder_text = "Track name"
+	field.text = "" if str(document.get("name", "")) == "My circuit" else str(document.get("name", ""))
+	field.max_length = 40
+	field.custom_minimum_size = Vector2(440, 52)
+	field.virtual_keyboard_enabled = true
+	dialog.add_child(field)
+	var update_save := func(value: String) -> void: dialog.get_ok_button().disabled = value.strip_edges().is_empty()
+	field.text_changed.connect(update_save)
+	update_save.call(field.text)
+	dialog.confirmed.connect(func() -> void:
+		document.name = field.text.strip_edges()
+		if not _save_track_now(): return
+		dialog.queue_free()
+		if after.is_valid(): after.call())
+	dialog.custom_action.connect(func(action: StringName) -> void:
+		if action != &"discard": return
+		var id: String = str(document.get("id", ""))
+		if TrackDocument.valid_id(id) and library.delete_wip(id) != OK:
+			_notice("Could not discard the recovery draft: " + library.last_error)
+			return
+		dialog.queue_free()
+		if after.is_valid(): after.call())
+	root_ui.add_child(dialog)
+	dialog.popup_centered_clamped(Vector2i(520, 250))
+	field.grab_focus()
 
 func _open_saved_tracks() -> void:
 	if not canvas.paint_points.is_empty():
@@ -1806,14 +1869,17 @@ func _prepare_editor_load() -> bool:
 		if not canvas.ghost.is_empty():
 			_notice("Move or cancel the preview before loading another track.")
 			return false
-	if _save_draft() != OK:
-		_notice("Could not save the current track: "+library.last_error)
-		return false
 	return true
 
 var draft_return_screen: String = "biome"
 
 func _open_drafts() -> void:
+	if screen == "create" and _editor_has_unsaved_changes():
+		_confirm_editor_departure(_open_drafts_after_resolution)
+		return
+	_open_drafts_after_resolution()
+
+func _open_drafts_after_resolution() -> void:
 	if not _prepare_editor_load(): return
 	draft_return_screen = "create" if screen == "create" else "biome"
 	_show_screen("drafts")
@@ -1934,6 +2000,7 @@ func _load_saved_document(id: String) -> void:
 	var loaded: Dictionary = _read_draft_for_action(id)
 	if loaded.is_empty(): return
 	document = loaded
+	editor_saved_snapshot = loaded.duplicate(true)
 	canvas = null # Loading a different document must not capture the outgoing view.
 	editor_view.clear()
 	history.clear()

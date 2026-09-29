@@ -97,6 +97,7 @@ func _check_storage() -> void:
 	var library := TrackLibrary.new(folder)
 	var document: Dictionary = TrackDocument.create_default()
 	check(library.save_document(document) == OK,"initial atomic save succeeds")
+	check(library.save_wip(document) == OK and library.delete_wip(document.id) == OK and library.load_wip(document.id).is_empty(),"discard removes only the editor recovery copy")
 	check(library.load_document(document.id) == document,"saved route round trips")
 	var older: Dictionary = document.duplicate(true)
 	document.name = "Revised circuit"

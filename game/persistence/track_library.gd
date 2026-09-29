@@ -183,6 +183,13 @@ func load_wip(id: String) -> Dictionary:
 	last_error=drafts.last_error
 	return result
 
+func delete_wip(id: String) -> Error:
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
+	var error: Error = drafts.delete_document(id)
+	last_error = drafts.last_error
+	return error
+
 func list_wips() -> Array[Dictionary]:
 	return TrackLibrary.new(directory.path_join("wip")).list_documents()
 

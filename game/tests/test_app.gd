@@ -95,9 +95,30 @@ func run() -> void:
 	await _check_test_drive()
 	await _check_clean_result()
 	_check_records()
+	await _check_editor_save_prompt()
 	app.queue_free()
 	await process_frame
 	_finish()
+
+
+func _check_editor_save_prompt() -> void:
+	app.call("_start_new_document")
+	await process_frame
+	app.call("_select_creation_biome", "pine")
+	await process_frame
+	var draft: Dictionary = app.get("document")
+	check(app.call("_save_draft") == OK and not (app.get("library") as TrackLibrary).load_wip(draft.id).is_empty(), "editor recovery autosave exists before departure choice")
+	app.call("_request_editor_exit")
+	await process_frame
+	var dialog: ConfirmationDialog = (app.get("root_ui") as Node).find_child("SaveChangesDialog", true, false)
+	check(dialog != null and dialog.visible, "leaving an unsaved editor opens the Save, Discard or Cancel prompt")
+	var field: LineEdit = dialog.find_child("SaveDraftName", true, false) if dialog != null else null
+	check(field != null and field.text.is_empty() and dialog.get_ok_button().disabled, "new draft requires a name before Save is available")
+	if dialog != null: dialog.custom_action.emit(&"discard")
+	await process_frame
+	await process_frame
+	check(app.get("screen") == "play", "Discard completes the requested editor exit")
+	check((app.get("library") as TrackLibrary).load_wip(draft.id).is_empty(), "Discard removes the autosaved recovery draft")
 
 
 func _set_records_path(records: RefCounted, path: String) -> bool:

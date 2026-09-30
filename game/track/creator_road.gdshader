@@ -108,8 +108,8 @@ void fragment() {
  SPECULAR = 0.0;
  if (wet_road && wet_coverage > 0.0) {
   float pool = road_puddle(world_position.xz)*wet_coverage;
-  ROUGHNESS = clamp(mix(0.70,0.18,pool)+(texture(surface_factors,world_position.xz/32.0).r-0.54)*0.6,0.15,0.82);
-  SPECULAR = mix(0.16,0.55,pool)*wet_coverage;
+  ROUGHNESS = clamp(mix(0.70,0.36,pool)+(texture(surface_factors,world_position.xz/32.0).r-0.54)*0.6,0.28,0.82);
+  SPECULAR = mix(0.16,0.30,pool)*wet_coverage;
  }
 	float relief_weight = grass ? (1.0-sand) : 0.0;
 	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
@@ -117,6 +117,4 @@ void fragment() {
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel && UV.x >= 0.0 ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
  if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,wet_coverage);
- EMISSION = vec3(0.0);
- if (wet_road) EMISSION = wet_road_radiance(world_position.xz,NORMAL,VIEW,INV_VIEW_MATRIX,wet_coverage);
 }

@@ -65,3 +65,7 @@ Actual checks through `powershell -NoProfile -ExecutionPolicy Bypass -File scrip
 [Previous](evidence/storm-road-2026-09-30/revision-3/rain.png) / [Stronger wet surface](evidence/storm-road-2026-09-30/revision-4/rain.png) / [Lightning](evidence/storm-road-2026-09-30/revision-4/lightning.png) / [Later rain](evidence/storm-road-2026-09-30/revision-4/rain-later.png).
 
 Owner acceptance of this stronger treatment remains outstanding. No physical-phone test or Android export performed; attachment not checked. Moving-camera aliasing, mobile GPU/frame pacing and dedicated bridge imagery remain unverified. Passing regression tests is not visual acceptance.
+
+## Kit 94 correction
+
+Owner rejected the added bright pattern. Restore the preferred kit 91 asphalt/material response and remove the later reflection/ripple overlay. Grass edge improvements remain. See [tire spray correction](STORM_TIRE_SPRAY.md) for changed files, actual checks and updated road/spray evidence.

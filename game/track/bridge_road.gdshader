@@ -13,10 +13,8 @@ void fragment() {
  SPECULAR = 0.0;
  if (wet_road && 1.0 > 0.0) {
   float pool = road_puddle(world_position.xz)*1.0;
-  ROUGHNESS = clamp(mix(0.70,0.18,pool)+(texture(surface_factors,world_position.xz/32.0).r-0.54)*0.6,0.15,0.82);
-  SPECULAR = mix(0.16,0.55,pool)*1.0;
+  ROUGHNESS = clamp(mix(0.70,0.36,pool)+(texture(surface_factors,world_position.xz/32.0).r-0.54)*0.6,0.28,0.82);
+  SPECULAR = mix(0.16,0.30,pool)*1.0;
  }
  if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
- EMISSION = vec3(0.0);
- if (wet_road) EMISSION = wet_road_radiance(world_position.xz,NORMAL,VIEW,INV_VIEW_MATRIX,1.0);
 }

@@ -97,7 +97,6 @@ func _run() -> void:
 		var material: ShaderMaterial = mesh.material_override as ShaderMaterial
 		if material != null and material.get_shader_parameter("wet_road") == true:
 			wet_materials += 1
-			check(material.shader.code.contains("wet_road_radiance"),"wet material uses reflection response")
 	check(wet_materials > 0,"wet road materials bound in race")
 	var weather: StormWeather = race.storm_weather
 	check(weather != null and weather.mouse_filter == Control.MOUSE_FILTER_IGNORE,"storm never captures driving input")
@@ -218,25 +217,25 @@ func _test_tire_spray() -> void:
 	state.velocity = Vector2(0,18)
 	var frame := DriveFrame.new()
 	effect.sample(state,frame,track)
-	check(effect.water_mist.is_empty(),"dry theme allocates no water spray")
+	check(effect.water_drops.is_empty(),"dry theme allocates no water spray")
 	track.metadata.theme = "storm"
 	var before: Array = state.snapshot()
 	effect.sample(state,frame,track)
-	check(effect.water_mist.size() == 4 and effect.water_drops.size() == 4,"four tire spray pairs")
+	check(effect.water_drops.size() == 4,"four droplet-only tire emitters")
 	check(state.snapshot() == before,"spray does not mutate simulation")
-	var fast: float = effect.water_mist[0].amount_ratio
-	check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return e.emitting),"straight driving sprays without drift or throttle")
+	var fast: float = effect.water_drops[0].amount_ratio
+	check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return e.emitting),"straight driving sprays without drift or throttle")
 	state.velocity = Vector2(0,5)
 	effect.sample(state,frame,track)
-	check(effect.water_mist[0].amount_ratio < fast,"spray increases with speed")
+	check(effect.water_drops[0].amount_ratio < fast,"spray increases with speed")
 	for kind: int in [1,2,3,4,5,6,7]:
 		track.cells.fill(kind)
 		effect.sample(state,frame,track)
-		check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"non-road surface stops water spray "+str(kind))
+		check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"non-road surface stops water spray "+str(kind))
 	track.cells.fill(0)
 	state.track_elevated = true
 	effect.sample(state,frame,track)
-	check(effect.water_mist[0].emitting,"wet bridge deck emits water spray")
+	check(effect.water_drops[0].emitting,"wet bridge deck emits water spray")
 	state.track_elevated = false
 	state.velocity = Vector2(0,-18)
 	effect.sample(state,frame,track)
@@ -248,28 +247,28 @@ func _test_tire_spray() -> void:
 		effect.wheelbase = config.wheelbase
 		effect.track_width = config.track_width
 		effect.sample(state,frame,track)
-		check(is_equal_approx(effect.water_mist[0].position.distance_to(effect.water_mist[1].position),config.track_width),car+" spray uses actual tire spacing")
+		check(is_equal_approx(effect.water_drops[0].position.distance_to(effect.water_drops[1].position),config.track_width),car+" spray uses actual tire spacing")
 	# Put just the left tires onto grass: right tires must keep spraying.
 	for row: int in range(40):
 		for column: int in range(20): track.cells[row*40+column] = 1
 	effect.sample(state,frame,track)
-	check(not effect.water_mist[0].emitting and effect.water_mist[1].emitting,"independent wheel surface gating at road edge")
+	check(not effect.water_drops[0].emitting and effect.water_drops[1].emitting,"independent wheel surface gating at road edge")
 	track.cells.fill(0)
 	for mode: String in ["stopped","airborne","rolled"]:
 		state.velocity = Vector2.ZERO if mode == "stopped" else Vector2(0,18)
 		state.jump_height = 1.0 if mode == "airborne" else 0.0
 		state.roll_ticks = 10 if mode == "rolled" else 0
 		effect.sample(state,frame,track)
-		check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return not e.emitting),mode+" stops spray")
+		check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),mode+" stops spray")
 	state.roll_ticks = 0
 	effect.sample(state,frame,track)
 	effect.set_water_paused(true)
-	check(effect.water_mist[0].speed_scale == 0.0 and effect.water_drops[0].speed_scale == 0.0,"pause freezes water particles")
+	check(effect.water_drops[0].speed_scale == 0.0,"pause freezes water particles")
 	effect.set_water_paused(false)
-	check(effect.water_mist[0].speed_scale == 1.0,"resume unfreezes water particles")
+	check(effect.water_drops[0].speed_scale == 1.0,"resume unfreezes water particles")
 	track.metadata.theme = "pine"
 	effect.sample(state,frame,track)
-	check(not effect.water_mist[0].emitting,"leaving Storm stops spray")
+	check(not effect.water_drops[0].emitting,"leaving Storm stops spray")
 	effect.clear()
 	check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"restart/rewind clears spray")
 	effect.free()
@@ -292,7 +291,7 @@ func _capture_tire_spray(race: Node) -> void:
 		await create_timer(1.0/60.0).timeout
 		await RenderingServer.frame_post_draw
 		if index == 30:
-			check(race.sand_dust.water_mist[0].emitting,"capture car on wet asphalt")
+			check(race.sand_dust.water_drops[0].emitting,"capture car on wet asphalt")
 			race.sand_dust.set_water_paused(true)
 			await _capture("tire-spray")
 	race.sand_dust.set_water_paused(true)

@@ -42,7 +42,7 @@ func apply(mode: String) -> void:
 				# Historical shared detail predates packed sand and grass relief.
 				# Adapt its interface explicitly; this mode restores historical grass too.
 				var compatibility: String = "\nuniform bool packed_sand = false;\nuniform sampler2D surface_factors;\nvec3 winter_wear(vec3 base, vec2 uv) { return base; }\nvec3 packed_wear(vec3 base, vec2 uv) { return base; }\nvec3 desert_shoulder(vec3 base, vec2 p) { return base; }\nvec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n"
-				compatibility += "\nvec3 wet_road_radiance(vec2 p, vec3 normal, vec3 view, mat4 inverse_view, float weight) { return vec3(0.0); }\nfloat road_puddle(vec2 p) { return 0.0; }\nvec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\n"
+				compatibility += "\nfloat road_puddle(vec2 p) { return 0.0; }\nvec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\n"
 				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + compatibility)
 			elif mode == "directional_off":
 				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")

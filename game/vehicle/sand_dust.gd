@@ -35,6 +35,9 @@ var spray_emitters: Array[GPUParticles3D] = []
 var clipping_emitters: Array[GPUParticles3D] = []
 var mud_emitters: Array[GPUParticles3D] = []
 var smoke_emitters: Array[GPUParticles3D] = []
+var water_mist: Array[GPUParticles3D] = []
+var water_drops: Array[GPUParticles3D] = []
+var water_paused: bool = false
 var last_strengths := PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
 
 
@@ -145,7 +148,7 @@ func clear() -> void:
 	snow_last_burst = -1000
 	snow_burst_count = 0
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts:
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_mist + water_drops:
 		emitter.restart()
 		emitter.emitting = false
 
@@ -157,6 +160,8 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 		_stop()
 		return
 	var winter: bool = track.metadata.get("theme","pine") == "winter"
+	var storm: bool = track.metadata.get("theme","pine") == "storm"
+	if storm: _ensure_water()
 	if winter: _ensure_snow()
 	elif not snow_chips.is_empty():
 		for emitter: GPUParticles3D in snow_chips+snow_powder+snow_impacts: emitter.emitting = false
@@ -183,6 +188,16 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 				strengths.y = maxf(strengths.y,0.30*smoothstep(0.8,12.0,state.velocity.length()))
 		last_strengths[wheel] = maxf(0.0,strengths.x)
 		var wheel_velocity: Vector2 = state.velocity + right * (state.yaw_rate * axle_values[wheel] * wheelbase * 0.5) - forward * (state.yaw_rate * side * track_width * 0.5)
+		if not water_mist.is_empty():
+			var water_strength: float = smoothstep(1.5,22.0,wheel_velocity.length()) if storm and kind == 9 else 0.0
+			_configure(water_mist[wheel],world_position+Vector3.UP*0.10,wheel_velocity,water_strength)
+			_configure(water_drops[wheel],world_position+Vector3.UP*0.07,wheel_velocity,water_strength)
+			if water_strength > 0.012:
+				var fan: Vector3 = VisualGeometry.world(-wheel_velocity.normalized()+right*side*0.28)+Vector3.UP*0.20
+				var local_fan: Vector3 = (water_mist[wheel].basis.inverse()*fan).normalized()
+				for emitter: GPUParticles3D in [water_mist[wheel],water_drops[wheel]]:
+					var process: ParticleProcessMaterial = emitter.process_material
+					if not process.direction.is_equal_approx(local_fan): process.direction = local_fan
 		if winter:
 			_sample_snow(wheel,contacts[wheel],world_position,wheel_velocity,kind,state,frame,track)
 		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)
@@ -239,7 +254,7 @@ func _stop() -> void:
 	snow_previous_valid = false
 	snow_in_bank = false
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts:
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_mist + water_drops:
 		emitter.emitting = false
 		emitter.amount_ratio = 0.0
 
@@ -449,6 +464,38 @@ void fragment() {
 		material.set_shader_parameter("dust_texture",load("res://assets/textures/dust_puff_v1.png"))
 		material.set_shader_parameter("alpha_softness",0.42)
 	return material
+
+
+func set_water_paused(paused: bool) -> void:
+	if water_paused == paused: return
+	water_paused = paused
+	for emitter: GPUParticles3D in water_mist + water_drops:
+		emitter.speed_scale = 0.0 if paused else 1.0
+
+
+func _ensure_water() -> void:
+	if not water_mist.is_empty(): return
+	for wheel: int in range(4):
+		# Lazily allocate only in Storm: 672 short-lived particles total.
+		var mist := _emitter("WaterMist%d" % wheel,72,0.55,Vector2(0.65,0.45),Color(0.72,0.82,0.86,0.24),MODE_SMOKE)
+		var drops := _emitter("WaterDrops%d" % wheel,96,0.38,Vector2(0.045,0.13),Color(0.80,0.90,0.95,0.72),MODE_SMOKE)
+		for emitter: GPUParticles3D in [mist,drops]:
+			var process: ParticleProcessMaterial = emitter.process_material
+			# Local -Z follows opposite contact velocity through _configure;
+			# the mirrored X component fans away from the vehicle on both sides.
+			process.direction = Vector3(0.28 if wheel%2 == 0 else -0.28,0.20,-1.0).normalized()
+			process.spread = 24.0
+			process.initial_velocity_min = 3.0
+			process.initial_velocity_max = 7.0
+			process.gravity = Vector3(0,-3.2,0)
+			process.damping_min = 0.6
+			process.damping_max = 1.2
+			process.scale_curve = _bounded_growth([0.35,0.75,1.15,1.5]) if emitter == mist else null
+			emitter.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			emitter.speed_scale = 0.0 if water_paused else 1.0
+			add_child(emitter)
+		water_mist.append(mist)
+		water_drops.append(drops)
 
 
 func _ensure_snow() -> void:

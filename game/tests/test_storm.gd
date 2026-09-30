@@ -14,6 +14,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	root.size = Vector2i(1280,720)
+	_test_tire_spray()
 	var track := NativeTrack.new()
 	track.cell_size = 10.0
 	track.grid_width = 100
@@ -187,6 +188,7 @@ func _run() -> void:
 	race.native_track.metadata.theme = "storm"
 	race.call("_update_weather")
 	check(is_equal_approx(race.storm_weather.base_light_energy,0.5),"entering Storm from day uses overcast baseline")
+	if "--capture" in OS.get_cmdline_user_args(): await _capture_tire_spray(race)
 	race.queue_free()
 	await process_frame
 	await process_frame
@@ -198,3 +200,100 @@ func _run() -> void:
 func _capture(label: String) -> void:
 	for i: int in range(3): await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../docs/evidence/storm/"+label+".png"))
+
+
+func _test_tire_spray() -> void:
+	var track := NativeTrack.new()
+	track.cell_size = 1.0
+	track.grid_width = 40
+	track.grid_height = 40
+	track.half_extent = Vector2(20,20)
+	track.cells.resize(1600)
+	track.deck_cells.resize(1600)
+	track.deck_cells.fill(0)
+	track.metadata = {"theme":"pine"}
+	var effect := SandDust.new()
+	root.add_child(effect)
+	var state := VehicleState.new()
+	state.velocity = Vector2(0,18)
+	var frame := DriveFrame.new()
+	effect.sample(state,frame,track)
+	check(effect.water_mist.is_empty(),"dry theme allocates no water spray")
+	track.metadata.theme = "storm"
+	var before: Array = state.snapshot()
+	effect.sample(state,frame,track)
+	check(effect.water_mist.size() == 4 and effect.water_drops.size() == 4,"four tire spray pairs")
+	check(state.snapshot() == before,"spray does not mutate simulation")
+	var fast: float = effect.water_mist[0].amount_ratio
+	check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return e.emitting),"straight driving sprays without drift or throttle")
+	state.velocity = Vector2(0,5)
+	effect.sample(state,frame,track)
+	check(effect.water_mist[0].amount_ratio < fast,"spray increases with speed")
+	for kind: int in [1,2,3,4,5,6,7]:
+		track.cells.fill(kind)
+		effect.sample(state,frame,track)
+		check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"non-road surface stops water spray "+str(kind))
+	track.cells.fill(0)
+	state.track_elevated = true
+	effect.sample(state,frame,track)
+	check(effect.water_mist[0].emitting,"wet bridge deck emits water spray")
+	state.track_elevated = false
+	state.velocity = Vector2(0,-18)
+	effect.sample(state,frame,track)
+	check((-effect.water_drops[0].global_basis.z).dot(VisualGeometry.world(-state.velocity.normalized())) > 0.99,"reverse spray follows actual contact travel")
+	var left_process: ParticleProcessMaterial = effect.water_drops[0].process_material
+	check((effect.water_drops[0].basis*left_process.direction).x < 0.0,"reverse fan still points outward from left tire")
+	for car: String in VehicleCatalog.IDS:
+		var config: HandlingConfig = VehicleCatalog.config(car)
+		effect.wheelbase = config.wheelbase
+		effect.track_width = config.track_width
+		effect.sample(state,frame,track)
+		check(is_equal_approx(effect.water_mist[0].position.distance_to(effect.water_mist[1].position),config.track_width),car+" spray uses actual tire spacing")
+	# Put just the left tires onto grass: right tires must keep spraying.
+	for row: int in range(40):
+		for column: int in range(20): track.cells[row*40+column] = 1
+	effect.sample(state,frame,track)
+	check(not effect.water_mist[0].emitting and effect.water_mist[1].emitting,"independent wheel surface gating at road edge")
+	track.cells.fill(0)
+	for mode: String in ["stopped","airborne","rolled"]:
+		state.velocity = Vector2.ZERO if mode == "stopped" else Vector2(0,18)
+		state.jump_height = 1.0 if mode == "airborne" else 0.0
+		state.roll_ticks = 10 if mode == "rolled" else 0
+		effect.sample(state,frame,track)
+		check(effect.water_mist.all(func(e: GPUParticles3D) -> bool: return not e.emitting),mode+" stops spray")
+	state.roll_ticks = 0
+	effect.sample(state,frame,track)
+	effect.set_water_paused(true)
+	check(effect.water_mist[0].speed_scale == 0.0 and effect.water_drops[0].speed_scale == 0.0,"pause freezes water particles")
+	effect.set_water_paused(false)
+	check(effect.water_mist[0].speed_scale == 1.0,"resume unfreezes water particles")
+	track.metadata.theme = "pine"
+	effect.sample(state,frame,track)
+	check(not effect.water_mist[0].emitting,"leaving Storm stops spray")
+	effect.clear()
+	check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"restart/rewind clears spray")
+	effect.free()
+
+
+func _capture_tire_spray(race: Node) -> void:
+	race.set_process(false)
+	var state := VehicleState.new()
+	state.heading = race.sim.state.heading
+	state.velocity = state.forward()*18.0
+	var origin: Vector2 = race.sim.state.position
+	race.sim.state = state
+	for index: int in range(60):
+		state.position = origin+state.forward()*(float(index)*0.3-9.0)
+		race.previous_position = state.position
+		race.previous_heading = state.heading
+		race.call("_process",0.0)
+		race.sand_dust.set_water_paused(false)
+		race.sand_dust.sample(state,DriveFrame.new(),race.native_track,race.bridge_presentation)
+		await create_timer(1.0/60.0).timeout
+		await RenderingServer.frame_post_draw
+		if index == 30:
+			check(race.sand_dust.water_mist[0].emitting,"capture car on wet asphalt")
+			race.sand_dust.set_water_paused(true)
+			await _capture("tire-spray")
+	race.sand_dust.set_water_paused(true)
+	await _capture("tire-spray-later")

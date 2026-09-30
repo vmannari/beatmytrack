@@ -345,6 +345,7 @@ func _process(delta: float) -> void:
 		music.present(presented.state,track_session,delta,paused or countdown_ticks > 0)
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
+	if sand_dust != null: sand_dust.set_water_paused(paused)
 	if cloud_shadow != null and not paused:
 		cloud_elapsed += delta
 		(cloud_shadow.material_override as ShaderMaterial).set_shader_parameter("elapsed",cloud_elapsed)
@@ -474,6 +475,7 @@ func restart() -> void:
 	impact_cracks.clear_effect()
 	hud.touch.enabled = true
 	hud.message_label.text = "" if editor_test else "Brake before the circle. Lift and countersteer. F5: handling test tracks."
+	sand_dust.clear()
 	hud.title.text = "Practice (untimed)" if editor_test else hud.title.text
 
 

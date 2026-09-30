@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V01/V02/V04/V05/Q01: Storm wet-road tire spray adds lazy per-wheel mist/droplets, speed scaling, reverse/outward direction, pause freeze and restart/rewind cleanup. Graphical Storm 88 and desert regression 53 checks pass; two desktop captures inspected. No device test/export. See docs/STORM_TIRE_SPRAY.md.
+
 2026-09-30 V02/V04/V05/Q01: owner still could not read kit 92 as wet. Kit 93 adds distinct broken water highlights, smoother pooled grain and sparse world-space rain rings; paused weather freezes rings, lightning boosts wet highlights. Storm graphical 59 and surface-profile 928 checks pass. Final desktop evidence inspected; no device test/export. See docs/STORM_ROAD.md.
 
 2026-09-30 V02/V04/V05/Q01: owner preferred kit 91 but requested more wetness. Kit 92 retains its asphalt/edges and adds view-dependent overcast sheen plus smoother water-film highlights. Final graphical Storm 59 and material regression 928 checks pass; rain/lightning evidence inspected. No device test/export. See docs/STORM_ROAD.md.

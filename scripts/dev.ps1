@@ -374,7 +374,7 @@ try {
         'CaptureObjectModels' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_object_models.gd') 'object-models-capture.log' }
         'TestStorm' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_storm.gd') 'storm-tests.log' }
         'CaptureStormVideo' { Invoke-Checked $script:godot @('--path', $projectRoot, '--fixed-fps', '30', '--write-movie', (Join-Path $buildRoot 'storm-weather.avi'), '--script', 'res://tests/test_storm.gd', '--', '--video') 'storm-video.log' }
-        'CaptureStorm' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_storm.gd', '--', '--capture') 'storm-capture.log' }
+        'CaptureStorm' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/test_storm.gd', '--', '--capture') + $trackArguments) 'storm-capture.log' }
         'TestContactShading' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_contact_shading.gd') 'contact-shading-tests.log' }
         'CaptureContactShading' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_contact_shading.gd') 'contact-shading-capture.log' }
         'CaptureWinter' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_winter.gd') 'winter-capture.log' }

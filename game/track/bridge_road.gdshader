@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode diffuse_toon, specular_disabled, cull_disabled;
+render_mode diffuse_toon, specular_schlick_ggx, cull_disabled;
 #include "res://track/surface_detail.gdshaderinc"
 uniform vec4 road_color : source_color = vec4(0.204,0.212,0.220,1.0);
 varying vec3 world_position;
@@ -10,4 +10,11 @@ void vertex() {
 void fragment() {
     ALBEDO = surface_detail(road_color.rgb,world_position.xz,true);
     ROUGHNESS = 1.0;
+ SPECULAR = 0.0;
+ if (wet_road && 1.0 > 0.0) {
+  float pool = road_puddle(world_position.xz)*1.0;
+  ROUGHNESS = mix(0.82,0.40,pool);
+  SPECULAR = mix(0.18,0.85,pool)*1.0;
+ }
+ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
 }

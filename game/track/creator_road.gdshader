@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode diffuse_toon, specular_disabled, cull_disabled;
+render_mode diffuse_toon, specular_schlick_ggx, cull_disabled;
 #include "res://track/surface_detail.gdshaderinc"
 
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
@@ -58,7 +58,8 @@ void fragment() {
 	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
 	}
-	if (edge_fringe && !wet_road && !icy_road) {
+	float wet_coverage = wet_road && asphalt_surface ? 1.0 : 0.0;
+	if (edge_fringe && !icy_road) {
 		// UV.y spans the cosmetic blend strip (1.47 m for desert), so
 		// curves never inherit the coarse canonical surface-grid staircase.
 		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
@@ -66,6 +67,7 @@ void fragment() {
 		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+		wet_coverage *= asphalt_coverage;
 	}
 	if (road_marking) {
 		// Preserve a continuous readable line while breaking up its pigment
@@ -103,9 +105,16 @@ void fragment() {
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 	}
 	ROUGHNESS = 1.0;
+ SPECULAR = 0.0;
+ if (wet_road && wet_coverage > 0.0) {
+  float pool = road_puddle(world_position.xz)*wet_coverage;
+  ROUGHNESS = mix(0.82,0.40,pool);
+  SPECULAR = mix(0.18,0.85,pool)*wet_coverage;
+ }
 	float relief_weight = grass ? (1.0-sand) : 0.0;
 	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel && UV.x >= 0.0 ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
+ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,wet_coverage);
 }

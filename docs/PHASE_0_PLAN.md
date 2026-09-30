@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V02/V04/V05/Q01: Storm road kit 90 adds broken wet asphalt, light-responsive puddles and aggregate relief, and enables the shared Grass asphalt edge blend. Storm graphical 55, shoulders/join 89 plus overlap, and surface-profile 928 checks pass. Desktop rain/lightning evidence inspected; no Android export or device test. See docs/STORM_ROAD.md.
+
 2026-09-30 V03/V04/R01/Q01: Race Complete removes benchmark/PB and redundant explanatory lines, doubles histogram minimum height, crops empty/sparse tails and keeps out-of-range player markers on the edge. Counts/ranks unchanged. Graphical results 508 and menu 26 checks pass; screenshots inspected. No phone attached/export/device test. See docs/PREMIUM_RACE_COMPLETE.md.
 
 2026-09-30 R01/V04/V05/Q01: persistent bounded road artifacts and ordered CPU shoulder workers; explicit Save reuses completed/pending editor roads. Fresh-process prepared first draw: Speedy 0.558s / Knot 0.644s; uncooked tracks remain above 1s and combined compilation/draw for Knot is 1.091s. Cache 66, cold golden 33, local equivalence 47, surfaces 928 and editor 38 checks pass; capture inspected. No phone/export/device test. See docs/BAKED_ROAD_LOADING.md.

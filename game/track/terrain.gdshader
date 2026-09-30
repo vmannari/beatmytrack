@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode diffuse_toon, specular_disabled;
+render_mode diffuse_toon, specular_schlick_ggx;
 #include "res://track/surface_detail.gdshaderinc"
 
 uniform sampler2D surface_low : filter_linear, repeat_disable;
@@ -67,4 +67,11 @@ void fragment() {
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
 	ROUGHNESS = 1.0;
+ SPECULAR = 0.0;
+ if (wet_road && low.r > 0.0) {
+  float pool = road_puddle(world_position.xz)*low.r;
+  ROUGHNESS = mix(0.82,0.40,pool);
+  SPECULAR = mix(0.18,0.85,pool)*low.r;
+ }
+ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.r);
 }

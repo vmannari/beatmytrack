@@ -25,7 +25,7 @@ static func palette(theme: String) -> Array[Color]:
 	match normalized(theme):
 		"night_city": return [Color("343943"), Color("555965"), Color("817a6c"), Color("24394b"), Color("737982"), Color("c3c8cd"), Color("486779"), Color("686575")]
 		"winter": return [Color("657f95"), Color("b5c2cd"), Color("c5cdd0"), Color("41677c"), Color("a3b2bb"), Color("edf2f4"), Color("9bbecb"), Color("a0a8b0")]
-		"storm": return [Color("293b48"), Color("566549"), Color("92846b"), Color("2c4959"), Color("687783"), Color("c0c7ca"), Color("4d7383"), Color("6f7163")]
+		"storm": return [Color("343b44"), Color("566549"), Color("92846b"), Color("2c4959"), Color("687783"), Color("c0c7ca"), Color("4d7383"), Color("6f7163")]
 		"desert": return DESERT.duplicate()
 	return PINE.duplicate()
 

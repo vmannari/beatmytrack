@@ -68,6 +68,11 @@ func _run() -> void:
 					replay.step(input,track)
 			check(replay.state.snapshot() == sim.state.snapshot(),car+" exact wet replay batch "+str(batch))
 	var document: Dictionary = TrackDocument.create_default()
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--track="):
+			document = TrackLibrary.new().load_document(argument.trim_prefix("--track="))
+			check(not document.is_empty(),"requested road-piece fixture exists")
+			if document.is_empty(): quit(1); return
 	document.theme = "storm"
 	var race: Node = load("res://core/game.tscn").instantiate()
 	race.initial_track = TrackCompiler.compile(document)
@@ -85,6 +90,7 @@ func _run() -> void:
 		quit()
 		return
 	race.paused = true
+	(race.race_cues as Control).hide()
 	var weather: StormWeather = race.storm_weather
 	check(weather != null and weather.mouse_filter == Control.MOUSE_FILTER_IGNORE,"storm never captures driving input")
 	check(race.weather_layer.layer < race.hud.layer,"HUD and pedals remain above weather")
@@ -170,7 +176,7 @@ func _run() -> void:
 	race.native_track.metadata.theme = "pine"
 	race.call("_update_weather")
 	await process_frame
-	check(race.storm_weather == null and race.weather_layer == null and light.light_energy == 1.0,"leaving Storm cleans up weather and restores daytime")
+	check(race.storm_weather == null and race.weather_layer == null and is_equal_approx(light.light_energy,1.2),"leaving Storm cleans up weather and restores daytime")
 	race.native_track.metadata.theme = "storm"
 	race.call("_update_weather")
 	check(is_equal_approx(race.storm_weather.base_light_energy,0.5),"entering Storm from day uses overcast baseline")

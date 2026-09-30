@@ -2,7 +2,7 @@ class_name StormWeather
 extends Control
 ## Presentation only: no access to simulation state, inputs or race clocks.
 const DROP_COUNT: int = 6
-const FLASH_DURATION: float = 1.0 # Upper bound; each strike ends at its last knot.
+const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
 const MIN_INTERVAL: float = 9.0
 const MAX_INTERVAL: float = 16.0
 var elapsed: float = 0.0
@@ -82,7 +82,7 @@ func advance(delta: float, paused: bool) -> void:
 		strikes += 1
 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
 		until_thunder = rng.randf_range(1.2,2.8)
-	if light != null: light.light_energy = base_light_energy+flash_strength()*8.0
+	if light != null: light.light_energy = base_light_energy+flash_strength()*6.0
 	_update_lens()
 	queue_redraw()
 
@@ -96,18 +96,19 @@ func flash_strength() -> float:
 	return 0.0
 
 func _build_flash_profile() -> void:
-	# Sample once per strike, never per rendered frame. Uneven return strokes
-	# share one thunder event and the same paused presentation clock.
+	# Sample once per strike. Broad, shallow swells share one thunder event
+	# and the paused presentation clock, without rapid bright/dark flicker.
 	flash_profile = PackedVector2Array([Vector2.ZERO])
-	var cursor: float = rng.randf_range(0.015,0.04)
-	var pulses: int = rng.randi_range(2,4)
+	var cursor: float = rng.randf_range(0.16,0.24)
+	var pulses: int = rng.randi_range(2,3)
+	var peak: float = rng.randf_range(0.24,0.32)
 	for pulse: int in range(pulses):
-		var peak: float = rng.randf_range(0.40,0.62) if pulse == 0 else rng.randf_range(0.24,0.60)
+		if pulse > 0: peak = clampf(peak*rng.randf_range(0.88,1.10),0.18,0.32)
 		flash_profile.append(Vector2(cursor,peak))
-		cursor += rng.randf_range(0.035,0.08)
-		flash_profile.append(Vector2(cursor,rng.randf_range(0.025,0.10)))
-		cursor += rng.randf_range(0.035,0.085)
-	flash_profile.append(Vector2(cursor+rng.randf_range(0.06,0.14),0.0))
+		cursor += rng.randf_range(0.18,0.28)
+		flash_profile.append(Vector2(cursor,peak*rng.randf_range(0.65,0.82)))
+		if pulse < pulses-1: cursor += rng.randf_range(0.16,0.26)
+	flash_profile.append(Vector2(cursor+rng.randf_range(0.30,0.45),0.0))
 
 func _draw() -> void:
 	if size.x <= 0.0 or size.y <= 0.0: return
@@ -120,7 +121,7 @@ func _draw() -> void:
 		draw_line(Vector2(x,y),Vector2(x-length*0.35,y+length),Color(0.72,0.83,0.90,0.27),1.0,true)
 	_draw_lens_trails()
 	var flash: float = flash_strength()
-	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*0.65))
+	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*0.40))
 
 # Analytic presentation paths keep stops, growth and trails independent of frame rate.
 func _lens_hash(value: float) -> float:

@@ -171,7 +171,7 @@ func _run() -> void:
 	check(weather.strikes == 1 and weather.thunder_count == 0 and weather.until_thunder >= 1.2,"lightning precedes delayed thunder")
 	check(weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0,"occasional lightning spacing")
 	weather.advance(0.16,false)
-	check(light.light_energy > weather.base_light_energy and weather.flash_strength() < 0.7,"bounded irregular lightning intensity")
+	check(light.light_energy > weather.base_light_energy and weather.flash_strength() <= 0.32,"restrained irregular lightning intensity")
 	var elapsed: float = weather.elapsed
 	var frozen_flash: float = weather.flash_strength()
 	weather.advance(10.0,true)
@@ -237,6 +237,7 @@ func _run() -> void:
 func _test_flash_profiles() -> void:
 	var weather := StormWeather.new()
 	var bounded: bool = true
+	var gradual: bool = true
 	var varied: bool = false
 	var first := PackedVector2Array()
 	for seed_value: int in range(64):
@@ -250,14 +251,18 @@ func _test_flash_profiles() -> void:
 			weather.flash_age = knot.x
 			bounded = bounded and is_equal_approx(weather.flash_strength(),knot.y)
 			if knot.y > weather.flash_profile[index-1].y and knot.y > weather.flash_profile[index+1].y: peaks += 1
-		bounded = bounded and peaks >= 2 and peaks <= 4 and weather.flash_profile[-1].x < weather.FLASH_DURATION
+		bounded = bounded and peaks >= 2 and peaks <= 3 and weather.flash_profile[-1].x >= 0.98 and weather.flash_profile[-1].x < weather.FLASH_DURATION
 		var rng_state: int = weather.rng.state
-		for sample: int in range(121):
+		var previous_strength: float = 0.0
+		for sample: int in range(ceili(weather.FLASH_DURATION*120.0)+1):
 			weather.flash_age = float(sample)/120.0
 			var strength: float = weather.flash_strength()
-			bounded = bounded and strength >= 0.0 and strength <= 0.62
+			bounded = bounded and strength >= 0.0 and strength <= 0.32
+			gradual = gradual and absf(strength-previous_strength) <= 0.03
+			previous_strength = strength
 		bounded = bounded and weather.rng.state == rng_state and weather.flash_strength() == 0.0
-	check(bounded,"64 seeded strikes have 2-4 bounded peaks, finite duration and no random sampling during rendering")
+	check(bounded,"64 seeded strikes have 2-3 softer peaks, at least 0.98s duration and no random sampling during rendering")
+	check(gradual,"lightning intensity changes gradually instead of fast high-contrast flicker")
 	check(varied,"strike shape varies with the random seed")
 	weather.rng.seed = 0
 	weather._build_flash_profile()

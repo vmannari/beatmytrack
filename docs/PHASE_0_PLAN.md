@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V02/V04/Q01: lightning now uses 2-4 randomized intensity peaks/dips per strike, with one delayed thunder and pause-stable timing. Storm desktop capture passes 94 checks; phase evidence inspected. No phone test/export; cadence acceptance pending. See docs/STORM_LIGHTNING.md.
+
 2026-09-30 V02/V04/V05/Q01: Storm kit 96 implements a wet asphalt baseline, sparse smoother pools, wet paint and shared overcast reflections. Storm-only PBR wrappers fix Compatibility toon suppression of non-metal reflections. Ajorata and bridge-fixture captures: 90 checks each; material regression: 928 checks. Desktop evidence inspected; no phone test/export. See docs/STORM_WET_MATERIAL.md.
 
 2026-09-30 V02/V04/Q01: screen-water droplets now use wider derivative-filtered edge feathering, weaker/broader glints and reduced rim refraction. Graphical Storm 85 checks pass; desktop capture inspected. No phone test/export. See docs/STORM_SOFT_DROPLETS.md.

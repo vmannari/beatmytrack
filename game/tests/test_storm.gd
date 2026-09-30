@@ -15,6 +15,7 @@ func _initialize() -> void:
 func _run() -> void:
 	root.size = Vector2i(1280,720)
 	_test_tire_spray()
+	_test_flash_profiles()
 	var track := NativeTrack.new()
 	track.cell_size = 10.0
 	track.grid_width = 100
@@ -170,13 +171,22 @@ func _run() -> void:
 	check(weather.strikes == 1 and weather.thunder_count == 0 and weather.until_thunder >= 1.2,"lightning precedes delayed thunder")
 	check(weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0,"occasional lightning spacing")
 	weather.advance(0.16,false)
-	check(light.light_energy > weather.base_light_energy and weather.flash_strength() < 0.7,"restrained single lightning pulse")
+	check(light.light_energy > weather.base_light_energy and weather.flash_strength() < 0.7,"bounded irregular lightning intensity")
 	var elapsed: float = weather.elapsed
+	var frozen_flash: float = weather.flash_strength()
 	weather.advance(10.0,true)
 	check(weather.elapsed == elapsed and weather.rain_audio.stream_paused and not weather.thunder_audio.playing,"pause freezes weather and pending thunder")
+	check(weather.flash_strength() == frozen_flash,"pause freezes the current lightning intensity")
 	if "--capture" in OS.get_cmdline_user_args():
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/storm"))
 		await _capture("flash")
+		var saved_age: float = weather.flash_age
+		for knot: int in range(1,mini(5,weather.flash_profile.size())):
+			weather.flash_age = weather.flash_profile[knot].x
+			weather.advance(0.0,false)
+			await _capture("strike-phase-"+str(knot))
+		weather.flash_age = saved_age
+		weather.advance(0.0,true)
 	weather.advance(3.0,false)
 	check(weather.thunder_count == 1 and weather.thunder_audio.playing,"thunder actually starts after delay")
 	weather.advance(0.0,true)
@@ -205,7 +215,7 @@ func _run() -> void:
 		weather.advance(0.1,false)
 		if weather.strikes != previous_strikes:
 			intervals_ok = intervals_ok and weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0
-	check(intervals_ok and weather.strikes >= 20 and weather.strikes <= 37,"five-minute storm stays intermittent, no flash bursts")
+	check(intervals_ok and weather.strikes >= 20 and weather.strikes <= 37,"five-minute storm retains occasional separate strikes")
 	check(weather.thunder_count >= weather.strikes-1,"each lightning event receives thunder")
 	# Changing the active biome removes visual/audio nodes and resets the light rig.
 	race.native_track.metadata.theme = "pine"
@@ -223,6 +233,36 @@ func _run() -> void:
 	await create_timer(0.15).timeout
 	print("STORM_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _test_flash_profiles() -> void:
+	var weather := StormWeather.new()
+	var bounded: bool = true
+	var varied: bool = false
+	var first := PackedVector2Array()
+	for seed_value: int in range(64):
+		weather.rng.seed = seed_value
+		weather._build_flash_profile()
+		if seed_value == 0: first = weather.flash_profile.duplicate()
+		else: varied = varied or first != weather.flash_profile
+		var peaks: int = 0
+		for index: int in range(1,weather.flash_profile.size()-1):
+			var knot: Vector2 = weather.flash_profile[index]
+			weather.flash_age = knot.x
+			bounded = bounded and is_equal_approx(weather.flash_strength(),knot.y)
+			if knot.y > weather.flash_profile[index-1].y and knot.y > weather.flash_profile[index+1].y: peaks += 1
+		bounded = bounded and peaks >= 2 and peaks <= 4 and weather.flash_profile[-1].x < weather.FLASH_DURATION
+		var rng_state: int = weather.rng.state
+		for sample: int in range(121):
+			weather.flash_age = float(sample)/120.0
+			var strength: float = weather.flash_strength()
+			bounded = bounded and strength >= 0.0 and strength <= 0.62
+		bounded = bounded and weather.rng.state == rng_state and weather.flash_strength() == 0.0
+	check(bounded,"64 seeded strikes have 2-4 bounded peaks, finite duration and no random sampling during rendering")
+	check(varied,"strike shape varies with the random seed")
+	weather.rng.seed = 0
+	weather._build_flash_profile()
+	check(weather.flash_profile == first,"same seed reproduces the complete strike envelope")
+	weather.free()
 
 func _capture(label: String) -> void:
 	for i: int in range(3): await RenderingServer.frame_post_draw

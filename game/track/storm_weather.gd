@@ -2,13 +2,14 @@ class_name StormWeather
 extends Control
 ## Presentation only: no access to simulation state, inputs or race clocks.
 const DROP_COUNT: int = 6
-const FLASH_DURATION: float = 0.55
+const FLASH_DURATION: float = 1.0 # Upper bound; each strike ends at its last knot.
 const MIN_INTERVAL: float = 9.0
 const MAX_INTERVAL: float = 16.0
 var elapsed: float = 0.0
 var until_lightning: float = 6.0
 var until_thunder: float = -1.0
 var flash_age: float = FLASH_DURATION
+var flash_profile := PackedVector2Array()
 var strikes: int = 0
 var thunder_count: int = 0
 var light: DirectionalLight3D
@@ -77,6 +78,7 @@ func advance(delta: float, paused: bool) -> void:
 	until_lightning -= delta
 	if until_lightning <= 0.0:
 		flash_age = 0.0
+		_build_flash_profile()
 		strikes += 1
 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
 		until_thunder = rng.randf_range(1.2,2.8)
@@ -85,8 +87,27 @@ func advance(delta: float, paused: bool) -> void:
 	queue_redraw()
 
 func flash_strength() -> float:
-	if flash_age >= FLASH_DURATION: return 0.0
-	return sin(PI*clampf(flash_age/FLASH_DURATION,0.0,1.0))*exp(-flash_age*3.0)
+	if flash_profile.is_empty() or flash_age >= flash_profile[-1].x: return 0.0
+	for index: int in range(1,flash_profile.size()):
+		var next: Vector2 = flash_profile[index]
+		if flash_age <= next.x:
+			var previous: Vector2 = flash_profile[index-1]
+			return lerpf(previous.y,next.y,smoothstep(previous.x,next.x,flash_age))
+	return 0.0
+
+func _build_flash_profile() -> void:
+	# Sample once per strike, never per rendered frame. Uneven return strokes
+	# share one thunder event and the same paused presentation clock.
+	flash_profile = PackedVector2Array([Vector2.ZERO])
+	var cursor: float = rng.randf_range(0.015,0.04)
+	var pulses: int = rng.randi_range(2,4)
+	for pulse: int in range(pulses):
+		var peak: float = rng.randf_range(0.40,0.62) if pulse == 0 else rng.randf_range(0.24,0.60)
+		flash_profile.append(Vector2(cursor,peak))
+		cursor += rng.randf_range(0.035,0.08)
+		flash_profile.append(Vector2(cursor,rng.randf_range(0.025,0.10)))
+		cursor += rng.randf_range(0.035,0.085)
+	flash_profile.append(Vector2(cursor+rng.randf_range(0.06,0.14),0.0))
 
 func _draw() -> void:
 	if size.x <= 0.0 or size.y <= 0.0: return

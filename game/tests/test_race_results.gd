@@ -22,6 +22,7 @@ func run() -> void:
 	test_rewards()
 	test_incidents()
 	test_sector_leaders()
+	test_lap_personal_best()
 	var interpolation: Dictionary = {"samples":[{"progress":0.0,"elapsed":0.0,"speed":10.0},{"progress":0.5,"elapsed":4.0,"speed":20.0},{"progress":1.0,"elapsed":10.0,"speed":30.0}]}
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.75),7.0),"time interpolation uses normalized distance")
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.25,"speed"),15.0),"speed interpolation uses normalized distance")
@@ -219,6 +220,25 @@ func run() -> void:
 	for size: Vector2i in [Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
 		root.size = size
 		await settle()
+		for mode: String in ["Track", "Sectors", "Speed"]:
+			panel.select_mode(mode)
+			await settle()
+			var fixed_map: Rect2 = panel.map.get_global_rect()
+			var fixed_route: PackedVector2Array = panel.map.fitted.duplicate()
+			var fixed_strip: Rect2 = panel.find_child("LapTimesStrip",true,false).get_global_rect()
+			for lap_index: int in range(panel.lap_buttons.size()):
+				var pointer := InputEventMouseMotion.new()
+				pointer.position = panel.lap_buttons[lap_index].get_global_rect().get_center()
+				root.push_input(pointer,true)
+				panel.select_lap(lap_index)
+				await settle()
+				check(panel.map.get_global_rect().is_equal_approx(fixed_map), "map rectangle fixed across lap hover/selection: "+mode)
+				check(panel.map.fitted == fixed_route, "route pixels fixed across lap hover/selection: "+mode)
+				check(panel.find_child("LapTimesStrip",true,false).get_global_rect().is_equal_approx(fixed_strip), "lap strip and separator stay fixed: "+mode)
+				check((panel.lap_buttons[lap_index].get_theme_stylebox("normal") as StyleBoxFlat).border_width_bottom == 0, "lap selection has no bottom border")
+		panel.select_lap(result.fastest)
+		panel.select_mode("Speed")
+		await settle()
 		var viewport: Rect2 = (app.get("root_ui") as Control).get_global_rect()
 		check(viewport.encloses(panel.get_global_rect()),"results fit viewport "+str(size))
 		check(is_equal_approx(panel.mode_buttons[0].size.x,panel.mode_buttons[1].size.x) and is_equal_approx(panel.mode_buttons[1].size.x,panel.mode_buttons[2].size.x),"analysis buttons equal width "+str(size))
@@ -344,6 +364,35 @@ func test_rewards() -> void:
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 250,"collision or off-track blocks clean reward")
 	facts.complete = false
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 0,"incomplete/practice result cannot qualify")
+
+func test_lap_personal_best() -> void:
+	var panel := RaceResults.new()
+	panel.clean = true
+	panel.laps = [20.0, 17.0, 19.0]
+	panel.set_meta("reward_facts", {"previous_lap":18.0})
+	root.add_child(panel)
+	check(panel.lap_buttons[1].text.contains("Personal best"), "fastest record lap says Personal best")
+	check(panel.lap_heading.text.contains("PERSONAL BEST"), "selected record lap heading says Personal best")
+	check(not panel._is_lap_pb(0) and not panel._is_lap_pb(2), "standing start and slower flying lap are not PBs")
+	panel.set_meta("reward_facts", {"previous_lap":17.0})
+	check(not panel._is_lap_pb(1), "matching a PB is not a new PB")
+	panel.set_meta("reward_facts", {"previous_lap":0.0})
+	check(panel._is_lap_pb(1), "first valid flying lap establishes a PB")
+	panel.clean = false
+	check(not panel._is_lap_pb(1), "practice cannot claim a lap PB")
+	for button: Button in panel.mode_buttons:
+		for state: String in ["normal", "pressed", "focus"]:
+			check(button.get_theme_stylebox(state).get_content_margin(SIDE_LEFT) == button.get_theme_stylebox("hover").get_content_margin(SIDE_LEFT), "mode icon padding matches hover: "+state)
+	panel.free()
+	var view := LapRouteView.new()
+	view.size = Vector2(700,300)
+	view.route = PackedVector2Array([Vector2(-50,-50),Vector2(50,50)])
+	view.framing_points = PackedVector2Array([Vector2(80,80)])
+	view.show_lap({"events":[{"position":Vector2(80,80)}]}, {})
+	var stable: PackedVector2Array = view.fitted.duplicate()
+	view.show_lap({"events":[]}, {})
+	check(view.fitted == stable, "switching incident and clean laps preserves race-wide fit")
+	view.free()
 
 func test_sector_leaders() -> void:
 	var label := Rect2(Vector2(100,80),Vector2(84,36))

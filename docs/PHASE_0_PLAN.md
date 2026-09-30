@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V03/V04/R01/Q01: results lap selection now preserves map/route/strip geometry across hover and selection; race-wide incident framing, fixed sector columns, equal button padding, no selection underlines (including shared tabs), and new flying-lap records say Personal best. Headless 391, graphical 408 and menu 26 checks pass. No phone attached/export/device test; see docs/PREMIUM_RESULTS.md.
+
 2026-09-30 V03/V04/R01/Q01: premium results presentation uses an open blurred race scene, dominant time/direct PB comparison, one factual achievement, enlarged annotated route, Track/Sectors/Speed modes, horizontal lap strip and race-wide speed/incident summary. Desktop capture checks pass; no phone attached or Android export/device test. See docs/PREMIUM_RESULTS.md.
 
 2026-09-29 V02/V04/V05/Q01: kit 89 fairs tight internal road contours and builds creator kerb visuals from the same outline, omitting isolated decorative slivers. Ajorata and Curvy desktop captures inspected; shoulder regression, 71 join, 18 contour, 31 kerb and 928 surface checks pass. Canonical contacts/cells unchanged. No phone attached/export/device test. See docs/AJORATA_JOINS.md.

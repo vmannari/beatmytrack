@@ -97,9 +97,7 @@ static func fill(node: Control) -> void:
 
 static func tab(text: String, action: Callable, selected: bool = false) -> Button:
 	var node: Button = button(text,action)
-	var normal := box(Color.TRANSPARENT,16)
-	normal.border_color = ACCENT if selected else Color.TRANSPARENT
-	normal.border_width_bottom = 3
+	var normal := box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16)
 	node.add_theme_stylebox_override("normal",normal)
 	node.add_theme_stylebox_override("hover",box(Color(1,1,1,0.07),16))
 	node.add_theme_color_override("font_color",ACCENT if selected else MUTED)

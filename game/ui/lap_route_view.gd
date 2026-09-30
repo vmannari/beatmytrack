@@ -3,6 +3,7 @@ extends Control
 ## Crisp vector centreline, no per-race raster assets. Geometry fits on resize only.
 signal point_selected(index: int)
 var route := PackedVector2Array()
+var framing_points := PackedVector2Array()
 var lap: Dictionary = {}
 var reference: Dictionary = {}
 var boundaries := PackedFloat32Array([0.0,1.0/3.0,2.0/3.0,1.0])
@@ -31,8 +32,7 @@ func _fit() -> void:
 	if route.size() < 2: return
 	bounds = Rect2(Vector2(route[0].x,-route[0].y),Vector2.ZERO)
 	for p: Vector2 in route: bounds = bounds.expand(Vector2(p.x,-p.y))
-	for event: Dictionary in lap.get("events", []):
-		var p: Vector2 = event.position
+	for p: Vector2 in framing_points:
 		bounds = bounds.expand(Vector2(p.x,-p.y))
 	# A dedicated left gutter keeps the route stroke out of the stacked legend.
 	var area := Rect2(Vector2(10,10),size-Vector2(20,20)) if miniature else Rect2(Vector2(65,24),size-Vector2(130,64))
@@ -93,9 +93,8 @@ func _draw() -> void:
 	var sectors: Array[Dictionary] = LapTelemetry.sectors(lap,boundaries)
 	var occupied: Array[Rect2] = [_legend_rect()]
 	var comparison: Array[Dictionary] = LapTelemetry.sectors(reference,boundaries)
-	for event: Dictionary in lap.get("events", []):
-		occupied.append(Rect2(_screen(event.position)-Vector2(10,10),Vector2(20,20)))
-	if selected_point >= 0: occupied.append(_tooltip_rect())
+	for point: Vector2 in framing_points:
+		occupied.append(Rect2(_screen(point)-Vector2(10,10),Vector2(20,20)))
 	for i: int in range(sectors.size()):
 		var middle: int = clampi(roundi((float(sectors[i].start)+float(sectors[i].end))*0.5*(fitted.size()-1)),0,fitted.size()-1)
 		var p: Vector2 = fitted[middle]

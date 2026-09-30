@@ -21,3 +21,22 @@ Final headless run: 195 checks, zero failures. Graphical final run: 212 checks, 
 Evidence: [default Track](evidence/premium-results-2026-09-30/track-default-1280x720.png), [time comparison](evidence/premium-results-2026-09-30/time-diff-1280x720.png), [wide sector detail](evidence/premium-results-2026-09-30/sectors-2400x1080.png), [speed](evidence/premium-results-2026-09-30/speed-1920x1080.png). Default and wide sector captures visually inspected.
 
 Remaining acceptance: owner visual approval, physical-phone readability/safe-area/performance, and unusual creator-route label layouts. No phone attached, Android export, or physical-device test. This keeps the real overhead finish scene rather than reproducing the reference's scenic rear-view illustration. Recorded telemetry without samples shows unavailable values. No online percentile added.
+
+
+## Selection stability follow-up
+
+Owner follow-up, 2026-09-30 (V03/V04/R01/Q01): selected/hovered laps must not move the separator or track; new fastest lap PBs must say Personal best; remove selection underlines throughout the shared menu style; mode-button normal icons must use the previous hover position.
+
+Normal, hover, pressed, disabled and focus lap styles now use identical five-pixel padding. Selection is a subtle fill with no border. Shared MenuStyle tabs also use a fill instead of a bottom border. Mode buttons use twelve-pixel padding in every state, matching the previous hover position. Sector columns have fixed widths, and the map fits the route plus all race incidents together, so changing the selected lap cannot change the scale/center. Sector labels also reserve the same incident spaces for every lap. Selecting a telemetry point no longer relocates the sector labels.
+
+The strip and heading use Personal best for a valid flying lap that improves the pre-race record (including the fastest lap); first valid flying records also qualify. Standing starts, practice and equal times do not claim a new record. Switching between Track and Sectors still intentionally allocates space for the detailed table; geometry is invariant across lap selection within each mode.
+
+Additional changed file: `game/ui/menu_style.gd`. Existing results tests now exercise every lap in every mode at 1280x720, 1920x1080 and 2400x1080, with actual hover input. They compare map rectangles, all fitted route coordinates and lap-strip rectangles; check shared incident extents, PB eligibility and identical icon padding. Commands actually run:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestResults`: 391 checks, zero failures.
+- `$env:BMT_RESULTS_EVIDENCE = 'C:/Codes/Godot/Beat my track/docs/evidence/results-stability-2026-09-30'`; `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureResults`: 408 checks, zero failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus`: 26 checks, zero failures.
+- `C:/Users/ville/AppData/Local/Android/Sdk/platform-tools/adb.exe devices`: empty device list.
+- `git diff --check`: passed.
+
+[Fastest lap, no underline](evidence/results-stability-2026-09-30/track-default-1280x720.png) and [another lap, same track placement](evidence/results-stability-2026-09-30/time-diff-1280x720.png). Desktop default screenshot inspected. Owner visual approval and physical-device touch/readability remain; no phone attached, Android export or device test.

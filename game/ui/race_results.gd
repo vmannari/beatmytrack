@@ -142,10 +142,7 @@ func _lap_list(parent: Control) -> void:
 		button.pressed.connect(select_lap.bind(i))
 		strip.add_child(button)
 		lap_buttons.append(button)
-		var collision: bool = false
-		for event: Dictionary in result.laps[i].get("events", []):
-			if str(event.kind) == "collision": collision = true
-		var marker: String = "  \u00d7" if collision else ("  \u2605" if i == result.fastest else "")
+		var marker: String = "  \u2605" if i == result.fastest else ""
 		var detail: String = "FASTEST" if i == result.fastest else ("%+.3f" % (laps[i]-laps[result.fastest]) if result.fastest >= 0 else "\u2014")
 		var prior_lap: float = float(get_meta("reward_facts", {}).get("previous_lap", 0.0))
 		if i > 0 and prior_lap > 0 and i != result.fastest:
@@ -154,7 +151,8 @@ func _lap_list(parent: Control) -> void:
 		if not result.laps[i].valid: detail = "INVALID"
 		button.text = "%02d%s\n%.3f\n%s" % [i+1, marker, laps[i], detail]
 		button.add_theme_font_size_override("font_size", 23)
-		button.add_theme_color_override("font_color", Color("ff9184") if collision else (MenuStyle.ACCENT if i == result.fastest else MenuStyle.TEXT))
+		for color_state: String in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_disabled_color"]:
+			button.add_theme_color_override(color_state, MenuStyle.ACCENT if i == result.fastest else MenuStyle.TEXT)
 		button.tooltip_text = "Lap %d / %s" % [i+1, "Standing start" if i == 0 else "Flying lap"]
 	var stats := VBoxContainer.new()
 	stats.custom_minimum_size.x = 210
@@ -275,7 +273,9 @@ func select_lap(index: int) -> void:
 	selected_lap = clampi(index,0,result.laps.size()-1)
 	for i: int in range(lap_buttons.size()):
 		for state: String in ["normal", "hover", "pressed", "focus"]:
-			lap_buttons[i].add_theme_stylebox_override(state,_selection_style(i == selected_lap or state == "hover" or state == "focus"))
+			var style: StyleBoxFlat = _selection_style(i == selected_lap)
+			if i != selected_lap and state in ["hover", "focus"]: style.bg_color = Color(0.07,0.15,0.20,0.30)
+			lap_buttons[i].add_theme_stylebox_override(state,style)
 	var lap: Dictionary = result.laps[selected_lap]
 	lap_heading.text = "LAP %02d / %s" % [selected_lap+1,"FASTEST LAP" if selected_lap == result.fastest else ("STANDING START" if selected_lap == 0 else "FLYING LAP")]
 	if _is_lap_pb(selected_lap): lap_heading.text = "LAP %02d / PERSONAL BEST" % (selected_lap+1)
@@ -347,7 +347,7 @@ func _is_lap_pb(index: int) -> bool:
 	return prior <= 0.0 or laps[index] < prior-0.0005
 
 static func _selection_style(selected: bool) -> StyleBoxFlat:
-	var style := MenuStyle.box(Color(0.07,0.15,0.20,0.22) if selected else Color.TRANSPARENT, 5)
+	var style := MenuStyle.box(Color(0.07,0.15,0.20,0.85) if selected else Color.TRANSPARENT, 5)
 	return style
 
 static func _card(parent: Control, padding: int) -> VBoxContainer:

@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V03/V04/Q01: lap strip uses white text for every non-fastest lap in all interaction states, gold for fastest, no collision markers and an 85%-opaque selected background (hover 30%). Graphical results: 493 checks pass; desktop screenshot inspected. No phone attached/export/device test. See docs/PREMIUM_RESULTS.md.
+
 2026-09-30 R01/R03/R07/G01/T01-T04/V03/Q01: rules v13 fixes missed checkpoints on steep straight-road joins using physical apex gates, mitred widths and removal of intersecting neighbours. Checkpoint 266, native replay 167, start-line 27, records 53, rewind 51 and graphical 15 checks pass. Shared v12 tracks retain content/history and get separate v13 boards. No phone attached/export/device test. See docs/SHARP_JOIN_CHECKPOINTS.md.
 
 2026-09-30 V03/R01/Q01: only the single fastest eligible flying lap can claim a new Personal best; earlier equal-time lap wins ties. Removed secondary LAP PB claims when several laps beat the old record. Graphical results suite: 493 checks pass, including first race/multiple improvements/ties/unbeaten records. No phone attached/export/device test. See docs/PREMIUM_RESULTS.md.

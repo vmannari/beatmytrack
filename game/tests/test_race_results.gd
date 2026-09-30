@@ -180,14 +180,16 @@ func run() -> void:
 	check(panel != null and panel.selected_lap == result.fastest,"integrated screen selects fastest lap")
 	check((app.get("records") as LocalRecords).best_for(track,game.get("handling")) == roundi(session.race_time_seconds()*1000.0)/1000.0,"paused race with shortcut history records its actual total")
 	check(panel.total == session.race_time_seconds() and panel.laps == session.lap_times,"summary and lap rows receive actual completed times")
-	check(panel.find_child("ResultDelta",true,false) == null and panel.find_child("ResultStatus",true,false) == null,"total race time card has no explanatory copy")
+	check(panel.find_child("ResultDelta",true,false) != null and panel.find_child("RaceAchievement",true,false) != null,"race time includes direct PB comparison and one earned achievement")
 	check(panel.find_child("ResultsActions",true,false).get_child_count() == 2,"results have only two bottom actions")
-	check(panel.map.mode == "Sectors" and panel.mode_buttons[0].text == "Sectors" and panel.mode_buttons[2].text == "Speed","analysis starts with sectors in requested order")
+	check(panel.map.mode == "Time diff" and panel.mode_buttons[0].text == "Track" and panel.mode_buttons[2].text == "Speed","analysis starts with Track in requested order")
 	var single_catalog := TrackCatalog.new(library)
 	single_catalog.entries = []
 	check(RaceRecommendations.suggest(single_catalog,track).is_empty(),"empty catalog has no invented recommendations")
-	check(panel.sector_table.visible and panel.sector_rows.get_child_count() == 12,"sectors table contains headings and three measured rows")
+	check(not panel.sector_table.visible and panel.sector_rows.get_child_count() == 12,"sector detail is populated but hidden by default")
+	var race_average: String = panel.average_label.text
 	panel.select_lap(0)
+	check(panel.average_label.text == race_average, "race average remains stable when inspecting another lap")
 	var measured: Array[Dictionary] = LapTelemetry.sectors(result.laps[0],result.sector_boundaries)
 	var best_sectors: Array[Dictionary] = LapTelemetry.sectors(result.laps[result.fastest],result.sector_boundaries)
 	check((panel.sector_rows.get_child(4) as Label).text == "%.2f s" % measured[0].time,"table updates time when lap changes")
@@ -211,6 +213,9 @@ func run() -> void:
 	panel.map.show_lap(incident_lap, panel.map.reference)
 	await screenshot("incident-markers-1280x720")
 	panel.select_lap(result.fastest)
+	panel.select_mode("Track")
+	await screenshot("track-default-1280x720")
+	panel.select_mode("Speed")
 	for size: Vector2i in [Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
 		root.size = size
 		await settle()
@@ -220,7 +225,7 @@ func run() -> void:
 		check(panel.map.size.x > 350 and panel.map.size.y >= 200,"map has usable area "+str(size))
 		for button: Button in panel.lap_buttons:
 			check(button.get_global_rect().size.y >= 61,"lap touch target")
-			check((button.get_parent().get_parent() as ScrollContainer).get_global_rect().encloses(button.get_global_rect()),"all five laps visible without scrolling")
+			check((button.get_parent() as HBoxContainer).get_global_rect().encloses(button.get_global_rect()),"all five laps visible without scrolling")
 		await tap(panel.lap_buttons[1].get_global_rect().get_center())
 		check(panel.selected_lap == 1,"lap tap updates selection")
 		panel.lap_buttons[result.fastest].pressed.emit()
@@ -231,11 +236,12 @@ func run() -> void:
 		check(panel.map.selected_point >= 0,"route touch picks telemetry point")
 		await screenshot("speed-"+str(size.x)+"x"+str(size.y))
 		panel.lap_buttons[0].pressed.emit()
-		panel.mode_buttons[1].pressed.emit()
+		panel.mode_buttons[0].pressed.emit()
 		check(panel.map.mode == "Time diff","time comparison mode hooked")
 		check(panel.map._segment_color(0.99,0,1).r > panel.map._segment_color(0.99,0,1).g,"slower lap finish is colored as time lost")
 		await screenshot("time-diff-"+str(size.x)+"x"+str(size.y))
-		panel.mode_buttons[0].pressed.emit()
+		panel.mode_buttons[1].pressed.emit()
+		check(panel.sector_table.visible, "Sectors mode exposes detailed data")
 		await screenshot("sectors-"+str(size.x)+"x"+str(size.y))
 		panel.select_mode("Speed")
 	# Show both rated and unrated recommendation states in the isolated UI fixture.
@@ -301,6 +307,10 @@ func run() -> void:
 	check(complete_page.recommendations.any(func(item: Dictionary) -> bool: return item.entry.get("read_only",false)), "results reuse shared circuits after opening Play")
 	var recommended_id: String = complete_page.recommendations[maxi(0, shared_index)].entry.id
 	complete_page.race_button.pressed.emit()
+	for frame: int in range(600):
+		await process_frame
+		var launched: Node = app.get("game")
+		if launched != null and (launched.get("native_track") as NativeTrack).identity == recommended_id: break
 	await settle()
 	var recommended_game: Node = app.get("game")
 	recommended_game.set_physics_process(false)

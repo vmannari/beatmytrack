@@ -44,12 +44,13 @@ func _ready() -> void:
 	main.add_theme_constant_override("separation",14)
 	add_child(main)
 	var left := VBoxContainer.new()
-	left.custom_minimum_size.x = 402
+	left.custom_minimum_size.x = 365
 	left.add_theme_constant_override("separation",8)
 	main.add_child(left)
 	_summary(left)
-	_lap_list(left)
 	_visualization(main)
+	add_child(HSeparator.new())
+	_lap_list(self)
 	_actions()
 	select_lap(maxi(0,result.fastest))
 
@@ -78,126 +79,128 @@ func _header() -> void:
 	row.add_child(brand)
 
 func _summary(parent: Control) -> void:
-	var body: VBoxContainer = _card(parent,10)
-	body.add_theme_constant_override("separation",1)
-	var values := HBoxContainer.new()
-	values.add_theme_constant_override("separation",10)
-	body.add_child(values)
-	var time_column := VBoxContainer.new()
-	time_column.add_theme_constant_override("separation",0)
-	time_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	values.add_child(time_column)
-	time_column.add_child(MenuStyle.label("TOTAL RACE TIME",17,true))
-	var timer := MenuStyle.label(MenuStyle.time_text(total),52)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 3)
+	parent.add_child(body)
+	var timer := MenuStyle.label(MenuStyle.time_text(total), 94)
 	timer.name = "ResultTime"
-	timer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	time_column.add_child(timer)
-	var pb := VBoxContainer.new()
-	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	pb.add_theme_constant_override("separation",0)
-	var wreath := HBoxContainer.new()
-	wreath.name = "PersonalBestLaurels"
-	wreath.add_theme_constant_override("separation",0)
-	wreath.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	values.add_child(wreath)
-	wreath.add_child(ResultsIcons.view("laurel",20,MenuStyle.ACCENT))
-	wreath.add_child(pb)
-	var right_leaf := ResultsIcons.view("laurel",20,MenuStyle.ACCENT)
-	right_leaf.flip_h = true
-	wreath.add_child(right_leaf)
-	var pb_title := MenuStyle.label("PERSONAL BEST",14)
-	pb_title.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	pb.add_child(pb_title)
-	var pb_time := MenuStyle.label(MenuStyle.time_text(best) if best > 0 else "\u2014",26)
-	pb_time.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	pb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	pb_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	pb.add_child(pb_time)
+	body.add_child(timer)
+	var delta_text: String = "%+.3f s vs personal best" % (total-previous) if previous > 0 else "Your first benchmark"
+	if previous > 0 and absf(total-previous) < 0.0005: delta_text = "Matched your personal best"
+	if not clean: delta_text = "Practice result"
+	var delta := MenuStyle.label(delta_text, 25, true)
+	delta.name = "ResultDelta"
+	body.add_child(delta)
+	body.add_child(MenuStyle.label("PB  "+(MenuStyle.time_text(best) if best > 0 else "\u2014"), 21, true))
+	var gap := Control.new()
+	gap.custom_minimum_size.y = 22
+	body.add_child(gap)
+	var achievement := HBoxContainer.new()
+	achievement.add_theme_constant_override("separation", 14)
+	body.add_child(achievement)
+	achievement.add_child(ResultsIcons.view("trophy", 52, MenuStyle.ACCENT))
+	var title: String = "RACE COMPLETE" if clean else "PRACTICE COMPLETE"
+	var caption: String = "Five laps. One more benchmark."
+	var facts: Dictionary = get_meta("reward_facts", {})
+	if clean and previous > 0 and total < previous-0.0005:
+		title = "NEW PERSONAL BEST"
+		caption = "%.3f s faster than your previous best." % (previous-total)
+	elif clean and bool(facts.get("incident_free", false)):
+		title = "CLEAN RACE"
+		caption = "Every lap. No collisions or off-track incidents."
+	elif clean and previous <= 0:
+		title = "FIRST FINISH"
+		caption = "Your next race has a time to chase."
+	var headline := MenuStyle.label(title, 34)
+	headline.name = "RaceAchievement"
+	headline.add_theme_color_override("font_color", MenuStyle.ACCENT)
+	achievement.add_child(headline)
+	var note := MenuStyle.label(caption, 16, true)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.custom_minimum_size.x = 340
+	body.add_child(note)
 
 func _lap_list(parent: Control) -> void:
-	var panel: VBoxContainer = _card(parent,5)
-	panel.get_parent().size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.get_parent().custom_minimum_size.y = min(laps.size(),5)*65+6
-	panel.add_theme_constant_override("separation",4)
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_child(scroll)
-	var list := VBoxContainer.new()
-	list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation",4)
-	scroll.add_child(list)
+	var lower := HBoxContainer.new()
+	lower.name = "LapTimesStrip"
+	lower.add_theme_constant_override("separation", 24)
+	parent.add_child(lower)
+	var stack := VBoxContainer.new()
+	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lower.add_child(stack)
+	stack.add_child(MenuStyle.label("LAP TIMES", 19))
+	var strip := HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 8)
+	stack.add_child(strip)
 	for i: int in range(laps.size()):
 		var button := Button.new()
 		button.name = "Lap%d" % (i+1)
-		button.custom_minimum_size.y = 61
-		button.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		button.custom_minimum_size = Vector2(90, 98)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.pressed.connect(select_lap.bind(i))
-		list.add_child(button)
+		strip.add_child(button)
 		lap_buttons.append(button)
-		var margin := MarginContainer.new()
-		margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		margin.add_theme_constant_override("margin_left",12)
-		margin.add_theme_constant_override("margin_right",12)
-		margin.add_theme_constant_override("margin_top",8)
-		margin.add_theme_constant_override("margin_bottom",8)
-		button.add_child(margin)
-		MenuStyle.fill(margin)
-		var stack := VBoxContainer.new()
-		stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		stack.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		stack.add_theme_constant_override("separation",1)
-		margin.add_child(stack)
-		var row := HBoxContainer.new()
-		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		stack.add_child(row)
-		var number := MenuStyle.label("%02d" % (i+1),24,true)
-		number.custom_minimum_size.x = 34
-		row.add_child(number)
-		var classification: String = "Standing start" if i == 0 else "Flying lap"
-		if i == result.fastest: classification = ("Standing start \u2605" if i == 0 else "Fastest lap \u2605")
-		if not result.laps[i].valid: classification += " · Invalid"
-		var title := MenuStyle.label(classification,15,true)
-		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		if i == result.fastest: title.add_theme_color_override("font_color",MenuStyle.ACCENT)
-		row.add_child(title)
-		row.add_child(MenuStyle.label("%.3f" % laps[i],28))
-		var delta := MenuStyle.label("—" if result.fastest < 0 or i == result.fastest else "%+.3f" % (laps[i]-laps[result.fastest]),15,true)
-		delta.custom_minimum_size.x = 65
-		delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		row.add_child(delta)
-		var bar := ProgressBar.new()
-		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		bar.custom_minimum_size.y = 4
-		bar.show_percentage = false
-		bar.max_value = laps.max()
-		bar.value = laps[i]
-		bar.add_theme_stylebox_override("fill",MenuStyle.box(MenuStyle.ACCENT if i == result.fastest else Color("729db6"),0))
-		stack.add_child(bar)
+		var collision: bool = false
+		for event: Dictionary in result.laps[i].get("events", []):
+			if str(event.kind) == "collision": collision = true
+		var marker: String = "  \u00d7" if collision else ("  \u2605" if i == result.fastest else "")
+		var detail: String = "FASTEST" if i == result.fastest else ("%+.3f" % (laps[i]-laps[result.fastest]) if result.fastest >= 0 else "\u2014")
+		var prior_lap: float = float(get_meta("reward_facts", {}).get("previous_lap", 0.0))
+		if i > 0 and prior_lap > 0 and i != result.fastest:
+			if laps[i] < prior_lap-0.0005: detail = "LAP PB"
+			elif absf(laps[i]-prior_lap) <= 0.05: detail = "NEAR PB"
+		if not result.laps[i].valid: detail = "INVALID"
+		button.text = "%02d%s\n%.3f\n%s" % [i+1, marker, laps[i], detail]
+		button.add_theme_font_size_override("font_size", 23)
+		button.add_theme_color_override("font_color", Color("ff9184") if collision else (MenuStyle.ACCENT if i == result.fastest else MenuStyle.TEXT))
+		button.tooltip_text = "Lap %d / %s" % [i+1, "Standing start" if i == 0 else "Flying lap"]
+	var stats := VBoxContainer.new()
+	stats.custom_minimum_size.x = 210
+	stats.add_theme_constant_override("separation", 3)
+	lower.add_child(stats)
+	average_label = _stat(stats, "Race average speed", "Speed")
+	top_label = _stat(stats, "Race top speed", "bars")
+	comparison_label = MenuStyle.label("", 17, true)
+	stats.add_child(comparison_label)
+	var duration: float = 0.0
+	var weighted: float = 0.0
+	var peak: float = 0.0
+	var collisions: int = 0
+	for lap: Dictionary in result.laps:
+		if not lap.get("samples", []).is_empty():
+			var speeds: Vector2 = RaceResultData.speed_stats(lap)
+			var seconds: float = float(lap.get("duration", 0))
+			duration += seconds
+			weighted += speeds.x*seconds
+			peak = maxf(peak, speeds.y)
+		for event: Dictionary in lap.get("events", []):
+			if str(event.kind) == "collision": collisions += 1
+	average_label.text = "%d km/h" % roundi(weighted/duration) if duration > 0 else "\u2014"
+	top_label.text = "%d km/h" % roundi(peak) if duration > 0 else "\u2014"
+	comparison_label.text = "%d collisions" % collisions if duration > 0 else "Incidents unavailable"
 
 func _visualization(parent: Control) -> void:
-	var body: VBoxContainer = _card(parent,16)
+	var body: VBoxContainer = _card(parent,4)
 	body.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation",8)
 	var header := HBoxContainer.new()
 	body.add_child(header)
-	lap_heading = MenuStyle.label("",25)
+	lap_heading = MenuStyle.label("",16)
 	lap_heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lap_heading.clip_text = true
-	lap_heading.custom_minimum_size.x = 210
+	lap_heading.custom_minimum_size.x = 80
 	header.add_child(lap_heading)
-	for mode: String in ["Sectors","Time diff","Speed"]:
+	for mode: String in ["Track","Sectors","Speed"]:
 		var button: Button = MenuStyle.button(mode,select_mode.bind(mode))
-		button.custom_minimum_size = Vector2(124,48)
-		button.icon = ResultsIcons.texture(mode,Color.WHITE)
+		button.custom_minimum_size = Vector2(110,48)
+		button.icon = ResultsIcons.texture("Time diff" if mode == "Track" else mode,Color.WHITE)
 		button.expand_icon = true
 		button.add_theme_constant_override("icon_max_width",24)
 		button.add_theme_constant_override("h_separation",10)
 		button.add_theme_font_size_override("font_size",18)
 		header.add_child(button)
 		mode_buttons.append(button)
-	body.add_child(MenuStyle.label("Tap or drag the route to inspect your lap",14,true))
+	lap_heading.tooltip_text = "Tap the route to inspect. Differences compare the selected lap with the fastest valid lap in this race."
 	map = LapRouteView.new()
 	map.name = "LapVisualization"
 	map.route = result.route
@@ -221,18 +224,10 @@ func _visualization(parent: Control) -> void:
 	sector_rows.add_theme_constant_override("h_separation",16)
 	sector_rows.add_theme_constant_override("v_separation",12)
 	sector_table.add_child(sector_rows)
-	body.add_child(HSeparator.new())
-	var stats := HBoxContainer.new()
-	stats.custom_minimum_size.y = 57
-	stats.add_theme_constant_override("separation",16)
-	body.add_child(stats)
-	average_label = _stat(stats,"Average speed","Speed")
-	top_label = _stat(stats,"Top speed","bars")
-	comparison_label = _stat(stats,"vs. fastest valid lap","trophy")
-	select_mode("Sectors")
+	select_mode("Track")
 
 func _stat(parent: Control, caption: String, symbol: String) -> Label:
-	if parent.get_child_count() > 0:
+	if parent is HBoxContainer and parent.get_child_count() > 0:
 		var divider := VSeparator.new()
 		var line := MenuStyle.box(Color("304c5b"),0)
 		line.content_margin_left = 1
@@ -243,7 +238,7 @@ func _stat(parent: Control, caption: String, symbol: String) -> Label:
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_theme_constant_override("separation",12)
 	parent.add_child(row)
-	row.add_child(ResultsIcons.view(symbol,34,MenuStyle.ACCENT if symbol == "trophy" else Color("a5c8df")))
+	row.add_child(ResultsIcons.view(symbol,24,MenuStyle.ACCENT if symbol == "trophy" else Color("a5c8df")))
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.add_theme_constant_override("separation",0)
@@ -258,7 +253,7 @@ func _actions() -> void:
 	row.name = "ResultsActions"
 	row.add_theme_constant_override("separation",16)
 	add_child(row)
-	var retry := MenuStyle.button("\u21bb   RACE AGAIN",func() -> void: retry_requested.emit())
+	var retry := MenuStyle.button("\u21bb   RACE AGAIN\n"+_retry_motivation(),func() -> void: retry_requested.emit())
 	retry.name = "RetryRace"
 	retry.add_theme_stylebox_override("normal",_panel_style(8))
 	row.add_child(retry)
@@ -267,7 +262,7 @@ func _actions() -> void:
 	row.add_child(next_button)
 	for button: Button in [retry,next_button]:
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		button.custom_minimum_size.y = 66
+		button.custom_minimum_size.y = 70
 
 func select_lap(index: int) -> void:
 	if result.laps.is_empty(): return
@@ -278,14 +273,10 @@ func select_lap(index: int) -> void:
 	if not lap.valid: lap_heading.text = "LAP %02d / INVALID" % (selected_lap+1)
 	map.show_lap(lap,result.laps[result.fastest] if result.fastest >= 0 else {})
 	_update_sectors(lap)
-	var stats: Vector2 = RaceResultData.speed_stats(lap)
-	average_label.text = "%d km/h" % roundi(stats.x) if not lap.samples.is_empty() else "—"
-	top_label.text = "%d km/h" % roundi(stats.y) if not lap.samples.is_empty() else "—"
-	comparison_label.text = "—" if result.fastest < 0 or selected_lap == result.fastest else "%+.3f s" % (float(lap.time)-float(result.laps[result.fastest].time))
 
 func select_mode(mode: String) -> void:
 	sector_table.visible = mode == "Sectors"
-	map.mode = mode
+	map.mode = "Time diff" if mode == "Track" else mode
 	map.queue_redraw()
 	for button: Button in mode_buttons:
 		var style: StyleBoxFlat = _panel_style(6)
@@ -323,17 +314,20 @@ static func _panel_style(padding: int) -> StyleBoxFlat:
 	style.set_corner_radius_all(5)
 	return style
 
+func _retry_motivation() -> String:
+	if not clean: return "Set a timed benchmark"
+	if previous > 0 and total > previous+0.0005: return "%.3f s to beat your PB" % (total-previous)
+	return "Beat your new benchmark" if best > 0 else "Find your next fastest lap"
+
 static func _selection_style(selected: bool) -> StyleBoxFlat:
-	var style: StyleBoxFlat = _panel_style(5)
-	if selected:
-		style.border_color = MenuStyle.ACCENT
-		style.set_border_width_all(2)
-		style.bg_color = Color(0.15,0.15,0.09,0.65)
+	var style := MenuStyle.box(Color(0.07,0.15,0.20,0.22) if selected else Color.TRANSPARENT, 5)
+	style.border_color = Color("9bb6c5")
+	style.border_width_bottom = 2 if selected else 0
 	return style
 
 static func _card(parent: Control, padding: int) -> VBoxContainer:
 	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel",_panel_style(padding))
+	panel.add_theme_stylebox_override("panel", MenuStyle.box(Color.TRANSPARENT, padding))
 	parent.add_child(panel)
 	var body := VBoxContainer.new()
 	panel.add_child(body)

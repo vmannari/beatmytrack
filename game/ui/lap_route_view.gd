@@ -35,7 +35,7 @@ func _fit() -> void:
 		var p: Vector2 = event.position
 		bounds = bounds.expand(Vector2(p.x,-p.y))
 	# A dedicated left gutter keeps the route stroke out of the stacked legend.
-	var area := Rect2(Vector2(10,10),size-Vector2(20,20)) if miniature else Rect2(Vector2(_legend_rect().end.x+18,16),size-Vector2(_legend_rect().end.x+83,66))
+	var area := Rect2(Vector2(10,10),size-Vector2(20,20)) if miniature else Rect2(Vector2(65,24),size-Vector2(130,64))
 	factor = maxf(0.001,minf(area.size.x/maxf(bounds.size.x,0.1),area.size.y/maxf(bounds.size.y,0.1)))
 	origin = area.position+(area.size-bounds.size*factor)*0.5
 	for p: Vector2 in route: fitted.append(_screen(p))
@@ -92,6 +92,7 @@ func _draw() -> void:
 		for y: int in range(3): draw_rect(Rect2(start+Vector2(x*4-8,y*4-6),Vector2(4,4)),Color.WHITE if (x+y)%2 == 0 else Color("111e27"))
 	var sectors: Array[Dictionary] = LapTelemetry.sectors(lap,boundaries)
 	var occupied: Array[Rect2] = [_legend_rect()]
+	var comparison: Array[Dictionary] = LapTelemetry.sectors(reference,boundaries)
 	for event: Dictionary in lap.get("events", []):
 		occupied.append(Rect2(_screen(event.position)-Vector2(10,10),Vector2(20,20)))
 	if selected_point >= 0: occupied.append(_tooltip_rect())
@@ -104,6 +105,9 @@ func _draw() -> void:
 		draw_line(p,_leader_end(p,label_rect),Color("56707e"),1,true)
 		draw_string(MenuStyle.BODY,label_pos,"Sector %d" % (i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.TEXT)
 		draw_string(MenuStyle.BODY,label_pos+Vector2(0,18),("%.2f s" % sectors[i].time) if not lap.get("samples",[]).is_empty() else "\u2014",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+		if not lap.get("samples", []).is_empty() and not reference.get("samples", []).is_empty() and i < comparison.size():
+			var delta: float = float(sectors[i].time)-float(comparison[i].time)
+			draw_string(MenuStyle.BODY,label_pos+Vector2(0,36),"%+.2f s" % delta,HORIZONTAL_ALIGNMENT_LEFT,-1,14,_sector_color(i))
 	for event: Dictionary in lap.get("events", []):
 		_draw_incident(_screen(event.position), str(event.kind))
 	_draw_legend()
@@ -125,22 +129,17 @@ func _draw_sector_ends() -> void:
 		draw_line(center-normal*6.0,center+normal*6.0,Color("f3f7f5"),2.0,true)
 
 func _sector_label_rect(anchor: Vector2, occupied: Array[Rect2]) -> Rect2:
-	var best := Rect2(Vector2(8,8),Vector2(84,36))
+	var best := Rect2(Vector2(8,8),Vector2(94,54))
 	var best_score: float = INF
-	var outward: float = (anchor-(size-Vector2(0,34))*0.5).angle()
-	# Find nearby clear space without assuming any particular track shape.
-	for ring: float in [52.0,80.0,110.0]:
-		for step: int in range(12):
-			var offset: Vector2 = Vector2.from_angle(outward+step*TAU/12.0)*ring
-			var position: Vector2 = anchor+offset-Vector2(42,18)
-			position.x = clampf(position.x,8,size.x-92)
-			position.y = clampf(position.y,4,size.y-76)
-			var candidate := Rect2(position,Vector2(84,36))
-			var score: float = candidate.get_center().distance_to(anchor)+step*0.05
+	# Search the complete drawing area so tight tracks can place labels outside bends.
+	for y: int in range(4, maxi(5, int(size.y)-85), 12):
+		for x: int in range(8, maxi(9, int(size.x)-102), 12):
+			var candidate := Rect2(Vector2(x,y),Vector2(94,54))
+			var score: float = candidate.get_center().distance_to(anchor)
 			for point: Vector2 in fitted:
 				if candidate.grow(8).has_point(point): score += 1000.0
 			for other: Rect2 in occupied:
-				if candidate.grow(4).intersects(other): score += 10000.0
+				if candidate.grow(6).intersects(other): score += 100000.0
 			if score < best_score:
 				best = candidate
 				best_score = score

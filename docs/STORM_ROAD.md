@@ -47,3 +47,21 @@ Actual commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts
 - `git diff --cached --check`: passes.
 
 [Wet road](evidence/storm-road-2026-09-30/revision-3/rain.png) / [Lightning](evidence/storm-road-2026-09-30/revision-3/lightning.png). Owner review of sheen strength remains. No phone/device test or Android export; physical-device frame pacing and moving-camera acceptance remain outstanding. Device attachment was not checked. Dedicated wet bridge imagery remains outstanding.
+
+## Readable water highlights (kit 93)
+
+The owner again found revision 3 too subtle to read as wet. The accepted neutral asphalt and shared road edges remain. Kit 93 adds a stronger, broken reflection band over shallow-wave slopes, reduces visible aggregate grain in pooled water and adds sparse expanding road-plane rain rings. Highlights are visibly distinct at the 1280x720 gameplay capture scale. Their first high-frequency prototype looked scratched, so the wave scales were broadened before final evidence.
+
+The existing StormWeather presentation clock and flash strength now feed a vec2 shader global. Rain rings freeze during pause; they do not use shader TIME or access the simulation. Lightning scales the wet reflection term by up to 1+1.8*flash_strength; weather teardown resets the global. Static/editor Storm materials default to time zero. This is a stylized reflected-light approximation composited through EMISSION, not ray tracing or reflections of nearby cars/trees. The shared helper covers creator/native/bridge road materials without additional geometry, lights or render passes. Shader pixel cost increases; mobile cost remains unmeasured.
+
+Changed files: game/track/surface_detail.gdshaderinc, game/track/storm_weather.gd, game/track/native_track_visual.gd (kit 93), game/project.godot (shader global), this document/evidence and status/phase notes. Canonical physics, camera and road-edge geometry are unchanged.
+
+Actual checks through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+- `CaptureStorm -Track track_acf29166cceaaa42`: final 59 checks, zero failures and no shader errors. Existing handling/replay/weather pause tests pass. Final normal rain, lightning and 1.2-second-later captures manually inspected. The shader clock is updated from the same pause-gated weather path; no additional automated pixel-freeze assertion was added.
+- `TestSurfaceProfile`: 928 checks, zero failures and no shader errors.
+- `git diff --check` and `git diff --cached --check`: pass (line-ending notices only).
+
+[Previous](evidence/storm-road-2026-09-30/revision-3/rain.png) / [Stronger wet surface](evidence/storm-road-2026-09-30/revision-4/rain.png) / [Lightning](evidence/storm-road-2026-09-30/revision-4/lightning.png) / [Later rain](evidence/storm-road-2026-09-30/revision-4/rain-later.png).
+
+Owner acceptance of this stronger treatment remains outstanding. No physical-phone test or Android export performed; attachment not checked. Moving-camera aliasing, mobile GPU/frame pacing and dedicated bridge imagery remain unverified. Passing regression tests is not visual acceptance.

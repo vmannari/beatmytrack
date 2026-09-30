@@ -97,17 +97,40 @@ vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  return normalize(original+ripple*weight);
 }
 
-// Compatibility reflection approximation, composited after diffuse lighting.
-// Fresnel and reflected direction respond to the view; coverage stays world-fixed.
+// Presentation clock freezes with StormWeather. No simulation or shader TIME.
+global uniform vec2 storm_surface_weather;
+
+// Sparse expanding rain rings in the actual road plane, filtered at distance.
+float road_rain_ring(vec2 p) {
+ vec2 cell = floor(p/1.7);
+ float seed = fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);
+ vec2 center = vec2(0.3+seed*0.9,0.3+fract(seed*17.1)*0.9);
+ vec2 local = mod(p,1.7)-center;
+ float age = fract(storm_surface_weather.x*0.7+seed*9.0);
+ float radius = age*0.44;
+ float distance_to_ring = abs(length(local)-radius);
+ float aa = max(length(fwidth(p))*0.55,0.012);
+ float ring = 1.0-smoothstep(0.009,0.009+aa,distance_to_ring);
+ return ring*(1.0-age)*smoothstep(0.02,0.10,age)*step(0.58,seed);
+}
+
+// A reflected light band broken by shallow water waves. This is composited
+// separately from diffuse asphalt, so brighter highlights do not recolour it.
 vec3 wet_road_radiance(vec2 p, vec3 normal, vec3 view, mat4 inverse_view, float weight) {
- vec3 reflection = (inverse_view*vec4(reflect(-view,normal),0.0)).xyz;
- vec2 sky_uv = reflection.xz/max(reflection.y+0.65,0.15);
- float cloud = texture(surface_factors,sky_uv*0.12+vec2(0.31,0.57)).g;
- float pool = road_puddle(p);
- vec3 sky = mix(vec3(0.50,0.54,0.58),vec3(1.2,1.26,1.32),cloud);
- float fresnel = 0.035+0.965*pow(1.0-clamp(dot(normal,view),0.0,1.0),5.0);
- float ripple = texture(surface_factors,p/vec2(24.0,6.0)).g;
- return sky*fresnel*pool*weight*3.2*(0.8+ripple*0.4);
+ float film = road_puddle(p);
+ float pool = smoothstep(0.26,0.76,film);
+ float wave = texture(surface_factors,p/vec2(80.0,24.0)).g;
+ float fine = texture(surface_factors,p/vec2(32.0,8.0)).g;
+ float ring = road_rain_ring(p);
+ vec3 world_view = normalize((inverse_view*vec4(view,0.0)).xyz);
+ // A small change in surface slope moves the narrow reflection across water.
+ float slope = (wave-0.5)*0.7+(fine-0.5)*0.08+ring*0.12;
+ float glint = exp(-pow((slope+world_view.x*0.035)/0.11,2.0));
+ float breakup = smoothstep(0.20,0.66,texture(surface_factors,p/20.0).g);
+ float fresnel = 0.045+0.955*pow(1.0-clamp(dot(normal,view),0.0,1.0),5.0);
+ vec3 reflected = vec3(0.78,0.84,0.88)*fresnel*pool*(1.6+glint*5.0*breakup);
+ reflected += vec3(0.11,0.13,0.14)*ring*pool;
+ return reflected*weight*(1.0+storm_surface_weather.y*1.8);
 }
 
 vec3 surface_detail(vec3 base, vec2 p, bool road) {
@@ -121,7 +144,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	if (road && wet_road) {
 		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
 		float film = road_puddle(p);
-		return base*(1.0+grain*0.3)*(1.0-film*0.12);
+		return base*(1.0+grain*mix(0.3,0.035,smoothstep(0.26,0.76,film)))*(1.0-film*0.12);
 	}
 	if (road && icy_road) {
 		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);

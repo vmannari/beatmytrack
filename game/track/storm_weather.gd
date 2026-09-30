@@ -149,6 +149,7 @@ func lens_sample(index: int, time: float) -> Vector4:
 	return Vector4(x,y,radius,stretch)
 
 func _update_lens() -> void:
+	RenderingServer.global_shader_parameter_set("storm_surface_weather",Vector2(elapsed,flash_strength()))
 	if lens_drops.size() != DROP_COUNT: return
 	_update_trail_history()
 	wet_glass_material.set_shader_parameter("weather_time",elapsed)
@@ -199,6 +200,7 @@ func _draw_lens_trails() -> void:
 			newer = older
 
 func _exit_tree() -> void:
+	RenderingServer.global_shader_parameter_set("storm_surface_weather",Vector2.ZERO)
 	if is_instance_valid(rain_audio): rain_audio.stop()
 	if is_instance_valid(thunder_audio): thunder_audio.stop()
 	if is_instance_valid(light): light.light_energy = base_light_energy

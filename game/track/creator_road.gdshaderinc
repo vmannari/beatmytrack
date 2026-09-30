@@ -106,7 +106,7 @@ void fragment() {
  SPECULAR = 0.0;
  if (wet_road && wet_coverage > 0.0) {
   ROUGHNESS = mix(1.0,wet_road_roughness(world_position.xz),wet_coverage);
-  SPECULAR = 0.5*wet_coverage;
+  SPECULAR = wet_road_specular(world_position.xz)*wet_coverage;
  }
  if (wet_road && (road_marking || kerb)) {
   ALBEDO *= 0.90;

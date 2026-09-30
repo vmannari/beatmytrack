@@ -83,15 +83,23 @@ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
 // Wet asphalt is the baseline. Only the upper tail of the metre-scale basin
 // field contains standing water; aggregate never drives puddle boundaries.
 float road_puddle(vec2 p) {
- float basin = pigment(p*0.22+vec2(3.2,7.6))*0.76;
+ float basin = pigment(p*0.22+vec2(3.2,7.6))*0.70;
  basin += pigment(p*0.71+vec2(11.7,2.4))*0.24;
- return smoothstep(0.62,0.79,basin);
+ basin += pigment(p*2.7+vec2(6.1,19.3))*0.06;
+ float feather = max(fwidth(basin),0.008);
+ return smoothstep(0.65-feather,0.72+feather,basin);
 }
 
 float wet_road_roughness(vec2 p) {
  float pool = road_puddle(p);
  float grain = (texture(surface_factors,p/32.0).r-0.54)*0.16;
  return mix(clamp(0.38+grain,0.33,0.43),0.12,pool);
+}
+
+float wet_road_specular(vec2 p) {
+ // Water-filled depressions retain a stronger environment highlight than
+ // exposed binder/aggregate. The road remains a non-metallic dielectric.
+ return mix(0.28,0.60,road_puddle(p));
 }
 
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {

@@ -11,7 +11,7 @@ void fragment() {
  SPECULAR = 0.0;
  if (wet_road) {
   ROUGHNESS = wet_road_roughness(world_position.xz);
-  SPECULAR = 0.5;
+  SPECULAR = wet_road_specular(world_position.xz);
  }
  if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
 }

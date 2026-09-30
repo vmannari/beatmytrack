@@ -1,5 +1,9 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V04/V05/Q01: reflection performance A/B completed on RTX 3090, 3600 uncapped measured frames. GPU median off/on: 1.120/1.104 ms at 720p and 1.114/1.134 ms at 1080p; 373 draw calls unchanged. No significant desktop steady-state drop observed; phone and first-use bake cost unverified. See docs/STORM_WET_MATERIAL.md.
+
+2026-09-30 V02/V04/V05/Q01: Storm kit 97 replaces the faint sky tint with brighter cloud openings, stronger smooth-puddle reflections and tighter water boundaries. Desktop Storm 94/material 928 checks pass; normal-rain comparison inspected. No phone test/export. See docs/STORM_WET_MATERIAL.md.
+
 2026-09-30 V02/V04/Q01: lightning now uses 2-4 randomized intensity peaks/dips per strike, with one delayed thunder and pause-stable timing. Storm desktop capture passes 94 checks; phase evidence inspected. No phone test/export; cadence acceptance pending. See docs/STORM_LIGHTNING.md.
 
 2026-09-30 V02/V04/V05/Q01: Storm kit 96 implements a wet asphalt baseline, sparse smoother pools, wet paint and shared overcast reflections. Storm-only PBR wrappers fix Compatibility toon suppression of non-metal reflections. Ajorata and bridge-fixture captures: 90 checks each; material regression: 928 checks. Desktop evidence inspected; no phone test/export. See docs/STORM_WET_MATERIAL.md.

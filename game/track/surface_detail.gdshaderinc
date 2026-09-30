@@ -80,19 +80,19 @@ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
 	return base * (0.8 + texture(surface_factors,p/32.0).r * 0.4);
 }
 
-// World-anchored pools with broken aggregate-sized margins.
+// Broad, shallow water coverage. Keep the mask continuous: thresholded noise
+// reads as painted camouflage rather than a thin film over asphalt aggregate.
 float road_puddle(vec2 p) {
- float basin = pigment(p*0.48+vec2(3.2,7.6))*0.52;
- basin += pigment(p*1.7+vec2(11.7,2.4))*0.24;
- basin += pigment(p*7.5)*0.14 + texture(surface_factors,p/8.0).r*0.10;
- return smoothstep(0.47,0.56,basin);
+ float basin = pigment(p*0.22+vec2(3.2,7.6))*0.60;
+ basin += pigment(p*0.71+vec2(11.7,2.4))*0.28;
+ basin += texture(surface_factors,p/10.0).r*0.12;
+ return smoothstep(0.38,0.65,basin);
 }
 
-// Flatten the water film while exposed aggregate scatters light at driving scale.
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
- vec2 grain = texture(surface_factors,p/8.0).rg-vec2(0.5);
- float strength = mix(0.32,0.025,road_puddle(p));
- strength *= 1.0-smoothstep(0.08,0.25,length(fwidth(p)));
+ vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
+ float strength = mix(0.035,0.008,road_puddle(p));
+ strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
  vec3 ripple = (view*vec4(grain.x*strength,0.0,grain.y*strength,0.0)).xyz;
  return normalize(original+ripple*weight);
 }
@@ -106,9 +106,9 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 		return base * (0.96 + grains.b*0.045 + broad*0.025);
 	}
 	if (road && wet_road) {
-		float grain = texture(surface_factors,p/12.0).r;
-		vec3 aggregate = base*(0.92+grain*0.65);
-		return mix(aggregate,base*0.76,road_puddle(p));
+		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
+		float film = road_puddle(p);
+		return base*(1.0+grain*0.3)*(1.0-film*0.12);
 	}
 	if (road && icy_road) {
 		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);

@@ -70,8 +70,8 @@ void fragment() {
  SPECULAR = 0.0;
  if (wet_road && low.r > 0.0) {
   float pool = road_puddle(world_position.xz)*low.r;
-  ROUGHNESS = mix(0.82,0.40,pool);
-  SPECULAR = mix(0.18,0.85,pool)*low.r;
+  ROUGHNESS = clamp(mix(0.70,0.36,pool)+(texture(surface_factors,world_position.xz/32.0).r-0.54)*0.6,0.28,0.82);
+  SPECULAR = mix(0.16,0.30,pool)*low.r;
  }
  if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.r);
 }

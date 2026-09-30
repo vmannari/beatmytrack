@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V02/V04/V05/Q01: owner rejected kit 90 as blue camouflage. Kit 91 reduces colour/specular discontinuities, restores neutral charcoal, broadens water-film transitions and filters fine aggregate relief. Graphical Storm 55 and surface-profile 928 checks pass; revised rain/lightning captures inspected. No device test/export; visual acceptance pending. See docs/STORM_ROAD.md.
+
 2026-09-30 V02/V04/V05/Q01: Storm road kit 90 adds broken wet asphalt, light-responsive puddles and aggregate relief, and enables the shared Grass asphalt edge blend. Storm graphical 55, shoulders/join 89 plus overlap, and surface-profile 928 checks pass. Desktop rain/lightning evidence inspected; no Android export or device test. See docs/STORM_ROAD.md.
 
 2026-09-30 V03/V04/R01/Q01: Race Complete removes benchmark/PB and redundant explanatory lines, doubles histogram minimum height, crops empty/sparse tails and keeps out-of-range player markers on the edge. Counts/ranks unchanged. Graphical results 508 and menu 26 checks pass; screenshots inspected. No phone attached/export/device test. See docs/PREMIUM_RACE_COMPLETE.md.

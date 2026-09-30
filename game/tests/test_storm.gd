@@ -71,7 +71,11 @@ func _run() -> void:
 	var document: Dictionary = TrackDocument.create_default()
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--track="):
-			document = TrackLibrary.new().load_document(argument.trim_prefix("--track="))
+			var fixture: String = argument.trim_prefix("--track=")
+			if fixture == "fixture:knit_bridge_regression":
+				document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/knit_bridge_regression.json"))
+			else:
+				document = TrackLibrary.new().load_document(fixture)
 			check(not document.is_empty(),"requested road-piece fixture exists")
 			if document.is_empty(): quit(1); return
 	document.theme = "storm"
@@ -93,11 +97,24 @@ func _run() -> void:
 	race.paused = true
 	(race.race_cues as Control).hide()
 	var wet_materials: int = 0
+	var wet_paint: int = 0
 	for mesh: MeshInstance3D in race.track_ground.find_children("*","MeshInstance3D",true,false):
 		var material: ShaderMaterial = mesh.material_override as ShaderMaterial
 		if material != null and material.get_shader_parameter("wet_road") == true:
 			wet_materials += 1
+			if material.get_shader_parameter("road_marking") == true or material.get_shader_parameter("kerb") == true:
+				wet_paint += 1
 	check(wet_materials > 0,"wet road materials bound in race")
+	if not document.get("pieces",[]).is_empty(): check(wet_paint > 0,"Storm paint and kerbs receive wet materials")
+	var finish: MeshInstance3D = race.track_ground.get_node_or_null("FinishLight")
+	check(finish != null and (finish.material_override as StandardMaterial3D).specular_mode == BaseMaterial3D.SPECULAR_SCHLICK_GGX,"start line receives specular lighting")
+	check(race.biome_environment.sky != null and race.biome_environment.reflected_light_source == Environment.REFLECTION_SOURCE_SKY,"Storm supplies filtered sky reflections")
+	var dry_environment := Environment.new()
+	var test_light := DirectionalLight3D.new()
+	TrackTheme.apply_lighting("storm",dry_environment,test_light)
+	TrackTheme.apply_lighting("pine",dry_environment,test_light)
+	check(dry_environment.sky == null and dry_environment.reflected_light_source == Environment.REFLECTION_SOURCE_BG,"changing biome clears Storm reflections")
+	test_light.free()
 	var weather: StormWeather = race.storm_weather
 	check(weather != null and weather.mouse_filter == Control.MOUSE_FILTER_IGNORE,"storm never captures driving input")
 	check(race.weather_layer.layer < race.hud.layer,"HUD and pedals remain above weather")
@@ -168,6 +185,17 @@ func _run() -> void:
 	check(race.sim.state.snapshot() == state_before,"weather never changes canonical car state")
 	if "--capture" in OS.get_cmdline_user_args():
 		await _capture("rain")
+		var reflected: Image = root.get_texture().get_image()
+		race.biome_environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+		await _capture("reflection-disabled")
+		var unreflected: Image = root.get_texture().get_image()
+		var reflection_delta: float = 0.0
+		for y: int in range(240,440,4):
+			for x: int in range(300,980,4):
+				reflection_delta += absf(reflected.get_pixel(x,y).r-unreflected.get_pixel(x,y).r)
+		print("STORM_REFLECTION_DELTA: ",reflection_delta)
+		check(reflection_delta > 1.0,"reflected sky changes the rendered road view, not only material properties")
+		race.biome_environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 		# Consecutive stills verify progression of rain and fading/drifting droplets.
 		weather.advance(1.2,false)
 		await _capture("rain-later")

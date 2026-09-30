@@ -12,7 +12,7 @@ func collect(root: Node) -> void:
 		var material: Material = mesh.material_override
 		if material is not ShaderMaterial: continue
 		var path: String = material.shader.resource_path
-		if path not in ["res://track/creator_road.gdshader", "res://track/terrain.gdshader", "res://track/ground.gdshader"]: continue
+		if path not in ["res://track/creator_road.gdshader", "res://track/terrain.gdshader", "res://track/ground.gdshader", "res://track/storm_creator_road.gdshader", "res://track/storm_terrain.gdshader"]: continue
 		entries.append({"mesh":mesh,"original":material,"path":path,"variants":{}})
 
 func apply(mode: String) -> void:
@@ -38,11 +38,15 @@ func apply(mode: String) -> void:
 		if not entry.variants.has(mode):
 			var shader := Shader.new()
 			var source: String = material.shader.code
+			# Resolve the shared bodies before applying diagnostic substitutions.
+			source = source.replace('#include "res://track/creator_road.gdshaderinc"',preload("res://track/creator_road.gdshaderinc").code)
+			source = source.replace('#include "res://track/terrain.gdshaderinc"',preload("res://track/terrain.gdshaderinc").code)
 			if mode == "asphalt_previous":
 				# Historical shared detail predates packed sand and grass relief.
 				# Adapt its interface explicitly; this mode restores historical grass too.
 				var compatibility: String = "\nuniform bool packed_sand = false;\nuniform sampler2D surface_factors;\nvec3 winter_wear(vec3 base, vec2 uv) { return base; }\nvec3 packed_wear(vec3 base, vec2 uv) { return base; }\nvec3 desert_shoulder(vec3 base, vec2 p) { return base; }\nvec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\nvec3 directional_asphalt(vec3 base, vec2 p, vec2 axis) { return base; }\n"
 				compatibility += "\nfloat road_puddle(vec2 p) { return 0.0; }\nvec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\n"
+				compatibility += "\nfloat wet_road_roughness(vec2 p) { return 0.7; }\n"
 				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + compatibility)
 			elif mode == "directional_off":
 				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")

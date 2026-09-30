@@ -153,7 +153,7 @@ func build(parent: Node3D) -> void:
 			mesh.mesh = surface.commit()
 			if kind == 0:
 				var asphalt := ShaderMaterial.new()
-				asphalt.shader = preload("res://track/bridge_road.gdshader")
+				asphalt.shader = preload("res://track/storm_bridge_road.gdshader") if track.metadata.get("theme","pine") == "storm" else preload("res://track/bridge_road.gdshader")
 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 				asphalt.set_shader_parameter("road_color", palette[0])
 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")

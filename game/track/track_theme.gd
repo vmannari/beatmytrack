@@ -48,6 +48,9 @@ static func stone(theme: String) -> Color:
 
 
 static func apply_lighting(theme: String, environment: Environment, light: DirectionalLight3D) -> void:
+	environment.background_mode = Environment.BG_COLOR
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_BG
+	if theme != "storm": environment.sky = null
 	light.rotation_degrees = Vector3(-58,-35,0)
 	var night: bool = normalized(theme) == "night_city"
 	environment.ambient_light_color = Color("7288b0") if night else Color("bac8ce")
@@ -57,6 +60,9 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 	# Grass: brighter sunlit areas while retaining cloud contrast.
 	if theme == "pine": light.light_energy = 1.20
 	if theme == "storm":
+		environment.sky = preload("res://track/storm_sky.tres")
+		environment.background_mode = Environment.BG_SKY
+		environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 		environment.ambient_light_color = Color("93a9bd")
 		environment.ambient_light_energy = 0.42
 		light.light_color = Color("c7d8ed")

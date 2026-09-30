@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V02/V04/V05/Q01: Storm kit 96 implements a wet asphalt baseline, sparse smoother pools, wet paint and shared overcast reflections. Storm-only PBR wrappers fix Compatibility toon suppression of non-metal reflections. Ajorata and bridge-fixture captures: 90 checks each; material regression: 928 checks. Desktop evidence inspected; no phone test/export. See docs/STORM_WET_MATERIAL.md.
+
 2026-09-30 V02/V04/Q01: screen-water droplets now use wider derivative-filtered edge feathering, weaker/broader glints and reduced rim refraction. Graphical Storm 85 checks pass; desktop capture inspected. No phone test/export. See docs/STORM_SOFT_DROPLETS.md.
 
 2026-09-30 V01/V02/V04/V05/Q01: owner rejected bright road streaks and cloud-like tire spray. Kit 94 restores the preferred kit 91 asphalt, removes added radiance/rings, and replaces spray mist with fewer short ballistic droplets using a dedicated bead shader. Storm graphical 85 and surface-profile 928 checks pass; captures inspected. No device test/export. See docs/STORM_TIRE_SPRAY.md.

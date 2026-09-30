@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-94"
+const VERSION: String = "track-kit-96"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -142,7 +142,7 @@ func _build_terrain(track: NativeTrack) -> void:
 			if kind < 4: low.set_pixel(x, y, weights)
 			else: high.set_pixel(x, y, weights)
 	var surface := ShaderMaterial.new()
-	surface.shader = TERRAIN_SHADER
+	surface.shader = preload("res://track/storm_terrain.gdshader") if theme_id == "storm" else TERRAIN_SHADER
 	surface.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	surface.set_shader_parameter("icy_road", theme_id == "winter")
 	surface.set_shader_parameter("wet_road", theme_id == "storm")
@@ -668,7 +668,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	var instance := MeshInstance3D.new()
 	instance.mesh = flat.commit()
 	var material := ShaderMaterial.new()
-	material.shader = CREATOR_ROAD_SHADER
+	material.shader = preload("res://track/storm_creator_road.gdshader") if theme_id == "storm" and not grass and not gravel else CREATOR_ROAD_SHADER
 	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	_bind_grass(material)
@@ -682,7 +682,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("road_color",color)
 	material.set_shader_parameter("asphalt_base_color",colors[0])
 	material.set_shader_parameter("icy_road",theme_id == "winter" and color == colors[0] and not gravel and not grass and not kerb)
-	material.set_shader_parameter("wet_road",theme_id == "storm" and color == colors[0] and not gravel and not grass and not kerb)
+	material.set_shader_parameter("wet_road",theme_id == "storm" and not gravel and not grass and (asphalt_surface or road_marking or kerb))
 	material.set_shader_parameter("gravel",gravel)
 	material.set_shader_parameter("packed_sand",theme_id == "desert")
 	material.set_shader_parameter("grass",grass)
@@ -1203,6 +1203,12 @@ func _commit(tool: SurfaceTool, color: Color, node_name: String = "") -> void:
 	instance.mesh = tool.commit()
 	var material := VisualGeometry.material(color)
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if theme_id == "storm" and node_name in ["FinishLight","FinishDark"]:
+		material.albedo_color = color.darkened(0.10)
+		material.roughness = 0.24
+		material.metallic_specular = 0.5
+		material.diffuse_mode = BaseMaterial3D.DIFFUSE_BURLEY
+		material.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
 	instance.material_override = material
 	if not node_name.is_empty(): instance.name = node_name
 	add_child(instance)

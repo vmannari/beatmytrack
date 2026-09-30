@@ -80,18 +80,23 @@ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
 	return base * (0.8 + texture(surface_factors,p/32.0).r * 0.4);
 }
 
-// Broad, shallow water coverage. Keep the mask continuous: thresholded noise
-// reads as painted camouflage rather than a thin film over asphalt aggregate.
+// Wet asphalt is the baseline. Only the upper tail of the metre-scale basin
+// field contains standing water; aggregate never drives puddle boundaries.
 float road_puddle(vec2 p) {
- float basin = pigment(p*0.22+vec2(3.2,7.6))*0.60;
- basin += pigment(p*0.71+vec2(11.7,2.4))*0.28;
- basin += texture(surface_factors,p/10.0).r*0.12;
- return smoothstep(0.38,0.65,basin);
+ float basin = pigment(p*0.22+vec2(3.2,7.6))*0.76;
+ basin += pigment(p*0.71+vec2(11.7,2.4))*0.24;
+ return smoothstep(0.62,0.79,basin);
+}
+
+float wet_road_roughness(vec2 p) {
+ float pool = road_puddle(p);
+ float grain = (texture(surface_factors,p/32.0).r-0.54)*0.16;
+ return mix(clamp(0.38+grain,0.33,0.43),0.12,pool);
 }
 
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
- float strength = mix(0.035,0.008,road_puddle(p));
+ float strength = mix(0.16,0.006,road_puddle(p));
  strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
  vec3 ripple = (view*vec4(grain.x*strength,0.0,grain.y*strength,0.0)).xyz;
  return normalize(original+ripple*weight);
@@ -108,7 +113,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	if (road && wet_road) {
 		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
 		float film = road_puddle(p);
-		return base*(1.0+grain*0.3)*(1.0-film*0.12);
+		return base*mix(0.76,0.65,film)*(1.0+grain*mix(0.3,0.06,film));
 	}
 	if (road && icy_road) {
 		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);

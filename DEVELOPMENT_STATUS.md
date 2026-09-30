@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V03/V04/R01/Q01: Race Complete removes benchmark/PB and redundant explanatory lines, doubles histogram minimum height, crops empty/sparse tails and keeps out-of-range player markers on the edge. Counts/ranks unchanged. Graphical results 508 and menu 26 checks pass; screenshots inspected. No phone attached/export/device test. See docs/PREMIUM_RACE_COMPLETE.md.
+
 2026-09-30 R01/V04/V05/Q01: persistent bounded road artifacts and ordered CPU shoulder workers; explicit Save reuses completed/pending editor roads. Fresh-process prepared first draw: Speedy 0.558s / Knot 0.644s; uncooked tracks remain above 1s and combined compilation/draw for Knot is 1.091s. Cache 66, cold golden 33, local equivalence 47, surfaces 928 and editor 38 checks pass; capture inspected. No phone/export/device test. See docs/BAKED_ROAD_LOADING.md.
 
 2026-09-30 R01/V04/V05/Q01: optimized road UV queries and shoulder candidate reuse; bounded immutable road-resource cache creates fresh race nodes. Desktop scene setup Speedy 5.7s -> 3.64s cold / 0.258s cached; Knot 2.2s -> 1.91s / 0.503s. Exact baseline meshes, 33 golden/cache checks, 928 surface checks and 38 editor checks pass; desktop capture inspected. No phone attached/export/device test. See docs/ROAD_BUILD_OPTIMIZATION.md.

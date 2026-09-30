@@ -157,15 +157,12 @@ func _standings(parent: Control) -> void:
 		var value: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
 		card.add_child(MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34))
 		var prior: float = results.previous if kind == "RACE TIME" else float(facts.get("previous_lap",0))
-		var delta := MenuStyle.label("%+.3f s vs your PB" % (value-prior) if prior > 0 and value > 0 else "Your first benchmark",17,true)
-		if prior > 0 and value > 0 and roundi(value*1000) == roundi(prior*1000): delta.text = "Matches your PB"
-		if prior > 0 and value < prior-0.0005: delta.add_theme_color_override("font_color",MenuStyle.POSITIVE)
-		card.add_child(delta)
 		var context := MenuStyle.label("",14,true)
 		context.clip_text = true
 		card.add_child(context)
+		context.hide()
 		var chart := TrackDistribution.new()
-		chart.custom_minimum_size = Vector2(180,64)
+		chart.custom_minimum_size = Vector2(180,130)
 		chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		var values: Array[float] = []
 		if kind == "RACE TIME":
@@ -182,16 +179,17 @@ func _standings(parent: Control) -> void:
 		chart.snapshot.marker_label = "THIS RACE" if kind == "RACE TIME" else "BEST LAP"
 		chart.snapshot.empty_text = "No completed race time" if kind == "RACE TIME" else "No valid flying laps"
 		chart.snapshot.empty_detail = "Finish a timed race to compare"
+		chart.tooltip_text = context.text
 		card.add_child(chart)
 		if kind == "RACE TIME":
-			global_rank = MenuStyle.label("LOCAL COMPARISON",16,true)
+			global_rank = MenuStyle.label("Your race times",13,true)
 			global_status = MenuStyle.label("Your times on this track",12,true)
 			global_status.clip_text = true
 			card.add_child(global_rank)
 			card.add_child(global_status)
+			global_status.hide()
 		else:
-			card.add_child(MenuStyle.label("YOUR LAP DISTRIBUTION",16,true))
-			card.add_child(MenuStyle.label("Global lap rankings not available",12,true))
+			card.add_child(MenuStyle.label("Your flying laps / %d samples" % values.size(),13,true))
 	body.add_child(HSeparator.new())
 	if rating_records != null and not results.editor:
 		var rating := TrackRating.new()
@@ -241,16 +239,20 @@ func _refresh_rank() -> void:
 		if not is_inside_tree(): return
 		if histogram.ok and not histogram.data.bins.is_empty():
 			var counts: Array[int] = []
+			var edges: Array[float] = []
 			var own_bin: int = -1
 			for index: int in range(histogram.data.bins.size()):
 				var bin: Dictionary = histogram.data.bins[index]
 				counts.append(int(bin.count))
+				edges.append(float(bin.from_ticks)*1000.0/120.0)
 				if response.ok and response.data.player != null:
 					var ticks: int = int(response.data.player.time_ticks)
 					if ticks >= int(bin.from_ticks) and ticks < int(bin.to_ticks_exclusive): own_bin = index
-			race_chart.snapshot = {"bins":counts,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":own_bin}
+			edges.append(float(histogram.data.bins[-1].to_ticks_exclusive)*1000.0/120.0)
+			race_chart.snapshot = {"bins":counts,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":own_bin,"edges_ms":edges}
 			race_chart.queue_redraw()
 			race_context.text = "%d verified players / personal bests" % int(histogram.data.population)
+			race_chart.tooltip_text = race_context.text
 		if response.ok and response.data.player != null:
 			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
 			global_rank.add_theme_color_override("font_color",MenuStyle.ACCENT)

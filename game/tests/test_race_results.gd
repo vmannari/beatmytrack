@@ -35,6 +35,7 @@ func run() -> void:
 	test_lap_personal_best()
 	await test_single_lap_pb()
 	await test_completion_distributions()
+	await test_histogram_tails()
 	var interpolation: Dictionary = {"samples":[{"progress":0.0,"elapsed":0.0,"speed":10.0},{"progress":0.5,"elapsed":4.0,"speed":20.0},{"progress":1.0,"elapsed":10.0,"speed":30.0}]}
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.75),7.0),"time interpolation uses normalized distance")
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.25,"speed"),15.0),"speed interpolation uses normalized distance")
@@ -376,6 +377,30 @@ func test_rewards() -> void:
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 250,"collision or off-track blocks clean reward")
 	facts.complete = false
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 0,"incomplete/practice result cannot qualify")
+
+func test_histogram_tails() -> void:
+	var bins: Array = [1,0,0,0,3,10,25,40,30,12,4,0,0,0,0,0,0,1]
+	var original: Array = bins.duplicate()
+	check(TrackDistribution.display_window(bins) == Vector2i(4,10), "sparse long tails cropped around core population")
+	check(bins == original, "view cropping preserves original counts")
+	check(TrackDistribution.display_window([0,0,1,0,0]) == Vector2i(2,2), "single sample centers without empty tail bins")
+	check(TrackDistribution.display_window([1,0,0,1]) == Vector2i(0,3), "two samples are not treated as statistical outliers")
+	check(TrackDistribution.display_window([0,3,0,0,0,0,1]) == Vector2i(1,1), "isolated outlier trimmed from tied small sample")
+	check(TrackDistribution.display_window([1,2,3,2,1]) == Vector2i(0,4), "ordinary short distribution retains its full range")
+	check(TrackDistribution.display_window([]) == Vector2i(0,0), "empty chart range is safe")
+	if not capture: return
+	var fixture := VBoxContainer.new()
+	fixture.position = Vector2(40,30)
+	fixture.size = Vector2(1100,620)
+	root.add_child(fixture)
+	fixture.add_child(MenuStyle.label("HISTOGRAM TAILS / SYNTHETIC TEST FIXTURE",24))
+	for marker: int in [7,17]:
+		var chart := TrackDistribution.new()
+		chart.custom_minimum_size = Vector2(1000,260)
+		chart.snapshot = {"bins":bins,"min_ms":50000,"max_ms":220000,"player_bin":marker}
+		fixture.add_child(chart)
+	await screenshot("histogram-tail-fixture")
+	fixture.free()
 
 func test_completion_distributions() -> void:
 	var distribution: Dictionary = RaceComplete._local_distribution([10.0001,10.0004],10.0004)

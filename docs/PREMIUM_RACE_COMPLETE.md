@@ -23,3 +23,16 @@ Tests retain reward eligibility/reveal/total, rating persistence, selected next-
 Initial runs exposed an overflowing vertical minimum size; reduced chart/card minimum heights and outer recommendation padding, retaining all actions. Final [1280x720](evidence/race-complete-2026-09-30/race-complete-1280x720.png) and [wide screen](evidence/race-complete-2026-09-30/race-complete-2400x1080.png) captures inspected. [Reward reveal](evidence/race-complete-2026-09-30/reward-reveal-first.png) also retained.
 
 Remaining acceptance: owner visual review, physical-phone readability/touch/performance and live verified-board refresh against populated server data. No phone attached, Android export or device test. Spendable rewards and global flying-lap comparisons remain outside this implementation.
+
+
+## Histogram space and long-tail follow-up
+
+2026-09-30 V03/V04/R01/Q01. Removed the benchmark/PB explanation row and the duplicated context/status lines. Race time and best lap remain above the charts; one compact local-source/rank footer remains below. Detailed source context is in tooltips. Minimum histogram height increases from 64 to 130 logical pixels with the existing responsive layout preserved.
+
+The shared distribution view crops empty end bins and sparse tails. For four or more observations it uses 1.5-IQR bin fences (one-bin minimum IQR); at 40+ observations it additionally limits the view to the central 95% by bin counts. Fewer than four observations keep their occupied range. No counts, population or ranks change. Cropped bounds are marked with edge chevrons; player markers outside the view stay on the corresponding edge and do not falsely highlight an in-range bar. Single populated bins are centered, with a single time label for equal endpoints. Race Complete retains exact backend bin edges for cropped time-axis labels. Coarse server bins cannot be subdivided into a finer distribution client-side; the view preserves their actual resolution.
+
+Changed files: `game/ui/race_complete.gd`, `game/ui/track_distribution.gd`, `game/tests/test_race_results.gd`, this document, both status documents and dated screenshots. Test coverage adds sparse long tails, tied samples with an isolated outlier, empty bins, one/two samples, unchanged input counts and an ordinary short distribution. A clearly labeled synthetic screenshot checks both in-range and off-range player markers without fabricating production rankings.
+
+Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureResults` with `BMT_RESULTS_EVIDENCE=C:/Codes/Godot/Beat my track/docs/evidence/histogram-tails-2026-09-30`: final 508 checks, zero failures. `TestMenus`: 26 checks, zero failures. `git diff --check` passed. An initial parse run caught an indentation error in backend-edge mapping; corrected before the successful captures. `adb devices`: no attached devices. No Android export/device test or new live HTTP test.
+
+[Updated screen](evidence/histogram-tails-2026-09-30/race-complete-1280x720.png) and [synthetic long-tail/edge-marker fixture](evidence/histogram-tails-2026-09-30/histogram-tail-fixture.png) visually inspected. Owner visual approval and physical-device readability remain.

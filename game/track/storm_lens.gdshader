@@ -17,16 +17,18 @@ void fragment() {
 	float polar = atan(oval.y,oval.x);
 	float edge = 1.0+0.14*sin(polar*3.0+shape_seed*8.0)+0.07*sin(polar*5.0+shape_seed*3.0);
 	float d = length(oval)/edge;
-	float body = 1.0 - smoothstep(0.80, 1.02, d);
+	// Broad feather plus derivative filtering keeps small/high-DPI beads soft.
+	float feather = max(fwidth(d)*1.5,0.06);
+	float body = 1.0 - smoothstep(0.58, 1.03+feather, d);
 	float mask = body * fade;
 	vec2 bend = oval * sqrt(max(0.0, 1.0-min(d*d, 1.0))) * body;
-	vec2 offset = bend * min(radius_px*1.45, 44.0) * SCREEN_PIXEL_SIZE;
+	vec2 offset = bend * min(radius_px*1.05, 34.0) * SCREEN_PIXEL_SIZE;
 	vec3 scene = texture(screen_texture, clamp(SCREEN_UV+offset, vec2(0.001), vec2(0.999))).rgb;
 	// Soft asymmetric glints, without the previous drawn bubble outlines.
-	float glint = exp(-dot((oval-vec2(-0.38,-0.62))*vec2(2.8,5.0), (oval-vec2(-0.38,-0.62))*vec2(2.8,5.0)));
-	float shade = exp(-dot((oval-vec2(0.25,0.70))*vec2(2.5,7.0), (oval-vec2(0.25,0.70))*vec2(2.5,7.0)));
-	float rim = exp(-pow((d-0.86)*10.0, 2.0)) * max(0.0, -oval.x*0.55-oval.y*0.45);
-	scene += vec3(0.70,0.85,0.94)*rim*0.30;
-	scene = scene * (1.0-shade*0.23) + vec3(0.80,0.91,1.0)*glint*0.52;
-	COLOR = vec4(scene, mask*0.94);
+	float glint = exp(-dot((oval-vec2(-0.38,-0.62))*vec2(2.2,3.5), (oval-vec2(-0.38,-0.62))*vec2(2.2,3.5)));
+	float shade = exp(-dot((oval-vec2(0.25,0.70))*vec2(2.0,4.5), (oval-vec2(0.25,0.70))*vec2(2.0,4.5)));
+	float rim = exp(-pow((d-0.79)*5.0, 2.0)) * max(0.0, -oval.x*0.55-oval.y*0.45);
+	scene += vec3(0.70,0.85,0.94)*rim*0.10;
+	scene = scene * (1.0-shade*0.12) + vec3(0.80,0.91,1.0)*glint*0.24;
+	COLOR = vec4(scene, mask*0.82);
 }

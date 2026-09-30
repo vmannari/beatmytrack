@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V02/V04/Q01: screen-water droplets now use wider derivative-filtered edge feathering, weaker/broader glints and reduced rim refraction. Graphical Storm 85 checks pass; desktop capture inspected. No phone test/export. See docs/STORM_SOFT_DROPLETS.md.
+
 2026-09-30 V01/V02/V04/V05/Q01: owner rejected bright road streaks and cloud-like tire spray. Kit 94 restores the preferred kit 91 asphalt, removes added radiance/rings, and replaces spray mist with fewer short ballistic droplets using a dedicated bead shader. Storm graphical 85 and surface-profile 928 checks pass; captures inspected. No device test/export. See docs/STORM_TIRE_SPRAY.md.
 
 2026-09-30 V01/V02/V04/V05/Q01: Storm wet-road tire spray adds lazy per-wheel mist/droplets, speed scaling, reverse/outward direction, pause freeze and restart/rewind cleanup. Graphical Storm 88 and desert regression 53 checks pass; two desktop captures inspected. No device test/export. See docs/STORM_TIRE_SPRAY.md.

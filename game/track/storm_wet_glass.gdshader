@@ -28,9 +28,10 @@ vec4 beads(vec2 uv, float scale, float seed, float screen_x) {
  float polar = atan(q.y,q.x);
  float edge = 1.0+0.16*sin(polar*3.0+shape*19.0)+0.08*sin(polar*5.0+r*23.0);
  float d = length(q)/edge;
- float mask = (1.0-smoothstep(0.87,1.03,d))*enabled;
+ float feather = max(fwidth(d)*1.5,0.06);
+ float mask = (1.0-smoothstep(0.58,1.03+feather,d))*enabled;
  float dome = sqrt(max(0.0,1.0-min(d*d,1.0)));
- return vec4(q*dome*mask,mask,exp(-pow((d-0.83)*12.0,2.0))*enabled);
+ return vec4(q*dome*mask,mask,exp(-pow((d-0.77)*5.0,2.0))*mask);
 }
 void fragment() {
  vec2 uv = SCREEN_UV;
@@ -56,12 +57,12 @@ void fragment() {
   normal.x += sign(dx)*stripe*0.30;
  }
  mask = max(mask,wet*0.65);
- vec2 offset = normal*vec2(SCREEN_PIXEL_SIZE.x,SCREEN_PIXEL_SIZE.y)*46.0;
+ vec2 offset = normal*vec2(SCREEN_PIXEL_SIZE.x,SCREEN_PIXEL_SIZE.y)*32.0;
  vec3 color = texture(screen_texture,clamp(uv+offset,vec2(0.001),vec2(0.999))).rgb;
  vec3 richer = texture(screen_texture,clamp(uv+offset*1.65,vec2(0.001),vec2(0.999))).rgb;
  color = mix(color,richer,mask*0.35);
  float facing = clamp(-normal.x*1.1-normal.y*1.5,0.0,1.0);
- color *= 1.0-mask*0.10-rim*0.10;
- color += vec3(0.79,0.90,1.0)*(rim*0.16+facing*0.40+bank*0.07)*(1.0+lightning*0.8);
- COLOR = vec4(color,clamp(mask+rim*0.5+bank*0.2,0.0,0.95));
+ color *= 1.0-mask*0.10-rim*0.04;
+ color += vec3(0.79,0.90,1.0)*(rim*0.055+facing*0.22+bank*0.045)*(1.0+lightning*0.8);
+ COLOR = vec4(color,clamp(mask*0.86+rim*0.12+bank*0.12,0.0,0.95));
 }

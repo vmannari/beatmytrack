@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .identity_models import Player
+from .runs import CHECKPOINT_RULES_TRANSITION
 from .track_models import Board, PersonalBest, Run, Track, TrackVersion, new_id, now
 
 logger = logging.getLogger("bmt.worker")
@@ -48,7 +49,9 @@ def process_one(app) -> bool:
         board = session.get(Board, run.board_id)
         version = session.get(TrackVersion, board.version_id)
         document_hash, replay_hash, vehicle_id = version.content_hash, run.replay_hash, board.vehicle_id
-        expected_manifest = version.manifest
+        expected_manifest = dict(version.manifest)
+        if (expected_manifest.get("rules_key"), board.manifest.get("rules_key")) == CHECKPOINT_RULES_TRANSITION:
+            expected_manifest["rules_key"] = CHECKPOINT_RULES_TRANSITION[1]
         session.commit()
 
     result, failure, rejected = None, None, False

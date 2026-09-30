@@ -484,6 +484,45 @@ def test_unknown_vehicle_and_changed_runtime_manifest_rejected(domain):
     )
 
 
+def test_checkpoint_rules_upgrade_keeps_track_and_historical_board(domain, monkeypatch):
+    from bmt_backend import runs
+
+    previous, current = runs.CHECKPOINT_RULES_TRANSITION
+    base = domain.app.state.verifier.manifest()
+    domain.app.state.verifier.manifest = lambda: {**base, "rules_key": previous}
+    # Establish the historical state using the previous ticket policy.
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr(runs, "CHECKPOINT_RULES_TRANSITION", ("none", "none"))
+        version, old_board_id = public_course(domain)
+    with domain.factory() as session:
+        original = dict(session.get(TrackVersion, version["version_id"]).manifest)
+    domain.app.state.verifier.manifest = lambda: {**base, "rules_key": current}
+    issued = ticket(domain, version, "Alice")
+    assert issued["manifest"]["rules_key"] == current
+    assert issued["board_id"] != old_board_id
+    submitted = submit(domain, issued, "Alice")
+    assert process_one(domain.app)
+    result = domain.client.get(
+        f"/v1/runs/{submitted['run_id']}", headers=headers(domain, "Alice")
+    ).json()
+    assert result["status"] == "verified", result
+    board = domain.client.get(f"/v1/track-versions/{version['version_id']}/leaderboard").json()
+    assert board["board_id"] == issued["board_id"] and board["population"] == 1
+    historical = domain.client.get(f"/v1/boards/{old_board_id}").json()
+    assert historical["manifest"]["rules_key"] == previous and historical["population"] == 1
+    with domain.factory() as session:
+        assert session.get(TrackVersion, version["version_id"]).manifest == original
+    domain.app.state.verifier.manifest = lambda: {
+        **base, "rules_key": current, "physics_version": "changed"
+    }
+    rejected = domain.client.post(
+        "/v1/run-tickets",
+        json={"version_id": version["version_id"], "vehicle_id": "compact"},
+        headers=headers(domain),
+    )
+    assert rejected.status_code == 409
+
+
 def test_concurrent_postgres_votes_do_not_lose_aggregate_updates(domain):
     if not domain.postgres:
         pytest.skip("Concurrency contract requires PostgreSQL row locks")

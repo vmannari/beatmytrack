@@ -1,13 +1,18 @@
 extends SceneTree
 var failures: int = 0
+var checks: int = 0
 func _initialize() -> void: call_deferred("run")
 func check(ok: bool, message: String) -> void:
+	checks += 1
 	if not ok:
 		failures += 1
 		push_error(message)
 func run() -> void:
 	root.size = Vector2i(1280,720)
+	var sharp_join: bool = "--screen=sharp-join" in OS.get_cmdline_user_args()
 	var document: Dictionary = TrackLibrary.new().load_document("track_acf29166cceaaa42")
+	if sharp_join:
+		document = JSON.parse_string(FileAccess.get_file_as_string("res://../build/sharp-join-fixture.json"))
 	var track: NativeTrack = TrackCompiler.compile(document)
 	var game: Node = load("res://core/game.tscn").instantiate()
 	game.initial_track = track
@@ -22,9 +27,13 @@ func run() -> void:
 	# Pick a bend with a wide recovery extension for visual evidence.
 	for index: int in range(session.checkpoint_count()):
 		session.next_checkpoint = index
+		if sharp_join:
+			if session.checkpoint_road_center(track).distance_to(Vector2(30,-20)) < 0.1: break
+			continue
 		var extra: Vector2 = session.checkpoint_acceptance_spans(track)-session.checkpoint_road_spans(track)
 		if maxf(extra.x,extra.y) > 6.0: break
 	var selected_gate: int = session.next_checkpoint
+	var road_center: Vector2 = session.checkpoint_road_center(track)
 	var gate: Vector2 = session.checkpoint_position(track)
 	var direction: Vector2 = session.checkpoint_direction(track)
 	var side: Vector2 = direction.orthogonal()*(session.checkpoint_width(track)*0.5+5.0)
@@ -53,12 +62,21 @@ func run() -> void:
 		check(margin.material_override.albedo_color.a < game.checkpoint_marker.material_override.albedo_color.a,"development margins are fainter")
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://../build/checkpoint-missed.png")
-	session.advance(track,gate-direction*2,gate+direction*2,0)
+	var recovery_point: Vector2 = road_center-direction.orthogonal()*7.6 if sharp_join else gate
+	session.advance(track,recovery_point-direction*2,recovery_point+direction*2,0)
 	for i: int in range(4): await process_frame
 	check(not game.checkpoint_marker.visible and not game.hud.shortcut_notice_label.visible,"recovery clears world and HUD notices")
+	if sharp_join:
+		check(track.cell_at(recovery_point,false) in [0,5],"inner join recovery crosses the physical road")
+		game.sim.state.position = recovery_point
+		game.previous_position = recovery_point
+		game.camera.follow(recovery_point,Vector2.ZERO,game.sim.state.heading,0.0,true)
+		for i: int in range(4): await process_frame
+		await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png("res://../build/checkpoint-sharp-join-cleared.png")
 	game.restart()
 	check(game.track_session.next_checkpoint == 0 and game.track_session.missed_checkpoint == -1,"restart clears checkpoint state")
 	check(not game.checkpoint_marker.visible,"restart clears cached marker")
 	game.free()
-	print("CHECKPOINT_CAPTURE: 14 checks, ",failures," failures")
+	print("CHECKPOINT_CAPTURE: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)

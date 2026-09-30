@@ -27,6 +27,7 @@ func drive(session: TrackSession, track: NativeTrack, path: PackedVector2Array, 
 			warned = warned or session.missed_checkpoint >= 0
 	return warned
 func run() -> void:
+	_sharp_joins()
 	var track := fixture()
 	var loop := PackedVector2Array([Vector2(1,0),Vector2(40,0),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)])
 	for spacing: float in [0.1,0.5,3.0,50.0]:
@@ -63,8 +64,8 @@ func run() -> void:
 	sparse.checkpoints.clear()
 	var automatic := TrackSession.new(120,1)
 	drive(automatic,sparse,loop)
-	check(automatic.finished and automatic.checkpoint_count() >= 12 and automatic.checkpoint_count() <= 16,"native routes without gates get automatic ordered gates")
-	check(RaceRules.KEY == "standing-5-road-gates-v12","checkpoint records use a new rules key")
+	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
+	check(RaceRules.KEY == "standing-5-road-gates-v13","checkpoint records use a new rules key")
 	# Real creator hairpins: a cut must block the eventual finish, even when
 	# the car rejoins and follows the rest of the route correctly.
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
@@ -144,3 +145,68 @@ func run() -> void:
 	print("CHECKPOINT_CPU_US_PER_TICK: ",(Time.get_ticks_usec()-start)/12000.0)
 	print("CHECKPOINT_TESTS: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)
+
+func _sharp_joins() -> void:
+	# A closed parallelogram made from real straight pieces, with a start
+	# halfway along a straight. Offset vertices use the road's mitred joins.
+	for angle: float in [60.0,90.0,120.0]:
+		for winding: float in [-1.0,1.0]:
+			var edge := Vector2.RIGHT.rotated(deg_to_rad(angle)*winding)*60.0
+			var vertices := PackedVector2Array([Vector2(-30,-20),Vector2(30,-20),Vector2(30,-20)+edge,Vector2(-30,-20)+edge])
+			var doc: Dictionary = TrackDocument.create_blank()
+			for i: int in range(4):
+				var delta: Vector2 = vertices[(i+1)%4]-vertices[i]
+				var piece: Dictionary = RoadPieces.create("straight",vertices[i],fposmod(rad_to_deg(delta.angle()),360.0),10.0)
+				piece.length = delta.length()
+				doc.pieces.append(piece)
+			doc = RoadPieces.route_from_pieces(doc).document
+			doc["start_line"] = {"position":[0.0,-20.0],"heading":0.0}
+			var track: NativeTrack = TrackCompiler.compile(doc)
+			check(track != null,"sharp join fixture compiles: "+str(TrackDocument.validate(doc)))
+			if track == null: continue
+			var reverse_doc: Dictionary = doc.duplicate(true)
+			reverse_doc.start_line.heading = 180.0
+			var reverse_track: NativeTrack = TrackCompiler.compile(reverse_doc)
+			if angle == 120.0 and winding == 1.0:
+				var artifact := FileAccess.open("res://../build/sharp-join-fixture.json",FileAccess.WRITE)
+				artifact.store_string(JSON.stringify(doc,"\t"))
+			var cut_path := PackedVector2Array([Vector2(1,-20),vertices[1]+edge.normalized()*30.0,vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
+			var cut := TrackSession.new(120,1)
+			drive(cut,track,cut_path)
+			check(not cut.finished and cut.missed_checkpoint >= 0,"off-road sharp corner cut blocks finish %s/%s" % [angle,winding])
+			var recovery := PackedVector2Array([Vector2(1,-20),vertices[1],vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
+			drive(cut,track,recovery)
+			check(cut.finished,"returning through sharp join recovers the lap")
+			for offset: float in [-3.8,0.0,3.8]:
+				var path := PackedVector2Array([Vector2(1,-20+offset)])
+				for step: int in range(1,5):
+					var i: int = step%4
+					var incoming: Vector2 = (vertices[i]-vertices[posmod(i-1,4)]).normalized()
+					var outgoing: Vector2 = (vertices[(i+1)%4]-vertices[i]).normalized()
+					var normal: Vector2 = Vector2(-(incoming+outgoing).y,(incoming+outgoing).x).normalized()
+					if offset*winding < 0.0:
+						# Raster roads round the outer tip. Follow that road area,
+						# rather than the decorative outer miter extension.
+						path.append(vertices[i]+Vector2(-incoming.y,incoming.x)*offset)
+						path.append(vertices[i]+Vector2(-outgoing.y,outgoing.x)*offset)
+					else:
+						path.append(vertices[i]+normal*offset/maxf(0.25,normal.dot(Vector2(-incoming.y,incoming.x))))
+				path.append(Vector2(1,-20+offset))
+				var on_road: bool = true
+				for i: int in range(path.size()-1):
+					var samples: int = ceili(path[i].distance_to(path[i+1])/0.25)
+					for j: int in range(samples+1):
+						var point: Vector2 = path[i].lerp(path[i+1],float(j)/samples)
+						on_road = on_road and track.cell_at(point,false) in [0,5]
+				check(on_road,"sharp join path stays on compiled road %s/%s/%s" % [angle,winding,offset])
+				for spacing: float in [0.1,0.5,2.0]:
+					var session := TrackSession.new(120,1)
+					var warned: bool = drive(session,track,path,spacing)
+					check(session.finished and not warned,"sharp join legal lap %s/%s/%s/%s gate %s" % [angle,winding,offset,spacing,session.next_checkpoint])
+					var reverse_path: PackedVector2Array = path.duplicate()
+					reverse_path.reverse()
+					reverse_path[0] = Vector2(-1,-20+offset)
+					reverse_path[-1] = reverse_path[0]
+					var reverse_session := TrackSession.new(120,1)
+					var reverse_warned: bool = drive(reverse_session,reverse_track,reverse_path,spacing)
+					check(reverse_session.finished and not reverse_warned,"reversed start respects sharp join gate direction %s/%s/%s/%s" % [angle,winding,offset,spacing])

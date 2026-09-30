@@ -390,7 +390,7 @@ try {
         'TestResults' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_race_results.gd') 'results-tests.log' }
         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
         'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd') 'surface-profile-tests.log' }
-        'CaptureCheckpoints' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd') 'checkpoint-capture.log' }
+        'CaptureCheckpoints' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd', '--') + $trackArguments) 'checkpoint-capture.log' }
         'TestHeadlights' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_headlights.gd') 'headlights-tests.log' }
         'CaptureHeadlights' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_headlights.gd', '--', '--capture') 'headlights-capture.log' }
         'CaptureMusicDrive' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_music.gd', '--', '--capture-drive') 'music-drive.log' }

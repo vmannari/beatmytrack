@@ -39,6 +39,7 @@ PINNED_FIELDS = (
     "laps",
 )
 MAX_FRAMES = 216000
+CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v13")
 
 
 def leaderboard_session(request: Request):
@@ -76,13 +77,18 @@ def board_manifest(version: TrackVersion, vehicle_id: str) -> dict:
     vehicle = manifest.get("vehicles", {}).get(vehicle_id)
     if vehicle is None:
         raise HTTPException(422, "Vehicle is not allowed by the server manifest")
-    return {
+    pinned = {
         **{field: manifest[field] for field in PINNED_FIELDS},
         "track_content_hash": manifest["track_content_hash"],
         "vehicle_id": vehicle_id,
         "handling_version": vehicle["handling_version"],
         "config_hash": vehicle["config_hash"],
     }
+    # This rules-only correction keeps immutable road content and handling.
+    # A different key creates a fresh board; historical PBs stay on the old one.
+    if pinned["rules_key"] == CHECKPOINT_RULES_TRANSITION[0]:
+        pinned["rules_key"] = CHECKPOINT_RULES_TRANSITION[1]
+    return pinned
 
 
 def _ticket_payload(ticket: RunTicket, board: Board) -> dict:

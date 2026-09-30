@@ -38,20 +38,29 @@ func _configure(track: NativeTrack) -> void:
 	_start_progress = track.route_progress(track.finish_center)
 	var targets: Array[float] = []
 	var count: int = maxi(4,ceili(track.route_length/12.0))
-	for i: int in range(1,count): targets.append(track.route_length*i/count)
-	# Add abrupt corners; smoothly sampled bends use the spaced gates.
-	for i: int in range(track.route.size()):
-		var incoming: Vector2 = (track.route[i]-track.route[posmod(i-1,track.route.size())]).normalized()
-		var outgoing: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[i]).normalized()
-		var distance: float = fposmod(track.route_cumulative[i]-_start_progress,track.route_length)
-		if incoming.dot(outgoing) < 0.707 and distance > 0.25 and distance < track.route_length-0.25: targets.append(distance)
+	var corners: Array[Dictionary] = _road_corners(track)
+	for i: int in range(1,count):
+		var distance: float = track.route_length*i/count
+		var overlaps_corner: bool = false
+		for corner: Dictionary in corners:
+			var separation: float = absf(distance-float(corner.distance))
+			separation = minf(separation,track.route_length-separation)
+			if separation < float(corner.reach): overlaps_corner = true; break
+		if not overlaps_corner: targets.append(distance)
+	for corner: Dictionary in corners: targets.append(corner.distance)
 	targets.sort()
 	var dirt: bool = track.metadata.get("creator_document",{}).get("surface","") == "dirt" or not track.metadata.has("creator_document")
 	for distance: float in targets:
-		if not _progress.is_empty() and distance-_progress[-1] < 3.0: continue
+		var junction: Dictionary = {}
+		for corner: Dictionary in corners:
+			if is_equal_approx(distance,float(corner.distance)): junction = corner; break
+		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < 3.0: continue
 		var absolute: float = _start_progress+distance
 		var center: Vector2 = track._race_route_point(absolute)
 		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
+		if not junction.is_empty():
+			center = junction.center
+			direction = junction.direction
 		var wrapped: float = fposmod(absolute,track.route_length)
 		var low: int = 0
 		var high: int = track.route.size()-1
@@ -62,6 +71,8 @@ func _configure(track: NativeTrack) -> void:
 		var half: float = maxf(3.0,float(track.metadata.get("representative_width_m",9.0))*0.5)
 		if track.route_widths.size() == track.route.size(): half = track.route_widths[low]*0.5
 		elif track.route_radii.size() == track.route.size(): half = maxf(3.0,track.route_radii[low]-2.0)
+		# A mitred road join is wider along its bisector than either straight.
+		if not junction.is_empty(): half = junction.half_span
 		var normal: Vector2 = direction.orthogonal()
 		var elevated: bool = track.elevated_at(center,low) if track.grid_width > 0 else false
 		var widths := Vector2(half+0.75,half+0.75)
@@ -91,6 +102,43 @@ func _configure(track: NativeTrack) -> void:
 		_widths.append(widths)
 		_road_widths.append(road_widths)
 	initialized = true
+
+func _road_corners(track: NativeTrack) -> Array[Dictionary]:
+	var points: PackedVector2Array = track.route
+	var widths: PackedFloat32Array = track.route_widths
+	var physical_chain: bool = false
+	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
+	if not pieces.is_empty():
+		# Automatic route resampling can split an apex into two smaller turns.
+		# Use the connected physical road chain to retain the actual joint.
+		var chain: Dictionary = RoadPieces.connected_route(pieces)
+		if chain.ok:
+			points = chain.points
+			widths = chain.widths
+			physical_chain = true
+	var result: Array[Dictionary] = []
+	for i: int in range(points.size()):
+		var incoming: Vector2 = (points[i]-points[posmod(i-1,points.size())]).normalized()
+		var outgoing: Vector2 = (points[(i+1)%points.size()]-points[i]).normalized()
+		if incoming.dot(outgoing) >= 0.707: continue
+		var direction: Vector2 = (incoming+outgoing).normalized()
+		if direction.length_squared() < 0.5: continue
+		var progress: float = track.route_progress(points[i]) if physical_chain else track.route_cumulative[i]
+		var distance: float = fposmod(progress-_start_progress,track.route_length)
+		if distance <= 0.25 or distance >= track.route_length-0.25: continue
+		var absolute: float = _start_progress+distance
+		var forward: Vector2 = track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)
+		var cosine: float = maxf(0.25,direction.dot(incoming))
+		if direction.dot(forward) < 0.0: direction = -direction
+		var half: float = maxf(3.0,float(track.metadata.get("representative_width_m",9.0))*0.5)
+		if widths.size() == points.size(): half = widths[i]*0.5
+		elif not physical_chain and track.route_radii.size() == points.size(): half = maxf(3.0,track.route_radii[i]-2.0)
+		var half_span: float = half/cosine
+		# Keep neighbouring straight gates beyond the inside miter. Otherwise
+		# a legal inside line crosses those planes in the opposite order.
+		var reach: float = maxf(3.0,(half+0.75)*sqrt(maxf(0.0,1.0-cosine*cosine))/cosine+2.0)
+		result.append({"distance":distance,"center":points[i],"direction":direction,"half_span":half_span,"reach":reach})
+	return result
 
 func _inside(index: int, point: Vector2) -> bool:
 	var lateral: float = (point-_centers[index]).dot(_directions[index].orthogonal())

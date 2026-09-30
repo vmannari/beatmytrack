@@ -1,5 +1,11 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 R01/V04/V05/Q01: persistent bounded road artifacts and ordered CPU shoulder workers; explicit Save reuses completed/pending editor roads. Fresh-process prepared first draw: Speedy 0.558s / Knot 0.644s; uncooked tracks remain above 1s and combined compilation/draw for Knot is 1.091s. Cache 66, cold golden 33, local equivalence 47, surfaces 928 and editor 38 checks pass; capture inspected. No phone/export/device test. See docs/BAKED_ROAD_LOADING.md.
+
+2026-09-30 R01/V04/V05/Q01: optimized road UV queries and shoulder candidate reuse; bounded immutable road-resource cache creates fresh race nodes. Desktop scene setup Speedy 5.7s -> 3.64s cold / 0.258s cached; Knot 2.2s -> 1.91s / 0.503s. Exact baseline meshes, 33 golden/cache checks, 928 surface checks and 38 editor checks pass; desktop capture inspected. No phone attached/export/device test. See docs/ROAD_BUILD_OPTIMIZATION.md.
+
+2026-09-30 R01/V04/V05/Q01: track-load review isolates 2.2–5.7 s synchronous race scene construction versus 0.32–0.42 s compilation on Speedy/Knot. Road edge generation and shoulder overlap dominate; added repeatable ProfileTrackLoad and prioritized cache/cold-build work. Profiling only; no runtime optimization claimed. Both final probes pass; no phone attached/export/device test. See docs/TRACK_LOAD_REVIEW.md.
+
 2026-09-30 V03/V04/R01/B19/Q01: Race Complete now pairs clear reward reasons and a large total with side-by-side timing distributions and scenic next-track cards. Verified race histograms connect to existing backend; local comparisons and flying-lap samples are explicitly scoped. Results 482 headless / 500 graphical and menus 26 checks pass. Rewards remain previews, no global lap board; no phone attached/export/device test. See docs/PREMIUM_RACE_COMPLETE.md.
 
 2026-09-30 V03/V04/Q01: lap strip uses white text for every non-fastest lap in all interaction states, gold for fastest, no collision markers and an 85%-opaque selected background (hover 30%). Graphical results: 493 checks pass; desktop screenshot inspected. No phone attached/export/device test. See docs/PREMIUM_RESULTS.md.

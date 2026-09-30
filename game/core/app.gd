@@ -1794,6 +1794,7 @@ func _save_track_now() -> bool:
 			var saved_track: NativeTrack = TrackCompiler.compile(document)
 			if saved_track != null: selected_track = saved_track
 		_notice("Saved on this device. Choose Saved tracks in the circuit library to drive it.")
+		NativeTrackVisual.request_saved_road_bake(canvas.native_preview)
 	editor_saved_snapshot = document.duplicate(true)
 	return true
 

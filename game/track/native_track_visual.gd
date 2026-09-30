@@ -35,6 +35,12 @@ var light_instances: Array[Node3D] = []
 var scenic_count: int = 0
 var editor_objects: NativeTrackVisual
 var editor_cover: NativeTrackVisual
+var cache_road_meshes: bool = true
+var persist_road_meshes: bool = true
+const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+static var _road_mesh_cache: Array[Dictionary] = []
+static var _pending_road_bakes: Dictionary = {}
 
 
 func _bind_grass(material: ShaderMaterial) -> void:
@@ -200,6 +206,14 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var document: Dictionary = track.metadata.get("creator_document",{})
 	var pieces: Array = document.get("pieces",[])
 	if pieces.is_empty(): return
+	var cache_key: Array = [track.content_hash,VERSION,theme_id,colors,partition_night_ground]
+	if cache_road_meshes and _restore_road_meshes(cache_key): return
+	if cache_road_meshes and persist_road_meshes and not editor_preview:
+		var stored: Dictionary = ROAD_DISK_CACHE.read_entry(cache_key)
+		if not stored.is_empty():
+			_admit_road_entry(stored)
+			if _restore_road_meshes(cache_key): return
+	var first_child: int = get_child_count()
 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
 	var texture: ImageTexture = ImageTexture.create_from_image(mask)
 	var road_texture: ImageTexture = ImageTexture.create_from_image(_creator_road_mask(track))
@@ -238,6 +252,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var piece: Dictionary = pieces[index]
 		if piece.kind == "bridge": continue
 		var points: PackedVector2Array = RoadPieces.samples(piece)
+		# Exact repeated vertices share road UV queries only within this piece.
+		var axis_cache: Dictionary = {}
 		var road_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index)
 		var marking_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index,-0.20)
 		var cuts: Array[Dictionary] = marking_join.cuts
@@ -247,7 +263,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,3.7 if theme_id == "desert" else 1.8,Geometry2D.JOIN_ROUND):
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
 		for polygon: PackedVector2Array in Geometry2D.offset_polygon(road_outline,0.16,Geometry2D.JOIN_ROUND):
-			counts[1] += _road_polygon(asphalt,polygon,0.012,points)
+			counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
 		for raw_polygon: PackedVector2Array in [marking_join.polygon]:
 			var polygon: PackedVector2Array = raw_polygon
@@ -283,7 +299,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 						_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
 					_asphalt_fringe_quad(asphalt_fringe,
 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
-						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points)
+						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points,axis_cache)
 					fringe_count += 1
 					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
 					# Continuous sand beneath the tapered kerb ends.
@@ -320,6 +336,78 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id not in ["desert","winter"]: await _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
 	if ground_count: await _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
+	if cache_road_meshes and (not _menu_slices or is_inside_tree()):
+		_remember_road_meshes(cache_key,first_child,track)
+
+
+func _restore_road_meshes(key: Array) -> bool:
+	for index: int in range(_road_mesh_cache.size()):
+		var entry: Dictionary = _road_mesh_cache[index]
+		if entry.key != key: continue
+		_road_mesh_cache.remove_at(index)
+		_road_mesh_cache.append(entry)
+		for data: Dictionary in entry.meshes:
+			# Only immutable road resources are shared. Every scene owns new nodes.
+			var instance := MeshInstance3D.new()
+			instance.mesh = data.mesh
+			instance.material_override = data.material
+			instance.transform = data.transform
+			instance.layers = data.layers
+			instance.cast_shadow = data.shadow
+			add_child(instance)
+		for name: String in entry.metadata: set_meta(name,entry.metadata[name])
+		return true
+	return false
+
+
+func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack) -> void:
+	var meshes: Array[Dictionary] = []
+	# Conservative vertex/index plus CPU/GPU mask allowance; cap both bytes
+	# and entries. Oversized roads still use the ordinary uncached builder.
+	var bytes: int = track.grid_width * track.grid_height * 16
+	if bytes > ROAD_CACHE_BUDGET: return
+	for index: int in range(first_child,get_child_count()):
+		var instance: MeshInstance3D = get_child(index) as MeshInstance3D
+		if instance == null or not instance.mesh is ArrayMesh: return
+		var mesh: ArrayMesh = instance.mesh
+		for surface: int in range(mesh.get_surface_count()):
+			bytes += mesh.surface_get_array_len(surface)*96 + mesh.surface_get_array_index_len(surface)*4
+		meshes.append({"mesh":instance.mesh,"material":instance.material_override,"transform":instance.transform,"layers":instance.layers,"shadow":instance.cast_shadow})
+	if meshes.is_empty() or bytes > ROAD_CACHE_BUDGET: return
+	var metadata: Dictionary = {}
+	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count"]:
+		if has_meta(name): metadata[name] = get_meta(name)
+	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes}
+	_admit_road_entry(entry)
+	var id: String = ROAD_DISK_CACHE.identity(key)
+	if persist_road_meshes and (not editor_preview or _pending_road_bakes.has(id)):
+		ROAD_DISK_CACHE.write_entry(entry)
+		_pending_road_bakes.erase(id)
+
+
+static func request_saved_road_bake(track: NativeTrack) -> void:
+	# Saving can reuse the completed editor road, or its pending sliced build.
+	# Never rebuild scenery synchronously in the Save handler.
+	if track == null or ROAD_DISK_CACHE.directory.is_empty(): return
+	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
+	for entry: Dictionary in _road_mesh_cache:
+		if entry.key == key:
+			ROAD_DISK_CACHE.write_entry(entry)
+			_pending_road_bakes.erase(ROAD_DISK_CACHE.identity(key))
+			return
+	if _pending_road_bakes.size() >= 8: _pending_road_bakes.erase(_pending_road_bakes.keys()[0])
+	_pending_road_bakes[ROAD_DISK_CACHE.identity(key)] = true
+
+
+static func _admit_road_entry(entry: Dictionary) -> void:
+	for index: int in range(_road_mesh_cache.size()-1,-1,-1):
+		if _road_mesh_cache[index].key == entry.key: _road_mesh_cache.remove_at(index)
+	var total: int = int(entry.bytes)
+	for existing: Dictionary in _road_mesh_cache: total += int(existing.bytes)
+	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= 2 or total > ROAD_CACHE_BUDGET):
+		total -= int(_road_mesh_cache.pop_front().bytes)
+	_road_mesh_cache.append(entry)
 
 
 
@@ -416,17 +504,22 @@ func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, se
 			tool.add_vertex(vertex)
 
 
-func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array) -> void:
+func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}) -> void:
 	var vertices: Array[Vector2] = [inner_a,outer_b,inner_b,inner_a,outer_a,outer_b]
 	var across: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
 	for i: int in range(6):
 		tool.set_uv(Vector2(0.0,across[i]))
-		tool.set_uv2(_asphalt_axis(vertices[i],points))
+		tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
 
 
 func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
 	return RoadEdges._inner_bend_distance(point,points)
+
+
+func _cached_asphalt_axis(point: Vector2, points: PackedVector2Array, cache: Dictionary) -> Vector2:
+	if not cache.has(point): cache[point] = _asphalt_axis(point,points)
+	return cache[point]
 
 
 func _asphalt_axis(point: Vector2, points: PackedVector2Array) -> Vector2:
@@ -465,35 +558,37 @@ func _sand_coordinates(point: Vector2, points: PackedVector2Array) -> Vector2:
 	return result
 
 
-func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float, points: PackedVector2Array = PackedVector2Array()) -> int:
+func _road_polygon(tool: SurfaceTool, polygon: PackedVector2Array, height: float, points: PackedVector2Array = PackedVector2Array(), axis_cache: Dictionary = {}) -> int:
 	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
+	var sand_cache: Dictionary = {}
 	if theme_id in ["desert","winter"] and not points.is_empty():
 		for i: int in range(0,indices.size(),3):
-			_sand_triangle(tool,polygon[indices[i]],polygon[indices[i+1]],polygon[indices[i+2]],height,points,0)
+			_sand_triangle(tool,polygon[indices[i]],polygon[indices[i+1]],polygon[indices[i+2]],height,points,0,axis_cache,sand_cache)
 	else:
 		for index: int in indices:
-			tool.set_uv2(_asphalt_axis(polygon[index],points))
+			tool.set_uv2(_cached_asphalt_axis(polygon[index],points,axis_cache))
 			tool.add_vertex(VisualGeometry.world(polygon[index])+Vector3.UP*height)
 	return indices.size()/3
 
 
-func _sand_triangle(tool: SurfaceTool, a: Vector2, b: Vector2, c: Vector2, height: float, points: PackedVector2Array, depth: int) -> void:
+func _sand_triangle(tool: SurfaceTool, a: Vector2, b: Vector2, c: Vector2, height: float, points: PackedVector2Array, depth: int, axis_cache: Dictionary, sand_cache: Dictionary) -> void:
 	var ab: float = a.distance_squared_to(b)
 	var bc: float = b.distance_squared_to(c)
 	var ca: float = c.distance_squared_to(a)
 	if maxf(ab,maxf(bc,ca)) > 4.0 and depth < 12:
 		if bc >= ab and bc >= ca:
-			_sand_triangle(tool,b,c,a,height,points,depth+1)
+			_sand_triangle(tool,b,c,a,height,points,depth+1,axis_cache,sand_cache)
 		elif ca > ab:
-			_sand_triangle(tool,c,a,b,height,points,depth+1)
+			_sand_triangle(tool,c,a,b,height,points,depth+1,axis_cache,sand_cache)
 		else:
 			var middle: Vector2 = (a+b)*0.5
-			_sand_triangle(tool,a,middle,c,height,points,depth+1)
-			_sand_triangle(tool,middle,b,c,height,points,depth+1)
+			_sand_triangle(tool,a,middle,c,height,points,depth+1,axis_cache,sand_cache)
+			_sand_triangle(tool,middle,b,c,height,points,depth+1,axis_cache,sand_cache)
 		return
 	for point: Vector2 in [a,b,c]:
-		tool.set_uv(_sand_coordinates(point,points))
-		tool.set_uv2(_asphalt_axis(point,points))
+		if not sand_cache.has(point): sand_cache[point] = _sand_coordinates(point,points)
+		tool.set_uv(sand_cache[point])
+		tool.set_uv2(_cached_asphalt_axis(point,points,axis_cache))
 		tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
 
 

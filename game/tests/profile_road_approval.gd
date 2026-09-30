@@ -19,6 +19,7 @@ func run() -> void:
 	root.add_child(app)
 	await process_frame
 	var doc: Dictionary = TrackDocument.create_blank()
+	doc.name = "Road approval fixture" # Explicit save requires a named circuit.
 	var position := Vector2(-28,-18)
 	var heading: float = 0
 	for kind: String in ["straight","hairpin","straight","hairpin"]:

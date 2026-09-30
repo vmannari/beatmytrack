@@ -29,3 +29,21 @@ Changed: shared surface include, creator/terrain/bridge road shaders, storm pale
 Actual verification: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureStorm -Track track_acf29166cceaaa42` run during visual iteration; final 55 checks pass. `TestSurfaceProfile` final 928 checks pass without shader errors. `git diff --check` passes. Same-fixture final rain and lightning captures inspected. An intermediate dark/plain result and an over-grained result were revised before saving final evidence.
 
 [Revised rain](evidence/storm-road-2026-09-30/revision-2/rain.png) / [Revised lightning](evidence/storm-road-2026-09-30/revision-2/lightning.png). Compare the preceding revision's same-track captures above. The resulting wetness is deliberately more gradual; this is not a claim of an exact reference match or owner acceptance. Direct-light sheen remains, without reflected scenery. No Android export or physical-device test; moving-camera stability and phone performance remain unverified.
+
+## Wet sheen follow-up (kit 92)
+
+The owner preferred revision 2's appearance but requested more wetness. Preserve its palette, albedo detail, broad film coverage and shared Grass edges. Wet roughness now reaches 0.18 before bounded grain (minimum 0.15), and specular reaches 0.55. A view-direction/Fresnel overcast reflection approximation adds soft silver sheen with filtered elongated surface variation. It is composited through EMISSION for Compatibility; this is an approximation of ambient reflected light, not a reflection of actual nearby scenery, and it does not illuminate other objects. The existing direct specular response receives lightning. The ambient reflection approximation stays at its overcast strength during lightning. Dry road, grass, markings and shoulders receive zero contribution; creator fringe weight tapers it away.
+
+Shared include/material changes cover creator, painted/native and bridge asphalt. Camera, canonical state, weather brightness and accepted base asphalt texture are unchanged. No new assets, runtime dependencies, additional light, cubemap or capture pass ships.
+
+Implementation exploration: an environment cubemap path initially used incorrect enum names, then exposed two GL texture-leak errors at shutdown after correction; removed it. A RADIANCE override compiled but did not provide the required visible response in these Compatibility captures, so the final implementation uses the bounded additive reflection approximation. No sky environment changes remain. Godot's documented shader outputs were checked at https://docs.godotengine.org/en/4.6/tutorials/shaders/shader_reference/spatial_shader.html and reflected-light behavior at https://docs.godotengine.org/en/stable/tutorials/3d/environment_and_post_processing.html.
+
+Changed files: game/track/surface_detail.gdshaderinc, creator_road.gdshader, terrain.gdshader, bridge_road.gdshader, native_track_visual.gd; game/tests/test_storm.gd; game/diagnostics/surface_material_probe.gd; status/phase notes and evidence. Earlier unrelated bridge Lambert work remains separate.
+
+Actual commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+- `CaptureStorm -Track track_acf29166cceaaa42`: final 59 checks, zero failures/errors. Includes actual race wet-material bindings plus existing replay, grip and weather checks. Rain/lightning captures inspected; stronger exploratory sheen was reduced before saving final evidence.
+- `TestSurfaceProfile`: 928 checks, zero failures/errors; historical/flat diagnostic variants have a zero-reflection compatibility helper.
+- `git diff --cached --check`: passes.
+
+[Wet road](evidence/storm-road-2026-09-30/revision-3/rain.png) / [Lightning](evidence/storm-road-2026-09-30/revision-3/lightning.png). Owner review of sheen strength remains. No phone/device test or Android export; physical-device frame pacing and moving-camera acceptance remain outstanding. Device attachment was not checked. Dedicated wet bridge imagery remains outstanding.

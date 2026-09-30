@@ -97,6 +97,19 @@ vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  return normalize(original+ripple*weight);
 }
 
+// Compatibility reflection approximation, composited after diffuse lighting.
+// Fresnel and reflected direction respond to the view; coverage stays world-fixed.
+vec3 wet_road_radiance(vec2 p, vec3 normal, vec3 view, mat4 inverse_view, float weight) {
+ vec3 reflection = (inverse_view*vec4(reflect(-view,normal),0.0)).xyz;
+ vec2 sky_uv = reflection.xz/max(reflection.y+0.65,0.15);
+ float cloud = texture(surface_factors,sky_uv*0.12+vec2(0.31,0.57)).g;
+ float pool = road_puddle(p);
+ vec3 sky = mix(vec3(0.50,0.54,0.58),vec3(1.2,1.26,1.32),cloud);
+ float fresnel = 0.035+0.965*pow(1.0-clamp(dot(normal,view),0.0,1.0),5.0);
+ float ripple = texture(surface_factors,p/vec2(24.0,6.0)).g;
+ return sky*fresnel*pool*weight*3.2*(0.8+ripple*0.4);
+}
+
 vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
 	if (road && packed_sand) {

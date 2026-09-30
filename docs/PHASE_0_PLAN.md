@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V02/V04/V05/Q01: owner preferred kit 91 but requested more wetness. Kit 92 retains its asphalt/edges and adds view-dependent overcast sheen plus smoother water-film highlights. Final graphical Storm 59 and material regression 928 checks pass; rain/lightning evidence inspected. No device test/export. See docs/STORM_ROAD.md.
+
 2026-09-30 V02/V04/V05/Q01: owner rejected kit 90 as blue camouflage. Kit 91 reduces colour/specular discontinuities, restores neutral charcoal, broadens water-film transitions and filters fine aggregate relief. Graphical Storm 55 and surface-profile 928 checks pass; revised rain/lightning captures inspected. No device test/export; visual acceptance pending. See docs/STORM_ROAD.md.
 
 2026-09-30 V02/V04/V05/Q01: Storm road kit 90 adds broken wet asphalt, light-responsive puddles and aggregate relief, and enables the shared Grass asphalt edge blend. Storm graphical 55, shoulders/join 89 plus overlap, and surface-profile 928 checks pass. Desktop rain/lightning evidence inspected; no Android export or device test. See docs/STORM_ROAD.md.

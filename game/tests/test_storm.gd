@@ -91,6 +91,13 @@ func _run() -> void:
 		return
 	race.paused = true
 	(race.race_cues as Control).hide()
+	var wet_materials: int = 0
+	for mesh: MeshInstance3D in race.track_ground.find_children("*","MeshInstance3D",true,false):
+		var material: ShaderMaterial = mesh.material_override as ShaderMaterial
+		if material != null and material.get_shader_parameter("wet_road") == true:
+			wet_materials += 1
+			check(material.shader.code.contains("wet_road_radiance"),"wet material uses reflection response")
+	check(wet_materials > 0,"wet road materials bound in race")
 	var weather: StormWeather = race.storm_weather
 	check(weather != null and weather.mouse_filter == Control.MOUSE_FILTER_IGNORE,"storm never captures driving input")
 	check(race.weather_layer.layer < race.hud.layer,"HUD and pedals remain above weather")

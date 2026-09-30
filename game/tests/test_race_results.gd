@@ -23,6 +23,7 @@ func run() -> void:
 	test_incidents()
 	test_sector_leaders()
 	test_lap_personal_best()
+	await test_single_lap_pb()
 	var interpolation: Dictionary = {"samples":[{"progress":0.0,"elapsed":0.0,"speed":10.0},{"progress":0.5,"elapsed":4.0,"speed":20.0},{"progress":1.0,"elapsed":10.0,"speed":30.0}]}
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.75),7.0),"time interpolation uses normalized distance")
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.25,"speed"),15.0),"speed interpolation uses normalized distance")
@@ -364,6 +365,32 @@ func test_rewards() -> void:
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 250,"collision or off-track blocks clean reward")
 	facts.complete = false
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 0,"incomplete/practice result cannot qualify")
+
+func test_single_lap_pb() -> void:
+	for prior: float in [0.0, 21.0, 17.0, 16.0]:
+		var panel := RaceResults.new()
+		panel.theme = MenuStyle.theme()
+		panel.clean = true
+		panel.circuit = "Single PB regression"
+		panel.vehicle_name = "Compact"
+		panel.laps = [20.0, 19.0, 17.0, 18.0, 17.0]
+		panel.total = 91.0
+		panel.set_meta("reward_facts", {"previous_lap":prior})
+		root.add_child(panel)
+		var count: int = 0
+		for index: int in range(panel.laps.size()):
+			var expected: bool = index == 2 and (prior == 0.0 or prior > 17.0)
+			check(panel._is_lap_pb(index) == expected, "only one best lap qualifies, including ties and first race")
+			check(panel.lap_buttons[index].text.contains("Personal best") == expected, "strip only labels the single record holder")
+			check(not panel.lap_buttons[index].text.contains("LAP PB"), "no secondary record claims for superseded laps")
+			panel.select_lap(index)
+			check(panel.lap_heading.text.contains("PERSONAL BEST") == expected, "heading only labels the single record holder")
+			if panel._is_lap_pb(index): count += 1
+		check(count == (1 if prior == 0.0 or prior > 17.0 else 0), "exactly one new PB, or none if old record remains")
+		if prior == 21.0:
+			panel.select_lap(2)
+			await screenshot("single-lap-pb-regression")
+		panel.free()
 
 func test_lap_personal_best() -> void:
 	var panel := RaceResults.new()

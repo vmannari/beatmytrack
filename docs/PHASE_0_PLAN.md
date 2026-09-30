@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-09-30 V03/R01/Q01: only the single fastest eligible flying lap can claim a new Personal best; earlier equal-time lap wins ties. Removed secondary LAP PB claims when several laps beat the old record. Graphical results suite: 493 checks pass, including first race/multiple improvements/ties/unbeaten records. No phone attached/export/device test. See docs/PREMIUM_RESULTS.md.
+
 2026-09-30 V03/V04/R01/Q01: results lap selection now preserves map/route/strip geometry across hover and selection; race-wide incident framing, fixed sector columns, equal button padding, no selection underlines (including shared tabs), and new flying-lap records say Personal best. Headless 391, graphical 408 and menu 26 checks pass. No phone attached/export/device test; see docs/PREMIUM_RESULTS.md.
 
 2026-09-30 V03/V04/R01/Q01: premium results presentation uses an open blurred race scene, dominant time/direct PB comparison, one factual achievement, enlarged annotated route, Track/Sectors/Speed modes, horizontal lap strip and race-wide speed/incident summary. Desktop capture checks pass; no phone attached or Android export/device test. See docs/PREMIUM_RESULTS.md.

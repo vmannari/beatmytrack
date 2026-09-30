@@ -149,8 +149,7 @@ func _lap_list(parent: Control) -> void:
 		var detail: String = "FASTEST" if i == result.fastest else ("%+.3f" % (laps[i]-laps[result.fastest]) if result.fastest >= 0 else "\u2014")
 		var prior_lap: float = float(get_meta("reward_facts", {}).get("previous_lap", 0.0))
 		if i > 0 and prior_lap > 0 and i != result.fastest:
-			if laps[i] < prior_lap-0.0005: detail = "LAP PB"
-			elif absf(laps[i]-prior_lap) <= 0.05: detail = "NEAR PB"
+			if laps[i] >= prior_lap and laps[i]-prior_lap <= 0.05: detail = "NEAR PB"
 		if _is_lap_pb(i): detail = "Personal best"
 		if not result.laps[i].valid: detail = "INVALID"
 		button.text = "%02d%s\n%.3f\n%s" % [i+1, marker, laps[i], detail]
@@ -340,6 +339,10 @@ func _retry_motivation() -> String:
 func _is_lap_pb(index: int) -> bool:
 	# Historical lap records are flying laps; a standing start is not comparable.
 	if not clean or index <= 0 or index >= result.laps.size() or not result.laps[index].valid: return false
+	# Only the best eligible flying lap owns the new record. First occurrence wins ties.
+	for other: int in range(1, result.laps.size()):
+		if not result.laps[other].valid or other == index: continue
+		if laps[other] < laps[index] or (laps[other] == laps[index] and other < index): return false
 	var prior: float = float(get_meta("reward_facts", {}).get("previous_lap", 0.0))
 	return prior <= 0.0 or laps[index] < prior-0.0005
 

@@ -40,3 +40,12 @@ Additional changed file: `game/ui/menu_style.gd`. Existing results tests now exe
 - `git diff --check`: passed.
 
 [Fastest lap, no underline](evidence/results-stability-2026-09-30/track-default-1280x720.png) and [another lap, same track placement](evidence/results-stability-2026-09-30/time-diff-1280x720.png). Desktop default screenshot inspected. Owner visual approval and physical-device touch/readability remain; no phone attached, Android export or device test.
+
+
+## Single record holder correction
+
+2026-09-30, V03/R01/Q01: the earlier implementation compared each lap with the pre-race record and incorrectly labeled multiple improvements (or every flying lap in a first race). Only the fastest valid flying lap now qualifies for Personal best, provided it improves the old record or establishes the first one. Equal winning times choose the first occurrence. Superseded laps retain their normal delta; the old secondary LAP PB branch is removed. The strip and selected-lap heading share this rule. Near-PB hints apply only to laps at or slower than an existing record.
+
+Changed files: `game/ui/race_results.gd`, `game/tests/test_race_results.gd`, this document and the two status documents. Regression fixture `[20,19,17,18,17]` exercises no previous record, several improvements over 21 s, matching 17 s and an unbeaten 16 s record; checks every strip label and selected heading, plus exactly one or zero PBs as applicable.
+
+Actual command: `$env:BMT_RESULTS_EVIDENCE = 'C:/Codes/Godot/Beat my track/docs/evidence/single-lap-pb-2026-09-30'`; `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureResults`. Result: 493 checks, zero failures, pinned Godot 4.7.2. `git diff --check` passed. `adb devices` returned no devices; no Android export/device test. Existing layout stability tests pass. [Isolated multi-improvement/tie fixture screenshot](evidence/single-lap-pb-2026-09-30/single-lap-pb-regression.png) inspected; this fixture intentionally has no route/telemetry. Owner acceptance remains.

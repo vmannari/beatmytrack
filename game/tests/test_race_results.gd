@@ -5,6 +5,16 @@ var failures: int = 0
 var capture: bool = false
 var app: Node
 
+class StandingsClient extends Node:
+	var own: Variant = {"rank":2,"time_ticks":120}
+	func signed_in() -> bool: return true
+	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
+		if path.contains("/histogram"):
+			return {"ok":true,"data":{"population":3,"minimum_ticks":100,"maximum_ticks":140,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":1},{"from_ticks":120,"to_ticks_exclusive":140,"count":1},{"from_ticks":140,"to_ticks_exclusive":160,"count":1}]}}
+		if path.ends_with("/around-me"):
+			return {"ok":true,"data":{"population":3,"player":own,"faster_than_percent":50.0 if own != null else null}}
+		return {"ok":true,"data":{"board_id":"test-board","population":3}}
+
 func _initialize() -> void:
 	capture = "--capture" in OS.get_cmdline_user_args()
 	call_deferred("run")
@@ -24,6 +34,7 @@ func run() -> void:
 	test_sector_leaders()
 	test_lap_personal_best()
 	await test_single_lap_pb()
+	await test_completion_distributions()
 	var interpolation: Dictionary = {"samples":[{"progress":0.0,"elapsed":0.0,"speed":10.0},{"progress":0.5,"elapsed":4.0,"speed":20.0},{"progress":1.0,"elapsed":10.0,"speed":30.0}]}
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.75),7.0),"time interpolation uses normalized distance")
 	check(is_equal_approx(LapTelemetry.at(interpolation,0.25,"speed"),15.0),"speed interpolation uses normalized distance")
@@ -365,6 +376,35 @@ func test_rewards() -> void:
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 250,"collision or off-track blocks clean reward")
 	facts.complete = false
 	check(RaceRewardPreview.total(RaceRewardPreview.build(facts)) == 0,"incomplete/practice result cannot qualify")
+
+func test_completion_distributions() -> void:
+	var distribution: Dictionary = RaceComplete._local_distribution([10.0001,10.0004],10.0004)
+	check(distribution.bins[0] == 2 and distribution.player_bin == 0, "equal displayed times share a histogram bin")
+	check(RaceComplete._local_distribution([],0).is_empty(), "no invented histogram for missing local samples")
+	var source := RaceResults.new()
+	source.laps = [20.0,17.0,18.0]
+	source.clean = true
+	source.total = 55.0
+	root.add_child(source)
+	var client := StandingsClient.new()
+	root.add_child(client)
+	var page := RaceComplete.new()
+	page.results = source
+	page.facts = {"flying":17.0}
+	page.cloud_client = client
+	root.add_child(page)
+	page.cloud_version = "test-version"
+	await page._refresh_rank()
+	check(page.race_chart.snapshot.bins == [1,1,1], "verified histogram uses exact server counts")
+	check(page.race_chart.snapshot.player_bin == 1, "verified player on bin boundary uses exclusive upper edge")
+	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
+	check(page.global_rank.text == "RANK 2 OF 3" and page.race_context.text.contains("3 verified players"), "rank and histogram context identify the real population")
+	client.own = null
+	await page._refresh_rank()
+	check(page.race_chart.snapshot.player_bin == -1 and page.global_rank.text == "AWAITING VERIFIED SCORE", "pending upload shows distribution without inventing player placement")
+	page.free()
+	client.free()
+	source.free()
 
 func test_single_lap_pb() -> void:
 	for prior: float in [0.0, 21.0, 17.0, 16.0]:

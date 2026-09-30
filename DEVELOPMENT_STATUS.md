@@ -1,5 +1,7 @@
 # Development status
 
+2026-09-30 V03/V04/R01/B19/Q01: Race Complete now pairs clear reward reasons and a large total with side-by-side timing distributions and scenic next-track cards. Verified race histograms connect to existing backend; local comparisons and flying-lap samples are explicitly scoped. Results 482 headless / 500 graphical and menus 26 checks pass. Rewards remain previews, no global lap board; no phone attached/export/device test. See docs/PREMIUM_RACE_COMPLETE.md.
+
 2026-09-30 V03/V04/Q01: lap strip uses white text for every non-fastest lap in all interaction states, gold for fastest, no collision markers and an 85%-opaque selected background (hover 30%). Graphical results: 493 checks pass; desktop screenshot inspected. No phone attached/export/device test. See docs/PREMIUM_RESULTS.md.
 
 2026-09-30 R01/R03/R07/G01/T01-T04/V03/Q01: rules v13 fixes missed checkpoints on steep straight-road joins using physical apex gates, mitred widths and removal of intersecting neighbours. Checkpoint 266, native replay 167, start-line 27, records 53, rewind 51 and graphical 15 checks pass. Shared v12 tracks retain content/history and get separate v13 boards. No phone attached/export/device test. See docs/SHARP_JOIN_CHECKPOINTS.md.

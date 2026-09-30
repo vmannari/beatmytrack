@@ -13,6 +13,8 @@ var cloud_sync: Node
 var global_rank: Label
 var global_status: Label
 var standings_busy: bool = false
+var race_chart: TrackDistribution
+var race_context: Label
 var vehicle_id: String = "compact"
 var facts: Dictionary
 var recommendations: Array[Dictionary] = []
@@ -57,11 +59,11 @@ func _ready() -> void:
 	if not recommendations.is_empty(): select_track(0)
 
 func _rewards(parent: Control) -> void:
-	var body: VBoxContainer = RaceResults._card(parent,12)
-	body.get_parent().custom_minimum_size.x = 396
+	var body: VBoxContainer = _section(parent,16)
+	body.get_parent().custom_minimum_size.x = 350
 	body.add_theme_constant_override("separation",6)
 	body.add_child(MenuStyle.label("REWARDS",28))
-	body.add_child(MenuStyle.label("Provisional amounts / not added to a balance",13,true))
+	body.add_child(MenuStyle.label("Reward preview / no balance credited",13,true))
 	var scroll := ScrollContainer.new()
 	scroll.name = "RewardScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -75,13 +77,13 @@ func _rewards(parent: Control) -> void:
 	for item: Dictionary in rewards:
 		if not item.eligible: continue
 		var slot := Control.new()
-		slot.custom_minimum_size.y = 64
+		slot.custom_minimum_size.y = 45
 		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		list.add_child(slot)
 		var panel := PanelContainer.new()
 		panel.name = "RewardRow%d" % reward_panels.size()
 		panel.set_meta("amount",int(item.amount))
-		panel.add_theme_stylebox_override("panel",RaceResults._panel_style(12))
+		panel.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,4))
 		panel.modulate.a = 0.0
 		slot.add_child(panel)
 		MenuStyle.fill(panel)
@@ -90,12 +92,12 @@ func _rewards(parent: Control) -> void:
 		row.add_theme_constant_override("separation",12)
 		panel.add_child(row)
 		row.add_child(ResultsIcons.view(item.icon,30,MenuStyle.ACCENT))
-		var title := MenuStyle.label(item.title,22)
+		var title := MenuStyle.label(item.title,21)
 		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(title)
-		row.add_child(ResultsIcons.view("coin",22,MenuStyle.ACCENT))
-		var amount := MenuStyle.label("+ %d" % item.amount,25)
+		var amount := MenuStyle.label("+%d" % item.amount,28)
+		amount.add_theme_color_override("font_color",MenuStyle.ACCENT)
 		amount.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(amount)
 	if reward_panels.is_empty():
@@ -103,11 +105,11 @@ func _rewards(parent: Control) -> void:
 	body.add_child(HSeparator.new())
 	var total_row := HBoxContainer.new()
 	body.add_child(total_row)
-	var caption := MenuStyle.label("ELIGIBLE TOTAL",20,true)
+	var caption := MenuStyle.label("TOTAL REWARDS",20,true)
 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	total_row.add_child(caption)
-	total_row.add_child(ResultsIcons.view("coin",24,MenuStyle.ACCENT))
-	reward_total = MenuStyle.label("+ 0",30)
+	total_row.add_child(ResultsIcons.view("coin",38,MenuStyle.ACCENT))
+	reward_total = MenuStyle.label("+ 0",48)
 	total_row.add_child(reward_total)
 	_reveal_rewards()
 
@@ -130,39 +132,67 @@ func _reveal_rewards() -> void:
 		reward_reveal.parallel().tween_method(_set_reward_total,float(previous_total),float(running_total),0.36).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 		reward_reveal.parallel().tween_property(style,"border_color",Color("425b69"),0.48)
 		reward_reveal.tween_interval(0.12)
-	reward_reveal.tween_callback(func() -> void: reward_total.add_theme_color_override("font_color",MenuStyle.TEXT))
+	reward_reveal.tween_callback(func() -> void: reward_total.add_theme_color_override("font_color",MenuStyle.ACCENT))
 
 func _set_reward_total(value: float) -> void:
 	reward_total.text = "+ %d" % roundi(value)
 
 func _standings(parent: Control) -> void:
-	var body: VBoxContainer = RaceResults._card(parent,12)
+	var body: VBoxContainer = _section(parent,16)
 	body.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation",8)
-	body.add_child(MenuStyle.label("WHERE YOU STAND",28))
+	body.add_child(MenuStyle.label("W H E R E  Y O U  S T A N D",23))
+	body.add_child(HSeparator.new())
+	var columns := HBoxContainer.new()
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	columns.add_theme_constant_override("separation",18)
+	body.add_child(columns)
 	for kind: String in ["RACE TIME","BEST LAP"]:
-		var card: VBoxContainer = RaceResults._card(body,16)
-		card.add_theme_constant_override("separation",4)
-		card.get_parent().size_flags_vertical = Control.SIZE_EXPAND_FILL
-		var row := HBoxContainer.new()
-		card.add_child(row)
-		var title := MenuStyle.label(kind,25)
-		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(title)
+		if kind == "BEST LAP": columns.add_child(VSeparator.new())
+		var card := VBoxContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.add_theme_constant_override("separation",2)
+		columns.add_child(card)
+		card.add_child(MenuStyle.label(kind,22,true))
 		var value: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
-		row.add_child(MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",32))
-		var space := Control.new()
-		space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		card.add_child(space)
-		if not cloud_version.is_empty() and kind == "RACE TIME":
-			global_rank = MenuStyle.label("CHECKING VERIFICATION",22,true)
-			global_status = MenuStyle.label("Your race is checked before entering the board.",15,true)
+		card.add_child(MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34))
+		var prior: float = results.previous if kind == "RACE TIME" else float(facts.get("previous_lap",0))
+		var delta := MenuStyle.label("%+.3f s vs your PB" % (value-prior) if prior > 0 and value > 0 else "Your first benchmark",17,true)
+		if prior > 0 and value > 0 and roundi(value*1000) == roundi(prior*1000): delta.text = "Matches your PB"
+		if prior > 0 and value < prior-0.0005: delta.add_theme_color_override("font_color",MenuStyle.POSITIVE)
+		card.add_child(delta)
+		var context := MenuStyle.label("",14,true)
+		context.clip_text = true
+		card.add_child(context)
+		var chart := TrackDistribution.new()
+		chart.custom_minimum_size = Vector2(180,64)
+		chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		var values: Array[float] = []
+		if kind == "RACE TIME":
+			race_chart = chart
+			race_context = context
+			if results.total > 0: values.append(results.total)
+			if prior > 0: values.append(prior)
+			context.text = "This race + previous PB" if prior > 0 else "First recorded race"
+		else:
+			for index: int in range(1,results.laps.size()):
+				if results.result.laps[index].valid: values.append(results.laps[index])
+			context.text = "This race / %d flying laps" % values.size()
+		chart.snapshot = _local_distribution(values,value)
+		chart.snapshot.marker_label = "THIS RACE" if kind == "RACE TIME" else "BEST LAP"
+		chart.snapshot.empty_text = "No completed race time" if kind == "RACE TIME" else "No valid flying laps"
+		chart.snapshot.empty_detail = "Finish a timed race to compare"
+		card.add_child(chart)
+		if kind == "RACE TIME":
+			global_rank = MenuStyle.label("LOCAL COMPARISON",16,true)
+			global_status = MenuStyle.label("Your times on this track",12,true)
+			global_status.clip_text = true
 			card.add_child(global_rank)
 			card.add_child(global_status)
 		else:
-			card.add_child(MenuStyle.label("PERCENTILE NOT AVAILABLE",22,true))
-			card.add_child(MenuStyle.label("Lap rankings are not available yet." if not cloud_version.is_empty() else "Global comparison data is not connected yet.",15,true))
-		card.add_child(MenuStyle.label("Best flying lap" if kind == "BEST LAP" else "Your completed race time",13,true))
+			card.add_child(MenuStyle.label("YOUR LAP DISTRIBUTION",16,true))
+			card.add_child(MenuStyle.label("Global lap rankings not available",12,true))
+	body.add_child(HSeparator.new())
 	if rating_records != null and not results.editor:
 		var rating := TrackRating.new()
 		rating.records = rating_records
@@ -175,6 +205,25 @@ func _standings(parent: Control) -> void:
 		call_deferred("_refresh_rank")
 		if cloud_sync != null: cloud_sync.changed.connect(_refresh_rank)
 
+static func _local_distribution(values: Array[float], marker: float) -> Dictionary:
+	if values.is_empty(): return {}
+	var rounded: Array[float] = []
+	for value: float in values: rounded.append(roundi(value*1000.0)/1000.0)
+	marker = roundi(marker*1000.0)/1000.0
+	var low: float = rounded.min()
+	var high: float = rounded.max()
+	var bins: Array[int] = []
+	bins.resize(12)
+	bins.fill(0)
+	var span: float = maxf(high-low,0.001)
+	for value: float in rounded: bins[clampi(int((value-low)/span*11),0,11)] += 1
+	return {"bins":bins,"min_ms":low*1000.0,"max_ms":high*1000.0,"player_bin":clampi(int((marker-low)/span*11),0,11)}
+
+static func _section(parent: Control, padding: int) -> VBoxContainer:
+	var body: VBoxContainer = RaceResults._card(parent,padding)
+	(body.get_parent() as PanelContainer).add_theme_stylebox_override("panel",RaceResults._panel_style(padding))
+	return body
+
 func _refresh_rank() -> void:
 	if standings_busy or not is_instance_valid(global_rank) or cloud_client == null: return
 	if not cloud_client.signed_in():
@@ -185,39 +234,76 @@ func _refresh_rank() -> void:
 	var response: Dictionary = await cloud_client.request_api("/track-versions/"+cloud_version+"/leaderboard?vehicle_id="+vehicle_id.uri_encode())
 	if not is_inside_tree(): return
 	if response.ok and int(response.data.population) > 0:
-		response = await cloud_client.request_api("/boards/"+str(response.data.board_id)+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+		var board: String = str(response.data.board_id)
+		var histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=24")
 		if not is_inside_tree(): return
+		response = await cloud_client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+		if not is_inside_tree(): return
+		if histogram.ok and not histogram.data.bins.is_empty():
+			var counts: Array[int] = []
+			var own_bin: int = -1
+			for index: int in range(histogram.data.bins.size()):
+				var bin: Dictionary = histogram.data.bins[index]
+				counts.append(int(bin.count))
+				if response.ok and response.data.player != null:
+					var ticks: int = int(response.data.player.time_ticks)
+					if ticks >= int(bin.from_ticks) and ticks < int(bin.to_ticks_exclusive): own_bin = index
+			race_chart.snapshot = {"bins":counts,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":own_bin}
+			race_chart.queue_redraw()
+			race_context.text = "%d verified players / personal bests" % int(histogram.data.population)
 		if response.ok and response.data.player != null:
 			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
-			global_status.text = "Verified personal best · "+VehicleCatalog.title(vehicle_id)
+			global_rank.add_theme_color_override("font_color",MenuStyle.ACCENT)
+			global_status.text = "Your verified PB"
+			if response.data.get("faster_than_percent") != null:
+				global_status.text += " / faster than %.1f%%" % float(response.data.faster_than_percent)
 		else:
 			global_rank.text = "AWAITING VERIFIED SCORE"
-			global_status.text = "Uploads retry automatically while signed in."
+			global_status.text = "Uploads retry while signed in."
 	else:
 		global_rank.text = "UNRANKED"
 		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
 	standings_busy = false
 
 func _recommendations() -> void:
-	var panel: VBoxContainer = RaceResults._card(self,10)
+	var panel: VBoxContainer = RaceResults._card(self,0)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",10)
 	panel.add_child(row)
-	var intro := VBoxContainer.new()
-	intro.custom_minimum_size.x = 155
-	row.add_child(intro)
-	intro.add_child(MenuStyle.label("NEXT TRACKS",26))
-	intro.add_child(MenuStyle.label("Keep the momentum.\nPick what's next.",16,true))
+	var heading := HBoxContainer.new()
+	heading.add_child(MenuStyle.label("NEXT TRACKS",28))
+	heading.add_child(MenuStyle.label("Keep the momentum. Pick what's next.",16,true))
+	panel.add_child(heading)
+	panel.move_child(heading,0)
 	if recommendations.is_empty():
 		row.add_child(MenuStyle.label("No other local tracks yet. Open Tracks to create or import one.",17,true))
 	for i: int in range(recommendations.size()):
 		var item: Dictionary = recommendations[i]
 		var button := Button.new()
-		button.custom_minimum_size = Vector2(0,106)
+		button.custom_minimum_size = Vector2(0,136)
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.pressed.connect(select_track.bind(i))
 		row.add_child(button)
 		cards.append(button)
+		button.clip_contents = true
+		var artwork := TextureRect.new()
+		artwork.texture = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
+		artwork.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		artwork.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		artwork.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		button.add_child(artwork)
+		MenuStyle.fill(artwork)
+		var shade := ColorRect.new()
+		shade.color = Color(0.015,0.04,0.06,0.52)
+		shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		button.add_child(shade)
+		MenuStyle.fill(shade)
+		var frame := Panel.new()
+		frame.name = "SelectionFrame"
+		frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		button.add_child(frame)
+		MenuStyle.fill(frame)
+
 		var margin := MarginContainer.new()
 		for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,10)
 		margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -240,20 +326,20 @@ func _recommendations() -> void:
 		var preview := LapRouteView.new()
 		preview.miniature = true
 		preview.route = item.route
-		preview.custom_minimum_size = Vector2(72,55)
-		detail.add_child(preview)
+		preview.custom_minimum_size = Vector2(105,92)
 		var copy := VBoxContainer.new()
 		copy.add_theme_constant_override("separation",0)
 		copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		detail.add_child(copy)
-		var title := MenuStyle.label(item.name,24)
+		var title := MenuStyle.label(item.name,27)
 		title.clip_text = true
 		copy.add_child(title)
-		copy.add_child(MenuStyle.label("%d laps / ~%d:%02d" % [item.laps,int(item.estimated_seconds/60),int(item.estimated_seconds)%60],14,true))
+		copy.add_child(MenuStyle.label("%d laps / est. %d:%02d" % [item.laps,int(item.estimated_seconds/60),int(item.estimated_seconds)%60],14,true))
 		var reason := MenuStyle.label(item.reason,12,true)
 		reason.clip_text = true
 		copy.add_child(reason)
+		detail.add_child(preview)
 		var score: int = 0
 		if rating_records != null:
 			score = int(rating_records.settings.get("track_ratings",{}).get(str(item.entry.id),0))
@@ -321,6 +407,10 @@ func _actions() -> void:
 
 func select_track(index: int) -> void:
 	selected = index
-	for i: int in range(cards.size()): cards[i].add_theme_stylebox_override("normal",RaceResults._selection_style(i == index))
+	for i: int in range(cards.size()):
+		var style := MenuStyle.box(Color.TRANSPARENT,0)
+		style.border_color = MenuStyle.ACCENT if i == index else MenuStyle.BORDER
+		style.set_border_width_all(2 if i == index else 1)
+		(cards[i].get_node("SelectionFrame") as Panel).add_theme_stylebox_override("panel",style)
 	race_button.text = "RACE %s  \u2192" % str(recommendations[index].name).to_upper()
 	race_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS

@@ -251,12 +251,26 @@ func _render_tiles() -> void:
 	if not is_instance_valid(grid): return
 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
 	if first == _tile_start: return
+	# Keep overlapping cards alive: scrolling one card must not rebuild twelve
+	# buttons, resample every route and invalidate all their draw commands.
+	if _tile_start == -1: _clear(grid)
 	_tile_start = first
-	_clear(grid)
+	var end: int = mini(matches.size(),first+12)
+	var retained: Dictionary = {}
+	for child: Node in grid.get_children():
+		var index: int = int(child.get_meta("catalog_index",-1))
+		if index < first or index >= end:
+			grid.remove_child(child)
+			child.queue_free()
+		else: retained[index] = child
 	grid.position.x = first*tile_stride
-	for index: int in range(first,mini(matches.size(),first+12)):
+	for index: int in range(first,end):
+		if retained.has(index):
+			grid.move_child(retained[index],index-first)
+			continue
 		var entry: Dictionary = matches[index]
 		var tile := TrackTile.new()
+		tile.set_meta("catalog_index",index)
 		tile.compact = true
 		tile.entry = entry
 		tile.favorite = entry.id in records.settings.get("favorites",[])
@@ -267,6 +281,7 @@ func _render_tiles() -> void:
 		tile.focus_entered.connect(_focus_card.bind(index))
 		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
 		grid.add_child(tile)
+		grid.move_child(tile,index-first)
 		tile.custom_minimum_size = Vector2(tile_stride-12,140)
 		tile.size_flags_horizontal = Control.SIZE_FILL
 

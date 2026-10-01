@@ -77,6 +77,24 @@ func run() -> void:
 	await process_frame
 	await process_frame
 	check(browser.grid.get_child_count() <= 12 and browser.matches.size() == 5000,"5000-track carousel bounds active cards to twelve")
+	var retained_tile: TrackTile = browser.grid.get_child(5)
+	var retained_id: int = retained_tile.get_instance_id()
+	browser.gallery.scroll_horizontal = 2*browser.tile_stride
+	browser._render_tiles()
+	check(is_instance_valid(retained_tile) and retained_tile.get_parent() == browser.grid and retained_tile.get_instance_id() == retained_id,"scrolling retains overlapping card instances and route caches")
+	check(browser.grid.get_child_count() <= 12,"incremental scroll keeps twelve-card bound")
+	browser.gallery.scroll_horizontal = 0
+	browser._render_tiles()
+	check(browser.grid.get_child(0).entry.id == all.front().id,"reverse scrolling restores card order")
+	var scroll_costs: Array[int] = []
+	for step: int in range(2,102):
+		var scroll_started: int = Time.get_ticks_usec()
+		browser.gallery.scroll_horizontal = step*browser.tile_stride
+		browser._render_tiles()
+		scroll_costs.append(Time.get_ticks_usec()-scroll_started)
+		await process_frame
+	scroll_costs.sort()
+	print("CAROUSEL_BOUNDARY_US median=",scroll_costs[50]," p95=",scroll_costs[95]," max=",scroll_costs.back())
 	browser.gallery.scroll_horizontal = int(browser.gallery.get_h_scroll_bar().max_value)
 	await process_frame
 	browser._render_tiles()

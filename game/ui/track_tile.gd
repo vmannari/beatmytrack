@@ -77,7 +77,7 @@ func _cache_route() -> void:
 	route_bounds = Rect2(low,(high-low).max(Vector2.ONE)) if low.is_finite() else Rect2(Vector2.ZERO,Vector2.ONE)
 
 func _draw() -> void:
-	var footer: float = 44.0 if compact else FOOTER_HEIGHT
+	var footer: float = 50.0 if compact else FOOTER_HEIGHT
 	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-4 if preview_only else size.y-footer-1.0))
 	_draw_terrain(image_area)
 	_draw_route(image_area)
@@ -102,7 +102,7 @@ func _draw() -> void:
 	draw_string(MenuStyle.DISPLAY,Vector2(13,title_baseline),title,HORIZONTAL_ALIGNMENT_LEFT,title_width,title_size,MenuStyle.TEXT)
 	var creator: String = str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": creator += " (fictional)"
-	draw_string(MenuStyle.BODY,Vector2(13,size.y-(6 if compact else 10)),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(13,size.y-12),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
 	var biome: String = TrackTheme.title(str(entry.get("theme","pine"))).to_upper()
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
 	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+16,23))
@@ -145,8 +145,8 @@ func _draw_terrain(area: Rect2) -> void:
 		draw_rect(Rect2(area.position.x,area.end.y-30+band*3,area.size.x,3),Color(0.02,0.07,0.08,float(band)*0.03))
 
 func _draw_route(area: Rect2) -> void:
-	var available := Rect2(area.position+Vector2(26,31),area.size-Vector2(52,52))
-	if compact: available = Rect2(area.position+Vector2(76,10),area.size-Vector2(92,24))
+	var available := Rect2(area.position+Vector2(26,26),area.size-Vector2(52,52))
+	if compact: available = Rect2(area.position+Vector2(46,12),area.size-Vector2(92,24))
 	var scale: float = minf(available.size.x/route_bounds.size.x,available.size.y/route_bounds.size.y)
 	for path: PackedVector2Array in paths:
 		if path.size() < 2: continue

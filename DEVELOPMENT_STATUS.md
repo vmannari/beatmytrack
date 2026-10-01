@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 R01/V03/V04/Q01: track cards now center route bounds in the image with symmetric margins. Creator baseline is 12 px above the bottom; compact footer grows to 50 px to preserve title spacing. CaptureMenus 1351 checks pass; compact capture inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 R01/V03/V04/Q01: compact track-card titles now use 16 px type anchored four pixels inside the solid footer, with width-based shrinking to 12 px and adjusted creator spacing. CaptureMenus: 1351 checks pass; compact screenshot inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 R01/V03/V04/G03/Q01: reference-led right-hand Search drawer adds scope tabs, live counts, highlighted titles, scenery/biome/route previews, more results, Clear and Show tracks. Draft search applies explicitly; cancel restores the gallery, result taps select directly. Graphical 1351 and loading 32 checks pass; desktop/compact captures inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.

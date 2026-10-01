@@ -52,3 +52,17 @@ Median of the three window medians per condition:
 At 1080p this is +0.020 ms GPU (about 1.8%) and +0.037 ms wall interval (about 1.4%). The 720p difference changes sign within run noise; no speedup is claimed. Draw calls remain 373 and primitives 252218 in every window. Median of window GPU p95 is 1.673 / 1.635 ms at 720p and 1.720 / 1.745 ms at 1080p. No significant steady-state desktop rendering drop was observed.
 
 [Raw timing windows](evidence/storm-reflection-2026-09-30/performance.json). These are controlled stationary-scene rendering measurements, not race FPS, a phone benchmark, an isolated first-use cubemap bake measurement, or a comparison against old pre-wet-material code. The off condition still evaluates the same wet-material roughness/normal helpers, isolating the sky-reflection rendering contribution. The static cloud shader runs when the sky is filtered, not per road fragment every frame. Actual Android GPU cost, startup spike and thermal/frame-pacing acceptance remain unverified. No phone attached-state check, device test or export was performed.
+
+
+## Kit 98: textured, quieter puddles (2026-10-01)
+
+Owner requests less smooth puddles and slightly dimmer reflections. Requirements V02/V04/V05/Q01. Shared surface_detail.gdshaderinc now retains pooled normal relief at 0.045 (previously 0.006), pooled roughness at 0.18 with existing grain variation (previously flat 0.12), and pooled albedo grain at 0.14 (previously 0.06). Pooled specular decreases from 0.60 to 0.52. native_track_visual.gd advances the material cache to kit 98. Coverage, road edges, sky, lightning and physics remain unchanged. No additional texture samples or rendering passes; the previous desktop performance measurement is not a fresh benchmark of this revision.
+
+Actual commands through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+- Initial CaptureStorm and TestSurfaceProfile encountered an unresolved rewind_button class from other workspace work; the capture was stopped. `Import` successfully registered RewindHUDButton without source changes.
+- `CaptureStorm -Track track_acf29166cceaaa42` after import: 95 checks, zero failures, clean exit. Reflection comparison delta 376.337 across 8500 samples; verifies reflection contribution, not aesthetic acceptance.
+- `TestSurfaceProfile` after import: 928 checks, zero failures, clean exit.
+- Rendered [normal rain preview](evidence/storm-puddle-texture-2026-10-01/rain.png) inspected: pools retain highlights with fine texture and reduced brightness. Screenshot includes unrelated current HUD work.
+
+Changed files: the two material/cache sources, this document, status/phase notes and the preview. Owner visual acceptance remains pending. No Android export or phone test; attached-device state not checked. Mobile performance remains unverified.

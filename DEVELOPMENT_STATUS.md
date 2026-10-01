@@ -1,5 +1,9 @@
 # Development status
 
+## 2026-10-01 ? Storm puddle refinement (kit 98)
+
+V02/V04/V05/Q01: retained fine pooled surface relief and grain, raised pooled roughness and modestly reduced specular. No added texture samples/passes. After refreshing stale class registration with Import, CaptureStorm passed 95 checks and TestSurfaceProfile passed 928. Desktop preview and commands: docs/STORM_WET_MATERIAL.md. Phone test/export not performed; owner visual acceptance pending.
+
 2026-09-30 V02/V04/Q01: owner found lightning too fast/strong. Strikes now last 0.98-2.05s with 2-3 shallow swells, slower rise/fade and reduced light/screen-flash intensity. Storm 95 checks pass; peak capture inspected. No phone test/export. See docs/STORM_LIGHTNING.md.
 
 2026-09-30 V04/V05/Q01: reflection performance A/B completed on RTX 3090, 3600 uncapped measured frames. GPU median off/on: 1.120/1.104 ms at 720p and 1.114/1.134 ms at 1080p; 373 draw calls unchanged. No significant desktop steady-state drop observed; phone and first-use bake cost unverified. See docs/STORM_WET_MATERIAL.md.

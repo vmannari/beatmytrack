@@ -93,18 +93,19 @@ float road_puddle(vec2 p) {
 float wet_road_roughness(vec2 p) {
  float pool = road_puddle(p);
  float grain = (texture(surface_factors,p/32.0).r-0.54)*0.16;
- return mix(clamp(0.38+grain,0.33,0.43),0.12,pool);
+ // Retain fine surface variation in standing water without losing its sheen.
+ return mix(clamp(0.38+grain,0.33,0.43),clamp(0.18+grain*0.6,0.15,0.21),pool);
 }
 
 float wet_road_specular(vec2 p) {
  // Water-filled depressions retain a stronger environment highlight than
  // exposed binder/aggregate. The road remains a non-metallic dielectric.
- return mix(0.28,0.60,road_puddle(p));
+ return mix(0.28,0.52,road_puddle(p));
 }
 
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
- float strength = mix(0.16,0.006,road_puddle(p));
+ float strength = mix(0.16,0.045,road_puddle(p));
  strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
  vec3 ripple = (view*vec4(grain.x*strength,0.0,grain.y*strength,0.0)).xyz;
  return normalize(original+ripple*weight);
@@ -121,7 +122,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	if (road && wet_road) {
 		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
 		float film = road_puddle(p);
-		return base*mix(0.76,0.65,film)*(1.0+grain*mix(0.3,0.06,film));
+		return base*mix(0.76,0.65,film)*(1.0+grain*mix(0.3,0.14,film));
 	}
 	if (road && icy_road) {
 		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);

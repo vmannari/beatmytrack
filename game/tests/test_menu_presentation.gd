@@ -74,6 +74,31 @@ func run() -> void:
 	check(provider.query(catalog,{"race_count":"low"},[])[0].id == "a","Low ends at nine races")
 	check(provider.query(catalog,{"race_count":"medium"},[])[0].id == "b","Medium starts at ten races")
 	check(provider.query(catalog,{"race_count":"high"},[])[0].id == "c","High starts at fifty races")
+	var now: int = 1800000000
+	catalog.entries[0]["created_at"] = now-30*86400
+	catalog.entries[1]["created_at"] = now-30*86400-1
+	catalog.entries[2]["created_at"] = now+1
+	check(provider.query(catalog,{"age_days":30},[],{},[],now).size() == 1,"age includes exact boundary, excludes older, future and unknown dates")
+	check(provider.query(catalog,{"age_days":0},[],{},[],now).size() == 4,"Any time includes unknown dates")
+	check(TrackDiscoveryProvider.creation_time({"created_at":"2026-10-01T12:00:00Z"}) == Time.get_unix_time_from_datetime_string("2026-10-01T12:00:00"),"cloud UTC dates parse without publication fallback")
+	check(provider.query(catalog,{"race_history":"raced"},[],{},["a"],now)[0].id == "a","Raced uses saved personal history")
+	check(provider.query(catalog,{"race_history":"unraced"},[],{},["a"],now).size() == 3,"Not raced excludes saved personal history")
+	check(provider.query(catalog,{"age_days":30,"race_history":"unraced"},[],{},["a"],now).is_empty(),"age and history combine")
+	store.settings["raced_tracks"] = ["cloud_12345678-1234-1234-1234-123456789abc","creator_example"]
+	check(store.save_records() == OK,"personal race history saves atomically")
+	reloaded.load_records()
+	check(reloaded.settings.get("raced_tracks",[]) == store.settings.raced_tracks,"personal race history survives reload")
+	var library := TrackLibrary.new(folder)
+	var document: Dictionary = TrackDocument.create_default()
+	check(library.save_document(document) == OK,"first local save records creation metadata")
+	var date_path: String = folder.path_join(str(document.id)+".created")
+	var created: String = FileAccess.get_file_as_string(date_path)
+	check(int(created) > 0,"local creation date is known after first save")
+	document.name = "Renamed"
+	check(library.save_document(document) == OK and FileAccess.get_file_as_string(date_path) == created,"editing preserves creation date")
+	var dated_catalog := TrackCatalog.new(library)
+	dated_catalog.add_local(str(document.id))
+	check(int(dated_catalog.entries[0].created_at) == int(created),"catalog reads creation metadata without compiling")
 	for filename: String in DirAccess.open(folder).get_files(): DirAccess.remove_absolute(folder.path_join(filename))
 	DirAccess.remove_absolute(folder)
 	print("MENU_PRESENTATION_TESTS: %d checks, %d failures" % [checks,failures])

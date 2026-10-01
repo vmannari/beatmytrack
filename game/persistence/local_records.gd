@@ -60,6 +60,9 @@ func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps
 	value.race_ms = mini(int(value.get("race_ms",race_ms)),race_ms)
 	value.flying_ms = mini(int(value.get("flying_ms",flying_ms)),flying_ms)
 	records[key] = value
+	var raced: Array = settings.get("raced_tracks",[]).duplicate()
+	if track.identity not in raced: raced.append(track.identity)
+	settings["raced_tracks"] = raced
 	return save_records()
 
 
@@ -150,7 +153,7 @@ static func _normalize(data: Variant) -> Dictionary:
 				var rating: Variant = preferences[field][id]
 				if not id is String or id.is_empty() or id.length() > 128: return {}
 				if not _number(rating) or float(rating) != floorf(float(rating)) or int(rating) < 1 or int(rating) > 5: return {}
-		elif field == "favorites":
+		elif field in ["favorites","raced_tracks"]:
 			if not preferences[field] is Array: return {}
 			for id: Variant in preferences[field]:
 				if not id is String or id.length() > 64 or id.is_empty(): return {}

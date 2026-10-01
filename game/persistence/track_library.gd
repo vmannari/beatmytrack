@@ -46,6 +46,7 @@ func save_document(document: Dictionary) -> Error:
 	if not errors.is_empty():
 		last_error = errors[0]
 		return ERR_INVALID_DATA
+	var first_save: bool = load_document(str(document.id)).is_empty()
 	var review_error: Error = invalidate_test_if_changed(document)
 	if review_error != OK: return review_error
 	var error: Error = DirAccess.make_dir_recursive_absolute(directory)
@@ -53,7 +54,11 @@ func save_document(document: Dictionary) -> Error:
 		last_error = "Could not open the local track folder."
 		return error
 	error = _atomic_write(document,directory.path_join(document.id+".json"))
-	if error == OK: revision += 1
+	if error == OK:
+		revision += 1
+		if first_save:
+			var date_file := FileAccess.open(directory.path_join(document.id+".created"),FileAccess.WRITE)
+			if date_file != null: date_file.store_string(str(int(Time.get_unix_time_from_system())))
 	return error
 
 

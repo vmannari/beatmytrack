@@ -3,7 +3,7 @@ extends CanvasLayer
 signal applied(filters: Dictionary)
 signal closed
 
-const DEFAULTS: Dictionary = {"section":"all","theme":"all","race_count":"any","minimum_rating":0.0,"sort":"recommended"}
+const DEFAULTS: Dictionary = {"section":"all","theme":"all","race_count":"any","minimum_rating":0.0,"age_days":0,"race_history":"any","sort":"recommended"}
 var catalog: TrackCatalog
 var discovery: TrackDiscoveryProvider
 var records: LocalRecords
@@ -106,6 +106,10 @@ func _ready() -> void:
 	rating_slider.add_theme_stylebox_override("grabber_area_highlight",slider_fill)
 	rating_slider.value_changed.connect(func(value: float) -> void: _choose("minimum_rating",snappedf(value,0.1)))
 	rating_group.add_child(rating_slider)
+	_group(groups,"CREATED","clock","age_days",4,[[0,"Any time",""],[7,"7 days",""],[30,"30 days",""],[90,"90 days",""]])
+	groups.add_child(MenuStyle.label("Within the last selected days; unknown dates excluded",12,true))
+	_group(groups,"YOUR RACES","flag","race_history",3,[["any","Any",""],["raced","Raced",""],["unraced","Not raced",""]])
+	groups.add_child(MenuStyle.label("Completed races saved on this device",12,true))
 	var sort_group := VBoxContainer.new()
 	sort_group.add_theme_constant_override("separation",6)
 	groups.add_child(sort_group)
@@ -204,6 +208,8 @@ func open_for(state: Dictionary, focus_owner: Control) -> void:
 	motion = create_tween()
 	motion.tween_property(panel,"position:x",target_x,0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	(choices.section[0].button as Button).grab_focus()
+	var scroll: ScrollContainer = panel.find_children("*","ScrollContainer",true,false)[0]
+	scroll.set_deferred("scroll_vertical",0)
 	# Keep keyboard traversal inside the modal drawer.
 	var controls: Array[Control] = []
 	for node: Node in panel.find_children("*","Control",true,false):
@@ -245,14 +251,14 @@ func refresh_choices() -> void:
 	rating_value.text = "Any" if rating_slider.value == 0.0 else "%.1f+" % rating_slider.value
 	rating_slider.tooltip_text = "Minimum rating: "+rating_value.text+" (0.1 steps)"
 	sorting.selected = maxi(0,["recommended","name","score","plays"].find(draft.sort))
-	var found: int = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{})).size()
+	var found: int = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[])).size()
 	apply_button.text = "SHOW %d TRACK%s" % [found,"" if found == 1 else "S"]
 	active_label.text = "%d filter%s active" % [active_count(draft),"" if active_count(draft) == 1 else "s"]
 	active_label.add_theme_color_override("font_color",MenuStyle.ACCENT if active_count(draft) > 0 else MenuStyle.TEXT)
 
 static func active_count(filters: Dictionary) -> int:
 	var count: int = 0
-	for key: String in ["section","theme","race_count","minimum_rating"]:
+	for key: String in ["section","theme","race_count","minimum_rating","age_days","race_history"]:
 		if filters.get(key,DEFAULTS[key]) != DEFAULTS[key]: count += 1
 	return count
 

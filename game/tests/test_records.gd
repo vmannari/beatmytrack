@@ -40,6 +40,7 @@ func _check_records() -> void:
 	check(store.best_for(track,handling) == 0.0,"new partition has no personal best")
 	var laps: Array[float] = [10.0004,21.2346,23.004,30.0,30.0]
 	check(store.record(track,handling,114.239,laps) == OK,"complete race persists")
+	check(store.settings.get("raced_tracks",[]) == [track.identity],"completed race records track history")
 	var key: String = store.key_for(track,handling)
 	check(store.records[key].race_ms is int and store.records[key].race_ms == 114239,"race persisted in rounded integer milliseconds")
 	check(store.records[key].flying_ms is int and store.records[key].flying_ms == 21235,"first standing lap excluded from flying PB")
@@ -148,7 +149,7 @@ func _check_failures() -> void:
 	check(store.record(track,handling,110.0,laps) != OK,"unwritable destination reports failure")
 	check(store.records == before and store.best_for(track,handling) == 114.0,"failed improved PB rolls back memory")
 	store.settings = {"touch_scale":1.2,"left_handed":true}
-	check(store.save_records() != OK and store.settings.is_empty(),"failed settings save restores last committed preferences")
+	check(store.save_records() != OK and store.settings == {"raced_tracks":[track.identity]},"failed settings save restores last committed preferences")
 	var empty := LocalRecords.new(store.path)
 	check(empty.record(track,handling,110.0,laps) != OK and empty.best_for(track,handling) == 0.0,"failed first record never appears as a phantom PB")
 	var reload := LocalRecords.new(committed_path)

@@ -221,7 +221,7 @@ func _clear(parent: Node) -> void:
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
 	gallery.call("_stop_snap")
-	matches = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}))
+	matches = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
 	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any")])
 	if signature != _query_signature: gallery.scroll_horizontal = 0
 	_query_signature = signature

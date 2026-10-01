@@ -16,7 +16,8 @@ static func is_rival(value: Dictionary) -> bool:
 	var current: float = float(value.get("current_top_percent",-1))
 	return previous >= 0 and current >= 0 and ceili(current/10.0) > ceili(previous/10.0)
 
-func query(catalog: TrackCatalog, state: Dictionary, favorites: Array, ratings: Dictionary = {}) -> Array[Dictionary]:
+func query(catalog: TrackCatalog, state: Dictionary, favorites: Array, ratings: Dictionary = {}, raced_tracks: Array = [], now_seconds: int = -1) -> Array[Dictionary]:
+	var now: int = int(Time.get_unix_time_from_system()) if now_seconds < 0 else now_seconds
 	var local_state: Dictionary = state.duplicate(true)
 	local_state.sort = "name"
 	var result: Array[Dictionary] = catalog.query(local_state,favorites)
@@ -28,6 +29,13 @@ func query(catalog: TrackCatalog, state: Dictionary, favorites: Array, ratings: 
 		if int(state.get("search_kind",0)) == 2: search_text = str(entry.creator)
 		if not search.is_empty() and not search_text.to_lower().contains(search): return false
 		if float(state.get("minimum_rating",0.0)) > 0.0 and rating_for(entry,ratings)+0.000001 < float(state.minimum_rating): return false
+		var age_days: int = int(state.get("age_days",0))
+		if age_days > 0:
+			var created: int = creation_time(entry)
+			if created <= 0 or created > now or created < now-age_days*86400: return false
+		var history: String = str(state.get("race_history","any"))
+		if history == "raced" and str(entry.id) not in raced_tracks: return false
+		if history == "unraced" and str(entry.id) in raced_tracks: return false
 		var count_filter: String = str(state.get("race_count","any"))
 		if count_filter != "any":
 			var races: int = int(track_stats.get(entry.id,{}).get("plays",-1))
@@ -59,3 +67,10 @@ func rating_for(entry: Dictionary, local_ratings: Dictionary) -> float:
 	if entry.get("source") == "cloud":
 		return float(entry.rating_average) if entry.get("rating_average") != null else -1.0
 	return float(local_ratings.get(str(entry.id),track_stats.get(entry.id,{}).get("score",-1.0)))
+
+static func creation_time(entry: Dictionary) -> int:
+	var value: Variant = entry.get("created_at",0)
+	if value is int or value is float: return int(value)
+	if value is String and value.length() >= 19:
+		return int(Time.get_unix_time_from_datetime_string(value.left(19)))
+	return 0

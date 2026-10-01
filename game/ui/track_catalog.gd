@@ -71,6 +71,8 @@ func add_local(id: String) -> void:
 		if not data is Dictionary or data.get("id") != id: continue
 		var entry: Dictionary = local_metadata(data)
 		if entry.is_empty(): continue
+		var date_path: String = library.directory.path_join(id+".created")
+		if FileAccess.file_exists(date_path): entry["created_at"] = int(FileAccess.get_file_as_string(date_path))
 		entries.append(entry)
 		return
 
@@ -101,7 +103,7 @@ static func local_metadata(data: Dictionary) -> Dictionary:
 		if not point is Array or point.size() != 2: return {}
 		for value: Variant in point:
 			if not TrackDocument._number(value) or absf(float(value)) > TrackDocument.MAX_COORD: return {}
-	return {"id":"creator_"+str(data.id),"local_id":str(data.id),"name":str(data.name),
+	return {"id":"creator_"+str(data.id),"local_id":str(data.id),"created_at":data.get("created_at",0),"name":str(data.name),
 		"creator":str(data.get("creator","Unknown creator")),"theme":TrackTheme.normalized(str(data.theme)),"source":"saved","points":points,"pieces":data.get("pieces",[])}
 
 func query(state: Dictionary, favorites: Array) -> Array[Dictionary]:

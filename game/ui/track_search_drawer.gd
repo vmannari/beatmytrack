@@ -183,7 +183,7 @@ func clear_search() -> void:
 	edit.grab_focus()
 
 func refresh_results() -> void:
-	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}))
+	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
 	for index: int in range(scopes.size()):
 		var active: bool = index == int(draft.get("search_kind",0))
 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10232f"),10)

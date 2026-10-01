@@ -226,3 +226,7 @@ Requirements R01/V03/V04/Q01. Preserved outer hero/records sizes, fixed personal
 Empty personal records say ?No time yet? with an invitation to set a first record. Empty comparison says ?Not ranked yet? with a plain-language next step appropriate to a local/shared track; the empty technical histogram is hidden. Friends/high scores use ?No friend times? / ?No times yet? and a short invitation. Real times/ranks are retained, without redundant unranked or missing-lap placeholders.
 
 Changed files: `game/ui/track_browser.gd`, docs/status notes and evidence. Actual pinned `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: **1450 checks, zero failures**, three landscape sizes including unchanged section bounds and cloud action fit. Scoped `git diff --cached --check`: passed. Inspected [empty states](evidence/hero-spacing-2026-10-01/tracks-populated-fixture-1280x720.png) and [compact populated controls](evidence/hero-spacing-2026-10-01/tracks-cloud-controls-fixture-960x540.png). Android SDK `adb devices` listed one connected phone at verification; no physical-device test or Android export was performed. Owner visual/device acceptance remains outstanding.
+
+## Android search keyboard (2026-10-01)
+
+Search keeps its input, live result preview and apply action above the on-screen keyboard. See [implementation and actual desktop/device verification](SEARCH_KEYBOARD.md).

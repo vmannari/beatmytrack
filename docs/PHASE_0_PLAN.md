@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-10-01 R01/V03/V04/G03/Q01: Search now adapts above the Android keyboard with compact controls, scrollable results and a Done action. CheckScript and CaptureMenus (1630 checks) passed; DeployAndroid -QuickValidation installed and launched successfully. Physical phone typing/results verified; dismissal acceptance interrupted by another device session. See docs/SEARCH_KEYBOARD.md.
+
 2026-10-01 R01/Q01: deployed current workspace debug APK to connected phone using DeployAndroid -QuickValidation. Import/startup, driving 62, catalog 18 and menus 44 checks passed; install Success, launch Status ok and device APP_READY confirmed. Restored USB reverse port 18181 to healthy local backend. Startup smoke now waits for async readiness; catalog smoke tests continuous scrolling. Full regression/device gameplay acceptance not claimed. See docs/PHONE_DEPLOY_2026_10_01.md.
 
 2026-10-01 R01/V03/V04/Q01: hero and records content now has more internal padding while preserving section proportions. Empty states use friendly headings and next steps. CaptureMenus 1450 checks pass; screenshots inspected. Phone attached at verification; no device test/export performed. See docs/RACE_DISCOVERY.md.

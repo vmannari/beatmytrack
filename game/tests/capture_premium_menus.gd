@@ -332,6 +332,20 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	for result: Control in browser.search_dialog.results.get_children():
 		check(result.get_global_rect().grow(1).encloses((result.get_child(0) as Control).get_global_rect()),"search row content stays inside its touch target")
 	await _capture("search-default",physical_size,true)
+	browser.search_dialog.set_process(false)
+	for keyboard: float in [400.0,480.0]:
+		browser.search_dialog._update_keyboard_layout(keyboard)
+		await _settle()
+		var visible_bottom: float = browser.search_dialog.overlay.size.y-keyboard
+		check(browser.search_dialog.panel.get_global_rect().end.y <= visible_bottom+1,"search drawer fits above keyboard")
+		check(search.get_global_rect().end.y <= visible_bottom and browser.search_dialog.apply_button.get_global_rect().end.y <= visible_bottom,"search input and apply stay above keyboard")
+		check(browser.search_dialog.scroll.size.y >= 65,"typing retains a usable result preview")
+		check(browser.search_dialog.keyboard_done.visible,"typing exposes Done to dismiss keyboard")
+		if keyboard == 400.0: await _capture("search-keyboard",physical_size,true)
+	browser.search_dialog._update_keyboard_layout(0.0)
+	browser.search_dialog.set_process(true)
+	await _settle()
+
 	search.text = "Redrock"
 	search.text_changed.emit(search.text)
 	await _settle()
@@ -472,6 +486,8 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.gallery.scroll_horizontal = 0
 	browser._refresh()
 	await _settle()
+	if browser._section_motion != null and browser._section_motion.is_running(): await browser._section_motion.finished
+	await _settle()
 	var stable: Dictionary = _race_rectangles(browser)
 	for control: Node in browser.find_children("*","Button",true,false):
 		check((control as Button).text not in ["<",">"],"carousel has no visible arrow buttons")
@@ -480,7 +496,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.selected_track.metadata.creator = "A long creator name that must not move the route or records"
 	browser._show_detail()
 	await _settle()
-	check(_race_rectangles(browser) == stable,"long track titles and creator names preserve every section rectangle")
+	check(_same_rectangles(_race_rectangles(browser),stable),"long track titles and creator names preserve every section rectangle")
 	browser.selected_track.metadata = original_metadata
 	browser._show_detail()
 	await _settle()
@@ -497,13 +513,13 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 		"friends":[{"player":"Fixture Alex","race_ms":68421,"lap_ms":13410},{"player":"Fixture Jen","race_ms":70053,"lap_ms":13702},{"player":"Fixture third player with a long display name","race_ms":71000,"lap_ms":13900}]}
 	browser.call("_show_detail")
 	await _settle()
-	check(_race_rectangles(browser) == stable,"comparison data preserves section rectangles")
+	check(_same_rectangles(_race_rectangles(browser),stable),"comparison data preserves section rectangles")
 	await _capture("tracks-data-fixture",physical_size,true)
 	# Verified-track controls must fit the same layout without invented scores.
 	browser.selected_track.metadata.cloud_version = "layout-fixture"
 	browser._show_detail()
 	await _settle()
-	check(_race_rectangles(browser) == stable,"cloud controls preserve section rectangles")
+	check(_same_rectangles(_race_rectangles(browser),stable),"cloud controls preserve section rectangles")
 	await _capture("tracks-cloud-controls-fixture",physical_size,true)
 	browser.selected_track.metadata.erase("cloud_version")
 	browser.discovery.records_by_rules_key.clear()
@@ -514,6 +530,13 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	var home: Button = (app.get("root_ui") as Node).find_child("Tab_tracks",true,false)
 	await _tap(home.get_global_rect().get_center())
 	check(app.get("screen") == "tracks","shared Race tab reaches the library through viewport touch")
+
+func _same_rectangles(a: Dictionary, b: Dictionary) -> bool:
+	for key: String in a:
+		if not (a[key] as Rect2).is_equal_approx(b[key]):
+			print("RECT_DIFF ",key," ",a[key]," expected ",b[key])
+			return false
+	return true
 
 func _race_rectangles(browser: TrackBrowser) -> Dictionary:
 	var result: Dictionary = {}

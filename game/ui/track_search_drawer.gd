@@ -21,6 +21,14 @@ var scopes: Array[Button] = []
 var return_focus: Control
 var motion: Tween
 var shown: int = 4
+var keyboard_height: float = 0.0
+var layout: VBoxContainer
+var header: HBoxContainer
+var subtitle: Label
+var scope_label: Label
+var choices: HBoxContainer
+var clear_button: Button
+var keyboard_done: Button
 
 func _ready() -> void:
 	layer = 40
@@ -41,10 +49,10 @@ func _ready() -> void:
 	style.border_width_left = 1
 	panel.add_theme_stylebox_override("panel",style)
 	overlay.add_child(panel)
-	var layout := VBoxContainer.new()
+	layout = VBoxContainer.new()
 	layout.add_theme_constant_override("separation",6)
 	panel.add_child(layout)
-	var header := HBoxContainer.new()
+	header = HBoxContainer.new()
 	header.add_theme_constant_override("separation",14)
 	layout.add_child(header)
 	header.add_child(_icon("search",28))
@@ -58,9 +66,11 @@ func _ready() -> void:
 	exit_button.custom_minimum_size = Vector2(48,48)
 	exit_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
 	header.add_child(exit_button)
-	layout.add_child(MenuStyle.label("Find tracks by name or creator",18,true))
-	layout.add_child(MenuStyle.label("Search in",18,true))
-	var choices := HBoxContainer.new()
+	subtitle = MenuStyle.label("Find tracks by name or creator",18,true)
+	layout.add_child(subtitle)
+	scope_label = MenuStyle.label("Search in",18,true)
+	layout.add_child(scope_label)
+	choices = HBoxContainer.new()
 	choices.add_theme_constant_override("separation",8)
 	layout.add_child(choices)
 	for index: int in range(3):
@@ -95,8 +105,16 @@ func _ready() -> void:
 		shown = 4
 		scroll.scroll_vertical = 0
 		refresh_results())
-	edit.text_submitted.connect(func(_value: String) -> void: _apply())
+	edit.text_submitted.connect(func(_value: String) -> void:
+		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): _dismiss_keyboard()
+		else: _apply())
 	input_row.add_child(edit)
+	keyboard_done = MenuStyle.button("Done",_dismiss_keyboard)
+	keyboard_done.custom_minimum_size = Vector2(64,40)
+	keyboard_done.add_theme_font_size_override("font_size",18)
+	keyboard_done.name = "SearchKeyboardDone"
+	input_row.add_child(keyboard_done)
+	keyboard_done.hide()
 	count_label = MenuStyle.label("",18)
 	layout.add_child(count_label)
 	scroll = ScrollContainer.new()
@@ -120,6 +138,7 @@ func _ready() -> void:
 	layout.add_child(footer)
 	var clear := MenuStyle.button("Clear",clear_search)
 	clear.name = "ClearSearch"
+	clear_button = clear
 	clear.icon = MenuIcon.texture("close")
 	clear.custom_minimum_size = Vector2(120,56)
 	footer.add_child(clear)
@@ -146,11 +165,46 @@ func _icon(kind: String, width: float) -> TextureRect:
 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return icon
 
+func _process(_delta: float) -> void:
+	if not visible: return
+	var height: float = 0.0
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		height = DisplayServer.virtual_keyboard_get_height()*overlay.size.y/maxf(1.0,DisplayServer.window_get_size().y)
+	if not is_equal_approx(height,keyboard_height): _update_keyboard_layout(height)
+
+func _update_keyboard_layout(height: float) -> void:
+	keyboard_height = maxf(0.0,height)
+	if motion != null: motion.kill()
+	_layout()
+	_trap_focus()
+
 func _layout() -> void:
-	panel.position = Vector2(maxf(0,overlay.size.x-500),0)
-	panel.size = Vector2(minf(500,overlay.size.x),overlay.size.y)
+	var typing: bool = keyboard_height > 0.0
+	var available_height: float = maxf(1.0,overlay.size.y-keyboard_height)
+	header.visible = not typing
+	subtitle.visible = not typing
+	scope_label.visible = not typing
+	choices.visible = not typing or available_height >= 260
+	keyboard_done.visible = typing
+	more_button.visible = not typing and matches.size() > shown
+	layout.add_theme_constant_override("separation",4 if typing else 6)
+	var style := panel.get_theme_stylebox("panel").duplicate() as StyleBoxFlat
+	style.set_content_margin_all(8 if typing else 20)
+	panel.add_theme_stylebox_override("panel",style)
+	for button: Button in scopes: button.custom_minimum_size.y = 44 if typing else 48
+	clear_button.custom_minimum_size.y = 48 if typing else 56
+	apply_button.custom_minimum_size.y = 48 if typing else 56
+	var width: float = minf(720 if typing else 500,overlay.size.x)
+	panel.position = Vector2(maxf(0,overlay.size.x-width),0)
+	panel.size = Vector2(width,available_height)
+
+func _dismiss_keyboard() -> void:
+	edit.release_focus()
+	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		DisplayServer.virtual_keyboard_hide()
 
 func open_for(state: Dictionary, focus_owner: Control) -> void:
+	keyboard_height = 0.0
 	draft = state.duplicate(true)
 	return_focus = focus_owner
 	edit.text = str(draft.get("search",""))
@@ -202,7 +256,7 @@ func refresh_results() -> void:
 		var empty := MenuStyle.label("No matching tracks.\nTry another name or creator, or change your filters.",18,true)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		results.add_child(empty)
-	more_button.visible = matches.size() > shown
+	more_button.visible = keyboard_height <= 0.0 and matches.size() > shown
 	more_button.text = "+ %d more tracks" % maxi(0,matches.size()-shown)
 	_trap_focus()
 

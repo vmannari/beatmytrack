@@ -11,8 +11,10 @@ float cloud_noise(vec2 p) {
 // The engine filters this static environment once, not every weather frame.
 void sky() {
  float elevation = smoothstep(-0.15,0.8,EYEDIR.y);
- float opening = pow(max(dot(EYEDIR,normalize(vec3(-0.25,0.80,-0.55))),0.0),64.0);
- float fringe = pow(max(dot(EYEDIR,normalize(vec3(0.03,0.90,-0.44))),0.0),110.0);
+ // Broad angular openings keep reflections readable across the road ahead,
+ // rather than concentrating the sky highlight beside the following camera.
+ float opening = pow(max(dot(EYEDIR,normalize(vec3(-0.25,0.80,-0.55))),0.0),18.0);
+ float fringe = pow(max(dot(EYEDIR,normalize(vec3(0.03,0.90,-0.44))),0.0),36.0);
  COLOR = mix(vec3(0.06,0.07,0.08),vec3(0.14,0.16,0.18),elevation);
  vec2 cloud_uv = EYEDIR.xz/max(EYEDIR.y,0.15);
  float cloud = cloud_noise(cloud_uv*9.0+vec2(3.7,9.2))*0.7+cloud_noise(cloud_uv*21.0)*0.3;

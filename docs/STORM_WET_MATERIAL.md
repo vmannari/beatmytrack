@@ -66,3 +66,12 @@ Actual commands through `powershell -NoProfile -ExecutionPolicy Bypass -File scr
 - Rendered [normal rain preview](evidence/storm-puddle-texture-2026-10-01/rain.png) inspected: pools retain highlights with fine texture and reduced brightness. Screenshot includes unrelated current HUD work.
 
 Changed files: the two material/cache sources, this document, status/phase notes and the preview. Owner visual acceptance remains pending. No Android export or phone test; attached-device state not checked. Mobile performance remains unverified.
+
+
+## Kit 99: wider reflection visibility and brighter lightning (2026-10-01)
+
+Requirements V02/V04/V05/Q01. Owner requests reflections farther from the car and brighter lightning. There is no car-distance reflection mask: narrow sky openings made their angular highlights cluster around the camera. storm_sky.gdshader broadens the two opening lobes (powers 64/110 to 18/36), retaining cloud breakup and peak radiance. This makes off-axis puddles reflect more of the bright sky; it is not a world-space radius. Kit 98 puddle grain, roughness and specular remain. native_track_visual.gd advances cache revision to 99. storm_weather.gd raises directional lightning gain from 6 to 8.5 (42% increase in added light; maximum 2.72 above baseline). Strike timing, shallow random swells and screen overlay are unchanged.
+
+Actual commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`: `CaptureStorm -Track track_acf29166cceaaa42` passed 95 checks, reflection-on/off delta 598.561; `TestSurfaceProfile` passed 928 checks. Both exited cleanly without engine/shader errors. Rain and peak-lightning captures inspected: reflections extend to the left bend, right road and upper road; lightning increases scene illumination. The summed delta verifies contribution, not distance coverage or owner acceptance.
+
+Evidence: [rain](evidence/storm-wide-reflection-2026-10-01/rain.png), [lightning](evidence/storm-wide-reflection-2026-10-01/lightning.png), [later view](evidence/storm-wide-reflection-2026-10-01/later-view.png). No extra texture samples, rendering passes, dynamic sky updates or lights. Performance benchmark not rerun; prior desktop result does not establish phone performance. No phone test/export; device attachment not checked. Owner visual acceptance remains pending. Changed files: storm_sky.gdshader, storm_weather.gd, native_track_visual.gd, this document, STORM_LIGHTNING.md, status/phase notes and new evidence.

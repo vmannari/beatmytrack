@@ -82,7 +82,7 @@ func advance(delta: float, paused: bool) -> void:
 		strikes += 1
 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
 		until_thunder = rng.randf_range(1.2,2.8)
-	if light != null: light.light_energy = base_light_energy+flash_strength()*6.0
+	if light != null: light.light_energy = base_light_energy+flash_strength()*8.5
 	_update_lens()
 	queue_redraw()
 

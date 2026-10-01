@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 V02/V04/V05/Q01: kit 99 broadens sky reflection angular coverage and increases lightning world-light gain by 42%, retaining slow random swells and textured puddles. CaptureStorm 95 and TestSurfaceProfile 928 checks pass; desktop rain/flash captures inspected. No extra samples/passes; phone testing and visual acceptance pending. See docs/STORM_WET_MATERIAL.md.
+
 ## 2026-10-01 ? Storm puddle refinement (kit 98)
 
 V02/V04/V05/Q01: retained fine pooled surface relief and grain, raised pooled roughness and modestly reduced specular. No added texture samples/passes. After refreshing stale class registration with Import, CaptureStorm passed 95 checks and TestSurfaceProfile passed 928. Desktop preview and commands: docs/STORM_WET_MATERIAL.md. Phone test/export not performed; owner visual acceptance pending.

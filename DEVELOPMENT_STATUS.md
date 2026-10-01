@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 V02/V04/V05/Q01: Storm kit 102 bakes lens data, skips wet relief on non-road pixels and reduces mobile trail segments. Physical DN2103 median/p95 frame time improves 23.526/35.265ms to 16.457/24.493ms; sustained displayed median/p95 16.839/17.013ms, 2% missed refreshes. Storm 96/surface 928 and quick export checks pass. Optimized APK installed, probe markers removed, normal app/backend reverse restored. Visual/long thermal acceptance remains; docs/STORM_MOBILE_OPTIMIZATION.md.
+
 2026-10-01 R01/V03/V04/G03/Q01: Carousel scroll retains overlapping cards and cached routes instead of rebuilding twelve cards per boundary. Desktop median boundary work 2.760 -> 0.404 ms; catalog 21 checks pass. Graphical 1627/1630 pass, with three existing wide-screen standings-position failures; carousel gesture/snap checks pass. Phone attached but no device test or deployment for this change. See docs/CAROUSEL_SCROLL.md.
 
 2026-10-01 R01/V03/V04/G03/Q01: Search now adapts above the Android keyboard with compact controls, scrollable results and a Done action. CheckScript and CaptureMenus (1630 checks) passed; DeployAndroid -QuickValidation installed and launched successfully. Physical phone typing/results verified; dismissal acceptance interrupted by another device session. See docs/SEARCH_KEYBOARD.md.

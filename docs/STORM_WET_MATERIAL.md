@@ -111,3 +111,8 @@ Actual checks via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/d
 - `nvidia-smi --query-gpu=name,utilization.gpu,power.draw,temperature.gpu,fan.speed --format=csv` and process inspection established concurrent GPU load. No game instances owned by the user were stopped. No physical-phone test or Android export; device attachment not checked.
 
 Evidence: [small scattered impacts](evidence/storm-dense-ripples-2026-10-01/rain.png), [later phase](evidence/storm-dense-ripples-2026-10-01/ripples-later.png), [before capped timings](evidence/storm-dense-ripples-2026-10-01/before-60.json), [optimized capped timings](evidence/storm-dense-ripples-2026-10-01/optimized-60.json), [uncapped timings](evidence/storm-dense-ripples-2026-10-01/uncapped.json). A single-instance phone/desktop thermal check and in-motion visual approval remain outstanding. Changed files: surface_detail.gdshaderinc, native_track_visual.gd, test_storm.gd, profile_storm_reflections.gd, this document, status/phase notes and evidence. No physics, camera or lighting changes.
+
+
+## Kit 102: physical-phone optimization
+
+2026-10-01: offline-baked lens data replaces full-screen procedural droplet/rivulet math, wet-road relief skips non-road terrain and mobile lens trails use fewer segments. Physical DN2103 matched-duration median/p95 improve from 23.526/35.265ms to 16.457/24.493ms. Sustained actual-present median/p95 are 16.839/17.013ms with 2% missed refreshes. The optimized APK is installed; details, commands, tradeoffs and evidence are in [STORM_MOBILE_OPTIMIZATION.md](STORM_MOBILE_OPTIMIZATION.md).

@@ -35,6 +35,7 @@ func _ready() -> void:
 	wet_glass.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	wet_glass_material = ShaderMaterial.new()
 	wet_glass_material.shader = preload("res://track/storm_wet_glass.gdshader")
+	wet_glass_material.set_shader_parameter("glass_data",preload("res://assets/textures/storm_glass_data.png"))
 	wet_glass.material = wet_glass_material
 	add_child(wet_glass)
 	wet_glass.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -175,7 +176,6 @@ func lens_sample(index: int, time: float) -> Vector4:
 func _update_lens() -> void:
 	if lens_drops.size() != DROP_COUNT: return
 	_update_trail_history()
-	wet_glass_material.set_shader_parameter("weather_time",elapsed)
 	wet_glass_material.set_shader_parameter("lightning",flash_strength())
 	for i: int in range(DROP_COUNT):
 		var sample: Vector4 = lens_sample(i,elapsed)
@@ -199,9 +199,11 @@ func _update_trail_history() -> void:
 	trail_tick = current_tick
 
 func _draw_lens_trails() -> void:
+	# Keep the same history/duration, joining fewer subpixel segments on phones.
+	var stride: int = 3 if OS.has_feature("mobile") else 1
 	for i: int in range(DROP_COUNT):
 		var newer: Vector4 = lens_sample(i,elapsed)
-		for step: int in range(71):
+		for step: int in range(0,71,stride):
 			var tick: int = trail_tick-step
 			if tick < 0: break
 			var age: float = elapsed-float(tick)*TRAIL_STEP

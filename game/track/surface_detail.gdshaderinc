@@ -129,6 +129,8 @@ vec2 rain_impact_slope(vec2 p) {
 }
 
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
+ // Terrain uses this helper too: grass/sand pixels have no wet road weight.
+ if (weight <= 0.001) return original;
  vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
  float pool = road_puddle(p);
  float strength = mix(0.16,0.045,pool);

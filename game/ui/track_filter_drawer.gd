@@ -236,6 +236,10 @@ func refresh_choices() -> void:
 			button.add_theme_color_override("icon_normal_color",MenuStyle.INK if selected else MenuStyle.TEXT)
 			button.add_theme_color_override("font_focus_color",MenuStyle.INK if selected else MenuStyle.TEXT)
 			button.add_theme_color_override("icon_focus_color",MenuStyle.INK if selected else MenuStyle.TEXT)
+			if key == "theme" and choice.value != "all" and not selected:
+				var biome_color: Color = preload("res://ui/biome_badge.gd").color(str(choice.value))
+				for color_key: String in ["font_color","font_focus_color","icon_normal_color","icon_focus_color"]:
+					button.add_theme_color_override(color_key,biome_color)
 			button.tooltip_text = "Race counts aren't available yet" if button.disabled else ("Low: 0–9 · Medium: 10–49 · High: 50+ completed races" if key == "race_count" else str(button.text))
 	rating_slider.set_value_no_signal(float(draft.get("minimum_rating",0.0)))
 	rating_value.text = "Any" if rating_slider.value == 0.0 else "%.1f+" % rating_slider.value

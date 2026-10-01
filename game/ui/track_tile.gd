@@ -103,10 +103,13 @@ func _draw() -> void:
 	var creator: String = str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": creator += " (fictional)"
 	draw_string(MenuStyle.BODY,Vector2(13,size.y-12),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
-	var biome: String = TrackTheme.title(str(entry.get("theme","pine"))).to_upper()
+	var theme_id: String = str(entry.get("theme","pine"))
+	var biome: String = TrackTheme.title(theme_id).to_upper()
+	var biome_color: Color = preload("res://ui/biome_badge.gd").color(theme_id)
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
-	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+16,23))
-	draw_string(MenuStyle.BODY,Vector2(18,26),biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("dce5dc"))
+	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+34,23))
+	draw_texture_rect(MenuIcon.texture(preload("res://ui/biome_badge.gd").icon(theme_id)),Rect2(16,14,15,15),false,biome_color)
+	draw_string(MenuStyle.BODY,Vector2(36,26),biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11,biome_color)
 	if draft_mode:
 		var status: String = "TESTED" if entry.get("tested",false) else "DRAFT"
 		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) else Color("0069a0"),0),Rect2(size.x-77,10,67,23))

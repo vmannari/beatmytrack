@@ -710,7 +710,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.add_child(spacer)
-	info.add_child(MenuStyle.label(TrackTheme.title(theme_id).to_upper(),18))
+	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,16))
 	var heading := MenuStyle.label(title,44)
 	heading.name = "HeroTrackTitle"
 	heading.clip_text = true

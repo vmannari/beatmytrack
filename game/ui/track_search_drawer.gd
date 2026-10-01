@@ -254,14 +254,8 @@ func _result(entry: Dictionary) -> void:
 	creator.clip_text = true
 	creator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info.add_child(creator)
-	var biome := HBoxContainer.new()
-	biome.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	info.add_child(biome)
 	var theme_id: String = str(entry.get("theme","pine"))
-	biome.add_child(_icon({"pine":"leaf","desert":"cactus","winter":"snowflake","night_city":"night","storm":"storm"}.get(theme_id,"leaf"),16))
-	var tag := MenuStyle.label(TrackTheme.title(theme_id),14,true)
-	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	biome.add_child(tag)
+	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,12))
 	var outline := Control.new()
 	outline.custom_minimum_size = Vector2(62,64)
 	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE

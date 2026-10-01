@@ -38,7 +38,9 @@ var cloud_status: Label
 var gallery: ScrollContainer
 var gallery_content: Control
 const HERO_FADE_SECONDS: float = 0.42
-const HERO_SLIDE_DISTANCE: float = 180.0
+var _slide_distance: float = 0.0
+var _outgoing_panels: Array[Control] = []
+var _outgoing_serial: int = -1
 var _hero_direction: float = 1.0
 var _section_motion: Tween
 var _section_offset: float = 0.0
@@ -310,6 +312,7 @@ func _select(entry: Dictionary) -> void:
 		race_button.text = "LOADING "+str(entry.name).to_upper()
 		# Keep the complete previous section visible until the next one is ready.
 		if _section_motion != null: _section_motion.kill()
+		_clear_outgoing_section()
 		_set_section_offset(0.0)
 		hero.modulate.a = 1.0
 		records_panel.modulate.a = 1.0
@@ -504,6 +507,7 @@ func _heading(parent: Control, caption: String, icon: String) -> void:
 
 func _show_detail() -> void:
 	if selecting or not preview_entry.is_empty(): return
+	_prepare_outgoing_section()
 	_clear(detail)
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -656,6 +660,7 @@ func _build_mode_rail(parent: Control) -> void:
 		rail.add_child(button)
 
 func _show_hero(title: String, theme_id: String) -> void:
+	_prepare_outgoing_section()
 	if not preview_entry.is_empty():
 		title = str(preview_entry.name).to_upper()
 		theme_id = str(preview_entry.get("theme","pine"))
@@ -714,16 +719,21 @@ func _show_hero(title: String, theme_id: String) -> void:
 	var creator := MenuStyle.label("by "+hero_creator,18)
 	creator.clip_text = true
 	info.add_child(creator)
-	var actions := HBoxContainer.new()
-	info.add_child(actions)
+	var is_favorite: bool = preview_entry.get("id",selected_track.identity) in records.settings.get("favorites",[])
 	var favorite := MenuStyle.button("",_favorite)
-	favorite.icon = MenuIcon.texture("star_filled" if preview_entry.get("id",selected_track.identity) in records.settings.get("favorites",[]) else "heart")
-	favorite.tooltip_text = "Toggle favorite"
-	actions.add_child(favorite)
+	favorite.name = "HeroFavorite"
+	favorite.icon = MenuIcon.texture("star_filled" if is_favorite else "star")
+	favorite.tooltip_text = "Remove favorite" if is_favorite else "Save favorite"
+	favorite.custom_minimum_size = Vector2(48,48)
+	favorite.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
+	favorite.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if is_favorite else MenuStyle.TEXT)
 	var route_column := VBoxContainer.new()
 	route_column.add_theme_constant_override("separation",4)
 	route_column.custom_minimum_size.x = 220
 	row.add_child(route_column)
+	var favorite_column := VBoxContainer.new()
+	row.add_child(favorite_column)
+	favorite_column.add_child(favorite)
 	var outline := Control.new()
 	outline.name = "HeroRouteOutline"
 	outline.custom_minimum_size = Vector2(220,110)
@@ -750,18 +760,61 @@ func _show_hero(title: String, theme_id: String) -> void:
 
 func _slide_section() -> void:
 	if _section_motion != null: _section_motion.kill()
-	_set_section_offset(_hero_direction*HERO_SLIDE_DISTANCE)
+	_slide_distance = hero.get_parent_control().size.x
+	_set_section_offset(_hero_direction*_slide_distance)
 	_section_motion = create_tween().set_parallel(true)
 	_section_motion.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_section_motion.tween_method(_set_section_offset,_section_offset,0.0,HERO_FADE_SECONDS)
-	for panel: Control in [hero,records_panel]:
-		panel.modulate.a = 0.65
-		_section_motion.tween_property(panel,"modulate:a",1.0,HERO_FADE_SECONDS)
+	_section_motion.chain().tween_callback(_clear_outgoing_section)
+
+func _prepare_outgoing_section() -> void:
+	if _hero_serial < 0 or _hero_serial == _selection_serial or _outgoing_serial == _selection_serial: return
+	if _section_motion != null: _section_motion.kill()
+	_clear_outgoing_section()
+	_outgoing_serial = _selection_serial
+	# Retain the actual controls, including custom route drawing and old records.
+	for panel: PanelContainer in [hero, records_panel]:
+		panel.position.x = 0.0
+		_disable_outgoing_input(panel)
+		_outgoing_panels.append(panel)
+		var replacement := PanelContainer.new()
+		var panel_name: String = panel.name
+		panel.name = "Outgoing" + panel_name
+		replacement.name = panel_name
+		replacement.clip_contents = panel.clip_contents
+		replacement.add_theme_stylebox_override("panel", panel.get_theme_stylebox("panel"))
+		panel.get_parent().add_child(replacement)
+		panel.get_parent().move_child(replacement, 0)
+		MenuStyle.fill(replacement)
+		if panel == hero:
+			hero = replacement
+			_hero_scenery = null
+		else:
+			records_panel = replacement
+			detail = VBoxContainer.new()
+			replacement.add_child(detail)
+			pending_records = MenuStyle.label("",18,true)
+			replacement.add_child(pending_records)
+			pending_records.hide()
+
+func _disable_outgoing_input(node: Node) -> void:
+	if node is Control:
+		(node as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
+		(node as Control).focus_mode = Control.FOCUS_NONE
+	for child: Node in node.get_children(): _disable_outgoing_input(child)
+
+func _clear_outgoing_section() -> void:
+	for panel: Control in _outgoing_panels:
+		panel.get_parent().remove_child(panel)
+		panel.queue_free()
+	_outgoing_panels.clear()
 
 func _set_section_offset(value: float) -> void:
 	_section_offset = value
 	hero.position.x = value
 	records_panel.position.x = value
+	for panel: Control in _outgoing_panels:
+		panel.position.x = value - _hero_direction*_slide_distance
 
 
 func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:

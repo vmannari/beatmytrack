@@ -203,3 +203,10 @@ Changed files: `game/ui/track_browser.gd`, `game/tests/test_menu_loading.gd`, `p
 - Scoped `git diff --cached --check`: passed. Android SDK `adb devices`: empty list; no phone attached, device test or export.
 
 Inspected [longer mid-slide](evidence/ready-section-slide-2026-10-01/section-slide-mid-1280x720.png). Raw logs and other phases are alongside it. Owner motion preference, physical-phone smoothness and live-network timing remain acceptance checks; slow online responses retain the previous section until completion or the client's timeout.
+
+
+## Consistent hero favorite star - 2026-10-01
+
+Requirements R01/V03/V04/Q01. Replaced the hero heart with the existing card star glyphs and moved its 48x48 logical-pixel button to the top-right corner, with a dedicated column to avoid covering the route outline. Matches card normal-background color/alpha (`0b202b99`), padding, white empty star and yellow filled star. Shared menu hover/focus styling and existing favorite persistence are retained. The button remains part of the sliding hero.
+
+Changed files: `game/ui/track_browser.gd`, docs/status notes and evidence. Actual pinned `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: **1450 checks, zero failures**, three landscape sizes (current workspace also includes separate profile-menu changes). Scoped `git diff --cached --check`: passed. Inspected [desktop hero star](evidence/hero-favorite-2026-10-01/tracks-populated-fixture-1280x720.png). Android SDK `adb devices`: empty list; no phone attached, device test or export. Owner visual/device acceptance remains outstanding.

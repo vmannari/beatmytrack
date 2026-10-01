@@ -195,6 +195,19 @@ func _run() -> void:
 	check(race.sim.state.snapshot() == state_before,"weather never changes canonical car state")
 	if "--capture" in OS.get_cmdline_user_args():
 		await _capture("rain")
+		# Freeze every other effect and advance only the ripple clock.
+		var ripple_first: Image = root.get_texture().get_image()
+		RenderingServer.global_shader_parameter_set("storm_ripple_time",weather.elapsed+0.27)
+		await _capture("ripples-later")
+		var ripple_later: Image = root.get_texture().get_image()
+		var ripple_delta: float = 0.0
+		for y: int in range(240,440,2):
+			for x: int in range(300,980,2):
+				ripple_delta += absf(ripple_first.get_pixel(x,y).r-ripple_later.get_pixel(x,y).r)
+		print("STORM_RIPPLE_DELTA: ",ripple_delta)
+		check(ripple_delta > 0.1,"ripple animation changes the reflected road with other weather frozen")
+		RenderingServer.global_shader_parameter_set("storm_ripple_time",weather.elapsed)
+		await _capture("rain")
 		var reflected: Image = root.get_texture().get_image()
 		race.biome_environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 		await _capture("reflection-disabled")

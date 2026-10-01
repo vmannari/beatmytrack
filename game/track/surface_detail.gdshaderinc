@@ -11,6 +11,8 @@ vec3 snow_detail(vec2 p) {
 uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool icy_road = false;
 uniform bool wet_road = false;
+global uniform float storm_ripple_time;
+global uniform bool storm_ripples_enabled;
 uniform bool packed_sand = false;
 uniform bool desert_dunes = false;
 uniform sampler2D desert_apron : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -103,11 +105,29 @@ float wet_road_specular(vec2 p) {
  return mix(0.28,0.52,road_puddle(p));
 }
 
+// One contained impact per world-space cell; no neighbour search or particles.
+vec2 rain_impact_slope(vec2 p) {
+ vec2 cell = floor(p/2.0);
+ vec2 seed = fract(sin(vec2(dot(cell,vec2(127.1,311.7)),dot(cell,vec2(269.5,183.3))))*43758.5453);
+ vec2 offset = fract(p/2.0)*2.0-(vec2(0.7)+seed*0.6);
+ float age = mod(storm_ripple_time+seed.x*1.7,1.7);
+ float radius = length(offset);
+ float wave = (radius-age*0.75)*32.0;
+ float envelope = smoothstep(0.0,0.08,age)*(1.0-smoothstep(0.45,0.8,age));
+ float ring = sin(wave)*exp(-wave*wave*0.12)*envelope;
+ return offset/max(radius,0.001)*ring*0.10;
+}
+
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
  float strength = mix(0.16,0.045,road_puddle(p));
  strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
- vec3 ripple = (view*vec4(grain.x*strength,0.0,grain.y*strength,0.0)).xyz;
+ vec2 slope = grain*strength;
+ if (storm_ripples_enabled) {
+  float visibility = 1.0-smoothstep(0.10,0.24,length(fwidth(p)));
+  slope += rain_impact_slope(p)*road_puddle(p)*visibility;
+ }
+ vec3 ripple = (view*vec4(slope.x,0.0,slope.y,0.0)).xyz;
  return normalize(original+ripple*weight);
 }
 

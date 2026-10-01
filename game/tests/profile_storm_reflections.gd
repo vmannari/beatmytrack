@@ -9,6 +9,7 @@ func _initialize() -> void:
 func _run() -> void:
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 0
+	var ripples: bool = "--screen=ripples" in OS.get_cmdline_user_args()
 	var track_id: String = "track_acf29166cceaaa42"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--track="): track_id = argument.trim_prefix("--track=")
@@ -35,15 +36,17 @@ func _run() -> void:
 		root.size = resolution
 		# Alternate order to expose warm-up/clock drift, rather than assume it away.
 		for mode: String in ["off","on","on","off","off","on"]:
-			environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY if mode == "on" else Environment.REFLECTION_SOURCE_DISABLED
-			environment.background_mode = Environment.BG_SKY if mode == "on" else Environment.BG_COLOR
-			environment.sky = sky if mode == "on" else null
+			RenderingServer.global_shader_parameter_set("storm_ripples_enabled",mode == "on" if ripples else true)
+			environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY if mode == "on" or ripples else Environment.REFLECTION_SOURCE_DISABLED
+			environment.background_mode = Environment.BG_SKY if mode == "on" or ripples else Environment.BG_COLOR
+			environment.sky = sky if mode == "on" or ripples else null
 			for frame: int in range(WARMUP): await RenderingServer.frame_post_draw
 			var wall: Array[float] = []
 			var gpu: Array[float] = []
 			var cpu: Array[float] = []
 			var previous: int = Time.get_ticks_usec()
 			for frame: int in range(SAMPLES):
+				if ripples: RenderingServer.global_shader_parameter_set("storm_ripple_time",float(frame)/60.0)
 				await RenderingServer.frame_post_draw
 				var now: int = Time.get_ticks_usec()
 				wall.append(float(now-previous)/1000.0)
@@ -57,9 +60,10 @@ func _run() -> void:
 				"texture_bytes":Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED)}
 			results.append(result)
 			print("REFLECTION_PROFILE ",JSON.stringify(result))
-	var output := FileAccess.open("res://../build/storm-reflection-profile.json",FileAccess.WRITE)
+	var output := FileAccess.open("res://../build/storm-ripple-profile.json" if ripples else "res://../build/storm-reflection-profile.json",FileAccess.WRITE)
 	output.store_string(JSON.stringify({"device":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"track":track_id,"warmup_frames":WARMUP,"results":results},"\t"))
 	output.close()
+	RenderingServer.global_shader_parameter_set("storm_ripples_enabled",true)
 	race.queue_free()
 	await process_frame
 	await process_frame

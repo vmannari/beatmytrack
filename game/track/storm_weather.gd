@@ -25,6 +25,7 @@ var trail_samples: Array[PackedVector4Array] = []
 var trail_tick: int = -1
 
 func _ready() -> void:
+	RenderingServer.global_shader_parameter_set("storm_ripple_time",0.0)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var screen_copy := BackBufferCopy.new()
@@ -68,6 +69,7 @@ func advance(delta: float, paused: bool) -> void:
 	thunder_audio.stream_paused = paused
 	if paused: return
 	elapsed = fmod(elapsed+delta,3600.0)
+	RenderingServer.global_shader_parameter_set("storm_ripple_time",elapsed)
 	flash_age += delta
 	if until_thunder >= 0.0:
 		until_thunder -= delta

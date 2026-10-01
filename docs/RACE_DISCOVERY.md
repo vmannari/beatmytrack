@@ -169,3 +169,10 @@ Changed files: `game/ui/track_tile.gd`, this document, status/phase notes and ev
 Requirements R01/V03/V04/Q01. Owner requested more space below creator attribution and centered track profiles. Creator baseline is now 12 logical pixels above the card bottom (previously six on compact cards); the compact solid footer increases from 44 to 50 pixels to preserve title/creator separation within the same card dimensions. Both compact and regular route drawing now use symmetric image-area insets, removing the old 30-pixel horizontal offset on compact cards and small vertical offsets.
 
 Changed files: `game/ui/track_tile.gd`, this document, status/phase notes and evidence. Actual `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: **1351 checks, zero failures** at three landscape sizes. Scoped `git diff --cached --check`: passed. Android SDK `adb devices`: empty list; no phone attached, device test or Android export. Inspected [compact cards](evidence/card-centering-2026-10-01/tracks-populated-fixture-960x540.png); desktop evidence and log are alongside it. Owner visual/device acceptance remains outstanding.
+
+
+## Drawer launcher focus cleanup - 2026-10-01
+
+Requirements R01/V03/Q01. The persistent yellow borders were keyboard-focus rings explicitly restored by each drawer's close handler. Both handlers now release launcher focus instead of grabbing it on close. Buttons remain keyboard-focusable through normal navigation; applied filter text/count styling is unchanged.
+
+Changed files: `game/ui/track_filter_drawer.gd`, `game/ui/track_search_drawer.gd`, two regression assertions in `game/tests/capture_premium_menus.gd`, docs/status notes and evidence. Actual pinned `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: **1357 checks, zero failures**, including closed Search and Filters focus at three landscape sizes. Scoped `git diff --cached --check`: passed. Inspected [closed drawers](evidence/drawer-focus-2026-10-01/drawers-closed-1280x720.png). Android SDK `adb devices`: empty list; no phone attached, device test or export. Physical-phone acceptance remains outstanding.

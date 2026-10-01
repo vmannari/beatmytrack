@@ -301,7 +301,7 @@ func close() -> void:
 	hide()
 	set_process_input(false)
 	closed.emit()
-	if is_instance_valid(return_focus): return_focus.grab_focus()
+	if is_instance_valid(return_focus): return_focus.release_focus()
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and event.pressed and not panel.get_global_rect().has_point(event.position):

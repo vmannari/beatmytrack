@@ -348,6 +348,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await _tap(browser.search_dialog.apply_button.get_global_rect().get_center())
 	check(not browser.search_dialog.visible and browser.matches.size() == 7 and browser.state.search_kind == 2,"Show tracks applies search and scope")
 	check(browser.gallery.is_processing_input(),"applying search restores carousel input")
+	check(not (browser.find_child("RaceSearch",true,false) as Button).has_focus(),"closed Search leaves no focus border on its launcher")
 	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
 	await create_timer(0.2).timeout
 	await _tap((browser.search_dialog.find_child("ClearSearch",true,false) as Button).get_global_rect().get_center())
@@ -446,6 +447,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await create_timer(0.2).timeout
 	await _tap(((app.get("root_ui") as Node).find_child("Tab_create",true,false) as Control).get_global_rect().get_center())
 	check(not browser.filter_dialog.visible and app.get("screen") == "tracks","backdrop tap closes filters without navigating the menu underneath")
+	check(not browser.filter_button.has_focus(),"closed Filters leaves no focus border on its launcher")
 	browser.filter_dialog.close()
 	await _settle()
 

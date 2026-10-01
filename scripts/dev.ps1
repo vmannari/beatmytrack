@@ -70,7 +70,7 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogN
 function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log'
     if ($QuickValidation) {
-        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--quit-after', '8') 'startup.log'
+        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_startup_smoke.gd') 'startup.log'
         if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'APP_READY' -Quiet)) {
             throw 'Main scene did not emit APP_READY.'
         }
@@ -85,7 +85,7 @@ function Invoke-Validation {
         Write-Host "Checking $($source.FullName)"
         Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $source.FullName) 'parse.log'
     }
-    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--quit-after', '8') 'startup.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_startup_smoke.gd') 'startup.log'
     if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'startup.log') -SimpleMatch 'APP_READY' -Quiet)) {
         throw 'Main scene did not emit APP_READY.'
     }

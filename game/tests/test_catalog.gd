@@ -64,7 +64,7 @@ func run() -> void:
 	check(all[2].name == "Circuit 2" and all[4999].name == "Circuit 4999","natural name sorting keeps numbered tracks in readable order")
 	print("CATALOG_5000_QUERY_US: ",Time.get_ticks_usec()-started)
 	var state: Dictionary = {"name":"","creator":"","section":"all","page":833}
-	# Actual UI receives the cached large catalog: only six cards are instantiated.
+	# Actual UI receives the cached large catalog with bounded visible cards.
 	catalog.indexed_revision = library.revision
 	var browser := TrackBrowser.new()
 	browser.library = library
@@ -75,9 +75,13 @@ func run() -> void:
 	root.size = Vector2i(1280,720)
 	root.add_child(browser)
 	await process_frame
-	check(browser.grid.get_child_count() == 2 and browser.matches.size() == 5000,"last page creates only the remaining two cards of a 5000-track catalog")
-	browser.call("_page",-1)
-	check(browser.grid.get_child_count() == 6,"page changes bound active track cards to six")
+	await process_frame
+	check(browser.grid.get_child_count() <= 12 and browser.matches.size() == 5000,"5000-track carousel bounds active cards to twelve")
+	browser.gallery.scroll_horizontal = int(browser.gallery.get_h_scroll_bar().max_value)
+	await process_frame
+	browser._render_tiles()
+	var last: TrackTile = browser.grid.get_child(browser.grid.get_child_count()-1)
+	check(last.entry.id == all.back().id and browser.grid.get_child_count() <= 12,"scrolling reaches the final track while keeping card creation bounded")
 	browser.queue_free()
 	await process_frame
 	for filename: String in DirAccess.open(folder).get_files(): DirAccess.remove_absolute(folder.path_join(filename))

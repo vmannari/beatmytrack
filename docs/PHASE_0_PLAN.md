@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-10-01 R01/Q01: deployed current workspace debug APK to connected phone using DeployAndroid -QuickValidation. Import/startup, driving 62, catalog 18 and menus 44 checks passed; install Success, launch Status ok and device APP_READY confirmed. Restored USB reverse port 18181 to healthy local backend. Startup smoke now waits for async readiness; catalog smoke tests continuous scrolling. Full regression/device gameplay acceptance not claimed. See docs/PHONE_DEPLOY_2026_10_01.md.
+
 2026-10-01 R01/V03/V04/Q01: hero and records content now has more internal padding while preserving section proportions. Empty states use friendly headings and next steps. CaptureMenus 1450 checks pass; screenshots inspected. Phone attached at verification; no device test/export performed. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 R01/V03/V04/Q01: biome labels now share existing icons and theme colors across hero, cards, search and inactive filter choices. CaptureMenus 1450 checks pass; desktop/compact captures inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.

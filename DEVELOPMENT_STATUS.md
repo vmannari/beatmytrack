@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 R01/V03/V04/G03/Q01: Race hero uses a 160 ms scenery crossfade and subtle title/creator/outline fade. Rapid selections interrupt without queues; panels stay fixed and compilation does not replay the transition. Loading 32 and graphical 1072 checks pass; transition captures inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 R01/V03/V04/G03/Q01: polished original Race rail icons and immediate catalog-based hero previews. Desktop first hero frame ~23 ms versus prior 343-453 ms compile wait; compilation remains asynchronous. Pending records stay quiet without loading-label flashes. Loading 28, menu 36, graphical 913 checks pass; screenshots inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 V02/V04/V05/Q01: kit 101 uses many smaller puddle impacts with changing scattered positions, cheaper arithmetic ripple math and wet-area skipping. Final Storm 96 / surface 928 checks pass. Capped 1080p optimized GPU off/on 2.575/2.599ms; concurrent game instances limit attribution. Fan load also coincided with uncapped profiling. Raw before/after evidence in docs/STORM_WET_MATERIAL.md. Single-instance/device and motion acceptance pending.

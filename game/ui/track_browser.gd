@@ -37,6 +37,11 @@ var cloud: Node
 var cloud_status: Label
 var gallery: ScrollContainer
 var gallery_content: Control
+const HERO_FADE_SECONDS: float = 0.16
+var _hero_serial: int = -1
+var _hero_scenery: PanelContainer
+var _hero_art: TextureRect
+var _hero_detail_tween: Tween
 var hero: PanelContainer
 const FilterDrawer = preload("res://ui/track_filter_drawer.gd")
 var filter_dialog: FilterDrawer
@@ -660,14 +665,37 @@ func _show_hero(title: String, theme_id: String) -> void:
 		for point: Array in preview_entry.get("points",[]): hero_points.append(Vector2(point[0],point[1]))
 		hero_length = 0.0
 		for index: int in range(hero_points.size()): hero_length += hero_points[index].distance_to(hero_points[(index+1)%hero_points.size()])
+	var animate: bool = _hero_serial >= 0 and _hero_serial != _selection_serial
+	_hero_serial = _selection_serial
+	if _hero_scenery != null: hero.remove_child(_hero_scenery)
 	_clear(hero)
+	if _hero_scenery == null:
+		_hero_scenery = PanelContainer.new()
+		_hero_scenery.name = "HeroSceneryLayers"
+		_hero_scenery.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_hero_scenery.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+	hero.add_child(_hero_scenery)
 	var art := TextureRect.new()
 	art.name = "SelectedTrackScenery"
 	art.texture = TrackTile.scenery_texture(theme_id)
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hero.add_child(art)
+	# Keep the incoming scenery opaque underneath the outgoing image. This
+	# avoids a dark dip; interrupted fades continue from their current opacity
+	# and expire independently instead of queuing or restarting.
+	_hero_scenery.add_child(art)
+	_hero_scenery.move_child(art,0)
+	if _hero_art != null:
+		if animate:
+			var outgoing: TextureRect = _hero_art
+			var fade := outgoing.create_tween()
+			fade.tween_property(outgoing,"modulate:a",0.0,HERO_FADE_SECONDS)
+			fade.tween_callback(outgoing.queue_free)
+		else:
+			_hero_scenery.remove_child(_hero_art)
+			_hero_art.queue_free()
+	_hero_art = art
 	var shade := ColorRect.new()
 	shade.color = Color(0.02,0.05,0.07,0.38)
 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -705,6 +733,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	route_column.custom_minimum_size.x = 220
 	row.add_child(route_column)
 	var outline := Control.new()
+	outline.name = "HeroRouteOutline"
 	outline.custom_minimum_size = Vector2(220,110)
 	outline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -725,6 +754,13 @@ func _show_hero(title: String, theme_id: String) -> void:
 	outline.resized.connect(outline.queue_redraw)
 	route_column.add_child(MenuStyle.label("5 LAPS",24))
 	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+"%.2f KM / LAP" % (hero_length/1000.0),20,true))
+	if _hero_detail_tween != null: _hero_detail_tween.kill()
+	if animate:
+		_hero_detail_tween = create_tween().set_parallel(true)
+		for element: Control in [heading,creator,outline]:
+			element.modulate.a = 0.65
+			_hero_detail_tween.tween_property(element,"modulate:a",1.0,HERO_FADE_SECONDS)
+
 
 func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:
 	var slot := Control.new()

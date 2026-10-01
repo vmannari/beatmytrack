@@ -248,6 +248,39 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check(race_chart != null and lap_chart == null,"reference layout shows a race comparison below the hero")
 	check(browser.find_child("DeleteUserTrack",true,false) == null and browser.find_child("RemixTrack",true,false) == null,"Play does not expose track modification actions")
 	await _capture("tracks-populated-fixture",physical_size,true)
+	# Presentation-only transition fixture; retain canonical selected track.
+	var transition_bounds: Rect2 = browser.hero.get_global_rect()
+	browser.preview_entry = {"id":"transition_start","name":"Pine Ridge","creator":"Gallery fixture","theme":"pine","points":[[0,0],[80,0],[110,60],[40,90]]}
+	browser._show_hero("PINE RIDGE","pine")
+	await create_timer(0.2).timeout
+	browser._selection_serial += 1
+	browser.preview_entry = {"id":"transition_fixture","name":"Redrock Run","creator":"Gallery fixture","theme":"desert","points":[[0,0],[80,0],[110,60],[40,90]]}
+	browser._show_hero("REDROCK RUN","desert")
+	await create_timer(0.05).timeout
+	await RenderingServer.frame_post_draw
+	check(browser._hero_scenery.get_child_count() > 1,"hero retains outgoing scenery during crossfade")
+	var outgoing_alpha: float = (browser._hero_scenery.get_child(1) as Control).modulate.a
+	check(outgoing_alpha > 0.0 and outgoing_alpha < 1.0,"scenery visibly blends during transition")
+	check(browser.hero.get_global_rect() == transition_bounds,"crossfade keeps hero bounds fixed")
+	await _capture("hero-crossfade-mid",physical_size,true)
+	# Interrupt before the first fade completes: newest title must win now.
+	browser._selection_serial += 1
+	browser.preview_entry.name = "Frostbite Run"
+	browser.preview_entry.theme = "winter"
+	browser._show_hero("FROSTBITE RUN","winter")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FROSTBITE RUN","interrupt updates title immediately")
+	await create_timer(0.05).timeout
+	await RenderingServer.frame_post_draw
+	await _capture("hero-crossfade-interrupted",physical_size,true)
+	await create_timer(0.2).timeout
+	await RenderingServer.frame_post_draw
+	check(browser._hero_scenery.get_child_count() == 1,"interrupted scenery settles without queued transitions")
+	await _capture("hero-crossfade-settled",physical_size,true)
+	browser.preview_entry = {}
+	browser._show_detail()
+	await _settle()
+
+
 	var wheel := InputEventMouseButton.new()
 	wheel.position = browser.gallery.get_global_rect().get_center()
 	wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN

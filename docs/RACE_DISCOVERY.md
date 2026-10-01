@@ -122,3 +122,18 @@ Actual commands used `powershell -NoProfile -ExecutionPolicy Bypass -File script
 - Android SDK `adb devices`: empty list. No phone attached, physical-device test or Android export performed.
 
 Inspected [desktop](evidence/race-icons-latency-2026-10-01/tracks-populated-fixture-1280x720.png) and [compact landscape](evidence/race-icons-latency-2026-10-01/tracks-populated-fixture-960x540.png) captures. Populated records/cards are disposable fixtures. Owner icon approval and physical-phone latency/touch acceptance remain outstanding.
+
+
+## Hero crossfade trial - 2026-10-01
+
+Requirements R01/V03/V04/G03/Q01. Owner accepted a 160 ms scenery crossfade with a subtle title and route-outline fade. New selections immediately update metadata; title, creator and outline fade from 65% to full opacity over 160 ms. Scenery stays opaque underneath fading outgoing layers to avoid a dark flash. Interrupted outgoing layers retain their current opacity and expire independently within 160 ms; no transitions are queued. Same-selection record/favorite/compilation refreshes do not start a second fade. Panels, records, buttons and carousel remain stationary.
+
+Changed files: `game/ui/track_browser.gd`, `game/tests/test_menu_loading.gd`, transition fixture additions in `game/tests/capture_premium_menus.gd`, this document, status/phase notes and evidence.
+
+Actual pinned-engine commands through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+- `TestMenuLoading`: final **32 checks, zero failures**. Checks immediate titles, readable opacity, rapid-selection layers, cleanup, final opacity and existing async safety. Initial exact float comparison was corrected to an approximate comparison.
+- `CaptureMenus`: final **1072 checks, zero failures**, at 1280x720, 960x540 and 1600x720. Adds mid-fade opacity, fixed bounds, immediate interrupt title and layer cleanup checks. The presentation-only fixture uses Pine -> Desert -> Winter; canonical race selection/records are deliberately retained and do not represent those metadata fixtures.
+- Scoped `git diff --cached --check`: passed.
+- Android SDK `adb devices`: empty list; no phone attached. No Android export or physical-device test.
+
+Inspected [desktop mid-fade](evidence/hero-crossfade-2026-10-01/hero-crossfade-mid-1280x720.png) and [compact settled hero](evidence/hero-crossfade-2026-10-01/hero-crossfade-settled-960x540.png). Interrupted and wide captures plus test logs are in the same evidence directory. Owner motion/visual acceptance and physical-phone smoothness remain outstanding.

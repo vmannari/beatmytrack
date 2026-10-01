@@ -38,6 +38,8 @@ func run() -> void:
 	check(not browser.detail.visible and browser.pending_records.visible and browser.pending_records.text.is_empty(),"pending selection shows neither previous records nor flashing loading text")
 	print("HERO_TWO_RAPID_CHOICES_MS: ",(Time.get_ticks_usec()-preview_started)/1000.0)
 	check(browser.selecting,"selection returns while work is pending")
+	check(browser._hero_scenery.get_child_count() >= 2,"rapid selections crossfade outgoing scenery without waiting")
+	check(is_equal_approx((browser.hero.find_child("HeroTrackTitle",true,false) as Label).modulate.a,0.65),"new title starts readable during subtle fade")
 	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
 	var frames: int = 0
 	while browser.selecting:
@@ -48,6 +50,9 @@ func run() -> void:
 	check(frames > 1,"UI continues processing frames during compilation")
 	check(browser.selected_track.identity == "creator_second_track","latest rapid selection wins")
 	check(browser.preview_entry.is_empty() and browser.detail.visible and not browser.pending_records.visible,"ready track restores its own records and clears preview state")
+	await create_timer(0.2).timeout
+	check(browser._hero_scenery.get_child_count() == 1,"interrupted fades dispose all outgoing scenery")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).modulate.a == 1.0,"resolved hero is fully visible without a repeated transition")
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")

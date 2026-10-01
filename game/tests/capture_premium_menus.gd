@@ -321,6 +321,34 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check((int(browser.gallery.size.x)+12) % browser.tile_stride == 0,"carousel width fits only complete cards")
 	check(browser.selected_track.identity == selected_before and not browser.selecting,"swipe never selects a track")
 	check(browser.records.settings.get("favorites",[]) == before_favorites,"swipe never toggles a favorite")
+	for edge_sign: int in [1,-1]:
+		browser.gallery.scroll_horizontal = 0 if edge_sign == 1 else int(browser.gallery.get_h_scroll_bar().max_value)
+		await _settle()
+		var boundary: int = browser.gallery.scroll_horizontal
+		var grid_x: float = browser.grid.position.x
+		touch = InputEventScreenTouch.new()
+		touch.index = 0
+		touch.position = touch_origin
+		touch.pressed = true
+		root.push_input(touch,true)
+		drag = InputEventScreenDrag.new()
+		drag.index = 0
+		drag.position = touch_origin+Vector2(edge_sign*180,0)
+		drag.relative = Vector2(edge_sign*180,0)
+		root.push_input(drag,true)
+		check(browser.gallery.scroll_horizontal == boundary,"edge pull retains valid scroll bounds")
+		check(float(browser.gallery.get("overscroll_offset"))*edge_sign > 20 and absf(float(browser.gallery.get("overscroll_offset"))) < 64,"edge pull reveals a restrained elastic gap")
+		check((browser.grid.position.x-grid_x)*edge_sign > 20,"edge offset moves the actual cards")
+		await _settle()
+		check((browser.grid.position.x-grid_x)*edge_sign > 20,"elastic gap persists through layout and rendering")
+		await _capture("carousel-edge-"+str(edge_sign),physical_size,true)
+		touch.pressed = false
+		touch.position = drag.position
+		root.push_input(touch,true)
+		await create_timer(0.45).timeout
+		check(is_zero_approx(float(browser.gallery.get("overscroll_offset"))),"released edge pull returns to rest")
+		check(browser.gallery.scroll_horizontal == boundary,"edge bounce keeps the first or last card aligned")
+	check(browser.selected_track.identity == selected_before and browser.records.settings.get("favorites",[]) == before_favorites,"edge gestures never activate cards or stars")
 	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
 	check(browser.search_dialog.visible,"Search beside Filters opens through viewport input")
 	var search: LineEdit = browser.search_dialog.find_child("Search_search",true,false)

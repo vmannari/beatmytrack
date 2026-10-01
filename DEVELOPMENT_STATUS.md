@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 R01/V03/V04/G03/Q01: Carousel ends now reveal a resisted gap capped at 64 logical pixels and spring back over 0.38 seconds; wheel edge nudges are 24 pixels. CaptureMenus 1765 and catalog 21 checks pass. No phone test/export/deployment. See docs/CAROUSEL_EDGE.md.
+
 2026-10-01 V02/V04/Q01: lightning scene-light gain increased 8.5 to 13 (+53%) at owner request; slow timing and gentle relative swells retained. Storm 96 checks pass; peak capture inspected. See docs/STORM_LIGHTNING.md.
 
 2026-10-01 V02/V04/V05/Q01: Storm kit 102 bakes lens data, skips wet relief on non-road pixels and reduces mobile trail segments. Physical DN2103 median/p95 frame time improves 23.526/35.265ms to 16.457/24.493ms; sustained displayed median/p95 16.839/17.013ms, 2% missed refreshes. Storm 96/surface 928 and quick export checks pass. Optimized APK installed, probe markers removed, normal app/backend reverse restored. Visual/long thermal acceptance remains; docs/STORM_MOBILE_OPTIMIZATION.md.

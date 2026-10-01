@@ -263,7 +263,7 @@ func _render_tiles() -> void:
 			grid.remove_child(child)
 			child.queue_free()
 		else: retained[index] = child
-	grid.position.x = first*tile_stride
+	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
 	for index: int in range(first,end):
 		if retained.has(index):
 			grid.move_child(retained[index],index-first)

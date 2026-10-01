@@ -118,3 +118,7 @@ The owner supplies a toolbar with race-resume indicators and a resource button. 
 
 ## Race discovery reference override (2026-10-01)
 The owner renames Play to Race and requests the supplied discovery composition, a bottom track carousel with mobile swiping, Search beside Filters, and an icon-only right rail whose non-Free-race modes may remain placeholders. This supersedes paged track browsing for this screen. See docs/RACE_DISCOVERY.md for implementation, actual evidence and remaining device/visual acceptance.
+
+
+## Race discovery correction (2026-10-01)
+The owner corrects the mode rail to the left, requires stable section dimensions during track changes, removes the duplicate hero Race and sidebar Random actions, requests equal spacious Random/Filters/Search buttons, and replaces carousel arrows with smooth scrolling that settles on full cards. This supersedes the right-rail portion of the preceding override. See docs/RACE_DISCOVERY.md.

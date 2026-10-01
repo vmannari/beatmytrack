@@ -28,13 +28,18 @@ func run() -> void:
 	while browser.loading: await process_frame
 	var a: Dictionary = TrackCatalog.local_metadata(first)
 	var b: Dictionary = TrackCatalog.local_metadata(second)
+	await process_frame
+	var layout_before: Dictionary = _layout(browser)
 	browser._select(a)
 	browser._select(b)
 	check(browser.selecting,"selection returns while work is pending")
+	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
 	var frames: int = 0
 	while browser.selecting:
 		await process_frame
 		frames += 1
+	await process_frame
+	check(_layout(browser) == layout_before,"completed selection preserves section rectangles")
 	check(frames > 1,"UI continues processing frames during compilation")
 	check(browser.selected_track.identity == "creator_second_track","latest rapid selection wins")
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
@@ -118,4 +123,10 @@ func _geometry(node: Node) -> Array:
 		result.append(node.transform)
 		for surface: int in range(node.mesh.get_surface_count()): result.append(node.mesh.surface_get_arrays(surface))
 	for child: Node in node.get_children(): result.append(_geometry(child))
+	return result
+
+func _layout(browser: TrackBrowser) -> Dictionary:
+	var result: Dictionary = {}
+	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
+		result[title] = (browser.find_child(title,true,false) as Control).get_global_rect()
 	return result

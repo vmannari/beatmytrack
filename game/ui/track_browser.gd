@@ -19,8 +19,6 @@ var matches: Array[Dictionary] = []
 var grid: GridContainer
 var detail: VBoxContainer
 var count_label: Label
-var previous: Button
-var next: Button
 var random_button: Button
 var sections: Dictionary = {}
 var discovery := TrackDiscoveryProvider.new()
@@ -44,7 +42,8 @@ var search_dialog: AcceptDialog
 var filter_controls: HFlowContainer
 var _tile_start: int = -1
 var _query_signature: String = ""
-const TILE_STRIDE: int = 202
+var tile_stride: int = 202
+var gallery_slot: Control
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -55,57 +54,64 @@ func _ready() -> void:
 	var body := HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(body)
+	_build_mode_rail(body)
 	var main := VBoxContainer.new()
 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main.add_theme_constant_override("separation",8)
 	body.add_child(main)
+	var hero_slot := Control.new()
+	hero_slot.name = "HeroSlot"
+	hero_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hero_slot.custom_minimum_size.y = 200
+	hero_slot.clip_contents = true
+	main.add_child(hero_slot)
 	hero = PanelContainer.new()
 	hero.name = "RaceHero"
 	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	hero.custom_minimum_size.y = 226
+	hero.custom_minimum_size.y = 0
 	hero.clip_contents = true
 	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
-	main.add_child(hero)
+	hero_slot.add_child(hero)
+	MenuStyle.fill(hero)
+	var records_slot := Control.new()
+	records_slot.name = "RecordsSlot"
+	records_slot.custom_minimum_size.y = 160
+	records_slot.clip_contents = true
+	main.add_child(records_slot)
 	var selection := PanelContainer.new()
 	selection.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720dd"),12))
-	main.add_child(selection)
+	records_slot.add_child(selection)
+	MenuStyle.fill(selection)
 	detail = VBoxContainer.new()
 	selection.add_child(detail)
-	var gallery_row := HBoxContainer.new()
-	main.add_child(gallery_row)
-	previous = _compact_button("<",_page.bind(-1))
-	previous.custom_minimum_size.x = 48
-	previous.tooltip_text = "Scroll tracks left"
-	gallery_row.add_child(previous)
+	gallery_slot = Control.new()
+	gallery_slot.name = "GallerySlot"
+	gallery_slot.custom_minimum_size.y = 140
+	gallery_slot.resized.connect(_layout_gallery)
+	main.add_child(gallery_slot)
 	gallery = preload("res://ui/track_carousel.gd").new()
 	gallery.name = "TrackCarousel"
-	gallery.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	gallery.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	gallery.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	gallery.custom_minimum_size.y = 140
 	gallery.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gallery.scroll_deadzone = 12
-	gallery.follow_focus = true
-	gallery.resized.connect(_render_tiles)
-	gallery_row.add_child(gallery)
+	gallery.follow_focus = false
+	gallery_slot.add_child(gallery)
 	gallery_content = Control.new()
-	gallery_content.custom_minimum_size.y = 124
+	gallery_content.custom_minimum_size.y = 140
 	gallery.add_child(gallery_content)
 	grid = GridContainer.new()
 	grid.columns = 12
 	grid.add_theme_constant_override("h_separation",12)
 	gallery_content.add_child(grid)
 	gallery.get_h_scroll_bar().value_changed.connect(func(_value: float) -> void: _render_tiles())
-	next = _compact_button(">",_page.bind(1))
-	next.custom_minimum_size.x = 48
-	next.tooltip_text = "Scroll tracks right"
-	gallery_row.add_child(next)
 	count_label = MenuStyle.label("Loading?",12,true)
 	count_label.clip_text = true
 	main.add_child(count_label)
 	count_label.hide()
 	_build_actions()
 	get_node("PlayActions").reparent(main)
-	_build_mode_rail(body)
 	filter_dialog = AcceptDialog.new()
 	filter_dialog.title = "Filter tracks"
 	filter_dialog.min_size = Vector2i(560,180)
@@ -263,12 +269,13 @@ func _clear(parent: Node) -> void:
 
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
+	gallery.call("_stop_snap")
 	matches = discovery.query(catalog,state,records.settings.get("favorites",[]))
 	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name")])
 	if signature != _query_signature: gallery.scroll_horizontal = 0
 	_query_signature = signature
 	_tile_start = -1
-	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*TILE_STRIDE-12)
+	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
 	_render_tiles()
 	if matches.is_empty():
 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
@@ -289,14 +296,12 @@ func _refresh() -> void:
 		sections[id].add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.MUTED)
 
 func _render_tiles() -> void:
-	if not is_instance_valid(grid) or not is_instance_valid(next): return
-	var first: int = maxi(0,int(gallery.scroll_horizontal/TILE_STRIDE)-1)
-	previous.disabled = gallery.scroll_horizontal <= 0
-	next.disabled = gallery.scroll_horizontal >= maxi(0,int(gallery_content.custom_minimum_size.x-gallery.size.x))
+	if not is_instance_valid(grid): return
+	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
 	if first == _tile_start: return
 	_tile_start = first
 	_clear(grid)
-	grid.position.x = first*TILE_STRIDE
+	grid.position.x = first*tile_stride
 	for index: int in range(first,mini(matches.size(),first+12)):
 		var entry: Dictionary = matches[index]
 		var tile := TrackTile.new()
@@ -307,18 +312,31 @@ func _render_tiles() -> void:
 		tile.selected = entry.id == selected_track.identity
 		tile.name = "Track_"+str(entry.id)
 		tile.pressed.connect(_select.bind(entry))
+		tile.focus_entered.connect(_focus_card.bind(index))
 		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
 		grid.add_child(tile)
-		tile.custom_minimum_size = Vector2(190,124)
+		tile.custom_minimum_size = Vector2(tile_stride-12,140)
 		tile.size_flags_horizontal = Control.SIZE_FILL
 
-func _page(direction: int) -> void:
-	gallery.scroll_horizontal += direction*maxi(TILE_STRIDE,int(gallery.size.x)-TILE_STRIDE)
+func _layout_gallery() -> void:
+	if not is_instance_valid(grid): return
+	gallery.call("_stop_snap")
+	var first: int = roundi(float(gallery.scroll_horizontal)/tile_stride)
+	var slots: int = maxi(1,floori((gallery_slot.size.x+12.0)/202.0))
+	tile_stride = floori((gallery_slot.size.x+12.0)/slots)
+	gallery.position.x = (gallery_slot.size.x-(slots*tile_stride-12))*0.5
+	gallery.size = Vector2(slots*tile_stride-12,140)
+	gallery.set("snap_stride",tile_stride)
+	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
+	gallery.scroll_horizontal = first*tile_stride
+	_tile_start = -1
+	_render_tiles()
 
 func _random() -> void:
 	var entry: Dictionary = TrackCatalog.random_entry(matches,selected_track.identity,rng)
 	if entry.is_empty(): return
-	gallery.scroll_horizontal = matches.find(entry)*TILE_STRIDE
+	gallery.call("_stop_snap")
+	gallery.scroll_horizontal = matches.find(entry)*tile_stride
 	_select(entry)
 
 func _select(entry: Dictionary) -> void:
@@ -327,8 +345,7 @@ func _select(entry: Dictionary) -> void:
 		var serial: int = _selection_serial
 		selecting = true
 		race_button.disabled = true
-		_clear(detail)
-		detail.add_child(MenuStyle.label("Downloading track…",18,true))
+		race_button.text = "DOWNLOADING TRACK..."
 		var downloaded: bool = await cloud.download(entry)
 		if not is_inside_tree() or serial != _selection_serial: return
 		if not downloaded:
@@ -352,9 +369,7 @@ func _select(entry: Dictionary) -> void:
 	race_button.disabled = true
 	# A new request replaces any pending request. The worker never touches UI,
 	# live library state, or a track already used by the main thread.
-	_clear(detail)
-	detail.add_child(MenuStyle.label(str(entry.name).to_upper(),30))
-	detail.add_child(MenuStyle.label("Loading track…",18,true))
+	race_button.text = "LOADING TRACK..."
 	for tile: Node in grid.get_children():
 		if tile is TrackTile:
 			tile.selected = tile.entry.id == entry.id
@@ -384,8 +399,6 @@ static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
 	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft),"draft":draft}
 
 func _process(_delta: float) -> void:
-	var hero_race: Button = hero.find_child("HeroRace",true,false) as Button
-	if hero_race != null: hero_race.disabled = race_button.disabled or selecting
 	if _resolve_thread == null or _resolve_thread.is_alive(): return
 	var result: Dictionary = _resolve_thread.wait_to_finish()
 	_resolve_thread = null
@@ -489,9 +502,9 @@ func _build_actions() -> void:
 	search.name = "RaceSearch"
 	search.icon = MenuIcon.texture("search")
 	actions.add_child(search)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	actions.add_child(spacer)
+	for button: Button in [random_button,filters,search]:
+		button.custom_minimum_size = Vector2(196,60)
+		button.size_flags_horizontal = Control.SIZE_FILL
 	race_button = MenuStyle.button("RACE",func() -> void: race_requested.emit(selected_track),true)
 	race_button.name = "LibraryRace"
 	race_button.icon = MenuIcon.texture("arrow")
@@ -499,6 +512,8 @@ func _build_actions() -> void:
 	race_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
 	race_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
 	race_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	race_button.clip_text = true
+	race_button.custom_minimum_size = Vector2(240,60)
 	race_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	actions.add_child(race_button)
 
@@ -523,7 +538,7 @@ func _show_detail() -> void:
 	var personal := VBoxContainer.new()
 	personal.custom_minimum_size.x = 210
 	personal.add_theme_constant_override("separation",2)
-	row.add_child(personal)
+	_fixed_column(row,personal,"PersonalRecords",230)
 	_heading(personal,"YOUR RECORDS","timer")
 	var key: String = records.key_for(selected_track,HandlingSelection.config())
 	var pb: Dictionary = records.records.get(key,{})
@@ -543,6 +558,7 @@ func _show_detail() -> void:
 	personal.add_child(MenuStyle.label("Best lap  "+(MenuStyle.time_text(float(pb.get("flying_ms",0))/1000.0) if int(pb.get("flying_ms",0)) > 0 else "--"),16,true))
 	row.add_child(VSeparator.new())
 	var distribution := VBoxContainer.new()
+	distribution.name = "RaceComparison"
 	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	distribution.size_flags_stretch_ratio = 1.4
 	distribution.add_theme_constant_override("separation",2)
@@ -575,8 +591,8 @@ func _show_detail() -> void:
 	var friends := VBoxContainer.new()
 	friends.custom_minimum_size.x = 240
 	friends.add_theme_constant_override("separation",8)
-	if selected_track.metadata.has("cloud_version"): friends.add_theme_constant_override("separation",4)
-	row.add_child(friends)
+	if selected_track.metadata.has("cloud_version"): friends.add_theme_constant_override("separation",2)
+	_fixed_column(row,friends,"Standings",270)
 	_heading(friends,"HIGH SCORES" if selected_track.metadata.has("cloud_version") else "FRIENDS","friends")
 	var standings: Array = snapshot.get("friends",[])
 	var friend_space := Control.new()
@@ -642,7 +658,7 @@ func _build_mode_rail(parent: Control) -> void:
 	rail.name = "RaceModes"
 	rail.add_theme_constant_override("separation",12)
 	parent.add_child(rail)
-	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"],["dice","Random events"]]:
+	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"]]:
 		var active: bool = item[1] == "Free race"
 		var button := MenuStyle.button("",func() -> void: pass,active)
 		button.icon = MenuIcon.texture(item[0])
@@ -688,20 +704,16 @@ func _show_hero(title: String, theme_id: String) -> void:
 	info.add_child(creator)
 	var actions := HBoxContainer.new()
 	info.add_child(actions)
-	var race := MenuStyle.button("RACE THIS TRACK",func() -> void:
-		if not selecting and not race_button.disabled: race_requested.emit(selected_track),true)
-	race.name = "HeroRace"
-	race.icon = MenuIcon.texture("play")
-	actions.add_child(race)
 	var favorite := MenuStyle.button("",_favorite)
 	favorite.icon = MenuIcon.texture("star_filled" if selected_track.identity in records.settings.get("favorites",[]) else "heart")
 	favorite.tooltip_text = "Toggle favorite"
 	actions.add_child(favorite)
 	var route_column := VBoxContainer.new()
+	route_column.add_theme_constant_override("separation",4)
 	route_column.custom_minimum_size.x = 220
 	row.add_child(route_column)
 	var outline := Control.new()
-	outline.custom_minimum_size = Vector2(220,130)
+	outline.custom_minimum_size = Vector2(220,110)
 	outline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	route_column.add_child(outline)
@@ -721,3 +733,18 @@ func _show_hero(title: String, theme_id: String) -> void:
 	outline.resized.connect(outline.queue_redraw)
 	route_column.add_child(MenuStyle.label("5 LAPS",24))
 	route_column.add_child(MenuStyle.label("%.2f KM / LAP" % (selected_track.route_length/1000.0),20,true))
+
+func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:
+	var slot := Control.new()
+	slot.name = column_name
+	slot.custom_minimum_size.x = width
+	slot.clip_contents = true
+	parent.add_child(slot)
+	slot.add_child(column)
+	MenuStyle.fill(column)
+
+func _focus_card(index: int) -> void:
+	var left: int = index*tile_stride
+	if left < gallery.scroll_horizontal or left+tile_stride-12 > gallery.scroll_horizontal+gallery.size.x:
+		gallery.call("_stop_snap")
+		gallery.scroll_horizontal = left

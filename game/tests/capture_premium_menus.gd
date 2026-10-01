@@ -247,9 +247,14 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check(race_chart != null and lap_chart == null,"reference layout shows a race comparison below the hero")
 	check(browser.find_child("DeleteUserTrack",true,false) == null and browser.find_child("RemixTrack",true,false) == null,"Play does not expose track modification actions")
 	await _capture("tracks-populated-fixture",physical_size,true)
-	browser.call("_page",1)
+	var wheel := InputEventMouseButton.new()
+	wheel.position = browser.gallery.get_global_rect().get_center()
+	wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+	wheel.pressed = true
+	root.push_input(wheel,true)
+	await create_timer(0.4).timeout
 	await _settle()
-	check(browser.gallery.scroll_horizontal > 0,"gallery arrow scrolls the continuous row")
+	check(browser.gallery.scroll_horizontal > 0,"mouse wheel scrolls the continuous row")
 	await _capture("tracks-storm-fixture",physical_size,true)
 	browser.gallery.scroll_horizontal = 0
 	await _settle()
@@ -265,13 +270,17 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	drag.position = touch_origin-Vector2(280,0)
 	drag.relative = Vector2(-280,0)
 	root.push_input(drag,true)
+	check(browser.gallery.scroll_horizontal == mini(280,int(browser.gallery_content.custom_minimum_size.x-browser.gallery.size.x)),"drag follows the pointer smoothly before snapping")
 	touch = InputEventScreenTouch.new()
 	touch.index = 0
 	touch.position = drag.position
 	touch.pressed = false
 	root.push_input(touch,true)
 	await _settle()
-	check(browser.gallery.scroll_horizontal >= mini(280,int(browser.gallery_content.custom_minimum_size.x-browser.gallery.size.x))-2,"mobile swipe scrolls the track row")
+	await create_timer(0.25).timeout
+	check(browser.gallery.scroll_horizontal > 0,"mobile swipe scrolls the track row")
+	check(browser.gallery.scroll_horizontal % browser.tile_stride == 0,"released swipe locks to a full card boundary")
+	check((int(browser.gallery.size.x)+12) % browser.tile_stride == 0,"carousel width fits only complete cards")
 	check(browser.selected_track.identity == selected_before and not browser.selecting,"swipe never selects a track")
 	check(browser.records.settings.get("favorites",[]) == before_favorites,"swipe never toggles a favorite")
 	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
@@ -309,19 +318,38 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.gallery.scroll_horizontal = 0
 	browser._refresh()
 	await _settle()
+	var stable: Dictionary = _race_rectangles(browser)
+	for control: Node in browser.find_children("*","Button",true,false):
+		check((control as Button).text not in ["<",">"],"carousel has no visible arrow buttons")
+	var original_metadata: Dictionary = browser.selected_track.metadata.duplicate(true)
+	browser.selected_track.metadata.title = "A very long track title with many words to exercise stable section widths"
+	browser.selected_track.metadata.creator = "A long creator name that must not move the route or records"
+	browser._show_detail()
+	await _settle()
+	check(_race_rectangles(browser) == stable,"long track titles and creator names preserve every section rectangle")
+	browser.selected_track.metadata = original_metadata
+	browser._show_detail()
+	await _settle()
+	var rail: Control = browser.find_child("RaceModes",true,false)
+	check(rail.get_global_rect().end.x < browser.hero.global_position.x,"mode rail sits to the left of the preview")
+	check(browser.find_child("HeroRace",true,false) == null and browser.find_child("Mode_dice",true,false) == null,"duplicate Race and Random actions are removed")
+	var random_rect: Rect2 = browser.random_button.get_global_rect()
+	check(random_rect.size.x >= 190 and random_rect.size.x == (browser.find_child("RaceFilters",true,false) as Control).size.x and random_rect.size.x == (browser.find_child("RaceSearch",true,false) as Control).size.x,"Random, Filters and Search are equal spacious widths")
 	var key: String = browser.records.key_for(browser.selected_track,HandlingSelection.config())
 	browser.discovery.records_by_rules_key[key] = {
 		"race_top_percent":18,"lap_top_percent":7,
 		"race_distribution":{"bins":[1,3,6,10,17,23,28,22,16,9,5,2],"min_ms":55000,"max_ms":80000,"player_bin":7},
 		"lap_distribution":{"bins":[2,7,12,19,15,8,3],"min_ms":11000,"max_ms":17000,"player_bin":2},
-		"friends":[{"player":"Fixture Alex","race_ms":68421,"lap_ms":13410},{"player":"Fixture Jen","race_ms":70053,"lap_ms":13702}]}
+		"friends":[{"player":"Fixture Alex","race_ms":68421,"lap_ms":13410},{"player":"Fixture Jen","race_ms":70053,"lap_ms":13702},{"player":"Fixture third player with a long display name","race_ms":71000,"lap_ms":13900}]}
 	browser.call("_show_detail")
 	await _settle()
+	check(_race_rectangles(browser) == stable,"comparison data preserves section rectangles")
 	await _capture("tracks-data-fixture",physical_size,true)
 	# Verified-track controls must fit the same layout without invented scores.
 	browser.selected_track.metadata.cloud_version = "layout-fixture"
 	browser._show_detail()
 	await _settle()
+	check(_race_rectangles(browser) == stable,"cloud controls preserve section rectangles")
 	await _capture("tracks-cloud-controls-fixture",physical_size,true)
 	browser.selected_track.metadata.erase("cloud_version")
 	browser.discovery.records_by_rules_key.clear()
@@ -332,3 +360,9 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	var home: Button = (app.get("root_ui") as Node).find_child("Tab_play",true,false)
 	await _tap(home.get_global_rect().get_center())
 	check(app.get("screen") == "play","shared Home tab reaches Home through viewport touch")
+
+func _race_rectangles(browser: TrackBrowser) -> Dictionary:
+	var result: Dictionary = {}
+	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
+		result[title] = (browser.find_child(title,true,false) as Control).get_global_rect()
+	return result

@@ -43,3 +43,28 @@ Early graphical runs exposed vertical overflow and outdated paging/account fixtu
 - [Shared-track control layout fixture](evidence/race-discovery-2026-10-01/tracks-cloud-controls-fixture-1280x720.png)
 
 Desktop and compact screenshots were inspected. Owner visual acceptance, physical-phone swipe/keyboard/safe-area testing and Android export remain outstanding. No physical-device test or Android export was performed. New rail modes remain placeholders; this pass does not add friends, seasons or challenges. No new art generation or production deployment.
+
+
+## Owner corrections ? stable layout and full-card scrolling (2026-10-01)
+
+Requirements R01/V03/V04/G03/Q01. This follow-up supersedes the initial right-rail, duplicate hero action and arrow/scrollbar descriptions above.
+
+- Hero, records, gallery and bottom action regions now allocate space independently of track content. Fixed-width record/standings columns and clipped title text stop long names or additional scores from moving adjacent sections. Async track selection keeps the previous details visible until the new track is ready; the single race button shows loading and remains disabled during selection.
+- The icon-only mode rail is on the left. Its redundant Random action is removed. The hero Race action is removed; bottom-right Race is the sole race-start action.
+- Random track, Filters and Search each have an equal 196?60 logical-pixel target.
+- Carousel arrows and visible scrollbar are removed. Card widths adapt to fit a whole number of cards within the available width, with at most a few pixels of centering remainder. Dragging follows the pointer continuously; release animates to the nearest complete-card boundary over 0.18 seconds. Mouse-wheel input animates one card per step, and keyboard focus scrolls to full-card boundaries. New gestures, random selection, resizing and catalog refresh cancel obsolete snap animations.
+
+Changed files: `game/ui/track_browser.gd`, `game/ui/track_carousel.gd`, `game/tests/capture_premium_menus.gd`, `game/tests/test_menu_loading.gd`, this document, AGENTS/status/phase notes and the new evidence directory. No changes to physics, replay, camera, backend or asset provenance.
+
+Actual commands (pinned engine through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`):
+
+- `CheckScript -ScriptPath res://ui/track_browser.gd`: passed.
+- `CaptureMenus`: final **730 checks, zero failures**, at 1280?720, 960?540 and 1600?720. Checks exact section rectangles across long titles, local/shared tracks and comparison data; left rail, duplicate removal, equal control widths; continuous drag then card-boundary settling, wheel scrolling, thousand-entry reachability and existing search/navigation behavior.
+- `TestMenuLoading`: **21 checks, zero failures**, including unchanged rectangles while async selections are pending and after completion.
+- `TestMenus`: **26 checks, zero failures**.
+- Scoped `git diff --check`: passed (CRLF notices only).
+- `%LOCALAPPDATA%/Android/Sdk/platform-tools/adb.exe devices`: no device attached. No Android export or physical-device test.
+
+Intermediate graphical runs caught a mouse-wheel step rounding back to its starting card and an obsolete idle snap interfering with catalog changes. Both were corrected; final tests retain scroll movement and final-entry reachability assertions.
+
+Inspected evidence: [desktop](evidence/race-discovery-stable-2026-10-01/tracks-populated-fixture-1280x720.png), [compact landscape](evidence/race-discovery-stable-2026-10-01/tracks-populated-fixture-960x540.png), [wide scrolled row](evidence/race-discovery-stable-2026-10-01/tracks-storm-fixture-1600x720.png), [three-score shared-track fixture](evidence/race-discovery-stable-2026-10-01/tracks-cloud-controls-fixture-1280x720.png). All populated cards/scores remain disposable evidence fixtures. Remaining acceptance: owner visual review and physical-phone swipe feel/safe-area/keyboard checks.

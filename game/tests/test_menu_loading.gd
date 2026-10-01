@@ -39,9 +39,9 @@ func run() -> void:
 	check(not browser.detail.visible and browser.pending_records.visible and browser.pending_records.text.is_empty(),"pending selection shows neither previous records nor flashing loading text")
 	print("HERO_TWO_RAPID_CHOICES_MS: ",(Time.get_ticks_usec()-preview_started)/1000.0)
 	check(browser.selecting,"selection returns while work is pending")
-	check(browser._hero_direction == 1.0 and is_zero_approx(browser._hero_art.position.x),"forward selection slides new scenery in from the right")
-	check(browser._hero_scenery.get_child_count() >= 2,"rapid selections crossfade outgoing scenery without waiting")
-	check(is_equal_approx((browser.hero.find_child("HeroTrackTitle",true,false) as Label).modulate.a,0.65),"new title starts readable during subtle fade")
+	check(browser._hero_direction == 1.0 and is_equal_approx(browser._section_offset,48.0),"forward selection slides new scenery in from the right")
+	check(is_equal_approx(browser.hero.position.x,browser.records_panel.position.x),"hero and records slide together during rapid selections")
+	check(is_equal_approx(browser.hero.modulate.a,0.65),"new title starts readable during subtle fade")
 	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
 	var frames: int = 0
 	while browser.selecting:
@@ -58,7 +58,7 @@ func run() -> void:
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
-	check(browser._hero_direction == -1.0 and is_equal_approx(browser._hero_art.position.x,-96.0),"backward selection slides new scenery in from the left")
+	check(browser._hero_direction == -1.0 and is_equal_approx(browser._section_offset,-48.0),"backward selection slides new scenery in from the left")
 	var third: Dictionary = second.duplicate(true)
 	third.id = "third_track"
 	check(library.save_document(third) == OK,"third fixture saved")
@@ -159,6 +159,8 @@ func _layout(browser: TrackBrowser) -> Dictionary:
 	var result: Dictionary = {}
 	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
 		result[title] = (browser.find_child(title,true,false) as Control).get_global_rect()
+		if title in ["PersonalRecords","Standings","RaceComparison"]:
+			result[title].position.x -= browser._section_offset
 	return result
 
 class DelayedCloud extends Node:

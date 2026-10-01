@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 R01/V03/V04/G03/Q01: owner-marked hero and records section now slides together, including all text, route, favorite and comparison panels. Fixed slots keep carousel/sidebar/actions stationary. Loading 34 and graphical 1366 checks pass; mid-slide capture inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 R01/V03/V04/G03/Q01: hero scenery now uses a 200 ms, 48 px directional slide with fade, following card order and interrupting immediately on reversal. Panels remain fixed. Loading 34 and graphical 1366 checks pass; transition capture inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 R01/V03/Q01: closing Search/Filters releases launcher focus instead of restoring the yellow focus border. CaptureMenus 1357 checks pass, including both closed-button focus regressions; screenshot inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.

@@ -259,12 +259,12 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser._show_hero("REDROCK RUN","desert")
 	await create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
-	check(browser._hero_scenery.get_child_count() > 1,"hero retains outgoing scenery during crossfade")
-	var outgoing_alpha: float = (browser._hero_scenery.get_child(1) as Control).modulate.a
+	check(is_equal_approx(browser.hero.position.x,browser.records_panel.position.x),"hero and records share the same slide offset")
+	var outgoing_alpha: float = browser.hero.modulate.a
 	check(outgoing_alpha > 0.0 and outgoing_alpha < 1.0,"scenery visibly blends during transition")
-	check(browser.hero.get_global_rect() == transition_bounds,"crossfade keeps hero bounds fixed")
-	check(browser._hero_art.position.x > -48.0 and browser._hero_art.position.x < 0.0,"forward slide is between its start and centered position")
-	await _capture("hero-slide-mid",physical_size,true)
+	check(browser.hero.size == transition_bounds.size and (browser.find_child("HeroSlot",true,false) as Control).get_global_rect() == transition_bounds,"slide keeps the allocated section bounds fixed")
+	check(browser._section_offset > 0.0 and browser._section_offset < 48.0,"forward slide is between its start and centered position")
+	await _capture("section-slide-mid",physical_size,true)
 	# Interrupt before the first fade completes: newest title must win now.
 	browser._selection_serial += 1
 	browser.preview_entry.name = "Frostbite Run"
@@ -274,13 +274,13 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FROSTBITE RUN","interrupt updates title immediately")
 	await create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
-	check(browser._hero_art.position.x < -48.0 and browser._hero_art.position.x > -96.0,"reverse slide interrupts immediately from the left")
-	await _capture("hero-slide-interrupted",physical_size,true)
+	check(browser._section_offset < 0.0 and browser._section_offset > -48.0,"reverse slide interrupts immediately from the left")
+	await _capture("section-slide-interrupted",physical_size,true)
 	await create_timer(0.2).timeout
 	await RenderingServer.frame_post_draw
 	check(browser._hero_scenery.get_child_count() == 1,"interrupted scenery settles without queued transitions")
-	check(is_equal_approx(browser._hero_art.position.x,-48.0),"slide settles at the centered crop")
-	await _capture("hero-slide-settled",physical_size,true)
+	check(is_zero_approx(browser._section_offset),"slide settles at the centered crop")
+	await _capture("section-slide-settled",physical_size,true)
 	browser.preview_entry = {}
 	browser._show_detail()
 	await _settle()
@@ -519,4 +519,6 @@ func _race_rectangles(browser: TrackBrowser) -> Dictionary:
 	var result: Dictionary = {}
 	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
 		result[title] = (browser.find_child(title,true,false) as Control).get_global_rect()
+		if title in ["PersonalRecords","Standings","RaceComparison"]:
+			result[title].position.x -= browser._section_offset
 	return result

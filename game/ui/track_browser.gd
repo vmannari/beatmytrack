@@ -40,11 +40,12 @@ var gallery_content: Control
 const HERO_FADE_SECONDS: float = 0.20
 const HERO_SLIDE_DISTANCE: float = 48.0
 var _hero_direction: float = 1.0
-var _hero_art_motion: Tween
+var _section_motion: Tween
+var _section_offset: float = 0.0
+var records_panel: PanelContainer
 var _hero_serial: int = -1
 var _hero_scenery: Control
 var _hero_art: TextureRect
-var _hero_detail_tween: Tween
 var hero: PanelContainer
 const FilterDrawer = preload("res://ui/track_filter_drawer.gd")
 var filter_dialog: FilterDrawer
@@ -90,6 +91,7 @@ func _ready() -> void:
 	records_slot.clip_contents = true
 	main.add_child(records_slot)
 	var selection := PanelContainer.new()
+	records_panel = selection
 	selection.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720dd"),12))
 	records_slot.add_child(selection)
 	MenuStyle.fill(selection)
@@ -675,28 +677,9 @@ func _show_hero(title: String, theme_id: String) -> void:
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Overscan keeps the clipped image filled while scenery slides.
+	_clear(_hero_scenery)
 	_hero_scenery.add_child(art)
-	_hero_scenery.move_child(art,0)
 	MenuStyle.fill(art)
-	art.offset_left = -HERO_SLIDE_DISTANCE
-	art.offset_right = HERO_SLIDE_DISTANCE
-	if _hero_art_motion != null: _hero_art_motion.kill()
-	if _hero_art != null:
-		if animate:
-			var outgoing: TextureRect = _hero_art
-			var slide := outgoing.create_tween().set_parallel(true)
-			slide.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-			slide.tween_property(outgoing,"position:x",outgoing.position.x-_hero_direction*HERO_SLIDE_DISTANCE,HERO_FADE_SECONDS)
-			slide.tween_property(outgoing,"modulate:a",0.0,HERO_FADE_SECONDS)
-			slide.chain().tween_callback(outgoing.queue_free)
-		else:
-			_hero_scenery.remove_child(_hero_art)
-			_hero_art.queue_free()
-	if animate:
-		art.position.x += _hero_direction*HERO_SLIDE_DISTANCE
-		_hero_art_motion = art.create_tween()
-		_hero_art_motion.tween_property(art,"position:x",-HERO_SLIDE_DISTANCE,HERO_FADE_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_hero_art = art
 	var shade := ColorRect.new()
 	shade.color = Color(0.02,0.05,0.07,0.38)
@@ -756,12 +739,22 @@ func _show_hero(title: String, theme_id: String) -> void:
 	outline.resized.connect(outline.queue_redraw)
 	route_column.add_child(MenuStyle.label("5 LAPS",24))
 	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+"%.2f KM / LAP" % (hero_length/1000.0),20,true))
-	if _hero_detail_tween != null: _hero_detail_tween.kill()
-	if animate:
-		_hero_detail_tween = create_tween().set_parallel(true)
-		for element: Control in [heading,creator,outline]:
-			element.modulate.a = 0.65
-			_hero_detail_tween.tween_property(element,"modulate:a",1.0,HERO_FADE_SECONDS)
+	if animate: _slide_section()
+
+func _slide_section() -> void:
+	if _section_motion != null: _section_motion.kill()
+	_set_section_offset(_hero_direction*HERO_SLIDE_DISTANCE)
+	_section_motion = create_tween().set_parallel(true)
+	_section_motion.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_section_motion.tween_method(_set_section_offset,_section_offset,0.0,HERO_FADE_SECONDS)
+	for panel: Control in [hero,records_panel]:
+		panel.modulate.a = 0.65
+		_section_motion.tween_property(panel,"modulate:a",1.0,HERO_FADE_SECONDS)
+
+func _set_section_offset(value: float) -> void:
+	_section_offset = value
+	hero.position.x = value
+	records_panel.position.x = value
 
 
 func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:

@@ -106,26 +106,37 @@ float wet_road_specular(vec2 p) {
 }
 
 // One contained impact per world-space cell; no neighbour search or particles.
+vec2 rain_impact_hash(vec2 p) {
+ vec3 h = fract(vec3(p.x,p.y,p.x)*vec3(0.1031,0.1030,0.0973));
+ h += dot(h,h.yzx+33.33);
+ return fract((h.xx+h.yz)*h.zy);
+}
+
 vec2 rain_impact_slope(vec2 p) {
- vec2 cell = floor(p/2.0);
- vec2 seed = fract(sin(vec2(dot(cell,vec2(127.1,311.7)),dot(cell,vec2(269.5,183.3))))*43758.5453);
- vec2 offset = fract(p/2.0)*2.0-(vec2(0.7)+seed*0.6);
- float age = mod(storm_ripple_time+seed.x*1.7,1.7);
+ vec2 cell = floor(p/0.42);
+ vec2 seed = rain_impact_hash(cell);
+ float clock = storm_ripple_time+seed.x*0.38;
+ float event = floor(clock/0.38);
+ vec2 center = rain_impact_hash(cell+event*vec2(17.1,39.7));
+ vec2 offset = fract(p/0.42)*0.42-(vec2(0.12)+center*0.18);
+ float age = mod(clock,0.38);
  float radius = length(offset);
- float wave = (radius-age*0.75)*32.0;
- float envelope = smoothstep(0.0,0.08,age)*(1.0-smoothstep(0.45,0.8,age));
- float ring = sin(wave)*exp(-wave*wave*0.12)*envelope;
- return offset/max(radius,0.001)*ring*0.10;
+ float wave = clamp((radius-age*0.30)*35.0,-1.0,1.0);
+ float envelope = smoothstep(0.0,0.025,age)*(1.0-smoothstep(0.14,0.26,age));
+ float shoulder = 1.0-wave*wave;
+ float ring = wave*shoulder*shoulder*4.0*envelope;
+ return offset/max(radius,0.001)*ring*0.22;
 }
 
 vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
  vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
- float strength = mix(0.16,0.045,road_puddle(p));
+ float pool = road_puddle(p);
+ float strength = mix(0.16,0.045,pool);
  strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
  vec2 slope = grain*strength;
  if (storm_ripples_enabled) {
-  float visibility = 1.0-smoothstep(0.10,0.24,length(fwidth(p)));
-  slope += rain_impact_slope(p)*road_puddle(p)*visibility;
+  float visibility = 1.0-smoothstep(0.18,0.40,length(fwidth(p)));
+  if (pool*visibility*weight > 0.001) slope += rain_impact_slope(p)*pool*visibility;
  }
  vec3 ripple = (view*vec4(slope.x,0.0,slope.y,0.0)).xyz;
  return normalize(original+ripple*weight);

@@ -8,8 +8,8 @@ func _initialize() -> void:
 
 func _run() -> void:
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-	Engine.max_fps = 0
-	var ripples: bool = "--screen=ripples" in OS.get_cmdline_user_args()
+	Engine.max_fps = 60 if "--screen=ripples-60" in OS.get_cmdline_user_args() else 0
+	var ripples: bool = "--screen=ripples" in OS.get_cmdline_user_args() or "--screen=ripples-60" in OS.get_cmdline_user_args()
 	var track_id: String = "track_acf29166cceaaa42"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--track="): track_id = argument.trim_prefix("--track=")
@@ -61,7 +61,7 @@ func _run() -> void:
 			results.append(result)
 			print("REFLECTION_PROFILE ",JSON.stringify(result))
 	var output := FileAccess.open("res://../build/storm-ripple-profile.json" if ripples else "res://../build/storm-reflection-profile.json",FileAccess.WRITE)
-	output.store_string(JSON.stringify({"device":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"track":track_id,"warmup_frames":WARMUP,"results":results},"\t"))
+	output.store_string(JSON.stringify({"device":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"track":track_id,"fps_cap":Engine.max_fps,"warmup_frames":WARMUP,"results":results},"\t"))
 	output.close()
 	RenderingServer.global_shader_parameter_set("storm_ripples_enabled",true)
 	race.queue_free()

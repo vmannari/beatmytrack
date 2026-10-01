@@ -205,7 +205,7 @@ func _run() -> void:
 			for x: int in range(300,980,2):
 				ripple_delta += absf(ripple_first.get_pixel(x,y).r-ripple_later.get_pixel(x,y).r)
 		print("STORM_RIPPLE_DELTA: ",ripple_delta)
-		check(ripple_delta > 0.1,"ripple animation changes the reflected road with other weather frozen")
+		check(ripple_delta > 10.0,"ripple animation changes the reflected road with other weather frozen")
 		RenderingServer.global_shader_parameter_set("storm_ripple_time",weather.elapsed)
 		await _capture("rain")
 		var reflected: Image = root.get_texture().get_image()

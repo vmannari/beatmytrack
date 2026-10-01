@@ -91,10 +91,18 @@ func _draw() -> void:
 	frame.set_border_width_all(2 if selected or has_focus() else 1)
 	draw_style_box(frame,Rect2(Vector2.ONE,size-Vector2(2,2)))
 	if selected: draw_line(Vector2(14,size.y-2),Vector2(size.x-14,size.y-2),accent,2)
-	draw_string(MenuStyle.DISPLAY,Vector2(13,size.y-29),str(entry.name).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,size.x-26,TITLE_FONT_SIZE,MenuStyle.TEXT)
+	var title: String = str(entry.name).to_upper()
+	var title_size: int = 16 if compact else TITLE_FONT_SIZE
+	var title_width: float = maxf(1.0,size.x-26)
+	while title_size > 12 and MenuStyle.DISPLAY.get_string_size(title,HORIZONTAL_ALIGNMENT_LEFT,-1,title_size).x > title_width:
+		title_size -= 1
+	# Anchor the baseline to the footer and actual font ascent, not the card bottom.
+	# Compact cards have a shorter footer; the old baseline put capitals over the image.
+	var title_baseline: float = size.y-footer+4+MenuStyle.DISPLAY.get_ascent(title_size)
+	draw_string(MenuStyle.DISPLAY,Vector2(13,title_baseline),title,HORIZONTAL_ALIGNMENT_LEFT,title_width,title_size,MenuStyle.TEXT)
 	var creator: String = str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": creator += " (fictional)"
-	draw_string(MenuStyle.BODY,Vector2(13,size.y-10),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(13,size.y-(6 if compact else 10)),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
 	var biome: String = TrackTheme.title(str(entry.get("theme","pine"))).to_upper()
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
 	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+16,23))

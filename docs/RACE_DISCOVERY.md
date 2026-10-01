@@ -155,3 +155,10 @@ Actual commands used the pinned engine via `powershell -NoProfile -ExecutionPoli
 - Android SDK `adb devices`: empty list. No phone attached, Android export or physical-device test.
 
 Visual iteration corrected empty-draft initialization, duplicate input borders, unsupported desktop keyboard warnings and result-row spacing. Inspected [default drawer](evidence/search-drawer-2026-10-01/search-default-1280x720.png) and [compact name search](evidence/search-drawer-2026-10-01/search-name-960x540.png). Evidence uses disposable gallery fixtures with shared sample route geometry, not actual distinct circuits. Owner visual acceptance and physical-phone keyboard/safe-area/scroll behavior remain outstanding.
+
+
+## Track-card title containment - 2026-10-01
+
+Requirements R01/V03/V04/Q01. Owner pointed out capitals extending above the solid footer. Compact cards now use 16 px titles instead of 21 px. The title baseline derives from the footer top plus four pixels of padding and actual font ascent. Longer names shrink to a 12 px minimum within the available width; extreme names retain the existing bounded card presentation and full tooltip. Creator attribution moves slightly lower in compact cards to preserve separation. Noncompact cards retain their 21 px starting size and also use footer-relative placement.
+
+Changed files: `game/ui/track_tile.gd`, this document, status/phase notes and evidence. Actual `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: final **1351 checks, zero failures**, at three landscape sizes. Scoped `git diff --cached --check`: passed. Android SDK `adb devices`: empty list; no phone attached, Android export or device test. Inspected [compact cards](evidence/card-title-footer-2026-10-01/tracks-populated-fixture-960x540.png); desktop capture and raw log are in the same directory. Owner visual/device acceptance remains outstanding.

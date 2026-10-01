@@ -500,6 +500,9 @@ func _heading(parent: Control, caption: String, icon: String) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",8)
 	parent.add_child(row)
+	var indent := Control.new()
+	indent.custom_minimum_size.x = 4
+	row.add_child(indent)
 	row.add_child(ResultsIcons.view(icon,20))
 	var label := MenuStyle.label(caption,21,true)
 	label.add_theme_font_override("font",MenuStyle.DISPLAY)
@@ -517,26 +520,32 @@ func _show_detail() -> void:
 	var theme_id: String = str(selected_track.metadata.get("theme","pine"))
 	_show_hero(title,theme_id)
 	var personal := VBoxContainer.new()
-	personal.custom_minimum_size.x = 210
+	personal.custom_minimum_size.x = 0
 	personal.add_theme_constant_override("separation",2)
 	_fixed_column(row,personal,"PersonalRecords",230)
 	_heading(personal,"YOUR RECORDS","timer")
+	var personal_body: VBoxContainer = _section_body(personal)
 	var key: String = records.key_for(selected_track,HandlingSelection.config())
 	var pb: Dictionary = records.records.get(key,{})
 	var snapshot: Dictionary = discovery.record_snapshot(key)
-	for metric: String in ["race"]:
-		personal.add_child(MenuStyle.label("Best race time" if metric == "race" else "Best lap",14,true))
-		var milliseconds: int = int(pb.get("race_ms" if metric == "race" else "flying_ms",0))
-		if metric == "race" and snapshot.has("race_ms"): milliseconds = int(snapshot.race_ms)
-		var timer := MenuStyle.label(MenuStyle.time_text(milliseconds/1000.0) if milliseconds > 0 else "--",26)
-		if metric == "race": timer.name = "LibraryBestTime"
+	var best_ms: int = int(snapshot.get("race_ms",pb.get("race_ms",0)))
+	if best_ms <= 0:
+		var empty_time := MenuStyle.label("No time yet",18)
+		empty_time.name = "LibraryBestTime"
+		personal_body.add_child(empty_time)
+		_friendly_hint(personal_body,"Set your first record and see how you perform.")
+	else:
+		personal_body.add_child(MenuStyle.label("Best race time",14,true))
+		var timer := MenuStyle.label(MenuStyle.time_text(best_ms/1000.0),26)
+		timer.name = "LibraryBestTime"
 		timer.add_theme_color_override("font_color",MenuStyle.ACCENT)
-		personal.add_child(timer)
-		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
-		var rank_text: String = "Top %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
-		if metric == "race" and snapshot.has("race_rank"): rank_text = "Rank %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
-		personal.add_child(MenuStyle.label(rank_text,12,true))
-	personal.add_child(MenuStyle.label("Best lap  "+(MenuStyle.time_text(float(pb.get("flying_ms",0))/1000.0) if int(pb.get("flying_ms",0)) > 0 else "--"),16,true))
+		personal_body.add_child(timer)
+		if snapshot.has("race_rank"):
+			personal_body.add_child(MenuStyle.label("Rank %d of %d" % [int(snapshot.race_rank),int(snapshot.population)],12,true))
+		elif float(snapshot.get("race_top_percent",-1)) >= 0:
+			personal_body.add_child(MenuStyle.label("Top %d%%" % ceili(float(snapshot.race_top_percent)),12,true))
+		if int(pb.get("flying_ms",0)) > 0:
+			personal_body.add_child(MenuStyle.label("Best lap  "+MenuStyle.time_text(float(pb.flying_ms)/1000.0),16,true))
 	row.add_child(VSeparator.new())
 	var distribution := VBoxContainer.new()
 	distribution.name = "RaceComparison"
@@ -545,10 +554,11 @@ func _show_detail() -> void:
 	distribution.add_theme_constant_override("separation",2)
 	row.add_child(distribution)
 	_heading(distribution,"WHERE YOU STAND","bars")
+	var distribution_body: VBoxContainer = _section_body(distribution)
 	var charts := HBoxContainer.new()
 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	charts.add_theme_constant_override("separation",8)
-	distribution.add_child(charts)
+	distribution_body.add_child(charts)
 	for metric: String in ["race"]:
 		var card := PanelContainer.new()
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -558,38 +568,40 @@ func _show_detail() -> void:
 		column.add_theme_constant_override("separation",4)
 		card.add_child(column)
 		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
-		var rank_text: String = "TOP %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
+		var rank_text: String = "TOP %d%%" % ceili(percentile) if percentile >= 0 else "Not ranked yet"
 		if metric == "race" and snapshot.has("race_rank"): rank_text = "RANK %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
-		column.add_child(MenuStyle.label(rank_text,13,true))
+		column.add_child(MenuStyle.label(rank_text,13 if snapshot.has(metric+"_distribution") else 18, snapshot.has(metric+"_distribution")))
 		var histogram := TrackDistribution.new()
 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
-		histogram.snapshot = snapshot.get(metric+"_distribution",{})
+		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+		if histogram.snapshot.get("bins",[]).is_empty():
+			histogram.hide()
+			_friendly_hint(column,"Share this track and set a time to see how you compare." if not selected_track.metadata.has("cloud_version") else "Set a time to see how you compare.")
 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
 		histogram.custom_minimum_size = Vector2(164,64)
 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		column.add_child(histogram)
 	row.add_child(VSeparator.new())
 	var friends := VBoxContainer.new()
-	friends.custom_minimum_size.x = 240
+	friends.custom_minimum_size.x = 0
 	friends.add_theme_constant_override("separation",8)
 	if selected_track.metadata.has("cloud_version"): friends.add_theme_constant_override("separation",2)
 	_fixed_column(row,friends,"Standings",270)
 	_heading(friends,"HIGH SCORES" if selected_track.metadata.has("cloud_version") else "FRIENDS","friends")
+	var friends_body: VBoxContainer = _section_body(friends)
 	var standings: Array = snapshot.get("friends",[])
-	var friend_space := Control.new()
-	friend_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	friends.add_child(friend_space)
 	if standings.is_empty():
-		friends.add_child(MenuStyle.label("No verified scores yet" if selected_track.metadata.has("cloud_version") else "No friend records yet",13,true))
+		friends_body.add_child(MenuStyle.label("No times yet" if selected_track.metadata.has("cloud_version") else "No friend times",18))
+		_friendly_hint(friends_body,"Be the first to set a time!" if selected_track.metadata.has("cloud_version") else "Share this track and challenge a friend.")
 	else:
 		for index: int in range(mini(3,standings.size())):
 			var friend: Dictionary = standings[index]
 			var line := MenuStyle.label("%s  %s" % [str(friend.player),MenuStyle.time_text(float(friend.race_ms)/1000)],12)
 			line.clip_text = true
-			friends.add_child(line)
+			friends_body.add_child(line)
 	if selected_track.metadata.has("cloud_version"):
 		var actions := HBoxContainer.new()
-		friends.add_child(actions)
+		friends_body.add_child(actions)
 		var scores_button := MenuStyle.button("High scores",_open_scores)
 		scores_button.add_theme_font_size_override("font_size",18)
 		scores_button.custom_minimum_size.y = 48
@@ -698,7 +710,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hero.add_child(shade)
 	var inset := MarginContainer.new()
-	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,12)
+	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,24 if side in ["left","right"] else 16)
 	hero.add_child(inset)
 	var row := HBoxContainer.new()
 	inset.add_child(row)
@@ -736,7 +748,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	favorite_column.add_child(favorite)
 	var outline := Control.new()
 	outline.name = "HeroRouteOutline"
-	outline.custom_minimum_size = Vector2(220,110)
+	outline.custom_minimum_size = Vector2(220,96)
 	outline.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	route_column.add_child(outline)
@@ -816,6 +828,24 @@ func _set_section_offset(value: float) -> void:
 	for panel: Control in _outgoing_panels:
 		panel.position.x = value - _hero_direction*_slide_distance
 
+
+func _section_body(parent: VBoxContainer) -> VBoxContainer:
+	var inset := MarginContainer.new()
+	inset.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	inset.add_theme_constant_override("margin_left",40)
+	inset.add_theme_constant_override("margin_right",12)
+	inset.add_theme_constant_override("margin_top",8)
+	inset.add_theme_constant_override("margin_bottom",8)
+	parent.add_child(inset)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation",3)
+	inset.add_child(content)
+	return content
+
+func _friendly_hint(parent: Control, text: String) -> void:
+	var hint := MenuStyle.label(text,15,true)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(hint)
 
 func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:
 	var slot := Control.new()

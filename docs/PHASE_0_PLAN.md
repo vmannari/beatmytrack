@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-10-01 R01/V03/V04/Q01: hero and records content now has more internal padding while preserving section proportions. Empty states use friendly headings and next steps. CaptureMenus 1450 checks pass; screenshots inspected. Phone attached at verification; no device test/export performed. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 R01/V03/V04/Q01: biome labels now share existing icons and theme colors across hero, cards, search and inactive filter choices. CaptureMenus 1450 checks pass; desktop/compact captures inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 R01/V03/V04/Q01: hero favorite is now a top-right star with the same translucent navy button, white outline and yellow filled state as track cards. CaptureMenus 1450 checks pass; desktop screenshot inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.

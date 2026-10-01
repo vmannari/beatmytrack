@@ -30,8 +30,13 @@ func run() -> void:
 	var b: Dictionary = TrackCatalog.local_metadata(second)
 	await process_frame
 	var layout_before: Dictionary = _layout(browser)
+	var preview_started: int = Time.get_ticks_usec()
 	browser._select(a)
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FIRST","cold choice updates hero metadata synchronously")
 	browser._select(b)
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "SECOND","rapid second choice immediately replaces the pending hero")
+	check(not browser.detail.visible and browser.pending_records.visible and browser.pending_records.text.is_empty(),"pending selection shows neither previous records nor flashing loading text")
+	print("HERO_TWO_RAPID_CHOICES_MS: ",(Time.get_ticks_usec()-preview_started)/1000.0)
 	check(browser.selecting,"selection returns while work is pending")
 	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
 	var frames: int = 0
@@ -42,6 +47,7 @@ func run() -> void:
 	check(_layout(browser) == layout_before,"completed selection preserves section rectangles")
 	check(frames > 1,"UI continues processing frames during compilation")
 	check(browser.selected_track.identity == "creator_second_track","latest rapid selection wins")
+	check(browser.preview_entry.is_empty() and browser.detail.visible and not browser.pending_records.visible,"ready track restores its own records and clears preview state")
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
@@ -73,6 +79,22 @@ func run() -> void:
 	check(browser.catalog.cached_track(a) == null,"saved changes invalidate compiled cache")
 	browser.catalog.clear_resolved()
 	check(browser.catalog.cached_track(b) == null,"manual refresh clears cached tracks")
+	var delayed := DelayedCloud.new()
+	root.add_child(delayed)
+	browser.cloud = delayed
+	var cloud_entry: Dictionary = a.duplicate(true)
+	cloud_entry.id = "cloud_delayed_fixture"
+	cloud_entry.source = "cloud"
+	cloud_entry.name = "Cloud preview"
+	browser._select(cloud_entry)
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "CLOUD PREVIEW" and delayed.calls == 0,"cloud metadata is visible before download starts")
+	while delayed.calls == 0: await process_frame
+	check(browser.race_button.disabled,"pending download cannot race the previous selection")
+	delayed.finished.emit()
+	await process_frame
+	check(browser.race_button.disabled and browser.pending_records.text.contains("unavailable"),"failed download keeps its own preview and never enables stale racing")
+	browser.cloud = null
+	delayed.queue_free()
 	var track: NativeTrack = browser.selected_track
 	browser.queue_free()
 	await process_frame
@@ -130,3 +152,12 @@ func _layout(browser: TrackBrowser) -> Dictionary:
 	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
 		result[title] = (browser.find_child(title,true,false) as Control).get_global_rect()
 	return result
+
+class DelayedCloud extends Node:
+	signal finished
+	var calls: int = 0
+	var last_error: String = "Fixture download unavailable"
+	func download(_entry: Dictionary) -> bool:
+		calls += 1
+		await finished
+		return false

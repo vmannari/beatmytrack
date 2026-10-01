@@ -81,6 +81,7 @@ func run() -> void:
 
 
 func _navigate(destination: String) -> void:
+	if destination == "play" and (app.get("root_ui") as Node).find_child("Tab_play",true,false) == null: destination = "tracks"
 	var node_name: String = "MenuSettings" if destination == "settings" else "Tab_" + destination
 	var button: Button = (app.get("root_ui") as Node).find_child(node_name, true, false)
 	check(button != null and button.is_visible_in_tree(), "visible navigation to " + destination)
@@ -359,7 +360,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check(not browser.filter_dialog.visible and browser.state.theme == "all" and browser.gallery.is_processing_input(),"Escape discards pending choices and restores carousel input")
 	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
 	await create_timer(0.2).timeout
-	await _tap(((app.get("root_ui") as Node).find_child("Tab_play",true,false) as Control).get_global_rect().get_center())
+	await _tap(((app.get("root_ui") as Node).find_child("Tab_create",true,false) as Control).get_global_rect().get_center())
 	check(not browser.filter_dialog.visible and app.get("screen") == "tracks","backdrop tap closes filters without navigating the menu underneath")
 	browser.filter_dialog.close()
 	await _settle()
@@ -420,9 +421,9 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.state.page = 0
 	browser.call("_refresh")
 	await _settle()
-	var home: Button = (app.get("root_ui") as Node).find_child("Tab_play",true,false)
+	var home: Button = (app.get("root_ui") as Node).find_child("Tab_tracks",true,false)
 	await _tap(home.get_global_rect().get_center())
-	check(app.get("screen") == "play","shared Home tab reaches Home through viewport touch")
+	check(app.get("screen") == "tracks","shared Race tab reaches the library through viewport touch")
 
 func _race_rectangles(browser: TrackBrowser) -> Dictionary:
 	var result: Dictionary = {}

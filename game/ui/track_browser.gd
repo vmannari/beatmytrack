@@ -25,6 +25,8 @@ var race_button: Button
 var loading: bool = true
 var detail_costs: Dictionary = {}
 var selecting: bool = false
+var preview_entry: Dictionary = {}
+var pending_records: Label
 var _resolve_thread: Thread
 var _requested_entry: Dictionary = {}
 var _working_entry: Dictionary = {}
@@ -84,6 +86,10 @@ func _ready() -> void:
 	MenuStyle.fill(selection)
 	detail = VBoxContainer.new()
 	selection.add_child(detail)
+	pending_records = MenuStyle.label("",18,true)
+	pending_records.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	selection.add_child(pending_records)
+	pending_records.hide()
 	gallery_slot = Control.new()
 	gallery_slot.name = "GallerySlot"
 	gallery_slot.custom_minimum_size.y = 140
@@ -260,7 +266,7 @@ func _render_tiles() -> void:
 		tile.entry = entry
 		tile.favorite = entry.id in records.settings.get("favorites",[])
 		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
-		tile.selected = entry.id == selected_track.identity
+		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
 		tile.name = "Track_"+str(entry.id)
 		tile.pressed.connect(_select.bind(entry))
 		tile.focus_entered.connect(_focus_card.bind(index))
@@ -292,44 +298,45 @@ func _random() -> void:
 
 func _select(entry: Dictionary) -> void:
 	_selection_serial += 1
-	if entry.source == "cloud" and cloud != null:
-		var serial: int = _selection_serial
-		selecting = true
-		race_button.disabled = true
-		race_button.text = "DOWNLOADING TRACK..."
-		var downloaded: bool = await cloud.download(entry)
-		if not is_inside_tree() or serial != _selection_serial: return
-		if not downloaded:
-			selecting = false
-			notice.emit(cloud.last_error)
-			return
-	_requested_entry = entry
+	_requested_entry = {}
 	var cached: NativeTrack = catalog.cached_track(entry)
 	if cached != null:
-		# A cached choice must not wait behind a superseded cold compilation.
-		_requested_entry = {}
 		_finish_selection({"track":cached,"draft":{}})
-		# Do not carry an unrelated menu worker into live racing.
 		race_button.disabled = _resolve_thread != null
-		for tile: Node in grid.get_children():
-			if tile is TrackTile:
-				tile.selected = tile.entry.id == entry.id
-				tile.queue_redraw()
-		return
-	selecting = true
-	race_button.disabled = true
-	# A new request replaces any pending request. The worker never touches UI,
-	# live library state, or a track already used by the main thread.
-	race_button.text = "LOADING TRACK..."
+	else:
+		selecting = true
+		preview_entry = entry
+		race_button.disabled = true
+		race_button.text = "LOADING "+str(entry.name).to_upper()
+		detail.hide()
+		pending_records.text = ""
+		pending_records.show()
+		_show_hero(str(entry.name).to_upper(),str(entry.get("theme","pine")))
 	for tile: Node in grid.get_children():
 		if tile is TrackTile:
 			tile.selected = tile.entry.id == entry.id
 			tile.queue_redraw()
+	if cached != null: return
+	var serial: int = _selection_serial
+	if entry.source == "cloud" and cloud != null:
+		# Present the metadata before any disk validation or HTTP work.
+		await get_tree().process_frame
+		await get_tree().process_frame
+		if not is_inside_tree() or serial != _selection_serial: return
+		var downloaded: bool = await cloud.download(entry)
+		if not is_inside_tree() or serial != _selection_serial: return
+		if not downloaded:
+			selecting = false
+			pending_records.text = "Track unavailable. Select it again to retry."
+			notice.emit(cloud.last_error)
+			return
+	_requested_entry = entry
 	_start_selection()
 
 func _start_selection() -> void:
 	if _resolve_thread != null or _requested_entry.is_empty(): return
 	_working_entry = _requested_entry
+	_requested_entry = {}
 	_working_serial = _selection_serial
 	var cached: NativeTrack = catalog.cached_track(_working_entry)
 	if cached != null:
@@ -340,6 +347,7 @@ func _start_selection() -> void:
 	if error != OK:
 		_resolve_thread = null
 		selecting = false
+		pending_records.text = "Track unavailable. Select it again to retry."
 		notice.emit("The track could not be loaded. Please try again.")
 
 static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
@@ -356,7 +364,7 @@ func _process(_delta: float) -> void:
 	if result.track != null: catalog.remember_track(_working_entry,result.track)
 	if _working_serial != _selection_serial:
 		_start_selection()
-		if _requested_entry.is_empty(): race_button.disabled = false
+		if _requested_entry.is_empty() and not selecting and preview_entry.is_empty(): race_button.disabled = false
 		return
 	_finish_selection(result)
 
@@ -371,6 +379,8 @@ func _finish_selection(result: Dictionary) -> void:
 	if track == null:
 		var draft: Dictionary = result.draft
 		if not draft.is_empty():
+			pending_records.hide()
+			detail.show()
 			_clear(detail)
 			var draft_title := MenuStyle.label(str(draft.name)+" - draft",23)
 			draft_title.clip_text = true
@@ -383,8 +393,12 @@ func _finish_selection(result: Dictionary) -> void:
 			detail.add_child(issue)
 			detail.add_child(MenuStyle.label("Open Create to repair this draft.",18,true))
 			return
+		pending_records.text = "Track unavailable. Select it again to retry."
 		notice.emit("This track could not be opened. Its saved route may need repair or reimporting.")
 		return
+	preview_entry = {}
+	pending_records.hide()
+	detail.show()
 	selected_track = track
 	track_selected.emit(track)
 	_show_detail()
@@ -482,6 +496,7 @@ func _heading(parent: Control, caption: String, icon: String) -> void:
 	row.add_child(label)
 
 func _show_detail() -> void:
+	if selecting or not preview_entry.is_empty(): return
 	_clear(detail)
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -597,7 +612,7 @@ func _open_rating() -> void:
 	dialog.popup_centered()
 
 func _favorite() -> void:
-	_favorite_id(selected_track.identity)
+	_favorite_id(str(preview_entry.get("id",selected_track.identity)))
 	_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
 
 func _favorite_id(id: String) -> void:
@@ -616,7 +631,16 @@ func _build_mode_rail(parent: Control) -> void:
 	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"]]:
 		var active: bool = item[1] == "Free race"
 		var button := MenuStyle.button("",func() -> void: pass,active)
-		button.icon = MenuIcon.texture(item[0])
+		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
+		button.expand_icon = true
+		button.add_theme_constant_override("icon_max_width",38)
+		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		button.add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.TEXT)
+		button.add_theme_color_override("icon_disabled_color",Color("9cbbc8"))
+		var tile_style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"),10)
+		tile_style.border_color = Color("ffe792") if active else Color("2a4655")
+		tile_style.set_border_width_all(1)
+		button.add_theme_stylebox_override("normal" if active else "disabled",tile_style)
 		button.name = "Mode_"+str(item[0])
 		button.custom_minimum_size = Vector2(60,60)
 		button.tooltip_text = str(item[1])+("" if active else " - Coming soon")
@@ -624,6 +648,18 @@ func _build_mode_rail(parent: Control) -> void:
 		rail.add_child(button)
 
 func _show_hero(title: String, theme_id: String) -> void:
+	if not preview_entry.is_empty():
+		title = str(preview_entry.name).to_upper()
+		theme_id = str(preview_entry.get("theme","pine"))
+	var hero_points: PackedVector2Array = selected_track.route
+	var hero_length: float = selected_track.route_length
+	var hero_creator: String = str(selected_track.metadata.get("cloud_creator",selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator"))))
+	if not preview_entry.is_empty():
+		hero_creator = str(preview_entry.get("creator","Unknown creator"))
+		hero_points = PackedVector2Array()
+		for point: Array in preview_entry.get("points",[]): hero_points.append(Vector2(point[0],point[1]))
+		hero_length = 0.0
+		for index: int in range(hero_points.size()): hero_length += hero_points[index].distance_to(hero_points[(index+1)%hero_points.size()])
 	_clear(hero)
 	var art := TextureRect.new()
 	art.name = "SelectedTrackScenery"
@@ -651,16 +687,17 @@ func _show_hero(title: String, theme_id: String) -> void:
 	info.add_child(spacer)
 	info.add_child(MenuStyle.label(TrackTheme.title(theme_id).to_upper(),18))
 	var heading := MenuStyle.label(title,44)
+	heading.name = "HeroTrackTitle"
 	heading.clip_text = true
 	heading.tooltip_text = title
 	info.add_child(heading)
-	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("cloud_creator",selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator")))),18)
+	var creator := MenuStyle.label("by "+hero_creator,18)
 	creator.clip_text = true
 	info.add_child(creator)
 	var actions := HBoxContainer.new()
 	info.add_child(actions)
 	var favorite := MenuStyle.button("",_favorite)
-	favorite.icon = MenuIcon.texture("star_filled" if selected_track.identity in records.settings.get("favorites",[]) else "heart")
+	favorite.icon = MenuIcon.texture("star_filled" if preview_entry.get("id",selected_track.identity) in records.settings.get("favorites",[]) else "heart")
 	favorite.tooltip_text = "Toggle favorite"
 	actions.add_child(favorite)
 	var route_column := VBoxContainer.new()
@@ -673,7 +710,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	route_column.add_child(outline)
 	outline.draw.connect(func() -> void:
-		var points: PackedVector2Array = selected_track.route
+		var points: PackedVector2Array = hero_points
 		if points.size() < 2: return
 		var bounds := Rect2(points[0],Vector2.ZERO)
 		for point: Vector2 in points: bounds = bounds.expand(point)
@@ -687,7 +724,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 		outline.draw_polyline(path,Color.WHITE,4,true))
 	outline.resized.connect(outline.queue_redraw)
 	route_column.add_child(MenuStyle.label("5 LAPS",24))
-	route_column.add_child(MenuStyle.label("%.2f KM / LAP" % (selected_track.route_length/1000.0),20,true))
+	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+"%.2f KM / LAP" % (hero_length/1000.0),20,true))
 
 func _fixed_column(parent: Control, column: Control, column_name: String, width: float) -> void:
 	var slot := Control.new()

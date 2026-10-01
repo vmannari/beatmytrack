@@ -94,3 +94,31 @@ Actual commands used the pinned engine through `powershell -NoProfile -Execution
 Initial visual review found clipped Show content and a stale pre-render rating capture; spacing and capture settling were corrected. Additional touch checks found that native slider/backdrop handling did not consume viewport touch events; explicit handling fixed both, and the final suite retains those tests.
 
 Inspected evidence: [default drawer](evidence/filter-drawer-2026-10-01/filters-default-1280x720.png), [4.1 minimum](evidence/filter-drawer-2026-10-01/filters-rating-1280x720.png), [compact landscape](evidence/filter-drawer-2026-10-01/filters-rating-960x540.png), [wide landscape](evidence/filter-drawer-2026-10-01/filters-default-1600x720.png). Populated cards/ratings in evidence are disposable fixtures. Remaining acceptance: owner visual review and actual-phone touch feel/safe-area testing; race-count controls await real catalog data.
+
+## Mode icons and immediate hero previews - 2026-10-01
+
+Requirements R01/V03/V04/G03/Q01. Replaced the left rail glyphs with original authored vector trophy, chequered flag, target and friends artwork. Consistent optical weight, subtle fills, sharper mipmapped textures, clearer inactive contrast and bordered tiles retain the existing dimensions and placeholder behavior. No external artwork or generated assets are used.
+
+Cold selections now paint title, creator, biome scenery and route outline directly from catalog metadata before compilation/download completes. Preview distance is marked approximate; canonical geometry replaces it when ready. Cached tracks still resolve immediately. The fixed records area remains quiet during preparation: the owner's follow-up removed the flashing "Loading track records" text. Previous-track records are hidden until the selected track is ready; actual failures retain an actionable error. Race stays disabled until preparation completes. Rapid choices and stale worker/download results cannot restore obsolete heroes or unlock an unrelated track.
+
+Desktop profiling (same Speedy/Knot content hashes before and after):
+
+| Track | Before: hero waited for ready | After: selection handler | After: first hero frame | After: race preparation ready |
+| --- | --- | --- | --- | --- |
+| Speedy | 343.267 ms | 1.332 ms | 22.583 ms | 358.034 ms |
+| Knot | 453.029 ms | 1.341 ms | 22.775 ms | 486.887 ms |
+
+This improves visible response, not compilation speed. Timings are desktop samples, not a phone performance guarantee. Raw logs are in [evidence](evidence/race-icons-latency-2026-10-01/after-profile.log), alongside the before log.
+
+Changed files: new `game/ui/race_mode_icons.gd`, `game/ui/track_browser.gd`, `game/tests/test_menu_loading.gd`, `profile_menu_selection.gd`, `capture_premium_menus.gd`, this document, status/phase notes and evidence. The capture harness follows the current workspace's existing Race-first navigation (no Home tab); the production app navigation changes belong to separate work.
+
+Actual commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+- `ProfileMenus` before/after: passed; identical compiled track hashes.
+- `TestMenuLoading`: final **28 checks, zero failures**, including synchronous rapid hero previews, quiet pending records, stale work/cache handling and failed downloads.
+- `TestMenus`: **36 checks, zero failures**.
+- `CaptureMenus`: final **913 checks, zero failures**, three landscape sizes. Early runs exposed stale Home-tab assumptions and an attempted backdrop tap inside the drawer; the harness now tests dismissal using the actual exposed Create tab, preserving the underlying-navigation assertion.
+- Scoped `git diff --check`: passed.
+- Android SDK `adb devices`: empty list. No phone attached, physical-device test or Android export performed.
+
+Inspected [desktop](evidence/race-icons-latency-2026-10-01/tracks-populated-fixture-1280x720.png) and [compact landscape](evidence/race-icons-latency-2026-10-01/tracks-populated-fixture-960x540.png) captures. Populated records/cards are disposable fixtures. Owner icon approval and physical-phone latency/touch acceptance remain outstanding.

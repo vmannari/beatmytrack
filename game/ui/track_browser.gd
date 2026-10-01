@@ -46,7 +46,8 @@ var hero: PanelContainer
 const FilterDrawer = preload("res://ui/track_filter_drawer.gd")
 var filter_dialog: FilterDrawer
 var filter_button: Button
-var search_dialog: AcceptDialog
+const SearchDrawer = preload("res://ui/track_search_drawer.gd")
+var search_dialog: SearchDrawer
 var _tile_start: int = -1
 var _query_signature: String = ""
 var tile_stride: int = 202
@@ -132,39 +133,20 @@ func _ready() -> void:
 		state.merge(filters,true)
 		_refresh())
 	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
-	search_dialog = AcceptDialog.new()
-	search_dialog.title = "Search tracks"
-	search_dialog.min_size = Vector2i(580,150)
+	search_dialog = SearchDrawer.new()
+	search_dialog.catalog = catalog
+	search_dialog.discovery = discovery
+	search_dialog.records = records
 	add_child(search_dialog)
-	var search_controls := VBoxContainer.new()
-	search_dialog.add_child(search_controls)
+	search_dialog.applied.connect(func(search: Dictionary) -> void:
+		state.merge(search,true)
+		state.page = 0
+		_refresh())
+	search_dialog.selected.connect(_select)
+	search_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
 	if cloud != null:
 		cloud.changed.connect(_cloud_changed)
 		cloud_status = count_label
-	var search_kind := OptionButton.new()
-	for caption: String in ["Name or creator","Track name","Creator"]: search_kind.add_item(caption)
-	search_kind.selected = int(state.get("search_kind",0))
-	search_kind.item_selected.connect(func(index: int) -> void:
-		state.search_kind = index
-		state.page = 0
-		_refresh())
-	search_controls.add_child(search_kind)
-	for field: String in ["search"]:
-		var edit := LineEdit.new()
-		edit.name = "Search_"+field
-		edit.placeholder_text = "Search tracks or creators..."
-		edit.text = str(state.get(field,""))
-		edit.max_length = 80
-		edit.clear_button_enabled = true
-		edit.right_icon = MenuIcon.texture("search")
-		edit.custom_minimum_size = Vector2(156,48)
-		edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		edit.add_theme_font_size_override("font_size",16)
-		search_controls.add_child(edit)
-		edit.text_changed.connect(func(value: String) -> void:
-			state[field] = value
-			state.page = 0
-			_refresh())
 	_show_detail()
 	call_deferred("_load_catalog")
 
@@ -256,6 +238,7 @@ func _refresh() -> void:
 	filter_button.add_theme_color_override("font_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
 	filter_button.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
 	if filter_dialog.visible: filter_dialog.refresh_choices()
+	if search_dialog != null and search_dialog.visible: search_dialog.refresh_results()
 
 func _render_tiles() -> void:
 	if not is_instance_valid(grid): return
@@ -471,8 +454,9 @@ func _build_actions() -> void:
 	filters.icon = MenuIcon.texture("filter")
 	actions.add_child(filters)
 	var search := MenuStyle.button("Search",func() -> void:
-		search_dialog.popup_centered()
-		(search_dialog.find_child("Search_search",true,false) as LineEdit).grab_focus())
+		gallery.call("_stop_snap")
+		gallery.set_process_input(false)
+		search_dialog.open_for(state,find_child("RaceSearch",true,false)))
 	search.name = "RaceSearch"
 	search.icon = MenuIcon.texture("search")
 	actions.add_child(search)

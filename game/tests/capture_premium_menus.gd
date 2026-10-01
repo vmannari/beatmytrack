@@ -320,16 +320,67 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
 	check(browser.search_dialog.visible,"Search beside Filters opens through viewport input")
 	var search: LineEdit = browser.search_dialog.find_child("Search_search",true,false)
+	var search_before: Dictionary = browser.state.duplicate(true)
+	await create_timer(0.2).timeout
+	await _settle()
+	check(not browser.gallery.is_processing_input(),"search blocks underlying carousel gestures")
+	check(browser.search_dialog.matches.size() == 8 and browser.search_dialog.results.get_child_count() == 4,"empty initial search renders four real previews and full count")
+	for result: Control in browser.search_dialog.results.get_children():
+		check(result.get_global_rect().grow(1).encloses((result.get_child(0) as Control).get_global_rect()),"search row content stays inside its touch target")
+	await _capture("search-default",physical_size,true)
 	search.text = "Redrock"
 	search.text_changed.emit(search.text)
 	await _settle()
-	check(browser.matches.size() == 1 and browser.matches[0].name == "Redrock Run","Search filters names across the full carousel")
+	check(browser.search_dialog.matches.size() == 1 and browser.search_dialog.matches[0].name == "Redrock Run","Search previews names across the full catalog")
+	check(browser.state == search_before,"typing leaves applied gallery filters unchanged")
+	await _capture("search-name",physical_size,true)
 	search.text = "Gallery fixture"
 	search.text_changed.emit(search.text)
-	check(browser.matches.size() == 7,"Search finds creators across the full carousel")
+	check(browser.search_dialog.matches.size() == 7,"Search finds creators across the full catalog")
+	await _tap(browser.search_dialog.scopes[1].get_global_rect().get_center())
+	check(browser.search_dialog.matches.is_empty(),"name-only scope excludes creator matches")
+	await _settle()
+	await _capture("search-empty",physical_size,true)
+	await _tap(browser.search_dialog.scopes[2].get_global_rect().get_center())
+	check(browser.search_dialog.matches.size() == 7,"creator-only scope returns creator matches")
+	await _tap(browser.search_dialog.more_button.get_global_rect().get_center())
+	check(browser.search_dialog.results.get_child_count() == 7,"more expands real search results")
+	await _tap(browser.search_dialog.apply_button.get_global_rect().get_center())
+	check(not browser.search_dialog.visible and browser.matches.size() == 7 and browser.state.search_kind == 2,"Show tracks applies search and scope")
+	check(browser.gallery.is_processing_input(),"applying search restores carousel input")
+	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	await _tap((browser.search_dialog.find_child("ClearSearch",true,false) as Button).get_global_rect().get_center())
+	check(search.text.is_empty() and browser.state.search == "Gallery fixture","Clear previews empty search until applied")
+	var cancel_search := InputEventKey.new()
+	cancel_search.keycode = KEY_ESCAPE
+	cancel_search.pressed = true
+	root.push_input(cancel_search,true)
+	check(not browser.search_dialog.visible and browser.state.search == "Gallery fixture","Escape discards pending search")
+	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
 	search.text = ""
 	search.text_changed.emit("")
-	browser.search_dialog.hide()
+	await _tap(browser.search_dialog.apply_button.get_global_rect().get_center())
+	check(browser.matches.size() == 8,"clearing and applying restores all fixture results")
+	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	await _tap(((app.get("root_ui") as Node).find_child("Tab_create",true,false) as Control).get_global_rect().get_center())
+	check(not browser.search_dialog.visible and app.get("screen") == "tracks","search backdrop dismisses without underlying navigation")
+	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	await _tap(browser.search_dialog.scopes[0].get_global_rect().get_center())
+	search.text = "Redrock"
+	search.text_changed.emit(search.text)
+	await _settle()
+	await _tap((browser.search_dialog.results.get_child(0) as Control).get_global_rect().get_center())
+	check(not browser.search_dialog.visible and browser.state.search == "Redrock","touching a preview applies search and selects its track")
+	while browser.selecting: await process_frame
+	browser.state.search = ""
+	browser.state.search_kind = 0
+	browser._refresh()
+	await _settle()
+
 	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
 	check(browser.filter_dialog.visible,"Filters opens through viewport input")
 	await create_timer(0.2).timeout

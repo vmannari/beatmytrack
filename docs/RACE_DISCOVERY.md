@@ -137,3 +137,21 @@ Actual pinned-engine commands through `powershell -NoProfile -ExecutionPolicy By
 - Android SDK `adb devices`: empty list; no phone attached. No Android export or physical-device test.
 
 Inspected [desktop mid-fade](evidence/hero-crossfade-2026-10-01/hero-crossfade-mid-1280x720.png) and [compact settled hero](evidence/hero-crossfade-2026-10-01/hero-crossfade-settled-960x540.png). Interrupted and wide captures plus test logs are in the same evidence directory. Owner motion/visual acceptance and physical-phone smoothness remain outstanding.
+
+
+## Search drawer reference - 2026-10-01
+
+Requirements R01/V03/V04/G03/Q01. Replaced the native Search popup with a navy right-hand modal drawer over a dimmed Race screen. Includes Name or creator / Name / Creator choices, outlined input with inline clear, live match count, highlighted title matches, existing scenery thumbnails and biome icons, real metadata route outlines, four initial previews with expandable additional results, Clear and yellow Show N tracks. Scrollable results retain fixed header/footer controls. No generated artwork or new dependencies.
+
+Search previews combine the draft query/scope with current filters and sorting through the existing discovery provider. Typing does not change the underlying gallery until Show tracks or Enter; a result tap applies the search and selects that track directly. Clear previews an empty query while preserving scope/filters. Close, Escape and backdrop taps discard pending changes. Focus cycles inside the drawer, carousel input is suspended while open, and the virtual keyboard is dismissed on supported platforms at close. Catalog refreshes update visible matches. Missing scenic/technical tags and server freshness timestamps from the reference are not fabricated.
+
+Changed files: new `game/ui/track_search_drawer.gd`, integration in `game/ui/track_browser.gd`, search interaction/capture checks in `game/tests/capture_premium_menus.gd`, this document, status/phase notes and evidence.
+
+Actual commands used the pinned engine via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+- `CaptureMenus`: final **1351 checks, zero failures**, at 1280x720, 960x540 and 1600x720. Covers initial empty query, live name/creator matches, scope taps, zero results, more results, apply, clear/cancel, backdrop isolation, result selection and row-content bounds, alongside existing Race/filter/transition regressions.
+- `TestMenuLoading`: **32 checks, zero failures** after integration.
+- `CheckScript -ScriptPath res://ui/track_search_drawer.gd`: passed. Initial shadowed local variable parse error was corrected; the stalled initial test process was stopped and rerun successfully.
+- Scoped `git diff --cached --check`: passed.
+- Android SDK `adb devices`: empty list. No phone attached, Android export or physical-device test.
+
+Visual iteration corrected empty-draft initialization, duplicate input borders, unsupported desktop keyboard warnings and result-row spacing. Inspected [default drawer](evidence/search-drawer-2026-10-01/search-default-1280x720.png) and [compact name search](evidence/search-drawer-2026-10-01/search-name-960x540.png). Evidence uses disposable gallery fixtures with shared sample route geometry, not actual distinct circuits. Owner visual acceptance and physical-phone keyboard/safe-area/scroll behavior remain outstanding.

@@ -30,6 +30,7 @@ func run() -> void:
 	var b: Dictionary = TrackCatalog.local_metadata(second)
 	await process_frame
 	var layout_before: Dictionary = _layout(browser)
+	browser.matches.assign([a,b])
 	var preview_started: int = Time.get_ticks_usec()
 	browser._select(a)
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FIRST","cold choice updates hero metadata synchronously")
@@ -38,6 +39,7 @@ func run() -> void:
 	check(not browser.detail.visible and browser.pending_records.visible and browser.pending_records.text.is_empty(),"pending selection shows neither previous records nor flashing loading text")
 	print("HERO_TWO_RAPID_CHOICES_MS: ",(Time.get_ticks_usec()-preview_started)/1000.0)
 	check(browser.selecting,"selection returns while work is pending")
+	check(browser._hero_direction == 1.0 and is_zero_approx(browser._hero_art.position.x),"forward selection slides new scenery in from the right")
 	check(browser._hero_scenery.get_child_count() >= 2,"rapid selections crossfade outgoing scenery without waiting")
 	check(is_equal_approx((browser.hero.find_child("HeroTrackTitle",true,false) as Label).modulate.a,0.65),"new title starts readable during subtle fade")
 	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
@@ -56,6 +58,7 @@ func run() -> void:
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
+	check(browser._hero_direction == -1.0 and is_equal_approx(browser._hero_art.position.x,-96.0),"backward selection slides new scenery in from the left")
 	var third: Dictionary = second.duplicate(true)
 	third.id = "third_track"
 	check(library.save_document(third) == OK,"third fixture saved")

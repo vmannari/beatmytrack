@@ -37,9 +37,12 @@ var cloud: Node
 var cloud_status: Label
 var gallery: ScrollContainer
 var gallery_content: Control
-const HERO_FADE_SECONDS: float = 0.16
+const HERO_FADE_SECONDS: float = 0.20
+const HERO_SLIDE_DISTANCE: float = 48.0
+var _hero_direction: float = 1.0
+var _hero_art_motion: Tween
 var _hero_serial: int = -1
-var _hero_scenery: PanelContainer
+var _hero_scenery: Control
 var _hero_art: TextureRect
 var _hero_detail_tween: Tween
 var hero: PanelContainer
@@ -285,6 +288,13 @@ func _random() -> void:
 	_select(entry)
 
 func _select(entry: Dictionary) -> void:
+	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
+	var previous_index: int = -1
+	var next_index: int = -1
+	for index: int in range(matches.size()):
+		if str(matches[index].id) == previous_id: previous_index = index
+		if str(matches[index].id) == str(entry.id): next_index = index
+	_hero_direction = -1.0 if previous_index >= 0 and next_index >= 0 and next_index < previous_index else 1.0
 	_selection_serial += 1
 	_requested_entry = {}
 	var cached: NativeTrack = catalog.cached_track(entry)
@@ -654,10 +664,10 @@ func _show_hero(title: String, theme_id: String) -> void:
 	if _hero_scenery != null: hero.remove_child(_hero_scenery)
 	_clear(hero)
 	if _hero_scenery == null:
-		_hero_scenery = PanelContainer.new()
+		_hero_scenery = Control.new()
 		_hero_scenery.name = "HeroSceneryLayers"
 		_hero_scenery.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_hero_scenery.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+		_hero_scenery.clip_contents = true
 	hero.add_child(_hero_scenery)
 	var art := TextureRect.new()
 	art.name = "SelectedTrackScenery"
@@ -665,20 +675,28 @@ func _show_hero(title: String, theme_id: String) -> void:
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Keep the incoming scenery opaque underneath the outgoing image. This
-	# avoids a dark dip; interrupted fades continue from their current opacity
-	# and expire independently instead of queuing or restarting.
+	# Overscan keeps the clipped image filled while scenery slides.
 	_hero_scenery.add_child(art)
 	_hero_scenery.move_child(art,0)
+	MenuStyle.fill(art)
+	art.offset_left = -HERO_SLIDE_DISTANCE
+	art.offset_right = HERO_SLIDE_DISTANCE
+	if _hero_art_motion != null: _hero_art_motion.kill()
 	if _hero_art != null:
 		if animate:
 			var outgoing: TextureRect = _hero_art
-			var fade := outgoing.create_tween()
-			fade.tween_property(outgoing,"modulate:a",0.0,HERO_FADE_SECONDS)
-			fade.tween_callback(outgoing.queue_free)
+			var slide := outgoing.create_tween().set_parallel(true)
+			slide.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			slide.tween_property(outgoing,"position:x",outgoing.position.x-_hero_direction*HERO_SLIDE_DISTANCE,HERO_FADE_SECONDS)
+			slide.tween_property(outgoing,"modulate:a",0.0,HERO_FADE_SECONDS)
+			slide.chain().tween_callback(outgoing.queue_free)
 		else:
 			_hero_scenery.remove_child(_hero_art)
 			_hero_art.queue_free()
+	if animate:
+		art.position.x += _hero_direction*HERO_SLIDE_DISTANCE
+		_hero_art_motion = art.create_tween()
+		_hero_art_motion.tween_property(art,"position:x",-HERO_SLIDE_DISTANCE,HERO_FADE_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_hero_art = art
 	var shade := ColorRect.new()
 	shade.color = Color(0.02,0.05,0.07,0.38)

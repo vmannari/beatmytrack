@@ -37,8 +37,8 @@ var cloud: Node
 var cloud_status: Label
 var gallery: ScrollContainer
 var gallery_content: Control
-const HERO_FADE_SECONDS: float = 0.20
-const HERO_SLIDE_DISTANCE: float = 48.0
+const HERO_FADE_SECONDS: float = 0.42
+const HERO_SLIDE_DISTANCE: float = 180.0
 var _hero_direction: float = 1.0
 var _section_motion: Tween
 var _section_offset: float = 0.0
@@ -302,16 +302,17 @@ func _select(entry: Dictionary) -> void:
 	var cached: NativeTrack = catalog.cached_track(entry)
 	if cached != null:
 		_finish_selection({"track":cached,"draft":{}})
-		race_button.disabled = _resolve_thread != null
+		race_button.disabled = selecting or _resolve_thread != null
 	else:
 		selecting = true
 		preview_entry = entry
 		race_button.disabled = true
 		race_button.text = "LOADING "+str(entry.name).to_upper()
-		detail.hide()
-		pending_records.text = ""
-		pending_records.show()
-		_show_hero(str(entry.name).to_upper(),str(entry.get("theme","pine")))
+		# Keep the complete previous section visible until the next one is ready.
+		if _section_motion != null: _section_motion.kill()
+		_set_section_offset(0.0)
+		hero.modulate.a = 1.0
+		records_panel.modulate.a = 1.0
 	for tile: Node in grid.get_children():
 		if tile is TrackTile:
 			tile.selected = tile.entry.id == entry.id
@@ -374,9 +375,9 @@ func _exit_tree() -> void:
 		_resolve_thread = null
 
 func _finish_selection(result: Dictionary) -> void:
-	selecting = false
 	var track: NativeTrack = result.track
 	if track == null:
+		selecting = false
 		var draft: Dictionary = result.draft
 		if not draft.is_empty():
 			pending_records.hide()
@@ -396,13 +397,19 @@ func _finish_selection(result: Dictionary) -> void:
 		pending_records.text = "Track unavailable. Select it again to retry."
 		notice.emit("This track could not be opened. Its saved route may need repair or reimporting.")
 		return
+	var serial: int = _selection_serial
+	selected_track = track
+	if cloud != null and track.metadata.has("cloud_version"):
+		selecting = true
+		race_button.disabled = true
+		await _load_cloud_detail(track)
+		if not is_inside_tree() or serial != _selection_serial: return
+	selecting = false
 	preview_entry = {}
 	pending_records.hide()
 	detail.show()
-	selected_track = track
 	track_selected.emit(track)
 	_show_detail()
-	if cloud != null and track.metadata.has("cloud_version"): _load_cloud_detail(track)
 
 func _load_cloud_detail(track: NativeTrack) -> void:
 	var response: Dictionary = await cloud.client.request_api("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+VehicleCatalog.selected.uri_encode())
@@ -433,7 +440,6 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 					for index: int in range(histogram.data.bins.size()):
 						var bin: Dictionary = histogram.data.bins[index]
 						if int(own.data.player.time_ticks) >= int(bin.from_ticks) and int(own.data.player.time_ticks) < int(bin.to_ticks_exclusive): discovery.records_by_rules_key[key].race_distribution.player_bin = index
-	_show_detail()
 
 func _open_scores() -> void:
 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
@@ -613,6 +619,7 @@ func _open_rating() -> void:
 	dialog.popup_centered()
 
 func _favorite() -> void:
+	if selecting: return
 	_favorite_id(str(preview_entry.get("id",selected_track.identity)))
 	_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
 

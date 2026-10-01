@@ -263,7 +263,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	var outgoing_alpha: float = browser.hero.modulate.a
 	check(outgoing_alpha > 0.0 and outgoing_alpha < 1.0,"scenery visibly blends during transition")
 	check(browser.hero.size == transition_bounds.size and (browser.find_child("HeroSlot",true,false) as Control).get_global_rect() == transition_bounds,"slide keeps the allocated section bounds fixed")
-	check(browser._section_offset > 0.0 and browser._section_offset < 48.0,"forward slide is between its start and centered position")
+	check(browser._section_offset > 0.0 and browser._section_offset < 180.0,"forward slide is between its start and centered position")
 	await _capture("section-slide-mid",physical_size,true)
 	# Interrupt before the first fade completes: newest title must win now.
 	browser._selection_serial += 1
@@ -274,9 +274,9 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FROSTBITE RUN","interrupt updates title immediately")
 	await create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
-	check(browser._section_offset < 0.0 and browser._section_offset > -48.0,"reverse slide interrupts immediately from the left")
+	check(browser._section_offset < 0.0 and browser._section_offset > -180.0,"reverse slide interrupts immediately from the left")
 	await _capture("section-slide-interrupted",physical_size,true)
-	await create_timer(0.2).timeout
+	await create_timer(0.5).timeout
 	await RenderingServer.frame_post_draw
 	check(browser._hero_scenery.get_child_count() == 1,"interrupted scenery settles without queued transitions")
 	check(is_zero_approx(browser._section_offset),"slide settles at the centered crop")

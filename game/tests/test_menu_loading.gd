@@ -31,34 +31,36 @@ func run() -> void:
 	await process_frame
 	var layout_before: Dictionary = _layout(browser)
 	browser.matches.assign([a,b])
+	var previous_title: String = (browser.hero.find_child("HeroTrackTitle",true,false) as Label).text
 	var preview_started: int = Time.get_ticks_usec()
 	browser._select(a)
-	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FIRST","cold choice updates hero metadata synchronously")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == previous_title,"cold choice retains complete prior section while preparing")
 	browser._select(b)
-	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "SECOND","rapid second choice immediately replaces the pending hero")
-	check(not browser.detail.visible and browser.pending_records.visible and browser.pending_records.text.is_empty(),"pending selection shows neither previous records nor flashing loading text")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == previous_title and browser.preview_entry.name == "Second","rapid choice replaces pending target without exposing incomplete content")
+	check(browser.detail.visible and not browser.pending_records.visible,"pending selection retains coherent old hero and records without loading flashes")
 	print("HERO_TWO_RAPID_CHOICES_MS: ",(Time.get_ticks_usec()-preview_started)/1000.0)
 	check(browser.selecting,"selection returns while work is pending")
-	check(browser._hero_direction == 1.0 and is_equal_approx(browser._section_offset,48.0),"forward selection slides new scenery in from the right")
+	check(browser._hero_direction == 1.0 and is_zero_approx(browser._section_offset),"pending selection waits before beginning the slide")
 	check(is_equal_approx(browser.hero.position.x,browser.records_panel.position.x),"hero and records slide together during rapid selections")
-	check(is_equal_approx(browser.hero.modulate.a,0.65),"new title starts readable during subtle fade")
-	check(_layout(browser) == layout_before,"pending selection preserves section rectangles")
+	check(is_equal_approx(browser.hero.modulate.a,1.0),"old section remains fully readable during preparation")
+	check(_same_layout(_layout(browser),layout_before),"pending selection preserves section rectangles")
 	var frames: int = 0
 	while browser.selecting:
 		await process_frame
 		frames += 1
 	await process_frame
-	check(_layout(browser) == layout_before,"completed selection preserves section rectangles")
+	check(_same_layout(_layout(browser),layout_before),"completed selection preserves section rectangles")
 	check(frames > 1,"UI continues processing frames during compilation")
 	check(browser.selected_track.identity == "creator_second_track","latest rapid selection wins")
 	check(browser.preview_entry.is_empty() and browser.detail.visible and not browser.pending_records.visible,"ready track restores its own records and clears preview state")
-	await create_timer(0.2).timeout
+	check(browser._section_offset > 0.0 and browser.detail.visible,"slide begins with resolved records already visible")
+	await create_timer(0.5).timeout
 	check(browser._hero_scenery.get_child_count() == 1,"interrupted fades dispose all outgoing scenery")
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).modulate.a == 1.0,"resolved hero is fully visible without a repeated transition")
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
-	check(browser._hero_direction == -1.0 and is_equal_approx(browser._section_offset,-48.0),"backward selection slides new scenery in from the left")
+	check(browser._hero_direction == -1.0 and is_equal_approx(browser._section_offset,-180.0),"backward selection slides new scenery in from the left")
 	var third: Dictionary = second.duplicate(true)
 	third.id = "third_track"
 	check(library.save_document(third) == OK,"third fixture saved")
@@ -94,14 +96,29 @@ func run() -> void:
 	cloud_entry.id = "cloud_delayed_fixture"
 	cloud_entry.source = "cloud"
 	cloud_entry.name = "Cloud preview"
+	var retained_title: String = (browser.hero.find_child("HeroTrackTitle",true,false) as Label).text
 	browser._select(cloud_entry)
-	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "CLOUD PREVIEW" and delayed.calls == 0,"cloud metadata is visible before download starts")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == retained_title and delayed.calls == 0,"cloud download keeps prior complete section visible")
 	while delayed.calls == 0: await process_frame
 	check(browser.race_button.disabled,"pending download cannot race the previous selection")
 	delayed.finished.emit()
 	await process_frame
 	check(browser.race_button.disabled and browser.pending_records.text.contains("unavailable"),"failed download keeps its own preview and never enables stale racing")
+	var board := DelayedBoard.new()
+	root.add_child(board)
+	browser.cloud = board
+	var ready_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	ready_track.metadata.cloud_version = "fixture_ready"
+	browser.catalog.indexed_revision = library.revision
+	browser.catalog.remember_track(a,ready_track)
+	browser._select(a)
+	check(browser.selecting and browser.race_button.disabled,"cached cloud track waits for its standings before enabling Race")
+	check(board.calls == 1,"cloud records request starts before the section transition")
+	board.finished.emit()
+	await process_frame
+	check(not browser.selecting and browser.detail.visible and browser._section_offset != 0.0,"cloud response completes before populated section starts sliding")
 	browser.cloud = null
+	board.queue_free()
 	delayed.queue_free()
 	var track: NativeTrack = browser.selected_track
 	browser.queue_free()
@@ -155,6 +172,11 @@ func _geometry(node: Node) -> Array:
 	for child: Node in node.get_children(): result.append(_geometry(child))
 	return result
 
+func _same_layout(a: Dictionary, b: Dictionary) -> bool:
+	for key: String in a:
+		if not (a[key] as Rect2).is_equal_approx(b[key]): return false
+	return true
+
 func _layout(browser: TrackBrowser) -> Dictionary:
 	var result: Dictionary = {}
 	for title: String in ["HeroSlot","RecordsSlot","GallerySlot","PersonalRecords","Standings","RaceComparison","PlayActions","LibraryRace"]:
@@ -171,3 +193,13 @@ class DelayedCloud extends Node:
 		calls += 1
 		await finished
 		return false
+
+
+class DelayedBoard extends Node:
+	signal finished
+	var client: Node = self
+	var calls: int = 0
+	func request_api(_path: String) -> Dictionary:
+		calls += 1
+		await finished
+		return {"ok":false,"error":"Fixture unavailable"}

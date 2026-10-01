@@ -18,13 +18,6 @@ func run() -> void:
 			var start: int = Time.get_ticks_usec()
 			browser._select(entry)
 			var call_ms: float = (Time.get_ticks_usec()-start)/1000.0
-			var hero_title: Label = browser.hero.find_child("HeroTrackTitle",true,false)
-			if hero_title == null or hero_title.text != title.to_upper():
-				push_error("Hero did not update synchronously for "+title)
-				quit(1)
-				return
-			await RenderingServer.frame_post_draw
-			var hero_frame_ms: float = (Time.get_ticks_usec()-start)/1000.0
 			var last: int = Time.get_ticks_usec()
 			var worst_ms: float = 0.0
 			while browser.selecting:
@@ -32,6 +25,13 @@ func run() -> void:
 				var now: int = Time.get_ticks_usec()
 				worst_ms = maxf(worst_ms,(now-last)/1000.0)
 				last = now
+			var hero_title: Label = browser.hero.find_child("HeroTrackTitle",true,false)
+			if hero_title == null or hero_title.text != title.to_upper() or not browser.detail.visible:
+				push_error("Selected hero and records were not ready together for "+title)
+				quit(1)
+				return
+			await RenderingServer.frame_post_draw
+			var hero_frame_ms: float = (Time.get_ticks_usec()-start)/1000.0
 			print("MENU_SELECTION ",title," call_ms=",call_ms," hero_frame_ms=",hero_frame_ms," ready_ms=",(Time.get_ticks_usec()-start)/1000.0," worst_frame_ms=",worst_ms)
 			break
 	# Instrument a session-local script copy; no timers in the production compiler.

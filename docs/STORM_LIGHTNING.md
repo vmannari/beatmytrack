@@ -22,3 +22,9 @@ Changed files: storm_weather.gd, test_storm.gd, this document, status/phase note
 
 
 2026-10-01 owner brightness follow-up: directional flash gain increased from 6 to 8.5, retaining the slower envelope, shallow random modulation and 0.40 screen-overlay gain. CaptureStorm passed 95 checks. Evidence and limits: [kit 99](STORM_WET_MATERIAL.md#kit-99-wider-reflection-visibility-and-brighter-lightning-2026-10-01).
+
+
+## Stronger scene light (2026-10-01)
+
+V02/V04/Q01: owner requests a stronger lightning light after mobile optimization. storm_weather.gd raises added directional light gain from 8.5 to 13.0 (+53%; peak contribution 4.16 above baseline). Timing, random envelope and screen wash remain unchanged. This is one scalar adjustment on the existing light, with no added lights/passes or per-frame calculations. CaptureStorm -Track track_acf29166cceaaa42 passes 96 checks; [peak desktop capture](evidence/storm-brighter-lightning-2026-10-01/peak.png) inspected. No new performance benchmark or physical-phone gameplay validation; visual acceptance pending.
+Actual DeployAndroid -QuickValidation -DeviceSerial PRQKU4U4PREQNRWG succeeded: import/startup, driving 72, catalog 18 and menus 48 checks, APK export, install Success and launch Status ok. Updated workspace build is installed on the connected DN2103; a new manual lightning review on the phone was not performed. Changed files: storm_weather.gd, this document, status/phase notes and peak evidence.

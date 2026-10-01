@@ -252,7 +252,7 @@ func _show_screen(next: String) -> void:
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.add_theme_constant_override("separation", 4)
 	nav.add_child(tabs)
-	for item: Array in [["play","HOME"],["tracks","PLAY"],["create","CREATE"],["garage","GARAGE"]]:
+	for item: Array in [["play","HOME"],["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
 		var id: String = item[0]
 		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id or (id == "create" and screen in ["biome","drafts"]))
 		button.name = "Tab_" + id

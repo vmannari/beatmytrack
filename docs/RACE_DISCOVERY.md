@@ -1,0 +1,45 @@
+# Race discovery reference pass ? 2026-10-01
+
+Requirements: R01, V03, V04, G03, Q01. Owner request: rename Play to Race, adopt the supplied discovery composition, place a continuously scrollable/swipeable track strip at the bottom, add Search beside Filters, and use an icon-only right rail with Free race and placeholders.
+
+## Delivered
+
+The shared navigation now reads Race. A large selected-track scenic panel carries the title, creator, real route outline, five-lap count, measured distance per lap, favorite and race actions. Records and the race-time comparison sit below it, followed by the track carousel and Random track / Filters / Search / Race actions. The right rail uses accessible hover descriptions and disabled Coming soon placeholders for the other modes. Both race actions use the existing selection/loading gate.
+
+The carousel supports touch swipe, desktop drag, mouse wheel, scrollbar and arrow controls. Crossing the gesture threshold cancels the tap action, including favorite stars. Rendering stays bounded to twelve nearby cards while the scroll extent covers the full filtered catalog. Name/creator search, biome/sort/collection filters, favorites and random selection use the existing catalog/provider. Refreshes with unchanged filters preserve the scroll position. Shared-track high scores remain available; rating opens a compact dialog to avoid pushing the bottom actions outside the phone viewport.
+
+Artwork reuses the existing original biome illustrations; the supplied reference is not copied into shipping assets. This is a layout adaptation, not a recreation of its lighthouse/car illustration. Runtime unavailable records stay empty; populated evidence is explicitly metadata/comparison fixtures and is not claimed racing history. Gameplay, camera, physics, accounts and backend contracts are unchanged.
+
+## Changed files
+
+- `game/core/app.gd`: shared Race label (other existing uncommitted work preserved).
+- `game/ui/track_browser.gd`: discovery composition, filters/search dialogs, carousel virtualization, route facts, placeholders and rating dialog.
+- `game/ui/track_carousel.gd`: gesture ownership and desktop scrolling.
+- `game/ui/track_tile.gd`: compact carousel cards with readable route silhouettes; other tile consumers retain their layout.
+- `game/ui/menu_icon.gd`: original filter, trophy and target vectors.
+- `game/tests/capture_premium_menus.gd`: actual graphical/gesture/search/large-catalog and cloud-control bounds checks; waits for account startup and isolates populated catalog fixtures from live refreshes.
+- `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this document and evidence.
+
+## Actual verification
+
+All Godot commands used the pinned build through `scripts/dev.ps1`:
+
+| Command | Outcome |
+| --- | --- |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus` | Final 661 checks, zero failures; 1280?720, 960?540 and 1600?720 graphical captures. Viewport-dispatched touch swipes, swipe-vs-tap/favorite separation, Search/Filters opening, name/creator search, 1,000 extra catalog entries and final-entry reachability, bounded rendering, cloud action bounds and navigation. |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus` | 26 checks, zero failures. |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenuLoading` | 19 checks, zero failures, including superseded/cached selections and race locking. |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CheckScript -ScriptPath res://ui/track_browser.gd` | Initial parse passed. Intermediate edits had parse failures, corrected before final graphical suite. |
+| `git diff --check` (task files) | Passed; CRLF normalization notices only. |
+| `%LOCALAPPDATA%/Android/Sdk/platform-tools/adb.exe devices` | Empty device list. No phone attached. |
+
+Early graphical runs exposed vertical overflow and outdated paging/account fixture assumptions, fixed before the final pass. One intermediate swipe assertion incorrectly assumed 280 pixels remained on the widest viewport; it now checks movement up to the available scroll extent. No failing behavior invariant was removed.
+
+## Evidence and remaining acceptance
+
+- [Desktop carousel](evidence/race-discovery-2026-10-01/tracks-populated-fixture-1280x720.png)
+- [Compact landscape carousel](evidence/race-discovery-2026-10-01/tracks-populated-fixture-960x540.png)
+- [Wide comparison fixture](evidence/race-discovery-2026-10-01/tracks-data-fixture-1600x720.png)
+- [Shared-track control layout fixture](evidence/race-discovery-2026-10-01/tracks-cloud-controls-fixture-1280x720.png)
+
+Desktop and compact screenshots were inspected. Owner visual acceptance, physical-phone swipe/keyboard/safe-area testing and Android export remain outstanding. No physical-device test or Android export was performed. New rail modes remain placeholders; this pass does not add friends, seasons or challenges. No new art generation or production deployment.

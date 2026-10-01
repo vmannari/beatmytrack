@@ -9,7 +9,6 @@ signal delete_requested(id: String, title: String)
 signal import_requested
 signal notice(message: String)
 
-const PAGE_SIZE: int = 6
 var library: TrackLibrary
 var records: LocalRecords
 var builtin_ids: Array[String]
@@ -20,7 +19,6 @@ var matches: Array[Dictionary] = []
 var grid: GridContainer
 var detail: VBoxContainer
 var count_label: Label
-var page_label: Label
 var previous: Button
 var next: Button
 var random_button: Button
@@ -38,6 +36,15 @@ var _working_serial: int = 0
 var rng := RandomNumberGenerator.new()
 var cloud: Node
 var cloud_status: Label
+var gallery: ScrollContainer
+var gallery_content: Control
+var hero: PanelContainer
+var filter_dialog: AcceptDialog
+var search_dialog: AcceptDialog
+var filter_controls: HFlowContainer
+var _tile_start: int = -1
+var _query_signature: String = ""
+const TILE_STRIDE: int = 202
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -45,33 +52,79 @@ func _ready() -> void:
 	rng.randomize()
 	discovery.changed.connect(_discovery_changed)
 	if catalog == null: catalog = TrackCatalog.new(library)
-	var title_row := HBoxContainer.new()
-	add_child(title_row)
-	var title := MenuStyle.label("TRACKS",34)
-	title_row.add_child(title)
+	var body := HBoxContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_child(body)
+	var main := VBoxContainer.new()
+	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	main.add_theme_constant_override("separation",8)
+	body.add_child(main)
+	hero = PanelContainer.new()
+	hero.name = "RaceHero"
+	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hero.custom_minimum_size.y = 226
+	hero.clip_contents = true
+	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+	main.add_child(hero)
+	var selection := PanelContainer.new()
+	selection.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720dd"),12))
+	main.add_child(selection)
+	detail = VBoxContainer.new()
+	selection.add_child(detail)
+	var gallery_row := HBoxContainer.new()
+	main.add_child(gallery_row)
+	previous = _compact_button("<",_page.bind(-1))
+	previous.custom_minimum_size.x = 48
+	previous.tooltip_text = "Scroll tracks left"
+	gallery_row.add_child(previous)
+	gallery = preload("res://ui/track_carousel.gd").new()
+	gallery.name = "TrackCarousel"
+	gallery.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	gallery.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	gallery.custom_minimum_size.y = 140
+	gallery.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gallery.scroll_deadzone = 12
+	gallery.follow_focus = true
+	gallery.resized.connect(_render_tiles)
+	gallery_row.add_child(gallery)
+	gallery_content = Control.new()
+	gallery_content.custom_minimum_size.y = 124
+	gallery.add_child(gallery_content)
+	grid = GridContainer.new()
+	grid.columns = 12
+	grid.add_theme_constant_override("h_separation",12)
+	gallery_content.add_child(grid)
+	gallery.get_h_scroll_bar().value_changed.connect(func(_value: float) -> void: _render_tiles())
+	next = _compact_button(">",_page.bind(1))
+	next.custom_minimum_size.x = 48
+	next.tooltip_text = "Scroll tracks right"
+	gallery_row.add_child(next)
+	count_label = MenuStyle.label("Loading?",12,true)
+	count_label.clip_text = true
+	main.add_child(count_label)
+	count_label.hide()
+	_build_actions()
+	get_node("PlayActions").reparent(main)
+	_build_mode_rail(body)
+	filter_dialog = AcceptDialog.new()
+	filter_dialog.title = "Filter tracks"
+	filter_dialog.min_size = Vector2i(560,180)
+	add_child(filter_dialog)
+	filter_controls = HFlowContainer.new()
+	filter_controls.add_theme_constant_override("h_separation",12)
+	filter_controls.add_theme_constant_override("v_separation",12)
+	filter_dialog.add_child(filter_controls)
+	var filters: HFlowContainer = filter_controls
+	search_dialog = AcceptDialog.new()
+	search_dialog.title = "Search tracks"
+	search_dialog.min_size = Vector2i(580,150)
+	add_child(search_dialog)
+	var search_controls := VBoxContainer.new()
+	search_dialog.add_child(search_controls)
 	if cloud != null:
 		cloud.changed.connect(_cloud_changed)
-		title_row.add_child(_compact_button("Refresh",func() -> void: cloud.refresh()))
-	count_label = MenuStyle.label("Loading…",14,true)
-	if cloud != null: cloud_status = count_label
-	count_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	count_label.clip_text = true
-	title_row.add_child(count_label)
-	previous = _compact_button("‹",_page.bind(-1))
-	previous.custom_minimum_size.x = 48
-	previous.tooltip_text = "Previous page"
-	title_row.add_child(previous)
-	page_label = MenuStyle.label("",14,true)
-	page_label.custom_minimum_size.x = 44
-	page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title_row.add_child(page_label)
-	next = _compact_button("›",_page.bind(1))
-	next.custom_minimum_size.x = 48
-	next.tooltip_text = "Next page"
-	title_row.add_child(next)
-	var filters := HBoxContainer.new()
-	filters.add_theme_constant_override("separation",6)
-	add_child(filters)
+		cloud_status = count_label
+		filters.add_child(_compact_button("Refresh tracks",func() -> void: cloud.refresh()))
 	var discover := OptionButton.new()
 	discover.name = "Discover"
 	discover.custom_minimum_size = Vector2(170,48)
@@ -103,7 +156,7 @@ func _ready() -> void:
 		state.search_kind = index
 		state.page = 0
 		_refresh())
-	filters.add_child(search_kind)
+	search_controls.add_child(search_kind)
 	for field: String in ["search"]:
 		var edit := LineEdit.new()
 		edit.name = "Search_"+field
@@ -115,7 +168,7 @@ func _ready() -> void:
 		edit.custom_minimum_size = Vector2(156,48)
 		edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		edit.add_theme_font_size_override("font_size",16)
-		filters.add_child(edit)
+		search_controls.add_child(edit)
 		edit.text_changed.connect(func(value: String) -> void:
 			state[field] = value
 			state.page = 0
@@ -144,33 +197,6 @@ func _ready() -> void:
 		state.page = 0
 		_refresh())
 	filters.add_child(sorting)
-	var row := VBoxContainer.new()
-	row.add_theme_constant_override("separation",8)
-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_child(row)
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.custom_minimum_size.y = 188
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(scroll)
-	grid = GridContainer.new()
-	grid.columns = 6
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation",12)
-	grid.add_theme_constant_override("v_separation",12)
-	scroll.add_child(grid)
-	var selection := PanelContainer.new()
-	selection.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var selection_style: StyleBoxFlat = MenuStyle.box(Color("0c202c"),12)
-	selection_style.border_color = MenuStyle.BORDER
-	selection_style.set_border_width_all(1)
-	selection.add_theme_stylebox_override("panel",selection_style)
-	row.add_child(selection)
-	detail = VBoxContainer.new()
-	detail.add_theme_constant_override("separation",6)
-	selection.add_child(detail)
-	_build_actions()
 	_show_detail()
 	call_deferred("_load_catalog")
 
@@ -238,12 +264,43 @@ func _clear(parent: Node) -> void:
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
 	matches = discovery.query(catalog,state,records.settings.get("favorites",[]))
-	var pages: int = maxi(1,ceili(float(matches.size())/PAGE_SIZE))
-	state.page = clampi(int(state.get("page",0)),0,pages-1)
+	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name")])
+	if signature != _query_signature: gallery.scroll_horizontal = 0
+	_query_signature = signature
+	_tile_start = -1
+	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*TILE_STRIDE-12)
+	_render_tiles()
+	if matches.is_empty():
+		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
+		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
+			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
+		if state.get("section","all") == "all" and state.get("feed","recommended") != "recommended" and not discovery.available:
+			empty.text = "This discovery feed needs online data.\nYour local tracks are in Recommended."
+		empty.custom_minimum_size.y = 128
+		grid.add_child(empty)
+	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
+	if cloud != null: count_label.text += " · "+str(cloud.status)
+	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
+	random_button.disabled = matches.is_empty() or loading
+	for id: String in sections:
+		var active: bool = id == state.get("section","all")
+		sections[id].add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT if active else MenuStyle.PANEL))
+		sections[id].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.MUTED)
+		sections[id].add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.MUTED)
+
+func _render_tiles() -> void:
+	if not is_instance_valid(grid) or not is_instance_valid(next): return
+	var first: int = maxi(0,int(gallery.scroll_horizontal/TILE_STRIDE)-1)
+	previous.disabled = gallery.scroll_horizontal <= 0
+	next.disabled = gallery.scroll_horizontal >= maxi(0,int(gallery_content.custom_minimum_size.x-gallery.size.x))
+	if first == _tile_start: return
+	_tile_start = first
 	_clear(grid)
-	for index: int in range(int(state.page)*PAGE_SIZE,mini(matches.size(),(int(state.page)+1)*PAGE_SIZE)):
+	grid.position.x = first*TILE_STRIDE
+	for index: int in range(first,mini(matches.size(),first+12)):
 		var entry: Dictionary = matches[index]
 		var tile := TrackTile.new()
+		tile.compact = true
 		tile.entry = entry
 		tile.favorite = entry.id in records.settings.get("favorites",[])
 		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
@@ -252,37 +309,16 @@ func _refresh() -> void:
 		tile.pressed.connect(_select.bind(entry))
 		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
 		grid.add_child(tile)
-		tile.custom_minimum_size.y = 180
-	if matches.is_empty():
-		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
-		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
-			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
-		if state.get("section","all") == "all" and state.get("feed","recommended") != "recommended" and not discovery.available:
-			empty.text = "This discovery feed needs online data.\nYour local tracks are in Recommended."
-		empty.custom_minimum_size.y = 166
-		grid.add_child(empty)
-	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
-	if cloud != null: count_label.text += " · "+str(cloud.status)
-	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
-	page_label.text = "%d / %d" % [int(state.page)+1,pages]
-	previous.disabled = int(state.page) == 0
-	next.disabled = int(state.page) == pages-1
-	random_button.disabled = matches.is_empty() or loading
-	for id: String in sections:
-		var active: bool = id == state.get("section","all")
-		sections[id].add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT if active else MenuStyle.PANEL))
-		sections[id].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.MUTED)
-		sections[id].add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.MUTED)
+		tile.custom_minimum_size = Vector2(190,124)
+		tile.size_flags_horizontal = Control.SIZE_FILL
 
 func _page(direction: int) -> void:
-	state.page = int(state.get("page",0))+direction
-	_refresh()
+	gallery.scroll_horizontal += direction*maxi(TILE_STRIDE,int(gallery.size.x)-TILE_STRIDE)
 
 func _random() -> void:
 	var entry: Dictionary = TrackCatalog.random_entry(matches,selected_track.identity,rng)
 	if entry.is_empty(): return
-	state.page = matches.find(entry)/PAGE_SIZE
-	_refresh()
+	gallery.scroll_horizontal = matches.find(entry)*TILE_STRIDE
 	_select(entry)
 
 func _select(entry: Dictionary) -> void:
@@ -348,6 +384,8 @@ static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
 	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft),"draft":draft}
 
 func _process(_delta: float) -> void:
+	var hero_race: Button = hero.find_child("HeroRace",true,false) as Button
+	if hero_race != null: hero_race.disabled = race_button.disabled or selecting
 	if _resolve_thread == null or _resolve_thread.is_alive(): return
 	var result: Dictionary = _resolve_thread.wait_to_finish()
 	_resolve_thread = null
@@ -437,20 +475,23 @@ func _build_actions() -> void:
 	var actions := HBoxContainer.new()
 	actions.name = "PlayActions"
 	add_child(actions)
-	var home := MenuStyle.button("Main menu",func() -> void: home_requested.emit())
-	home.name = "PlayMainMenu"
-	home.icon = MenuIcon.texture("home")
-	home.custom_minimum_size = Vector2(180,56)
-	actions.add_child(home)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	spacer.size_flags_stretch_ratio = 0.35
-	actions.add_child(spacer)
-	random_button = MenuStyle.button("Surprise me",_random)
+	random_button = MenuStyle.button("Random track",_random)
 	random_button.icon = MenuIcon.texture("dice")
 	random_button.name = "RandomTrack"
-	random_button.custom_minimum_size.x = 240
 	actions.add_child(random_button)
+	var filters := MenuStyle.button("Filters",func() -> void: filter_dialog.popup_centered())
+	filters.name = "RaceFilters"
+	filters.icon = MenuIcon.texture("filter")
+	actions.add_child(filters)
+	var search := MenuStyle.button("Search",func() -> void:
+		search_dialog.popup_centered()
+		(search_dialog.find_child("Search_search",true,false) as LineEdit).grab_focus())
+	search.name = "RaceSearch"
+	search.icon = MenuIcon.texture("search")
+	actions.add_child(search)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(spacer)
 	race_button = MenuStyle.button("RACE",func() -> void: race_requested.emit(selected_track),true)
 	race_button.name = "LibraryRace"
 	race_button.icon = MenuIcon.texture("arrow")
@@ -478,49 +519,16 @@ func _show_detail() -> void:
 	detail.add_child(row)
 	var title: String = str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper()
 	var theme_id: String = str(selected_track.metadata.get("theme","pine"))
-	var preview := PanelContainer.new()
-	preview.name = "SelectedTrackScenery"
-	preview.custom_minimum_size.x = 260
-	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	preview.size_flags_stretch_ratio = 0.65
-	preview.clip_contents = true
-	preview.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
-	row.add_child(preview)
-	var art := TextureRect.new()
-	art.texture = TrackTile.scenery_texture(theme_id)
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	preview.add_child(art)
-	var shade := MenuScrim.new()
-	preview.add_child(shade)
-	var inset := MarginContainer.new()
-	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,12)
-	preview.add_child(inset)
-	var info := VBoxContainer.new()
-	info.add_theme_constant_override("separation",4)
-	inset.add_child(info)
-	info.add_child(MenuStyle.label(TrackTheme.title(theme_id).to_upper(),13))
-	var space := Control.new()
-	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	info.add_child(space)
-	var name_label := MenuStyle.label(title,28)
-	name_label.clip_text = true
-	name_label.tooltip_text = title
-	info.add_child(name_label)
-	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("cloud_creator",selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator")))),14,true)
-	creator.clip_text = true
-	info.add_child(creator)
+	_show_hero(title,theme_id)
 	var personal := VBoxContainer.new()
-	personal.custom_minimum_size.x = 165
+	personal.custom_minimum_size.x = 210
 	personal.add_theme_constant_override("separation",2)
 	row.add_child(personal)
 	_heading(personal,"YOUR RECORDS","timer")
 	var key: String = records.key_for(selected_track,HandlingSelection.config())
 	var pb: Dictionary = records.records.get(key,{})
 	var snapshot: Dictionary = discovery.record_snapshot(key)
-	for metric: String in ["race","lap"]:
-		if metric == "lap": personal.add_child(HSeparator.new())
+	for metric: String in ["race"]:
 		personal.add_child(MenuStyle.label("Best race time" if metric == "race" else "Best lap",14,true))
 		var milliseconds: int = int(pb.get("race_ms" if metric == "race" else "flying_ms",0))
 		if metric == "race" and snapshot.has("race_ms"): milliseconds = int(snapshot.race_ms)
@@ -532,26 +540,26 @@ func _show_detail() -> void:
 		var rank_text: String = "Top %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
 		if metric == "race" and snapshot.has("race_rank"): rank_text = "Rank %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
 		personal.add_child(MenuStyle.label(rank_text,12,true))
+	personal.add_child(MenuStyle.label("Best lap  "+(MenuStyle.time_text(float(pb.get("flying_ms",0))/1000.0) if int(pb.get("flying_ms",0)) > 0 else "--"),16,true))
 	row.add_child(VSeparator.new())
 	var distribution := VBoxContainer.new()
 	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	distribution.size_flags_stretch_ratio = 1.4
-	distribution.add_theme_constant_override("separation",8)
+	distribution.add_theme_constant_override("separation",2)
 	row.add_child(distribution)
 	_heading(distribution,"WHERE YOU STAND","bars")
 	var charts := HBoxContainer.new()
 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	charts.add_theme_constant_override("separation",8)
 	distribution.add_child(charts)
-	for metric: String in ["race","lap"]:
+	for metric: String in ["race"]:
 		var card := PanelContainer.new()
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		card.add_theme_stylebox_override("panel",MenuStyle.card(10))
+		card.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
 		charts.add_child(card)
 		var column := VBoxContainer.new()
 		column.add_theme_constant_override("separation",4)
 		card.add_child(column)
-		_heading(column,"RACE TIME" if metric == "race" else "BEST LAP","timer")
 		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
 		var rank_text: String = "TOP %d%%" % ceili(percentile) if percentile >= 0 else "Unranked"
 		if metric == "race" and snapshot.has("race_rank"): rank_text = "RANK %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
@@ -560,12 +568,12 @@ func _show_detail() -> void:
 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
 		histogram.snapshot = snapshot.get(metric+"_distribution",{})
 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
-		histogram.custom_minimum_size = Vector2(164,84)
+		histogram.custom_minimum_size = Vector2(164,64)
 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		column.add_child(histogram)
 	row.add_child(VSeparator.new())
 	var friends := VBoxContainer.new()
-	friends.custom_minimum_size.x = 160
+	friends.custom_minimum_size.x = 240
 	friends.add_theme_constant_override("separation",8)
 	if selected_track.metadata.has("cloud_version"): friends.add_theme_constant_override("separation",4)
 	row.add_child(friends)
@@ -575,7 +583,6 @@ func _show_detail() -> void:
 	friend_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	friends.add_child(friend_space)
 	if standings.is_empty():
-		friends.add_child(ResultsIcons.view("friends",44))
 		friends.add_child(MenuStyle.label("No verified scores yet" if selected_track.metadata.has("cloud_version") else "No friend records yet",13,true))
 	else:
 		for index: int in range(mini(3,standings.size())):
@@ -583,36 +590,44 @@ func _show_detail() -> void:
 			var line := MenuStyle.label("%s  %s" % [str(friend.player),MenuStyle.time_text(float(friend.race_ms)/1000)],12)
 			line.clip_text = true
 			friends.add_child(line)
-	var challenge := MenuStyle.button("Challenge friends",func() -> void: notice.emit("Friend challenges are not connected yet."))
-	challenge.icon = MenuIcon.texture("friends")
-	challenge.add_theme_font_size_override("font_size",17)
-	challenge.tooltip_text = "Friend challenges are not connected yet"
 	if selected_track.metadata.has("cloud_version"):
-		challenge.queue_free()
-		var scores_button: Button = MenuStyle.button("High scores",_open_scores)
-		scores_button.custom_minimum_size.y = 44
-		friends.add_child(scores_button)
-		if not str(snapshot.get("board_error","")).is_empty(): friends.add_child(MenuStyle.label("Scores unavailable · retry",12,true))
-		var rating := TrackRating.new()
-		rating.records = records
-		rating.track_id = selected_track.identity
-		rating.cloud_client = cloud.client if cloud != null else null
-		rating.cloud_version = str(selected_track.metadata.cloud_version)
-		rating.cloud_sync = cloud
-		friends.add_child(rating)
-		rating.caption.reparent(friends)
-		rating.caption.clip_text = true
-		rating.caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		rating.caption.add_theme_font_size_override("font_size",12)
-		rating.rated.connect(func() -> void: cloud.refresh())
-		rating.tooltip_text = "Your rating · verified completion required · no self-rating"
-	else: friends.add_child(challenge)
+		var actions := HBoxContainer.new()
+		friends.add_child(actions)
+		var scores_button := MenuStyle.button("High scores",_open_scores)
+		scores_button.add_theme_font_size_override("font_size",18)
+		scores_button.custom_minimum_size.y = 48
+		actions.add_child(scores_button)
+		var rate := MenuStyle.button("Rate",_open_rating)
+		rate.add_theme_font_size_override("font_size",18)
+		rate.custom_minimum_size.y = 48
+		actions.add_child(rate)
+		if not str(snapshot.get("board_error","")).is_empty(): scores_button.tooltip_text = "Scores unavailable - retry"
 	race_button.text = "RACE "+title
 	race_button.disabled = false
 	detail_costs = {"preview":0.0}
 
+func _open_rating() -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Rate this track"
+	add_child(dialog)
+	var column := VBoxContainer.new()
+	dialog.add_child(column)
+	var rating := TrackRating.new()
+	rating.records = records
+	rating.track_id = selected_track.identity
+	rating.cloud_client = cloud.client if cloud != null else null
+	rating.cloud_version = str(selected_track.metadata.cloud_version)
+	rating.cloud_sync = cloud
+	column.add_child(rating)
+	rating.caption.reparent(column)
+	if cloud != null: rating.rated.connect(func() -> void: cloud.refresh())
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered()
+
 func _favorite() -> void:
 	_favorite_id(selected_track.identity)
+	_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
 
 func _favorite_id(id: String) -> void:
 	var favorites: Array = records.settings.get("favorites",[]).duplicate()
@@ -621,3 +636,88 @@ func _favorite_id(id: String) -> void:
 	records.settings.favorites = favorites
 	if records.save_records() != OK: notice.emit("Favorite could not be saved. Check available storage.")
 	_refresh()
+
+func _build_mode_rail(parent: Control) -> void:
+	var rail := VBoxContainer.new()
+	rail.name = "RaceModes"
+	rail.add_theme_constant_override("separation",12)
+	parent.add_child(rail)
+	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"],["dice","Random events"]]:
+		var active: bool = item[1] == "Free race"
+		var button := MenuStyle.button("",func() -> void: pass,active)
+		button.icon = MenuIcon.texture(item[0])
+		button.name = "Mode_"+str(item[0])
+		button.custom_minimum_size = Vector2(60,60)
+		button.tooltip_text = str(item[1])+("" if active else " - Coming soon")
+		button.disabled = not active
+		rail.add_child(button)
+
+func _show_hero(title: String, theme_id: String) -> void:
+	_clear(hero)
+	var art := TextureRect.new()
+	art.name = "SelectedTrackScenery"
+	art.texture = TrackTile.scenery_texture(theme_id)
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hero.add_child(art)
+	var shade := ColorRect.new()
+	shade.color = Color(0.02,0.05,0.07,0.38)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hero.add_child(shade)
+	var inset := MarginContainer.new()
+	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,12)
+	hero.add_child(inset)
+	var row := HBoxContainer.new()
+	inset.add_child(row)
+	var info := VBoxContainer.new()
+	info.add_theme_constant_override("separation",0)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+	info.add_child(MenuStyle.label("TRACK DISCOVERY",20,true))
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	info.add_child(spacer)
+	info.add_child(MenuStyle.label(TrackTheme.title(theme_id).to_upper(),18))
+	var heading := MenuStyle.label(title,44)
+	heading.clip_text = true
+	heading.tooltip_text = title
+	info.add_child(heading)
+	var creator := MenuStyle.label("by "+str(selected_track.metadata.get("cloud_creator",selected_track.metadata.get("creator_document",{}).get("creator",selected_track.metadata.get("creator","Unknown creator")))),18)
+	creator.clip_text = true
+	info.add_child(creator)
+	var actions := HBoxContainer.new()
+	info.add_child(actions)
+	var race := MenuStyle.button("RACE THIS TRACK",func() -> void:
+		if not selecting and not race_button.disabled: race_requested.emit(selected_track),true)
+	race.name = "HeroRace"
+	race.icon = MenuIcon.texture("play")
+	actions.add_child(race)
+	var favorite := MenuStyle.button("",_favorite)
+	favorite.icon = MenuIcon.texture("star_filled" if selected_track.identity in records.settings.get("favorites",[]) else "heart")
+	favorite.tooltip_text = "Toggle favorite"
+	actions.add_child(favorite)
+	var route_column := VBoxContainer.new()
+	route_column.custom_minimum_size.x = 220
+	row.add_child(route_column)
+	var outline := Control.new()
+	outline.custom_minimum_size = Vector2(220,130)
+	outline.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	route_column.add_child(outline)
+	outline.draw.connect(func() -> void:
+		var points: PackedVector2Array = selected_track.route
+		if points.size() < 2: return
+		var bounds := Rect2(points[0],Vector2.ZERO)
+		for point: Vector2 in points: bounds = bounds.expand(point)
+		var scale_factor: float = minf((outline.size.x-24)/maxf(1,bounds.size.x),(outline.size.y-24)/maxf(1,bounds.size.y))
+		var path := PackedVector2Array()
+		for point: Vector2 in points:
+			var offset: Vector2 = (point-bounds.get_center())*scale_factor
+			path.append(outline.size*0.5+Vector2(offset.x,-offset.y))
+		path.append(path[0])
+		outline.draw_polyline(path,Color("06131c"),8,true)
+		outline.draw_polyline(path,Color.WHITE,4,true))
+	outline.resized.connect(outline.queue_redraw)
+	route_column.add_child(MenuStyle.label("5 LAPS",24))
+	route_column.add_child(MenuStyle.label("%.2f KM / LAP" % (selected_track.route_length/1000.0),20,true))

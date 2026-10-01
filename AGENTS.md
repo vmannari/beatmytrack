@@ -114,3 +114,7 @@ The owner reduces rewind to ten seconds, opens at the current position, and requ
 
 ## Resume resource toolbar and temporary ad override (2026-09-29)
 The owner supplies a toolbar with race-resume indicators and a resource button. Banked resumes are consumed first and their count is shown on the ticket button. With no banked resumes, show an ad icon; retain the daily free allowance separately, then allow an immediate free resume until ad integration exists. This explicitly supersedes the earlier unavailable-ad restriction for this temporary path only. Do not claim an ad was watched or mint banked rewards; server receipts identify the temporary source. Ten-second rewind, three resumes per race and leaderboard eligibility remain. See docs/REWIND.md.
+
+
+## Race discovery reference override (2026-10-01)
+The owner renames Play to Race and requests the supplied discovery composition, a bottom track carousel with mobile swiping, Search beside Filters, and an icon-only right rail whose non-Free-race modes may remain placeholders. This supersedes paged track browsing for this screen. See docs/RACE_DISCOVERY.md for implementation, actual evidence and remaining device/visual acceptance.

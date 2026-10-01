@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-10-01 R01/V03/V04/G03/Q01: Race replaces Play; reference-led discovery hero, record strip, continuous touch/desktop carousel, Search beside Filters and icon-only right-side placeholders. Graphical 661, menu 26 and loading 19 checks pass; desktop/compact evidence inspected. No phone attached, Android export or device test. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 V02/V04/V05/Q01: kit 100 adds paused-clock, world-anchored rain ripples to puddle normals. Final CaptureStorm 96 and surface profile 928 checks pass. Desktop ripple A/B: +0.145ms GPU at 720p, +0.014ms at 1080p (noisy window medians); unchanged draws/textures. Preview/timings and limitations in docs/STORM_WET_MATERIAL.md. Phone and owner motion acceptance pending.
 
 2026-10-01 V02/V04/V05/Q01: kit 99 broadens sky reflection angular coverage and increases lightning world-light gain by 42%, retaining slow random swells and textured puddles. CaptureStorm 95 and TestSurfaceProfile 928 checks pass; desktop rain/flash captures inspected. No extra samples/passes; phone testing and visual acceptance pending. See docs/STORM_WET_MATERIAL.md.

@@ -41,6 +41,8 @@ func run() -> void:
 		app.set("library", TrackLibrary.new(test_directory))
 		app.set("records", LocalRecords.new(test_directory.path_join("records.json")))
 		root.add_child(app)
+		while not app.get("startup_complete"): await process_frame
+		app.call("_show_screen","play")
 		await _settle()
 		await _capture("home-first", physical_size)
 		await _navigate("garage")
@@ -207,8 +209,14 @@ func _finish() -> void:
 
 func _populated_gallery(physical_size: Vector2i) -> void:
 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
+	if browser.cloud != null:
+		browser.cloud.changed.disconnect(browser._cloud_changed)
+		browser.cloud = null
 	var original: Array[Dictionary] = browser.catalog.entries.duplicate(true)
-	var sample: Dictionary = original[0].duplicate(true)
+	var sample: Dictionary = {}
+	for entry: Dictionary in original:
+		if entry.source == "builtin": sample = entry.duplicate(true); break
+	browser.catalog.entries.assign([sample])
 	# Metadata-only gallery fixtures, never saved into the owner catalog.
 	for index: int in range(7):
 		var entry: Dictionary = sample.duplicate(true)
@@ -220,7 +228,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.records.settings["track_ratings"] = {"gallery_fixture_0":4,"gallery_fixture_2":5}
 	browser.call("_refresh")
 	await _settle()
-	check(browser.grid.get_child_count() == 6,"populated discovery gallery stays bounded at six cards")
+	check(browser.grid.get_child_count() == mini(12,browser.matches.size()),"all eight fixture tracks are reachable in one continuous row")
 	for card: TrackTile in browser.grid.get_children():
 		var rating: int = int(browser.records.settings.track_ratings.get(str(card.entry.id),0))
 		check(card.personal_rating == rating,"gallery shows saved rating for its track identity")
@@ -236,13 +244,71 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await _settle()
 	var race_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
 	var lap_chart: TrackDistribution = browser.find_child("LapDistribution",true,false)
-	check(race_chart != null and lap_chart != null and race_chart.get_global_rect().end.x <= lap_chart.global_position.x,"race and lap comparisons remain visible side by side")
+	check(race_chart != null and lap_chart == null,"reference layout shows a race comparison below the hero")
 	check(browser.find_child("DeleteUserTrack",true,false) == null and browser.find_child("RemixTrack",true,false) == null,"Play does not expose track modification actions")
 	await _capture("tracks-populated-fixture",physical_size,true)
 	browser.call("_page",1)
 	await _settle()
-	check(browser.grid.get_child_count() == 2,"discovery next page shows remaining entries")
+	check(browser.gallery.scroll_horizontal > 0,"gallery arrow scrolls the continuous row")
 	await _capture("tracks-storm-fixture",physical_size,true)
+	browser.gallery.scroll_horizontal = 0
+	await _settle()
+	var before_favorites: Array = browser.records.settings.get("favorites",[]).duplicate()
+	var touch_origin: Vector2 = browser.gallery.get_global_rect().get_center()
+	var touch := InputEventScreenTouch.new()
+	touch.index = 0
+	touch.position = touch_origin
+	touch.pressed = true
+	root.push_input(touch,true)
+	var drag := InputEventScreenDrag.new()
+	drag.index = 0
+	drag.position = touch_origin-Vector2(280,0)
+	drag.relative = Vector2(-280,0)
+	root.push_input(drag,true)
+	touch = InputEventScreenTouch.new()
+	touch.index = 0
+	touch.position = drag.position
+	touch.pressed = false
+	root.push_input(touch,true)
+	await _settle()
+	check(browser.gallery.scroll_horizontal >= mini(280,int(browser.gallery_content.custom_minimum_size.x-browser.gallery.size.x))-2,"mobile swipe scrolls the track row")
+	check(browser.selected_track.identity == selected_before and not browser.selecting,"swipe never selects a track")
+	check(browser.records.settings.get("favorites",[]) == before_favorites,"swipe never toggles a favorite")
+	await _tap((browser.find_child("RaceSearch",true,false) as Button).get_global_rect().get_center())
+	check(browser.search_dialog.visible,"Search beside Filters opens through viewport input")
+	var search: LineEdit = browser.search_dialog.find_child("Search_search",true,false)
+	search.text = "Redrock"
+	search.text_changed.emit(search.text)
+	await _settle()
+	check(browser.matches.size() == 1 and browser.matches[0].name == "Redrock Run","Search filters names across the full carousel")
+	search.text = "Gallery fixture"
+	search.text_changed.emit(search.text)
+	check(browser.matches.size() == 7,"Search finds creators across the full carousel")
+	search.text = ""
+	search.text_changed.emit("")
+	browser.search_dialog.hide()
+	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
+	check(browser.filter_dialog.visible,"Filters opens through viewport input")
+	browser.filter_dialog.hide()
+	await _settle()
+
+	# A large catalog remains bounded while every entry can be scrolled into view.
+	var small_catalog: Array[Dictionary] = browser.catalog.entries.duplicate(true)
+	for index: int in range(1000):
+		var entry: Dictionary = sample.duplicate(true)
+		entry.id = "large_fixture_%d" % index
+		entry.name = "ZZ %04d" % index
+		browser.catalog.entries.append(entry)
+	browser._refresh()
+	await _settle()
+	browser.gallery.scroll_horizontal = 999999
+	await _settle()
+	check(browser.grid.get_child_count() <= 12,"large catalog renders at most twelve nearby cards")
+	check((browser.grid.get_child(browser.grid.get_child_count()-1) as TrackTile).entry.name == "ZZ 0999","continuous scrolling reaches the last track in a thousand-entry catalog")
+	browser.catalog.entries = small_catalog
+	browser.gallery.scroll_horizontal = 0
+	browser._refresh()
+	await _settle()
 	var key: String = browser.records.key_for(browser.selected_track,HandlingSelection.config())
 	browser.discovery.records_by_rules_key[key] = {
 		"race_top_percent":18,"lap_top_percent":7,
@@ -252,11 +318,17 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.call("_show_detail")
 	await _settle()
 	await _capture("tracks-data-fixture",physical_size,true)
+	# Verified-track controls must fit the same layout without invented scores.
+	browser.selected_track.metadata.cloud_version = "layout-fixture"
+	browser._show_detail()
+	await _settle()
+	await _capture("tracks-cloud-controls-fixture",physical_size,true)
+	browser.selected_track.metadata.erase("cloud_version")
 	browser.discovery.records_by_rules_key.clear()
 	browser.catalog.entries = original
 	browser.state.page = 0
 	browser.call("_refresh")
 	await _settle()
-	var home: Button = browser.find_child("PlayMainMenu",true,false)
+	var home: Button = (app.get("root_ui") as Node).find_child("Tab_play",true,false)
 	await _tap(home.get_global_rect().get_center())
-	check(app.get("screen") == "play","bottom Main menu action reaches Home through viewport touch")
+	check(app.get("screen") == "play","shared Home tab reaches Home through viewport touch")

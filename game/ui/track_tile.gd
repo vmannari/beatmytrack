@@ -16,6 +16,7 @@ var personal_rating: int = 0
 var selected: bool = false
 var draft_mode: bool = false
 var preview_only: bool = false
+var compact: bool = false
 var paths: Array[PackedVector2Array] = []
 var route_bounds: Rect2
 
@@ -76,13 +77,14 @@ func _cache_route() -> void:
 	route_bounds = Rect2(low,(high-low).max(Vector2.ONE)) if low.is_finite() else Rect2(Vector2.ZERO,Vector2.ONE)
 
 func _draw() -> void:
-	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-4 if preview_only else size.y-FOOTER_HEIGHT-1.0))
+	var footer: float = 44.0 if compact else FOOTER_HEIGHT
+	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-4 if preview_only else size.y-footer-1.0))
 	_draw_terrain(image_area)
 	_draw_route(image_area)
 	if preview_only: return
 	# Quiet footer keeps creator attribution separate from the route illustration.
-	draw_rect(Rect2(0,size.y-FOOTER_HEIGHT,size.x,FOOTER_HEIGHT),Color("091720"))
-	draw_line(Vector2(1,size.y-FOOTER_HEIGHT),Vector2(size.x-1,size.y-FOOTER_HEIGHT),Color("344d56"),1)
+	draw_rect(Rect2(0,size.y-footer,size.x,FOOTER_HEIGHT),Color("091720"))
+	draw_line(Vector2(1,size.y-footer),Vector2(size.x-1,size.y-footer),Color("344d56"),1)
 	var frame: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
 	var accent: Color = Color("54cfff") if draft_mode else MenuStyle.ACCENT
 	frame.border_color = accent if selected else MenuStyle.BORDER.lightened(0.2) if is_hovered() or has_focus() else MenuStyle.BORDER
@@ -136,6 +138,7 @@ func _draw_terrain(area: Rect2) -> void:
 
 func _draw_route(area: Rect2) -> void:
 	var available := Rect2(area.position+Vector2(26,31),area.size-Vector2(52,52))
+	if compact: available = Rect2(area.position+Vector2(76,10),area.size-Vector2(92,24))
 	var scale: float = minf(available.size.x/route_bounds.size.x,available.size.y/route_bounds.size.y)
 	for path: PackedVector2Array in paths:
 		if path.size() < 2: continue

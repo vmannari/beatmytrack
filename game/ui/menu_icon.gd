@@ -15,6 +15,7 @@ static func texture(kind: String) -> Texture2D:
 		cache[kind] = biome_texture
 		return biome_texture
 	var paths: Dictionary = {
+		"close":"<path d='m5 5 14 14M19 5 5 19'/>",
 		"filter":"<path d='M3 4h18l-7 8v7l-4 2v-9Z'/>",
 		"trophy":"<path d='M7 3h10v7a5 5 0 0 1-10 0ZM7 5H3v3a5 5 0 0 0 5 5m9-8h4v3a5 5 0 0 1-5 5M12 15v5m-5 1h10'/>",
 		"target":"<circle cx='11' cy='13' r='8'/><circle cx='11' cy='13' r='4'/><path d='m11 13 9-10m-1 0v4h4'/>",

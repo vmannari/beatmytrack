@@ -298,7 +298,70 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	browser.search_dialog.hide()
 	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
 	check(browser.filter_dialog.visible,"Filters opens through viewport input")
-	browser.filter_dialog.hide()
+	await create_timer(0.2).timeout
+	await _settle()
+	var filter_scroll: ScrollContainer = browser.filter_dialog.panel.find_children("*","ScrollContainer",true,false)[0]
+	check(filter_scroll.scroll_vertical == 0,"drawer opens with the Show heading visible")
+	check(filter_scroll.get_v_scroll_bar().max_value <= filter_scroll.get_v_scroll_bar().page+1,"all filter groups fit the landscape drawer without scrolling")
+	await _capture("filters-default",physical_size,true)
+	var pending_before: Dictionary = browser.state.duplicate(true)
+	var drawer: CanvasLayer = browser.filter_dialog
+	var grass: Button = drawer.find_child("Choice_theme_pine",true,false)
+	await _tap(grass.get_global_rect().get_center())
+	check(browser.filter_dialog.draft.theme == "pine" and browser.state == pending_before,"filter choices preview without changing the gallery")
+	await _tap(browser.filter_dialog.rating_slider.get_global_rect().get_center())
+	check(is_equal_approx(float(browser.filter_dialog.draft.minimum_rating),2.5),"touch selects the midpoint of the rating slider")
+	var rating_touch := InputEventScreenTouch.new()
+	rating_touch.index = 1
+	rating_touch.pressed = true
+	rating_touch.position = browser.filter_dialog.rating_slider.get_global_rect().get_center()
+	root.push_input(rating_touch,true)
+	var rating_drag := InputEventScreenDrag.new()
+	rating_drag.index = 1
+	rating_drag.position = rating_touch.position+Vector2(600,0)
+	rating_drag.relative = Vector2(600,0)
+	root.push_input(rating_drag,true)
+	rating_touch.pressed = false
+	rating_touch.position = rating_drag.position
+	root.push_input(rating_touch,true)
+	check(is_equal_approx(float(browser.filter_dialog.draft.minimum_rating),5.0),"touch drag follows the rating slider and clamps at five outside its bounds")
+	browser.filter_dialog.rating_slider.value = 4.1
+	check(is_equal_approx(float(browser.filter_dialog.draft.minimum_rating),4.1),"rating slider supports 0.1 steps")
+	browser.filter_dialog.rating_slider.grab_focus()
+	var increase := InputEventKey.new()
+	increase.keycode = KEY_RIGHT
+	increase.pressed = true
+	root.push_input(increase,true)
+	check(is_equal_approx(float(browser.filter_dialog.draft.minimum_rating),4.2),"keyboard rating adjustment advances one tenth")
+	increase.pressed = false
+	root.push_input(increase,true)
+	browser.filter_dialog.rating_slider.value = 4.1
+	check(browser.filter_dialog.apply_button.text == "SHOW 0 TRACKS","preview count combines biome and minimum rating")
+	await _settle()
+	await _capture("filters-rating",physical_size,true)
+	await _tap(browser.filter_dialog.apply_button.get_global_rect().get_center())
+	check(not browser.filter_dialog.visible and browser.matches.is_empty(),"Show tracks commits combined filters and handles zero results")
+	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	check(is_equal_approx(browser.filter_dialog.rating_slider.value,4.1),"reopening keeps the applied rating")
+	var reset: Button = drawer.find_child("ResetFilters",true,false)
+	await _tap(reset.get_global_rect().get_center())
+	check(browser.matches.is_empty(),"Reset previews defaults without silently committing")
+	await _tap(browser.filter_dialog.apply_button.get_global_rect().get_center())
+	check(browser.matches.size() == 8,"Reset then Show restores all fixture tracks")
+	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	await _tap(grass.get_global_rect().get_center())
+	var cancel := InputEventKey.new()
+	cancel.keycode = KEY_ESCAPE
+	cancel.pressed = true
+	root.push_input(cancel,true)
+	check(not browser.filter_dialog.visible and browser.state.theme == "all" and browser.gallery.is_processing_input(),"Escape discards pending choices and restores carousel input")
+	await _tap((browser.find_child("RaceFilters",true,false) as Button).get_global_rect().get_center())
+	await create_timer(0.2).timeout
+	await _tap(((app.get("root_ui") as Node).find_child("Tab_play",true,false) as Control).get_global_rect().get_center())
+	check(not browser.filter_dialog.visible and app.get("screen") == "tracks","backdrop tap closes filters without navigating the menu underneath")
+	browser.filter_dialog.close()
 	await _settle()
 
 	# A large catalog remains bounded while every entry can be scrolled into view.

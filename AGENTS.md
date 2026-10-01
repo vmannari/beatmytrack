@@ -122,3 +122,7 @@ The owner renames Play to Race and requests the supplied discovery composition, 
 
 ## Race discovery correction (2026-10-01)
 The owner corrects the mode rail to the left, requires stable section dimensions during track changes, removes the duplicate hero Race and sidebar Random actions, requests equal spacious Random/Filters/Search buttons, and replaces carousel arrows with smooth scrolling that settles on full cards. This supersedes the right-rail portion of the preceding override. See docs/RACE_DISCOVERY.md.
+
+
+## Race filter drawer override (2026-10-01)
+The owner requests a reference-led right-side filter drawer over the Race menu, retaining the left mode rail and stable layout. Reuse existing icons, especially biome glyphs. Minimum rating uses a slider in 0.1 increments instead of the reference's rating buttons. See docs/RACE_DISCOVERY.md for implementation, actual checks and missing race-count data/device acceptance.

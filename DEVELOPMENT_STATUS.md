@@ -1,5 +1,7 @@
 # Development status
 
+2026-10-01 R01/V03/V04/G03/Q01: reference-led Race filter drawer reuses biome/menu icons, previews combined matches and adds a 0.1-step minimum-rating slider with touch/keyboard support. Reset/apply/cancel preserve menu layout. Graphical 922, menu 36 and loading 21 checks pass; captures inspected. Race-count choices disabled pending real data. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
+
 2026-10-01 R01/V03/V04/G03/Q01: Race discovery corrections fix section bounds across async selections and score states, move modes left, remove duplicate Race/Random actions, equalize bottom controls and snap smooth carousel scrolling to full cards without arrows. Graphical 730, loading 21 and menu 26 checks pass; captures inspected. No phone attached/export/device test. See docs/RACE_DISCOVERY.md.
 
 2026-10-01 R01/V03/V04/G03/Q01: Race replaces Play; reference-led discovery hero, record strip, continuous touch/desktop carousel, Search beside Filters and icon-only right-side placeholders. Graphical 661, menu 26 and loading 19 checks pass; desktop/compact evidence inspected. No phone attached, Android export or device test. See docs/RACE_DISCOVERY.md.

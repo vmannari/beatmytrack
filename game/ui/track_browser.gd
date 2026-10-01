@@ -20,7 +20,6 @@ var grid: GridContainer
 var detail: VBoxContainer
 var count_label: Label
 var random_button: Button
-var sections: Dictionary = {}
 var discovery := TrackDiscoveryProvider.new()
 var race_button: Button
 var loading: bool = true
@@ -37,9 +36,10 @@ var cloud_status: Label
 var gallery: ScrollContainer
 var gallery_content: Control
 var hero: PanelContainer
-var filter_dialog: AcceptDialog
+const FilterDrawer = preload("res://ui/track_filter_drawer.gd")
+var filter_dialog: FilterDrawer
+var filter_button: Button
 var search_dialog: AcceptDialog
-var filter_controls: HFlowContainer
 var _tile_start: int = -1
 var _query_signature: String = ""
 var tile_stride: int = 202
@@ -112,15 +112,15 @@ func _ready() -> void:
 	count_label.hide()
 	_build_actions()
 	get_node("PlayActions").reparent(main)
-	filter_dialog = AcceptDialog.new()
-	filter_dialog.title = "Filter tracks"
-	filter_dialog.min_size = Vector2i(560,180)
+	filter_dialog = FilterDrawer.new()
+	filter_dialog.catalog = catalog
+	filter_dialog.discovery = discovery
+	filter_dialog.records = records
 	add_child(filter_dialog)
-	filter_controls = HFlowContainer.new()
-	filter_controls.add_theme_constant_override("h_separation",12)
-	filter_controls.add_theme_constant_override("v_separation",12)
-	filter_dialog.add_child(filter_controls)
-	var filters: HFlowContainer = filter_controls
+	filter_dialog.applied.connect(func(filters: Dictionary) -> void:
+		state.merge(filters,true)
+		_refresh())
+	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
 	search_dialog = AcceptDialog.new()
 	search_dialog.title = "Search tracks"
 	search_dialog.min_size = Vector2i(580,150)
@@ -130,31 +130,6 @@ func _ready() -> void:
 	if cloud != null:
 		cloud.changed.connect(_cloud_changed)
 		cloud_status = count_label
-		filters.add_child(_compact_button("Refresh tracks",func() -> void: cloud.refresh()))
-	var discover := OptionButton.new()
-	discover.name = "Discover"
-	discover.custom_minimum_size = Vector2(170,48)
-	for caption: String in ["Recommended","Trending","Friends","New","Rivals"]: discover.add_icon_item(MenuIcon.texture("compass"),caption)
-	discover.add_theme_constant_override("icon_max_width",22)
-	discover.selected = maxi(0,["recommended","trending","friends","new","rivals"].find(state.get("feed","recommended")))
-	discover.item_selected.connect(func(index: int) -> void:
-		state.section = "all"
-		state.feed = ["recommended","trending","friends","new","rivals"][index]
-		state.page = 0
-		_refresh())
-	filters.add_child(discover)
-	for index: int in [1,2,4]: discover.set_item_disabled(index,true)
-	sections["all"] = discover
-	for pair: Array in [["favorites","Favorites"],["saved","My tracks"]]:
-		var id: String = pair[0]
-		var button: Button = _compact_button(pair[1],func() -> void:
-			state.section = id
-			state.page = 0
-			_refresh())
-		button.icon = MenuIcon.texture("star" if id == "favorites" else "person")
-		button.name = "Filter_"+id
-		sections[id] = button
-		filters.add_child(button)
 	var search_kind := OptionButton.new()
 	for caption: String in ["Name or creator","Track name","Creator"]: search_kind.add_item(caption)
 	search_kind.selected = int(state.get("search_kind",0))
@@ -179,30 +154,6 @@ func _ready() -> void:
 			state[field] = value
 			state.page = 0
 			_refresh())
-	var themes := OptionButton.new()
-	themes.custom_minimum_size.y = 48
-	themes.add_theme_font_size_override("font_size",16)
-	themes.add_icon_item(MenuIcon.texture("biomes"),"All biomes")
-	for theme: String in TrackTheme.IDS: themes.add_icon_item(MenuIcon.texture("biomes"),TrackTheme.title(theme))
-	themes.selected = (["all"]+TrackTheme.IDS).find(state.get("theme","all"))
-	themes.item_selected.connect(func(index: int) -> void:
-		state.theme = (["all"]+TrackTheme.IDS)[index]
-		state.page = 0
-		_refresh())
-	filters.add_child(themes)
-	var sorting := OptionButton.new()
-	sorting.custom_minimum_size.y = 48
-	sorting.add_theme_font_size_override("font_size",16)
-	sorting.add_icon_item(MenuIcon.texture("sort"),"A-Z")
-	sorting.add_icon_item(MenuIcon.texture("sort"),"User score")
-	sorting.add_icon_item(MenuIcon.texture("sort"),"Playthroughs")
-	sorting.set_item_disabled(2,true)
-	sorting.selected = maxi(0,["name","score","plays"].find(state.get("sort","name")))
-	sorting.item_selected.connect(func(index: int) -> void:
-		state.sort = ["name","score","plays"][index]
-		state.page = 0
-		_refresh())
-	filters.add_child(sorting)
 	_show_detail()
 	call_deferred("_load_catalog")
 
@@ -270,8 +221,8 @@ func _clear(parent: Node) -> void:
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
 	gallery.call("_stop_snap")
-	matches = discovery.query(catalog,state,records.settings.get("favorites",[]))
-	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name")])
+	matches = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}))
+	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any")])
 	if signature != _query_signature: gallery.scroll_horizontal = 0
 	_query_signature = signature
 	_tile_start = -1
@@ -289,11 +240,11 @@ func _refresh() -> void:
 	if cloud != null: count_label.text += " · "+str(cloud.status)
 	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
 	random_button.disabled = matches.is_empty() or loading
-	for id: String in sections:
-		var active: bool = id == state.get("section","all")
-		sections[id].add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT if active else MenuStyle.PANEL))
-		sections[id].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.MUTED)
-		sections[id].add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.MUTED)
+	var filter_count: int = FilterDrawer.active_count(state)
+	filter_button.text = "Filters"+(" - %d" % filter_count if filter_count > 0 else "")
+	filter_button.add_theme_color_override("font_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
+	filter_button.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
+	if filter_dialog.visible: filter_dialog.refresh_choices()
 
 func _render_tiles() -> void:
 	if not is_instance_valid(grid): return
@@ -492,7 +443,11 @@ func _build_actions() -> void:
 	random_button.icon = MenuIcon.texture("dice")
 	random_button.name = "RandomTrack"
 	actions.add_child(random_button)
-	var filters := MenuStyle.button("Filters",func() -> void: filter_dialog.popup_centered())
+	var filters := MenuStyle.button("Filters",func() -> void:
+		gallery.call("_stop_snap")
+		gallery.set_process_input(false)
+		filter_dialog.open_for(state,filter_button))
+	filter_button = filters
 	filters.name = "RaceFilters"
 	filters.icon = MenuIcon.texture("filter")
 	actions.add_child(filters)

@@ -68,3 +68,29 @@ Actual commands (pinned engine through `powershell -NoProfile -ExecutionPolicy B
 Intermediate graphical runs caught a mouse-wheel step rounding back to its starting card and an obsolete idle snap interfering with catalog changes. Both were corrected; final tests retain scroll movement and final-entry reachability assertions.
 
 Inspected evidence: [desktop](evidence/race-discovery-stable-2026-10-01/tracks-populated-fixture-1280x720.png), [compact landscape](evidence/race-discovery-stable-2026-10-01/tracks-populated-fixture-960x540.png), [wide scrolled row](evidence/race-discovery-stable-2026-10-01/tracks-storm-fixture-1600x720.png), [three-score shared-track fixture](evidence/race-discovery-stable-2026-10-01/tracks-cloud-controls-fixture-1280x720.png). All populated cards/scores remain disposable evidence fixtures. Remaining acceptance: owner visual review and physical-phone swipe feel/safe-area/keyboard checks.
+
+
+## Filter drawer and fractional rating ? 2026-10-01
+
+Requirements R01/V03/V04/G03/Q01. Owner supplied a right-hand filter drawer reference, requested reuse of existing icons (especially biomes), then replaced the pictured rating buttons with a slider in 0.1 increments. The mode rail stays on the left and the preceding stable Race layout remains intact.
+
+Implemented a modal right-hand drawer over a dimmed Race screen, with Show (Recommended / Favorites / My tracks), the existing six biome choices/icons, race-count choices, minimum-rating slider, sorting, active-filter count, Reset, close and a live Show N tracks action. The existing menu icon set is reused; only the missing close glyph was added. The central content can scroll on constrained viewports while the header/footer remain fixed; all groups fit without scrolling at the tested landscape sizes.
+
+Choices remain a draft until Show tracks. Close, backdrop tap and Escape discard changes and restore carousel input/focus. Reset changes the draft filters but preserves the separate search query. The displayed match count includes the current search, collection, biome and minimum rating. Rating ranges from Any (0) to 5, with 0.1 input/keyboard steps and larger whole-star visual tick marks. Touch tapping and dragging are explicitly handled without depending on touch-to-mouse emulation. Sorting by rating uses cloud aggregate ratings for shared tracks and existing local ratings for local tracks; unrated tracks are excluded only when the minimum exceeds zero.
+
+The current backend/catalog does not expose completed race counts. Low / Medium / High and Most raced are therefore visibly disabled with an explanation. No counts are fabricated from votes or leaderboard population. The read-model supports future supplied counts: Low 0?9, Medium 10?49, High 50+ (proposed UI thresholds, no backend contract changes). Recommended preserves the existing default name order; personalized recommendations are not added.
+
+Changed files: `game/ui/track_filter_drawer.gd` (new drawer), `track_browser.gd` (integration and active count), `track_discovery_provider.gd` (combined fractional rating/race-count filtering and rating sort), `menu_icon.gd` (close glyph), `game/tests/capture_premium_menus.gd`, `test_menu_presentation.gd`, this document, AGENTS/status/phase notes and evidence.
+
+Actual commands used the pinned engine through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+- `CheckScript -ScriptPath res://ui/track_browser.gd`: passed.
+- `CaptureMenus`: final **922 checks, zero failures** at 1280?720, 960?540 and 1600?720. Includes viewport touch choices, slider tap/drag/clamping, keyboard 0.1 adjustment, live counts, zero results, apply/reset/reopen/cancel, backdrop dismissal without underlying navigation, full drawer fit and existing Race layout/carousel regressions.
+- `TestMenus`: **36 checks, zero failures**, including exact fractional boundaries, missing ratings/counts, compound filters and local/shared rating order.
+- `TestMenuLoading`: **21 checks, zero failures**.
+- Scoped `git diff --check`: passed (CRLF normalization notices only).
+- `%LOCALAPPDATA%/Android/Sdk/platform-tools/adb.exe devices`: no attached device. No physical-phone test or Android export performed.
+
+Initial visual review found clipped Show content and a stale pre-render rating capture; spacing and capture settling were corrected. Additional touch checks found that native slider/backdrop handling did not consume viewport touch events; explicit handling fixed both, and the final suite retains those tests.
+
+Inspected evidence: [default drawer](evidence/filter-drawer-2026-10-01/filters-default-1280x720.png), [4.1 minimum](evidence/filter-drawer-2026-10-01/filters-rating-1280x720.png), [compact landscape](evidence/filter-drawer-2026-10-01/filters-rating-960x540.png), [wide landscape](evidence/filter-drawer-2026-10-01/filters-default-1600x720.png). Populated cards/ratings in evidence are disposable fixtures. Remaining acceptance: owner visual review and actual-phone touch feel/safe-area testing; race-count controls await real catalog data.

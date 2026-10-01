@@ -58,6 +58,22 @@ func run() -> void:
 	provider.available = true
 	check(provider.query(catalog,{"feed":"friends"},[])[0].id == "b","friend feed uses supplied metadata")
 	check(provider.query(catalog,{"section":"favorites","feed":"friends"},["a"])[0].id == "a","favorites independent of discovery feed")
+	catalog.entries.append({"id":"c","name":"Cloud","creator":"Mika","source":"cloud","theme":"desert","rating_average":4.1,"owned":true})
+	catalog.entries.append({"id":"d","name":"Unrated","creator":"Jen","source":"cloud","theme":"winter","rating_average":null})
+	var local_ratings: Dictionary = {"a":4,"b":5}
+	check(provider.query(catalog,{"minimum_rating":4.1},[],local_ratings).size() == 2,"fractional rating includes the exact aggregate boundary and excludes lower local ratings")
+	check(provider.query(catalog,{"minimum_rating":4.2},[],local_ratings).size() == 1,"next tenth excludes a 4.1 aggregate")
+	check(provider.query(catalog,{"minimum_rating":0.0},[],local_ratings).size() == 4,"Any rating includes unrated tracks")
+	check(provider.query(catalog,{"minimum_rating":4.1,"theme":"desert","search":"mika"},[],local_ratings)[0].id == "c","rating biome and creator search combine")
+	check(provider.query(catalog,{"minimum_rating":4.5,"section":"favorites"},["a"],local_ratings).is_empty(),"favorites do not bypass rating constraints")
+	check(provider.query(catalog,{"sort":"score"},[],local_ratings)[1].id == "c","rating order uses card values across local and cloud tracks")
+	check(provider.query(catalog,{"race_count":"low"},[]).is_empty(),"missing race counts are not treated as zero")
+	provider.track_stats.a.plays = 9
+	provider.track_stats.b.plays = 10
+	provider.track_stats.c = {"plays":50}
+	check(provider.query(catalog,{"race_count":"low"},[])[0].id == "a","Low ends at nine races")
+	check(provider.query(catalog,{"race_count":"medium"},[])[0].id == "b","Medium starts at ten races")
+	check(provider.query(catalog,{"race_count":"high"},[])[0].id == "c","High starts at fifty races")
 	for filename: String in DirAccess.open(folder).get_files(): DirAccess.remove_absolute(folder.path_join(filename))
 	DirAccess.remove_absolute(folder)
 	print("MENU_PRESENTATION_TESTS: %d checks, %d failures" % [checks,failures])

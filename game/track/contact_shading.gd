@@ -1,7 +1,7 @@
 class_name ContactShading
 extends RefCounted
 ## Cosmetic depth projections. No collision, timing or canonical-state writes.
-const VERSION: String = "contact-lighting-8"
+const VERSION: String = "contact-lighting-9"
 const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2)}
 const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","container","shed","hut","grandstand"]
 

@@ -3,7 +3,7 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 var graphical: bool = false
-const FOLDER: String = "res://../docs/evidence/grass-cloud-coverage-2026-10-03/after/"
+const FOLDER: String = "res://../docs/evidence/grass-sunlight-2026-10-03/"
 
 func _initialize() -> void:
 	graphical = DisplayServer.get_name() != "headless"
@@ -100,6 +100,12 @@ func capture_views(game: Node, bridges: Array[Node]) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(FOLDER))
 	var camera: FollowCamera = game.get("camera")
 	# Production camera first. Subsequent inspection view is diagnostic only.
+	var sun_material := (game.get("cloud_shadow") as MeshInstance3D).material_override as ShaderMaterial
+	sun_material.set_shader_parameter("sunlight_strength",0.0)
+	var sun_before: Image = await shot("sunlight-before")
+	sun_material.set_shader_parameter("sunlight_strength",0.19)
+	var sun_after: Image = await shot("sunlight-after")
+	check(changed_pixels(sun_before,sun_after) > 1000,"golden sunlight visibly affects world")
 	await shot("gameplay")
 	var production_cloud: MeshInstance3D = game.get("cloud_shadow")
 	(production_cloud.material_override as ShaderMaterial).set_shader_parameter("elapsed",8.0)

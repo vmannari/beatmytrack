@@ -1,0 +1,270 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-10-03 V01/V04/V05/Q01: owner camera-motion correction caps Follow-car yaw at 60 degrees/s and slows Look-ahead offset at 2/s separately from the existing 9/s position follow. Reproduced 578-604 degrees/s before correction; cap/smoothing keep shortest arcs and snap recovery. Final camera 1,269, shake 7, rewind 57 and parse 254 pass; graphical comparisons/turn sequences inspected. Initial 16 speed failures and one premature convergence deadline are documented; final headless test retains three shutdown instance leaks. Doctor finds DN2103 attached, no Android export/install/device test, full Validate/replay gate or service action. Changed files, actual commands, motion screenshots and scoped patch: docs/CAMERA_OPTIONS.md. Owner feel acceptance remains; no mixed-workspace commit.
+ 
+ 2026-10-03 V02/V04/V05/Q01: owner accepts Grass contrast and requests more sunny area. Contact-lighting-8 raises soft cloud-mask thresholds to 0.50–0.70, reducing shaded footprints with the accepted strength/tint/sunlight/drift retained. CaptureContactShading 46 checks pass and desktop images inspected; Doctor finds DN2103 attached. No Android export/install/device driving or performance test. Owner coverage/motion/phone acceptance remains; files, actual commands, screenshots and scoped checkpoint: docs/GRASS_CLOUD_CONTRAST.md (Smaller cloud coverage).
+ 
+diff --git a/docs/CAMERA_OPTIONS.md b/docs/CAMERA_OPTIONS.md
+--- a/docs/CAMERA_OPTIONS.md
++++ b/docs/CAMERA_OPTIONS.md
+@@ -7,10 +7,10 @@
+ | Choice | Pitch | Rotation | Look-ahead |
+ |---|---|---|---|
+ | Overhead | 56° | Fixed world yaw, 18° | Velocity × 0.22 s + 1.5 m forward, capped at 7 m |
+-| Follow car | 48° | Car heading, smoothly delayed | Original bounded look-ahead |
++| Follow car | 48° | Car heading, smoothly delayed, capped at 60°/s | Original bounded look-ahead |
+ | Look ahead | 56° | Fixed world yaw, 18° | Velocity × 0.4 s + 2 m forward, capped at 9 m |
+ 
+-Follow-car rotation uses shortest-arc exponential smoothing at 3.5/s: approximately 0.20 seconds to cover half a heading change, 0.66 seconds to cover 90%. Translation retains its existing separate 9/s response. These are initial feel values for owner testing. Look-ahead uses actual travel velocity with a small heading bias, includes reverse motion, and recenters when stopped. Both views remain orthographic and overhead, without a horizon; the whole-scene extent remains 35/1.15 m with unchanged HUD, mesh and collision scale. Restart and rewind snapshots reset translation and yaw together.
++Follow-car rotation eases over the shortest arc at 3.5/s, with a hard **60°/s** speed limit. Large heading gaps no longer produce proportionally faster camera rotation; a 180° correction takes at least three seconds, plus final easing. Look-ahead smooths its offset separately at **2/s** (about 0.35 seconds for half an offset change), while normal car-position tracking retains its existing 9/s response. These are initial feel values for owner testing. Look-ahead uses actual travel velocity with a small heading bias, includes reverse motion, and recenters gradually when stopped. Both views remain orthographic and overhead, without a horizon; the whole-scene extent remains 35/1.15 m with unchanged HUD, mesh and collision scale. Restart, mode switches and rewind snapshots reset translation, yaw and look-ahead together; these explicit discontinuities bypass ordinary smoothing/rate limits.
+ 
+ Open **Settings → Camera**, select a view and **Apply settings**. During racing or creator practice, use **Pause → Settings → Camera** to change it immediately, or press **C** to cycle Overhead → Follow car → Look ahead. Race changes retain the attempt and save the preference when a local store is available. A failed write reports that the view applies to the current race; it retains the previous committed preference. Settings selection/reset stages until Apply. Reset camera preserves controls; Reset controls preserves the camera.
+ 
+@@ -26,7 +26,7 @@
+ - `scripts/dev.ps1`: TestCameraModes/CaptureCameraModes entrypoints and camera checks in full Validate.
+ - `AGENTS.md`, this file, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`: owner override and actual verification record.
+ 
+-## Actual commands and outcomes
++## Initial implementation commands and outcomes
+ 
+ All engine actions used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and the pinned `4.7.2.stable.official.ed1daf0bf`; the Godot PATH alias was not used.
+ 
+@@ -52,3 +52,29 @@
+ ## Remaining acceptance and limits
+ 
+ Owner driving acceptance remains for rotation delay, lower-angle readability, look-ahead strength and comfort through tight hairpins/drifts/bridges. DN2103 was attached, but no Android export/install, device driving, device GPU/frame-time or thermal test was performed. No backend/service deployment, full Validate or full replay/regression gate was run for this presentation change. Headless camera integration exits 0 with an ObjectDB leak warning (four instances initially, three in the final run); graphical captures and the existing rewind/pause checks exit cleanly.
++
++## Owner motion correction — 2026-10-03
++
++The owner reports excessive Follow-car rotation and then requests slower Look-ahead movement relative to the car. V01/V05 authorize both presentation corrections; V04/Q01 still require owner/device acceptance. Changed files for this follow-up are `game/camera/camera_profile.gd`, `follow_camera.gd`, `game/tests/test_camera_modes.gd`, `capture_camera_modes.gd`, this document, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. The original menus, selection/persistence, Overhead settings and canonical contracts are retained.
++
++The reproduced 175° heading change peaked at **578–604°/s** across 30/60/120 fps. The new per-frame shortest-arc clamp permits at most elapsed time × 60°/s and still eases toward alignment. Look-ahead has an independent filtered offset, so changing travel direction/accelerating/decelerating/stopping moves the framing more gently around the car, with the usual position response preserved. Both filtered states reset on existing snap paths.
++
++Actual commands used the same pinned `scripts/dev.ps1` entrypoint:
++
++| Action/arguments | Result |
++|---|---|
++| `-Action TestCameraModes` before the cap | 1,150 checks, 16 failures, reproducing excessive yaw speed |
++| `-Action TestCameraModes` first cap pass | 1,150 checks, one convergence-deadline failure; all cap checks pass |
++| `-Action TestCameraModes` after convergence check correction | 1,151 checks, 0 failures |
++| `-Action TestCameraModes` after slower offset | **1,269 checks, 0 failures**; existing three-instance shutdown leak warning |
++| `-Action TestScript -ScriptPath res://tests/test_camera_shake.gd` | Final 7 checks, 0 failures |
++| `-Action TestRewind` | Final 57 checks, 0 failures |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | Final 254 scripts, 0 failures; earlier cap-only run 252 passes |
++| `-Action CaptureCameraModes` | Final exit 0: nine comparisons, five limited-yaw frames, four delayed-offset frames, two pause-selector captures |
++| `-Action Doctor` | Matching engine/templates, DN2103 attached |
++
++The first cap pass exposed a test timing assumption: a capped large turn needs its full bounded rotation time plus final easing. The convergence check now allows four seconds, retains its alignment threshold and additionally checks monotonic approach/no overshoot; none of the speed-limit assertions were removed or relaxed. New checks cover both turn directions, frame rates, uneven/zero/negative render deltas, bounded offset interpolation, gradual direction changes, unchanged position response and stale-offset recovery on snap.
++
++Updated desktop captures are in [motion-correction](evidence/camera-options-2026-10-03/motion-correction); the earlier uncapped evidence is retained. Follow-car and Look-ahead turn sequences were visually inspected. The turn fixtures hold position and change car heading/velocity at one tick to expose camera response; they are diagnostic captures, not complete raced laps. `motion-correction/camera-motion.patch` is a scoped checkpoint against the pre-correction shared workspace, checked with `git apply --reverse --check`; no mixed-workspace commit was made. Actual patch preparation and whitespace checks use Python `difflib` and `git diff --check`.
++
++No Android export/install/device driving or phone performance measurement, backend/service action, full Validate or complete replay gate was performed. Owner acceptance of the 60°/s maximum and gentler Look-ahead response remains.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-10-03 V01/V04/V05/Q01: owner Follow-car speed/Look-ahead response correction delivered. Hard 60-degree/s yaw limit and separate 2/s look-ahead offset retain normal car tracking, Overhead baseline and canonical contracts. Reproduced 578-604 degrees/s before correction. Camera 1,269/shake 7/rewind 57/parse 254 pass; diagnostic desktop turn captures inspected. DN2103 attached; no export/install/device driving, full Validate/replay gate or backend action. Three headless shutdown instance leaks remain; owner feel/phone acceptance pending. Scope, initial failing checks, actual commands and checkpoint: docs/CAMERA_OPTIONS.md.
+ 
+ 2026-10-03 V02/V04/V05/Q01: Grass coverage follow-up retains owner-accepted contrast and shrinks cloudy footprints using mask thresholds 0.50–0.70, contact-lighting-8. CaptureContactShading 46 checks pass; desktop images inspected. Doctor confirms DN2103 attached; no export/install/device/performance test. Owner coverage/motion/phone acceptance remains. Files, commands, screenshots and scoped checkpoint: GRASS_CLOUD_CONTRAST.md (Smaller cloud coverage).
+ 
+diff --git a/game/camera/camera_profile.gd b/game/camera/camera_profile.gd
+--- a/game/camera/camera_profile.gd
++++ b/game/camera/camera_profile.gd
+@@ -17,11 +17,13 @@
+ @export var forward_look_ahead: float = 1.5
+ @export var velocity_look_ahead: float = 0.22 # seconds
+ @export var maximum_look_ahead: float = 7.0
++@export var look_ahead_smoothing: float = 0.0 # optional separate response/s for the offset
+ @export var smoothing: float = 9.0 # response/s
+ @export var orthographic: bool = true
+ @export var field_of_view: float = 40.0
+ @export var follow_heading: bool = false # experiment only; stable world is default
+-@export var heading_smoothing: float = 3.5 # response/s; about 0.66 s to turn 90% of the way
++@export var heading_smoothing: float = 3.5 # response/s; eases into alignment within the speed cap
++@export_range(5.0, 180.0, 1.0) var maximum_yaw_speed_degrees: float = 60.0
+ 
+ 
+ static func valid_mode(value: String) -> String:
+@@ -40,4 +42,5 @@
+ 			result.velocity_look_ahead = 0.4
+ 			result.forward_look_ahead = 2.0
+ 			result.maximum_look_ahead = 9.0
++			result.look_ahead_smoothing = 2.0
+ 	return result
+diff --git a/game/camera/follow_camera.gd b/game/camera/follow_camera.gd
+--- a/game/camera/follow_camera.gd
++++ b/game/camera/follow_camera.gd
+@@ -6,6 +6,7 @@
+ var initialized: bool = false
+ var mode: String = CameraProfile.MODES[0]
+ var smoothed_yaw: float = 0.0
++var look_ahead_offset: Vector2 = Vector2.ZERO
+ var trauma: float = 0.0
+ var impact_offset: Vector2 = Vector2.ZERO
+ var impact_velocity: Vector2 = Vector2.ZERO
+@@ -82,21 +83,31 @@
+ 	fov = profile.field_of_view
+ 	near = 0.1
+ 	far = 180.0
++	var step: float = maxf(delta, 0.0)
+ 	var ahead: Vector2 = velocity * profile.velocity_look_ahead
+ 	if velocity.length() > 0.5:
+ 		ahead += Vector2(sin(heading), cos(heading)) * profile.forward_look_ahead
+ 	ahead = ahead.limit_length(profile.maximum_look_ahead)
+-	var desired: Vector3 = VisualGeometry.world(point + ahead)
++	if snap or not initialized or profile.look_ahead_smoothing <= 0.0:
++		look_ahead_offset = ahead
++	else:
++		# Delay changes around the car separately from ordinary position tracking.
++		look_ahead_offset = look_ahead_offset.lerp(ahead, 1.0 - exp(-profile.look_ahead_smoothing * step))
++	var desired: Vector3 = VisualGeometry.world(point + look_ahead_offset)
+ 	var desired_yaw: float = deg_to_rad(profile.world_yaw_degrees) - (heading if profile.follow_heading else 0.0)
+-	var step: float = maxf(delta, 0.0)
+ 	if snap or not initialized:
+ 		focus = desired
+ 		smoothed_yaw = desired_yaw
+ 		initialized = true
+ 	else:
+ 		focus = focus.lerp(desired, 1.0 - exp(-profile.smoothing * step))
+-		# Shortest-arc exponential response avoids a full turn at the heading wrap.
+-		smoothed_yaw = lerp_angle(smoothed_yaw, desired_yaw, 1.0 - exp(-profile.heading_smoothing * step)) if profile.follow_heading else desired_yaw
++		if profile.follow_heading:
++			# Ease over the shortest arc, with a hard speed cap even after a spin.
++			var eased_turn: float = angle_difference(smoothed_yaw, desired_yaw) * (1.0 - exp(-profile.heading_smoothing * step))
++			var maximum_turn: float = deg_to_rad(profile.maximum_yaw_speed_degrees) * step
++			smoothed_yaw += clampf(eased_turn, -maximum_turn, maximum_turn)
++		else:
++			smoothed_yaw = desired_yaw
+ 	if snap:
+ 		clear_shake()
+ 	var shake: Vector2 = shake_offset(delta)
+diff --git a/game/tests/capture_camera_modes.gd b/game/tests/capture_camera_modes.gd
+--- a/game/tests/capture_camera_modes.gd
++++ b/game/tests/capture_camera_modes.gd
+@@ -3,7 +3,7 @@
+ func _initialize() -> void: call_deferred("run")
+ 
+ func run() -> void:
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/camera-options-2026-10-03")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/camera-options-2026-10-03/motion-correction")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+ 	var game: Node = load("res://core/game.tscn").instantiate()
+@@ -31,9 +31,16 @@
+ 	game.sim.state.heading += PI / 2.0
+ 	game.previous_heading = game.sim.state.heading
+ 	game.sim.state.velocity = game.sim.state.forward() * 22.0
+-	for frame: int in range(61):
++	for frame: int in range(181):
+ 		game._process(1.0 / 60.0)
+-		if frame in [0, 17, 59]: await capture(output.path_join("follow-turn-%02d.png" % (frame + 1)))
++		if frame in [0, 17, 59, 119, 179]: await capture(output.path_join("follow-turn-%03d.png" % (frame + 1)))
++	game.set_camera_mode("look_ahead")
++	game.sim.state.heading -= PI / 2.0
++	game.previous_heading = game.sim.state.heading
++	game.sim.state.velocity = game.sim.state.forward() * 22.0
++	for frame: int in range(121):
++		game._process(1.0 / 60.0)
++		if frame in [0, 17, 59, 119]: await capture(output.path_join("look-ahead-turn-%03d.png" % (frame + 1)))
+ 	game.toggle_pause()
+ 	game.hud.pause_menu._settings()
+ 	await capture(output.path_join("pause-camera-1280x720.png"))
+@@ -42,7 +49,7 @@
+ 	await capture(output.path_join("pause-camera-960x540.png"))
+ 	game.queue_free()
+ 	await process_frame
+-	print("CAMERA_CAPTURE: 9 comparison, 3 delayed-turn and 2 pause-selector captures saved")
++	print("CAMERA_CAPTURE: 9 comparison, 5 limited-turn, 4 look-ahead-turn and 2 pause-selector captures saved")
+ 	quit()
+ 
+ func capture(path: String) -> void:
+diff --git a/game/tests/test_camera_modes.gd b/game/tests/test_camera_modes.gd
+--- a/game/tests/test_camera_modes.gd
++++ b/game/tests/test_camera_modes.gd
+@@ -26,6 +26,7 @@
+ 		results.append(camera.smoothed_yaw)
+ 		check(camera.smoothed_yaw < -0.2 and camera.smoothed_yaw > -PI / 2.0 + 0.1, "turn follows with visible lag at %d fps" % fps)
+ 	check(absf(results[0] - results[1]) < 0.00001 and absf(results[1] - results[2]) < 0.00001, "yaw response is independent of display rate")
++	_check_rotation_limit(camera)
+ 	camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(179.0), 0.0, true)
+ 	var previous: float = camera.smoothed_yaw
+ 	camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(-179.0), 1.0 / 60.0)
+@@ -40,6 +41,7 @@
+ 	camera.set_mode("overhead")
+ 	camera.follow(Vector2.ZERO, Vector2(0, 18), 0.0, 0.0, true)
+ 	check(extra > camera.focus.length() + 2.0, "look-ahead shows materially more road at normal speed")
++	_check_look_ahead_delay(camera)
+ 	for dimensions: Vector2i in [Vector2i(960, 540), Vector2i(1280, 720), Vector2i(1600, 720)]:
+ 		root.size = dimensions
+ 		root.content_scale_size = dimensions
+@@ -121,3 +123,64 @@
+ 	DirAccess.remove_absolute(directory)
+ 	print("CAMERA_MODE_TESTS: %d checks, %d failures" % [checks, failures])
+ 	quit(1 if failures else 0)
++
++func _check_rotation_limit(camera: FollowCamera) -> void:
++	# A large heading gap used to cause arbitrarily fast initial rotation.
++	const MAX_DEGREES_PER_SECOND: float = 60.0
++	for fps: int in [30, 60, 120]:
++		for direction: float in [-1.0, 1.0]:
++			camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
++			var peak: float = 0.0
++			var travel: float = 0.0
++			for frame: int in range(fps * 2):
++				var previous: float = camera.smoothed_yaw
++				camera.follow(Vector2.ZERO, Vector2.ZERO, direction * deg_to_rad(175.0), 1.0 / fps)
++				var movement: float = absf(rad_to_deg(angle_difference(previous, camera.smoothed_yaw)))
++				peak = maxf(peak, movement * fps)
++				travel += movement
++			check(peak <= MAX_DEGREES_PER_SECOND + 0.0001, "large turn never exceeds 60 degrees/s at %d fps, direction %.0f (peak %.2f)" % [fps, direction, peak])
++			check(travel > 100.0 and travel <= 120.0001, "camera follows a large turn without racing ahead or freezing")
++	# Uneven render times, short-arc wrap and changing turn direction all obey
++	# the same limit; stopped/invalid elapsed time contributes no rotation.
++	camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(179.0), 0.0, true)
++	for delta: float in [1.0 / 120.0, 1.0 / 30.0, 0.125, 0.4, 0.0, -0.1]:
++		var previous: float = camera.smoothed_yaw
++		camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(-45.0), delta)
++		var movement: float = absf(rad_to_deg(angle_difference(previous, camera.smoothed_yaw)))
++		check(movement <= MAX_DEGREES_PER_SECOND * maxf(delta, 0.0) + 0.0001, "rotation cap holds with uneven/zero elapsed time")
++	var monotonic: bool = true
++	# Allow the bounded turn plus settling; a 180-degree gap needs at least 3 s.
++	for frame: int in range(240):
++		var previous_error: float = angle_difference(camera.smoothed_yaw, deg_to_rad(45.0))
++		camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(-45.0), 1.0 / 60.0)
++		var current_error: float = angle_difference(camera.smoothed_yaw, deg_to_rad(45.0))
++		monotonic = monotonic and absf(current_error) <= absf(previous_error) + 0.000001 and previous_error * current_error >= -0.000000001
++	check(monotonic, "camera approaches its target monotonically without overshoot")
++	check(absf(angle_difference(camera.smoothed_yaw, deg_to_rad(45.0))) < 0.01, "camera eventually aligns without overshoot")
++
++func _check_look_ahead_delay(camera: FollowCamera) -> void:
++	var delayed: Array[Vector3] = []
++	for fps: int in [30, 60, 120]:
++		camera.set_mode("look_ahead")
++		camera.follow(Vector2.ZERO, Vector2(0, 22), 0.0, 0.0, true)
++		var original: Vector3 = camera.focus
++		var target: Vector3 = VisualGeometry.world(Vector2(9, 0))
++		var monotonic: bool = true
++		for frame: int in range(fps / 2):
++			var previous_distance: float = camera.focus.distance_to(target)
++			camera.follow(Vector2.ZERO, Vector2(22, 0), PI / 2.0, 1.0 / fps)
++			monotonic = monotonic and camera.focus.distance_to(target) <= previous_distance + 0.000001
++			check(camera.look_ahead_offset.length() <= 9.00001, "delayed offset stays bounded through turn")
++		var movement: float = camera.focus.distance_to(original)
++		var total: float = original.distance_to(target)
++		check(movement > total * 0.35 and movement < total * 0.7, "look-ahead shift remains gradual after half a second at %d fps" % fps)
++		check(monotonic, "look-ahead approaches the new direction without overshooting")
++		delayed.append(camera.focus)
++		# Slower offset motion retains the existing 9/s position response.
++		var previous: Vector3 = camera.focus
++		camera.follow(Vector2(1, 0), Vector2(22, 0), PI / 2.0, 1.0 / fps)
++		var response: float = 1.0 - exp(-9.0 / fps)
++		check(camera.focus.x - previous.x >= response - 0.000001, "moving-car tracking remains responsive at %d fps" % fps)
++		camera.follow(Vector2(40, -20), Vector2.ZERO, 0.0, 0.0, true)
++		check(camera.focus == VisualGeometry.world(Vector2(40, -20)) and camera.look_ahead_offset == Vector2.ZERO, "restart/rewind clears stale look-ahead immediately")
++	check(delayed[0].distance_to(delayed[1]) < 0.12 and delayed[1].distance_to(delayed[2]) < 0.12, "look-ahead response stays consistent across display rates")

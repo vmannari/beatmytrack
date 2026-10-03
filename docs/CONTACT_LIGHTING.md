@@ -1,5 +1,7 @@
 # Contact shading, bridge depth and Grass cloud shadows — 2026-09-25
 
+2026-10-03 owner-reference follow-up: `contact-lighting-7` widens Grass cloud shapes and strengthens sunny/shaded contrast, with warmer sunlight. This supersedes the historical cloud/light parameters below; actual changes, paired captures, commands and device limitations are in [GRASS_CLOUD_CONTRAST.md](GRASS_CLOUD_CONTRAST.md). The intermediate contact-strength revision is recorded in [ENVIRONMENT_COHERENCE.md](ENVIRONMENT_COHERENCE.md).
+
 Requirements **V02/V04/V05/Q01**. Owner explicitly requested these three effects following the effects assessment. Current presentation version `contact-lighting-5`, visual kit `track-kit-83`; brighter-sun/slower-cloud follow-up below supersedes previous tuning. Canonical physics, gates, track content, camera framing and dust behaviour are unchanged.
 
 ## Delivered behaviour

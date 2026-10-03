@@ -1,5 +1,13 @@
 # Race discovery reference pass ? 2026-10-01
 
+## Race as the landing page — 2026-10-01
+
+Requirements R01/V03/Q01. The Home tab and its separate selected-track composition are removed. Race discovery is now the initial menu after guest continuation or restored sign-in, and all former Home returns from Settings, Garage, editor departure and Race Complete lead to Race. Old internal/debug `play` requests are accepted only as a compatibility alias and immediately normalized to `tracks`; they cannot recreate Home.
+
+Changed files: `game/core/app.gd`, focused app/account/results tests and the graphical menu/cars capture fixtures. Actual verification used the pinned Godot build through `scripts/dev.ps1`: `CheckScript -ScriptPath res://core/app.gd` passed; `Import` passed; `TestMenus` passed 36 checks; `TestMenuLoading` passed 28 checks; `TestResults` passed 489 checks; `CaptureMenus` passed 913 checks at 1280×720, 960×540 and 1600×720. The focused legacy `TestApp` run was stopped after it stalled on obsolete pre-discovery browser controls; the landing/navigation coverage is retained in the current graphical suite and its updated app assertions. Scoped `git diff --check` passed with CRLF notices only.
+
+Inspected evidence: [default Race landing](../build/premium-menus/race-first-1280x720.png), [compact Race landing](../build/premium-menus/race-first-960x540.png), and [return from a race](../build/premium-menus/race-returning-fixture-1280x720.png). No phone was attached; Android export and physical-device testing were not performed. Remaining acceptance is owner review and physical-phone navigation/safe-area confirmation.
+
 Requirements: R01, V03, V04, G03, Q01. Owner request: rename Play to Race, adopt the supplied discovery composition, place a continuously scrollable/swipeable track strip at the bottom, add Search beside Filters, and use an icon-only right rail with Free race and placeholders.
 
 ## Delivered
@@ -204,6 +212,35 @@ Changed files: `game/ui/track_browser.gd`, `game/tests/test_menu_loading.gd`, `p
 
 Inspected [longer mid-slide](evidence/ready-section-slide-2026-10-01/section-slide-mid-1280x720.png). Raw logs and other phases are alongside it. Owner motion preference, physical-phone smoothness and live-network timing remain acceptance checks; slow online responses retain the previous section until completion or the client's timeout.
 
+## Profile and settings page entry points (2026-10-01)
+
+R01/V03/V04/Q01: owner requested reference-style top-right profile/settings controls and separate pages, with profile content deferred. `game/core/app.gd` now routes the avatar/name/chevron button to a Profile heading with an otherwise empty body. Guest is the signed-out label; signed-in names remain live. The separate gear consistently opens Settings, with yellow bottom borders marking the current page. Existing driving controls remain on that page, with an explicit SETTINGS heading and Account/Sign in access. `game/ui/menu_icon.gd` adds original avatar, chevron and gear vectors; no reference image ships. `game/tests/capture_premium_menus.gd` captures and exercises the Profile entry at all three viewport sizes.
+
+Actual verification:
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus`: 36 checks, zero failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: 1396 checks, zero failures; pinned Godot 4.7.2.
+- Inspected Settings at 1280x720 and 960x540 and Profile at 1280x720. Evidence retained in `docs/evidence/profile-settings-2026-10-01/`.
+
+Profile features and custom avatar images remain deferred. The chevron is part of the profile page link; there is no account dropdown. No Android export or physical-device test was performed; device attachment was not checked. Owner visual acceptance remains. Existing unrelated working-tree changes were preserved.
+
+2026-10-01 R01/V03/V04/Q01: profile-name correction in game/core/app.gd removes fixed-width text clipping so the button sizes naturally to the name and expanding navigation tabs yield space. All interaction states reserve chevron padding. game/tests/capture_premium_menus.gd now captures Beat My Track at three sizes. Actual commands: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus (36 checks, zero failures) and CaptureMenus (1444 checks, zero failures). Inspected compact 960x540 capture: full name visible. Evidence: docs/evidence/profile-settings-2026-10-01/profile-name-fixture-960x540.png. Physical-device testing/export not performed; extreme-length names and owner visual acceptance remain unverified.
+
+2026-10-01 R01/V03/V04/Q01: owner requested tab-style selection for Profile and Settings. game/core/app.gd now uses the same translucent selected background as tabs, with yellow profile text/settings glyph; removed both bottom borders. Actual commands: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus (36 checks, zero failures), CaptureMenus (1444 checks, zero failures). Inspected Profile 1280x720 and Settings 960x540; refreshed docs/evidence/profile-settings-2026-10-01 screenshots. No Android export or physical-device test performed; owner visual acceptance remains.
+
+## Sliding track replacement (2026-10-01)
+
+R01/V03/V04/G03/Q01: owner requested the outgoing track slide away as the incoming track replaces it. `game/ui/track_browser.gd` now retains the actual outgoing hero/records controls, creates the incoming section and moves both edge to edge over the full slot width in 420 ms. Both remain opaque, with stable clipped slots; carousel, rail and actions stay fixed. Outgoing controls reject mouse/focus input and are freed on completion or interruption. Pending selections still wait for prepared track/records. Rapid reversal replaces the active transition immediately, without a queue.
+
+Changed checks: `game/tests/test_menu_loading.gd` uses the actual slot width; `game/tests/capture_premium_menus.gd` verifies retained old title, opaque panels, edge alignment and disposal. Capture action checks account for slot clipping and noninteractive outgoing controls; section-size comparisons use approximate float equality. Initial checks caught these old fade/onscreen assumptions and an outgoing-node lookup; replacement nodes now precede outgoing nodes so live-content queries remain correct.
+
+Actual commands and final outcomes:
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenuLoading`: 38 checks, zero failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus`: 36 checks, zero failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: 1450 checks, zero failures.
+- `git diff --check` for changed code/tests: passed.
+
+Inspected forward desktop and reverse compact transition frames. Evidence: `docs/evidence/track-replacement-2026-10-01/`. These presentation fixtures use synthetic hero titles; loading tests cover prepared records. No Android export or physical-device test performed. Owner motion acceptance and device performance remain outstanding. Unrelated working-tree changes preserved.
+
 
 ## Consistent hero favorite star - 2026-10-01
 
@@ -227,6 +264,22 @@ Empty personal records say ?No time yet? with an invitation to set a first recor
 
 Changed files: `game/ui/track_browser.gd`, docs/status notes and evidence. Actual pinned `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus`: **1450 checks, zero failures**, three landscape sizes including unchanged section bounds and cloud action fit. Scoped `git diff --cached --check`: passed. Inspected [empty states](evidence/hero-spacing-2026-10-01/tracks-populated-fixture-1280x720.png) and [compact populated controls](evidence/hero-spacing-2026-10-01/tracks-cloud-controls-fixture-960x540.png). Android SDK `adb devices` listed one connected phone at verification; no physical-device test or Android export was performed. Owner visual/device acceptance remains outstanding.
 
+## Age and personal race history (2026-10-01)
+
+Created age and Raced/Not raced choices now combine with the drawer filters. See [behavior, evidence, actual tests and migration limitations](AGE_HISTORY_FILTERS.md).
+
 ## Android search keyboard (2026-10-01)
 
 Search keeps its input, live result preview and apply action above the on-screen keyboard. See [implementation and actual desktop/device verification](SEARCH_KEYBOARD.md).
+
+## Free race information hierarchy (2026-10-02)
+
+Requirements R01/V03/V04/Q01. Owner reference removes the Track discovery heading and five-lap labels in Free race, enlarges the hero title, adds its rating beside the creator, and puts each carousel rating on the title row with creator attribution below. Hero type increases 44 to 60 logical units. Actual local votes or cloud aggregates are reused; unrated tracks retain an empty-star/count state. Race length remains five laps.
+
+Changed runtime files: `game/ui/track_browser.gd`, `game/ui/track_tile.gd`. Status recorded in `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
+
+Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenus` (48 checks, zero failures); `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus` (run twice, final evidence after attribution alignment correction). Final graphical suite: 1765 checks, zero failures. First run hit the previously documented three widescreen standings-position failures (2 logical pixels); these did not recur on the final run. No checks weakened. Desktop 1280x720 and compact 960x540 captures visually inspected. Evidence uses disposable gallery fixtures, not claimed online ratings.
+
+Evidence: [desktop](evidence/free-race-layout-2026-10-02/tracks-populated-fixture-1280x720.png), [compact](evidence/free-race-layout-2026-10-02/tracks-populated-fixture-960x540.png).
+
+Remaining acceptance: owner visual review and physical-device readability. No Android export or device test performed; attachment status not checked.

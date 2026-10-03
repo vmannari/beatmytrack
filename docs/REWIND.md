@@ -1,5 +1,46 @@
 # Rewind and resume — 2026-09-29
 
+2026-10-02 RW22/V03/Q01 car-label follow-up: removed the selected car's RESUME HERE/CURRENT annotation and its small pointer from `game/ui/rewind_panel.gd`. Ghost time labels remain. Actual command `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks; inspected `build/rewind.png`. Both status documents updated. No Android export or physical-device test; owner visual acceptance remains.
+
+2026-10-02 RW22/V03/Q01 spacing follow-up: `game/ui/rewind_panel.gd` widens the play action's layout area from 68 to 116 logical units, adding 24 units of empty space on each side of the centered circle. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks. Inspected `build/rewind.png` and `build/rewind-compact.png`; badges clear the divider. Both status documents updated. No Android export or physical-device test; owner visual acceptance remains.
+
+## Single resume action — 2026-10-02
+
+RW22/V03/Q01: removed the separate right-side resource action and wallet caption. That section now only displays the RESUMES heading, race-use dots and remaining-use count. The timeline play button is the sole resume action; its badge shows banked balance or the existing unringed ad icon when the balance is zero. Existing daily allowance and temporary ad-preview consumption remain unchanged; no real ad integration is claimed.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/tests/test_rewind.gd`, this document and both status documents. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks, including play-button resource states, race cap and consumption. Inspected `build/rewind.png` and `build/rewind-banked.png`; compact capture also produced. No Android export/device test; owner visual and phone touch acceptance remain.
+
+## Fixed time scale and centered toolbar — 2026-10-02
+
+RW21/V03/Q01: the timeline uses actual relative seconds from −10 to 0, with selection mapped to the nearest recorded snapshot. Missing early history is dimmed and selection clamps to available snapshots. The timeline row fills the space beneath the lap title; the rail/handle, Cancel, endpoint labels and play action share its vertical center. The selected-time bubble remains above the handle.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/core/game.gd`, `game/tests/test_rewind.gd`, this document and both status documents. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks, including real-time selection, fixed endpoints and history clamping. Desktop evidence: `build/rewind.png` and `build/rewind-compact.png`; inspected toolbar alignment. No Android export or physical-device test performed. Owner visual/touch acceptance remains.
+
+2026-10-01 RW20/V03/Q01 tangent correction: `game/ui/icons/rewind.svg` now explicitly uses a radius-20 circle centered at (32,32). At the upper-left endpoint the counter-clockwise tangent points diagonally down-left; the arrowhead axis now follows that tangent exactly instead of pointing horizontally. Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 Import` and `CaptureRewind` passed (62 checks, zero failures). Inspected `build/rewind-hud-ad.png`. Owner visual acceptance remains; no Android export or physical-device test performed.
+
+## Replacement SVG rewind glyph — 2026-10-01
+
+RW20/V03/Q01: replaced the rejected procedural arc/triangle with original `game/ui/icons/rewind.svg`, a smooth circular return arrow with an attached arrowhead and rounded trailing end. `game/ui/rewind_hud_button.gd` draws the new texture at 52 logical units. Existing large unringed ad artwork and banked-count badge remain. SVG authored locally, no third-party asset or reference image shipped. Import metadata is in `rewind.svg.import`.
+
+Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 Import` passed; the same entry point with `CaptureRewind` passed 62 checks, zero failures. Inspected `build/rewind-hud-ad.png` in the current race HUD. Owner visual acceptance remains; no Android export or physical-device test performed for this change. Status updates are in `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
+
+## Race-HUD resource button and fixed handling — 2026-10-01
+
+**RW20 / V03 / G01:** the race HUD now places a circular rewind action beside Pause and the race menu. Its attached badge shows the actual banked-resume count, or the established small rewarded-ad icon when the bank is empty. The whole action becomes disabled when the three confirmed race resumes have been used (and retains the existing countdown, insufficient-history, finish and return-ramp guards). The production handling selector has been removed and production compact-car races are locked to `Original+`; diagnostic non-production tuning remains available to developers.
+
+Changed files: new `game/ui/rewind_hud_button.gd`, `game/ui/playground_hud.gd`, `game/ui/handling_selection.gd`, `game/core/game.gd`, `game/tests/test_rewind.gd`, `game/tests/test_driving.gd`, this document and the two status documents. No canonical physics values, resume-credit ordering, server contract or replay format changed.
+
+Actual verification:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 TestRewind` — final capture run passed 62 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 TestDriving` — 62 checks passed, 0 failures. Godot reported three ObjectDB leaks at shutdown.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` — passed and saved inspected desktop evidence: `build/rewind-hud-banked.png` and `build/rewind-hud-ad.png` (plus the existing rewind-screen captures).
+- The combined initial `CheckScript` invocation was stopped after its editor import stalled while other Godot processes were using the project. Both focused suites subsequently parsed and ran the changed scripts successfully; this is not reported as a passing standalone `CheckScript` run.
+
+Known limitations and acceptance: the HUD fetches the authoritative wallet at race start and refreshes after a confirmed resume; transient refresh failure leaves the conservative ad-icon placeholder until the rewind panel retries. The owner still needs to accept the icon/badge size and placement on a phone. No Android export, install or physical-device test was performed.
+
+Owner visual follow-up: the rewind glyph now uses the reference's larger near-complete counter-clockwise loop and solid left-pointing arrowhead. The empty-bank ad artwork is enlarged from 18 × 14 to 36 × 30 logical units and no longer receives an extra circular badge border; the count retains its circle for banked resumes.
+
 Owner scope (latest revision): rewind up to ten seconds, choose where to resume, at most three resumes per race. One free resume each day, no rollover. One resume per rewarded ad with unlimited ads per day. Purchased/otherwise awarded resumes never expire. The owner explicitly permits rewind-assisted leaderboard results; the corresponding override is recorded in `AGENTS.md`. Ordinary full-race restarts remain free and unlimited.
 
 ## Requirements and implemented behavior

@@ -126,3 +126,11 @@ The owner corrects the mode rail to the left, requires stable section dimensions
 
 ## Race filter drawer override (2026-10-01)
 The owner requests a reference-led right-side filter drawer over the Race menu, retaining the left mode rail and stable layout. Reuse existing icons, especially biome glyphs. Minimum rating uses a slider in 0.1 increments instead of the reference's rating buttons. See docs/RACE_DISCOVERY.md for implementation, actual checks and missing race-count data/device acceptance.
+
+## Camera options override (2026-10-03)
+
+The owner authorizes two optional driving-camera experiments: delayed car-heading rotation with a slightly lower overhead angle, and fixed-world rotation with more road shown in the travel direction. The rotating option supersedes stable-world yaw and preserved pitch for that selected mode only. Keep the original Overhead option/default, scene magnification, no horizon, HUD scale and canonical driving contracts. See docs/CAMERA_OPTIONS.md for parameters, controls, actual checks and remaining owner/device acceptance.
+
+## Speed-dependent camera override (2026-10-03)
+
+The owner additionally requests a slight camera pullback at higher speeds. This authorizes smoothly bounded whole-scene speed zoom with any driving view, superseding constant live magnification when Speed zoom is enabled. Keep the 1.15x baseline at low speed and with Speed zoom off, unchanged HUD/mesh/collision scale, no horizon and canonical simulation separation. See docs/CAMERA_OPTIONS.md for parameters, actual evidence and remaining owner/device acceptance.

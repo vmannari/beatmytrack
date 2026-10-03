@@ -1,8 +1,10 @@
 # Google and Development sign-in
 
+Review repair follow-up (2026-10-03): Sign out clears local identity immediately, fences late credential completions and writes a restart fence; server revocation is separate and bounded. Session expiry selects Guest storage immediately while active results remain pinned to their original owner. See [R2/R10 repair and actual acceptance](CODE_REVIEW_REPAIRS_2_3_2026_10_03.md).
+
 Racing names are now unique (case/whitespace/Unicode-normalized), with the UUID remaining the permanent identity. See [unique names](UNIQUE_USERNAMES.md).
 
-Latest ownership update: development identity `developer` now races as **Beat My Track**. Local player data is account-scoped; creator names come from the account. Existing circuits remain playable. See [account ownership](ACCOUNT_OWNERSHIP.md).
+Latest ownership update (2026-10-03): development identity `developer` races as **Beat my track**, using the owner's exact requested capitalization. Race discovers backend publications; the retained named circuits have been restored to the PC server. Local player data is account-scoped; creator names come from the account. See [track restoration](TRACK_RESTORATION.md) and [account ownership](ACCOUNT_OWNERSHIP.md).
 
 Startup now shows sign-in unless a saved session can be restored. Open the player-name button in the menu to sign out. See [remembered sign-in](REMEMBERED_SIGN_IN.md) for persistence and verification.
 

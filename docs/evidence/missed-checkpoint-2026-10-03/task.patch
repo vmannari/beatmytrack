@@ -1,0 +1,452 @@
+--- a/game/ui/checkpoint_marker.gd
++++ b/game/ui/checkpoint_marker.gd
+@@ -1,23 +1,29 @@
+ class_name CheckpointMarker
+ extends MeshInstance3D
+-## Only a missed gate gets a world marker; the minimap has no waypoint marker.
+-## Temporary development overlay; disable this flag to hide acceptance margins.
+-const SHOW_DEVELOPMENT_MARGINS: bool = true
+-var label: Label3D
++## Presentation only: a missed road gate, with no floating text or collision.
++const AMBER := Color("ffb632")
++const SHOW_DEVELOPMENT_MARGINS: bool = false
+ var margins: Array[MeshInstance3D] = []
+ var previous_gate: int = -2
++var chevrons: MeshInstance3D
++var road_quads: Array[PackedVector3Array] = []
++var road_span: float = 0.0
++
+ func line_material(alpha: float) -> StandardMaterial3D:
+ 	var material := StandardMaterial3D.new()
+ 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+ 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+-	material.albedo_color = Color(1.0,0.8,0.286,alpha)
++	material.albedo_color = Color(AMBER,alpha)
++	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 	return material
++
+ func _ready() -> void:
+-	var box := BoxMesh.new()
+-	box.size = Vector3(1,0.025,0.24)
+-	mesh = box
+-	material_override = line_material(0.65)
++	material_override = line_material(0.92)
+ 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	chevrons = MeshInstance3D.new()
++	chevrons.material_override = line_material(0.42)
++	chevrons.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(chevrons)
+ 	for side: int in range(2):
+ 		var margin := MeshInstance3D.new()
+ 		var margin_mesh := BoxMesh.new()
+@@ -27,17 +33,8 @@
+ 		margin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		add_child(margin)
+ 		margins.append(margin)
+-	label = Label3D.new()
+-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+-	label.font_size = 48
+-	label.pixel_size = 0.025
+-	label.outline_size = 10
+-	label.modulate = Color("ffdf77")
+-	label.position.y = 2.2
+-	label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-	label.text = "Missed checkpoint"
+-	add_child(label)
+ 	visible = false
++
+ func present(session: TrackSession, track: NativeTrack, bridge: BridgePresentation) -> void:
+ 	visible = session.missed_checkpoint >= 0 and not session.finished
+ 	if not visible or previous_gate == session.missed_checkpoint: return
+@@ -48,13 +45,46 @@
+ 	var accepted: Vector2 = session.checkpoint_acceptance_spans(track)
+ 	var shift: float = (road.y-road.x)*0.5
+ 	var route_index: int = track.nearest_route(center)
++	var layer: int = 1 if session.checkpoint_elevated() else 0
+ 	position = VisualGeometry.world(center+direction.orthogonal()*shift)
+-	position.y = bridge.height_at(center,route_index,1 if session.checkpoint_elevated() else 0)+0.12
++	position.y = bridge.height_at(center,route_index,layer)+0.12
+ 	rotation.y = -atan2(direction.x,direction.y)
+-	(mesh as BoxMesh).size.x = road.x+road.y
++	road_span = road.x+road.y
++	road_quads.clear()
++	var stripe := SurfaceTool.new()
++	stripe.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var dash_count: int = maxi(2,ceili(road_span/1.2))
++	var pitch: float = road_span/(dash_count-0.28)
++	for index: int in range(dash_count):
++		var low: float = -road.x+index*pitch
++		var high: float = minf(road.y,low+pitch*0.72)
++		var quad := PackedVector3Array()
++		for point: Vector2 in [Vector2(low,-0.16),Vector2(high,-0.16),Vector2(high,0.16),Vector2(low,0.16)]:
++			quad.append(_road_point(center,direction,point,bridge,route_index,layer))
++		road_quads.append(quad)
++		_quad(stripe,quad)
++	mesh = stripe.commit()
++	var arrows := SurfaceTool.new()
++	arrows.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var half: float = minf(1.35,minf(road.x,road.y)*0.45)
++	# Two approach chevrons point through the gate in the accepted direction.
++	for distance: float in [2.5,5.0]:
++		for side: float in [-1.0,1.0]:
++			var quad := PackedVector3Array()
++			for point: Vector2 in [Vector2(0,-distance+0.7),Vector2(side*half,-distance-0.35),Vector2(side*half,-distance-1.1),Vector2(0,-distance-0.05)]:
++				quad.append(_road_point(center,direction,point,bridge,route_index,layer))
++			_quad(arrows,quad)
++	chevrons.mesh = arrows.commit()
+ 	for side: int in range(2):
+ 		var span: float = maxf(0.0,accepted[side]-road[side])
+ 		margins[side].visible = SHOW_DEVELOPMENT_MARGINS and span > 0.001
+ 		(margins[side].mesh as BoxMesh).size.x = maxf(0.001,span)
+ 		var sign_value: float = -1.0 if side == 0 else 1.0
+ 		margins[side].position.x = sign_value*(road[side]+span*0.5)-shift
++
++func _road_point(center: Vector2, direction: Vector2, offset: Vector2, bridge: BridgePresentation, route_index: int, layer: int) -> Vector3:
++	var point: Vector2 = center+direction.orthogonal()*offset.x+direction*offset.y
++	return to_local(VisualGeometry.world(point)+Vector3.UP*(bridge.height_at(point,route_index,layer)+0.12))
++
++func _quad(surface: SurfaceTool, points: PackedVector3Array) -> void:
++	for index: int in [0,1,2,0,2,3]: surface.add_vertex(points[index])
+--- a/game/ui/checkpoint_notice.gd
++++ b/game/ui/checkpoint_notice.gd
+@@ -0,0 +1,63 @@
++class_name CheckpointNotice
++extends Control
++## Persistent missed-checkpoint banner with one live direction arrow.
++const AMBER := Color("ffb632")
++var label: Label
++var bearing: Vector2 = Vector2.UP
++var banner_rect := Rect2()
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	label = Label.new()
++	label.name = "ShortcutNotice"
++	label.text = "MISSED CHECKPOINT"
++	label.add_theme_font_override("font",RaceHUDStyle.DISPLAY)
++	label.add_theme_font_size_override("font_size",26)
++	label.add_theme_color_override("font_color",RaceHUDStyle.TEXT)
++	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(label)
++	clear()
++
++func clear() -> void:
++	visible = false
++	label.visible = false
++
++func present(marker: CheckpointMarker, camera: Camera3D, source_screen: Vector2 = Vector2.INF) -> void:
++	var active: bool = marker.visible
++	visible = active
++	label.visible = active
++	if not active: return
++	var target: Vector3 = marker.global_position
++	var projected: Vector2 = camera.unproject_position(target)
++	var view_size: Vector2 = camera.get_viewport().get_visible_rect().size
++	var source: Vector2 = view_size*0.5 if source_screen == Vector2.INF else source_screen
++	var delta: Vector2 = projected-source
++	if camera.projection == Camera3D.PROJECTION_PERSPECTIVE and camera.is_position_behind(target): delta = -delta
++	bearing = delta.normalized() if delta.length_squared() > 0.01 else Vector2.UP
++	banner_rect = Rect2(Vector2((size.x-386)*0.5,174),Vector2(386,54))
++	label.position = banner_rect.position+Vector2(70,0)
++	label.size = Vector2(254,54)
++	queue_redraw()
++
++func _draw() -> void:
++	if not visible: return
++	var p: Vector2 = banner_rect.position
++	var polygon := PackedVector2Array([p+Vector2(28,0),p+Vector2(372,0),p+Vector2(344,54),p+Vector2(28,54)])
++	draw_colored_polygon(polygon,Color("101c22eb"))
++	var border: PackedVector2Array = polygon.duplicate()
++	border.append(polygon[0])
++	draw_polyline(border,AMBER,1.5,true)
++	for offset: float in [0.0,12.0]:
++		draw_colored_polygon(PackedVector2Array([p+Vector2(378+offset,0),p+Vector2(386+offset,0),p+Vector2(358+offset,54),p+Vector2(350+offset,54)]),AMBER)
++	var warning: Vector2 = p+Vector2(28,27)
++	draw_circle(warning,33,Color("111e22f2"))
++	draw_arc(warning,33,0,TAU,64,AMBER,2.5,true)
++	draw_line(warning+Vector2(0,-14),warning+Vector2(0,4),AMBER,5,true)
++	draw_circle(warning+Vector2(0,13),3,AMBER)
++	_arrow(p+Vector2(326,27),13)
++
++func _arrow(center: Vector2, radius: float) -> void:
++	var side: Vector2 = bearing.orthogonal()
++	draw_colored_polygon(PackedVector2Array([center+bearing*radius,center-bearing*radius*0.65+side*radius*0.7,center-bearing*radius*0.25,center-bearing*radius*0.65-side*radius*0.7]),AMBER)
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -29,6 +29,7 @@
+ var race_timer: Label
+ var shortcut_penalty_label: Label
+ var shortcut_notice_label: Label
++var checkpoint_notice: CheckpointNotice
+ var rewind_button: RewindHUDButton
+ var handling_button: MenuButton
+ 
+@@ -121,20 +122,9 @@
+ 	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+ 	shortcut_penalty_label.visible = false
+ 	clock_info.add_child(shortcut_penalty_label)
+-	shortcut_notice_label = _label("Missed checkpoint", 22)
+-	shortcut_notice_label.name = "ShortcutNotice"
+-	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+-	shortcut_notice_label.offset_left = -300
+-	shortcut_notice_label.offset_right = 300
+-	shortcut_notice_label.offset_top = 164
+-	shortcut_notice_label.offset_bottom = 202
+-	shortcut_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	shortcut_notice_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
+-	shortcut_notice_label.add_theme_color_override("font_outline_color", Color("172129"))
+-	shortcut_notice_label.add_theme_constant_override("outline_size", 8)
+-	shortcut_notice_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	shortcut_notice_label.visible = false
+-	root.add_child(shortcut_notice_label)
++	checkpoint_notice = CheckpointNotice.new()
++	root.add_child(checkpoint_notice)
++	shortcut_notice_label = checkpoint_notice.label
+ 	race_timer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	clock_row.add_child(race_timer)
+ 	var lap_time_caption := _label("LAP",16)
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -420,9 +420,8 @@
+ 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
+ 			hud.show_session(track_session)
+ 			hud.shortcut_penalty_label.text = ""
+-			hud.shortcut_notice_label.text = "Missed checkpoint"
+-			hud.shortcut_notice_label.visible = track_session.missed_checkpoint >= 0
+ 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
++			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position))
+ 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
+ 		else:
+ 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
+@@ -461,6 +460,7 @@
+ 	practice_validation_eligible = true
+ 	checkpoint_marker.previous_gate = -2
+ 	checkpoint_marker.visible = false
++	hud.checkpoint_notice.clear()
+ 	lap_telemetry = LapTelemetry.new()
+ 	lap_telemetry.begin(sim.state.position)
+ 	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
+--- a/game/tests/capture_checkpoints.gd
++++ b/game/tests/capture_checkpoints.gd
+@@ -11,11 +11,14 @@
+ 	root.size = Vector2i(1280,720)
+ 	var sharp_join: bool = "--screen=sharp-join" in OS.get_cmdline_user_args()
+ 	var dust_cloud: bool = "--screen=dust-cloud" in OS.get_cmdline_user_args()
++	var bridge_entry: bool = "--screen=bridge-entry" in OS.get_cmdline_user_args()
+ 	var document: Dictionary
+ 	if dust_cloud:
+ 		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json"))
++	elif bridge_entry:
++		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+ 	else:
+-		document = TrackLibrary.new().load_document("track_acf29166cceaaa42")
++		document = TrackDocument.create_default()
+ 	if sharp_join:
+ 		document = JSON.parse_string(FileAccess.get_file_as_string("res://../build/sharp-join-fixture.json"))
+ 	var track: NativeTrack = TrackCompiler.compile(document)
+@@ -32,6 +35,9 @@
+ 	# Pick a bend with a wide recovery extension for visual evidence.
+ 	for index: int in range(session.checkpoint_count()):
+ 		session.next_checkpoint = index
++		if bridge_entry:
++			if index == 13: break
++			continue
+ 		if dust_cloud:
+ 			if index == 8: break
+ 			continue
+@@ -49,6 +55,9 @@
+ 	check(session.missed_checkpoint == selected_gate,"actual missed sweep creates checkpoint notice")
+ 	game.sim.state.position = gate-direction*8
+ 	game.sim.state.heading = atan2(direction.x,direction.y)
++	if bridge_entry:
++		game.sim.reset(road_center+Vector2(0,0.01),PI)
++		game.sim.state.velocity = Vector2(0,-120.0/3.6)
+ 	game.sim.state.route_index = track.nearest_route(game.sim.state.position)
+ 	game.sim.state.track_elevated = session.checkpoint_elevated()
+ 	game.previous_position = game.sim.state.position
+@@ -60,28 +69,50 @@
+ 	for property: Dictionary in game.hud.road_map.get_property_list():
+ 		minimap_properties.append(property.name)
+ 	check(&"checkpoint" not in minimap_properties,"minimap has no waypoint marker state")
+-	check(game.hud.shortcut_notice_label.visible and game.hud.shortcut_notice_label.text == "Missed checkpoint","persistent return notice")
+-	check(game.checkpoint_marker.label.text == "Missed checkpoint","world label has no checkpoint number")
++	var marker: CheckpointMarker = game.checkpoint_marker
++	var notice: CheckpointNotice = game.hud.checkpoint_notice
++	check(notice.visible and notice.label.visible,"missed checkpoint always shows its banner")
++	var expected_bearing: Vector2 = (game.camera.unproject_position(marker.global_position)-game.camera.unproject_position(game.car.global_position)).normalized()
++	check(notice.bearing.dot(expected_bearing) > 0.99,"live banner arrow points from the car towards the missed gate")
++	check(marker.get_children().all(func(child: Node) -> bool: return not child is Label3D),"road marker has no floating checkpoint text")
+ 	var road: Vector2 = session.checkpoint_road_spans(track)
+ 	var accepted: Vector2 = session.checkpoint_acceptance_spans(track)
+-	check(is_equal_approx(game.checkpoint_marker.mesh.size.x,road.x+road.y),"main line spans road edges only")
+-	check(is_equal_approx(game.checkpoint_marker.material_override.albedo_color.a,0.65),"road line is translucent")
++	check(is_equal_approx(marker.mesh.get_aabb().size.x,road.x+road.y),"dashed line spans road edges only")
++	check(marker.road_quads.size() >= 2 and marker.chevrons.mesh != null,"road marker includes separated dashes and approach chevrons")
++	check(is_equal_approx(marker.material_override.albedo_color.a,0.92),"road line keeps the reference amber readable")
+ 	for side_index: int in range(2):
+ 		var margin: MeshInstance3D = game.checkpoint_marker.margins[side_index]
+ 		check(is_equal_approx(margin.mesh.size.x,accepted[side_index]-road[side_index]),"margin ends at actual acceptance boundary")
+ 		check(margin.material_override.albedo_color.a < game.checkpoint_marker.material_override.albedo_color.a,"development margins are fainter")
++		check(not margin.visible,"development acceptance margins are hidden in the styled marker")
+ 	if dust_cloud:
+ 		check(not session.checkpoint_elevated() and track.has_overhead_bridge(road_center,false),"reported gate is on the road beneath the bridge edge")
+ 		check(is_equal_approx(game.checkpoint_marker.position.y,0.12),"underpass marker is drawn at ground height")
+ 	await RenderingServer.frame_post_draw
+-	root.get_texture().get_image().save_png("res://../build/checkpoint-missed.png")
++	root.get_texture().get_image().save_png("res://../build/checkpoint-bridge-entry-missed.png" if bridge_entry else "res://../build/checkpoint-missed.png")
++	if not dust_cloud and not sharp_join and not bridge_entry:
++		await bearing_cases(game,road_center)
++		# Restore the actual driving view before accepting the missed gate.
++		game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0.0,true)
+ 	var recovery_point: Vector2 = road_center-direction.orthogonal()*7.6 if sharp_join else road_center if dust_cloud else gate
+-	session.advance(track,recovery_point-direction*2,recovery_point+direction*2,0)
++	if bridge_entry:
++		game.paused = false
++		game._physics_process(VehicleSimulation.STEP)
++		game.paused = true
++		game.race_cues.hide()
++		check(game.sim.state.track_elevated,"actual fast recovery enters the upper ramp in this tick")
++		check(session.next_checkpoint == 14,"runtime accepts the gate crossed before ramp entry")
++	else:
++		session.advance(track,recovery_point-direction*2,recovery_point+direction*2,0)
+ 	if dust_cloud:
+ 		game.sim.state.position = recovery_point+direction*2
+ 		game.previous_position = game.sim.state.position
+ 	for i: int in range(4): await process_frame
+ 	check(not game.checkpoint_marker.visible and not game.hud.shortcut_notice_label.visible,"recovery clears world and HUD notices")
++	if bridge_entry:
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png("res://../build/checkpoint-bridge-entry-cleared.png")
++	check(not notice.visible,"recovery also clears the direction hint")
+ 	if dust_cloud:
+ 		check(session.next_checkpoint == 9,"ground-level driving accepts the reported gate")
+ 		await RenderingServer.frame_post_draw
+@@ -97,6 +128,71 @@
+ 	game.restart()
+ 	check(game.track_session.next_checkpoint == 0 and game.track_session.missed_checkpoint == -1,"restart clears checkpoint state")
+ 	check(not game.checkpoint_marker.visible,"restart clears cached marker")
++	check(not notice.visible,"restart clears cached banner and direction hint")
++	game.track_session._configure(track)
++	game.track_session.missed_checkpoint = 0
++	game.track_session.finished = true
++	game.call("_process",0.0)
++	check(not marker.visible and not notice.visible,"finish suppresses any stale missed marker and warning")
+ 	game.free()
+ 	print("CHECKPOINT_CAPTURE: ",checks," checks, ",failures," failures")
+ 	quit(0 if failures == 0 else 1)
++
++func bearing_cases(game: Node, road_center: Vector2) -> void:
++	game.set_process(false)
++	var marker: CheckpointMarker = game.checkpoint_marker
++	var notice: CheckpointNotice = game.hud.checkpoint_notice
++	var camera: Camera3D = game.camera
++	var output: String = "res://../docs/evidence/missed-checkpoint-2026-10-03"
++	for extent: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = extent
++		for i: int in range(3): await process_frame
++		game.camera.follow(road_center,Vector2.ZERO,0.0,0.0,true)
++		game.call("_process",0.0)
++		notice.present(marker,camera,camera.unproject_position(game.car.global_position))
++		check(root.get_visible_rect().has_point(camera.unproject_position(marker.global_position)) and notice.visible,"visible gate retains banner at %s" % extent)
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(output+"/onscreen-%dx%d.png" % [extent.x,extent.y]) == OK,"save on-screen evidence")
++		var center: Vector2 = camera.get_viewport().get_visible_rect().size*0.5
++		for bearing: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN,Vector2(-1,-1).normalized(),Vector2(1,1).normalized()]:
++			var projected: Vector2 = camera.unproject_position(marker.global_position)
++			var destination: Vector2 = center+bearing*center.length()*2.0
++			var move: Vector3 = camera.project_position(projected,20)-camera.project_position(destination,20)
++			camera.global_position += move
++			notice.present(marker,camera)
++			check(not root.get_visible_rect().has_point(camera.unproject_position(marker.global_position)) and notice.visible and notice.label.visible,"off-screen gate retains warning at %s towards %s" % [extent,bearing])
++			check(notice.bearing.dot(bearing) > 0.99,"direction hint points towards the projected checkpoint")
++			check(Rect2(Vector2.ZERO,notice.size).encloses(notice.banner_rect.grow_individual(6,8,12,8)),"banner and its only direction arrow fit the viewport")
++			check(notice.label.get_global_rect().position.y > game.hud.lap_timer.get_global_rect().end.y,"warning clears the race and lap clocks")
++			await RenderingServer.frame_post_draw
++			if bearing == Vector2.LEFT:
++				check(root.get_texture().get_image().save_png(output+"/offscreen-%dx%d.png" % [extent.x,extent.y]) == OK,"save off-screen evidence")
++			# Returning to view keeps the warning until the gate is recovered.
++			camera.global_position -= move
++			notice.present(marker,camera)
++			check(notice.visible,"returning gate retains the banner and its direction arrow")
++		# Keep one road-line end visible with the centre outside the viewport.
++		var projected_center: Vector2 = camera.unproject_position(marker.global_position)
++		var longest := Vector2.ZERO
++		for quad: PackedVector3Array in marker.road_quads:
++			for point: Vector3 in quad:
++				var offset: Vector2 = camera.unproject_position(marker.to_global(point))-projected_center
++				if offset.length_squared() > longest.length_squared(): longest = offset
++		var axis: int = 0 if absf(longest.x) > absf(longest.y) else 1
++		var target: Vector2 = center
++		target[axis] = -absf(longest[axis])*0.35 if longest[axis] > 0.0 else center[axis]*2.0+absf(longest[axis])*0.35
++		var partial_move: Vector3 = camera.project_position(projected_center,20)-camera.project_position(target,20)
++		camera.global_position += partial_move
++		notice.present(marker,camera)
++		check(not root.get_visible_rect().has_point(camera.unproject_position(marker.global_position)),"partial visibility case has an off-screen gate centre")
++		check(notice.visible,"a partially visible dashed-line retains the warning")
++		camera.global_position -= partial_move
++		var saved_position: Vector3 = camera.global_position
++		camera.global_position = marker.global_position-camera.global_basis.z*30+camera.global_basis.x*20
++		notice.present(marker,camera)
++		check(camera.is_position_behind(marker.global_position) and notice.visible,"a gate behind the camera gets a warning")
++		check(notice.bearing.x < -0.99,"orthographic behind-camera hint retains the correct left bearing")
++		camera.global_position = saved_position
++	root.size = Vector2i(1280,720)
++	for i: int in range(3): await process_frame
++	game.set_process(true)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-10-03 R01/V03/V04/Q01: reference-led missed checkpoints use an amber dashed road line and approach chevrons without floating text. Final owner correction keeps the dark amber banner and its single car-to-gate direction arrow visible throughout a miss; the window-edge arrow is removed. Recovery/restart/finish clear it. Canonical rules/physics and camera configuration unchanged by this task. Final capture 132, underpass capture 24, checkpoint rules 266, rewind 57 and all-script parse 248 pass; three-size desktop evidence inspected. Doctor finds DN2103 attached; no Android export/install/device driving, full regression or phone performance measurement. Owner/motion/device acceptance remains. See docs/MISSED_CHECKPOINT_STYLE.md for files, commands, earlier fixture failure, evidence and limitations; no mixed-workspace commit.
+ 
+ 2026-10-03 V02/V04/V05/Q01: owner kerb-red follow-up, kit 105. Standard raised-kerb paint is slightly lighter and less saturated (#a63e30 to #ae5749); existing wear/white blocks retained. HUD/geometry/canonical data unchanged. CaptureKerbs 40 checks pass and desktop shade pair inspected; Doctor confirms DN2103 attached. No Android/device test. See docs/KERB_VERGE_CORRECTION.md for changed files, actual commands, screenshot and remaining shade/phone acceptance.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-10-03 R01/V03/V04/Q01: missed-checkpoint presentation follows the owner's amber dashed-line/chevron reference. Final owner correction keeps the banner and its single car-to-gate arrow visible whenever a checkpoint is missed, and removes the window-edge arrow. Visible/partially visible/off-screen/behind-camera bearings and recovery/restart/finish are covered. Final graphical 132/underpass 24, rules 266, rewind 57 and script parsing 248 pass. Three-size desktop captures inspected; DN2103 attached with no export/install/device test or mobile performance measurement. Owner visual/motion/phone acceptance remains; canonical rules, physics and camera configuration unchanged by this task. Actual commands, changed files, evidence, earlier fixture failure and limitations: MISSED_CHECKPOINT_STYLE.md.
+ 
+ 2026-10-03 V02/V04/V05/Q01: owner kerb-red follow-up, kit 105. Standard raised-kerb paint is slightly lighter and less saturated (#a63e30 to #ae5749); existing wear/white blocks retained. HUD/geometry/canonical data unchanged. CaptureKerbs 40 checks pass and desktop shade pair inspected; Doctor confirms DN2103 attached. No Android/device test. See docs/KERB_VERGE_CORRECTION.md for changed files, actual commands, screenshot and remaining shade/phone acceptance.
+ 
+--- a/docs/MISSED_CHECKPOINT_STYLE.md
++++ b/docs/MISSED_CHECKPOINT_STYLE.md
+@@ -0,0 +1,30 @@
++# Missed checkpoint presentation — 2026-10-03
++
++Requirements: R01/V03/V04/Q01. The owner's supplied gameplay reference authorizes this marker/banner presentation. The final owner correction removes the window-edge arrow and keeps the banner visible for every missed checkpoint, superseding the initial off-screen-only request. The separate bridge-entry report was explicitly withdrawn; this task changes no checkpoint acceptance, physics, rules or camera configuration.
++
++The missed gate now has an amber dashed line across the physical road and two translucent approach chevrons pointing in the required crossing direction. There is no floating text. Development acceptance extensions remain available in code but are hidden by default. Mesh vertices use the accepted road layer and bridge height; these drawings have no collision.
++
++Whenever a checkpoint is missed, a dark slanted banner uses the reference's amber outline, circular exclamation and double end stripes. Its only direction arrow points from the car towards the checkpoint in the current camera view. The banner remains visible with on-screen, partially visible, off-screen and behind-camera gates. There is no window-edge arrow or viewport/occlusion-based visibility test. Recovery, restart and finish clear the banner.
++
++All artwork is original editable Godot mesh/control drawing code. The owner reference is inspiration and is not bundled as a game asset. Existing cleared project fonts are reused.
++
++Changed runtime files: `game/ui/checkpoint_marker.gd`, new `game/ui/checkpoint_notice.gd` and its Godot UID, `game/ui/playground_hud.gd`, `game/core/game.gd`. Validation: `game/tests/capture_checkpoints.gd` now uses a deterministic built-in document rather than depending on a retired player-file ID. Documentation: this report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and the evidence directory below.
++
++Actual commands used pinned Godot `4.7.2.stable.official.ed1daf0bf` through `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Action and arguments | Actual result |
++| --- | --- |
++| `CaptureCheckpoints -Screen dust-cloud` before editing | 17 checks, zero failures; baseline capture retained. |
++| `Doctor` | Matching engine/templates available; physical DN2103 attached. |
++| `Import` | Pass; nonfatal pre-existing Android build-tools version warning. |
++| `CaptureCheckpoints` final | 132 checks, zero failures; actual miss/recovery, live car-to-gate bearing, no floating label, road spans, three landscape sizes, six off-screen bearings, persistence for visible/partially visible/returning gates, behind-camera bearing, restart and finish. |
++| `CaptureCheckpoints -Screen dust-cloud` final | 24 checks, zero failures; ground-height underpass marker, car-to-gate bearing and actual recovery retained. |
++| `TestRouteValidation` | 266 checks, zero failures. |
++| `TestRewind` | 57 checks, zero failures. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` final | 248 scripts, zero failures. |
++
++The first updated capture exited 1 because the live follow-camera process overwrote the test's temporary camera placement during a render wait. The fixture now suspends that process during deliberate camera-bearing cases; actual driving presentation and recovery assertions remain enabled. Earlier 124/131-check captures tested the initial off-screen-only contract. Persistence assertions were updated to the owner's explicit final correction; the final expanded capture passes 132. No planned or physical-device test is recorded as passed.
++
++Inspected desktop screenshots and raw final logs: [evidence](evidence/missed-checkpoint-2026-10-03/). [Visible road gate](evidence/missed-checkpoint-2026-10-03/onscreen-1280x720.png), [off-screen warning](evidence/missed-checkpoint-2026-10-03/offscreen-1280x720.png), [compact warning](evidence/missed-checkpoint-2026-10-03/offscreen-960x540.png), [underpass](evidence/missed-checkpoint-2026-10-03/underpass.png). Six size/state captures cover 1280×720, 960×540 and 1600×720. The before image uses the underpass fixture; compare it with `underpass.png`, not the different ordinary-road fixture.
++
++Remaining acceptance: owner visual review, real driving/moving bearings and touch/safe-area/readability on the phone. No Android export, install or device driving was performed. No full project regression or phone GPU/thermal measurement. Existing HUD/world artwork outside this marker is unchanged by this task. The workspace already contained substantial unrelated edits; a source-only task patch against saved pre-task files is retained in the evidence directory, explicitly excluding concurrent unrelated core/physics changes. No mixed-workspace commit or production action.
+--- a/game/ui/checkpoint_notice.gd.uid
++++ b/game/ui/checkpoint_notice.gd.uid
+@@ -0,0 +1 @@
++uid://bs07e8ie3tqp5

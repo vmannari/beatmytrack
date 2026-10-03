@@ -1,0 +1,673 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -126,3 +126,7 @@
+ 
+ ## Race filter drawer override (2026-10-01)
+ The owner requests a reference-led right-side filter drawer over the Race menu, retaining the left mode rail and stable layout. Reuse existing icons, especially biome glyphs. Minimum rating uses a slider in 0.1 increments instead of the reference's rating buttons. See docs/RACE_DISCOVERY.md for implementation, actual checks and missing race-count data/device acceptance.
++
++## Camera options override (2026-10-03)
++
++The owner authorizes two optional driving-camera experiments: delayed car-heading rotation with a slightly lower overhead angle, and fixed-world rotation with more road shown in the travel direction. The rotating option supersedes stable-world yaw and preserved pitch for that selected mode only. Keep the original Overhead option/default, scene magnification, no horizon, HUD scale and canonical driving contracts. See docs/CAMERA_OPTIONS.md for parameters, controls, actual checks and remaining owner/device acceptance.
+diff --git a/game/camera/camera_profile.gd b/game/camera/camera_profile.gd
+--- a/game/camera/camera_profile.gd
++++ b/game/camera/camera_profile.gd
+@@ -1,5 +1,13 @@
+ class_name CameraProfile
+ extends Resource
++
++const MODES: Array[String] = ["overhead", "follow_car", "look_ahead"]
++const TITLES: Array[String] = ["Overhead", "Follow car", "Look ahead"]
++const DESCRIPTIONS: Array[String] = [
++	"The original fixed-angle overhead view.",
++	"Turns smoothly with the car, viewed from a slightly lower angle.",
++	"Keeps the world steady and shows more road in your direction of travel.",
++]
+ 
+ @export var height: float = 32.0
+ @export_range(40.0, 80.0, 0.5) var pitch_degrees: float = 56.0
+@@ -13,3 +21,23 @@
+ @export var orthographic: bool = true
+ @export var field_of_view: float = 40.0
+ @export var follow_heading: bool = false # experiment only; stable world is default
++@export var heading_smoothing: float = 3.5 # response/s; about 0.66 s to turn 90% of the way
++
++
++static func valid_mode(value: String) -> String:
++	return value if value in MODES else MODES[0]
++
++
++static func for_mode(value: String) -> CameraProfile:
++	# Each camera owns its profile; experiments never mutate the shared baseline.
++	var result: CameraProfile = (load("res://resources/camera.tres") as CameraProfile).duplicate()
++	match valid_mode(value):
++		"follow_car":
++			result.follow_heading = true
++			result.world_yaw_degrees = 0.0
++			result.pitch_degrees = 48.0
++		"look_ahead":
++			result.velocity_look_ahead = 0.4
++			result.forward_look_ahead = 2.0
++			result.maximum_look_ahead = 9.0
++	return result
+diff --git a/game/camera/follow_camera.gd b/game/camera/follow_camera.gd
+--- a/game/camera/follow_camera.gd
++++ b/game/camera/follow_camera.gd
+@@ -4,6 +4,8 @@
+ var profile: CameraProfile = preload("res://resources/camera.tres")
+ var focus: Vector3 = Vector3.ZERO
+ var initialized: bool = false
++var mode: String = CameraProfile.MODES[0]
++var smoothed_yaw: float = 0.0
+ var trauma: float = 0.0
+ var impact_offset: Vector2 = Vector2.ZERO
+ var impact_velocity: Vector2 = Vector2.ZERO
+@@ -19,6 +21,13 @@
+ const SURFACE_RESPONSE: float = 9.0
+ const SURFACE_PRIMARY_FREQUENCY: float = 61.0
+ const SURFACE_SECONDARY_FREQUENCY: float = 43.0
++
++
++func set_mode(value: String) -> void:
++	mode = CameraProfile.valid_mode(value)
++	profile = CameraProfile.for_mode(mode)
++	initialized = false
++	clear_shake()
+ 
+ 
+ func add_collision_impact(resolved_velocity_change: Vector2) -> void:
+@@ -78,16 +87,20 @@
+ 		ahead += Vector2(sin(heading), cos(heading)) * profile.forward_look_ahead
+ 	ahead = ahead.limit_length(profile.maximum_look_ahead)
+ 	var desired: Vector3 = VisualGeometry.world(point + ahead)
++	var desired_yaw: float = deg_to_rad(profile.world_yaw_degrees) - (heading if profile.follow_heading else 0.0)
++	var step: float = maxf(delta, 0.0)
+ 	if snap or not initialized:
+ 		focus = desired
++		smoothed_yaw = desired_yaw
+ 		initialized = true
+ 	else:
+-		focus = focus.lerp(desired, 1.0 - exp(-profile.smoothing * delta))
++		focus = focus.lerp(desired, 1.0 - exp(-profile.smoothing * step))
++		# Shortest-arc exponential response avoids a full turn at the heading wrap.
++		smoothed_yaw = lerp_angle(smoothed_yaw, desired_yaw, 1.0 - exp(-profile.heading_smoothing * step)) if profile.follow_heading else desired_yaw
+ 	if snap:
+ 		clear_shake()
+ 	var shake: Vector2 = shake_offset(delta)
+-	var yaw: float = deg_to_rad(profile.world_yaw_degrees) - (heading if profile.follow_heading else 0.0)
+ 	var offset := Vector3(0, profile.height, profile.height / tan(deg_to_rad(profile.pitch_degrees)))
+ 	var shaken_focus: Vector3 = focus + VisualGeometry.world(shake)
+-	position = shaken_focus + offset.rotated(Vector3.UP, yaw)
++	position = shaken_focus + offset.rotated(Vector3.UP, smoothed_yaw)
+ 	look_at(shaken_focus, Vector3.UP)
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -147,6 +147,8 @@
+ 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+ 		elif field == "selected_car":
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
++		elif field == "camera_mode":
++			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
+ 		elif field == "track_ratings":
+ 			if not preferences[field] is Dictionary: return {}
+ 			for id: Variant in preferences[field]:
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -27,6 +27,7 @@
+ var finish_sim: VehicleSimulation
+ var finish_ticks: int = 0
+ var rating_records: LocalRecords
++var preference_records: LocalRecords
+ var online_frames: Array = []
+ var online_rewinds: Array = []
+ var resume_client: Node
+@@ -166,6 +167,8 @@
+ 	music = DynamicMusicController.new()
+ 	add_child(music)
+ 	camera = FollowCamera.new()
++	if preference_records != null:
++		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
+ 	world.add_child(camera)
+ 	camera.current = true
+ 	_update_cloud_shadows()
+@@ -555,6 +558,11 @@
+ 	if is_instance_valid(rewind_panel):
+ 		if event.is_action_pressed("pause"): cancel_rewind()
+ 		return
++	if event is InputEventKey and event.physical_keycode == KEY_C:
++		var next: int = (CameraProfile.MODES.find(camera.mode) + 1) % CameraProfile.MODES.size()
++		set_camera_mode(CameraProfile.MODES[next])
++		get_viewport().set_input_as_handled()
++		return
+ 	if event is InputEventKey and event.physical_keycode == KEY_BACKSPACE:
+ 		open_rewind()
+ 		return
+@@ -582,6 +590,15 @@
+ 			KEY_F9:
+ 				ai_enabled = not ai_enabled
+ 				restart()
++
++
++func set_camera_mode(value: String) -> Error:
++	camera.set_mode(value)
++	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
++	camera.follow(presented.state.position, presented.state.velocity, presented.state.heading, 0.0, true)
++	if preference_records == null: return OK
++	preference_records.settings.camera_mode = camera.mode
++	return preference_records.save_records()
+ 
+ 
+ func _unhandled_input(event: InputEvent) -> void:
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1431,6 +1431,7 @@
+ 	game.set("resume_client",online.client)
+ 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
+ 	game.set("rating_records", null if track.metadata.has("cloud_version") else records)
++	game.set("preference_records", records)
+ 	game.set("editor_test", from_editor)
+ 	game.connect("exit_requested", _leave_race)
+ 	game.connect("edit_here_requested", _edit_here)
+diff --git a/game/ui/settings_page.gd b/game/ui/settings_page.gd
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -10,6 +10,7 @@
+ var section: String = "controls"
+ var draft_layout: Dictionary
+ var draft_haptics: float = 0.2
++var draft_camera: String = "overhead"
+ var body: VBoxContainer
+ var heading: Label
+ var subtitle: Label
+@@ -19,6 +20,7 @@
+ 
+ const TITLES: Dictionary = {
+ 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
++	"camera": ["Camera", "Choose the view you prefer while driving."],
+ 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
+ 	"account": ["Account", "Manage the profile you race with."],
+ }
+@@ -30,6 +32,7 @@
+ 	add_theme_constant_override("separation", 16)
+ 	draft_layout = ControlLayout.from_settings(records.settings)
+ 	draft_haptics = float(records.settings.get("steering_haptics", 0.2))
++	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
+ 	_build_sidebar()
+ 	_build_panel()
+ 	_show_section(section)
+@@ -54,6 +57,7 @@
+ 	column.add_child(space)
+ 	for item: Array in [
+ 		["controls", "Controls", "Steering and layout", "controller"],
++		["camera", "Camera", "View and road ahead", "compass"],
+ 		["haptics", "Haptics", "Feedback and vibration", "phone"],
+ 		["account", "Account", "Profile and sign-in", "person"],
+ 	]:
+@@ -150,11 +154,13 @@
+ 		for field: String in ["caption", "glyph", "arrow"]:
+ 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
+ 	reset_button.visible = id != "account"
++	reset_button.text = "Reset camera" if id == "camera" else "Reset controls"
+ 	for child: Node in body.get_children():
+ 		body.remove_child(child)
+ 		child.queue_free()
+ 	match id:
+ 		"controls": _controls()
++		"camera": _camera()
+ 		"haptics": _haptics()
+ 		"account": _account()
+ 
+@@ -217,6 +223,22 @@
+ 		line.add_child(keycap)
+ 		line.add_child(_label(entry[1], 16, true))
+ 
++func _camera() -> void:
++	for index: int in range(CameraProfile.MODES.size()):
++		var mode: String = CameraProfile.MODES[index]
++		var row: HBoxContainer = _row("CameraRow_" + mode, 14)
++		row.add_child(_copy(CameraProfile.TITLES[index], CameraProfile.DESCRIPTIONS[index]))
++		var choice: Button = _choice("Selected" if draft_camera == mode else "Select", draft_camera == mode, func() -> void:
++			draft_camera = mode
++			_changed()
++			_show_section("camera"))
++		choice.name = "Camera_" + mode
++		choice.size_flags_horizontal = Control.SIZE_FILL
++		choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		choice.custom_minimum_size.x = 150
++		row.add_child(choice)
++	body.add_child(_label("You can also change the view in Pause > Settings, or press C while driving.", 16, true))
++
+ func _haptics() -> void:
+ 	var row: HBoxContainer = _row("HapticSettings", 18)
+ 	var column := VBoxContainer.new()
+@@ -256,14 +278,18 @@
+ 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
+ 
+ func _reset() -> void:
+-	draft_layout = ControlLayout.preset()
+-	draft_haptics = 0.2
++	if section == "camera":
++		draft_camera = "overhead"
++	else:
++		draft_layout = ControlLayout.preset()
++		draft_haptics = 0.2
+ 	_changed()
+ 	_show_section(section)
+ 
+ func _apply() -> bool:
+ 	records.settings.control_layout = draft_layout.duplicate(true)
+ 	records.settings.steering_haptics = draft_haptics
++	records.settings.camera_mode = draft_camera
+ 	var error: Error = records.save_records()
+ 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
+ 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
+diff --git a/game/ui/race_pause_menu.gd b/game/ui/race_pause_menu.gd
+--- a/game/ui/race_pause_menu.gd
++++ b/game/ui/race_pause_menu.gd
+@@ -77,7 +77,7 @@
+ 	_clear("BEAT\nMY TRACK.")
+ 	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), BLUE)
+ 	_row("Restart","Start this race again","restart",func() -> void: hud.restart_requested.emit())
+-	_row("Settings","Audio and driving controls","gear",_settings)
++	_row("Settings","Camera, sound and controls","gear",_settings)
+ 	var report := _row("Report track","Reporting is not available yet","flag",func() -> void: pass)
+ 	report.disabled = true
+ 	_row("Help","Driving tips and controls","help",_help)
+@@ -136,7 +136,7 @@
+ 
+ func _help() -> void:
+ 	_clear("DRIVING HELP")
+-	var text := MenuStyle.label("Steer with the on-screen controls or A / D and the arrow keys.\n\nUse the accelerator to drive and the brake to slow down or reverse. Keyboard: W / S and Space.\n\nPass every checkpoint in order. If you miss one, return to it to continue your lap.\n\nEsc opens and closes this menu. Restart begins a fresh attempt.",20)
++	var text := MenuStyle.label("Steer with the on-screen controls or A / D and the arrow keys.\n\nUse the accelerator to drive and the brake to slow down or reverse. Keyboard: W / S and Space.\n\nPass every checkpoint in order. If you miss one, return to it to continue your lap.\n\nPress C to cycle camera views. Esc opens and closes this menu. Restart begins a fresh attempt.",20)
+ 	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	column.add_child(text)
+ 	_row("Back","Return to pause menu","arrow",show_main)
+@@ -148,6 +148,23 @@
+ 	audio.button_pressed = not AudioServer.is_bus_mute(0)
+ 	audio.toggled.connect(func(on: bool) -> void: AudioServer.set_bus_mute(0,not on))
+ 	column.add_child(audio)
++	column.add_child(MenuStyle.label("Camera",22))
++	var camera_choice := OptionButton.new()
++	camera_choice.name = "RaceCameraMode"
++	camera_choice.custom_minimum_size.y = 52
++	for title: String in CameraProfile.TITLES: camera_choice.add_item(title)
++	var game: Node = hud.get_parent()
++	var camera_index: int = CameraProfile.MODES.find(game.camera.mode)
++	camera_choice.select(camera_index)
++	var camera_description: Label = MenuStyle.label(CameraProfile.DESCRIPTIONS[camera_index], 16, true)
++	camera_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	camera_choice.item_selected.connect(func(index: int) -> void:
++		var error: Error = game.set_camera_mode(CameraProfile.MODES[index])
++		camera_description.text = CameraProfile.DESCRIPTIONS[index]
++		status.text = "Camera changed" if error == OK else "Camera changed for this race. Could not save preference."
++	)
++	column.add_child(camera_choice)
++	column.add_child(camera_description)
+ 	column.add_child(MenuStyle.label("Steering",22))
+ 	var steering := OptionButton.new()
+ 	for title: String in ["Buttons","Horizontal slider","Joystick"]: steering.add_item(title)
+@@ -163,7 +180,7 @@
+ 			if records.save_records() != OK: status.text = "Could not save controls."
+ 	)
+ 	column.add_child(steering)
+-	status = MenuStyle.label("Sound applies to this session. Controls are saved when available.",16,true)
++	status = MenuStyle.label("Sound applies to this session. Camera and controls are saved when available.",16,true)
+ 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	column.add_child(status)
+ 	_row("Back","Return to pause menu","arrow",show_main)
+diff --git a/game/tests/capture_settings.gd b/game/tests/capture_settings.gd
+--- a/game/tests/capture_settings.gd
++++ b/game/tests/capture_settings.gd
+@@ -50,6 +50,12 @@
+ 		for label: Node in keyboard.find_children("*", "Label", true, false):
+ 			check((label as Label).get_line_count() == 1, "keyboard shortcut text stays on one line")
+ 		await _capture("controls", dimensions)
++		await _press("SettingsCategory_camera")
++		check(page.section == "camera" and panel.get_global_rect().is_equal_approx(panel_rect), "camera keeps panel geometry")
++		for mode: String in CameraProfile.MODES:
++			var choice: Button = page.find_child("Camera_" + mode, true, false)
++			check(choice != null and choice.is_visible_in_tree() and choice.size.y >= 52, "reachable camera choice " + mode)
++		await _capture("camera", dimensions)
+ 		await _press("SettingsCategory_haptics")
+ 		check(page.section == "haptics" and panel.get_global_rect().is_equal_approx(panel_rect), "haptics keeps panel geometry")
+ 		await _capture("haptics", dimensions)
+@@ -71,12 +77,18 @@
+ 	var store: LocalRecords = app.get("records")
+ 	store.settings.favorites = ["starter_circuit"]
+ 	check(store.save_records() == OK, "unrelated preference fixture saved")
++	await _press("SettingsCategory_camera")
++	await _press("Camera_follow_car")
++	check(_page().draft_camera == "follow_car" and store.settings.get("camera_mode", "overhead") == "overhead", "camera stages until Apply")
++	await _press("SettingsCategory_controls")
++	check(_page().draft_camera == "follow_car", "camera draft survives section switching")
+ 	await _press("Steering_joystick")
+ 	check(_page().draft_layout.steering_type == "joystick" and ControlLayout.from_settings(store.settings).steering_type == "buttons", "steering is staged before apply")
+ 	await _press("ApplySettings")
+ 	var reloaded := LocalRecords.new(store.path)
+ 	reloaded.load_records()
+ 	check(ControlLayout.from_settings(reloaded.settings).steering_type == "joystick", "apply persists steering after reload")
++	check(reloaded.settings.camera_mode == "follow_car", "apply persists camera after reload")
+ 	await _press("SettingsCategory_haptics")
+ 	await _press("HapticsMedium")
+ 	check(is_equal_approx(_page().draft_haptics, 0.5) and is_equal_approx(float(store.settings.steering_haptics), 0.2), "haptic strength is staged")
+@@ -96,6 +108,14 @@
+ 		for field: String in ["x", "y", "scale", "opacity"]:
+ 			check(is_equal_approx(float(restored[key][field]), float(preset[key][field])), "reset restores " + key + " " + field)
+ 	check(reloaded.settings.favorites == ["starter_circuit"], "reset preserves favorites")
++	check(reloaded.settings.camera_mode == "follow_car", "reset controls preserves camera")
++	await _press("SettingsCategory_camera")
++	await _press("ResetSettings")
++	check(_page().draft_camera == "overhead" and store.settings.camera_mode == "follow_car", "camera reset is staged")
++	await _press("ApplySettings")
++	reloaded.load_records()
++	check(reloaded.settings.camera_mode == "overhead" and reloaded.settings.favorites == ["starter_circuit"], "camera reset commits without changing favorites")
++	await _press("SettingsCategory_controls")
+ 	await _press("Steering_horizontal")
+ 	await _press("Tab_tracks")
+ 	await _press("MenuSettings")
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -171,6 +171,7 @@
+     }
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_review_reliability.gd') 'review-reliability-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_camera_modes.gd') 'camera-mode-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_catalog.gd') 'catalog-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_menu_loading.gd') 'menu-loading-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_compiler_raster.gd') 'compiler-raster-tests.log'
+@@ -440,6 +441,8 @@
+         'CaptureBiomes' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_biomes.gd', '--', '--capture') 'biomes-capture.log' }
+         'TestHandbrake' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_handbrake.gd') 'handbrake-tests.log' }
+         'CaptureHandbrake' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_handbrake.gd') 'handbrake-capture.log' }
++        'TestCameraModes' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_camera_modes.gd') 'camera-mode-tests.log' }
++        'CaptureCameraModes' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_camera_modes.gd') 'camera-mode-capture.log' }
+         'CaptureControls' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_controls.gd') 'controls-capture.log' }
+         'TestResults' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_race_results.gd') 'results-tests.log' }
+         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-10-03 V01/V03/V04/V05/Q01: added owner-requested optional Follow car (48-degree overhead, delayed heading rotation) and Look ahead (fixed yaw, stronger bounded travel offset), retaining Overhead default/1.15x extent. Settings staged Apply/scoped reset, pause dropdown and C cycling persist separately from track ratings; canonical versions/records unchanged. Camera 1,131, shake 7, records 54, Settings 181, rewind 57, pause 17, menus 48 and parse 252 checks pass; import/captures exit 0. Comparison/turn/pause/Settings desktop screenshots inspected. Headless camera test emits a 3-instance shutdown leak warning. Doctor finds DN2103 attached; no export/install/device driving, full Validate/replay gate or service deployment. Owner feel/device acceptance remains. Files, exact actions, evidence and scoped patch checkpoint: docs/CAMERA_OPTIONS.md; no mixed-workspace commit.
+ 
+ 2026-10-03 Q01/G01/R01/T01-T04/B01-B07/B19/B20/B23: second game/backend review saved in [docs/CODE_REVIEW_PASS_2_2026_10_03.md](docs/CODE_REVIEW_PASS_2_2026_10_03.md). Eight remaining defects reproduced: local save/autosync conflicts, busy Sign out retaining sessions, rejected uploads retaining objects, synchronous receipt-history scans, uncapped finished catalog snapshots, mixed-build competition health, offset-only score paging and exhausted validation leases. Two P1/six P2; desktop no-work outbox flush measures 400.6 ms at 2,000 completed receipts. Selected backend 119 pass/one skip; review 17, bridge entry 258 and parse 252 pass; lint/Doctor pass. Public live contracts now match v16/.49/compiler20. Documentation/probes only; runtime/services/player files unchanged by this review. DN2103 attached; no export/device test, full Validate/backend suite, PostgreSQL/NAS load test, deployment or mixed-workspace commit. Actual commands, evidence and remaining acceptance are in the report.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-10-03 V01/V03/V04/V05/Q01: owner camera experiments delivered: optional delayed heading-follow at 48 degrees and fixed-yaw stronger look-ahead, with original Overhead baseline retained. Settings Camera/Apply, pause selector and C cycling share saved local preferences independently of ratings. Camera 1,131/shake 7/records 54/Settings 181/rewind 57/pause 17/menus 48/parse 252 checks pass; actual desktop comparisons and turn/compact/wide controls inspected. DN2103 attached; no Android export/install/device test, full Validate/replay gate or backend deployment. Headless camera integration emits three shutdown instance leaks; graphical captures exit cleanly. Owner comfort/driving/device acceptance and scoped checkpoint evidence: docs/CAMERA_OPTIONS.md.
+ 
+ 2026-10-03 Q01/G01/R01/T01-T04/B01-B07/B19/B20/B23: another review pass identifies eight reproduced remaining issues (two P1/six P2), led by save-during-autosync conflicts and busy Sign out leaving credentials active. Storage admission, outbox frame stalls, discovery bounds, compatibility health, score paging and validator retry limits also require repair. Selected backend 119 pass/one skip; review 17, bridge entry 258, parse 252 and lint/Doctor pass. Read-only live contracts match v16/.49/compiler20. Review/probes only; no runtime repair, service/data changes, export/deployment or mixed-workspace commit. DN2103 attached; no device/full-suite/PostgreSQL/NAS capacity test. See [CODE_REVIEW_PASS_2_2026_10_03.md](CODE_REVIEW_PASS_2_2026_10_03.md) for source, commands, evidence and remaining acceptance.
+ 
+diff --git a/game/tests/test_camera_modes.gd b/game/tests/test_camera_modes.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_camera_modes.gd
+@@ -0,0 +1,123 @@
++extends SceneTree
++## Camera behavior, framing and preference failures, independent of the verifier.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: " + message)
++
++func run() -> void:
++	var camera := FollowCamera.new()
++	root.add_child(camera)
++	camera.current = true
++	var baseline: CameraProfile = load("res://resources/camera.tres")
++	camera.set_mode("follow_car")
++	check(camera.profile.pitch_degrees < baseline.pitch_degrees and camera.profile.pitch_degrees >= 40.0, "lower view remains overhead")
++	check(camera.profile != baseline and not baseline.follow_heading and baseline.pitch_degrees == 56.0, "mode owns its profile and preserves baseline")
++	var results: Array[float] = []
++	for fps: int in [30, 60, 120]:
++		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
++		for frame: int in range(fps / 2): camera.follow(Vector2.ZERO, Vector2.ZERO, PI / 2.0, 1.0 / fps)
++		results.append(camera.smoothed_yaw)
++		check(camera.smoothed_yaw < -0.2 and camera.smoothed_yaw > -PI / 2.0 + 0.1, "turn follows with visible lag at %d fps" % fps)
++	check(absf(results[0] - results[1]) < 0.00001 and absf(results[1] - results[2]) < 0.00001, "yaw response is independent of display rate")
++	camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(179.0), 0.0, true)
++	var previous: float = camera.smoothed_yaw
++	camera.follow(Vector2.ZERO, Vector2.ZERO, deg_to_rad(-179.0), 1.0 / 60.0)
++	check(absf(angle_difference(previous, camera.smoothed_yaw)) < deg_to_rad(1.0), "heading wrap takes short arc")
++	camera.add_collision_impact(Vector2(16, 0))
++	camera.follow(Vector2(30, -20), Vector2.ZERO, -1.0, 0.0, true)
++	check(absf(angle_difference(camera.smoothed_yaw, 1.0)) < 0.00001 and camera.focus == VisualGeometry.world(Vector2(30, -20)), "restart/rewind snap resets yaw and translation together")
++	check(camera.trauma == 0.0 and camera.impact_velocity == Vector2.ZERO, "snap clears impact")
++	camera.set_mode("look_ahead")
++	camera.follow(Vector2.ZERO, Vector2(0, 18), 0.0, 0.0, true)
++	var extra: float = camera.focus.length()
++	camera.set_mode("overhead")
++	camera.follow(Vector2.ZERO, Vector2(0, 18), 0.0, 0.0, true)
++	check(extra > camera.focus.length() + 2.0, "look-ahead shows materially more road at normal speed")
++	for dimensions: Vector2i in [Vector2i(960, 540), Vector2i(1280, 720), Vector2i(1600, 720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		await process_frame
++		for mode: String in CameraProfile.MODES:
++			camera.set_mode(mode)
++			for heading: float in [0.0, PI * 0.5, PI, PI * 1.5]:
++				var forward := Vector2(sin(heading), cos(heading))
++				for speed: float in [-12.0, 0.0, 18.0, 55.0]:
++					camera.follow(Vector2.ZERO, forward * speed, heading, 0.0, true)
++					check(camera.focus.length() <= camera.profile.maximum_look_ahead + 0.0001, "look-ahead bound " + mode)
++					check(is_equal_approx(camera.size, baseline.baseline_extent / baseline.magnification), "vertical magnification preserved " + mode)
++					if mode != "follow_car": check(is_equal_approx(camera.smoothed_yaw, deg_to_rad(baseline.world_yaw_degrees)), "world rotation fixed " + mode)
++					for height: float in [0.0, 4.0]:
++						var car_pixel: Vector2 = camera.unproject_position(Vector3(0, height, 0))
++						check(Rect2(40, 70, dimensions.x - 80, dimensions.y - 140).has_point(car_pixel), "car stays clear of screen edges on ground/bridge " + mode)
++						check(not camera.is_position_behind(Vector3(0, height, 0)), "car stays in front of camera " + mode)
++					check(camera.global_basis.z.y > 0.7, "no horizon/low chase angle " + mode)
++	# Persist through the same atomic store; fail without losing older settings.
++	var directory: String = "user://camera_test_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var store := LocalRecords.new(directory.path_join("records.json"))
++	store.settings.favorites = ["starter_circuit"]
++	for mode: String in CameraProfile.MODES:
++		store.settings.camera_mode = mode
++		check(store.save_records() == OK, "camera preference commits " + mode)
++		var reload := LocalRecords.new(store.path)
++		reload.load_records()
++		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["starter_circuit"], "reload preserves camera and unrelated preferences " + mode)
++	store.settings.camera_mode = "unknown"
++	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_mode == "look_ahead", "invalid camera preference rejected without losing committed settings")
++	var valid_path: String = store.path
++	store.path = directory.path_join("missing/records.json")
++	store.settings.camera_mode = "follow_car"
++	check(store.save_records() != OK and store.settings.camera_mode == "look_ahead", "failed write keeps prior saved camera")
++	store.path = valid_path
++	# Online races omit local ratings; camera preferences still load and save.
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(TrackDocument.create_default())
++	game.production_mode = true
++	game.preference_records = store
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	check(game.rating_records == null and game.camera.mode == "look_ahead", "race loads preferences independently of local rating records")
++	var state: Array = game.sim.state.snapshot()
++	var rules: Dictionary = RewindHistory.properties(game.track_session, true)
++	var key: String = store.key_for(game.native_track, game.handling)
++	game.toggle_pause()
++	game.hud.pause_menu._settings()
++	var picker: OptionButton = game.hud.pause_menu.find_child("RaceCameraMode", true, false)
++	picker.select(1)
++	picker.item_selected.emit(1)
++	check(game.paused and not game.hud.touch.enabled and game.camera.mode == "follow_car", "pause selector changes camera without unpausing")
++	var reload := LocalRecords.new(store.path)
++	reload.load_records()
++	check(reload.settings.camera_mode == "follow_car", "pause selection persists for next race")
++	store.path = directory.path_join("missing/records.json")
++	picker.select(0)
++	picker.item_selected.emit(0)
++	check(game.camera.mode == "overhead" and store.settings.camera_mode == "follow_car", "failed save still permits testing camera in current race")
++	check(game.hud.pause_menu.status.text.contains("Could not save"), "pause menu reports camera save failure")
++	store.path = valid_path
++	game.set_camera_mode("follow_car")
++	game.toggle_pause()
++	var shortcut := InputEventKey.new()
++	shortcut.pressed = true
++	shortcut.physical_keycode = KEY_C
++	game._unhandled_key_input(shortcut)
++	check(game.camera.mode == "look_ahead", "C cycles the race camera")
++	game.restart()
++	check(game.camera.mode == "look_ahead", "retry keeps chosen camera")
++	check(game.sim.state.snapshot() == state and RewindHistory.properties(game.track_session, true) == rules, "camera switching leaves canonical state and race gates unchanged")
++	check(store.key_for(game.native_track, game.handling) == key, "camera choice leaves record partition unchanged")
++	game.queue_free()
++	camera.queue_free()
++	await process_frame
++	for filename: String in DirAccess.get_files_at(directory): DirAccess.remove_absolute(directory.path_join(filename))
++	DirAccess.remove_absolute(directory)
++	print("CAMERA_MODE_TESTS: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_camera_modes.gd.uid b/game/tests/test_camera_modes.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_camera_modes.gd.uid
+@@ -0,0 +1 @@
++uid://7cifuxfusx3g
+diff --git a/game/tests/capture_camera_modes.gd b/game/tests/capture_camera_modes.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_camera_modes.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Same actual world/car pose in all views, plus real delayed-turn frames.
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/camera-options-2026-10-03")
++	DirAccess.make_dir_recursive_absolute(output)
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(document)
++	game.production_mode = true
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	game.countdown_ticks = 0
++	game.race_cues.hide()
++	game.sim.state.velocity = game.sim.state.forward() * 22.0
++	game.previous_position = game.sim.state.position
++	game.previous_heading = game.sim.state.heading
++	for frame: int in range(45): game._process(1.0 / 60.0)
++	for dimensions: Vector2i in [Vector2i(1280, 720), Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		for mode: String in CameraProfile.MODES:
++			game.set_camera_mode(mode)
++			game._process(0.0)
++			await capture(output.path_join("%s-%dx%d.png" % [mode, dimensions.x, dimensions.y]))
++	root.size = Vector2i(1280, 720)
++	root.content_scale_size = Vector2i(1280, 720)
++	game.set_camera_mode("follow_car")
++	game.sim.state.heading += PI / 2.0
++	game.previous_heading = game.sim.state.heading
++	game.sim.state.velocity = game.sim.state.forward() * 22.0
++	for frame: int in range(61):
++		game._process(1.0 / 60.0)
++		if frame in [0, 17, 59]: await capture(output.path_join("follow-turn-%02d.png" % (frame + 1)))
++	game.toggle_pause()
++	game.hud.pause_menu._settings()
++	await capture(output.path_join("pause-camera-1280x720.png"))
++	root.size = Vector2i(960, 540)
++	root.content_scale_size = Vector2i(960, 540)
++	await capture(output.path_join("pause-camera-960x540.png"))
++	game.queue_free()
++	await process_frame
++	print("CAMERA_CAPTURE: 9 comparison, 3 delayed-turn and 2 pause-selector captures saved")
++	quit()
++
++func capture(path: String) -> void:
++	for frame: int in range(5): await process_frame
++	await RenderingServer.frame_post_draw
++	assert(root.get_texture().get_image().save_png(path) == OK)
+diff --git a/game/tests/capture_camera_modes.gd.uid b/game/tests/capture_camera_modes.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_camera_modes.gd.uid
+@@ -0,0 +1 @@
++uid://d0eqfwd1fk0ul
+diff --git a/docs/CAMERA_OPTIONS.md b/docs/CAMERA_OPTIONS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/CAMERA_OPTIONS.md
+@@ -0,0 +1,54 @@
++# Driving camera options — 2026-10-03
++
++The owner requests two alternative views for driving comparisons: delayed rotation with the car from a slightly lower angle, and a fixed-world view showing more road in the direction of travel. This authorizes selectable camera rotation/pitch experiments under V01; the original Overhead view remains the default and calibration baseline. V03 covers Settings/pause access, V05 the presentation/canonical boundary, and V04/Q01 retain owner/physical-device acceptance.
++
++## Behavior and controls
++
++| Choice | Pitch | Rotation | Look-ahead |
++|---|---|---|---|
++| Overhead | 56° | Fixed world yaw, 18° | Velocity × 0.22 s + 1.5 m forward, capped at 7 m |
++| Follow car | 48° | Car heading, smoothly delayed | Original bounded look-ahead |
++| Look ahead | 56° | Fixed world yaw, 18° | Velocity × 0.4 s + 2 m forward, capped at 9 m |
++
++Follow-car rotation uses shortest-arc exponential smoothing at 3.5/s: approximately 0.20 seconds to cover half a heading change, 0.66 seconds to cover 90%. Translation retains its existing separate 9/s response. These are initial feel values for owner testing. Look-ahead uses actual travel velocity with a small heading bias, includes reverse motion, and recenters when stopped. Both views remain orthographic and overhead, without a horizon; the whole-scene extent remains 35/1.15 m with unchanged HUD, mesh and collision scale. Restart and rewind snapshots reset translation and yaw together.
++
++Open **Settings → Camera**, select a view and **Apply settings**. During racing or creator practice, use **Pause → Settings → Camera** to change it immediately, or press **C** to cycle Overhead → Follow car → Look ahead. Race changes retain the attempt and save the preference when a local store is available. A failed write reports that the view applies to the current race; it retains the previous committed preference. Settings selection/reset stages until Apply. Reset camera preserves controls; Reset controls preserves the camera.
++
++`camera_mode` is an optional allowlisted enum in the existing local records schema 2; missing values default to Overhead. Camera preferences use a separate local-store reference from track ratings so authenticated/backend races also load/save them. Physics 0.49, rules v16, compiler 20, replay data and record partitions are unchanged by this task. The blueprint camera/reference files remain historical calibration specifications; the explicit owner override is recorded in AGENTS.md.
++
++## Changed files
++
++- `game/camera/camera_profile.gd`, `follow_camera.gd`: isolated view profiles and delayed yaw response.
++- `game/core/game.gd`, `app.gd`: preference injection, race switching and C shortcut.
++- `game/ui/settings_page.gd`, `race_pause_menu.gd`: staged camera choices, scoped reset and immediate race dropdown.
++- `game/persistence/local_records.gd`: optional camera-mode validation and existing atomic persistence.
++- `game/tests/test_camera_modes.gd`, `capture_camera_modes.gd`, `capture_settings.gd`: camera/frame/persistence/lifecycle checks and comparison evidence, with generated `.uid` files for new scripts.
++- `scripts/dev.ps1`: TestCameraModes/CaptureCameraModes entrypoints and camera checks in full Validate.
++- `AGENTS.md`, this file, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`: owner override and actual verification record.
++
++## Actual commands and outcomes
++
++All engine actions used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and the pinned `4.7.2.stable.official.ed1daf0bf`; the Godot PATH alias was not used.
++
++| Action/arguments | Actual result |
++|---|---|
++| `-Action CheckScript -ScriptPath res://core/game.gd` | Exit 0 |
++| `-Action TestCameraModes` | Final 1,131 checks, 0 failures; initial 1,129 also pass |
++| `-Action TestScript -ScriptPath res://tests/test_camera_shake.gd` | 7 checks, 0 failures |
++| `-Action TestRecords` | 54 checks, 0 failures |
++| `-Action CaptureSettings` | 181 checks, 0 failures; twelve three-size Settings captures |
++| `-Action TestRewind` | 57 checks, 0 failures |
++| `-Action CapturePause` | 17 checks, 0 failures, including frozen overlay/resume |
++| `-Action TestMenus` | 48 checks, 0 failures |
++| `-Action Import` | Exit 0; emits pre-existing Target SDK/build-tools fallback notice |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | 252 scripts, 0 failures |
++| `-Action CaptureCameraModes` | Final exit 0; nine comparison, three delayed-turn and two pause-selector captures |
++| `-Action Doctor` | Pinned engine/templates found; DN2103 attached |
++
++Camera checks cover 30/60/120 fps yaw response, ±179° wrap, snap/shake recovery, reverse/stopped/18/55 m/s travel, four headings, ground/4 m bridge elevations, and 960×540/1280×720/1600×720 framing. They exercise atomic reload, invalid values, write failure, real pause selection, C cycling, restart retention, unchanged canonical state/gates and unchanged record keys. Settings captures exercise actual touch actions, staged Apply, category switching, reset isolation and saved camera reload. These checks establish local behavior and bounds; they do not constitute a complete camera-driven lap or physical-device acceptance.
++
++Desktop evidence is in [evidence/camera-options-2026-10-03](evidence/camera-options-2026-10-03). Comparison captures use the same Over and under fixture/car pose and seeded 22 m/s presentation state; turn frames hold position and change heading by 90° to show delay. They are diagnostic presentation captures, not scored races. Selected comparison, delayed-turn, compact/wide and Settings/pause captures were visually inspected. A scoped patch checkpoint is retained alongside the evidence; the shared workspace already contains substantial unrelated changes, so no mixed-workspace commit was made.
++
++## Remaining acceptance and limits
++
++Owner driving acceptance remains for rotation delay, lower-angle readability, look-ahead strength and comfort through tight hairpins/drifts/bridges. DN2103 was attached, but no Android export/install, device driving, device GPU/frame-time or thermal test was performed. No backend/service deployment, full Validate or full replay/regression gate was run for this presentation change. Headless camera integration exits 0 with an ObjectDB leak warning (four instances initially, three in the final run); graphical captures and the existing rewind/pause checks exit cleanly.

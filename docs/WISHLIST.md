@@ -37,3 +37,9 @@ Recorded 2026-09-19 at the owner's explicit request. **Deferred; do not implemen
 Show which tracks have been published and which are still saved only locally in My tracks. Distinguish a published immutable version from later unpublished local edits. Publication status must come from confirmed publication metadata, not from a successful local save or an attempted upload. Offline cached status and pending/failed publication need clear states when cloud publication is implemented.
 
 Requirements to revisit: R01, T01-T04, V03/V05.
+
+## Different game modes
+
+Recorded 2026-10-01; reaffirmed as a separate wishlist item at the owner's explicit request. **Deferred; do not implement yet.**
+
+Rather than racing 5 different laps, have a target to hit all the cones or other objects on the track. Race ends when all cones are hit. Another game mode would be the time gated laps, i.e. the first lap would have to be completed within 50% percentile time, then 40%, 30%, 20%, 10%, 5% and 1%. Only tracks with enough completions would be eligible for this mode, e.g. 100 players have completed the track in normal mode. 

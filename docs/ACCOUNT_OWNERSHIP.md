@@ -1,5 +1,12 @@
 # Account ownership and existing circuit access — 2026-09-28
 
+Current override (2026-10-03): Race uses backend publications and disposable
+retrieval caches. The 20 retained named local circuits are now published under
+**Beat my track**, alongside six existing publications. Matching saved originals
+were removed after backup, validated import and verified download; unmatched
+recovery copies and unfinished edits remain. This supersedes the shared-local
+playable catalog described below. See [track restoration](TRACK_RESTORATION.md).
+
 Requirements B01/B19 (identity), B02–B07 (track/rating/leaderboard ownership), R01
 (domain separation), Q01 (validation), and the owner's account-specific data request.
 

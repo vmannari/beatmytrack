@@ -1,0 +1,278 @@
+diff --git a/game/ui/settings_page.gd b/game/ui/settings_page.gd
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -12,6 +12,7 @@
+ var draft_haptics: float = 0.2
+ var draft_camera: String = "overhead"
+ var draft_speed_zoom: bool = true
++var draft_labels: bool = true
+ var body: VBoxContainer
+ var heading: Label
+ var subtitle: Label
+@@ -35,6 +36,7 @@
+ 	draft_haptics = float(records.settings.get("steering_haptics", 0.2))
+ 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
+ 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
++	draft_labels = bool(records.settings.get("control_labels", true))
+ 	_build_sidebar()
+ 	_build_panel()
+ 	_show_section(section)
+@@ -200,6 +202,17 @@
+ 	preview.add_child(preview_title)
+ 	var layout_row: HBoxContainer = _row("LayoutSettings", 16)
+ 	layout_row.add_child(_copy("Control layout", "Move and resize your on-screen controls."))
++	var label_toggle := CheckButton.new()
++	label_toggle.name = "ShowControlLabels"
++	label_toggle.text = "Show labels"
++	label_toggle.tooltip_text = "Show names below the gas, brake and handbrake controls."
++	label_toggle.button_pressed = draft_labels
++	label_toggle.custom_minimum_size = Vector2(180, 52)
++	label_toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	label_toggle.toggled.connect(func(on: bool) -> void:
++		draft_labels = on
++		_changed())
++	layout_row.add_child(label_toggle)
+ 	var customize: Button = MenuStyle.button("Customize layout", _customize)
+ 	customize.name = "CustomizeControls"
+ 	customize.icon = MenuIcon.texture("edit")
+@@ -299,6 +312,7 @@
+ 	else:
+ 		draft_layout = ControlLayout.preset()
+ 		draft_haptics = 0.2
++		draft_labels = true
+ 	_changed()
+ 	_show_section(section)
+ 
+@@ -307,6 +321,7 @@
+ 	records.settings.steering_haptics = draft_haptics
+ 	records.settings.camera_mode = draft_camera
+ 	records.settings.camera_speed_zoom = draft_speed_zoom
++	records.settings.control_labels = draft_labels
+ 	var error: Error = records.save_records()
+ 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
+ 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
+diff --git a/game/ui/touch_control_art.gd b/game/ui/touch_control_art.gd
+--- a/game/ui/touch_control_art.gd
++++ b/game/ui/touch_control_art.gd
+@@ -12,6 +12,11 @@
+ var vehicle_id: String = "compact"
+ var button_index: int = 0
+ var pressed: bool = false
++var show_labels: bool = true:
++	set(value):
++		if show_labels == value: return
++		show_labels = value
++		queue_redraw()
+ var draw_count: int = 0
+ var artwork_rect := Rect2()
+ 
+@@ -31,6 +36,7 @@
+ 			face.size *= 0.96
+ 		draw_texture_rect_region(HANDBRAKE, face, HANDBRAKE_REGION)
+ 		if pressed: draw_arc(center, radius, 0, TAU, 64, RaceHUDStyle.GOLD, 2, true)
++		if not show_labels: return
+ 		var label: String = "HANDBRAKE"
+ 		var font: Font = RaceHUDStyle.DISPLAY
+ 		var width_text: float = font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
+@@ -55,6 +61,7 @@
+ 			face.position += Vector2(width*0.035,height*0.18)
+ 			face.size *= Vector2(0.93,0.82)
+ 		draw_texture_rect_region(GAS if gas else BRAKE,face,source,tint)
++		if not show_labels: return
+ 		var label: String = "GAS" if gas else "BRAKE"
+ 		var font: Font = RaceHUDStyle.DISPLAY
+ 		var width_text: float = font.get_string_size(label,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x
+diff --git a/game/ui/touch_controls.gd b/game/ui/touch_controls.gd
+--- a/game/ui/touch_controls.gd
++++ b/game/ui/touch_controls.gd
+@@ -117,6 +117,10 @@
+ var draw_count: int = 0
+ var last_pressed_mask: int = -1
+ var artwork: Array[TouchControlArt] = []
++var show_labels: bool = true:
++	set(value):
++		show_labels = value
++		for art: TouchControlArt in artwork: art.show_labels = value
+ 
+ 
+ func _ready() -> void:
+@@ -129,6 +133,7 @@
+ 			var art := TouchControlArt.new()
+ 			art.button_index = index
+ 			art.pressed = pressed
++			art.show_labels = show_labels
+ 			art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 			artwork.append(art)
+ 			add_child(art)
+diff --git a/game/ui/control_layout_editor.gd b/game/ui/control_layout_editor.gd
+--- a/game/ui/control_layout_editor.gd
++++ b/game/ui/control_layout_editor.gd
+@@ -44,6 +44,7 @@
+ 	touch = preview.touch
+ 	touch.enabled = false
+ 	touch.layout = ControlLayout.from_settings(records.settings)
++	touch.show_labels = bool(records.settings.get("control_labels", true))
+ 	selected = _steering_selection()
+ 	# Retain the actual driving controls without unrelated race/practice messages.
+ 	for child: Node in touch.get_parent().get_children():
+@@ -135,6 +136,7 @@
+ 	row.add_theme_constant_override("separation", 20)
+ 	selection_panel.add_child(row)
+ 	selected_art = TouchControlArt.new()
++	selected_art.show_labels = touch.show_labels
+ 	selected_art.custom_minimum_size = Vector2(54, 54)
+ 	selected_art.artwork_rect = Rect2(5, 2, 44, 50)
+ 	selected_art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -163,7 +163,7 @@
+ 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+ 		elif field == "control_layout":
+ 			if not ControlLayout.valid(preferences[field]): return {}
+-		elif field in ["left_handed", "camera_speed_zoom"]:
++		elif field in ["left_handed", "camera_speed_zoom", "control_labels"]:
+ 			if not preferences[field] is bool:
+ 				return {}
+ 		elif field == "steering_haptics":
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1444,6 +1444,7 @@
+ 	hud.touch.left_handed = ui_left_handed
+ 	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
+ 	hud.touch.layout = ControlLayout.from_settings(records.settings)
++	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
+ 
+ func _edit_here(position: Vector2) -> void:
+ 	_leave_race()
+diff --git a/game/tests/capture_settings.gd b/game/tests/capture_settings.gd
+--- a/game/tests/capture_settings.gd
++++ b/game/tests/capture_settings.gd
+@@ -41,7 +41,7 @@
+ 		var panel_rect: Rect2 = panel.get_global_rect()
+ 		check(not sidebar.get_global_rect().intersects(panel_rect), "sidebar and content do not overlap")
+ 		check(root.get_visible_rect().encloses(panel_rect), "content stays within viewport")
+-		for id: String in ["Steering_buttons", "Steering_horizontal", "Steering_joystick", "CustomizeControls", "ApplySettings", "ResetSettings"]:
++		for id: String in ["Steering_buttons", "Steering_horizontal", "Steering_joystick", "ShowControlLabels", "CustomizeControls", "ApplySettings", "ResetSettings"]:
+ 			var button: Button = page.find_child(id, true, false)
+ 			check(button != null and button.is_visible_in_tree() and button.size.y >= 52, "reachable touch target " + id)
+ 		var scroll: Control = page.find_child("SettingsScroll", true, false)
+@@ -86,6 +86,9 @@
+ 	check(not _page().draft_speed_zoom and store.settings.get("camera_speed_zoom", true) == true, "speed zoom stages until Apply")
+ 	await _press("SettingsCategory_controls")
+ 	check(_page().draft_camera == "follow_car", "camera draft survives section switching")
++	check(_page().draft_labels, "existing profiles show control labels by default")
++	await _press("ShowControlLabels")
++	check(not _page().draft_labels and store.settings.get("control_labels", true), "control labels stage until Apply")
+ 	await _press("Steering_joystick")
+ 	check(_page().draft_layout.steering_type == "joystick" and ControlLayout.from_settings(store.settings).steering_type == "buttons", "steering is staged before apply")
+ 	await _press("ApplySettings")
+@@ -94,11 +97,13 @@
+ 	check(ControlLayout.from_settings(reloaded.settings).steering_type == "joystick", "apply persists steering after reload")
+ 	check(reloaded.settings.camera_mode == "follow_car", "apply persists camera after reload")
+ 	check(not reloaded.settings.camera_speed_zoom, "apply persists disabled speed zoom after reload")
++	check(not reloaded.settings.control_labels, "apply persists hidden labels after reload")
+ 	await _press("SettingsCategory_haptics")
+ 	await _press("HapticsMedium")
+ 	check(is_equal_approx(_page().draft_haptics, 0.5) and is_equal_approx(float(store.settings.steering_haptics), 0.2), "haptic strength is staged")
+ 	await _press("SettingsCategory_controls")
+ 	check(is_equal_approx(_page().draft_haptics, 0.5), "category switching retains staged strength")
++	check(not _page().draft_labels, "hidden label preference survives category switching")
+ 	await _press("ApplySettings")
+ 	reloaded.load_records()
+ 	check(is_equal_approx(float(reloaded.settings.steering_haptics), 0.5), "apply persists haptics")
+@@ -115,6 +120,7 @@
+ 	check(reloaded.settings.favorites == ["starter_circuit"], "reset preserves favorites")
+ 	check(reloaded.settings.camera_mode == "follow_car", "reset controls preserves camera")
+ 	check(not reloaded.settings.camera_speed_zoom, "reset controls preserves disabled speed zoom")
++	check(reloaded.settings.control_labels, "reset controls restores visible labels")
+ 	await _press("SettingsCategory_camera")
+ 	await _press("ResetSettings")
+ 	check(_page().draft_camera == "overhead" and store.settings.camera_mode == "follow_car", "camera reset is staged")
+@@ -129,11 +135,13 @@
+ 	await _press("MenuSettings")
+ 	check(_page().draft_layout.steering_type == "buttons", "leaving without apply preserves committed preferences")
+ 	await _press("Steering_horizontal")
++	await _press("ShowControlLabels")
+ 	var valid_path: String = store.path
+ 	store.path = directory.path_join("missing_parent/records.json")
+ 	await _press("ApplySettings")
+ 	check(_page().status.text.begins_with("Could not save") and ControlLayout.from_settings(store.settings).steering_type == "buttons", "save failure reports error and rolls back committed preference")
+ 	check(_page().draft_layout.steering_type == "horizontal", "save failure retains draft for retry")
++	check(not _page().draft_labels and store.settings.control_labels, "failed label save retains draft and committed preference")
+ 	store.path = valid_path
+ 	await _press("CustomizeControls")
+ 	var editor: ControlLayoutEditor
+@@ -143,6 +151,9 @@
+ 	reloaded.load_records()
+ 	check(ControlLayout.from_settings(reloaded.settings).steering_type == "horizontal", "customize commits selected method before editor")
+ 	if editor != null:
++		check(not editor.touch.show_labels and not editor.selected_art.show_labels, "layout preview respects hidden labels")
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(output.path_join("layout-no-labels.png")) == OK, "capture hidden layout labels")
+ 		for child: Node in editor.find_children("*", "Button", true, false):
+ 			if (child as Button).text == "Done": await _tap((child as Button).get_global_rect().get_center()); break
+ 		await _settle()
+diff --git a/game/tests/capture_controls.gd b/game/tests/capture_controls.gd
+--- a/game/tests/capture_controls.gd
++++ b/game/tests/capture_controls.gd
+@@ -35,7 +35,15 @@
+ 		assert(root.get_texture().get_image().save_png(output.path_join(id+"-pressed.png")) == OK)
+ 		hud.touch.driver.release_touch(90)
+ 		hud.touch.driver.release_touch(91)
++		if id == "compact":
++			var targets: Array[Rect2] = hud.touch.touch_zones()
++			hud.touch.show_labels = false
++			await process_frame
++			await process_frame
++			await RenderingServer.frame_post_draw
++			assert(hud.touch.touch_zones() == targets)
++			assert(root.get_texture().get_image().save_png(output.path_join(id+"-no-labels.png")) == OK)
+ 		game.queue_free()
+ 		await process_frame
+-	print("CONTROLS: 5 vehicle bindings, 120 scaled/mirrored action targets passed; 10 gameplay captures")
++	print("CONTROLS: 5 vehicle bindings, 120 scaled/mirrored action targets and unchanged targets with hidden labels passed; 11 gameplay captures")
+ 	quit()
+diff --git a/docs/HUD_REFRESH.md b/docs/HUD_REFRESH.md
+--- a/docs/HUD_REFRESH.md
++++ b/docs/HUD_REFRESH.md
+@@ -1,6 +1,18 @@
+ # Reference HUD replacement ? 2026-09-21
+ 
+ Requirements: V02/V03/V05, G01 and R01/R03. Owner supplied `temp/HUD` and authorized reuse/modification. This supersedes the prior heavy instrument/card HUD presentation.
++
++## Optional control labels — 2026-10-03
++
++Requirements **R01 / G03 / V03 / V05 / Q01**. Settings → Controls now has **Show labels** beside Customize layout. Turn it off and Apply settings to hide only the Gas, Brake and Handbrake captions. Existing profiles default to visible labels. The boolean `control_labels` is stored through the existing strict, atomic LocalRecords schema 2 preferences; no layout-schema change is needed. Reset controls restores labels, and Reset camera preserves the preference. Leaving without Apply or a failed save retains the committed preference; a failed save keeps the draft available for retry.
++
++Shared released/pressed artwork and the layout editor/selected-control preview respect the preference. Pedal/icon dimensions, placement, opacity, touch targets and pressed feedback stay unchanged. Changing visibility redraws each retained artwork variant once; normal input updates continue to reuse it.
++
++Changed runtime files: `game/ui/settings_page.gd`, `game/persistence/local_records.gd`, `game/core/app.gd`, `game/ui/touch_controls.gd`, `game/ui/touch_control_art.gd`, `game/ui/control_layout_editor.gd`. Existing capture utilities `game/tests/capture_settings.gd` and `game/tests/capture_controls.gd` now exercise preference staging/reload/reset/failure, preview inheritance and unchanged hit areas, and capture the hidden-label result. This document, status/phase notes and evidence are updated too.
++
++Actual pinned-engine commands via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`: **CaptureSettings** 203 checks, **TestRecords** 54, **TestMobileControls** 747 and **TestControlLayout** 487 all pass with zero failures; **CaptureControls** passes five vehicle bindings, 120 scaled/mirrored targets and unchanged targets with hidden labels, producing 11 gameplay captures. **Doctor** passes with DN2103 attached. The initial CaptureSettings run stopped at a duplicate local-variable parse error; the variable was renamed and the complete final run passed without weakening assertions. `git diff --check` also passes.
++
++Inspected [compact Settings](evidence/hud-labels-2026-10-03/settings-controls-960x540.png), [gameplay without labels](evidence/hud-labels-2026-10-03/gameplay-no-labels.png) and [layout without labels](evidence/hud-labels-2026-10-03/layout-no-labels.png). Final logs, three-size Settings captures and the scoped [checkpoint patch](evidence/hud-labels-2026-10-03/checkpoint.patch) are retained. No Android export/install or physical-device test was performed; owner visual and phone touch/relaunch acceptance remain. No canonical changes or mixed-workspace commit.
+ 
+ ## Owner-supplied pedal and handbrake artwork — 2026-10-03
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ # Development status
++
++2026-10-03 R01/G03/V03/V05/Q01: added saved Show labels in Settings → Controls for Gas/Brake/Handbrake captions. Default visible; Apply/reset/failure behavior uses existing atomic preferences, with shared HUD and layout previews respecting the selection while geometry/input/pressed feedback remain unchanged. Settings 203, records 54, mobile 747, layout 487 and five-vehicle/120-target captures pass; initial duplicate-variable parse error resolved. Desktop Settings/hidden-label captures inspected and scoped checkpoint retained. Doctor finds DN2103 attached; no Android export/install/physical-device test or mixed-workspace commit. Owner/phone acceptance remains. See docs/HUD_REFRESH.md and docs/evidence/hud-labels-2026-10-03.
+ 
+ 2026-10-03 V01/V03/V04/V05/Q01: owner speed-dependent camera pullback added to all three views. Speed zoom defaults On, smoothly grows from 30 to 160 km/h and caps at 12% more world extent; 1.5/s easing retains car readability and HUD/physical scale. Settings staged Apply/scoped reset and pause toggle persist independently of ratings; Off retains fixed calibration. Camera 1,332, Settings 190, records 54, shake 7, rewind 57, pause 17 and parse 257 pass; 31 desktop camera captures plus three settings copies inspected. Headless camera test retains four shutdown instance leaks. Doctor confirms DN2103 attached; no export/install/device driving, full Validate/replay gate or backend/service action. Owner feel/device acceptance remains. Files, actual commands, evidence and scoped checkpoint: docs/CAMERA_OPTIONS.md; no mixed-workspace commit.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ # Phase 0: specification review and first slice
++
++2026-10-03 R01/G03/V03/V05/Q01: owner-requested saved label toggle delivered under Settings → Controls. Gas/Brake/Handbrake captions can be hidden in HUD/layout previews; defaults, staged Apply, reset, reload and failed-save recovery retain existing contracts. Settings 203/records 54/mobile 747/layout 487 and five-vehicle/120-target captures pass; three-size Settings and hidden-label gameplay/editor evidence inspected. Initial parse-variable conflict corrected. Doctor finds DN2103 attached; no Android export/install/device test or mixed-workspace commit. Files, actual commands, checkpoint and remaining owner/phone acceptance: HUD_REFRESH.md (Optional control labels).
+ 
+ 2026-10-03 V01/V03/V04/V05/Q01: owner-authorized speed zoom now gently pulls back with any camera view: 30-160 km/h curve, max 12% extra extent, separate 1.5/s easing. Settings/pause On-Off controls persist and preserve fixed baseline when disabled. Camera 1,332/Settings 190/records 54/shake 7/rewind 57/pause 17/parse 257 pass; desktop same-pose zoom pairs/easing/controls inspected. DN2103 attached; no Android export/install/device test, full Validate/replay gate or backend action. Four headless shutdown instance leaks remain. Actual files, commands, screenshots/scoped patch and owner feel/device acceptance: docs/CAMERA_OPTIONS.md.
+ 

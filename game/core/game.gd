@@ -153,12 +153,10 @@ func _ready() -> void:
 	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
 	trails = SkidTrails.new()
-	trails.ground_relief = (track_ground as NativeTrackVisual).relief if track_ground is NativeTrackVisual else null
 	trails.wheelbase = handling.wheelbase
 	trails.track_width = handling.track_width
 	world.add_child(trails)
 	sand_dust = SandDustEffect.new()
-	sand_dust.ground_relief = trails.ground_relief
 	sand_dust.wheelbase = handling.wheelbase
 	sand_dust.track_width = handling.track_width
 	sand_dust.collision_radius = handling.collision_radius
@@ -379,23 +377,13 @@ func _process(delta: float) -> void:
 	if native_track != null:
 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
 	var kerb_contacts: Vector4 = native_track.kerb_heights(presented.state,handling) if native_track != null else Vector4.ZERO
-	var terrain_contacts := Vector4.ZERO
-	var terrain_pose := Vector3.ZERO
-	var relief: GroundRelief = (track_ground as NativeTrackVisual).relief if track_ground is NativeTrackVisual else null
-	if relief != null and not presented.state.track_elevated and water_depth == 0.0:
-		terrain_contacts = relief.contacts(point,heading,handling.wheelbase,handling.track_width)
-		terrain_pose = GroundRelief.pose(terrain_contacts,handling.wheelbase,handling.track_width,relief.height_at(point))
-	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts,terrain_pose,terrain_contacts)
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts)
 	if presented.state.jump_height == 0.0:
 		car.position.y += presented.state.kerb_offset.x
 		car.rotation.x += presented.state.kerb_offset.y
 		car.rotation.z = presented.state.kerb_offset.z
-	car.position.y += terrain_pose.x
-	if presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0:
-		car.rotation.x += terrain_pose.y
-		car.rotation.z += terrain_pose.z
 	car.present_roll(presented.state, weight)
-	ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation,relief)
+	ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation)
 	if not contact_lighting_enabled: contact_shadow.hide()
 	if profile_enabled:
 		profile_car_us += Time.get_ticks_usec() - section_start
@@ -730,7 +718,7 @@ func open_rewind() -> void:
 	add_child(rewind_ghosts)
 	var markers: Array[Dictionary] = rewind_choices.duplicate()
 	markers.append({"tick":sim.state.tick,"state":rewind_origin.state})
-	rewind_ghosts.configure(car,native_track,bridge_presentation,markers,sim.state.tick,trails.ground_relief,handling)
+	rewind_ghosts.configure(car,native_track,bridge_presentation,markers,sim.state.tick)
 	rewind_selected = rewind_choices.size()
 	rewind_panel.slider.value = rewind_selected
 	preview_rewind(rewind_selected)

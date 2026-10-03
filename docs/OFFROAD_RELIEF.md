@@ -1,5 +1,7 @@
 # Smooth meadow relief - 2026-10-03
 
+**Removed by owner request on 2026-10-03.** The bumps were insufficiently visible and caused issues with other surfaces. Kit 107 restores flat ground and removes the shared terrain-following system. See [the removal record](OFFROAD_RELIEF_REMOVAL.md) for current behavior and verification. All implementation details, results and remaining checks below describe the superseded trial.
+
 Requirements: V02/V04/V05 (coherent, readable, bounded procedural scenery), R01/Q01 (presentation boundary and evidence), RW03 (recorded rewind presentation). The owner authorizes proceeding with the proposed grass-biome trial at twice the suggested height: 20-50 cm.
 
 ## Result

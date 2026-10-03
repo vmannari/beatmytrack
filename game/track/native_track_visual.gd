@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-106"
+const VERSION: String = "track-kit-107"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -28,7 +28,6 @@ var _slice_started: int = 0
 var theme_id: String = "pine"
 var editor_preview: bool = false
 var colors: Array[Color] = []
-var relief: GroundRelief
 var tyre_instances: MultiMeshInstance3D
 var _tyre_positions := PackedVector2Array()
 var _tyre_spins: Array[float] = []
@@ -63,7 +62,6 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	_slice_started = Time.get_ticks_usec() if menu_slices else 0
 	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
 	colors = TrackTheme.palette(theme_id)
-	relief = GroundRelief.for_track(track)
 	var ground := ShaderMaterial.new()
 	ground.shader = preload("res://track/ground.gdshader")
 	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
@@ -105,7 +103,6 @@ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, slic
 	editor_objects._slice_started = Time.get_ticks_usec()
 	editor_objects.theme_id = theme_id
 	editor_objects.colors = colors
-	editor_objects.relief = relief
 	add_child(editor_objects)
 	if refresh_cover:
 		if editor_cover != null:
@@ -117,7 +114,6 @@ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, slic
 		editor_cover._slice_started = Time.get_ticks_usec()
 		editor_cover.theme_id = theme_id
 		editor_cover.colors = colors
-		editor_cover.relief = relief
 		add_child(editor_cover)
 		await editor_cover._build_low_cover(track)
 		if sliced and not is_inside_tree(): return
@@ -159,16 +155,6 @@ func _build_terrain(track: NativeTrack) -> void:
 	for i: int in range(colors.size()):
 		# Terrain sand uses the exact same theme tint as the road shoulder.
 		surface.set_shader_parameter("color_" + str(i), colors[i].darkened(0.20) if i == 2 else colors[i])
-	if relief != null and not relief.meshes.is_empty():
-		for terrain_mesh: ArrayMesh in relief.meshes:
-			var terrain := MeshInstance3D.new()
-			terrain.name = "MeadowRelief"
-			terrain.mesh = terrain_mesh
-			terrain.material_override = surface
-			terrain.position.y = -0.06 if not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty() else 0.0
-			terrain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(terrain,true)
-		return
 	var plane := PlaneMesh.new()
 	plane.size = track.half_extent * 2.0
 	var ground := MeshInstance3D.new()
@@ -870,7 +856,6 @@ func _build_low_cover(track: NativeTrack) -> void:
 		# Preserve the original site budget and stone population while replacing grass.
 		if theme_id in ["pine","storm"] and seed_value % 4 != 0: continue
 		var center := Vector3((cell.x+0.5)*track.cell_size-track.half_extent.x, 0.014, (cell.y+0.5)*track.cell_size-track.half_extent.y)
-		if relief != null: center.y += relief.height_at(Vector2(center.x,-center.z))
 		var scale_value: float = 0.8 + (seed_value % 11) * 0.035
 		var turn: float = (seed_value % 37) * 0.17
 		# Grid strides are multiples of four, so low seed bits always selected
@@ -884,9 +869,7 @@ func _build_low_cover(track: NativeTrack) -> void:
 			scenic_count += 1
 			continue
 		_mound(scenery, center, Vector3(0.18 if seed_value % 4 == 0 else 0.4, height, 0.14 if seed_value % 4 == 0 else 0.3) * scale_value, turn, color)
-		var secondary: Vector3 = center+Vector3(0.5,0,0.25)
-		if relief != null: secondary.y = 0.014+relief.height_at(Vector2(secondary.x,-secondary.z))
-		_mound(scenery, secondary, Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
+		_mound(scenery, center + Vector3(0.5, 0, 0.25), Vector3(0.10 if seed_value % 4 == 0 else 0.24, height * 0.6, 0.08 if seed_value % 4 == 0 else 0.2), turn+1.2, color.darkened(0.08))
 		scenic_count += 1
 	if scenic_count:
 		scenery.generate_normals()
@@ -952,7 +935,7 @@ func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
 
 
 func _build_placed_objects(track: NativeTrack) -> void:
-	ContactShading.build_props(self,track,relief)
+	ContactShading.build_props(self,track)
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var count: int = 0
@@ -965,7 +948,6 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			if not is_inside_tree(): return
 			_slice_started = Time.get_ticks_usec()
 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
-		if relief != null: center.y += relief.height_at(Vector2(center.x,-center.z))
 		var object_scale: float = float(object.get("scale",1.0))
 		if object.kind == "light" and theme_id == "night_city":
 			var lamp := OmniLight3D.new()
@@ -1249,8 +1231,7 @@ func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
 		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
 		_tyre_positions[i] = p
 		_tyre_spins[i] = spin
-		var ground_height: float = relief.height_at(p) if relief != null else 0.0
-		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*(0.014+ground_height)))
+		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*0.014))
 
 func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
 	tool.generate_normals()
@@ -1267,7 +1248,6 @@ func update_light_props(state: VehicleState) -> void:
 		var row: Array = state.light_props[index]
 		light_instances[index].position.x = row[0]
 		light_instances[index].position.z = -float(row[1])
-		light_instances[index].position.y = 0.014+(relief.height_at(Vector2(row[0],row[1])) if relief != null else 0.0)
 		light_instances[index].rotation.z = float(row[4])*0.9
 
 

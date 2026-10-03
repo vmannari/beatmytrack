@@ -2,10 +2,12 @@
 
 import argparse
 import configparser
+import json
 import os
 import secrets
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +86,18 @@ def main():
     # the image. Build and verify it before replacing either running service.
     subprocess.run([*command, "build", "api"], cwd=ROOT, check=True)
     subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "90"], cwd=ROOT, check=True)
+    probe = "import json; from bmt_backend.config import Settings; from bmt_backend.verifier import GodotVerifier; print(json.dumps(GodotVerifier(Settings.from_env()).manifest()))"
+    manifests = []
+    for service in ("api", "worker"):
+        checked = subprocess.run([*command, "exec", "-T", service, "python", "-c", probe], cwd=ROOT,
+                                 check=True, capture_output=True, text=True)
+        manifests.append(json.loads(checked.stdout))
+    if manifests[0] != manifests[1]:
+        raise RuntimeError("API and worker verifier artifacts differ; client configuration was not changed")
+    with urllib.request.urlopen(URL + "/v1/manifest", timeout=10) as response:
+        live_manifest = json.load(response)
+    if live_manifest != manifests[0]:
+        raise RuntimeError("Live API and worker contracts differ; client configuration was not changed")
     configure_game(config)
     print(f"PC backend ready at {URL}. Reopen Sign in and choose Development.")
     print(

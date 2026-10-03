@@ -149,8 +149,8 @@ def test_postgres_daily_and_race_limit_are_serialized(domain):
 
 def rewind_fixture(original):
     frames = original["frames"]
-    # Three branches, including return to race start and a full 20-second rewind.
-    first, second, third = 120, 3000, 4200
+    # Three branches, including return to race start and the full ten-second limit.
+    first, second, third = 120, 1800, 4200
     return {
         "schema": "bmt-replay-v2",
         "frames": frames[:first] + frames[:second] + frames[600:third] + frames[3600:],

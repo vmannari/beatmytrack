@@ -37,6 +37,8 @@ SCRIPTS = {
     "ui": ("handling_selection",),
     "vehicle": (
         "handling_config",
+        "rally_handbrake",
+        "launch_start",
         "light_props",
         "loose_tyres",
         "track_hazards",
@@ -62,6 +64,8 @@ def stage(repo: Path, destination: Path) -> None:
     files = [source / folder / (name + ".gd") for folder, names in SCRIPTS.items() for name in names]
     runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd")]
     files.extend(runners)
+    # TrackTheme preloads this resource even in the headless canonical project.
+    files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))
     files.extend(source / "resources" / (name + ".tres") for name in PROFILES)
     files.extend(sorted((source / "resources" / "cars").glob("*.tres")))
     files.extend(

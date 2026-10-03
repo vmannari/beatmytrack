@@ -1,4 +1,64 @@
+2026-10-03 launch-start update: the current source uses rules v18 / physics 0.50.
+Rebuild API and verifier together before online client acceptance; existing running
+services were not rebuilt by this task. v18 adds a tick-zero launch input marker,
+reaction assistance and early-pedal delay. Historical board rows remain pinned.
+See [launch start](../../docs/LAUNCH_START.md) for actual tests and limits.
+
 # DS925+ deployment and cloud migration
+
+The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying still requires stopped writers and `--offline`. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
+
+The October reliability fixes require migration to the current Alembic head
+(currently `0010_archive_drafts`, including `0008_review_reliability` and
+`0009_track_lifecycle`) and a matching rules-v17 canonical verifier image. Keep historical boards pinned; an
+old in-flight contract fails explicitly instead of being rescored with new rules.
+
+The [bridge-exit checkpoint repair](../../docs/BRIDGE_EXIT_CHECKPOINTS.md) adds
+v17 gate orientation near ramp ends while retaining the v16 exact-crossing layer
+checks. The local PC API/worker were rebuilt successfully on 2026-10-03; both
+contain the exact workspace checkpoint source. Live readiness/manifest and
+desktop/Linux verification of actual Over and under and Dust cloud five-lap
+recordings pass with unchanged ticks. This supersedes the earlier WSL lock and
+mixed-build observations. No NAS/production rollout was performed.
+
+The earlier [Dust cloud repair](../../docs/DUST_CLOUD_CHECKPOINTS.md) introduced
+route-continuous bridge gate layers in v15, and the
+[fast bridge repair](../../docs/BRIDGE_ENTRY_CHECKPOINTS.md) introduced crossing
+layer validation in v16. Both remain covered by the current verifier.
+Migrations and canonical verification were tested locally. The release image needs
+rebuilding with the matching verifier before rollout; no NAS/production rollout was
+performed. See [review fixes and acceptance](../../docs/CODE_REVIEW_FIXES_2026_10_03.md).
+
+The authenticated `/v1/admin/competition-health` endpoint and console System page
+report worker freshness/build, race and track-validation backlog, oldest job age,
+recent arrivals/completions/failure codes, an explicitly approximate wait estimate
+and object-volume free space. API readiness remains independent of workers.
+Defaults are `BMT_MAX_QUEUED_RUNS=128`, `BMT_WORKER_STALE_SECONDS=300` and
+`BMT_RETENTION_DAYS=90`; tune against deployed measurements. A stopped worker must
+trigger an operational alert even when `/readyz` succeeds. Optional
+`BMT_BACKUP_MARKER_PATH` points to a read-only mounted latest successful `COMPLETE`
+marker. Add that mount and environment value in a Compose override; without them,
+backup status is honestly `not_configured`. Marker freshness does not prove restore.
+
+Discovery stores compact preview projections. For an existing installation, repeat
+`python -m bmt_backend.maintenance --backfill-discovery` until `backfilled` is zero;
+each invocation processes at most 100 legacy versions. Optional
+[`search-indexes.sql`](search-indexes.sql) adds PostgreSQL lower-case trigram indexes
+matching substring search. It requires authorized database-owner extension setup;
+execute outside a transaction because indexes build concurrently. No application
+runtime database privilege is expanded. Short terms and broad combined searches
+can still scan metadata; verify actual plans after backfill.
+
+Reference-aware race retention is opt-in. `python -m bmt_backend.maintenance
+--retention` reports candidates without changing records or files. After a backup,
+stop API and every worker, review the counts, and run the same command with
+`--apply-retention --offline`. Repeat bounded batches during the maintenance window,
+then restart writers. Retention protects every immutable track version, current PB
+replay, creator publication proof and permanent resume grant/wallet. It retires old
+terminal non-PB attempts and expired expendable tickets/races/receipts, retains
+idempotency tombstones, and removes only aged unreferenced SHA256 JSON objects
+inside the resolved object root. Never run destructive GC while writers are active.
+No player data or deployed objects were pruned during this repair.
 
 Local PC development: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendStart` builds the shared API/worker image before starting services. Python is bind-mounted, but canonical Godot validation code is baked into the image. The build checks the pinned engine and exact golden replay before replacing services; a failed build leaves the running backend intact. Accounts and tracks remain in existing volumes. See [bridge validation follow-up](../../docs/BACKEND_BRIDGE_VALIDATION.md).
 
@@ -167,8 +227,9 @@ expired request-rate buckets, login challenges and session records:
 docker compose --env-file backend/deploy/.env -f backend/deploy/compose.yaml run --rm migrate python -m bmt_backend.maintenance
 ```
 
-This does not delete tracks, replays, ratings, PBs or idempotency records. Those need
-a separate accepted retention and account-deletion policy.
+This default authentication cleanup does not delete track or race history. Opt-in
+reference-aware race/object retention is described above. Account deletion and
+shared-content retirement still require separate policies.
 
 ## Migration to cloud
 

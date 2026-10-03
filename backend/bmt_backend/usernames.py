@@ -7,5 +7,5 @@ def username_key(name: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", name).split()).casefold()
 
 
-DEVELOPER_NAME = "Beat My Track"
+DEVELOPER_NAME = "Beat my track"
 DEVELOPER_NAME_KEY = username_key(DEVELOPER_NAME)

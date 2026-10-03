@@ -1,11 +1,14 @@
 """Bound requests before parsing; share rate budgets across API replicas."""
 
+import asyncio
 import json
 import logging
 import math
 import time
 import uuid
+from collections import OrderedDict
 
+from fastapi.routing import APIRoute
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,16 +21,16 @@ from .security import digest
 log = logging.getLogger("bmt.requests")
 
 
-def check_budget(factory, peer: str, category: str, limit: int) -> bool:
+def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1) -> bool:
     current = int(time.time())
     key = digest(f"{peer}:{category}:{current // 60}")
     with factory() as session:
         insert = sqlite_insert if session.bind.dialect.name == "sqlite" else pg_insert
-        statement = insert(RateBucket).values(key=key, count=1, expires_at=current + 120)
+        statement = insert(RateBucket).values(key=key, count=amount, expires_at=current + 120)
         statement = statement.on_conflict_do_update(
             index_elements=[RateBucket.key],
-            set_={"count": RateBucket.count + 1},
-            where=RateBucket.count < limit,
+            set_={"count": RateBucket.count + amount},
+            where=RateBucket.count <= limit - amount,
         ).returning(RateBucket.count)
         value = session.scalar(statement)
         session.commit()
@@ -48,9 +51,65 @@ def reject_constant(value):
     raise ValueError("Nonfinite JSON value")
 
 
+def parse_body(body):
+    parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
+    pending = [(parsed, 0)]
+    visited = 0
+    maximum_nodes = 1200000 # Includes a full 216,000-frame four-channel replay.
+    while pending:
+        value, depth = pending.pop()
+        visited += 1
+        if depth > 32:
+            raise ValueError("JSON nesting limit")
+        if isinstance(value, dict):
+            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
+            pending.extend((v, depth + 1) for v in value.values())
+        elif isinstance(value, list):
+            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
+            pending.extend((v, depth + 1) for v in value)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Nonfinite JSON number")
+        elif isinstance(value, str):
+            value.encode("utf-8")
+    return parsed
+
+
+class ParsedJSONRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded_handler(request):
+            if "bounded_json" in request.scope.get("state", {}):
+                # FastAPI reuses the strictly validated tree without a second loop-blocking decode.
+                request._json = request.scope["state"]["bounded_json"]
+            return await handler(request)
+
+        return bounded_handler
+
+
 class RequestBoundary:
     def __init__(self, app, settings, session_factory):
         self.app, self.settings, self.session_factory = app, settings, session_factory
+        self.parsers = asyncio.Semaphore(2)
+        self.read_leases = OrderedDict()
+
+    async def read_budget(self, peer, limit):
+        # Reserve small chunks in PostgreSQL, so replicas still share a hard ceiling.
+        # Unused reservations are conservative; they never permit excess requests.
+        key = (peer, int(time.time()) // 60)
+        # Separate peers do not wait for each other's cold database reservation.
+        lease = self.read_leases.setdefault(key, [0, asyncio.Lock()])
+        self.read_leases.move_to_end(key)
+        while len(self.read_leases) > 2048: self.read_leases.popitem(last=False)
+        async with lease[1]:
+            remaining = lease[0]
+            if not remaining:
+                batch = min(10, limit)
+                if not await run_in_threadpool(check_budget, self.session_factory, peer, "read", limit, batch):
+                    return False
+                remaining = batch
+            lease[0] = remaining - 1
+            return True
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -67,8 +126,11 @@ class RequestBoundary:
                 message["headers"] += [
                     (b"x-request-id", request_id.encode()),
                     (b"x-content-type-options", b"nosniff"),
-                    (b"cache-control", b"no-store"),
                 ]
+                if not any(name.lower() == b"cache-control" for name, _ in message["headers"]):
+                    message["headers"].append((b"cache-control", b"no-store"))
+                if status in (429, 503):
+                    message["headers"].append((b"retry-after", b"60" if status == 429 else b"5"))
             await send(message)
 
         async def error(code, message):
@@ -77,28 +139,34 @@ class RequestBoundary:
             )
 
         try:
-            if scope["path"] not in ("/healthz", "/readyz"):
+            method = scope["method"]
+            headers = dict(scope["headers"])
+            health = scope["path"] in ("/healthz", "/readyz")
+            if health and method != "GET":
+                return await error(405, "METHOD_NOT_ALLOWED")
+            if health and (headers.get(b"content-length", b"0") != b"0" or b"transfer-encoding" in headers):
+                return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
+            token_auth = scope["path"] in ("/v1/auth/google/browser/poll", "/v1/auth/refresh")
+            if not health:
                 peer = (scope.get("client") or ("unknown", 0))[0]
                 method = scope["method"]
                 category = (
-                    "auth"
+                    "auth_session" if token_auth else "auth"
                     if scope["path"].startswith("/v1/auth/")
                     else ("read" if method in ("GET", "HEAD") else "write")
                 )
                 limit = {
                     "auth": self.settings.auth_limit_per_minute,
+                    "auth_session": self.settings.rate_limit_per_minute,
                     "read": self.settings.rate_limit_per_minute,
                     "write": self.settings.write_limit_per_minute,
                 }[category]
                 try:
-                    allowed = await run_in_threadpool(
-                        check_budget, self.session_factory, peer, category, limit
-                    )
+                    allowed = await self.read_budget(peer, limit) if category == "read" else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
                 except SQLAlchemyError:
                     return await error(503, "DATABASE_UNAVAILABLE")
                 if not allowed:
                     return await error(429, "RATE_LIMITED")
-            headers = dict(scope["headers"])
             limit = (
                 min(32768, self.settings.max_body_bytes)
                 if scope["path"].startswith("/v1/auth/")
@@ -115,38 +183,43 @@ class RequestBoundary:
                 if declared < 0 or declared > limit:
                     return await error(413, "PAYLOAD_TOO_LARGE")
             body = bytearray()
-            while True:
-                message = await receive()
-                if message["type"] == "http.disconnect":
-                    return
-                body.extend(message.get("body", b""))
-                if len(body) > limit:
-                    return await error(413, "PAYLOAD_TOO_LARGE")
-                if not message.get("more_body", False):
-                    break
+            try:
+                body_deadline = time.monotonic() + 30
+                while True:
+                    message = await asyncio.wait_for(receive(), max(0, body_deadline - time.monotonic()))
+                    if message["type"] == "http.disconnect":
+                        return
+                    body.extend(message.get("body", b""))
+                    if health and body:
+                        return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
+                    if len(body) > limit:
+                        return await error(413, "PAYLOAD_TOO_LARGE")
+                    if not message.get("more_body", False):
+                        break
+            except TimeoutError:
+                return await error(408, "REQUEST_BODY_TIMEOUT")
             if body:
                 if headers.get(b"content-type", b"").split(b";")[0].strip().lower() != b"application/json":
                     return await error(415, "JSON_REQUIRED")
                 try:
-                    parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
-                    pending = [(parsed, 0)]
-                    while pending:
-                        value, depth = pending.pop()
-                        if depth > 32:
-                            raise ValueError("JSON nesting limit")
-                        if isinstance(value, dict):
-                            pending.extend((v, depth + 1) for v in value.values())
-                        elif isinstance(value, list):
-                            pending.extend((v, depth + 1) for v in value)
-                        elif isinstance(value, float) and not math.isfinite(value):
-                            raise ValueError("Nonfinite JSON number")
-                        elif isinstance(value, str):
-                            value.encode("utf-8")
+                    await asyncio.wait_for(self.parsers.acquire(), timeout=0.1)
+                    try:
+                        parsed = await run_in_threadpool(parse_body, body)
+                    finally:
+                        self.parsers.release()
+                except TimeoutError:
+                    return await error(503, "REQUEST_VALIDATION_BUSY")
                 except (ValueError, RecursionError, UnicodeDecodeError):
                     return await error(400, "INVALID_JSON")
-                # FastAPI parses the bounded bytes for its typed request model next.
-                # Release this validation tree before retaining another decoded replay.
-                del parsed, pending, value
+                scope["state"]["bounded_json"] = parsed
+                if token_auth:
+                    token = parsed.get("token" if scope["path"].endswith("/poll") else "refresh_token", "") if isinstance(parsed, dict) else ""
+                    try:
+                        allowed = await run_in_threadpool(check_budget, self.session_factory, digest(str(token)), scope["path"], 60)
+                    except SQLAlchemyError:
+                        return await error(503, "DATABASE_UNAVAILABLE")
+                    if not allowed:
+                        return await error(429, "RATE_LIMITED")
             sent = False
 
             async def buffered_receive():

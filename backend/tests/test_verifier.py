@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +23,38 @@ from bmt_backend.verifier import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.godot
+def test_retained_over_and_under_rejection_verifies_exactly(real_verifier):
+    """Owner's rejected inputs exercise the first bridge exit on lap three."""
+    fixtures = ROOT / "game" / "tests" / "fixtures"
+    document = json.loads((fixtures / "over_and_under.json").read_text())
+    replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+    result = real_verifier.verify_run(document, replay, "compact")
+    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v18"
+    assert result["time_ticks"] == len(replay["frames"]) == 7786
+    assert result["lap_ticks"] == [1627, 1412, 1426, 1553, 1768]
+    assert result["time_ms"] == 64880
+    # The fix must still reject missing finish input and trailing scored input.
+    for frames in (replay["frames"][:-1], replay["frames"] + [[0, 0, 0]]):
+        with pytest.raises(VerificationError):
+            real_verifier.verify_run(document, {**replay, "frames": frames}, "compact")
+
+
+def test_variable_width_route_survives_json_without_relaxing_geometry(real_verifier):
+    import struct
+
+    document = json.loads((Path(__file__).parent / "fixtures" / "variable_width_oval.json").read_text())
+    # This fixture has the same decimal-rounding failure as Dust cloud, unlike
+    # the original constant-width oval whose integer widths round-trip exactly.
+    assert any(width != struct.unpack("f", struct.pack("f", width))[0] for width in document["widths"])
+    manifest = real_verifier.validate_track(document)
+    assert manifest["track_content_hash"] == "dc35d53a219a92af75c128bc68a2d1388811249f1a1cbf4e211a54cad900178b"
+    altered = copy.deepcopy(document)
+    altered["widths"][1] += 0.00001
+    with pytest.raises(VerificationError, match="Regenerate the automatic route"):
+        real_verifier.validate_track(altered)
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +110,10 @@ def test_server_accepts_overlapping_bridge_decks(real_verifier):
         [0.0, 0, 0],
         [False, 0, 0],
         [0, 0],
-        [0, 0, 0, 0],
+        [0, 0, 0, 256],
+        [0, 0, 0, -1],
+        [0, 0, 0, True],
+        [0, 0, 0, 0, 0],
     ],
 )
 def test_rejects_non_quantized_or_out_of_range_input(frame):
@@ -314,3 +350,90 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
     mutations = [call for call in calls if call[0] == "/v1/tracks"]
     assert len(mutations) == 2 and mutations[0][2:] == mutations[1][2:]
     assert not any(call[0] == "/leaked-credentials" for call in calls)
+
+
+def test_real_creator_practice_proof(real_verifier):
+    # Produced by TestPractice through the real game's input controls and recorder.
+    path = ROOT / "build/creator-practice-proof.json"
+    if not path.exists():
+        pytest.skip("Run scripts/dev.ps1 -Action TestPractice first")
+    proof = json.loads(path.read_text())
+    result = real_verifier.verify_run(proof["document"], proof["replay"], "compact", creator_test=True)
+    assert len(result["lap_ticks"]) == 1
+    assert result["time_ticks"] == len(proof["replay"]["frames"])
+    with pytest.raises(VerificationError):
+        real_verifier.verify_run(proof["document"], proof["replay"], "compact")
+    incomplete = {**proof["replay"], "frames": proof["replay"]["frames"][:-1]}
+    with pytest.raises(VerificationError):
+        real_verifier.verify_run(proof["document"], incomplete, "compact", creator_test=True)
+
+
+@pytest.mark.parametrize("handbrake", [0, 127, 255])
+def test_accepts_quantized_handbrake(handbrake):
+    validate_replay({"schema": "bmt-replay-v1", "frames": [[0, 0, 0, handbrake]]})
+
+
+@pytest.mark.godot
+def test_real_verifier_applies_handbrake(real_verifier, race_fixture):
+    replay = copy.deepcopy(race_fixture["replay"])
+    replay["frames"] = [frame + [255] for frame in replay["frames"]]
+    # Ignoring the fourth channel would incorrectly accept the original trajectory.
+    with pytest.raises(VerificationError):
+        real_verifier.verify_run(race_fixture["document"], replay, "compact")
+
+
+@pytest.mark.parametrize("previous", ["arcade-planar-0.39", "arcade-planar-0.40", "arcade-planar-0.41", "arcade-planar-0.42", "arcade-planar-0.43", "arcade-planar-0.44", "arcade-planar-0.45", "arcade-planar-0.46", "arcade-planar-0.47", "arcade-planar-0.48"])
+def test_handbrake_board_upgrade_preserves_immutable_track(race_fixture, previous):
+    from bmt_backend.runs import board_manifest
+    manifest = copy.deepcopy(race_fixture["expected_manifest"])
+    manifest["physics_version"] = previous
+    original = copy.deepcopy(manifest)
+    upgraded = board_manifest(SimpleNamespace(manifest=manifest), "compact")
+    assert upgraded["physics_version"] == "arcade-planar-0.50"
+    assert upgraded["track_content_hash"] == manifest["track_content_hash"]
+    assert manifest == original
+
+
+@pytest.mark.godot
+def test_standalone_verifier_contains_complete_handbrake_model(real_verifier, race_fixture, tmp_path):
+    project = tmp_path / "canonical"
+    subprocess.run([
+        sys.executable, str(ROOT / "backend/deploy/stage_verifier.py"),
+        "--repo", str(ROOT), "--destination", str(project),
+    ], check=True, capture_output=True, timeout=30)
+    imported = subprocess.run([
+        real_verifier.binary, "--headless", "--editor", "--path", str(project), "--import",
+    ], check=True, capture_output=True, timeout=90)
+    assert b"SCRIPT ERROR:" not in imported.stdout + imported.stderr
+    verifier = GodotVerifier(SimpleNamespace(
+        godot_bin=real_verifier.binary,
+        game_project=project,
+        verifier_timeout_seconds=90,
+    ))
+    assert verifier.validate_track(race_fixture["document"]) == race_fixture["expected_manifest"]
+    verifier.verify_run(race_fixture["document"], race_fixture["replay"], "compact")
+
+
+def test_maximum_four_channel_finished_race(real_verifier, race_fixture):
+    frames = race_fixture["replay"]["frames"]
+    idle = [[0, 0, 255, 255]] * (MAX_FRAMES - len(frames))
+    replay = {"schema": "bmt-replay-v1", "frames": idle + [frame[:3] + [0] for frame in frames]}
+    result = real_verifier.verify_run(race_fixture["document"], replay, "compact")
+    assert result["time_ticks"] == MAX_FRAMES
+    assert len(result["lap_ticks"]) == 5 and sum(result["lap_ticks"]) == MAX_FRAMES
+
+
+@pytest.mark.parametrize("marker", [1, 2])
+def test_launch_marker_valid_only_in_first_frame(marker):
+    validate_replay({"schema": "bmt-replay-v1", "frames": [[0, 255, 0, 0, marker], [0, 255, 0]]})
+    for frames in ([[0, 0, 0], [0, 255, 0, 0, marker]], [[0, 0, 0, 0, 0]], [[0, 0, 0, 0, 3]]):
+        with pytest.raises(VerificationError):
+            validate_replay({"schema": "bmt-replay-v1", "frames": frames})
+
+
+def test_early_launch_delay_verifies_in_standalone_runner(real_verifier, race_fixture):
+    replay = copy.deepcopy(race_fixture["replay"])
+    replay["frames"] = [[0, 255, 0, 0, 2]] + [[0, 255, 0]] * 71 + replay["frames"]
+    result = real_verifier.verify_run(race_fixture["document"], replay, race_fixture["vehicle_id"])
+    assert result["time_ticks"] == race_fixture["time_ticks"] + 72
+    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v18"

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from .config import Settings
 from .db import make_engine
@@ -14,6 +15,9 @@ def configuration(engine) -> Config:
     config.set_main_option("script_location", str(Path(__file__).with_name("migrations")))
     config.attributes["engine"] = engine
     return config
+
+
+SCHEMA_HEAD = ScriptDirectory.from_config(configuration(None)).get_current_head()
 
 
 def upgrade(engine):

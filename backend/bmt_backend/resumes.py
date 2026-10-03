@@ -9,11 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .identity_models import Player
+from .middleware import ParsedJSONRoute
 from .resume_models import ResumeGrant, ResumeRace, ResumeReceipt, ResumeWallet
 from .track_models import Run, RunTicket, commit_response, now, replay_response
 from .tracks import DB, Auth, Key
 
-router = APIRouter(tags=["resumes"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["resumes"])
 # Owner-authorized bridge until a real rewarded-ad adapter is integrated.
 # These receipts are explicitly not evidence of a watched ad or a banked grant.
 TEMPORARY_AD_RESUMES = True

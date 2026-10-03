@@ -20,6 +20,7 @@ REPLAY_SCHEMA = "bmt-replay-v1"
 MAX_FRAMES = 216_000  # 30 minutes at the canonical 120 Hz.
 MAX_TRACK_BYTES = 524_288
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_JSON_NODES = MAX_FRAMES * 5 + MAX_TRACK_BYTES + 1024
 _ENGINE_SLOT = threading.BoundedSemaphore(1)
 
 
@@ -38,7 +39,7 @@ def _json_bytes(value: Any, limit: int) -> bytes:
     while stack:
         item, depth = stack.pop()
         nodes += 1
-        if depth > 12 or nodes > 1_000_000:
+        if depth > 12 or nodes > MAX_JSON_NODES:
             raise VerificationError("JSON structure exceeds verification bounds")
         if type(item) is dict:
             if any(type(key) is not str or len(key) > 80 for key in item):
@@ -71,11 +72,14 @@ def validate_replay(replay: dict) -> None:
     frames = replay["frames"]
     if type(frames) is not list or not 1 <= len(frames) <= MAX_FRAMES:
         raise VerificationError("Replay needs 1 to 216000 canonical input frames")
-    for frame in frames:
-        if type(frame) is not list or len(frame) != 3 or any(type(value) is not int for value in frame):
-            raise VerificationError("Each replay frame needs exactly three quantized integers")
-        if not -127 <= frame[0] <= 127 or not 0 <= frame[1] <= 255 or not 0 <= frame[2] <= 255:
+    for frame_index, frame in enumerate(frames):
+        if type(frame) is not list or len(frame) not in (3, 4, 5) or any(type(value) is not int for value in frame):
+            raise VerificationError("Each replay frame needs three to five quantized integers")
+        if not -127 <= frame[0] <= 127 or not 0 <= frame[1] <= 255 or not 0 <= frame[2] <= 255 or (len(frame) >= 4 and not 0 <= frame[3] <= 255):
             raise VerificationError("Replay input outside quantized range")
+
+        if len(frame) == 5 and (frame_index != 0 or frame[4] not in (1, 2)):
+            raise VerificationError("Invalid launch marker")
 
     events = replay.get("rewinds", [])
     if type(events) is not list or len(events) > 3 or (replay["schema"] == "bmt-replay-v2" and not events):
@@ -95,8 +99,8 @@ def validate_replay(replay: dict) -> None:
             raise VerificationError("Rewind input offsets must increase within replay")
         if event["from_tick"] != tick + event["input_offset"] - offset:
             raise VerificationError("Rewind timeline mismatch")
-        if event["to_tick"] < 0 or not 1 <= event["from_tick"] - event["to_tick"] <= 2400:
-            raise VerificationError("Rewind exceeds 20 seconds")
+        if event["to_tick"] < 0 or not 1 <= event["from_tick"] - event["to_tick"] <= 1200:
+            raise VerificationError("Rewind exceeds 10 seconds")
         offset, tick = event["input_offset"], event["to_tick"]
 
 
@@ -164,7 +168,7 @@ class GodotVerifier:
                 diagnostics = log_path.read_text(encoding="utf-8", errors="replace")
                 if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
                     raise VerifierUnavailable("Canonical verifier reported an engine error")
-                if not output_path.is_file() or output_path.stat().st_size > 65536:
+                if not output_path.is_file() or output_path.stat().st_size > MAX_TRACK_BYTES + 4096:
                     raise VerifierUnavailable("Canonical verifier returned no bounded result")
                 response = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -192,7 +196,19 @@ class GodotVerifier:
         _json_bytes(document, MAX_TRACK_BYTES)
         return self._invoke({"operation": "track", "document": document})
 
-    def verify_run(self, document: dict, replay: dict, vehicle_id: str) -> dict:
+    def prepare_track(self, document: dict) -> tuple[dict, dict]:
+        """Normalize and validate an owner-approved legacy local track atomically."""
+        if type(document) is not dict:
+            raise VerificationError("Track must be a JSON object")
+        _json_bytes(document, MAX_TRACK_BYTES)
+        result = self._invoke({"operation": "prepare_track", "document": document})
+        normalized, manifest = result.get("document"), result.get("manifest")
+        if type(normalized) is not dict or type(manifest) is not dict:
+            raise VerifierUnavailable("Canonical verifier returned no prepared track")
+        _json_bytes(normalized, MAX_TRACK_BYTES)
+        return normalized, manifest
+
+    def verify_run(self, document: dict, replay: dict, vehicle_id: str, *, creator_test: bool = False) -> dict:
         if type(document) is not dict:
             raise VerificationError("Track must be a JSON object")
         _json_bytes(document, MAX_TRACK_BYTES)
@@ -200,7 +216,7 @@ class GodotVerifier:
         if type(vehicle_id) is not str or vehicle_id not in self.manifest()["vehicles"]:
             raise VerificationError("Unsupported vehicle")
         result = self._invoke(
-            {"operation": "run", "document": document, "replay": replay, "vehicle_id": vehicle_id}
+            {"operation": "creator_test" if creator_test else "run", "document": document, "replay": replay, "vehicle_id": vehicle_id}
         )
         ticks, laps, milliseconds = result.get("time_ticks"), result.get("lap_ticks"), result.get("time_ms")
         if (
@@ -209,7 +225,7 @@ class GodotVerifier:
             or type(milliseconds) is not int
             or milliseconds <= 0
             or type(laps) is not list
-            or len(laps) != 5
+            or len(laps) != (1 if creator_test else 5)
             or any(type(tick) is not int or tick <= 0 for tick in laps)
             or sum(laps) != ticks
         ):

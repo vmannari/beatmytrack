@@ -40,9 +40,12 @@ def digest(value: object) -> str:
 
 class Track(Base):
     __tablename__ = "tracks"
+    __table_args__ = (UniqueConstraint("owner_id", "authoring_id"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     owner_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
+    authoring_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 
@@ -50,6 +53,7 @@ class TrackVersion(Base):
     __tablename__ = "track_versions"
     __table_args__ = (
         UniqueConstraint("track_id", "number"),
+        UniqueConstraint("track_id", "revision_key"),
         Index("ix_track_discovery", "state", "published_at", "id"),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -57,13 +61,27 @@ class TrackVersion(Base):
     number: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(80))
     content_hash: Mapped[str] = mapped_column(String(64))
+    revision_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest: Mapped[dict] = mapped_column(JSON)
+    discovery: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     state: Mapped[str] = mapped_column(String(16), default="draft")
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     published_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     creator_test_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     rating_sum: Mapped[int] = mapped_column(Integer, default=0)
     rating_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class TrackValidation(Base):
+    __tablename__ = "track_validations"
+    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_until: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 
 class Board(Base):
@@ -73,6 +91,7 @@ class Board(Base):
     vehicle_id: Mapped[str] = mapped_column(String(80))
     manifest: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
+    stats_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class RunTicket(Base):
@@ -132,6 +151,19 @@ class IdempotencyRecord(Base):
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 
+class QueuePlayer(Base):
+    __tablename__ = "queue_players"
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    last_claim_at: Mapped[int] = mapped_column(Integer, default=0, index=True)
+
+
+class OperationState(Base):
+    __tablename__ = "operation_state"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    updated_at: Mapped[int] = mapped_column(Integer, default=now)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 def replay_response(session: Session, player_id: str, scope: str, key: str, body: object) -> dict | None:
     if not 8 <= len(key) <= 128 or any(ord(c) < 33 or ord(c) > 126 for c in key):
         raise HTTPException(
@@ -142,6 +174,8 @@ def replay_response(session: Session, player_id: str, scope: str, key: str, body
         return None
     if record.request_hash != digest(body):
         raise HTTPException(409, "Idempotency-Key already used for different content")
+    if record.response.get("retired"):
+        raise HTTPException(410, "Attempt history expired; this request will not be repeated")
     return record.response
 
 

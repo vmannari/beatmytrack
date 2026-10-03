@@ -1,5 +1,8 @@
 import importlib.util
+import io
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,10 +50,16 @@ def test_start_builds_verified_image_before_replacing_services(launcher, monkeyp
     commands = []
     monkeypatch.setattr(launcher.sys, "argv", ["pc_development.py", "start"])
     monkeypatch.setattr(launcher.sys, "platform", "win32")
-    monkeypatch.setattr(launcher.subprocess, "run", lambda args, **kwargs: commands.append(args))
+    manifest = {"engine_version":"pinned", "physics_version":"current"}
+    def run(args, **kwargs):
+        commands.append(args)
+        return SimpleNamespace(stdout=json.dumps(manifest))
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(json.dumps(manifest).encode()))
     launcher.main()
     assert commands[0][-2:] == ["build", "api"]
     assert commands[1][-5:] == ["up", "-d", "--wait", "--wait-timeout", "90"]
+    assert [cmd[-4] for cmd in commands[2:]] == ["api", "worker"]
 
 
 def test_failed_image_build_leaves_running_backend_untouched(launcher, monkeypatch):

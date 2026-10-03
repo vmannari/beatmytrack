@@ -13,10 +13,13 @@ from sqlalchemy.exc import IntegrityError
 
 from .admin_models import AdminAudit
 from .identity_models import Identity, Player, SessionFamily
+from .middleware import ParsedJSONRoute
+from .migrate import SCHEMA_HEAD
+from .operations import competition_health
 from .resume_models import ResumeGrant, ResumeWallet
 from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
 
-router = APIRouter(tags=["administration"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
 UI = Path(__file__).with_name("admin_ui")
 
 
@@ -30,6 +33,11 @@ def access(request: Request):
 
 
 Access = Annotated[str, Depends(access)]
+
+
+@router.get("/v1/admin/competition-health")
+def competition(request: Request, role: Access):
+    return competition_health(request.app)
 
 
 @router.get("/admin", include_in_schema=False)
@@ -102,7 +110,7 @@ def overview(request: Request, role: Access, days: int = Query(7, ge=1, le=90)):
             "pending": count(Run, Run.status.in_(["queued", "verifying"])),
             "disabled": count(Player, Player.disabled.is_(True)),
             "database": "reachable",
-            "schema": "0007_admin_audit",
+            "schema": SCHEMA_HEAD,
         }
 
 

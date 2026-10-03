@@ -18,7 +18,7 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from bmt_backend.app import create_app
 from bmt_backend.config import Settings
 from bmt_backend.identity_models import Identity, Player, SessionFamily, SessionToken
-from bmt_backend.migrate import upgrade
+from bmt_backend.migrate import SCHEMA_HEAD, upgrade
 
 pytestmark = pytest.mark.postgres
 
@@ -177,7 +177,7 @@ def test_postgres_migration_second_pass_preserves_schema_and_data(postgres_auth)
     upgrade(app.state.engine)
     assert inspect(app.state.engine).get_table_names() == before
     with app.state.engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007_admin_audit"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == SCHEMA_HEAD
     assert (
         client.get(
             "/v1/me", headers={"Authorization": "Bearer " + signed_in.json()["access_token"]}

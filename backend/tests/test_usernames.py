@@ -35,7 +35,7 @@ def test_spaces_reserved_name_and_rename_keep_uuid_and_tracks(auth_app, auth_cli
         session.add(track)
         session.commit()
         tid = track.id
-    for name in ["fast   racer", "Beat My Track", "BEAT MY TRACK"]:
+    for name in ["fast   racer", "Beat my track", "Beat My Track", "BEAT MY TRACK"]:
         assert (
             auth_client.patch("/v1/me", headers=headers(bob), json={"display_name": name}).status_code == 409
         )

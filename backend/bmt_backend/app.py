@@ -8,6 +8,7 @@ from . import auth
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .middleware import RequestBoundary
+from .migrate import SCHEMA_HEAD
 from .observability import configure_logging
 from .security import GoogleIdentityVerifier
 from .storage import LocalBlobStore
@@ -56,7 +57,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         try:
             with app.state.engine.connect() as connection:
                 revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                if revision != "0007_admin_audit":
+                if revision != SCHEMA_HEAD:
                     raise HTTPException(503, "SCHEMA_NOT_READY")
             app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
         except (SQLAlchemyError, OSError) as exc:
@@ -77,6 +78,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2"],
             "rewind_policy": "rewind-1",
             "verification": "canonical-replay",
+            "track_lifecycle_version": 1,
             "max_request_bytes": settings.max_body_bytes,
         }
 

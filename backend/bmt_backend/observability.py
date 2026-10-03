@@ -14,7 +14,7 @@ class JsonFormatter(logging.Formatter):
         if not isinstance(value, dict):
             value = {"event": message}
         value["level"] = record.levelname.lower()
-        for field in ("run_id", "time_ticks"):
+        for field in ("run_id", "time_ticks", "failure_code"):
             if hasattr(record, field):
                 value[field] = getattr(record, field)
         # Record only exception type: arbitrary exception text can include submitted data.

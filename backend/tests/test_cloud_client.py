@@ -19,6 +19,15 @@ from bmt_backend.worker import process_one
 
 @pytest.mark.godot
 def test_cloud_library_against_http(tmp_path):
+    run_client(tmp_path, "res://tests/test_cloud_tracks.gd")
+
+
+@pytest.mark.godot
+def test_durable_track_lifecycle_against_http(tmp_path):
+    run_client(tmp_path, "res://tests/test_track_lifecycle.gd")
+
+
+def run_client(tmp_path, script):
     root = Path(__file__).resolve().parents[2]
     binary = os.environ.get("GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
     if not Path(binary).is_file():
@@ -61,7 +70,7 @@ def test_cloud_library_against_http(tmp_path):
                "BMT_DEV_AUTH_KEY": key, "BMT_CLOUD_FIXTURE": str(fixture_path)}
         args = [] if env.get("BMT_CAPTURE_CLOUD") else ["--headless"]
         result = subprocess.run(
-            [binary, *args, "--path", str(root / "game"), "--script", "res://tests/test_cloud_tracks.gd"],
+            [binary, *args, "--path", str(root / "game"), "--script", script],
             env=env, capture_output=True, text=True, timeout=150, check=False,
         )
         assert not errors, errors

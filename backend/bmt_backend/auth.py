@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session
 
 from .db import get_session
 from .identity_models import Identity, LoginChallenge, Player, SessionFamily, SessionToken, now
+from .middleware import ParsedJSONRoute
 from .security import current_player, development_session_disabled, digest
-from .usernames import DEVELOPER_NAME_KEY, username_key
+from .usernames import DEVELOPER_NAME, DEVELOPER_NAME_KEY, username_key
 
-router = APIRouter(tags=["identity"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["identity"])
 
 
 class StrictBody(BaseModel):
@@ -73,7 +74,7 @@ def developer_login(
     session: Session = Depends(get_session),
 ):
     return development_login(
-        DevelopmentLogin(subject="developer", display_name="Beat My Track"), request, x_dev_auth_key, session
+        DevelopmentLogin(subject="developer", display_name=DEVELOPER_NAME), request, x_dev_auth_key, session
     )
 
 
@@ -97,7 +98,7 @@ def development_login(
     if identity:
         player = session.get(Player, identity.player_id)
     else:
-        name = "Beat My Track" if body.subject == "developer" else body.display_name
+        name = DEVELOPER_NAME if body.subject == "developer" else body.display_name
         if body.subject != "developer" and username_key(name) == DEVELOPER_NAME_KEY:
             raise HTTPException(409, "USERNAME_TAKEN")
         try:
@@ -117,7 +118,7 @@ def development_login(
     if player.disabled:
         raise HTTPException(403, "ACCOUNT_DISABLED")
     if body.subject == "developer":
-        player.display_name = "Beat My Track"
+        player.display_name = DEVELOPER_NAME
     family = SessionFamily(player_id=player.id, expires_at=now() + settings.refresh_ttl_seconds)
     session.add(family)
     session.flush()
@@ -277,7 +278,7 @@ def profile(
             Identity.subject == "developer",
         )
     )
-    if developer and body.display_name != "Beat My Track":
+    if developer and body.display_name != DEVELOPER_NAME:
         raise HTTPException(403, "DEVELOPER_NAME_FIXED")
     require_available_name(session, body.display_name, player.id, developer=developer is not None)
     player.display_name = body.display_name

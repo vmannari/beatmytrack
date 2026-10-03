@@ -57,7 +57,7 @@ def payload(entity, action="player_restriction", **extra):
 
 def test_admin_denies_missing_and_game_credentials(console):
     client, _app, ids = console
-    for endpoint in ("overview", "entities/players", "entities/players/" + ids[0]):
+    for endpoint in ("overview", "competition-health", "entities/players", "entities/players/" + ids[0]):
         assert client.get("/v1/admin/" + endpoint).status_code == 401
         assert (
             client.get("/v1/admin/" + endpoint, headers={"Authorization": "Bearer game-session"}).status_code
@@ -67,6 +67,21 @@ def test_admin_denies_missing_and_game_credentials(console):
     assert client.get("/admin").status_code == 200
     assert "frame-ancestors 'none'" in client.get("/admin").headers["content-security-policy"]
     assert client.get("/admin/assets/missing").status_code == 404
+
+
+def test_competition_health_reports_stopped_workers_and_backup(console, tmp_path):
+    client, app, _ids = console
+    missing = client.get("/v1/admin/competition-health", headers=headers("analyst"))
+    assert missing.status_code == 200
+    data = missing.json()
+    assert data["status"] == "worker_unavailable" and data["queue_depth"] == 0
+    assert data["backup"]["status"] == "not_configured"
+    marker = tmp_path / "COMPLETE"
+    app.state.settings = replace(app.state.settings, backup_marker_path=str(marker))
+    assert client.get("/v1/admin/competition-health", headers=headers()).json()["backup"]["status"] == "missing"
+    marker.write_text("test recovery point")
+    backup = client.get("/v1/admin/competition-health", headers=headers()).json()["backup"]
+    assert backup["status"] == "complete" and backup["age_seconds"] >= 0
 
 
 def test_queries_are_bounded_and_redacted(console):

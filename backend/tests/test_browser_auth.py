@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from bmt_backend.app import create_app
-from bmt_backend.identity_models import BrowserLogin, now
+from bmt_backend.identity_models import BrowserLogin, Player, now
 from bmt_backend.maintenance import cleanup
 
 
@@ -168,9 +168,12 @@ def test_fixed_developer_account_and_removal(auth_app, sign_in):
     with TestClient(app) as client:
         assert client.post("/v1/auth/developer").status_code == 401
         first = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": "k" * 32}).json()
+        with app.state.session_factory() as session:
+            session.get(Player, first["player"]["id"]).display_name = "Beat My Track"
+            session.commit()
         second = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": "k" * 32}).json()
         assert first["player"] == second["player"]
-        assert first["player"]["display_name"] == "Beat My Track"
+        assert first["player"]["display_name"] == "Beat my track"
         assert first["player"]["needs_username"] is False
         assert first["player"]["id"] != google["player"]["id"]
         headers = {"Authorization": "Bearer " + first["access_token"]}

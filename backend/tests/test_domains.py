@@ -47,14 +47,14 @@ class FakeVerifier:
             "route_length": 220.0,
         }
 
-    def verify_run(self, document, replay, vehicle_id):
+    def verify_run(self, document, replay, vehicle_id, *, creator_test=False):
         if replay["frames"][0][0] == -127:
             raise ValueError("Incomplete race")
         if replay["frames"][0][0] == -126:
             raise RuntimeError("Verifier unavailable")
         return {
-            "time_ticks": len(replay["frames"]) * 5,
-            "lap_ticks": [len(replay["frames"])] * 5,
+            "time_ticks": len(replay["frames"]) * (1 if creator_test else 5),
+            "lap_ticks": [len(replay["frames"])] * (1 if creator_test else 5),
             "manifest": self.validate_track(document),
         }
 
@@ -492,7 +492,8 @@ def test_checkpoint_rules_upgrade_keeps_track_and_historical_board(domain, monke
     domain.app.state.verifier.manifest = lambda: {**base, "rules_key": previous}
     # Establish the historical state using the previous ticket policy.
     with monkeypatch.context() as old_policy:
-        old_policy.setattr(runs, "CHECKPOINT_RULES_TRANSITION", ("none", "none"))
+        old_policy.setattr(runs, "current_manifest", lambda value: value)
+        old_policy.setattr("bmt_backend.worker.current_manifest", lambda value: value)
         version, old_board_id = public_course(domain)
     with domain.factory() as session:
         original = dict(session.get(TrackVersion, version["version_id"]).manifest)
@@ -634,3 +635,58 @@ def test_uploaded_document_cannot_spoof_creator(domain):
         headers=headers(domain, "Alice"),
     )
     assert denied.status_code == 404
+
+
+def test_creator_practice_unlocks_publish_without_leaderboard_score(domain):
+    version = upload(domain)
+    response = domain.client.post("/v1/run-tickets", json={
+        "version_id": version["version_id"], "vehicle_id": "compact", "purpose": "creator_test"
+    }, headers=headers(domain))
+    assert response.status_code == 201, response.text
+    issued = response.json()
+    assert issued["manifest"]["laps"] == 1
+    submitted = submit(domain, issued)
+    assert process_one(domain.app)
+    result = domain.client.get(f"/v1/runs/{submitted['run_id']}", headers=headers(domain)).json()
+    assert result["status"] == "verified"
+    assert len(result["lap_ticks"]) == 1
+    with domain.factory() as session:
+        assert session.scalar(select(PersonalBest).where(PersonalBest.board_id == issued["board_id"])) is None
+    publish(domain, version)
+    assert domain.client.get(f"/v1/boards/{issued['board_id']}").status_code == 404
+    assert ticket(domain, version)["manifest"]["laps"] == 5
+    response = domain.client.post("/v1/run-tickets", json={
+        "version_id": version["version_id"], "vehicle_id": "compact", "purpose": "creator_test"
+    }, headers=headers(domain, "Alice"))
+    assert response.status_code == 403
+
+
+def test_recorded_practice_through_real_publish_worker(domain):
+    import json
+
+    from bmt_backend.verifier import GodotVerifier
+    root = Path(__file__).resolve().parents[2]
+    proof_path = root / "build/creator-practice-proof.json"
+    if not proof_path.exists():
+        pytest.skip("Run TestPractice first")
+    binary = os.environ.get("BMT_GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
+    if not Path(binary).exists():
+        pytest.skip("Pinned Godot unavailable")
+    domain.app.state.verifier = GodotVerifier(SimpleNamespace(
+        godot_bin=binary, game_project=root / "game", verifier_timeout_seconds=90))
+    proof = json.loads(proof_path.read_text())
+    version = upload(domain, document=proof["document"])
+    issued = domain.client.post("/v1/run-tickets", json={
+        "version_id": version["version_id"], "vehicle_id": "compact", "purpose": "creator_test"
+    }, headers=headers(domain))
+    assert issued.status_code == 201, issued.text
+    submitted = domain.client.post("/v1/runs", json={
+        "ticket_id": issued.json()["ticket_id"], "replay": proof["replay"]
+    }, headers=headers(domain))
+    assert submitted.status_code == 202, submitted.text
+    assert process_one(domain.app)
+    result = domain.client.get(f"/v1/runs/{submitted.json()['run_id']}", headers=headers(domain)).json()
+    assert result["status"] == "verified", result
+    publish(domain, version)
+    board = domain.client.get(f"/v1/track-versions/{version['version_id']}/leaderboard").json()
+    assert board["population"] == 0

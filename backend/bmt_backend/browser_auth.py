@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 from .auth import ProfileBody, StrictBody, complete_google_login
 from .db import get_session
 from .identity_models import BrowserLogin, now
+from .middleware import ParsedJSONRoute
 from .security import digest
 
-router = APIRouter(tags=["identity"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["identity"])
 
 
 class HandoffToken(StrictBody):

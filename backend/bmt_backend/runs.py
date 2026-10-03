@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Integer, cast, func, select, text
+from sqlalchemy import Integer, cast, func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .board_cache import cached
+from .contracts import current_manifest
+from .cursors import decode_cursor, encode_cursor
 from .identity_models import Player
+from .middleware import ParsedJSONRoute
+from .queueing import admit
 from .track_models import (
     Board,
     PersonalBest,
@@ -26,7 +31,7 @@ from .track_models import (
 )
 from .tracks import DB, Auth, Key, published_version
 
-router = APIRouter(tags=["races"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["races"])
 PINNED_FIELDS = (
     "engine_version",
     "verifier_version",
@@ -39,7 +44,7 @@ PINNED_FIELDS = (
     "laps",
 )
 MAX_FRAMES = 216000
-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v13")
+CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v17")
 
 
 def leaderboard_session(request: Request):
@@ -64,6 +69,7 @@ class TicketRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version_id: str = Field(min_length=36, max_length=36)
     vehicle_id: str = Field(min_length=1, max_length=80)
+    purpose: Literal["race", "creator_test"] = "race"
 
 
 class SubmitRun(BaseModel):
@@ -73,7 +79,7 @@ class SubmitRun(BaseModel):
 
 
 def board_manifest(version: TrackVersion, vehicle_id: str) -> dict:
-    manifest = version.manifest
+    manifest = current_manifest(version.manifest)
     vehicle = manifest.get("vehicles", {}).get(vehicle_id)
     if vehicle is None:
         raise HTTPException(422, "Vehicle is not allowed by the server manifest")
@@ -84,10 +90,6 @@ def board_manifest(version: TrackVersion, vehicle_id: str) -> dict:
         "handling_version": vehicle["handling_version"],
         "config_hash": vehicle["config_hash"],
     }
-    # This rules-only correction keeps immutable road content and handling.
-    # A different key creates a fresh board; historical PBs stay on the old one.
-    if pinned["rules_key"] == CHECKPOINT_RULES_TRANSITION[0]:
-        pinned["rules_key"] = CHECKPOINT_RULES_TRANSITION[1]
     return pinned
 
 
@@ -112,6 +114,7 @@ def run_payload(run: Run) -> dict:
         "time_ticks": run.time_ticks,
         "lap_ticks": run.lap_ticks,
         "failure_code": run.failure_code,
+        "retryable": run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch"),
     }
 
 
@@ -135,6 +138,12 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         raise HTTPException(404, "Track version not found")
     if session.get(Player, track.owner_id).disabled:
         raise HTTPException(404, "Track version not found")
+    if payload.purpose == "creator_test" and track.owner_id != player.id:
+        raise HTTPException(403, "Only the creator can test this draft")
+    if version.state == "validating":
+        raise HTTPException(409, "TRACK_VALIDATION_PENDING")
+    if version.state == "invalid" or not version.manifest:
+        raise HTTPException(422, "INVALID_DOCUMENT: repair this revision before testing")
     pinned = board_manifest(version, payload.vehicle_id)
     try:
         active = request.app.state.verifier.manifest()
@@ -148,6 +157,8 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         raise HTTPException(
             409, "This version requires a different verifier build; upload and test a new version"
         )
+    if payload.purpose == "creator_test":
+        pinned = {**pinned, "purpose": "creator_test", "laps": 1}
     board_id = digest({"version_id": version.id, **pinned})
     board = session.get(Board, board_id)
     if board is None:
@@ -198,17 +209,14 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
         return commit_response(session, player.id, "submit_run", key, body, run_payload(existing))
     if ticket.expires_at <= now():
         raise HTTPException(410, "Run ticket expired")
-    # Distinct tickets for the same player share one queue budget across API replicas.
-    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
-    outstanding = session.scalar(
-        select(func.count())
-        .select_from(Run)
-        .where(Run.player_id == player.id, Run.status.in_(("queued", "verifying")))
-    )
-    if outstanding >= 8:
-        raise HTTPException(
-            429, "Verification queue is full for this player; retry after a pending result completes"
-        )
+    board = session.get(Board, ticket.board_id)
+    if board.manifest.get("purpose") == "creator_test":
+        repeated = session.scalar(select(Run).where(Run.player_id == player.id,
+            Run.board_id == ticket.board_id, Run.replay_hash == body["replay_hash"])
+            .order_by(Run.created_at, Run.id).limit(1))
+        if repeated is not None:
+            return commit_response(session, player.id, "submit_run", key, body, run_payload(repeated))
+    admit(session, player.id, request.app.state.settings.max_queued_runs)
     from .resumes import validate_receipts
     validate_receipts(session, ticket.id, payload.replay)
     replay_hash = request.app.state.blobs.put_json(payload.replay)
@@ -228,9 +236,37 @@ def get_run(run_id: str, session: DB, player: Auth) -> dict:
     return run_payload(run)
 
 
+@router.post("/runs/{run_id}/retry")
+def retry_run(run_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    scope = f"retry_run:{run_id}"
+    old = replay_response(session, player.id, scope, key, {})
+    if old is not None:
+        return old
+    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
+    run = session.scalar(select(Run).where(Run.id == run_id, Run.player_id == player.id).with_for_update())
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch"):
+        board = session.get(Board, run.board_id)
+        try:
+            active = request.app.state.verifier.manifest()
+        except RuntimeError:
+            raise HTTPException(503, "Verifier temporarily unavailable; the original replay is retained") from None
+        creator_test = board.manifest.get("purpose") == "creator_test"
+        compatible = {**active, "laps":1} if creator_test else active
+        if any(board.manifest.get(field) != compatible.get(field) for field in PINNED_FIELDS):
+            raise HTTPException(409, "CONTRACT_UNSUPPORTED: this saved attempt requires its original verifier build")
+        admit(session, player.id, request.app.state.settings.max_queued_runs)
+        run.status, run.attempts, run.lease_until, run.lease_token = "queued", 0, 0, None
+        run.failure_code, run.finished_at = None, None
+    elif run.status == "rejected":
+        raise HTTPException(409, "INVALID_REPLAY: complete a new valid attempt")
+    return commit_response(session, player.id, scope, key, {}, run_payload(run))
+
+
 def public_board(session, board_id: str) -> Board:
     board = session.get(Board, board_id)
-    if board is None:
+    if board is None or board.manifest.get("purpose") == "creator_test":
         raise HTTPException(404, "Leaderboard not found")
     published_version(session, board.version_id)
     return board
@@ -250,17 +286,27 @@ def population(board_id: str):
     )
 
 
-def ranked_population(board_id: str):
-    return (
-        population(board_id)
-        .add_columns(
-            func.rank().over(order_by=PersonalBest.time_ticks).label("rank"),
-            func.row_number()
-            .over(order_by=(PersonalBest.time_ticks, PersonalBest.player_id))
-            .label("position"),
-        )
-        .subquery()
-    )
+def population_count(session, board_id, *conditions):
+    if not conditions:
+        board = session.get(Board, board_id)
+        return cached(session, (board_id, board.stats_revision, "count"), lambda: population_count_query(session, board_id))
+    return population_count_query(session, board_id, *conditions)
+
+
+def population_count_query(session, board_id, *conditions):
+    return session.scalar(select(func.count()).select_from(population(board_id).where(*conditions).subquery()))
+
+
+def rank_rows(session, board_id, rows, first_position):
+    result, previous_time, rank = [], None, 0
+    for index, source in enumerate(rows):
+        row = dict(source)
+        if row["time_ticks"] != previous_time:
+            rank = (population_count(session, board_id, PersonalBest.time_ticks < row["time_ticks"]) + 1
+                    if index == 0 else first_position + index)
+            previous_time = row["time_ticks"]
+        result.append({**row, "rank": rank, "position": first_position + index})
+    return result
 
 
 @router.get("/boards/{board_id}")
@@ -269,21 +315,27 @@ def top(
     session: BoardDB,
     offset: int = Query(0, ge=0, le=10000),
     limit: int = Query(20, ge=1, le=100),
+    cursor: str = "",
 ) -> dict:
     board = public_board(session, board_id)
-    ranked = ranked_population(board_id)
-    count = session.scalar(select(func.count()).select_from(ranked))
-    rows = (
-        session.execute(select(ranked).order_by(ranked.c.position).offset(offset).limit(limit))
-        .mappings()
-        .all()
-    )
+    count = population_count(session, board_id)
+    statement = population(board_id)
+    if cursor:
+        position = decode_cursor(cursor)
+        if type(position.get("ticks")) is not int or not isinstance(position.get("player"), str) or len(position["player"]) > 36:
+            raise HTTPException(422, "INVALID_CURSOR")
+        before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) <= (position["ticks"], position["player"])
+        offset = population_count(session, board_id, before)
+        statement = statement.where(~before)
+    raw = session.execute(statement.order_by(PersonalBest.time_ticks, PersonalBest.player_id).offset(0 if cursor else offset).limit(limit+1)).mappings().all()
+    rows = rank_rows(session, board_id, raw[:limit], offset + 1)
     return {
         "board_id": board_id,
         "manifest": board.manifest,
         "population": count,
         "items": [dict(row) for row in rows],
         "next_offset": offset + limit if offset + limit < count else None,
+        "next_cursor": encode_cursor({"ticks": rows[-1]["time_ticks"], "player": rows[-1]["player_id"]}) if len(raw) > limit else None,
     }
 
 
@@ -291,21 +343,21 @@ def top(
 def version_board(
     version_id: str, session: BoardDB, vehicle_id: str = Query("compact", max_length=80),
     offset: int = Query(0, ge=0, le=10000), limit: int = Query(20, ge=1, le=100),
+    cursor: str = Query("", max_length=400),
 ) -> dict:
     version = published_version(session, version_id)
     pinned = board_manifest(version, vehicle_id)
     board_id = digest({"version_id": version.id, **pinned})
     if session.get(Board, board_id) is None:
         return {"board_id": board_id, "manifest": pinned, "population": 0, "items": [], "next_offset": None}
-    return top(board_id, session, offset, limit)
+    return top(board_id, session, offset, limit, cursor)
 
 
 @router.get("/boards/{board_id}/around-me")
 def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query(3, ge=1, le=25)) -> dict:
     public_board(session, board_id)
-    ranked = ranked_population(board_id)
-    count = session.scalar(select(func.count()).select_from(ranked))
-    own = session.execute(select(ranked).where(ranked.c.player_id == player.id)).mappings().first()
+    count = population_count(session, board_id)
+    own = session.execute(population(board_id).where(PersonalBest.player_id == player.id)).mappings().first()
     if own is None:
         return {
             "board_id": board_id,
@@ -314,18 +366,15 @@ def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query
             "items": [],
             "faster_than_percent": None,
         }
-    rows = (
-        session.execute(
-            select(ranked)
-            .where(ranked.c.position.between(max(1, own["position"] - radius), own["position"] + radius))
-            .order_by(ranked.c.position)
-        )
-        .mappings()
-        .all()
-    )
-    slower = session.scalar(
-        select(func.count()).select_from(ranked).where(ranked.c.time_ticks > own["time_ticks"])
-    )
+    ticks = own["time_ticks"]
+    before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) < (ticks, player.id)
+    after = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) > (ticks, player.id)
+    position = population_count(session, board_id, before) + 1
+    predecessors = session.execute(population(board_id).where(before).order_by(PersonalBest.time_ticks.desc(), PersonalBest.player_id.desc()).limit(radius)).mappings().all()
+    successors = session.execute(population(board_id).where(after).order_by(PersonalBest.time_ticks, PersonalBest.player_id).limit(radius)).mappings().all()
+    rows = rank_rows(session, board_id, list(reversed(predecessors)) + [own] + list(successors), position - len(predecessors))
+    own = rows[len(predecessors)]
+    slower = population_count(session, board_id, PersonalBest.time_ticks > ticks)
     return {
         "board_id": board_id,
         "population": count,
@@ -337,7 +386,11 @@ def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query
 
 @router.get("/boards/{board_id}/histogram")
 def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100)) -> dict:
-    public_board(session, board_id)
+    board = public_board(session, board_id)
+    return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
+
+
+def histogram_query(board_id, session, bins):
     entries = population(board_id).subquery()
     count, minimum, maximum = session.execute(
         select(func.count(), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(

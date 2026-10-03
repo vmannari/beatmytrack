@@ -26,6 +26,10 @@ class Settings:
     rate_limit_per_minute: int = 600
     auth_limit_per_minute: int = 30
     write_limit_per_minute: int = 90
+    max_queued_runs: int = 128
+    worker_stale_seconds: int = 300
+    retention_days: int = 90
+    backup_marker_path: str = ""
 
     def __post_init__(self):
         for key in (self.admin_owner_key, self.admin_analyst_key):
@@ -47,6 +51,9 @@ class Settings:
             "rate_limit_per_minute",
             "auth_limit_per_minute",
             "write_limit_per_minute",
+            "max_queued_runs",
+            "worker_stale_seconds",
+            "retention_days",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:

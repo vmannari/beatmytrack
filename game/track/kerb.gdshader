@@ -5,7 +5,7 @@ uniform vec2 map_extent;
 uniform bool sand_berm = false;
 uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
 #include "res://track/kerb_paint.gdshaderinc"
-uniform vec4 red : source_color = vec4(0.651,0.243,0.188,1.0);
+uniform vec4 red : source_color = vec4(0.682,0.341,0.286,1.0);
 uniform vec4 pale_color : source_color = vec4(0.87,0.867,0.827,1.0);
 varying vec3 world_position;
 varying float face_up;

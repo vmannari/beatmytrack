@@ -47,3 +47,11 @@ All engine actions used `powershell.exe -NoProfile -ExecutionPolicy Bypass -File
 | `Doctor` | Engine and templates pass; DN2103 phone attached (`PRQKU4U4PREQNRWG`). |
 
 No Android export, installation, physical-device driving or GPU/thermal test was performed. No physics/rules change or full physics regression is claimed. Remaining acceptance: owner review of sand continuity, verge restraint and kerb wear at the normal gameplay distance, followed by phone readability and performance testing.
+
+## Red shade follow-up - 2026-10-03
+
+The owner requests a slightly lighter red because the current paint reads too bright red. Requirements V02/V04/V05/Q01. Kit `track-kit-105` changes the standard raised-kerb source paint from approximately `#a63e30` to `#ae5749`: slightly lighter with less saturation, giving a muted brick tone. The existing concrete wear, white blocks and shading remain. Desert's explicit sand-colour override remains; no HUD, geometry, canonical or additional texture/pass changes.
+
+Changed files: `game/track/kerb.gdshader` (red default), the version constant only in `game/track/native_track_visual.gd`, this report, both status documents and the two evidence files. The separate solitary-piece geometry correction remains outside this checkpoint.
+
+Actual pinned commands: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureKerbs` passes 40 checks, including the same bump/pitch/speed-loss values; `-Action Doctor` confirms matching engine/templates and DN2103 attached. The Compatibility/RTX 3090 capture was inspected beside the prior material. [Previous red](evidence/kerb-verge-correction-2026-10-03/kerb-worn-before.png), [muted red](evidence/kerb-red-shade-2026-10-03/muted-red.png), [capture log](evidence/kerb-red-shade-2026-10-03/kerbs-capture.log). No Android export/install or phone visual/performance test was performed. Owner shade acceptance remains.

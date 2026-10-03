@@ -7,12 +7,16 @@ var track: NativeTrack
 var bridge: BridgePresentation
 var entries: Array[Dictionary] = []
 var origin_tick: int = 0
+var ground_relief: GroundRelief
+var terrain_config: HandlingConfig
 
-func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int) -> void:
+func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int, relief: GroundRelief = null, config: HandlingConfig = null) -> void:
 	track = road
 	bridge = heights
 	entries = history
 	origin_tick = tick
+	ground_relief = relief
+	terrain_config = config if config != null else VehicleCatalog.config(car.vehicle_id,0)
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Flatten the selected vehicle once, then share it between four ghost instances.
@@ -61,7 +65,13 @@ func world(state: Dictionary) -> Vector3:
 	var point: Vector2 = state.position
 	var height: float = bridge.height_at(point,int(state.route_index),1 if state.track_elevated else 0)
 	height += float(state.jump_height)
+	height += terrain_pose(state).x
 	return Vector3(point.x,height+0.05,-point.y)
+
+func terrain_pose(state: Dictionary) -> Vector3:
+	if ground_relief == null or state.track_elevated: return Vector3.ZERO
+	var contacts: Vector4 = ground_relief.contacts(state.position,float(state.heading),terrain_config.wheelbase,terrain_config.track_width)
+	return GroundRelief.pose(contacts,terrain_config.wheelbase,terrain_config.track_width,ground_relief.height_at(state.position))
 
 func present(selected: int) -> void:
 	labels.clear()
@@ -91,6 +101,9 @@ func present(selected: int) -> void:
 		var entry: Dictionary = entries[picks[i]]
 		ghosts[i].position = world(entry.state)
 		ghosts[i].rotation.y = -float(entry.state.heading)
+		var terrain: Vector3 = terrain_pose(entry.state)
+		ghosts[i].rotation.x = terrain.y if float(entry.state.jump_height) == 0.0 and int(entry.state.get("roll_ticks",0)) == 0 else 0.0
+		ghosts[i].rotation.z = terrain.z if float(entry.state.jump_height) == 0.0 and int(entry.state.get("roll_ticks",0)) == 0 else 0.0
 		ghosts[i].show()
 		labels.append({"world":ghosts[i].position,"seconds":(origin_tick-int(entry.tick))/120.0,"tick":int(entry.tick)})
 	var tool := SurfaceTool.new()

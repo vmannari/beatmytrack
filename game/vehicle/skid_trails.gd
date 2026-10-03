@@ -22,6 +22,7 @@ var previous_right_strength: float = 0.0
 var previous_front_left_strength: float = 0.0
 var previous_front_right_strength: float = 0.0
 var active: bool = false
+var ground_relief: GroundRelief
 
 
 func _ready() -> void:
@@ -130,6 +131,7 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	var left: Vector3 = VisualGeometry.world(rear_axle - state.right() * (track_width * 0.5)) + Vector3(0, 0.028, 0)
 	if bridge != null:
 		left.y += bridge.height_at(Vector2(left.x,-left.z),state.route_index,1 if state.track_elevated else 0)
+	if ground_relief != null and not state.track_elevated: left.y += ground_relief.height_at(Vector2(left.x,-left.z))
 	# Reject unchanged/sub-spacing samples before querying the other contacts
 	# and calculating intensities. Use the same bridge-adjusted 3D distance.
 	if active and left.distance_to(previous_left) < SAMPLE_DISTANCE: return
@@ -146,6 +148,10 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 		right.y += track.snow_banks.height_at(Vector2(right.x,-right.z))
 		front_left.y += track.snow_banks.height_at(Vector2(front_left.x,-front_left.z))
 		front_right.y += track.snow_banks.height_at(Vector2(front_right.x,-front_right.z))
+	if ground_relief != null and not state.track_elevated:
+		right.y += ground_relief.height_at(Vector2(right.x,-right.z))
+		front_left.y += ground_relief.height_at(Vector2(front_left.x,-front_left.z))
+		front_right.y += ground_relief.height_at(Vector2(front_right.x,-front_right.z))
 	var left_kind: int = surface_at(track, left, state.track_elevated)
 	var right_kind: int = surface_at(track, right, state.track_elevated)
 	var front_left_kind: int = surface_at(track, front_left, state.track_elevated)

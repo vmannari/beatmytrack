@@ -42,8 +42,9 @@ vec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) {
 	if (!hybrid_grass || weight <= 0.001) return original;
 	vec3 detail = texture(grass_normal,p/0.8).rgb*2.0-1.0;
 	float fade = 1.0-smoothstep(0.025,0.10,length(fwidth(p)));
-	vec3 world_normal = normalize(vec3(detail.x*0.11*fade,1.0,detail.y*0.11*fade));
-	return normalize(mix(original,(view*vec4(world_normal,0.0)).xyz,weight));
+	// Preserve actual meadow slopes while layering the existing fine relief.
+	vec3 perturbation = (view*vec4(vec3(detail.x,0.0,detail.y)*0.11*fade,0.0)).xyz;
+	return normalize(original+perturbation*weight);
 }
 float pigment(vec2 p) {
 	vec2 cell = floor(p);

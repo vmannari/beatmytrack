@@ -27,6 +27,7 @@ var snow_impact_position: Vector2
 var snow_last_burst: int = -1000
 var snow_burst_count: int = 0
 var desert_profile: bool = false
+var ground_relief: GroundRelief
 
 var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
 var track_width: float = 1.52 * HandlingConfig.BODY_SCALE
@@ -178,6 +179,7 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 		var world_position: Vector3 = VisualGeometry.world(contacts[wheel]) + Vector3(0,0.025,0)
 		if bridge != null:
 			world_position.y += bridge.height_at(contacts[wheel],state.route_index,1 if state.track_elevated else 0)
+		if ground_relief != null and not state.track_elevated: world_position.y += ground_relief.height_at(contacts[wheel])
 		var kind: int = SkidTrails.surface_at(track,world_position,state.track_elevated)
 		var side: float = -1.0 if wheel % 2 == 0 else 1.0
 		var on_sand: bool = kind == SAND_SURFACE

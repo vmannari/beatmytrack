@@ -22,11 +22,12 @@ static func car_shadow(parent: Node3D) -> MeshInstance3D:
 	parent.add_child(result)
 	return result
 
-static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleState, point: Vector2, heading: float, track: NativeTrack, bridge: BridgePresentation) -> void:
+static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleState, point: Vector2, heading: float, track: NativeTrack, bridge: BridgePresentation, relief: GroundRelief = null) -> void:
 	var dimensions: Vector2 = CAR_DIMENSIONS.get(car.vehicle_id,CAR_DIMENSIONS.compact)
 	dimensions *= HandlingConfig.BODY_SCALE
 	var support: float = 0.0
 	var slope: float = 0.0
+	var cross_slope: float = 0.0
 	if track != null:
 		var axle := Vector2(sin(heading),cos(heading))*dimensions.y*0.35
 		var layer: int = 1 if state.track_elevated else 0
@@ -35,17 +36,22 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 		if not state.track_elevated:
 			front += TrackHazards.ramp_height(point+axle,track.hazard_objects)
 			rear += TrackHazards.ramp_height(point-axle,track.hazard_objects)
+			if relief != null:
+				front += relief.height_at(point+axle)
+				rear += relief.height_at(point-axle)
+				var side := Vector2(cos(heading),-sin(heading))*dimensions.x*0.35
+				cross_slope = atan2(relief.height_at(point+side)-relief.height_at(point-side),side.length()*2.0)
 		support = (front+rear)*0.5
 		slope = atan2(front-rear,axle.length()*2.0)
 	shadow.position = VisualGeometry.world(point)+Vector3.UP*(support+0.03)
-	shadow.rotation = Vector3(slope,-heading,0)
+	shadow.rotation = Vector3(slope,-heading,cross_slope)
 	var air: float = maxf(state.jump_height,car.ramp_lift)
 	var spread: float = 1.0+minf(air,2.0)*0.10
-	shadow.scale = Vector3(dimensions.x*spread,0.55,dimensions.y*spread)
+	shadow.scale = Vector3(dimensions.x*spread,1.1 if relief != null and not relief.heights.is_empty() and not state.track_elevated else 0.55,dimensions.y*spread)
 	shadow.visible = track == null or track.water_depth(point) <= 0.0
 	(shadow.material_override as ShaderMaterial).set_shader_parameter("strength",0.34/(1.0+air*1.8))
 
-static func build_props(parent: Node3D, track: NativeTrack) -> void:
+static func build_props(parent: Node3D, track: NativeTrack, relief: GroundRelief = null) -> void:
 	# Spatial batches bound draw calls and let the renderer cull distant groups.
 	var groups: Dictionary = {}
 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
@@ -57,7 +63,8 @@ static func build_props(parent: Node3D, track: NativeTrack) -> void:
 		if object.kind in ["tree","broadleaf"]: size *= 0.40
 		size += Vector2.ONE*0.65
 		var basis := Basis(Vector3.UP,deg_to_rad(float(object.rotation)))*Basis.from_scale(Vector3(size.x,0.5,size.y))
-		var pose := Transform3D(basis,VisualGeometry.world(point)+Vector3.UP*0.025)
+		var height: float = relief.height_at(point) if relief != null else 0.0
+		var pose := Transform3D(basis,VisualGeometry.world(point)+Vector3.UP*(0.025+height))
 		if not groups.has(key): groups[key] = []
 		groups[key].append(pose)
 	var surface: ShaderMaterial = material()

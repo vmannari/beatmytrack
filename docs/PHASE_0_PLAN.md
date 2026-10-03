@@ -1,5 +1,7 @@
 # Phase 0: specification review and first slice
 
+2026-10-03 V02/V04/V05/R01/Q01: environment-only owner-reference pass, kit 103/contact 6. Existing meadow/shoulder/asphalt/contact materials now share calmer values; no HUD, geometry or canonical changes by this task. Road build 33, contact 23/45, surface profile 928, surfaces 50, legacy grass 15, static grass 21, joins 71 and contours 18 pass; desktop before/after and bridge captures retained. Biomes remains 107 checks/five creator identity failures after an unrelated concurrent parse correction; full regression not claimed. Phone attached, no export/install/device or GPU/thermal test. Details, actual commands, limits and remaining acceptance: docs/ENVIRONMENT_COHERENCE.md.
+
 2026-10-01 R01/V03/V04/G03/Q01: Carousel ends now reveal a resisted gap capped at 64 logical pixels and spring back over 0.38 seconds; wheel edge nudges are 24 pixels. CaptureMenus 1765 and catalog 21 checks pass. No phone test/export/deployment. See docs/CAROUSEL_EDGE.md.
 
 2026-10-01 V02/V04/Q01: lightning scene-light gain increased 8.5 to 13 (+53%) at owner request; slow timing and gentle relative swells retained. Storm 96 checks pass; peak capture inspected. See docs/STORM_LIGHTNING.md.

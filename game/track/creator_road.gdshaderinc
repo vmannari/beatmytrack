@@ -50,6 +50,7 @@ void fragment() {
 	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
 	float sand = 0.0;
 	if (grass || gravel) { sand = sand_coverage(map_uv); }
+	float relief_weight = grass ? (1.0-sand) : 0.0;
 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
 	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear(ALBEDO,UV); }
 	if (asphalt_surface && packed_sand && !edge_fringe) { ALBEDO = packed_wear(ALBEDO,UV); }
@@ -64,6 +65,7 @@ void fragment() {
 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
 		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
+		if (hybrid_grass) { shoulder *= vec3(0.88,0.94,0.98); }
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
 		wet_coverage *= asphalt_coverage;
 	}
@@ -93,14 +95,16 @@ void fragment() {
 	}
 	if (gravel) {
 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
+		if (hybrid_grass) { ALBEDO *= vec3(0.88,0.94,0.98); }
 		if (packed_sand) {
 			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
 			ALBEDO *= 1.0-contact*0.16;
 			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
 		}
-		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
+		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : (hybrid_grass ? meadow_verge(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);
 		if (packed_sand && UV.x < -0.5) { fringe = 0.0; }
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
+		relief_weight = fringe;
 	}
 	ROUGHNESS = 1.0;
  SPECULAR = 0.0;
@@ -113,8 +117,6 @@ void fragment() {
   ROUGHNESS = kerb ? 0.30 : 0.24;
   SPECULAR = 0.5;
  }
-	float relief_weight = grass ? (1.0-sand) : 0.0;
-	if (gravel) relief_weight = grass_fringe(UV.y,world_position.xz)*(1.0-sand);
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel && UV.x >= 0.0 ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));

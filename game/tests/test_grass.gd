@@ -86,7 +86,7 @@ func run() -> void:
 			game.call("_process",0.0)
 			await RenderingServer.frame_post_draw
 		if "--screen=static" in OS.get_cmdline_user_args():
-			var folder: String = "res://../docs/evidence/grass-static"
+			var folder: String = "res://../docs/evidence/environment-coherence-2026-10-03/grass-static"
 			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 			game.set_process(false)
 			var cloud: Node = game.get("cloud_shadow")

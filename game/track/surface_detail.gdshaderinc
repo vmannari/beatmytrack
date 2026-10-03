@@ -42,7 +42,7 @@ vec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) {
 	if (!hybrid_grass || weight <= 0.001) return original;
 	vec3 detail = texture(grass_normal,p/0.8).rgb*2.0-1.0;
 	float fade = 1.0-smoothstep(0.025,0.10,length(fwidth(p)));
-	vec3 world_normal = normalize(vec3(detail.x*0.24*fade,1.0,detail.y*0.24*fade));
+	vec3 world_normal = normalize(vec3(detail.x*0.11*fade,1.0,detail.y*0.11*fade));
 	return normalize(mix(original,(view*vec4(world_normal,0.0)).xyz,weight));
 }
 float pigment(vec2 p) {
@@ -63,6 +63,15 @@ float pigment(vec2 p) {
 float grass_fringe(float coverage, vec2 p) {
 	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
 }
+// Exposed roadside shoulders keep a narrow soil contact, then yield to
+// broad meadow patches. UV coverage comes from the existing clipped verge;
+// intersections and authored paint retain their current ownership masks.
+float meadow_verge(float coverage, vec2 p) {
+	vec3 patches = texture(grass_macro_mask,p/32.0).rgb;
+	float edge = mix(0.54,0.84,smoothstep(0.25,0.75,patches.r));
+	float broken = (texture(surface_factors,p/16.0).g-0.5)*0.12;
+	return smoothstep(edge-0.08,edge+0.16,coverage+broken);
+}
 // Matte sand shared by terrain paint and roadside shoulders. Grain is
 // isotropic (no grass-like diagonal strokes), with filtered fine minerals.
 vec3 sand_detail(vec3 base, vec2 p) {
@@ -79,7 +88,11 @@ vec3 desert_shoulder(vec3 base, vec2 p) {
 // Shared world-space baked asphalt. Random repair/crack shapes are removed;
 // binder variation and mineral grain remain presentation-only.
 vec3 dry_asphalt_detail(vec3 base, vec2 p) {
-	return base * (0.8 + texture(surface_factors,p/32.0).r * 0.4);
+	// Fine aggregate stays subordinate to multi-metre binder variation.
+	// Both fields reuse the baked factors; no per-frame noise or decals.
+	float grain = texture(surface_factors,p/32.0,0.75).r;
+	float broad = texture(surface_factors,p/384.0+vec2(0.23,0.41)).g;
+	return base * (1.015+(grain-0.54)*0.22+(broad-0.5)*0.04);
 }
 
 // Wet asphalt is the baseline. Only the upper tail of the metre-scale basin
@@ -204,10 +217,15 @@ vec3 painted_grass(vec3 base, vec2 p) {
 		vec3 macro = texture(grass_macro_mask,p/32.0).rgb;
 		// Actual narrow-blade meadow clumps with visible root depth. The
 		// offset companion sample breaks repetition without runtime noise.
-		vec3 paint = texture(grass_albedo,p/10.0).rgb;
-		vec3 companion = texture(grass_albedo,vec2(-p.y,p.x)/17.0+vec2(0.31,0.57)).rgb;
+		vec3 paint = texture(grass_albedo,p/10.0,0.85).rgb;
+		vec3 companion = texture(grass_albedo,vec2(-p.y,p.x)/17.0+vec2(0.31,0.57),1.0).rgb;
 		vec3 vegetation = mix(paint,companion,0.18)*base/vec3(0.3765,0.4196,0.2118);
-		vec3 patch = mix(vec3(0.82,0.93,0.88),vec3(1.10,1.08,0.94),macro.r);
+		// Retain the meadow's blade fans while compressing their contrast and
+		// yellow highlights into the same restrained palette as scenery.
+		float value = dot(vegetation,vec3(0.2126,0.7152,0.0722));
+		vegetation = mix(vegetation,vec3(value),0.18);
+		vegetation = mix(vegetation,base,0.38);
+		vec3 patch = mix(vec3(0.88,0.95,0.91),vec3(1.05,1.06,0.98),macro.r);
 		return vegetation*patch*0.72;
 	}
 	// Cool neutral palettes use snow/concrete grain without green brush pigment.

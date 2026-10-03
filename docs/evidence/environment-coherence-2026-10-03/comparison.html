@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beat my track — environment comparison</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: #142129; color: #f1eee3; font: 16px system-ui, sans-serif; }
+  main { max-width: 1494px; margin: auto; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  p { color: #c1c8c8; line-height: 1.5; }
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+  select, button { font: inherit; padding: 10px 14px; color: inherit; background: #24333e; border: 1px solid #53626c; border-radius: 6px; }
+  input { flex: 1; min-width: 160px; accent-color: #ffd15c; }
+  .picture { position: relative; width: 100%; aspect-ratio: 1494 / 1009; overflow: hidden; --split: 50%; }
+  img { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+  #after { clip-path: inset(0 calc(100% - var(--split)) 0 0); }
+  .divider { position: absolute; left: var(--split); width: 2px; height: 100%; background: #ffd15c; pointer-events: none; }
+  .label { position: absolute; top: 12px; background: #142129e6; padding: 6px 12px; border-radius: 4px; }
+  .left { left: 12px; } .right { right: 12px; }
+  a { color: #ffd15c; }
+</style>
+<main>
+  <h1>Environment coherence — 3 October 2026</h1>
+  <p>Same Ajorata document, camera and car pose. The new environment is on the left; the baseline is on the right. These are paused desktop diagnostic captures, including their existing countdown and HUD overlays.</p>
+  <div class="controls">
+    <label>View <select id="view"><option value="">Start / finish</option><option value="-corner">Corner</option></select></label>
+    <button id="showBefore" type="button">Before</button>
+    <label for="split">Compare</label><input id="split" type="range" min="0" max="100" value="50">
+    <button id="showAfter" type="button">After</button>
+  </div>
+  <div class="picture" id="picture">
+    <img id="before" src="ajorata-before.png" alt="Baseline environment">
+    <img id="after" src="ajorata-after.png" alt="Calmer meadow, variable verge, subtle asphalt and stronger contact shading">
+    <div class="divider"></div><span class="label left">After</span><span class="label right">Before</span>
+  </div>
+  <p><a href="grass-static/static-driving.png">Grass and road capture</a> · <a href="contact-shading/contacts-on.png">Bridge and object contact shading</a> · <a href="../../ENVIRONMENT_COHERENCE.md">Implementation and actual validation</a></p>
+</main>
+<script>
+  const picture = document.getElementById('picture');
+  const split = document.getElementById('split');
+  function updateSplit() { picture.style.setProperty('--split', `${split.value}%`); }
+  split.addEventListener('input', updateSplit);
+  document.getElementById('showBefore').addEventListener('click', () => { split.value = 0; updateSplit(); });
+  document.getElementById('showAfter').addEventListener('click', () => { split.value = 100; updateSplit(); });
+  document.getElementById('view').addEventListener('change', event => {
+    document.getElementById('before').src = `ajorata${event.target.value}-before.png`;
+    document.getElementById('after').src = `ajorata${event.target.value}-after.png`;
+  });
+</script>
+</html>

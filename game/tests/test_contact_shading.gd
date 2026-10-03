@@ -3,7 +3,7 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 var graphical: bool = false
-const FOLDER: String = "res://../docs/evidence/grass-sunlight-2026-10-03/"
+const FOLDER: String = "res://../docs/evidence/grass-sunlight-stronger-2026-10-03/"
 
 func _initialize() -> void:
 	graphical = DisplayServer.get_name() != "headless"
@@ -103,7 +103,7 @@ func capture_views(game: Node, bridges: Array[Node]) -> void:
 	var sun_material := (game.get("cloud_shadow") as MeshInstance3D).material_override as ShaderMaterial
 	sun_material.set_shader_parameter("sunlight_strength",0.0)
 	var sun_before: Image = await shot("sunlight-before")
-	sun_material.set_shader_parameter("sunlight_strength",0.19)
+	sun_material.set_shader_parameter("sunlight_strength",0.42)
 	var sun_after: Image = await shot("sunlight-after")
 	check(changed_pixels(sun_before,sun_after) > 1000,"golden sunlight visibly affects world")
 	await shot("gameplay")

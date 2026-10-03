@@ -23,9 +23,9 @@ void vertex() {
 void fragment() {
 	vec3 world = shadow_world_position(depth_map, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
 	// Smaller cloud footprints leave more full sunlight between soft penumbrae.
-	// Keep the accepted slow 0.30 m/s world-space drift.
-	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.28, 0.105)*elapsed) / 26.0;
-	float mask = smoothstep(0.54, 0.74, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
+	// Sparse patches with a visible, continuous 1.2 m/s world-space drift.
+	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(1.12, 0.42)*elapsed) / 26.0;
+	float mask = smoothstep(0.62, 0.80, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
 	// Project the existing (-58, -35 degree) sun into the current camera.
 	// A bounded warm veil shares this pass, depth read and cloud mask.
 	vec3 sun_view = mat3(VIEW_MATRIX) * vec3(-0.304, 0.848, 0.434);

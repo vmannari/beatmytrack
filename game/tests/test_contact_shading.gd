@@ -3,7 +3,7 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 var graphical: bool = false
-const FOLDER: String = "res://../docs/evidence/grass-sunlight-balanced-2026-10-03/"
+const FOLDER: String = "res://../docs/evidence/grass-cloud-drift-2026-10-03/"
 
 func _initialize() -> void:
 	graphical = DisplayServer.get_name() != "headless"

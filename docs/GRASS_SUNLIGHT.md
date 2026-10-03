@@ -1,5 +1,13 @@
 # Grass golden sunlight prototype — 2026-10-03
 
+## Sparser, more visibly moving clouds
+
+Actual `-Action DeployAndroid -QuickValidation`: focused import/startup/driving/catalog/menu checks pass; fresh export, install Success and cold launch Status ok on DN2103 (785 ms). Logs `build/logs/DeployAndroid-22216/`; build-tools fallback 35.0.1. Process existence checked after launch. Full suite not repeated for shader-only tuning. No physical-phone driving/FPS test performed. APK includes concurrent workspace launch-notice/desert-dust/results changes, which are excluded from this cloud checkpoint.
+
+Owner requests even less cloud cover and clearer movement. V02/V04/V05/Q01, `contact-lighting-12`: cloud thresholds rise from 0.54–0.74 to 0.62–0.80, leaving fewer shaded patches. World-space drift increases fourfold, from `(0.28, 0.105)` to `(1.12, 0.42)` m/s (approximately 1.2 m/s). Balanced sunlight, shade strength, 26 m noise scale, pause behaviour and existing rendering resources remain. No canonical/camera changes.
+
+Changed `game/track/cloud_shadow.gdshader`, `game/track/contact_shading.gd`, evidence destination in `game/tests/test_contact_shading.gd`, this report and status/plan notes. Actual `-Action CaptureContactShading`: 49 checks/zero failures/exit 0, includes visible eight-second movement and opaque HUD/canonical preservation. Both [zero-second](evidence/grass-cloud-drift-2026-10-03/clouds-0s.png) and [eight-second](evidence/grass-cloud-drift-2026-10-03/clouds-8s.png) desktop captures inspected. Actual `-Action TestContactShading`: 23 checks/zero failures/exit 0. GPU cost remains unmeasured; phone motion/coverage/readability and thermal acceptance remain. Commands use the pinned engine via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`.
+
 ## Balanced glow and smaller clouds
 
 Owner found the stronger phone version excessive and requests an intermediate glow and slightly smaller clouds. V02/V04/V05/Q01, `contact-lighting-11`: maximum sunlight alpha 0.305, centre offset 0.55 and falloff 0.065–1.45 are midpoints of the two previous versions. Cloud soft thresholds rise from 0.50–0.70 to 0.54–0.74, shrinking shaded footprints while retaining maximum darkness, noise scale and drift. No additional rendering resources or canonical changes.

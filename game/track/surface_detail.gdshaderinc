@@ -63,6 +63,12 @@ float pigment(vec2 p) {
 float grass_fringe(float coverage, vec2 p) {
 	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
 }
+// Halfway between the original broken edge and the quieter smooth shoulder.
+// Painted terrain keeps its own fringe; only roadside grass uses this blend.
+float shoulder_fringe(float coverage, vec2 p) {
+	float settled = smoothstep(0.60,0.94,coverage+(texture(surface_factors,p/16.0).g-0.5)*0.04);
+	return mix(settled,grass_fringe(coverage,p),0.5);
+}
 // Matte sand shared by terrain paint and roadside shoulders. Grain is
 // isotropic (no grass-like diagonal strokes), with filtered fine minerals.
 vec3 sand_detail(vec3 base, vec2 p) {

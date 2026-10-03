@@ -48,7 +48,7 @@ func apply(mode: String) -> void:
 				compatibility += "\nfloat road_puddle(vec2 p) { return 0.0; }\nvec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) { return original; }\n"
 				compatibility += "\nfloat wet_road_roughness(vec2 p) { return 0.7; }\n"
 				compatibility += "\nfloat wet_road_specular(vec2 p) { return 0.16; }\n"
-				compatibility += "\nuniform bool hybrid_grass = false;\nfloat meadow_verge(float coverage, vec2 p) { return grass_fringe(coverage,p); }\n"
+				compatibility += "\nuniform bool hybrid_grass = false;\n"
 				source = source.replace('#include "res://track/surface_detail.gdshaderinc"',PREVIOUS.code + compatibility)
 			elif mode == "directional_off":
 				source = source.replace("ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);", "ALBEDO = ALBEDO;")

@@ -100,7 +100,7 @@ void fragment() {
 			ALBEDO *= 1.0-contact*0.16;
 			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
 		}
-		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : (hybrid_grass ? meadow_verge(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);
+		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : grass_fringe(UV.y,world_position.xz))*(1.0-sand);
 		if (packed_sand && UV.x < -0.5) { fringe = 0.0; }
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 		relief_weight = fringe;

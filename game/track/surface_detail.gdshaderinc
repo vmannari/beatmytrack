@@ -63,12 +63,6 @@ float pigment(vec2 p) {
 float grass_fringe(float coverage, vec2 p) {
 	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
 }
-// Keep a consistent worn shoulder. Only centimetre-scale grass breakup
-// interrupts its edge; broad meadow patches no longer change dirt width.
-float meadow_verge(float coverage, vec2 p) {
-	float broken = (texture(surface_factors,p/16.0).g-0.5)*0.04;
-	return smoothstep(0.60,0.94,coverage+broken);
-}
 // Matte sand shared by terrain paint and roadside shoulders. Grain is
 // isotropic (no grass-like diagonal strokes), with filtered fine minerals.
 vec3 sand_detail(vec3 base, vec2 p) {

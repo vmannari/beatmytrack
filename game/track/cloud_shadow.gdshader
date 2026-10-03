@@ -4,7 +4,7 @@ render_mode unshaded, fog_disabled, cull_disabled, depth_draw_never, depth_test_
 uniform sampler2D depth_map : hint_depth_texture, repeat_disable, filter_nearest;
 uniform float elapsed = 0.0;
 uniform float strength = 0.43;
-uniform float sunlight_strength = 0.42;
+uniform float sunlight_strength = 0.305;
 float cloud_hash(vec2 p) {
 	p = fract(p * vec2(0.1031, 0.1030));
 	p += dot(p, p.yx + 33.33);
@@ -25,15 +25,15 @@ void fragment() {
 	// Smaller cloud footprints leave more full sunlight between soft penumbrae.
 	// Keep the accepted slow 0.30 m/s world-space drift.
 	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.28, 0.105)*elapsed) / 26.0;
-	float mask = smoothstep(0.50, 0.70, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
+	float mask = smoothstep(0.54, 0.74, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
 	// Project the existing (-58, -35 degree) sun into the current camera.
 	// A bounded warm veil shares this pass, depth read and cloud mask.
 	vec3 sun_view = mat3(VIEW_MATRIX) * vec3(-0.304, 0.848, 0.434);
 	vec2 sun_screen = vec2(sun_view.x, -sun_view.y);
 	sun_screen /= max(length(sun_screen), 0.001);
-	vec2 offset = SCREEN_UV - (vec2(0.5) + sun_screen * 0.48);
+	vec2 offset = SCREEN_UV - (vec2(0.5) + sun_screen * 0.55);
 	offset.x *= VIEWPORT_SIZE.x / VIEWPORT_SIZE.y;
-	float haze = 1.0 - smoothstep(0.08, 1.55, length(offset));
+	float haze = 1.0 - smoothstep(0.065, 1.45, length(offset));
 	float warm_alpha = sunlight_strength * haze * (1.0 - mask);
 	float shade_alpha = strength * mask;
 	float combined_alpha = shade_alpha + warm_alpha * (1.0 - shade_alpha);

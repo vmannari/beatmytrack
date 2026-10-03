@@ -1,5 +1,11 @@
 # Grass golden sunlight prototype — 2026-10-03
 
+## Balanced glow and smaller clouds
+
+Owner found the stronger phone version excessive and requests an intermediate glow and slightly smaller clouds. V02/V04/V05/Q01, `contact-lighting-11`: maximum sunlight alpha 0.305, centre offset 0.55 and falloff 0.065–1.45 are midpoints of the two previous versions. Cloud soft thresholds rise from 0.50–0.70 to 0.54–0.74, shrinking shaded footprints while retaining maximum darkness, noise scale and drift. No additional rendering resources or canonical changes.
+
+Changed shader/revision/capture defaults and evidence destination; [balanced gameplay](evidence/grass-sunlight-balanced-2026-10-03/sunlight-after.png). Initial `-Action CaptureContactShading` reports 49 checks/zero failures then native shutdown crash (-1073741819); unchanged rerun reports 49/zero and exit 0. Screenshot inspected. `-Action TestContactShading` passes 23 checks with three shutdown instance warnings. `-Action DeployAndroid -QuickValidation` passes import/startup/driving/catalog/menu checks, exports a fresh debug APK, installs successfully and cold-launches on DN2103 (Status ok, 896 ms). Logs: `build/logs/DeployAndroid-13360/`. Full suite was not repeated for this cosmetic tuning; preceding stronger-version full run is recorded below. SDK build-tools fallback remains 35.0.1. No phone driving/FPS/thermal measurement; owner visual/motion acceptance remains. Concurrent launch-notice edits remain outside the sunlight checkpoint. Status/plan notes are updated in the shared workspace without committing unrelated changes.
+
 ## Stronger follow-up
 
 Owner found the first version imperceptible and requested phone deployment. `contact-lighting-10` increases maximum veil alpha from 0.19 to 0.42, moves its centre closer to the visible frame (0.62 to 0.48 normalized offset) and broadens its falloff (1.35 to 1.55). Existing cloud contrast and sun projection remain. No additional rendering resources. Changed shader, presentation revision and capture defaults/destination; earlier evidence retained.

@@ -35,7 +35,15 @@ func run() -> void:
 		assert(root.get_texture().get_image().save_png(output.path_join(id+"-pressed.png")) == OK)
 		hud.touch.driver.release_touch(90)
 		hud.touch.driver.release_touch(91)
+		if id == "compact":
+			var targets: Array[Rect2] = hud.touch.touch_zones()
+			hud.touch.show_labels = false
+			await process_frame
+			await process_frame
+			await RenderingServer.frame_post_draw
+			assert(hud.touch.touch_zones() == targets)
+			assert(root.get_texture().get_image().save_png(output.path_join(id+"-no-labels.png")) == OK)
 		game.queue_free()
 		await process_frame
-	print("CONTROLS: 5 vehicle bindings, 120 scaled/mirrored action targets passed; 10 gameplay captures")
+	print("CONTROLS: 5 vehicle bindings, 120 scaled/mirrored action targets and unchanged targets with hidden labels passed; 11 gameplay captures")
 	quit()

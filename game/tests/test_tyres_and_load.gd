@@ -91,8 +91,10 @@ func _load_ui() -> void:
 	var app: Node = load("res://core/app.gd").new()
 	app.set("library",library)
 	app.set("records",LocalRecords.new(folder+"/records.json"))
+	app.cloud_root_override = folder.path_join("cloud")
+	OS.set_environment("BMT_API_URL","")
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	app.call("_new_document")
 	await process_frame
 	(app.get("root_ui") as Node).find_child("LoadTrack",true,false).pressed.emit()
@@ -131,6 +133,10 @@ func _load_ui() -> void:
 	check(library.load_wip("saved_curve").pieces[0].width==14.0,"continued changes autosave")
 	check(library.load_document("saved_curve").pieces[0].width==10.0,"original is preserved until explicit Save")
 	app.call("_open_drafts")
+	await process_frame
+	var save_dialog: ConfirmationDialog = app.root_ui.find_child("SaveChangesDialog",true,false)
+	check(app.screen == "create" and save_dialog != null,"unsaved edits require a save decision before Load")
+	if save_dialog != null: save_dialog.confirmed.emit()
 	await process_frame
 	check(app.get("screen")=="drafts","editor Load uses the same gallery")
 	browser = app.get("root_ui").find_child("DraftBrowser",true,false)
@@ -226,7 +232,7 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	var browser: Node = app.get("root_ui").find_child("DraftBrowser",true,false)
 	var search: LineEdit = browser.find_child("DraftSearch",true,false)
 	search.text="Tested oval"; search.text_changed.emit(search.text)
-	check(not browser.find_child("PublishDraft",true,false).disabled,"tested selection enables Publish")
+	check(browser.find_child("PublishDraft",true,false).disabled,"a local completion alone cannot bypass backend-verified publication")
 	if "--capture" in OS.get_cmdline_user_args():
 		for i: int in range(3): await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../docs/evidence/draft-browser/tested.png"))
@@ -242,6 +248,11 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	app.call("_show_screen","drafts")
 	app.call("_publish_saved_draft","wip:publication_test")
 	await process_frame
+	check(not library.is_published(doc.id) and not library.load_wip(doc.id).is_empty(),"guest Publish retains its draft and cannot mint a publication")
+	# Legacy local locks may still exist in retained player files. Exercise their
+	# persistence directly; the current shipping UI publishes through the backend.
+	check(library.publish_document(doc)==OK,"retained legacy publication fixture is readable")
+	app.call("_show_screen","drafts")
 	check(library.is_published(doc.id),"Publish persists local lock")
 	check(not library.load_document(doc.id).is_empty(),"published track enters local playable library")
 	check(library.editable_entries().filter(func(item: Dictionary) -> bool: return item.id==doc.id).is_empty(),"published track removed from draft gallery")

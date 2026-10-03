@@ -155,7 +155,7 @@ func _drive_and_replay(track: NativeTrack, label: String) -> void:
 		var input: DriveFrame = driver.sample(simulation.state,track,config)
 		frames.append(input.packed())
 		simulation.step(input,track)
-		session.advance(track,from,simulation.state.position,simulation.state.route_index)
+		session.advance(track,from,simulation.state.position,simulation.state.route_index,simulation.state.track_elevated)
 		if session.finished:
 			break
 	print("CREATOR_RACE ",label," laps=",session.completed_laps," times=",session.lap_times," contacts=",simulation.state.collision_count)
@@ -174,5 +174,5 @@ func _drive_and_replay(track: NativeTrack, label: String) -> void:
 			input.brake = int(parsed_frames[index][2])
 			var from: Vector2 = replay.state.position
 			replay.step(input,track)
-			replay_session.advance(track,from,replay.state.position,replay.state.route_index)
+			replay_session.advance(track,from,replay.state.position,replay.state.route_index,replay.state.track_elevated)
 	check(replay.state.snapshot() == simulation.state.snapshot() and replay_session.lap_times == session.lap_times,label+" complete three-lap JSON replay is exact in 8-tick batches")

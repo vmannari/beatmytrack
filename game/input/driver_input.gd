@@ -19,13 +19,13 @@ func release_touch(index: int) -> void:
 func clear() -> void:
 	touches.clear()
 	touch_strengths.clear()
-	for action: StringName in [&"steer_left", &"steer_right", &"accelerate", &"brake"]:
+	for action: StringName in [&"steer_left", &"steer_right", &"accelerate", &"brake", &"handbrake"]:
 		Input.action_release(action)
 
 
 func sample() -> DriveFrame:
 	return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
-		_strength(&"accelerate"), _strength(&"brake"))
+		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake"))
 
 
 func _strength(action: StringName) -> float:

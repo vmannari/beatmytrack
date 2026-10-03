@@ -14,7 +14,7 @@ static func normalized(theme: String) -> String:
 
 static func title(theme: String) -> String:
 	match normalized(theme):
-		"night_city": return "Night city"
+		"night_city": return "Night"
 		"winter": return "Winter"
 		"storm": return "Storm"
 		"desert": return "Desert"
@@ -57,8 +57,10 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 	environment.ambient_light_energy = 0.045 if night else 0.35
 	light.light_color = Color("8299cc") if night else Color("e7f2ff") if theme == "winter" else Color("fff1d8")
 	light.light_energy = 0.025 if night else 0.50 if theme == "storm" else 1.0
-	# Grass: brighter sunlit areas while retaining cloud contrast.
-	if theme == "pine": light.light_energy = 1.20
+	# Grass: warm sunlight against the broad, deeper cloud projections.
+	if theme == "pine":
+		light.light_energy = 1.32
+		light.light_color = Color("ffedce")
 	if theme == "storm":
 		environment.sky = preload("res://track/storm_sky.tres")
 		environment.background_mode = Environment.BG_SKY

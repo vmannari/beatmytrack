@@ -29,6 +29,7 @@ func run() -> void:
 		_finish()
 		return
 	await _check_practice(track)
+	await _check_creator_proof()
 	await _check_normal_race(track)
 	_finish()
 
@@ -57,7 +58,7 @@ func _check_practice(track: NativeTrack) -> void:
 	check(int(game.get("countdown_ticks")) == 0 and sim.state.tick == 0, "practice starts at rest without a race countdown")
 	check(bool(game.get("attempt_practice")), "editor drive is always marked practice at the result boundary")
 	check(not hud.race_timer.visible and not hud.title.visible, "practice hides the timed race and lap presentation")
-	check(hud.pause_button.text == "Practice (untimed)", "practice has a compact untimed status")
+	check(hud.practice_status.text == "Practice (untimed)", "practice has a compact untimed status")
 	check(hud.find_child("EditHere", true, false) != null and hud.find_child("PracticeRestart", true, false) != null, "practice exposes Restart and Edit here")
 	check(game.get("camera") is FollowCamera and hud.touch is TouchControls, "practice uses the existing gameplay camera and real driving controls")
 	game.set("ai_enabled", true)
@@ -65,7 +66,7 @@ func _check_practice(track: NativeTrack) -> void:
 	for tick: int in range(120 * 240):
 		var before: Vector2 = sim.state.position
 		game.call("_physics_process", 1.0 / 120.0)
-		witness.advance(track, before, sim.state.position, sim.state.route_index)
+		witness.advance(track, before, sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if sim.state.tick == 1200 and not capture_path.is_empty():
 			await _capture(game)
 		if witness.finished:
@@ -80,14 +81,14 @@ func _check_practice(track: NativeTrack) -> void:
 	check(sim.state.tick == finished_tick + 1, "simulation continues after the sixth lap")
 	game.call("toggle_recording")
 	check(not (game.get("recorder") as HandlingRecorder).active, "editor practice cannot enable developer recording persistence")
-	var pause: Button = hud.pause_button
+	var pause: Button = hud.menu_button
 	pause.pressed.emit()
 	check(bool(game.get("paused")) and not hud.touch.enabled, "practice status pauses and releases touch controls")
 	var paused_tick: int = sim.state.tick
 	game.call("_physics_process", 1.0 / 120.0)
 	check(sim.state.tick == paused_tick, "paused practice does not advance simulation")
 	game.call("_process", 0.1)
-	check(pause.text == "Paused · Resume", "paused practice exposes a visible Resume action")
+	check(hud.pause_menu.visible, "paused practice exposes a visible Resume action")
 	pause.pressed.emit()
 	check(not bool(game.get("paused")) and hud.touch.enabled, "the same practice status resumes driving")
 	(hud.find_child("PracticeRestart", true, false) as Button).pressed.emit()
@@ -186,10 +187,12 @@ func _check_normal_race(track: NativeTrack) -> void:
 		game.call("_physics_process", 1.0 / 120.0)
 		check(game.get("race_cues").stage == light and sim.state.tick == 0, "red lights accumulate while race clock stays stopped: %d" % light)
 		for tick: int in range(59): game.call("_physics_process", 1.0 / 120.0)
-	for tick: int in range(60): game.call("_physics_process", 1.0 / 120.0)
+	for tick: int in range(59): game.call("_physics_process", 1.0 / 120.0)
 	check(game.get("race_cues").stage == 5 and sim.state.tick == 0, "all five reds hold before release")
 	game.call("_physics_process", 1.0 / 120.0)
-	check(game.get("race_cues").stage == 0 and sim.state.tick == 1, "all lights extinguish on the first race tick")
+	check(game.get("race_cues").stage == 0 and sim.state.tick == 0, "all lights extinguish on countdown boundary before canonical race tick")
+	game.call("_physics_process", 1.0 / 120.0)
+	check(sim.state.tick == 1,"canonical race advances immediately after lights-out")
 	game.queue_free()
 	await process_frame
 
@@ -208,3 +211,35 @@ func _capture(game: Node) -> void:
 func _finish() -> void:
 	print("EDITOR_PRACTICE_TESTS: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures else 0)
+
+func _check_creator_proof() -> void:
+	var source := FileAccess.open("res://../backend/tests/fixtures/verified_oval.json",FileAccess.READ)
+	var fixture: Dictionary = JSON.parse_string(source.get_as_text())
+	var document: Dictionary = fixture.document
+	var track: NativeTrack = TrackCompiler.compile(document)
+	track.spawn = Vector2(document.start_line.position[0],document.start_line.position[1])
+	track.spawn_heading = PI*0.5-deg_to_rad(float(document.start_line.heading))
+	var game: Node = _new_game(track,true)
+	var sim: VehicleSimulation = game.get("sim")
+	var route_driver := RouteDriver.new()
+	var controls: DriverInput = game.get("driver")
+	for tick: int in range(24000):
+		var input: DriveFrame = route_driver.sample(sim.state,track,game.get("handling"))
+		controls.clear()
+		controls.set_touch(0,&"steer_right" if input.steer >= 0 else &"steer_left",absf(float(input.steer))/127.0)
+		controls.set_touch(1,&"accelerate",float(input.throttle)/255.0)
+		controls.set_touch(2,&"brake",float(input.brake)/255.0)
+		game.call("_physics_process",1.0/120.0)
+		if game.get("practice_validation").finished: break
+	check(game.get("practice_validation").finished,"creator proof completes one ordered lap with input controls")
+	var frames: Array = game.get("online_frames").duplicate(true)
+	check(not frames.is_empty() and frames.size() == sim.state.tick,"practice records every canonical input through completion")
+	game.call("_physics_process",1.0/120.0)
+	check(game.get("online_frames").size() == frames.size(),"proof freezes at completion while practice continues")
+	var output := FileAccess.open("res://../build/creator-practice-proof.json",FileAccess.WRITE)
+	output.store_string(JSON.stringify({"document":document,"replay":{"schema":"bmt-replay-v1","frames":frames}}))
+	output.close()
+	game.call("restart")
+	check(game.get("online_frames").is_empty(),"restart discards previous proof inputs")
+	game.queue_free()
+	await process_frame

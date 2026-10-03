@@ -13,7 +13,7 @@ func _init(root: String = "user://tracks") -> void:
 
 
 static func unique_id() -> String:
-	return "track_" + Crypto.new().generate_random_bytes(8).hex_encode()
+	return "track_" + Crypto.new().generate_random_bytes(16).hex_encode()
 
 
 func list_documents() -> Array[Dictionary]:
@@ -270,6 +270,61 @@ func invalidate_test_if_changed(document: Dictionary) -> Error:
 func is_published(id: String) -> bool:
 	if not TrackDocument.valid_id(id): return false
 	return not TrackLibrary.new(directory.path_join(".published")).load_document(id).is_empty()
+
+func commit_backend_binding(source: Dictionary, receipt: Dictionary, backend_url: String) -> bool:
+	if not TrackDocument.valid_id(source.get("id")): return false
+	var path: String = directory.path_join(".backend").path_join(str(source.id)+".json")
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var value: Dictionary = {"backend_url":backend_url,"track_id":receipt.track_id,
+		"version_id":receipt.version_id,"content_hash":receipt.content_hash,
+		"source_fingerprint":draft_fingerprint(source)}
+	var file := FileAccess.open(path+".tmp",FileAccess.WRITE)
+	if file == null: return false
+	file.store_string(JSON.stringify(value))
+	file.flush()
+	var ok: bool = file.get_error() == OK
+	file.close()
+	return ok and DirAccess.rename_absolute(path+".tmp",path) == OK
+
+static func authoring_equivalent(first: Dictionary, second: Dictionary) -> bool:
+	# Derived automatic routes and authenticated display attribution may have
+	# changed in the approved legacy seeder. Physical authoring data must match.
+	var a: Dictionary = first.duplicate(true)
+	var b: Dictionary = second.duplicate(true)
+	for key: String in ["points","widths","corners","route_override","creator"]:
+		a.erase(key)
+		b.erase(key)
+	return not a.is_empty() and a == b
+
+func cleanup_backend_publication(source: Dictionary, remote: Dictionary) -> Error:
+	if not TrackDocument.valid_id(source.get("id")) or not authoring_equivalent(source,remote):
+		last_error = "The published document differs from this draft; local files were preserved."
+		return ERR_INVALID_DATA
+	var id: String = str(source.id)
+	var stores: Array[String] = [directory,directory.path_join("wip"),directory.path_join(".published")]
+	var folder := DirAccess.open(directory)
+	if folder != null:
+		for child: String in folder.get_directories():
+			if child.begins_with(".tested-"): stores.append(directory.path_join(child))
+	for store: String in stores:
+		for suffix: String in [".json.bak",".json.tmp",".json"]:
+			var path: String = store.path_join(id+suffix)
+			if not FileAccess.file_exists(path): continue
+			var candidate: Dictionary = TrackLibrary.new(store)._read(path)
+			# Preserve newer edits and unreadable recovery evidence.
+			if candidate.is_empty() or not authoring_equivalent(candidate,remote): continue
+			var error: Error = DirAccess.remove_absolute(path)
+			if error != OK:
+				last_error = "Could not remove the transferred local copy."
+				return error
+	if not FileAccess.file_exists(directory.path_join(id+".json")):
+		var created: String = directory.path_join(id+".created")
+		if FileAccess.file_exists(created):
+			var error: Error = DirAccess.remove_absolute(created)
+			if error != OK: return error
+	revision += 1
+	last_error = ""
+	return OK
 
 func publish_document(document: Dictionary) -> Error:
 	if not owner_name.is_empty(): document["creator"] = owner_name

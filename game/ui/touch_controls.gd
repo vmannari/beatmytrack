@@ -3,8 +3,8 @@ extends Control
 
 const SteeringHaptics = preload("res://platform/steering_haptics.gd")
 
-const ACTIONS: Array[StringName] = [&"steer_left", &"steer_right", &"brake", &"accelerate"]
-const LABELS: Array[String] = ["LEFT", "RIGHT", "BRAKE", "THROTTLE"]
+const ACTIONS: Array[StringName] = [&"steer_left", &"steer_right", &"brake", &"accelerate", &"handbrake"]
+const LABELS: Array[String] = ["LEFT", "RIGHT", "BRAKE", "THROTTLE", "HANDBRAKE"]
 var vehicle_id: String = "compact":
 	set(value):
 		vehicle_id = value
@@ -17,7 +17,7 @@ var enabled: bool = true:
 		if not enabled: release_all()
 var layout: Dictionary = {}:
 	set(value):
-		layout = value
+		layout = ControlLayout.upgrade(value) if not value.is_empty() else {}
 		release_all()
 		queue_redraw()
 var owners: Dictionary = {}
@@ -61,7 +61,7 @@ func group_rects() -> Dictionary:
 
 func _resolve_groups(area: Rect2) -> Dictionary:
 	var result: Dictionary = {}
-	for key: String in [str(layout.steering_type),"brake","accelerator"]:
+	for key: String in ControlLayout.active_keys(layout):
 		var rect: Rect2 = ControlLayout.rect(layout,key,area)
 		# Resolve overlap after aspect-ratio/safe-area changes using nearest free position.
 		if _overlaps(rect,result):
@@ -80,12 +80,12 @@ func _resolve_groups(area: Rect2) -> Dictionary:
 	return result
 
 func _packed_rects(area: Rect2) -> Dictionary:
-	var keys: Array[String] = [str(layout.steering_type),"brake","accelerator"]
+	var keys: Array[String] = ControlLayout.active_keys(layout)
 	keys.sort_custom(func(a: String,b: String) -> bool: return float(layout[a].x) < float(layout[b].x))
 	var total: float = 0.0
 	for key: String in keys: total += ControlLayout.extent(key,layout[key].scale).x
-	var factor: float = minf(1.0,(area.size.x-24)/maxf(total,1))
-	var gap: float = maxf(12,(area.size.x-total*factor)/2)
+	var factor: float = minf(1.0,(area.size.x-12*(keys.size()-1))/maxf(total,1))
+	var gap: float = maxf(12,(area.size.x-total*factor)/maxi(1,keys.size()-1))
 	var x: float = area.position.x
 	var result: Dictionary = {}
 	for key: String in keys:
@@ -117,18 +117,23 @@ var mobile_layout: bool = OS.has_feature("android") or OS.has_feature("ios")
 var draw_count: int = 0
 var last_pressed_mask: int = -1
 var artwork: Array[TouchControlArt] = []
+var show_labels: bool = true:
+	set(value):
+		show_labels = value
+		for art: TouchControlArt in artwork: art.show_labels = value
 
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for index: int in range(4):
+	for index: int in range(ACTIONS.size()):
 		# Draw both variants once under the normal variant during loading.
 		# Subsequent presses switch opacity; hide/show invalidates Godot's draw list.
 		for pressed: bool in [true,false]:
 			var art := TouchControlArt.new()
 			art.button_index = index
 			art.pressed = pressed
+			art.show_labels = show_labels
 			art.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			artwork.append(art)
 			add_child(art)
@@ -144,14 +149,19 @@ func _ready() -> void:
 func zones() -> Array[Rect2]:
 	if not layout.is_empty():
 		var groups: Dictionary = group_rects()
-		var steering: Rect2 = groups[layout.steering_type]
+		var left: Rect2
+		var right: Rect2
 		if layout.steering_type == "buttons":
-			var inset: Vector2 = steering.size*Vector2(24.0/292.0,32.0/192.0)
-			steering = Rect2(steering.position+inset,steering.size*Vector2(244.0/292.0,112.0/192.0))
-		var half := Vector2(steering.size.x*0.46,steering.size.y)
-		return [Rect2(steering.position,half),Rect2(Vector2(steering.end.x-half.x,steering.position.y),half),_pedal_art(groups.brake,false),_pedal_art(groups.accelerator,true)]
+			left = _steering_art(groups.steer_left)
+			right = _steering_art(groups.steer_right)
+		else:
+			var steering: Rect2 = groups[layout.steering_type]
+			var half := Vector2(steering.size.x*0.46,steering.size.y)
+			left = Rect2(steering.position,half)
+			right = Rect2(Vector2(steering.end.x-half.x,steering.position.y),half)
+		return [left, right, _pedal_art(groups.brake,false), _pedal_art(groups.accelerator,true), groups.handbrake.grow(-10)]
 	var result: Array[Rect2] = [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
-		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120)]
+		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120), Rect2(size.x - 360, size.y - 156, 92, 92)]
 	var scale_value: float = control_scale * (1.15 if mobile_layout else 1.0)
 	for i: int in range(result.size()):
 		var rect: Rect2 = result[i]
@@ -163,6 +173,9 @@ func zones() -> Array[Rect2]:
 	return result
 
 
+func _steering_art(rect: Rect2) -> Rect2:
+	return Rect2(rect.position + rect.size * Vector2(17.0/146.0,32.0/192.0), rect.size * Vector2(112.0/146.0,112.0/192.0))
+
 func _pedal_art(rect: Rect2, gas: bool) -> Rect2:
 	var base: Vector2 = Vector2(168,208) if gas else Vector2(156,176)
 	return Rect2(rect.position+rect.size*Vector2(20,24)/base,rect.size*(base-Vector2(40,70))/base)
@@ -171,24 +184,31 @@ func touch_zones() -> Array[Rect2]:
 	if not layout.is_empty():
 		var rectangles: Array[Rect2] = zones()
 		var groups: Dictionary = group_rects()
-		var steering: Rect2 = groups[layout.steering_type]
 		rectangles[2] = groups.brake
+		rectangles[4] = groups.handbrake
 		rectangles[3] = groups.accelerator
-		rectangles[0] = Rect2(steering.position,Vector2(steering.size.x*0.5,steering.size.y))
-		rectangles[1] = Rect2(steering.position+Vector2(steering.size.x*0.5,0),rectangles[0].size)
+		if layout.steering_type == "buttons":
+			rectangles[0] = groups.steer_left
+			rectangles[1] = groups.steer_right
+		else:
+			var steering: Rect2 = groups[layout.steering_type]
+			rectangles[0] = Rect2(steering.position,Vector2(steering.size.x*0.5,steering.size.y))
+			rectangles[1] = Rect2(steering.position+Vector2(steering.size.x*0.5,0),rectangles[0].size)
 		return rectangles
 	var artwork: Array[Rect2] = zones()
 	var result: Array[Rect2] = []
 	for i: int in range(artwork.size()):
 		var rect: Rect2 = artwork[i].grow_individual(42, 48, 42, 72)
-		var neighbor: Rect2 = artwork[i ^ 1]
-		var split: float = (artwork[i].get_center().x + neighbor.get_center().x) * 0.5
-		if artwork[i].get_center().x < split:
-			rect.size.x = minf(rect.end.x, split) - rect.position.x
-		else:
-			var right: float = rect.end.x
-			rect.position.x = maxf(rect.position.x, split)
-			rect.size.x = right - rect.position.x
+		for j: int in range(artwork.size()):
+			if i == j: continue
+			var neighbor: Rect2 = artwork[j]
+			var split: float = (artwork[i].get_center().x + neighbor.get_center().x) * 0.5
+			if artwork[i].get_center().x < split:
+				rect.size.x = minf(rect.end.x, split) - rect.position.x
+			else:
+				var right: float = rect.end.x
+				rect.position.x = maxf(rect.position.x, split)
+				rect.size.x = right - rect.position.x
 		result.append(rect.intersection(Rect2(Vector2.ZERO, size)))
 	return result
 
@@ -290,7 +310,8 @@ func _process(_delta: float) -> void:
 
 func _opacity(index: int) -> float:
 	if layout.is_empty(): return 1.0
-	return float(layout[layout.steering_type if index < 2 else "brake" if index == 2 else "accelerator"].opacity)
+	var key: String = ("steer_left" if index == 0 else "steer_right") if index < 2 and layout.steering_type == "buttons" else str(layout.steering_type) if index < 2 else "brake" if index == 2 else "handbrake" if index == 4 else "accelerator"
+	return float(layout[key].opacity)
 
 # All artwork is drawn in local 100 x 100 units; touch geometry stays independent.
 func _draw() -> void:

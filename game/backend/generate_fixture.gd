@@ -32,8 +32,9 @@ func run() -> void:
 		var frame: DriveFrame = driver.sample(sim.state,track,sim.config)
 		frames.append(frame.packed())
 		var before: Vector2 = sim.state.position
+		var previous_layer: int = int(sim.state.track_elevated)
 		sim.step(frame,track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
 		if session.finished: break
 	if not session.finished: respond({},"Fixture did not finish"); return
 	respond({"document":doc,"replay":{"schema":REPLAY_SCHEMA,"frames":frames},"vehicle_id":"compact","time_ticks":session.elapsed_ticks})

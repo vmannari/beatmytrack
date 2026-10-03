@@ -22,6 +22,7 @@ func check(condition: bool, description: String) -> void:
 
 func run() -> void:
 	root.size = Vector2i(1280, 720)
+	OS.set_environment("BMT_API_URL","")
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--capture-app-flow="):
 			capture_directory = argument.trim_prefix("--capture-app-flow=")
@@ -40,6 +41,7 @@ func run() -> void:
 		return
 	app = scene.instantiate()
 	app.set("library", TrackLibrary.new(test_directory))
+	app.cloud_root_override = test_directory.path_join("cloud")
 	var local_records: RefCounted = app.get("records")
 	# Records path is injected before _ready can read or write owner data.
 	check(_set_records_path(local_records, test_directory.path_join("records.json")), "local records have an isolated injectable path")
@@ -48,18 +50,43 @@ func run() -> void:
 		_finish()
 		return
 	root.add_child(app)
+	var deadline: int = Time.get_ticks_msec()+10000
+	while not app.get("startup_complete") and Time.get_ticks_msec() < deadline: await process_frame
+	check(app.get("startup_complete"),"startup completes within its deadline")
+	check(app.get("screen") == "account","isolated guest starts at Account")
+	app.cloud.root_override = test_directory.path_join("cloud")
+	app.cloud.load_cached()
+	# Race now lists backend publications. Seed a cached immutable fixture so
+	# this offline test still exercises real search, selection and racing.
+	var cached_doc: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	var cached_body: String = JSON.stringify(cached_doc)
+	var cached_hash: String = cached_body.sha256_text()
+	var cached_version: String = "00000000-0000-4000-8000-000000000001"
+	app.cloud.entries.append({"track_id":"fixture-track", "version_id":cached_version,"content_hash":cached_hash,"name":"Starter fixture","creator":"Fixture author","creator_id":"fixture-owner","points":cached_doc.points,"theme":"pine","rating_average":null,"rating_count":0})
+	app.cloud._write(app.cloud.cache_root().path_join(cached_hash+".json"),cached_doc)
+	app.cloud._write(app.cloud.cache_root().path_join("index.json"),{"entries":app.cloud.entries})
+	app.call("_show_screen","tracks") # Explicit guest choice, independent of saved owner identity.
 	await process_frame
-	await process_frame
-	check(app.get("screen") == "play" and app.get("game") == null, "startup opens Play with no running simulation")
-	check((app.get("root_ui") as Node).find_child("StartRace", true, false) != null, "Play exposes the primary Race action")
-	check(_button(app.get("root_ui"), "Create") != null, "Play exposes creator navigation")
+	check(app.get("screen") == "tracks" and app.get("game") == null, "startup opens Race with no running simulation")
+	check((app.get("root_ui") as Node).find_child("TrackBrowser", true, false) != null, "Race exposes track discovery")
+	check((app.get("root_ui") as Node).find_child("Tab_play", true, false) == null, "navigation has no Home tab")
+	check((app.get("root_ui") as Node).find_child("Tab_create", true, false) != null, "Race exposes creator navigation")
 	await _check_library()
-	await _capture("app-home")
-	var create_button: Button = _button(app.get("root_ui"), "Create")
+	await process_frame
+	await process_frame
+	await _capture("app-race")
+	var create_button: Button = (app.get("root_ui") as Node).find_child("Tab_create", true, false)
 	await _viewport_tap(create_button.get_global_rect().get_center())
 	await process_frame
 	await process_frame
-	check(app.get("screen") == "create", "viewport-dispatched finger tap opens the creator through its menu button")
+	check(app.get("screen") == "biome", "viewport-dispatched finger tap opens the creator biome choice")
+	if app.get("screen") == "biome":
+		(app.get("root_ui").find_child("Biome_pine",true,false) as Button).pressed.emit()
+		await process_frame
+		(app.get("root_ui").find_child("CreateTrack",true,false) as Button).pressed.emit()
+		await process_frame
+		await process_frame
+	check(app.get("screen") == "create","biome selection creates a new editable track")
 	if app.get("screen") != "create":
 		# Preserve the failure, then continue independent integration checks.
 		app.call("_show_screen", "create")
@@ -117,7 +144,7 @@ func _check_editor_save_prompt() -> void:
 	if dialog != null: dialog.custom_action.emit(&"discard")
 	await process_frame
 	await process_frame
-	check(app.get("screen") == "play", "Discard completes the requested editor exit")
+	check(app.get("screen") == "tracks", "Discard completes the requested editor exit on Race")
 	check((app.get("library") as TrackLibrary).load_wip(draft.id).is_empty(), "Discard removes the autosaved recovery draft")
 
 
@@ -130,39 +157,53 @@ func _set_records_path(records: RefCounted, path: String) -> bool:
 
 
 func _check_library() -> void:
-	_button(app.get("root_ui"),"Tracks").pressed.emit()
-	await process_frame
-	await process_frame
 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
+	check(browser != null,"guest Race creates the browser")
+	if browser == null: return
 	while browser.loading: await process_frame
-	check(browser.matches.size() == browser.builtin_ids.size() and browser.grid.get_child_count() == mini(6,browser.builtin_ids.size()),"track library pages the complete built-in collection into six visual cards")
+	await process_frame
+	await process_frame
+	check(browser.matches.size() == 1 and browser.grid.get_child_count() > 0 and browser.grid.get_child_count() <= 12,"track carousel displays the cached backend publication")
 	await _capture("track-library")
-	var search: LineEdit = browser.find_child("Search_name",true,false)
+	browser.search_dialog.open_for(browser.state,browser.random_button)
+	browser.search_dialog._scope(1)
+	var search: LineEdit = browser.search_dialog.edit
 	search.text = "sTaRtEr"
 	search.text_changed.emit(search.text)
+	browser.search_dialog._apply()
 	check(browser.matches.size() == 1,"name search is case insensitive and filters the full catalog")
-	var creator_search: LineEdit = browser.find_child("Search_creator",true,false)
-	creator_search.text = str(browser.matches[0].creator).to_lower()
-	creator_search.text_changed.emit(creator_search.text)
-	check(browser.matches.size() == 1,"creator and name search combine in the live browser")
+	browser.search_dialog.open_for(browser.state,browser.random_button)
+	browser.search_dialog._scope(2)
+	search.text = str(browser.matches[0].creator).to_lower()
+	search.text_changed.emit(search.text)
+	check(not browser.search_dialog.matches.is_empty(),"creator search finds the selected creator")
+	browser.search_dialog.close()
 	await process_frame
 	await process_frame
 	await _viewport_tap((browser.grid.get_child(0) as Button).get_global_rect().get_center())
+	while browser.selecting: await process_frame
 	var chosen: NativeTrack = app.get("selected_track")
-	check(chosen.identity == "starter_circuit","a route card selects its exact circuit")
+	check(chosen.identity == "cloud_fixture-track" and chosen.metadata.cloud_version == "00000000-0000-4000-8000-000000000001","a route card selects the stable track and exact immutable publication: "+chosen.identity+" / "+app.cloud.last_error)
 	(browser.find_child("ToggleFavorite",true,false) as Button).pressed.emit()
 	var store: LocalRecords = app.get("records")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
 	check(chosen.identity in reloaded.settings.get("favorites",[]),"favorites persist across store instances")
-	(browser.find_child("Filter_favorites",true,false) as Button).pressed.emit()
+	browser.filter_dialog.open_for(browser.state,browser.filter_button)
+	browser.filter_dialog._choose("section","favorites")
+	browser.filter_dialog._apply()
 	check(browser.matches.size() == 1,"Favorites intersects the current name filter")
+	browser.search_dialog.open_for(browser.state,browser.random_button)
+	browser.search_dialog._scope(1)
 	search.text = "no such track"
 	search.text_changed.emit(search.text)
+	browser.search_dialog._apply()
 	check(browser.matches.is_empty() and browser.random_button.disabled,"empty results disable random choice and expose a recovery message")
-	search.text = ""
-	search.text_changed.emit("")
+	browser.search_dialog.open_for(browser.state,browser.random_button)
+	browser.search_dialog.clear_search()
+	browser.search_dialog._apply()
 	browser.random_button.pressed.emit()
+	while browser.selecting: await process_frame
 	check((app.get("selected_track") as NativeTrack).identity == chosen.identity,"random favorite respects both collection and search filters")
 	await process_frame
 	await _capture("track-favorites")
@@ -176,7 +217,8 @@ func _check_library() -> void:
 	browser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
 	check(browser.state.get("section") == "favorites" and browser.matches.size() == 1,"return from racing preserves library filters")
-	app.call("_show_screen","play")
+	app.browser_state = {}
+	app.call("_show_screen","tracks")
 	await process_frame
 	await process_frame
 
@@ -184,12 +226,12 @@ func _check_library() -> void:
 func _check_input_and_history() -> void:
 	_button(app.get("root_ui"), "Track").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
-	canvas.document.pieces.append(RoadPieces.create("straight",Vector2(-25,-12)))
+	canvas.document.pieces.insert(0,RoadPieces.create("straight",Vector2(-25,-12)))
 	canvas.selected_piece = 0
 	canvas.snap_enabled = false
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	var start: Vector2 = canvas.to_screen(canvas._geometry_handle(original.pieces[0],"length"))
-	var destination: Vector2 = start + Vector2(canvas.scale_factor() * 2.0, 0.0)
+	var start: Vector2 = canvas.to_screen(canvas._geometry_handle(original.pieces[0],"width"))
+	var destination: Vector2 = start + Vector2(0.0,canvas.scale_factor() * 2.0)
 	_mouse(canvas, start, true)
 	check(canvas.dragging and canvas.active_pointer == -1, "mouse press selects and starts a handle drag")
 	var motion := InputEventMouseMotion.new()
@@ -200,12 +242,13 @@ func _check_input_and_history() -> void:
 	_mouse(canvas, destination, false)
 	check(not canvas.dragging and canvas.active_pointer == -99, "mouse release ends its gesture")
 	var changed: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	check(changed.pieces[0].length != original.pieces[0].length and changed.points == original.points, "mouse drag changes only the selected road length")
+	check(changed.pieces[0].width != original.pieces[0].width and changed.points == original.points, "mouse drag changes only the selected road width")
 	check((app.get("history") as Array).size() == 1, "one completed drag creates one undo step")
 	var library: TrackLibrary = app.get("library")
 	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
 	var expected_preview: NativeTrack = TrackCompiler.compile(changed)
-	check(canvas.preview.track != null and canvas.preview.track.content_hash == expected_preview.content_hash and canvas.preview.track.cells == expected_preview.cells, "released editor drag refreshes the exact compiled native preview")
+	while app.get("editor_preview_thread") != null: await process_frame
+	check(canvas.native_preview != null and canvas.native_preview.content_hash == expected_preview.content_hash and canvas.native_preview.cells == expected_preview.cells, "released editor drag refreshes the exact compiled native preview")
 	_button(app.get("root_ui"), "Undo").pressed.emit()
 	await process_frame
 	await process_frame
@@ -215,7 +258,7 @@ func _check_input_and_history() -> void:
 	await process_frame
 	check(app.get("document") == changed, "Redo restores the edited document")
 	canvas = app.get("canvas")
-	start = canvas.to_screen(canvas._geometry_handle(changed.pieces[0],"length"))
+	start = canvas.to_screen(canvas._geometry_handle(changed.pieces[0],"width"))
 	_touch(canvas, 3, start, true)
 	check(canvas.dragging and canvas.active_pointer == 3, "touch press starts a handle drag through the same canvas")
 	_drag(canvas, 3, start + Vector2(canvas.scale_factor(), 0.0))
@@ -249,9 +292,9 @@ func _check_input_and_history() -> void:
 	# Starting a fresh handle drag after pinch also proves gesture recovery.
 	var current: Dictionary = app.get("document")
 	canvas.selected_piece = 0
-	start = canvas.to_screen(canvas._geometry_handle(current.pieces[0],"length"))
+	start = canvas.to_screen(canvas._geometry_handle(current.pieces[0],"width"))
 	_touch(canvas, 12, start, true)
-	check(canvas.dragging and canvas.geometry_drag == "length", "a fresh handle remains draggable after multitouch navigation")
+	check(canvas.dragging and canvas.geometry_drag == "width", "a fresh handle remains draggable after multitouch navigation")
 	var history_before: int = (app.get("history") as Array).size()
 	var emulated := InputEventMouseButton.new()
 	emulated.device = -1
@@ -293,7 +336,7 @@ func _check_import_copy() -> void:
 	await process_frame
 	var copy: Dictionary = app.get("document")
 	check(copy.id != saved.id and copy.name == imported.name, "import opens a separately identified local draft")
-	check(copy.creator == "Mira", "import preserves the shared creator attribution for search")
+	check(copy.creator == library.owner_name, "editable import stamps the current owner")
 	check(library.load_wip(saved.id) == saved, "importing an existing identifier cannot overwrite the original draft")
 	check(library.load_wip(copy.id) == copy, "the imported copy is persisted independently")
 	check(imported.id == saved.id, "import does not mutate the supplied document")
@@ -381,6 +424,7 @@ func _check_test_drive() -> void:
 func _check_clean_result() -> void:
 	# This fixture targets the result-to-storage boundary. Actual ordered
 	# driving is covered above; it does not claim a second driven race.
+	app._restore_cloud_selection("cloud_fixture-track")
 	var track: NativeTrack = app.get("selected_track")
 	app.call("_start_race", track, false)
 	var game: Node = app.get("game")
@@ -397,38 +441,46 @@ func _check_clean_result() -> void:
 	game.emit_signal("race_completed")
 	var records: LocalRecords = app.get("records")
 	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ContinueResults",true,false) != null, "a clean normal race result persists its local PB and exposes Continue")
-	check(((app.get("root_ui") as Node).find_child("ResultStatus",true,false) as Label).text == "FIRST TIME SET","a first normal finish is presented as the player's benchmark")
+	check(((app.get("root_ui") as Node).find_child("RaceAchievement",true,false) as Label).text in ["FIRST FINISH","CLEAN RACE"],"a first normal finish is presented as the player's benchmark")
 	await _capture("normal-race-debrief")
 	# Controlled result fixtures exercise improvement feedback; they are not
 	# additional claims of AI-driven lap times.
 	completed.lap_times[4] = 20.816
 	completed.lap_start_time = 108.816
 	app.call("_results")
-	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("-0.184 from your best"),"the integrated PB screen uses the previous saved target")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text == "-0.184 s vs personal best","the integrated PB screen uses the previous saved target")
 	await _capture("improved-race-debrief")
 	completed.lap_times[4] = 21.0
 	completed.lap_start_time = 109.0
 	app.call("_results")
-	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text.begins_with("+0.184 from your best"),"a slower integrated finish presents its exact gap without replacing the PB")
+	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text == "+0.184 s vs personal best","a slower integrated finish presents its exact gap without replacing the PB")
+	var race_handling: HandlingConfig = game.get("handling")
 	game.emit_signal("exit_requested")
 	await process_frame
 	await process_frame
-	check(((app.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the saved PB for the active handling after leaving results")
+	check(app.records.best_for(track,race_handling) == 108.816,"Race return preserves the best time for the active handling")
 	await _capture("tracks-saved-best")
 	var resumed: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
 	resumed.set("library",app.get("library"))
 	resumed.set("records",LocalRecords.new(records.path))
+	resumed.cloud_root_override = test_directory.path_join("cloud")
+	resumed.cloud_root_override = test_directory.path_join("cloud")
 	root.add_child(resumed)
-	await process_frame
-	await process_frame
+	while not resumed.startup_complete: await process_frame
+	resumed.online.client.configure("")
+	resumed.cloud.root_override = test_directory.path_join("cloud")
+	resumed.cloud.load_cached()
+	resumed._restore_cloud_selection(str(resumed.records.settings.get("last_track","")))
 	resumed.call("_show_screen", "tracks")
 	await process_frame
 	await process_frame
+	var resumed_browser: TrackBrowser = resumed.get("root_ui").find_child("TrackBrowser",true,false)
+	while resumed_browser.loading or resumed_browser.selecting: await process_frame
 	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the active handling PB after loading a new app instance")
-	resumed.call("_show_screen", "play")
+	resumed.call("_show_screen", "tracks")
 	await process_frame
 	check((resumed.get("selected_track") as NativeTrack).identity == track.identity,"relaunch resumes the last ordinary race circuit")
-	check(((resumed.get("root_ui") as Node).find_child("RaceTarget",true,false) as Label).text == "01:48.816","returning home presents the actual stored five-lap time to beat")
+	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == "01:48.816","returning Race presents the actual stored five-lap time to beat")
 	await _capture("returning-race-home")
 	resumed.queue_free()
 	await process_frame

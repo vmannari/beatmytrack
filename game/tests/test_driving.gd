@@ -43,6 +43,7 @@ func corner_radius(config: HandlingConfig, speed: float) -> float:
 
 
 func _run() -> void:
+	_test_handbrake()
 	var config := HandlingConfig.new()
 	var legacy := config.duplicate() as HandlingConfig
 	legacy.progressive_handling = false
@@ -236,7 +237,7 @@ func _run() -> void:
 
 func _production_profiles() -> void:
 	for practice: bool in [false, true]:
-		HandlingSelection.index = 4
+		HandlingSelection.index = 1
 		var scene: Node = load("res://core/game.tscn").instantiate()
 		scene.set("production_mode", true)
 		scene.set("editor_test", practice)
@@ -244,25 +245,10 @@ func _production_profiles() -> void:
 		await process_frame
 		var sim: VehicleSimulation = scene.get("sim")
 		var hud: PlaygroundHUD = scene.get("hud")
-		check(hud.handling_button.is_visible_in_tree(), "handling selector visible in production, practice=%s" % practice)
+		check(hud.handling_button == null, "handling selector removed from production, practice=%s" % practice)
 		check(sim.config.profile_name == "Original+" and not sim.config.progressive_handling, "normal drive defaults to the original-based slide tune")
-		var popup: PopupMenu = hud.handling_button.get_popup()
-		check(popup.item_count == 7 and popup.get_item_id(0) == 5 and popup.get_item_text(0).begins_with("Drift+"), "handling menu exposes Drift+ as a separate comparison option")
-		popup.about_to_popup.emit()
-		check(scene.get("paused") and not hud.touch.enabled, "opening comparison pauses and releases driving controls")
-		popup.id_pressed.emit(5)
-		popup.popup_hide.emit()
-		check(sim.config.profile_name == "Drift+" and HandlingSelection.config().profile_name == "Drift+" and sim.state.tick == 0, "visible Drift+ option switches the active and subsequent compact tune")
-		popup.about_to_popup.emit()
-		popup.id_pressed.emit(1)
-		popup.popup_hide.emit()
-		check(sim.config.profile_name == "Balanced" and sim.state.tick == 0 and not scene.get("paused"), "visible menu switches handling and restarts the drive")
-		check(HandlingSelection.config().profile_name == "Balanced", "menus and subsequent tracks use the chosen session preset")
-		popup.about_to_popup.emit()
-		popup.popup_hide.emit()
-		check(not scene.get("paused") and sim.config.profile_name == "Balanced", "dismissing the selector resumes without changing handling")
-		popup.id_pressed.emit(3)
-		check(sim.config.profile_name == "Original", "visible Original option restores previous handling")
+		scene.call("select_profile",5)
+		check(sim.config.profile_name == "Original+" and HandlingSelection.config().profile_name == "Original+", "production handling remains locked to Original+")
 		scene.queue_free()
 		await process_frame
 
@@ -322,3 +308,37 @@ func _integration() -> void:
 		check(screen.x > viewport.x * 0.15 and screen.x < viewport.x * 0.85 and screen.y > viewport.y * 0.15 and screen.y < viewport.y * 0.85, "camera retains player at heading %.0f degrees" % rad_to_deg(heading))
 	scene.queue_free()
 	await process_frame
+
+
+func _test_handbrake() -> void:
+	var key := InputEventKey.new()
+	key.physical_keycode = KEY_SPACE
+	check(InputMap.event_is_action(key, &"handbrake") and not InputMap.event_is_action(key, &"brake"), "Space binds only handbrake")
+	var driver := DriverInput.new()
+	Input.action_press(&"handbrake")
+	check(driver.sample().handbrake == 255 and driver.sample().brake == 0, "keyboard handbrake is independent")
+	driver.clear()
+	check(driver.sample().handbrake == 0, "focus/pause clear releases handbrake")
+	check(DriveFrame.sample(0,0,0,0.5).handbrake == 128, "handbrake quantizes")
+	for direction: float in [-1.0,1.0]:
+		var stopped := VehicleSimulation.new(HandlingConfig.new())
+		stopped.state.velocity = Vector2(0, direction*20)
+		for tick: int in range(1200): stopped.step(DriveFrame.sample(0,1,1,1))
+		check(stopped.state.velocity.length() < 0.001 and stopped.state.reverse_wait == 0.0, "handbrake stops either direction and never engages reverse or throttle")
+	var normal := VehicleSimulation.new(HandlingConfig.new())
+	var sliding := VehicleSimulation.new(HandlingConfig.new())
+	var replay := VehicleSimulation.new(HandlingConfig.new())
+	for sim: VehicleSimulation in [normal,sliding,replay]: sim.state.velocity = Vector2(0,25)
+	for tick: int in range(60):
+		normal.step(DriveFrame.sample(0.7,0,0))
+		var frame: DriveFrame = DriveFrame.sample(0.7,0,0,1)
+		sliding.step(frame)
+		var values: Array = JSON.parse_string(JSON.stringify(frame.packed()))
+		var decoded := DriveFrame.new()
+		decoded.steer=int(values[0]); decoded.throttle=int(values[1]); decoded.brake=int(values[2]); decoded.handbrake=int(values[3])
+		replay.step(decoded)
+	check(absf(sliding.state.slip_angle()) > absf(normal.state.slip_angle()), "handbrake initiates a stronger slide")
+	check(sliding.state.velocity.length() < normal.state.velocity.length(), "handbrake dissipates speed")
+	check(sliding.state.snapshot() == replay.state.snapshot(), "handbrake JSON replay is exact")
+	for tick: int in range(480): sliding.step(DriveFrame.sample(0,0,0))
+	check(absf(sliding.state.slip_angle()) < 0.02, "released handbrake recovers grip")

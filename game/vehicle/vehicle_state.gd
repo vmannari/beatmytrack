@@ -16,6 +16,12 @@ var yaw_rate: float = 0.0
 var steering: float = 0.0
 var grip: float = 1.0
 var reverse_wait: float = 0.0
+var handbrake_pressure: float = 0.0 # Input-driven rear-brake engagement and finite grip recovery.
+var launch_pending: bool = false
+var launch_result: String = ""
+var launch_end_tick: int = 0
+var launch_delay_until: int = 0
+var launch_gain: float = 0.0
 var tick: int = 0
 var collision_count: int = 0
 var route_index: int = -1
@@ -52,4 +58,6 @@ func snapshot() -> Array:
 	result.append([tire_oil,tire_water])
 	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])
 	result.append([roll_ticks, roll_direction, roll_cooldown])
+	result.append(handbrake_pressure)
+	result.append([launch_pending,launch_result,launch_end_tick,launch_delay_until,launch_gain])
 	return result

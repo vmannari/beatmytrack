@@ -4,7 +4,7 @@ extends Node
 const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
 const AccountController = preload("res://backend/account_controller.gd")
 var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
-var screen: String = "play"
+var screen: String = "tracks"
 var menu_open_costs: Dictionary = {}
 var root_ui: Control
 var content: VBoxContainer
@@ -18,6 +18,7 @@ var redo_history: Array[Dictionary] = []
 var canvas: EditorCanvas
 var editor_status: Label
 var test_button: Button
+var publish_button: Button
 var share_button: Button
 var capture_path: String = ""
 var returning_to_editor: bool = false
@@ -59,9 +60,16 @@ var guest_records: LocalRecords
 var guest_library: TrackLibrary
 var active_profile: String = ""
 var cloud: Node
+var lifecycle: TrackLifecycle
+var test_library_snapshot: TrackLibrary
+var test_scope_snapshot: String = ""
+var test_vehicle_snapshot: String = "compact"
+var cloud_root_override: String = ""
 var cloud_ticket: Dictionary = {}
 var cloud_publish_version: String = ""
 var cloud_starting: bool = false
+var _navigation_generation: int = 0
+var _profile_draft_recovery: Dictionary = {}
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -110,7 +118,7 @@ func _objects_only_edit() -> bool:
 
 func _ready() -> void:
 	var direct: bool = false
-	var capture_screen: String = "play"
+	var capture_screen: String = "tracks"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--track=") or argument == "--demo": direct = true
 		if argument.begins_with("--capture="): capture_path = argument.trim_prefix("--capture=")
@@ -129,13 +137,23 @@ func _ready() -> void:
 	add_child(online)
 	cloud = preload("res://backend/cloud_tracks.gd").new()
 	cloud.client = online.client
+	cloud.root_override = cloud_root_override
 	add_child(cloud)
 	cloud.load_cached()
+	lifecycle = TrackLifecycle.new()
+	lifecycle.cloud = cloud
+	lifecycle.library = library
+	lifecycle.records = records
+	lifecycle.legacy_directories = _legacy_track_directories()
+	add_child(lifecycle)
+	lifecycle.changed.connect(_lifecycle_changed)
 	var sync_timer := Timer.new()
-	sync_timer.wait_time = 8.0
+	sync_timer.wait_time = 2.0
 	sync_timer.autostart = true
 	sync_timer.timeout.connect(func() -> void:
-		if not online.busy and not cloud_starting: cloud.flush_outbox())
+		if not online.busy and not cloud_starting:
+			cloud.flush_outbox()
+			if not is_instance_valid(game): lifecycle.process_jobs())
 	add_child(sync_timer)
 	online.changed.connect(_account_changed)
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
@@ -161,9 +179,9 @@ func _ready() -> void:
 		_show_screen("restoring" if restoring else "account")
 		await online.start_session()
 		if restoring:
-			_show_screen("play" if online.client.signed_in() and not online.needs_username() else "account")
+			_show_screen("tracks" if online.client.signed_in() and not online.needs_username() else "account")
 		elif screen == "account" and online.client.signed_in() and not online.needs_username():
-			_show_screen("play")
+			_show_screen("tracks")
 	startup_complete = true
 	print("APP_READY")
 	if OS.is_debug_build() and FileAccess.file_exists("user://mobile_probe.json"):
@@ -176,6 +194,9 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	_navigation_generation += 1
+	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
+	if next == "play": next = "tracks"
 	_finish_preview_thread()
 	if is_instance_valid(object_browser):
 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
@@ -220,7 +241,7 @@ func _show_screen(next: String) -> void:
 	var background := MenuBackdrop.new()
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
-	if screen in ["play","garage"]:
+	if screen == "garage":
 		var stage := MenuStage.new()
 		stage.setting = str(selected_track.metadata.get("theme","pine"))
 		stage.garage = screen == "garage"
@@ -252,23 +273,50 @@ func _show_screen(next: String) -> void:
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.add_theme_constant_override("separation", 4)
 	nav.add_child(tabs)
-	for item: Array in [["play","HOME"],["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
+	for item: Array in [["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
 		var id: String = item[0]
 		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id or (id == "create" and screen in ["biome","drafts"]))
 		button.name = "Tab_" + id
 		button.custom_minimum_size.y = 64
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
-	account_button = MenuStyle.button(online.player_name() if online.client.signed_in() else "Sign in", _open_account)
+	account_button = MenuStyle.button(online.player_name() if online.client.signed_in() else "Guest", _show_screen.bind("profile"))
 	account_button.name = "MenuAccount"
-	account_button.custom_minimum_size.x = 110
+	account_button.tooltip_text = "Profile"
+	account_button.icon = MenuIcon.texture("avatar")
+	account_button.add_theme_constant_override("icon_max_width", 38)
+	account_button.add_theme_constant_override("h_separation", 12)
+	account_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	account_button.custom_minimum_size = Vector2(190, 54)
+	var profile_style: StyleBoxFlat = MenuStyle.box(MenuStyle.PANEL)
+	profile_style.content_margin_right = 38
+	if screen == "profile":
+		profile_style.bg_color = Color(1, 1, 1, 0.07)
+		account_button.add_theme_color_override("font_color", MenuStyle.ACCENT)
+	account_button.add_theme_stylebox_override("normal", profile_style)
+	for state: String in ["hover", "pressed", "disabled", "focus"]:
+		var state_style: StyleBoxFlat = root_ui.theme.get_stylebox(state, "Button").duplicate() as StyleBoxFlat
+		state_style.content_margin_right = 38
+		account_button.add_theme_stylebox_override(state, state_style)
+	var chevron := TextureRect.new()
+	chevron.texture = MenuIcon.texture("chevron")
+	chevron.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chevron.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	chevron.position = Vector2(-30, -10)
+	chevron.size = Vector2(20, 20)
+	chevron.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	account_button.add_child(chevron)
 	account_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	account_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	account_button.clip_text = true
+	# Let the name contribute to the minimum width; expanding tabs yield space.
+	account_button.clip_text = false
 	nav.add_child(account_button)
-	var settings: Button = MenuStyle.button("",_show_screen.bind("play" if screen == "settings" else "settings"))
-	settings.icon = MenuIcon.texture("settings")
-	settings.tooltip_text = "Back to Home" if screen == "settings" else "Settings"
+	var settings: Button = MenuStyle.button("",_show_screen.bind("settings"))
+	settings.icon = MenuIcon.texture("gear")
+	settings.tooltip_text = "Settings"
+	if screen == "settings":
+		var selected_style: StyleBoxFlat = MenuStyle.box(Color(1, 1, 1, 0.07))
+		settings.add_theme_stylebox_override("normal", selected_style)
+		settings.add_theme_color_override("icon_normal_color", MenuStyle.ACCENT)
 	settings.name = "MenuSettings"
 	settings.custom_minimum_size = Vector2(54,54)
 	settings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -284,13 +332,35 @@ func _show_screen(next: String) -> void:
 		"create": _editor()
 		"garage": _garage()
 		"settings": _settings()
+		"profile":
+			content.add_child(MenuStyle.label("PROFILE",36))
+			var manage := MenuStyle.button("Manage account" if online.client.signed_in() else "Sign in",_open_account)
+			manage.name = "ManageAccount"
+			content.add_child(manage)
+			if online.client.signed_in(): content.add_child(MenuStyle.button("Race uploads",cloud.show_uploads.bind(root_ui)))
 		"account": _account()
-		_: _home()
+		_: _tracks()
 
 func _account_changed() -> void:
+	var previous_profile: String = active_profile
 	_select_player_storage()
+	if lifecycle != null:
+		lifecycle.library = library
+		lifecycle.records = records
+		lifecycle.legacy_directories = _legacy_track_directories()
+		for item: Dictionary in library.editable_entries(): lifecycle.defer_sync(item.document)
 	if is_instance_valid(account_button):
-		account_button.text = online.player_name() if online.client.signed_in() else "Sign in"
+		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
+	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
+		_show_screen("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
+
+func _legacy_track_directories() -> Array[String]:
+	var directories: Array[String] = [guest_library.directory]
+	var players: String = profile_root.path_join("players")
+	if DirAccess.dir_exists_absolute(players):
+		for profile: String in DirAccess.get_directories_at(players):
+			directories.append(players.path_join(profile).path_join("tracks"))
+	return directories
 
 func _select_player_storage() -> void:
 	var identity: String = str(online.client.player.get("id", "")) if online.client.signed_in() else ""
@@ -298,6 +368,17 @@ func _select_player_storage() -> void:
 	if scope == active_profile:
 		library.owner_name = online.player_name() if not identity.is_empty() else "Guest"
 		return
+	# Save the outgoing editor under its original owner before selecting Guest or
+	# another account. A running race already retains its preference_records.
+	var profile_save_error: String = ""
+	if not document.is_empty() and library != null:
+		var binding: Dictionary = cloud._read(library.directory.path_join(".backend").path_join(str(document.id)+".json")) if cloud != null else {}
+		if binding.get("source_fingerprint") != TrackLibrary.draft_fingerprint(document):
+			if library.save_wip(document) != OK:
+				_profile_draft_recovery[active_profile] = document.duplicate(true)
+				profile_save_error = "The previous draft could not be saved. It remains in memory for that account; check available storage."
+			else: _profile_draft_recovery.erase(active_profile)
+	_navigation_generation += 1
 	_finish_preview_thread()
 	active_profile = scope
 	if scope.is_empty():
@@ -311,6 +392,7 @@ func _select_player_storage() -> void:
 	records.load_records()
 	library.owner_name = online.player_name() if not identity.is_empty() else "Guest"
 	document = {}
+	if _profile_draft_recovery.has(scope): document = _profile_draft_recovery[scope].duplicate(true)
 	history.clear()
 	redo_history.clear()
 	editor_view.clear()
@@ -318,10 +400,10 @@ func _select_player_storage() -> void:
 	browser_state.clear()
 	track_catalog = null
 	discovery_provider = TrackDiscoveryProvider.new()
-	test_document_snapshot = {}
+	if not is_instance_valid(game): test_document_snapshot = {}
 	test_return_to_drafts = false
 	returning_to_editor = false
-	pending_menu_notice = ""
+	pending_menu_notice = profile_save_error
 	selected_track = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
 	var last: String = str(records.settings.get("last_track", ""))
 	if last in BUILTIN_IDS:
@@ -343,11 +425,14 @@ func _stamp_creator() -> void:
 func _restore_cloud_selection(identity: String) -> void:
 	if cloud == null: return
 	var catalog := TrackCatalog.new(library)
-	cloud.add_to_catalog(catalog)
+	cloud.add_to_catalog(catalog,null,[identity])
 	for entry: Dictionary in catalog.entries:
-		if entry.id == identity:
+		if entry.id == identity or "cloud_"+str(entry.version_id) == identity:
 			var track: NativeTrack = catalog.resolve(entry)
-			if track != null: selected_track = track
+			if track != null:
+				selected_track = track
+				records.settings.last_track = entry.id
+				records.save_records()
 			return
 
 func _open_account() -> void:
@@ -383,83 +468,13 @@ func _account() -> void:
 	var panel := preload("res://ui/account_panel.gd").new()
 	panel.account = online
 	panel.custom_minimum_size.x = 520
-	panel.continue_requested.connect(_show_screen.bind("play"))
+	panel.continue_requested.connect(_show_screen.bind("tracks"))
 	column.add_child(panel)
 
 func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> void:
 	if parent == null: parent = content
 	parent.add_child(MenuStyle.label(eyebrow, 15, true))
 	parent.add_child(MenuStyle.label(title, 32))
-
-func _home() -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation",24)
-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(row)
-	var scene_copy := VBoxContainer.new()
-	scene_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(scene_copy)
-	var slogan := MenuStyle.label("SMALL TRACKS. BIG STORIES.",40)
-	slogan.add_theme_color_override("font_shadow_color",Color(0.02,0.06,0.08,0.85))
-	slogan.add_theme_constant_override("shadow_offset_x",1)
-	slogan.add_theme_constant_override("shadow_offset_y",2)
-	scene_copy.add_child(slogan)
-	var controls := MenuStyle.label("WASD / arrows to steer  ·  Space to brake" if not OS.has_feature("mobile") else "Steer left. Pedals right. Make it yours.",17)
-	controls.add_theme_color_override("font_shadow_color",MenuStyle.INK)
-	controls.add_theme_constant_override("shadow_offset_y",2)
-	scene_copy.add_child(controls)
-	var space := Control.new()
-	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scene_copy.add_child(space)
-	var shortcuts := HBoxContainer.new()
-	scene_copy.add_child(shortcuts)
-	_feature(shortcuts,"EXPLORE CIRCUITS","%d tracks to make your own" % BUILTIN_IDS.size(),_open_library.bind("all"))
-	_feature(shortcuts,"YOUR FAVORITES","%d saved for another run" % records.settings.get("favorites",[]).size(),_open_library.bind("favorites"))
-	var invite: VBoxContainer = _menu_card(row)
-	invite.add_theme_constant_override("separation",6)
-	var eyebrow := MenuStyle.label("TIME ATTACK  /  SELECTED CIRCUIT",16)
-	eyebrow.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	invite.add_child(eyebrow)
-	invite.add_child(MenuStyle.button(VehicleCatalog.title() + "  /  Change car",_show_screen.bind("garage")))
-	var title := MenuStyle.label(track_title(selected_track).to_upper(),48)
-	title.clip_text = true
-	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	title.tooltip_text = track_title(selected_track)
-	invite.add_child(title)
-	var route_row := HBoxContainer.new()
-	invite.add_child(route_row)
-	var outline := CircuitEmblem.new()
-	outline.track = selected_track
-	outline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	route_row.add_child(outline)
-	var facts := VBoxContainer.new()
-	facts.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	route_row.add_child(facts)
-	facts.add_child(MenuStyle.label("5 LAPS",25))
-	facts.add_child(MenuStyle.label("Standing start",16,true))
-	facts.add_child(MenuStyle.label(str(selected_track.metadata.get("theme","pine")).to_upper(),16,true))
-	invite.add_child(HSeparator.new())
-	var best: float = records.best_for(selected_track,HandlingSelection.config())
-	invite.add_child(MenuStyle.label("YOUR TIME TO BEAT" if best > 0.0 else "YOUR FIRST RUN",16,true))
-	var target := MenuStyle.label(MenuStyle.time_text(best) if best > 0.0 else "SET YOUR FIRST TIME",36)
-	target.name = "RaceTarget"
-	invite.add_child(target)
-	var instruction := MenuStyle.label("Five laps. Find your next tenth." if best > 0.0 else "Finish five laps. Then beat your time.",17,true)
-	instruction.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	invite.add_child(instruction)
-	var card_space := Control.new()
-	card_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	invite.add_child(card_space)
-	var race: Button = MenuStyle.button("RACE",_start_race.bind(selected_track,false),true)
-	race.name = "StartRace"
-	race.icon = MenuIcon.texture("arrow")
-	race.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	race.add_theme_color_override("icon_normal_color",MenuStyle.INK)
-	race.add_theme_color_override("icon_hover_color",MenuStyle.INK)
-	race.custom_minimum_size.y = 66
-	race.add_theme_font_size_override("font_size",30)
-	invite.add_child(race)
-	invite.add_child(MenuStyle.button("Change circuit",_open_library.bind("all")))
 
 func _menu_card(parent: HBoxContainer) -> VBoxContainer:
 	var panel := PanelContainer.new()
@@ -487,6 +502,7 @@ func _open_library(section: String) -> void:
 func _ensure_track_catalog() -> void:
 	if track_catalog == null:
 		track_catalog = TrackCatalog.new(library)
+		if cloud != null: return # Race uses backend publications and their caches.
 		if library.directory != guest_library.directory:
 			track_catalog.shared_directories.append(guest_library.directory)
 		var profiles := DirAccess.open(profile_root.path_join("players"))
@@ -511,7 +527,7 @@ func _tracks() -> void:
 	browser.state = browser_state
 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
 	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
-	browser.home_requested.connect(func() -> void: _show_screen("play"))
+	browser.home_requested.connect(func() -> void: _show_screen("tracks"))
 	browser.import_requested.connect(_import_dialog)
 	browser.delete_requested.connect(_confirm_delete_track)
 	browser.notice.connect(_notice)
@@ -542,7 +558,7 @@ func _garage() -> void:
 	scene_copy.add_child(scene_space)
 	var footer := HBoxContainer.new()
 	scene_copy.add_child(footer)
-	_feature(footer,track_title(selected_track).to_upper()+" · 5 LAPS","Return to your selected circuit",_show_screen.bind("play"))
+	_feature(footer,track_title(selected_track).to_upper()+" · 5 LAPS","Return to your selected circuit",_show_screen.bind("tracks"))
 	_feature(footer,"DRIVING CONTROLS","Find your preferred layout",_show_screen.bind("settings"))
 	var info: VBoxContainer = _menu_card(row)
 	info.add_theme_constant_override("separation",6)
@@ -585,73 +601,13 @@ func _garage() -> void:
 	info.add_child(MenuStyle.button("Choose circuit",_open_library.bind("all")))
 
 func _settings() -> void:
-	var columns := HBoxContainer.new()
-	columns.add_theme_constant_override("separation",32)
-	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(columns)
-	var intro := VBoxContainer.new()
-	intro.custom_minimum_size.x = 360
-	columns.add_child(intro)
-	intro.add_child(MenuStyle.label("MAKE YOURSELF\nCOMFORTABLE.",44))
-	var help := MenuStyle.label("Your controls. Your racing line.",20,true)
-	intro.add_child(help)
-	var air := Control.new()
-	air.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	intro.add_child(air)
-	intro.add_child(MenuStyle.button("Back to Home",_show_screen.bind("play")))
-	var panel := PanelContainer.new()
-	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	columns.add_child(panel)
-	var settings := VBoxContainer.new()
-	settings.add_theme_constant_override("separation",10)
-	panel.add_child(settings)
-	settings.add_child(MenuStyle.label("DRIVING CONTROLS",28))
-	settings.add_child(MenuStyle.label("Set up your touch controls for a comfortable reach.",18,true))
-	var steering_modes := HBoxContainer.new()
-	steering_modes.add_theme_constant_override("separation",10)
-	settings.add_child(steering_modes)
-	var current_layout: Dictionary = ControlLayout.from_settings(records.settings)
-	var steering_titles: Array[String] = ["Buttons", "Analog slider", "Analog joystick"]
-	for index: int in range(ControlLayout.METHODS.size()):
-		var method: String = ControlLayout.METHODS[index]
-		var option: Button = MenuStyle.button(steering_titles[index],func() -> void:
-			var config: Dictionary = ControlLayout.from_settings(records.settings)
-			config.steering_type = method
-			records.settings.control_layout = config
-			var error: Error = records.save_records()
-			_show_screen("settings")
-			if error != OK: _notice("Steering mode could not be saved. Please try again."),current_layout.steering_type == method)
-		option.name = "Steering_"+method
-		option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		steering_modes.add_child(option)
-	settings.add_child(MenuStyle.button("Customize layout", _customize_controls, true))
-	settings.add_child(MenuStyle.label("Analog: slide farther left or right to steer more.\nCustomize layout to move and resize your controls.",18,true))
-	settings.add_child(HSeparator.new())
-	settings.add_child(MenuStyle.label("STEERING HAPTICS",16,true))
-	var haptics := HBoxContainer.new()
-	haptics.add_theme_constant_override("separation",10)
-	settings.add_child(haptics)
-	var strength: float = float(records.settings.get("steering_haptics",0.2))
-	var choices: Array[String] = ["Off", "Light", "Medium", "Strong"]
-	var amplitudes: Array[float] = [0.0, 0.2, 0.5, 1.0]
-	for index: int in range(choices.size()):
-		var amplitude: float = amplitudes[index]
-		var option: Button = MenuStyle.button(choices[index],func() -> void:
-			records.settings.steering_haptics = amplitude
-			var error: Error = records.save_records()
-			_show_screen("settings")
-			if error != OK:
-				_notice("Haptic setting could not be saved. Please try again.")
-			else:
-				TouchControls.SteeringHaptics.press(amplitude),is_equal_approx(strength,amplitude))
-		option.name = "Haptics"+choices[index]
-		option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		haptics.add_child(option)
-	settings.add_child(MenuStyle.label("KEYBOARD",16,true))
-	for hint: String in ["WASD / arrows   Steer and accelerate", "Space   Brake     ·     R   Retry     ·     Esc   Pause", "Editor: drag to move, scroll or pinch to zoom."]:
-		var label := MenuStyle.label(hint,18,true)
-		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		settings.add_child(label)
+	var page := SettingsPage.new()
+	page.records = records
+	page.signed_in = online.client.signed_in()
+	page.player_name = online.player_name() if page.signed_in else "Guest"
+	page.customize_requested.connect(_customize_controls)
+	page.account_requested.connect(_open_account)
+	content.add_child(page)
 
 func _customize_controls() -> void:
 	var editor := ControlLayoutEditor.new()
@@ -725,6 +681,7 @@ func _editor() -> void:
 	canvas.document_changed.connect(func() -> void:
 		canvas.refresh()
 		test_button.disabled = true
+		publish_button.disabled = true
 		share_button.disabled = true)
 	canvas.edit_finished.connect(func() -> void: _save_draft(true))
 	canvas.hint_changed.connect(func(value: String) -> void: editor_status.text = value)
@@ -795,7 +752,7 @@ func _editor() -> void:
 	top.alignment = BoxContainer.ALIGNMENT_END
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -376; top.offset_right = -80; top.offset_top = 16
+	top.offset_left = -516; top.offset_right = -80; top.offset_top = 16
 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = EditorStyle.button("",_focus_issue)
@@ -823,6 +780,11 @@ func _editor() -> void:
 		play_style.border_color=Color(0.65,0.82,0.43,0.45)
 		play_style.set_border_width_all(1)
 		test_button.add_theme_stylebox_override(state,play_style)
+	publish_button = EditorButton.action("Publish","publish",_publish_current_document,true)
+	publish_button.name = "PublishTrack"
+	publish_button.tooltip_text = "Complete a test drive before publishing this version."
+	publish_button.custom_minimum_size=Vector2(132,52)
+	top.add_child(publish_button)
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
 	var rail_panel := PanelContainer.new()
@@ -1282,6 +1244,7 @@ func _refresh_editor() -> void:
 	var errors: Array[String] = TrackDocument.validate(document)
 	editor_status.text = "Waypoints are generated from connected roads. Changes save automatically." if errors.is_empty() else errors[0]
 	test_button.disabled = not errors.is_empty()
+	publish_button.disabled = not errors.is_empty() or lifecycle == null or not lifecycle.ready_to_publish(document)
 	share_button.disabled = not errors.is_empty()
 	if is_instance_valid(canvas): canvas.refresh()
 
@@ -1296,12 +1259,14 @@ func _save_draft(background_preview: bool = false) -> Error:
 	var errors: Array[String] = TrackDocument.validate(document)
 	var message: String
 	var save_error: Error = library.save_wip(document)
+	if save_error == OK and lifecycle != null: lifecycle.defer_sync(document)
 	if save_error != OK: message = "Could not save: " + library.last_error
 	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
 	else: message = "WIP autosaved. Saved original unchanged."
 	if is_instance_valid(editor_status):
 		editor_status.text = message
 		test_button.disabled = not errors.is_empty()
+		publish_button.disabled = not errors.is_empty() or lifecycle == null or not lifecycle.ready_to_publish(document)
 		share_button.disabled = not errors.is_empty()
 	# Refresh action availability after each edit, without rebuilding under a finger.
 	if is_instance_valid(canvas):
@@ -1325,12 +1290,20 @@ func _test_document() -> void:
 	if not canvas.ghost.is_empty():
 		editor_status.text = "Confirm or cancel the preview before testing."
 		return
-	_save_draft()
+	if _save_draft() != OK: return
+	if not await _prepare_creator_test(document): return
 	var track: NativeTrack = TrackCompiler.compile(document)
 	if track != null and not test_button.disabled:
 		track.spawn = _practice_start(track)
 		track.spawn_heading = _practice_heading(track)
 		_start_race(track, true)
+
+func _publish_current_document() -> void:
+	if not canvas.paint_points.is_empty() or not canvas.ghost.is_empty():
+		_notice("Confirm or cancel the preview before publishing.")
+		return
+	if _save_draft() != OK: return
+	await _publish_saved_draft("wip:"+str(document.id))
 
 func _share_dialog() -> void:
 	if not canvas.paint_points.is_empty():
@@ -1435,24 +1408,43 @@ var test_document_snapshot: Dictionary = {}
 
 func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false) -> void:
 	if cloud_starting: return
+	if not from_editor and not track.metadata.has("cloud_version") and cloud != null:
+		_notice("Choose a published backend track from Race.")
+		return
 	cloud_ticket = {}
 	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+		var original_scope: String = lifecycle.scope()
+		var navigation_generation: int = _navigation_generation
+		var starting_screen: String = screen
+		var selected_vehicle: String = VehicleCatalog.selected
+		var starting_selection: NativeTrack = selected_track
 		cloud_starting = true
-		cloud_ticket = await cloud.ticket(track)
+		var issued: Dictionary = await cloud.ticket(track)
 		cloud_starting = false
+		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection: return
+		cloud_ticket = issued
+		if not cloud_ticket.is_empty():
+			cloud_ticket._owner_id = str(online.client.player.id)
+			cloud_ticket._origin = str(online.client.base_url())
 		if cloud_ticket.is_empty():
 			var offline_dialog := ConfirmationDialog.new()
 			offline_dialog.title = "Online race unavailable"
 			offline_dialog.dialog_text = cloud.last_error+"\nRace offline with a local time? This attempt will not enter the online leaderboard."
 			offline_dialog.ok_button_text = "Race offline"
 			_own_dialog(offline_dialog)
-			offline_dialog.confirmed.connect(_start_race.bind(track,from_editor,true))
+			offline_dialog.confirmed.connect(func() -> void:
+				if navigation_generation == _navigation_generation and screen == starting_screen and VehicleCatalog.selected == selected_vehicle and selected_track == starting_selection:
+					_start_race(track,from_editor,true))
 			offline_dialog.popup_centered()
 			return
 	returning_to_editor = from_editor
 	test_return_to_drafts = from_editor and screen == "drafts"
 	test_document_snapshot = document.duplicate(true) if from_editor else {}
+	if from_editor:
+		test_library_snapshot = library
+		test_scope_snapshot = lifecycle.scope() if lifecycle != null else ""
+		test_vehicle_snapshot = VehicleCatalog.selected
 	if not from_editor:
 		records.settings["last_track"] = track.identity
 		if records.save_records() != OK:
@@ -1467,6 +1459,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.set("resume_client",online.client)
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
 	game.set("rating_records", null if track.metadata.has("cloud_version") else records)
+	game.set("preference_records", records)
 	game.set("editor_test", from_editor)
 	game.connect("exit_requested", _leave_race)
 	game.connect("edit_here_requested", _edit_here)
@@ -1479,6 +1472,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	hud.touch.left_handed = ui_left_handed
 	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
 	hud.touch.layout = ControlLayout.from_settings(records.settings)
+	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
 
 func _edit_here(position: Vector2) -> void:
 	_leave_race()
@@ -1487,6 +1481,9 @@ func _edit_here(position: Vector2) -> void:
 		canvas.refresh()
 
 func _leave_race() -> void:
+	if is_instance_valid(game) and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+		_results()
+		if not cloud_ticket.is_empty(): return
 	if is_instance_valid(game):
 		remove_child(game)
 		game.queue_free()
@@ -1498,6 +1495,7 @@ func _leave_race() -> void:
 		pending_menu_notice = ""
 
 func _results() -> void:
+	var result_records: LocalRecords = game.get("preference_records")
 	var session: TrackSession = game.get("track_session")
 	var track: NativeTrack = game.get("native_track")
 	var total: float = session.race_time_seconds()
@@ -1506,14 +1504,20 @@ func _results() -> void:
 	if clean and session.finished and not cloud_ticket.is_empty():
 		online_queued = cloud.queue_run(cloud_ticket,game.get("online_frames"),cloud_publish_version,game.get("online_rewinds"))
 		if not online_queued:
-			pending_menu_notice = "The race could not be queued for upload. Check free storage."
+			var recovery := AcceptDialog.new()
+			recovery.dialog_text = "The race could not be saved for upload. Free storage, then retry saving this result."
+			recovery.ok_button_text = "Retry saving"
+			_own_dialog(recovery)
+			recovery.confirmed.connect(_results,CONNECT_DEFERRED)
+			recovery.popup_centered(Vector2i(550,180))
+			return # Keep the finished game, frames and ticket until durable enqueue.
 		cloud_ticket = {}
 		cloud_publish_version = ""
 		cloud.flush_outbox()
-	var previous: float = records.best_for(track, game.get("handling"))
-	var previous_lap: float = float(records.records.get(records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+	var previous: float = result_records.best_for(track, game.get("handling"))
+	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
 	var saved: bool = not clean
-	if clean: saved = records.record(track, game.get("handling"), total, session.lap_times) == OK
+	if clean: saved = result_records.record(track, game.get("handling"), total, session.lap_times) == OK
 	(game.get("hud") as PlaygroundHUD).hide()
 	root_ui.visible = true
 	for child: Node in root_ui.get_children():
@@ -1538,7 +1542,7 @@ func _results() -> void:
 	panel.vehicle_name = VehicleCatalog.title(game.vehicle_id)
 	panel.total = total
 	panel.previous = previous
-	panel.best = records.best_for(track,game.get("handling"))
+	panel.best = result_records.best_for(track,game.get("handling"))
 	panel.laps = session.lap_times.duplicate()
 	panel.clean = clean
 	panel.saved = saved
@@ -1558,11 +1562,12 @@ func _results() -> void:
 	if track.metadata.has("cloud_version"):
 		var online_status := Label.new()
 		online_status.name = "CloudRunStatus"
-		online_status.text = cloud.status if online_queued else ("Offline race · local time only" if clean else "Practice · no online score")
+		online_status.text = "Could not connect to the server. We'll retry automatically."
+		online_status.visible = online_queued and cloud.run_connection_failed
 		panel.add_child(online_status)
 		if online_queued:
 			var update_status: Callable = func() -> void:
-				if is_instance_valid(online_status): online_status.text = cloud.status
+				if is_instance_valid(online_status): online_status.visible = cloud.run_connection_failed
 			cloud.changed.connect(update_status)
 			online_status.tree_exiting.connect(func() -> void:
 				if cloud.changed.is_connected(update_status): cloud.changed.disconnect(update_status))
@@ -1583,10 +1588,11 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	_ensure_track_catalog()
 	if track_catalog.indexed_revision != library.revision:
 		track_catalog.entries.clear()
-		for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
-		for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
-		track_catalog.add_shared_tracks()
-		if cloud != null: cloud.add_to_catalog(track_catalog,discovery_provider)
+		if cloud != null:
+			cloud.add_to_catalog(track_catalog,discovery_provider)
+		else:
+			for id: String in BUILTIN_IDS: track_catalog.add_builtin(id)
+			for id: String in track_catalog.local_ids(): track_catalog.add_local(id)
 		track_catalog.indexed_revision = library.revision
 	page.recommendations = RaceRecommendations.suggest(track_catalog,game.get("native_track"))
 	page.back_requested.connect(func() -> void:
@@ -1599,7 +1605,7 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 			game.queue_free()
 		game = null
 		returning_to_editor = false
-		_show_screen("play"))
+		_show_screen("tracks"))
 	page.tracks_requested.connect(_leave_race)
 	page.race_requested.connect(_next_result_race)
 	parent.add_child(page)
@@ -1620,20 +1626,33 @@ func _next_result_race(recommendation: Dictionary) -> void:
 	_start_race(next_track,false)
 
 func _retry_race() -> void:
-	if cloud_starting: return
+	if cloud_starting or not is_instance_valid(game): return
+	if not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+		_results()
+		if not cloud_ticket.is_empty(): return
+	var active_game: Node = game
+	var account_id: String = str(online.client.player.get("id",""))
+	var origin: String = str(online.client.base_url())
 	var track: NativeTrack = game.get("native_track")
-	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
-	cloud_ticket = {}
+	var replacement: Dictionary = {}
 	if track.metadata.has("cloud_version") and online.client.signed_in():
 		cloud_starting = true
-		cloud_ticket = await cloud.ticket(track)
+		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"))
 		cloud_starting = false
-		if cloud_ticket.is_empty():
+		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+		if replacement.is_empty():
 			_notice("Could not start verified retry: "+cloud.last_error)
 			return
+	cloud_ticket = replacement
+	if not cloud_ticket.is_empty():
+		cloud_ticket._owner_id = account_id
+		cloud_ticket._origin = origin
+	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
 	root_ui.visible = false
 	(game.get("hud") as PlaygroundHUD).show()
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
+	game.set("preference_records",records) # A confirmed restart begins a new attempt.
+	game.set("rating_records",null if track.metadata.has("cloud_version") else records)
 	game.call("restart")
 
 static func track_title(track: NativeTrack) -> String:
@@ -1786,15 +1805,17 @@ func _save_track_now() -> bool:
 		_notice("Could not save: "+library.last_error)
 		return false
 	elif not TrackDocument.validate(document).is_empty():
-		_notice("Draft saved. You can reopen it in My circuits. Before driving: "+TrackDocument.validate(document)[0])
+		_notice("Draft saved. Open Load track to edit it. Before testing: "+TrackDocument.validate(document)[0])
 	else:
 		# Menus retain a compiled selection independently of the saved-track index.
 		# Replace it after committing edits so Race cannot launch its old geometry.
 		if selected_track != null and selected_track.identity == "creator_"+str(document.id):
 			var saved_track: NativeTrack = TrackCompiler.compile(document)
 			if saved_track != null: selected_track = saved_track
-		_notice("Saved on this device. Choose Saved tracks in the circuit library to drive it.")
+		_notice("Saved on this device. Open Load track to edit or test it.")
 		NativeTrackVisual.request_saved_road_bake(canvas.native_preview)
+	var saved_title: Label = root_ui.find_child("TrackName",true,false) as Label
+	if saved_title != null: saved_title.text = str(document.name)
 	editor_saved_snapshot = document.duplicate(true)
 	return true
 
@@ -1804,9 +1825,9 @@ func _editor_has_unsaved_changes() -> bool:
 
 func _request_editor_exit() -> void:
 	if not _editor_has_unsaved_changes():
-		_show_screen("play")
+		_show_screen("tracks")
 		return
-	_confirm_editor_departure(_show_screen.bind("play"))
+	_confirm_editor_departure(_show_screen.bind("tracks"))
 
 func _confirm_editor_departure(after: Callable, allow_discard: bool = true) -> void:
 	if root_ui.find_child("SaveChangesDialog", true, false) != null: return
@@ -1830,8 +1851,11 @@ func _confirm_editor_departure(after: Callable, allow_discard: bool = true) -> v
 	field.text_changed.connect(update_save)
 	update_save.call(field.text)
 	dialog.confirmed.connect(func() -> void:
+		dialog.hide() # Saving can open its own success/failure notice.
 		document.name = field.text.strip_edges()
-		if not _save_track_now(): return
+		if not _save_track_now():
+			dialog.queue_free()
+			return
 		dialog.queue_free()
 		if after.is_valid(): after.call())
 	dialog.custom_action.connect(func(action: StringName) -> void:
@@ -1892,12 +1916,51 @@ func _drafts() -> void:
 	var browser: VBoxContainer = load("res://ui/draft_browser.gd").new()
 	browser.name = "DraftBrowser"
 	browser.set("library",library)
+	browser.set("lifecycle",lifecycle)
+	if library != guest_library: browser.set("guest_library",guest_library)
+	browser.connect("adopt_requested",_adopt_guest_draft)
+	browser.connect("fork_requested",_fork_track_draft)
 	browser.connect("edit_requested",_load_saved_document)
 	browser.connect("test_requested",_test_saved_draft)
 	browser.connect("publish_requested",_publish_saved_draft)
 	browser.connect("back_requested",func() -> void: _show_screen(draft_return_screen if not document.is_empty() else "biome"))
 	browser.connect("delete_requested",_confirm_delete_draft)
-	content.add_child(browser)
+	if get_viewport().get_visible_rect().size.x < 1100 or get_viewport().get_visible_rect().size.y < 620:
+		var scroll := ScrollContainer.new()
+		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		content.add_child(scroll)
+		browser.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scroll.add_child(browser)
+	else: content.add_child(browser)
+
+func _adopt_guest_draft(source: Dictionary) -> void:
+	if online == null or not online.client.signed_in(): return
+	document = source.duplicate(true)
+	_stamp_creator()
+	if library.save_wip(document) != OK:
+		_notice(library.last_error)
+		return
+	lifecycle.defer_sync(document)
+	editor_view.clear()
+	history.clear()
+	redo_history.clear()
+	_show_screen("create")
+
+func _fork_track_draft(source: Dictionary) -> void:
+	var copy: Dictionary = source.duplicate(true)
+	copy.id = TrackLibrary.unique_id()
+	copy.name = str(copy.name)+" copy"
+	document = copy
+	_stamp_creator()
+	if library.save_wip(document) != OK:
+		_notice(library.last_error)
+		return
+	lifecycle.defer_sync(document)
+	editor_view.clear()
+	history.clear()
+	redo_history.clear()
+	_show_screen("create")
 
 func _read_draft_for_action(id: String) -> Dictionary:
 	var loaded: Dictionary = library.load_wip(id.trim_prefix("wip:")) if id.begins_with("wip:") else library.load_document(id)
@@ -1919,6 +1982,9 @@ func _test_saved_draft(id: String) -> void:
 		_notice("Place a start line in the editor before testing.")
 		return
 	loaded = route.document
+	document = loaded
+	if not await _prepare_creator_test(loaded): return
+	loaded = document
 	var track: NativeTrack = TrackCompiler.compile(loaded)
 	if track == null:
 		_notice("This track needs repairs before testing. Open Edit track for details.")
@@ -1938,44 +2004,78 @@ func _complete_draft_test() -> void:
 	if not is_instance_valid(game) or test_document_snapshot.is_empty(): return
 	var witness: TrackSession = game.get("practice_validation")
 	if not witness.finished or not bool(game.get("practice_validation_eligible")): return
-	if TrackLibrary.draft_fingerprint(document) != TrackLibrary.draft_fingerprint(test_document_snapshot): return
-	if library.is_published(str(document.id)): return
-	if library.mark_tested(document) != OK:
-		pending_menu_notice = "Test completed, but its status could not be saved. Please try again."
-	else:
-		pending_menu_notice = "Test run complete. This draft is ready to publish."
+	var storage: TrackLibrary = test_library_snapshot if test_library_snapshot != null else library
+	var proof_document: Dictionary = test_document_snapshot.duplicate(true)
+	var proof_frames: Array = game.get("online_frames").duplicate(true)
+	var staged: Dictionary = lifecycle.stage(proof_document,proof_frames,test_vehicle_snapshot,storage,test_scope_snapshot)
+	if proof_frames.is_empty() or staged.is_empty() or storage.mark_tested(proof_document) != OK:
+		var recovery := AcceptDialog.new()
+		recovery.dialog_text = "The completed test could not be saved. Free storage, then retry saving this recording."
+		recovery.ok_button_text = "Retry saving"
+		_own_dialog(recovery)
+		recovery.confirmed.connect(_complete_draft_test,CONNECT_DEFERRED)
+		recovery.popup_centered()
+		return # Keep the exact finished recording available until durable save succeeds.
+	pending_menu_notice = "Test recording saved. Backend verification continues automatically."
+	lifecycle.process_jobs()
 	if test_return_to_drafts: _leave_race()
 
 func _publish_saved_draft(id: String) -> void:
 	var loaded: Dictionary = _read_draft_for_action(id)
 	if loaded.is_empty(): return
 	if online != null and online.client.signed_in():
-		var uploaded: Dictionary = await cloud.upload_draft(loaded)
-		if not uploaded.ok:
-			_notice("Upload failed: "+str(uploaded.error))
+		var original_scope: String = lifecycle.scope()
+		if not await lifecycle.request_publish(loaded):
+			_notice(lifecycle.last_error)
 			return
-		var response: Dictionary = await online.client.request_api("/me/track-versions/"+str(uploaded.data.version_id)+"/document",HTTPClient.METHOD_GET,{},"",true)
-		if not response.ok:
-			_notice("Could not load the uploaded draft. Please retry.")
+		if lifecycle.scope() != original_scope: return
+		if lifecycle.status_for(loaded).get("state") != "published":
+			_notice(lifecycle.caption(loaded)+" Your publication request is saved and will retry.")
 			return
-		var track: NativeTrack = TrackCompiler.compile(response.data)
-		if track == null: return
-		track.metadata["cloud_version"] = str(uploaded.data.version_id)
-		track.metadata["cloud_publish"] = true
-		cloud_publish_version = str(uploaded.data.version_id)
-		selected_track = track
-		_start_race(track,false)
+		if not document.is_empty() and TrackLibrary.draft_fingerprint(document) == TrackLibrary.draft_fingerprint(loaded):
+			document = {}
+			editor_view.clear()
+			history.clear()
+			redo_history.clear()
+		_show_screen("tracks")
+		_notice("Track published.")
 		return
 	_notice("Sign in to publish this track to the cloud. Your draft remains saved locally.")
 	return
+
+func _prepare_creator_test(source: Dictionary) -> bool:
+	if lifecycle == null: return true
+	var original_scope: String = lifecycle.scope()
+	var fingerprint: String = TrackLibrary.draft_fingerprint(source)
+	cloud_starting = true
+	var exact: Dictionary = await lifecycle.prepare_test(source.duplicate(true))
+	cloud_starting = false
+	if lifecycle.scope() != original_scope or document.is_empty() or TrackLibrary.draft_fingerprint(document) != fingerprint: return false
+	if exact.is_empty():
+		_notice(lifecycle.last_error)
+		return false
+	document = exact
+	library.owner_name = str(exact.get("creator",library.owner_name))
+	return library.save_wip(document) == OK
+
+func _lifecycle_changed() -> void:
+	if records != null and cloud != null: cloud.migrate_record_identities(records)
+	if is_instance_valid(publish_button) and not document.is_empty():
+		publish_button.disabled = not lifecycle.ready_to_publish(document)
+		publish_button.tooltip_text = lifecycle.caption(document)
+		if is_instance_valid(editor_status): editor_status.text = lifecycle.caption(document)
 
 func _confirm_delete_draft(id: String, title: String) -> void:
 	var dialog := ConfirmationDialog.new()
 	dialog.name = "DeleteDraftDialog"
 	dialog.title = "Delete draft?"
-	dialog.dialog_text = 'Delete "%s" and its local autosave?\nThis cannot be undone.' % title
+	dialog.dialog_autowrap = true
+	dialog.dialog_text = 'Delete "%s" and its local autosave?\nIts private cloud draft will be archived; shared versions stay available.\nThis cannot be undone.' % title
 	dialog.ok_button_text = "Delete draft"
 	dialog.confirmed.connect(func() -> void:
+		if lifecycle != null and not lifecycle.archive_draft(id):
+			_notice(lifecycle.last_error)
+			return
 		if library.delete_editable(id) != OK:
 			_notice(library.last_error)
 			return

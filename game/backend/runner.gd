@@ -87,7 +87,10 @@ func compile_track(doc: Dictionary) -> Dictionary:
 	if not generated.ok: return {"error":str(generated.errors[0])}
 	# A route cannot be shortened independently from the physical road.
 	var automatic: Dictionary = generated.document
-	if doc.points.size() != automatic.points.size() or doc.corners != automatic.corners or doc.widths != automatic.widths:
+	# Route widths are generated and consumed as float32. JSON round-tripping
+	# widens them to float64 with decimal rounding; compare canonical precision,
+	# not those incidental low bits. Compile the unchanged submitted document.
+	if doc.points.size() != automatic.points.size() or doc.corners != automatic.corners or PackedFloat32Array(doc.widths) != PackedFloat32Array(automatic.widths):
 		return {"error":"Regenerate the automatic route from connected road pieces"}
 	for i: int in range(doc.points.size()):
 		if Vector2(doc.points[i][0],doc.points[i][1]).distance_to(Vector2(automatic.points[i][0],automatic.points[i][1])) > 0.002:
@@ -111,11 +114,13 @@ func replay_error(replay: Variant) -> String:
 		return "Unsupported replay envelope"
 	if not ((replay.size() == 2 and replay.get("schema") == REPLAY_SCHEMA) or (replay.size() == 3 and replay.get("schema") == "bmt-replay-v2" and replay.get("rewinds") is Array)): return "Unsupported replay envelope"
 	if replay.frames.is_empty() or replay.frames.size() > MAX_FRAMES: return "Replay frame count outside bounds"
-	for frame: Variant in replay.frames:
-		if not frame is Array or frame.size() != 3: return "Malformed quantized frame"
+	for frame_index: int in range(replay.frames.size()):
+		var frame: Variant = replay.frames[frame_index]
+		if not frame is Array or frame.size() not in [3, 4, 5]: return "Malformed quantized frame"
 		for value: Variant in frame:
 			if not number(value) or float(value) != floorf(float(value)): return "Replay inputs must be quantized integers"
-		if frame[0] < -127 or frame[0] > 127 or frame[1] < 0 or frame[1] > 255 or frame[2] < 0 or frame[2] > 255:
+		if frame.size() == 5 and (frame_index != 0 or int(frame[4]) not in [1, 2]): return "Invalid launch marker"
+		if frame[0] < -127 or frame[0] > 127 or frame[1] < 0 or frame[1] > 255 or frame[2] < 0 or frame[2] > 255 or (frame.size() >= 4 and (frame[3] < 0 or frame[3] > 255)):
 			return "Replay input outside quantized range"
 	var offset: int = 0
 	var tick: int = 0
@@ -130,7 +135,7 @@ func replay_error(replay: Variant) -> String:
 			if not number(event.get(key)) or float(event[key]) != floorf(float(event[key])): return "Invalid rewind tick"
 		if event.input_offset <= offset or event.input_offset >= replay.frames.size(): return "Invalid rewind input offset"
 		if event.from_tick != tick+int(event.input_offset)-offset: return "Invalid rewind timeline"
-		if event.to_tick < 0 or event.from_tick-event.to_tick < 1 or event.from_tick-event.to_tick > 2400: return "Rewind exceeds 20 seconds"
+		if event.to_tick < 0 or event.from_tick-event.to_tick < 1 or event.from_tick-event.to_tick > RewindHistory.WINDOW_TICKS: return "Rewind exceeds 10 seconds"
 		offset = int(event.input_offset)
 		tick = int(event.to_tick)
 	return ""
@@ -147,10 +152,19 @@ func initial_simulation(track: NativeTrack, vehicle: String) -> VehicleSimulatio
 		sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
 	return sim
 
-func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dictionary) -> void:
+func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dictionary, creator_test: bool = false, document: Dictionary = {}) -> void:
+	if creator_test and not replay.get("rewinds",[]).is_empty():
+		respond({},"Creator practice cannot contain rewinds"); return
 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
-	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
-	session._configure(track)
+	var target_laps: int = 1 if creator_test else RaceRules.LAPS
+	if creator_test:
+		sim.reset(Vector2(document.start_line.position[0],document.start_line.position[1]),PI*0.5-deg_to_rad(float(document.start_line.heading)))
+		sim.state.route_index = track.nearest_route(sim.state.position)
+		sim.state.track_elevated = track.elevated_at(sim.state.position,sim.state.route_index)
+		if CreatorBridges.at_any(track.creator_bridges,sim.state.position):
+			sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
+	var session := TrackSession.new(VehicleSimulation.TICK_RATE,target_laps)
+	if not creator_test: session._configure(track)
 	var lap_ticks: Array[int] = []
 	var last_lap_tick: int = 0
 	var events: Array = replay.get("rewinds",[])
@@ -160,6 +174,7 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 	var next_event: int = 0
 	var offset: int = 0
 	for values: Array in replay.frames:
+		if offset == 0 and values.size() == 5: LaunchStart.initialize(sim.state,int(values[4]))
 		if sim.state.tick in targets:
 			saved[sim.state.tick] = {"state":RewindHistory.properties(sim.state),"session":RewindHistory.properties(session,true),"laps":lap_ticks.duplicate(),"last_lap":last_lap_tick}
 		if next_event < events.size() and int(events[next_event].input_offset) == offset:
@@ -180,14 +195,17 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 			return
 		var frame := DriveFrame.new()
 		frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
+		frame.handbrake = int(values[3]) if values.size() >= 4 else 0
+		frame.launch_start = int(values[4]) if values.size() == 5 else 0
 		var before: Vector2 = sim.state.position
+		var previous_layer: int = int(sim.state.track_elevated)
 		sim.step(frame,track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
 		if session.completed_laps > lap_ticks.size():
 			lap_ticks.append(session.elapsed_ticks-last_lap_tick)
 			last_lap_tick = session.elapsed_ticks
-	if not session.finished or session.completed_laps != 5 or lap_ticks.size() != 5:
-		respond({},"Replay does not complete all five laps and ordered road gates")
+	if not session.finished or session.completed_laps != target_laps or lap_ticks.size() != target_laps:
+		respond({},"Replay does not complete the required laps and ordered road gates")
 		return
 	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info})
 
@@ -203,9 +221,17 @@ func run() -> void:
 	file.close()
 	if not request is Dictionary: respond({},"Invalid request envelope"); return
 	if request.get("operation") == "manifest": respond(manifest()); return
-	if request.get("operation") not in ["track","run"] or not request.get("document") is Dictionary:
+	if request.get("operation") == "prepare_track" and request.get("document") is Dictionary:
+		var source: Dictionary = request.document
+		if not safe_shape(source): respond({},"Malformed creator document structure"); return
+		var automatic: Dictionary = RoadPieces.route_from_pieces(source)
+		if not automatic.ok: respond({},str(automatic.errors[0])); return
+		var prepared: Dictionary = compile_track(automatic.document)
+		if prepared.has("error"): respond({},prepared.error); return
+		respond({"document":automatic.document,"manifest":prepared.manifest}); return
+	if request.get("operation") not in ["track","run","creator_test"] or not request.get("document") is Dictionary:
 		respond({},"Unsupported verification operation"); return
-	if request.operation == "run":
+	if request.operation in ["run","creator_test"]:
 		var error: String = replay_error(request.get("replay"))
 		if not error.is_empty(): respond({},error); return
 		if not request.get("vehicle_id") is String or request.vehicle_id not in VehicleCatalog.IDS:
@@ -213,4 +239,4 @@ func run() -> void:
 	var compiled: Dictionary = compile_track(request.document)
 	if compiled.has("error"): respond({},compiled.error); return
 	if request.operation == "track": respond(compiled.manifest); return
-	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest)
+	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest,request.operation == "creator_test",request.document)

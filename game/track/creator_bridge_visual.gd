@@ -78,6 +78,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	material.vertex_color_use_as_albedo = true
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = material
+	mesh.layers = 2 # Separately culled from headlights while the car is below.
 	if theme == "desert":
 		var stone := ShaderMaterial.new()
 		stone.shader = preload("res://track/desert_bridge.gdshader")
@@ -93,9 +94,11 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
+	asphalt.set_shader_parameter("ice_albedo", preload("res://assets/textures/winter_ice_v1.png"))
 	asphalt.set_shader_parameter("wet_road",theme == "storm")
 	asphalt.set_shader_parameter("packed_sand",theme == "desert")
 	road.material_override = asphalt
+	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
 	parent.add_child(road)
 
 static func vertex(span: Dictionary, along: float, across: float, offset: float) -> Vector3:
@@ -103,7 +106,11 @@ static func vertex(span: Dictionary, along: float, across: float, offset: float)
 	return VisualGeometry.world(p)+Vector3.UP*(CreatorBridges.height(span,p)+offset)
 
 static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color) -> void:
-	quad(tool,vertex(span,a,left,offset),vertex(span,b,left,offset),vertex(span,b,right,offset),vertex(span,a,right,offset),color)
+	# Metres along/across this span, so winter wear follows any bridge heading.
+	tool.set_color(color)
+	for uv: Vector2 in [Vector2(a,left),Vector2(b,right),Vector2(b,left),Vector2(a,left),Vector2(a,right),Vector2(b,right)]:
+		tool.set_uv(uv)
+		tool.add_vertex(vertex(span,uv.x,uv.y,offset))
 
 static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:
 	tool.set_color(color)

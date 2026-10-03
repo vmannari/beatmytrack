@@ -93,7 +93,8 @@ func _draw() -> void:
 	if selected: draw_line(Vector2(14,size.y-2),Vector2(size.x-14,size.y-2),accent,2)
 	var title: String = str(entry.name).to_upper()
 	var title_size: int = 16 if compact else TITLE_FONT_SIZE
-	var title_width: float = maxf(1.0,size.x-26)
+	var rating_width: float = 0.0 if draft_mode else MenuStyle.BODY.get_string_size(rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+27
+	var title_width: float = maxf(1.0,size.x-26-rating_width-(8 if not draft_mode else 0))
 	while title_size > 12 and MenuStyle.DISPLAY.get_string_size(title,HORIZONTAL_ALIGNMENT_LEFT,-1,title_size).x > title_width:
 		title_size -= 1
 	# Anchor the baseline to the footer and actual font ascent, not the card bottom.
@@ -115,13 +116,13 @@ func _draw() -> void:
 		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) else Color("0069a0"),0),Rect2(size.x-77,10,67,23))
 		draw_string(MenuStyle.DISPLAY,Vector2(size.x-71,27),status,HORIZONTAL_ALIGNMENT_LEFT,60,15,MenuStyle.TEXT)
 	if not draft_mode:
-		draw_string(MenuStyle.BODY,Vector2(13,image_area.end.y-10),"5 LAPS",HORIZONTAL_ALIGNMENT_LEFT,-1,11,Color("e5e8dc"))
-		var rating_width: float = MenuStyle.BODY.get_string_size(rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12).x+32
-		var rating_box := Rect2(size.x-rating_width-9,image_area.end.y-29,rating_width,24)
-		draw_style_box(MenuStyle.box(Color("091720ee"),0),rating_box)
-		var rated: bool = int(entry.get("rating_count",0)) > 0 if entry.get("source") == "cloud" else personal_rating > 0
-		draw_texture_rect(MenuIcon.texture("star_filled" if rated else "star"),Rect2(rating_box.position+Vector2(6,4),Vector2(16,16)),false,MenuStyle.ACCENT if rated else MenuStyle.MUTED)
-		draw_string(MenuStyle.BODY,rating_box.position+Vector2(27,17),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if rated else MenuStyle.MUTED)
+		var rating_origin := Vector2(size.x-rating_width-13,title_baseline-MenuStyle.BODY.get_ascent(12))
+		var rated: bool = has_rating()
+		draw_texture_rect(MenuIcon.texture("star_filled" if rated else "star"),Rect2(rating_origin+Vector2(0,-1),Vector2(16,16)),false,MenuStyle.ACCENT if rated else MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,Vector2(rating_origin.x+22,title_baseline),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if rated else MenuStyle.MUTED)
+
+func has_rating() -> bool:
+	return int(entry.get("rating_count",0)) > 0 if entry.get("source") == "cloud" else personal_rating > 0
 
 func rating_text() -> String:
 	if entry.get("source") == "cloud":

@@ -75,7 +75,7 @@ func _race(track: NativeTrack) -> void:
 		frames.append(input.packed())
 		var before: Vector2 = sim.state.position
 		sim.step(input,track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if session.finished: break
 	check(session.finished and session.completed_laps == 5,"figure-eight junction completes five ordered laps")
 	print("FREE_EDITOR_RACE laps=",session.completed_laps," times=",session.lap_times," contacts=",sim.state.collision_count)
@@ -93,7 +93,10 @@ func _ui(doc: Dictionary) -> void:
 	var app: Node = load("res://core/app.tscn").instantiate()
 	app.set("library",TrackLibrary.new(folder))
 	(app.get("records") as LocalRecords).path = folder+"/records.json"
+	app.cloud_root_override = folder.path_join("cloud")
 	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	app.online.client.configure("")
 	app.set("document",doc.duplicate(true))
 	app.call("_show_screen","create")
 	await process_frame
@@ -143,11 +146,13 @@ func _ui(doc: Dictionary) -> void:
 	canvas._gui_input(drag)
 	check(canvas.document.paint.is_empty(),"brush gesture stays transient until release")
 	touch.pressed = false; canvas._gui_input(touch)
+	while app.editor_preview_thread != null: await process_frame
 	check(canvas.document.paint.size() == 1 and canvas.native_preview.cell_at(Vector2(0,-5)) == 2,"one finger paints a continuous physical stroke")
 	check((app.get("history") as Array).size() == 1,"a full brush gesture creates one undo entry")
 	app.call("_undo")
 	check((app.get("document") as Dictionary).paint.is_empty(),"undo removes a complete stroke")
 	app.call("_redo")
+	while app.editor_preview_thread != null: await process_frame
 	await process_frame
 	canvas = app.get("canvas")
 	check(canvas.document.paint.size() == 1,"redo restores a complete stroke")
@@ -166,28 +171,26 @@ func _ui(doc: Dictionary) -> void:
 	app.call("_build_editor_tools")
 	await _capture("free-editor-route")
 	var library: TrackLibrary = app.get("library")
+	while app.editor_preview_thread != null: await process_frame
 	check(library.export_document(canvas.document,folder+"/exchange.json") == OK,"free-painted map exports")
 	check(TrackCompiler.compile(library.import_document(folder+"/exchange.json")).content_hash == canvas.native_preview.content_hash,"export/import preserves physical painted map")
 	app.call("_save_track_explicit")
 	await _capture("free-editor-saved")
-	app.call("_show_screen","tracks")
+	var starter := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var remix: Dictionary = TrackDocument.from_builtin(starter)
+	check(library.save_wip(remix) == OK,"starter remix is saved for current draft workflow")
+	app.call("_show_screen","drafts")
 	await process_frame
-	await process_frame
-	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
-	while browser.loading: await process_frame
-	app.set("selected_track",NativeTrack.read("res://resources/tracks/starter_circuit.json"))
-	app.call("_show_screen","tracks")
-	await process_frame
-	browser = (app.get("root_ui") as Node).find_child("TrackBrowser",true,false)
-	while browser.loading: await process_frame
-	for child: Node in browser.find_children("*","Button",true,false):
-		if child.text == "Edit":
-			child.pressed.emit()
-			break
+	var drafts: Control = app.root_ui.find_child("DraftBrowser",true,false)
+	var tile: Button = drafts.find_child("Draft_"+str(remix.id),true,false)
+	check(tile != null,"saved starter remix appears in Load track")
+	if tile != null: tile.pressed.emit()
+	var edit: Button = drafts.find_child("ContinueEditing",true,false)
+	if edit != null: edit.pressed.emit()
 	await process_frame
 	await process_frame
 	canvas = app.get("canvas")
-	check(canvas != null and canvas.document.id == "starter_circuit","library Edit opens original starter document")
+	check(canvas != null and canvas.document.id == remix.id,"Load track opens the saved starter remix")
 	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/starter_circuit.json").cells,"starter editing preserves native map geometry")
 	# The preview dialog is owned by root app; close it before remix evidence.
 	for child: Node in app.get_children():

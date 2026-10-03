@@ -125,7 +125,10 @@ func build(parent: Node3D) -> void:
 					var p: Vector2 = point(corner)
 					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else 0.015)))
 				surface.set_color(CreatorBridgeVisual.RAIL_TOP if kind == 4 else Color.WHITE)
-				for i: int in [0,1,2,0,2,3]: surface.add_vertex(vertices[i])
+				for i: int in [0,1,2,0,2,3]:
+					var p := Vector2(vertices[i].x,-vertices[i].z)
+					surface.set_uv(Vector2(p.dot(track.bridge_axis),p.dot(track.bridge_axis.orthogonal())))
+					surface.add_vertex(vertices[i])
 				# Close exposed deck edges with a shaded, substantial fascia.
 				for i: int in range(4):
 					var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
@@ -157,11 +160,13 @@ func build(parent: Node3D) -> void:
 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 				asphalt.set_shader_parameter("road_color", palette[0])
 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
+				asphalt.set_shader_parameter("ice_albedo", preload("res://assets/textures/winter_ice_v1.png"))
 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
 				asphalt.set_shader_parameter("packed_sand",track.metadata.get("theme","pine") == "desert")
 				mesh.material_override = asphalt
 			else:
 				mesh.material_override = _structure_material()
+			mesh.layers = 1 if kind == 0 else 2
 			parent.add_child(mesh)
 	if fascia_count > 0:
 		fascia.generate_normals()
@@ -169,6 +174,7 @@ func build(parent: Node3D) -> void:
 		edge.name = "NativeBridgeFascia"
 		edge.mesh = fascia.commit()
 		edge.material_override = _structure_material()
+		edge.layers = 2 # Separately culled from headlights while the car is below.
 		parent.add_child(edge)
 
 

@@ -14,7 +14,7 @@ func check(value: bool, description: String) -> void:
 
 func capture(filename: String) -> void:
 	if DisplayServer.get_name() == "headless": return
-	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/pc-sign-in")
+	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/track-restoration-2026-10-03")
 	DirAccess.make_dir_recursive_absolute(folder)
 	await process_frame
 	await RenderingServer.frame_post_draw
@@ -36,17 +36,20 @@ func run() -> void:
 		await capture("pc-options")
 		await app.online.sign_in_developer()
 		check(app.online.client.signed_in(), "PC Development login succeeds")
-		check(app.online.player_name() == "Beat My Track", "fixed developer name")
+		check(app.online.player_name() == "Beat my track", "fixed developer name")
 		var player_id: String = str(app.online.client.player.get("id", ""))
 		await capture("pc-developer")
-		# Read-only visibility check against the owner's pre-account circuit folder.
-		app.guest_library = TrackLibrary.new("user://tracks")
 		app._show_screen("tracks")
 		var browser: Node = app.root_ui.find_child("TrackBrowser",true,false)
 		while browser.loading: await process_frame
-		var legacy := TrackCatalog.new(app.guest_library)
-		for id: String in legacy.local_ids(): legacy.add_local(id)
-		check(legacy.entries.all(func(entry: Dictionary) -> bool: return app.track_catalog.entries.any(func(visible: Dictionary) -> bool: return visible.id == entry.id)), "existing device circuits remain available to signed-in player")
+		check(not app.cloud.entries.is_empty(), "published server catalog is available")
+		check(app.cloud.entries.all(func(metadata: Dictionary) -> bool: return app.track_catalog.entries.any(func(visible: Dictionary) -> bool: return visible.id == "cloud_"+str(metadata.track_id))), "every server publication appears in Race")
+		check(app.track_catalog.entries.all(func(entry: Dictionary) -> bool: return entry.source == "cloud" and entry.creator == "Beat my track"), "Race uses server publications and the requested creator attribution")
+		if not app.track_catalog.entries.is_empty():
+			browser._select(app.track_catalog.entries[0])
+			while browser.selecting: await process_frame
+			check(browser.selected_track.metadata.has("cloud_version") and not browser.race_button.disabled, "a restored backend track can be selected for driving")
+			await create_timer(0.6).timeout
 		await capture("pc-existing-tracks")
 		app._show_screen("account")
 		await app.online.sign_out()

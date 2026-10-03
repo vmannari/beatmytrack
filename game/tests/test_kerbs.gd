@@ -89,7 +89,7 @@ func run() -> void:
 	check(fast.state.kerb_offset.x > 0.001,"top-speed swept tyres detect the narrow kerb")
 	var recorder := HandlingRecorder.new()
 	recorder.start(one_side,yard)
-	check(recorder.header.schema_version == 8 and recorder.header.initial_state.size() == 20,"schema 8 records the six spring scalars at snapshot index 18")
+	check(recorder.header.schema_version == 10 and recorder.header.initial_state.size() == 22 and recorder.header.initial_state[21] == [false,"",0,0,0.0] and recorder.header.initial_state[20] == 0.0,"schema 10 retains spring/handbrake fields and appends launch state at 21")
 	check(recorder.header.physics_version == VehicleSimulation.PHYSICS_VERSION,"kerb replay manifest pins new physics")
 	_geometry()
 	for argument: String in OS.get_cmdline_user_args():

@@ -1257,7 +1257,8 @@ func _build_kerbs(track: NativeTrack) -> void:
 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
 	var document: Dictionary = track.metadata.get("creator_document",{})
 	var triangles: Array[Dictionary] = track.kerbs.triangles
-	if not document.get("pieces",[]).is_empty() and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+	# A solitary piece has no cosmetic join to fair; retain its canonical kerb.
+	if document.get("pieces",[]).size() > 1 and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
 		triangles = preload("res://track/visual_road_join.gd").kerb_triangles(document)
 	if triangles.is_empty(): return
 	var tool := SurfaceTool.new()

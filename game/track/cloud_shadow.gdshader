@@ -3,7 +3,7 @@ render_mode unshaded, fog_disabled, cull_disabled, depth_draw_never, depth_test_
 #include "res://track/shadow_depth.gdshaderinc"
 uniform sampler2D depth_map : hint_depth_texture, repeat_disable, filter_nearest;
 uniform float elapsed = 0.0;
-uniform float strength = 0.24;
+uniform float strength = 0.43;
 float cloud_hash(vec2 p) {
 	p = fract(p * vec2(0.1031, 0.1030));
 	p += dot(p, p.yx + 33.33);
@@ -21,10 +21,10 @@ void vertex() {
 }
 void fragment() {
 	vec3 world = shadow_world_position(depth_map, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	// Distinct soft-edged 18 m patches drift slowly at 0.30 m/s. Clear gaps
-	// between patches keep this readable as cloud shade rather than a global tint.
-	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.28, 0.105)*elapsed) / 18.0;
-	float mask = smoothstep(0.40, 0.68, cloud_noise(p)*0.75 + cloud_noise(p*2.03+7.1)*0.25);
-	ALBEDO = vec3(0.025, 0.035, 0.05);
+	// Smaller cloud footprints leave more full sunlight between soft penumbrae.
+	// Keep the accepted slow 0.30 m/s world-space drift.
+	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(0.28, 0.105)*elapsed) / 26.0;
+	float mask = smoothstep(0.50, 0.70, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
+	ALBEDO = vec3(0.018, 0.028, 0.032);
 	ALPHA = strength * mask;
 }

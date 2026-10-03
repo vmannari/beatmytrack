@@ -4,6 +4,11 @@ extends Camera3D
 var profile: CameraProfile = preload("res://resources/camera.tres")
 var focus: Vector3 = Vector3.ZERO
 var initialized: bool = false
+var mode: String = CameraProfile.MODES[0]
+var smoothed_yaw: float = 0.0
+var look_ahead_offset: Vector2 = Vector2.ZERO
+var speed_zoom_enabled: bool = true
+var zoom_multiplier: float = 1.0
 var trauma: float = 0.0
 var impact_offset: Vector2 = Vector2.ZERO
 var impact_velocity: Vector2 = Vector2.ZERO
@@ -19,6 +24,13 @@ const TRAUMA_DECAY: float = 5.0
 const SURFACE_RESPONSE: float = 9.0
 const SURFACE_PRIMARY_FREQUENCY: float = 61.0
 const SURFACE_SECONDARY_FREQUENCY: float = 43.0
+
+
+func set_mode(value: String) -> void:
+	mode = CameraProfile.valid_mode(value)
+	profile = CameraProfile.for_mode(mode)
+	initialized = false
+	clear_shake()
 
 
 func add_collision_impact(resolved_velocity_change: Vector2) -> void:
@@ -67,9 +79,16 @@ func shake_offset(delta: float) -> Vector2:
 
 
 func follow(point: Vector2, velocity: Vector2, heading: float, delta: float, snap: bool = false) -> void:
+	var step: float = maxf(delta, 0.0)
+	var desired_zoom: float = 1.0
+	if speed_zoom_enabled:
+		var amount: float = smoothstep(profile.speed_zoom_start_kmh, profile.speed_zoom_full_kmh, velocity.length() * 3.6)
+		desired_zoom += profile.maximum_speed_zoom * amount
+	zoom_multiplier = desired_zoom if snap or not initialized else lerpf(zoom_multiplier, desired_zoom, 1.0 - exp(-profile.speed_zoom_smoothing * step))
 	projection = PROJECTION_ORTHOGONAL if profile.orthographic else PROJECTION_PERSPECTIVE
 	keep_aspect = KEEP_HEIGHT
-	size = profile.baseline_extent / profile.magnification
+	# Orthographic distance alone does not pull back: widen the whole-world extent.
+	size = profile.baseline_extent / profile.magnification * zoom_multiplier
 	fov = profile.field_of_view
 	near = 0.1
 	far = 180.0
@@ -77,17 +96,31 @@ func follow(point: Vector2, velocity: Vector2, heading: float, delta: float, sna
 	if velocity.length() > 0.5:
 		ahead += Vector2(sin(heading), cos(heading)) * profile.forward_look_ahead
 	ahead = ahead.limit_length(profile.maximum_look_ahead)
-	var desired: Vector3 = VisualGeometry.world(point + ahead)
+	if snap or not initialized or profile.look_ahead_smoothing <= 0.0:
+		look_ahead_offset = ahead
+	else:
+		# Delay changes around the car separately from ordinary position tracking.
+		look_ahead_offset = look_ahead_offset.lerp(ahead, 1.0 - exp(-profile.look_ahead_smoothing * step))
+	var desired: Vector3 = VisualGeometry.world(point + look_ahead_offset)
+	var desired_yaw: float = deg_to_rad(profile.world_yaw_degrees) - (heading if profile.follow_heading else 0.0)
 	if snap or not initialized:
 		focus = desired
+		smoothed_yaw = desired_yaw
 		initialized = true
 	else:
-		focus = focus.lerp(desired, 1.0 - exp(-profile.smoothing * delta))
+		focus = focus.lerp(desired, 1.0 - exp(-profile.smoothing * step))
+		if profile.follow_heading:
+			# Ease over the shortest arc, with a hard speed cap even after a spin.
+			var eased_turn: float = angle_difference(smoothed_yaw, desired_yaw) * (1.0 - exp(-profile.heading_smoothing * step))
+			var maximum_turn: float = deg_to_rad(profile.maximum_yaw_speed_degrees) * step
+			smoothed_yaw += clampf(eased_turn, -maximum_turn, maximum_turn)
+		else:
+			smoothed_yaw = desired_yaw
 	if snap:
 		clear_shake()
 	var shake: Vector2 = shake_offset(delta)
-	var yaw: float = deg_to_rad(profile.world_yaw_degrees) - (heading if profile.follow_heading else 0.0)
-	var offset := Vector3(0, profile.height, profile.height / tan(deg_to_rad(profile.pitch_degrees)))
+	var height: float = profile.height * zoom_multiplier
+	var offset := Vector3(0, height, height / tan(deg_to_rad(profile.pitch_degrees)))
 	var shaken_focus: Vector3 = focus + VisualGeometry.world(shake)
-	position = shaken_focus + offset.rotated(Vector3.UP, yaw)
+	position = shaken_focus + offset.rotated(Vector3.UP, smoothed_yaw)
 	look_at(shaken_focus, Vector3.UP)

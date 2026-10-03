@@ -469,8 +469,8 @@ void fragment() {
 func set_water_paused(paused: bool) -> void:
 	if water_paused == paused: return
 	water_paused = paused
-	for emitter: GPUParticles3D in water_drops:
-		emitter.speed_scale = 0.0 if paused else 1.0
+	for child: Node in get_children():
+		if child is GPUParticles3D: child.speed_scale = 0.0 if paused else 1.0
 
 
 func _ensure_water() -> void:

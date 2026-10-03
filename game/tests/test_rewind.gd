@@ -50,12 +50,36 @@ func run() -> void:
 		game.call("_physics_process",1.0/120.0)
 	check(game.sim.state.tick == 4000,"scene advances 4000 ticks")
 	check(game.rewind_history.entries.size() <= 101,"history remains bounded at 101 checkpoints")
+	game.hud.rewind_button.show_resource({"balance":3},0)
+	check(game.hud.rewind_button.banked == 3 and not game.hud.rewind_button.use_ad,"race HUD shows the available banked rewind count")
+	game.hud.rewind_button.show_resource({"balance":0,"ad_preview_available":true},0)
+	check(game.hud.rewind_button.use_ad,"race HUD substitutes the ad icon when no banked rewinds remain")
+	game.online_rewinds = [{},{},{}]
+	game.call("_process",0.1)
+	check(game.hud.rewind_button.disabled,"race HUD disables rewind after all three race uses")
+	game.online_rewinds.clear()
+	game.call("_process",0.1)
+	if not capture_path.is_empty():
+		game.hud.rewind_button.show_resource({"balance":3},0)
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-banked.png") == OK,"banked race-HUD rewind screenshot saved")
+		game.hud.rewind_button.show_resource({"balance":0,"ad_preview_available":true},0)
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-ad.png") == OK,"ad race-HUD rewind screenshot saved")
 	var original: Array = game.sim.state.snapshot()
 	var original_session: Dictionary = RewindHistory.properties(game.track_session,true)
 	var original_damage: Vector4 = game.impact_cracks.side_damage
 	check(original_damage.x > 0.0 and original_damage.y > 0.0,"fixture contains old left and recent right collision cracks")
 	await game.open_rewind()
 	check(game.paused and not game.hud.touch.enabled,"rewind freezes simulation and releases controls")
+	check(game.rewind_panel.slider.min_value == -10.0 and game.rewind_panel.slider.max_value == 0.0,"timeline keeps a fixed ten-second scale")
+	game.rewind_panel.slider.value = -5.0
+	check(absi(game.sim.state.tick-3400) <= RewindHistory.STRIDE,"time slider selects the nearest recorded five-second snapshot")
+	game.rewind_panel.slider.value = -10.0
+	check(game.sim.state.tick == game.rewind_choices[0].tick,"left endpoint clamps to available history")
+	game.preview_rewind(game.rewind_choices.size())
 	check(game.rewind_choices[0].tick >= 2800,"timeline never goes beyond ten seconds")
 	check(game.sim.state.snapshot() == original,"rewind opens at the exact current position")
 	if not capture_path.is_empty():
@@ -86,11 +110,11 @@ func run() -> void:
 		recorded_only = recorded_only and int(marker.tick) <= 4000
 	check(has_before and has_after and recorded_only,"ghosts show recorded positions on both sides without future extrapolation")
 	game.rewind_panel.show_balance({"free":0,"balance":3,"ad_preview_available":true},1)
-	check(game.rewind_panel.resume_action.count == 3 and not game.rewind_panel.resume_action.use_ad,"banked button shows ticket icon and actual banked count")
+	check(game.rewind_panel.confirm.count == 3 and not game.rewind_panel.confirm.use_ad,"play button shows actual banked count")
 	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},1)
-	check(game.rewind_panel.resume_action.use_ad and not game.rewind_panel.resume_action.disabled,"empty wallet shows usable temporary ad action")
+	check(game.rewind_panel.confirm.use_ad and not game.rewind_panel.confirm.disabled,"empty wallet shows usable temporary ad action")
 	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},3)
-	check(game.rewind_panel.resume_action.disabled and game.rewind_panel.confirm.disabled,"both resume actions enforce the race cap")
+	check(game.rewind_panel.confirm.disabled,"play button enforces the race cap")
 	game.rewind_panel.status.text = ""
 	game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},0)
 	if not capture_path.is_empty():
@@ -120,7 +144,7 @@ func run() -> void:
 	game.preview_rewind(0)
 	var target: Dictionary = game.rewind_choices[0].duplicate(true)
 	check(int(target.tick) >= 2800,"resume remains within the ten-second window")
-	game.rewind_panel.resume_action.pressed.emit()
+	game.rewind_panel.confirm.pressed.emit()
 	check(game.online_rewinds.size() == 1 and game.resume_credits.used == 1,"confirm spends exactly one resume")
 	check(game.sim.state.tick == target.tick and not game.paused,"resume continues from selected tick")
 	check(game.impact_cracks.side_damage == older_damage and game.impact_cracks.strength > 0.0 and game.impact_cracks.visible,"resume removes only skipped collision damage")
@@ -210,7 +234,7 @@ func _check_exact_restore(track: NativeTrack, frames: Array) -> void:
 			frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
 			var before: Vector2 = sim.state.position
 			sim.step(frame,track)
-			session.advance(track,before,sim.state.position,sim.state.route_index)
+			session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 			if pass_index == 0:
 				history.capture(sim.state,session)
 				if sim.state.tick == 1200: captured = history.entries[-1].duplicate(true)

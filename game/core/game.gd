@@ -27,6 +27,7 @@ var race_cues: Control
 var finish_sim: VehicleSimulation
 var finish_ticks: int = 0
 var rating_records: LocalRecords
+var preference_records: LocalRecords
 var online_frames: Array = []
 var online_rewinds: Array = []
 var resume_client: Node
@@ -44,13 +45,15 @@ var finish_rating_pending: bool = false
 const FINISH_TICKS: int = 216
 
 const PROFILE_PATHS: Array[String] = HandlingSelection.PROFILE_PATHS
-var profile_index: int = HandlingSelection.index
+var profile_index: int = HandlingSelection.ORIGINAL_PLUS_INDEX
 var resume_after_handling: bool = false
 var vehicle_id: String = VehicleCatalog.selected
 var handling: HandlingConfig
 var sim: VehicleSimulation
 var yard := PlaygroundData.new()
 var driver := DriverInput.new()
+var launch_early: bool = false
+var launch_countdown_seen: bool = false
 var frame := DriveFrame.new()
 var recorder := HandlingRecorder.new()
 var car: CarVisual
@@ -166,6 +169,9 @@ func _ready() -> void:
 	music = DynamicMusicController.new()
 	add_child(music)
 	camera = FollowCamera.new()
+	if preference_records != null:
+		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
+		camera.speed_zoom_enabled = bool(preference_records.settings.get("camera_speed_zoom", true))
 	world.add_child(camera)
 	camera.current = true
 	_update_cloud_shadows()
@@ -215,6 +221,7 @@ func _ready() -> void:
 	resume_credits.client = resume_client
 	add_child(resume_credits)
 	restart()
+	_refresh_resume_hud()
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
 		for argument: String in OS.get_cmdline_user_args():
@@ -233,9 +240,13 @@ func _physics_process(_delta: float) -> void:
 		_advance_finish()
 		return
 	if countdown_ticks > 0:
+		frame = driver.sample()
+		launch_countdown_seen = true
+		launch_early = launch_early or frame.throttle > 0
 		race_cues.show_start(countdown_ticks, 0)
 		countdown_label.text = ""
 		countdown_ticks -= 1
+		if countdown_ticks == 0: race_cues.show_start(0, 0)
 		return
 	if not rewind_return.step_due(): return
 	race_cues.show_start(0, sim.state.tick) if production_mode and not editor_test else race_cues.reset()
@@ -243,6 +254,7 @@ func _physics_process(_delta: float) -> void:
 	previous_heading = sim.state.heading
 	var velocity_before_step: Vector2 = sim.state.velocity
 	var collisions_before_step: int = sim.state.collision_count
+	var layer_before_step: int = int(sim.state.track_elevated)
 	frame = driver.sample()
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if ai_enabled and native_track != null:
@@ -252,8 +264,17 @@ func _physics_process(_delta: float) -> void:
 		profile_start = Time.get_ticks_usec()
 	if demo_capture:
 		frame = DriveFrame.sample(0.7 if sim.state.tick > 190 else 0.0, 1.0, 0.0)
-	if production_mode and not editor_test and online_frames.size() < 216000: online_frames.append(frame.packed())
+	if online_frames.is_empty() and sim.state.tick == 0 and launch_countdown_seen and production_mode and not editor_test:
+		frame.launch_start = 2 if launch_early else 1
+		LaunchStart.initialize(sim.state,frame.launch_start)
+		if not rewind_history.entries.is_empty() and int(rewind_history.entries[0].tick) == 0:
+			rewind_history.entries[0].state = RewindHistory.properties(sim.state)
+	if production_mode and (not editor_test or not practice_validation.finished) and online_frames.size() < 216000: online_frames.append(frame.packed())
 	sim.step(frame, yard)
+	if production_mode and not editor_test and sim.state.tick < 180:
+		countdown_label.text = sim.state.launch_result
+		countdown_label.modulate.a = 1.0 - smoothstep(120.0,180.0,float(sim.state.tick))
+	elif not countdown_label.text.is_empty(): countdown_label.text = ""
 	if sim.state.collision_count > collisions_before_step:
 		var resolved_impact: Vector2 = sim.state.velocity - velocity_before_step
 		camera.add_collision_impact(resolved_impact)
@@ -266,9 +287,9 @@ func _physics_process(_delta: float) -> void:
 		profile_sim_us += Time.get_ticks_usec() - profile_start
 		profile_start = Time.get_ticks_usec()
 	if native_track != null and editor_test:
-		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index)
+		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index,layer_before_step)
 	if native_track != null and not editor_test:
-		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index)
+		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index,sim.state.track_elevated,layer_before_step)
 		if profile_enabled:
 			profile_rules_us += Time.get_ticks_usec() - profile_start
 			profile_start = Time.get_ticks_usec()
@@ -358,6 +379,7 @@ func _process(delta: float) -> void:
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
 	car.present(point, heading, presented.state, frame)
+	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
 	tire_audio.present(presented.state, delta, paused or countdown_ticks > 0)
 	car.rotation.x = 0.0
 	if native_track != null:
@@ -400,7 +422,8 @@ func _process(delta: float) -> void:
 		section_start = Time.get_ticks_usec()
 	if hud.rewind_button != null:
 		hud.rewind_button.disabled = countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3 or rewind_return.remaining > 0
-		hud.rewind_button.text = "Rewind · %d / 3" % online_rewinds.size()
+		hud.rewind_button.race_remaining = maxi(0,3-online_rewinds.size())
+		hud.rewind_button.queue_redraw()
 	hud.set_track(native_track)
 	hud.update_values(presented.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
@@ -417,9 +440,8 @@ func _process(delta: float) -> void:
 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
 			hud.show_session(track_session)
 			hud.shortcut_penalty_label.text = ""
-			hud.shortcut_notice_label.text = "Missed checkpoint"
-			hud.shortcut_notice_label.visible = track_session.missed_checkpoint >= 0
 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
+			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position))
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:
 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
@@ -430,6 +452,9 @@ func _process(delta: float) -> void:
 func restart() -> void:
 	if is_instance_valid(rewind_panel): return
 	online_frames.clear()
+	launch_early = false
+	launch_countdown_seen = false
+	countdown_label.modulate.a = 1.0
 	online_rewinds.clear()
 	rewind_return.reset()
 	rewind_history = RewindHistory.new()
@@ -438,6 +463,7 @@ func restart() -> void:
 	driver.clear()
 	frame = DriveFrame.new()
 	paused = false
+	if hud != null and hud.pause_menu != null: hud.pause_menu.hide()
 	attempt_practice = editor_test
 	countdown_ticks = 360 if production_mode and not editor_test else 0
 	countdown_label.text = ""
@@ -457,6 +483,7 @@ func restart() -> void:
 	practice_validation_eligible = true
 	checkpoint_marker.previous_gate = -2
 	checkpoint_marker.visible = false
+	hud.checkpoint_notice.clear()
 	lap_telemetry = LapTelemetry.new()
 	lap_telemetry.begin(sim.state.position)
 	hud.title.text = "CIRCUIT / 01  ·  " + (native_track.identity.replace("_"," ").to_upper() if native_track != null else "HANDLING YARD")
@@ -479,13 +506,15 @@ func restart() -> void:
 	hud.title.text = "Practice (untimed)" if editor_test else hud.title.text
 
 
-func _advance_practice_validation(from: Vector2, to: Vector2, route_index: int) -> void:
+func _advance_practice_validation(from: Vector2, to: Vector2, route_index: int, previous_layer: int = -1) -> void:
 	if ai_enabled or demo_capture: practice_validation_eligible = false
 	if not practice_validation_eligible or practice_validation.finished: return
-	practice_validation.advance(native_track,from,to,route_index)
+	practice_validation.advance(native_track,from,to,route_index,sim.state.track_elevated,previous_layer)
 	if practice_validation.finished: practice_lap_completed.emit()
 
 func select_profile(index: int) -> void:
+	if production_mode:
+		return
 	profile_index = clampi(index, 0, PROFILE_PATHS.size() - 1)
 	HandlingSelection.index = profile_index
 	handling = VehicleCatalog.config(vehicle_id, profile_index)
@@ -509,13 +538,17 @@ func _close_handling_menu() -> void:
 func toggle_pause() -> void:
 	if is_instance_valid(rewind_panel): return
 	if production_mode and not editor_test and track_session.finished: return
+	if not paused: hud.pause_menu.capture_race()
 	paused = not paused
+	if sand_dust != null: sand_dust.set_water_paused(paused)
+	hud.pause_menu.visible = paused
+	if paused: hud.pause_menu.show_main()
 	driver.clear()
 	frame = DriveFrame.new()
 	hud.touch.enabled = not paused
 	if recorder.active:
 		_save_recording()
-	hud.message_label.text = "PAUSED · press Esc or Pause to resume" if paused else "Resumed. Inputs released."
+	hud.message_label.text = "PAUSED · press Esc or Resume to continue" if paused else "Resumed. Inputs released."
 
 
 func toggle_recording() -> void:
@@ -544,6 +577,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if is_instance_valid(rewind_panel):
 		if event.is_action_pressed("pause"): cancel_rewind()
 		return
+	if event is InputEventKey and event.physical_keycode == KEY_C:
+		var next: int = (CameraProfile.MODES.find(camera.mode) + 1) % CameraProfile.MODES.size()
+		set_camera_mode(CameraProfile.MODES[next])
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.physical_keycode == KEY_BACKSPACE:
 		open_rewind()
 		return
@@ -571,6 +609,22 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_F9:
 				ai_enabled = not ai_enabled
 				restart()
+
+
+func set_camera_mode(value: String) -> Error:
+	camera.set_mode(value)
+	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+	camera.follow(presented.state.position, presented.state.velocity, presented.state.heading, 0.0, true)
+	if preference_records == null: return OK
+	preference_records.settings.camera_mode = camera.mode
+	return preference_records.save_records()
+
+
+func set_camera_speed_zoom(enabled: bool) -> Error:
+	camera.speed_zoom_enabled = enabled
+	if preference_records == null: return OK
+	preference_records.settings.camera_speed_zoom = enabled
+	return preference_records.save_records()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -696,6 +750,7 @@ func set_contact_lighting_enabled(enabled: bool) -> void:
 
 
 func open_rewind() -> void:
+	if hud != null and hud.pause_menu.visible: return
 	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3 or rewind_return.remaining > 0: return
 	rewind_choices = rewind_history.choices(sim.state.tick)
 	if rewind_choices.is_empty(): return
@@ -720,7 +775,7 @@ func open_rewind() -> void:
 	markers.append({"tick":sim.state.tick,"state":rewind_origin.state})
 	rewind_ghosts.configure(car,native_track,bridge_presentation,markers,sim.state.tick)
 	rewind_selected = rewind_choices.size()
-	rewind_panel.slider.value = rewind_selected
+	rewind_panel.select_index(rewind_selected)
 	preview_rewind(rewind_selected)
 	var panel: CanvasLayer = rewind_panel
 	var result: Dictionary = await resume_credits.refresh()
@@ -732,7 +787,7 @@ func open_rewind() -> void:
 func preview_rewind(index: int) -> void:
 	if not is_instance_valid(rewind_panel) or resume_credits.busy: return
 	rewind_selected = clampi(index,0,rewind_choices.size())
-	rewind_panel.slider.set_value_no_signal(rewind_selected)
+	rewind_panel.select_index(rewind_selected)
 	var live: bool = rewind_selected == rewind_choices.size()
 	var item: Dictionary = rewind_origin if live else rewind_choices[rewind_selected]
 	RewindHistory.restore(sim.state,item.state)
@@ -786,6 +841,17 @@ func confirm_rewind() -> void:
 	checkpoint_marker.previous_gate = -2
 	if music != null: music.start(native_track)
 	_close_rewind(false,true)
+	_refresh_resume_hud()
+
+func _refresh_resume_hud() -> void:
+	if hud == null or hud.rewind_button == null or resume_credits == null:
+		return
+	var credits: Node = resume_credits
+	var result: Dictionary = await credits.refresh()
+	if not is_instance_valid(credits) or credits != resume_credits or hud == null or hud.rewind_button == null:
+		return
+	if result.ok:
+		hud.rewind_button.show_resource(result.data,online_rewinds.size())
 
 func _close_rewind(stay_paused: bool, resumed: bool = false) -> void:
 	if is_instance_valid(rewind_ghosts):

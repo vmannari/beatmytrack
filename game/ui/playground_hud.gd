@@ -20,15 +20,17 @@ var map_track: NativeTrack
 var race_frame: HUDFrame
 var road_map: HUDRoadMap
 var instrument: HUDFrame
-var pause_glyph: HUDGlyph
+var pause_menu: Control
+var menu_button: Button
+var practice_status: Label
 var lap_label: Label
 var lap_timer: Label
 var lap_total: Label
 var race_timer: Label
 var shortcut_penalty_label: Label
 var shortcut_notice_label: Label
-var rewind_button: Button
-var pause_button: Button
+var checkpoint_notice: CheckpointNotice
+var rewind_button: RewindHUDButton
 var handling_button: MenuButton
 
 var config: HandlingConfig
@@ -120,20 +122,9 @@ func _ready() -> void:
 	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
 	shortcut_penalty_label.visible = false
 	clock_info.add_child(shortcut_penalty_label)
-	shortcut_notice_label = _label("Missed checkpoint", 22)
-	shortcut_notice_label.name = "ShortcutNotice"
-	shortcut_notice_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	shortcut_notice_label.offset_left = -300
-	shortcut_notice_label.offset_right = 300
-	shortcut_notice_label.offset_top = 164
-	shortcut_notice_label.offset_bottom = 202
-	shortcut_notice_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	shortcut_notice_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
-	shortcut_notice_label.add_theme_color_override("font_outline_color", Color("172129"))
-	shortcut_notice_label.add_theme_constant_override("outline_size", 8)
-	shortcut_notice_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	shortcut_notice_label.visible = false
-	root.add_child(shortcut_notice_label)
+	checkpoint_notice = CheckpointNotice.new()
+	root.add_child(checkpoint_notice)
+	shortcut_notice_label = checkpoint_notice.label
 	race_timer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	clock_row.add_child(race_timer)
 	var lap_time_caption := _label("LAP",16)
@@ -159,10 +150,8 @@ func _ready() -> void:
 		var practice := HBoxContainer.new()
 		practice.position = Vector2(24, 20)
 		root.add_child(practice)
-		_button(practice, "Practice (untimed)", func() -> void: pause_requested.emit())
-		pause_button = practice.get_child(0) as Button
-		pause_button.name = "PracticeStatus"
-		pause_button.tooltip_text = "Pause practice"
+		practice_status = _label("Practice (untimed)", 20)
+		practice.add_child(practice_status)
 		_button(top, "Restart", func() -> void: restart_requested.emit())
 		top.get_child(top.get_child_count() - 1).name = "PracticeRestart"
 		_button(top, "Edit here", func() -> void: edit_here_requested.emit())
@@ -174,55 +163,22 @@ func _ready() -> void:
 		edit_button.add_theme_stylebox_override("normal", accent)
 		edit_button.add_theme_color_override("font_color", RaceHUDStyle.INK)
 	else:
-		_button(top, "", func() -> void: pause_requested.emit())
-		pause_button = top.get_child(top.get_child_count() - 1) as Button
-		pause_button.custom_minimum_size = Vector2(60,60)
-		_round_button(pause_button)
-		pause_button.tooltip_text = "Pause / resume (Esc)"
-		pause_glyph = HUDGlyph.new()
-		pause_button.add_child(pause_glyph)
-		var menu := MenuButton.new()
-		menu.name = "RaceMenu"
-		menu.flat = false
-		menu.custom_minimum_size = Vector2(60,60)
-		_round_button(menu)
-		menu.tooltip_text = "Race menu: restart or return to tracks"
-		top.add_child(menu)
-		var icon := HUDGlyph.new()
-		icon.kind = "menu"
-		menu.add_child(icon)
-		var popup: PopupMenu = menu.get_popup()
-		popup.add_item("Restart",0)
-		if production_mode: popup.add_item("Tracks",1)
-		popup.about_to_popup.connect(func() -> void: handling_menu_opened.emit())
-		popup.popup_hide.connect(func() -> void: handling_menu_closed.emit())
-		popup.id_pressed.connect(func(id: int) -> void:
-			if id == 0: restart_requested.emit()
-			else: exit_requested.emit())
-	if production_mode and not editor_test:
-		_button(actions,"Rewind · 0 / 3",func() -> void: rewind_requested.emit())
-		rewind_button = actions.get_child(actions.get_child_count()-1) as Button
-		rewind_button.name = "RewindButton"
-		rewind_button.tooltip_text = "Choose a point in the last 20 seconds (Backspace)"
-	var secondary := HBoxContainer.new()
-	secondary.alignment = BoxContainer.ALIGNMENT_END
-	actions.add_child(secondary)
-	handling_button = MenuButton.new()
-	handling_button.name = "HandlingSelector"
-	handling_button.flat = false
-	handling_button.text = "Handling"
-	handling_button.custom_minimum_size = Vector2(196, 52)
-	handling_button.visible = config.vehicle_id == "compact"
-	handling_button.tooltip_text = "Compare handling; selecting a preset restarts this drive"
-	secondary.add_child(handling_button)
-	var choices: PopupMenu = handling_button.get_popup()
-	choices.add_theme_constant_override("v_separation", 16)
-	for entry: Array in [["Drift+ (more playful)", 5], ["Original+ (slide and drive)", 4], ["Original (unchanged)", 3], ["Planted", 0], ["Balanced", 1], ["Playful", 2]]:
-		choices.add_radio_check_item(entry[0], entry[1])
-	choices.add_separator("Selecting restarts the drive")
-	choices.id_pressed.connect(func(index: int) -> void: profile_requested.emit(index))
-	choices.about_to_popup.connect(func() -> void: handling_menu_opened.emit())
-	choices.popup_hide.connect(func() -> void: handling_menu_closed.emit())
+		if production_mode:
+			rewind_button = RewindHUDButton.new()
+			rewind_button.name = "RewindButton"
+			rewind_button.pressed.connect(func() -> void: rewind_requested.emit())
+			top.add_child(rewind_button)
+			_round_button(rewind_button)
+	menu_button = Button.new()
+	menu_button.name = "RaceMenu"
+	menu_button.custom_minimum_size = Vector2(60,60)
+	_round_button(menu_button)
+	menu_button.tooltip_text = "Pause / race menu (Esc)"
+	top.add_child(menu_button)
+	var icon := HUDGlyph.new()
+	icon.kind = "menu"
+	menu_button.add_child(icon)
+	menu_button.pressed.connect(func() -> void: pause_requested.emit())
 	if OS.is_debug_build() and not production_mode:
 		var tools := HBoxContainer.new()
 		tools.position = Vector2(24, 104)
@@ -271,7 +227,7 @@ func _ready() -> void:
 	message_label = _label("Brake before the circle. Lift and countersteer to catch a slide.", 16)
 	message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.add_child(message_label)
-	var help := _label("WASD / arrows: drive    Space: brake / reverse    R: restart    F1: telemetry    1 / 2 / 3 / 4 / 5 / 6: handling", 14)
+	var help := _label("WASD / arrows: drive    Space: handbrake    R: restart    F1: telemetry    1 / 2 / 3 / 4 / 5 / 6: handling", 14)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	help.visible = OS.is_debug_build() and not OS.has_feature("mobile") and not production_mode
 	footer.add_child(help)
@@ -286,6 +242,13 @@ func _ready() -> void:
 	tune_fields = VBoxContainer.new()
 	tune_panel.add_child(tune_fields)
 	show_config(config)
+	pause_menu = preload("res://ui/race_pause_menu.gd").new()
+	pause_menu.hud = self
+	var pause_layer := CanvasLayer.new()
+	pause_layer.layer = 100
+	add_child(pause_layer)
+	pause_layer.add_child(pause_menu)
+	pause_menu.hide()
 
 
 func show_config(handling: HandlingConfig) -> void:
@@ -347,11 +310,6 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 	if hud_elapsed < 0.08:
 		return
 	hud_elapsed = 0.0
-	pause_button.text = ("Paused · Resume" if paused else "Practice (untimed)") if editor_test else ("Resume" if paused else ("Pause" if production_mode else "Pause  Esc"))
-	if pause_glyph != null:
-		pause_button.text = ""
-		pause_glyph.kind = "resume" if paused else "pause"
-		pause_glyph.queue_redraw()
 	road_map.player = state.position
 	road_map.queue_redraw()
 	instrument.speed_fraction = clampf(state.velocity.length()*3.6/180.0,0,1)
@@ -362,7 +320,7 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 		frame.steer / 127.0, frame.throttle / 255.0, frame.brake / 255.0, rad_to_deg(state.yaw_rate),
 		"SLIP" if state.grip < 0.95 else "GRIP", state.grip, Engine.get_frames_per_second(), state.tick, state.collision_count]
 	if paused:
-		message_label.text = "PAUSED · press Esc or Pause to resume"
+		message_label.text = "PAUSED · press Esc or Resume to continue"
 	elif recording:
 		message_label.text = "Recording input + state · F3 to save (maximum 2 minutes)"
 

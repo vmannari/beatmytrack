@@ -22,6 +22,7 @@ func run() -> void:
 		for i: int in range(160): sim.step(drive,track)
 		check(track.cell_at(Vector2.ZERO) == 4 and sim.state.collision_count > 0 and sim.state.position.y < -1,kind+" stops an approaching car")
 	var road: Dictionary = TrackDocument.create_blank()
+	road.name = "Refinement circuit"
 	var curve: Dictionary = RoadPieces.create("curve",Vector2(-24,-20))
 	curve.length = 0.0
 	curve.radius = 20.0
@@ -55,6 +56,7 @@ func run() -> void:
 	check(tyre_track.cell_at(Vector2.ZERO)!=4 and tyre_track.tyre_origins.size()==6,"tyres are loose stacks instead of baked barriers")
 	var sim := VehicleSimulation.new(config)
 	sim.reset(Vector2(0,-8))
+	sim.state.velocity = Vector2(0,20) # A real impact, rather than slowly pushing a resistant pile.
 	var frames: Array[DriveFrame] = []
 	for i: int in range(360):
 		var input := DriveFrame.new(); input.throttle = 255 if i<130 else 0
@@ -68,6 +70,7 @@ func run() -> void:
 	print("LOOSE_TYRES moved=",moved," contacts=",sim.state.collision_count)
 	var replay := VehicleSimulation.new(config)
 	replay.reset(Vector2(0,-8))
+	replay.state.velocity = Vector2(0,20)
 	for input: DriveFrame in frames:
 		var values: Array = JSON.parse_string(JSON.stringify(input.packed()))
 		var decoded := DriveFrame.new(); decoded.steer=values[0]; decoded.throttle=values[1]; decoded.brake=values[2]
@@ -85,8 +88,10 @@ func run() -> void:
 	var app: Node = load("res://core/app.gd").new()
 	app.set("library",library)
 	app.set("records",LocalRecords.new(folder+"/records.json"))
+	app.cloud_root_override = folder.path_join("cloud")
+	OS.set_environment("BMT_API_URL","")
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	app.set("document",road)
 	app.call("_show_screen","create")
 	await process_frame
@@ -103,6 +108,7 @@ func run() -> void:
 	var line: Array = canvas._object_run(Vector2(40,-50),Vector2(58,-50))
 	check(line.size()==3 and line[0].position==[43.0,-50.0],"free tyre line is independent of roads and lap")
 	var joined: Dictionary = TrackDocument.create_blank()
+	joined.name = "Joined circuit"
 	joined.pieces = [RoadPieces.create("straight",Vector2.ZERO),RoadPieces.create("straight",Vector2(32,0))]
 	app.set("document",joined); canvas.document=joined; canvas.selected_piece=0
 	canvas.connect_nearby()
@@ -129,19 +135,19 @@ func run() -> void:
 	await process_frame
 	var saved_expected: NativeTrack = TrackCompiler.compile(library.load_document(str(road.id)))
 	check((app.get("selected_track") as NativeTrack).content_hash==saved_expected.content_hash,"Save refreshes the selected circuit without reselecting it")
-	app.call("_show_screen","play")
-	await process_frame
-	var race_button: Button = app.get("root_ui").find_child("StartRace",true,false)
-	race_button.pressed.emit()
+	# Current Race contains backend publications; saved local geometry is tested
+	# through the editor's Practice action before creator proof/publication.
+	app.call("_test_document")
 	await process_frame
 	var immediate_game: Node = app.get("game")
-	check(immediate_game!=null and (immediate_game.get("native_track") as NativeTrack).content_hash==saved_expected.content_hash,"immediate Home Race uses saved geometry")
+	check(immediate_game!=null and immediate_game.editor_test and (immediate_game.get("native_track") as NativeTrack).content_hash==saved_expected.content_hash,"immediate Practice uses the saved geometry")
 	app.call("_leave_race")
 	app.call("_show_screen","create")
 	await process_frame
-	app.call("_open_saved_tracks")
+	app.call("_show_screen","drafts")
 	for i: int in range(40): await process_frame
-	check(app.get("browser_state").section=="saved","My circuits opens the saved-only library")
+	var draft_browser: Control = app.root_ui.find_child("DraftBrowser",true,false)
+	check(draft_browser != null and draft_browser.find_child("Draft_"+str(road.id),true,false) != null,"Load track contains the saved local circuit")
 	var catalog := TrackCatalog.new(library)
 	catalog.add_local(str(road.id))
 	var entry: Dictionary = catalog.entries[0]
@@ -152,14 +158,14 @@ func run() -> void:
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/refinement-library.png"))==OK,"saved circuits screenshot")
 	app.call("_start_race",loaded,false)
 	await process_frame
-	check(app.get("game")!=null,"saved local circuit starts an ordinary race")
-	app.call("_leave_race")
+	check(app.get("game")==null,"an unpublished local draft cannot enter ordinary backend Race")
 	app.call("_start_race",tyre_track,true)
 	await process_frame
 	var game: Node = app.get("game")
 	game.set_physics_process(false)
 	var actual: VehicleSimulation = game.get("sim")
 	actual.reset(Vector2(0,-8))
+	actual.state.velocity = Vector2(0,20)
 	for input: DriveFrame in frames: actual.step(input,tyre_track)
 	game.set("previous_position",actual.state.position)
 	game.set("previous_heading",actual.state.heading)

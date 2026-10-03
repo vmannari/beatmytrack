@@ -7,6 +7,7 @@ void vertex() {
 }
 void fragment() {
     ALBEDO = surface_detail(road_color.rgb,world_position.xz,true);
+    if (icy_road) { ALBEDO = winter_wear(ALBEDO,UV); }
     ROUGHNESS = 1.0;
  SPECULAR = 0.0;
  if (wet_road) {

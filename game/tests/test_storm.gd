@@ -234,7 +234,7 @@ func _run() -> void:
 	race.native_track.metadata.theme = "pine"
 	race.call("_update_weather")
 	await process_frame
-	check(race.storm_weather == null and race.weather_layer == null and is_equal_approx(light.light_energy,1.2),"leaving Storm cleans up weather and restores daytime")
+	check(race.storm_weather == null and race.weather_layer == null and is_equal_approx(light.light_energy,1.32),"leaving Storm cleans up weather and restores approved Grass daylight")
 	race.native_track.metadata.theme = "storm"
 	race.call("_update_weather")
 	check(is_equal_approx(race.storm_weather.base_light_energy,0.5),"entering Storm from day uses overcast baseline")

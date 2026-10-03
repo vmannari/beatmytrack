@@ -118,7 +118,7 @@ func _drive(track: NativeTrack) -> void:
 		frames.append(input.packed())
 		var before: Vector2 = sim.state.position
 		sim.step(input,track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if sim.state.position.length() < 8:
 			if sim.state.track_elevated: upper += 1
 			else: lower += 1
@@ -296,6 +296,7 @@ func _test_intersections() -> void:
 		var parent := Node3D.new()
 		CreatorBridgeVisual.build(parent,[horizontal,vertical],theme)
 		check(parent.get_node_or_null("BridgeAsphalt") != null,"intersection builds shared bridge presentation in "+theme)
+		check((parent.get_node("BridgeAsphalt") as MeshInstance3D).layers == 1,"continuous road lighting across bridge ramps and deck in "+theme)
 		parent.free()
 
 func _capture_intersections() -> void:

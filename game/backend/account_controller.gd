@@ -12,10 +12,19 @@ var configured: bool = false
 var _development_key: String = ""
 var _cancelled: bool = false
 var open_browser: Callable = OS.shell_open
+var _signing_out: bool = false
 
 func _ready() -> void:
 	add_child(client)
+	client.identity_changed.connect(_identity_changed)
 	_load_configuration()
+
+func _identity_changed() -> void:
+	# Explicit sign-in batches its clear/remember transition until it finishes.
+	# Expiry and local sign-out update storage/UI immediately, before callers resume.
+	if busy and not _signing_out: return
+	if not client.signed_in(): message = "Session ended. Sign in again or continue as Guest."
+	changed.emit()
 
 func _load_configuration() -> void:
 	var config := ConfigFile.new()
@@ -25,12 +34,14 @@ func _load_configuration() -> void:
 	if OS.is_debug_build():
 		_development_key = OS.get_environment("BMT_DEV_AUTH_KEY")
 		if _development_key.is_empty(): _development_key = str(config.get_value("backend", "development_key", ""))
-	if url != client._base_url:
+	if url != client.base_url():
 		capabilities = {}
-		configured = not url.is_empty() and client.configure(url) == OK
+		var error: Error = client.configure(url)
+		configured = not url.is_empty() and error == OK
 	if not configured: message = "Online sign-in is not configured yet."
 
 func start_session() -> void:
+	client.discard_signed_out_session()
 	if not configured: return
 	busy = true
 	message = "Checking saved sign-in?"
@@ -125,7 +136,7 @@ func sign_in_google() -> void:
 	var poll_token: String = str(result.data.get("poll_token", ""))
 	var browser_url: String = str(result.data.get("browser_url", ""))
 	# Only open this configured backend's browser endpoint, never arbitrary server URLs.
-	if not browser_url.begins_with(client._base_url + "/v1/auth/google/browser#") or poll_token.is_empty():
+	if not browser_url.begins_with(client.base_url() + "/v1/auth/google/browser#") or poll_token.is_empty():
 		message = "The sign-in service returned an invalid response."
 		busy = false
 		changed.emit()
@@ -140,13 +151,18 @@ func sign_in_google() -> void:
 	message = "Finish signing in with Google in your browser, then return here."
 	changed.emit()
 	var deadline: int = Time.get_ticks_msec() + 300000
+	var poll_delay: float = 5.0
 	while not _cancelled and Time.get_ticks_msec() < deadline:
-		await get_tree().create_timer(5.0).timeout
+		await get_tree().create_timer(poll_delay).timeout
 		if _cancelled: break
 		result = await client.poll_google(poll_token)
 		if not result.ok:
+			if int(result.get("status",0)) == 429:
+				poll_delay = maxf(5.0,float(result.get("retry_after",60)))
+				continue
 			message = _error_text(result)
 			break
+		poll_delay = 5.0
 		if client.signed_in():
 			message = _signed_in_message()
 			break
@@ -183,9 +199,12 @@ func cancel_google() -> void:
 func sign_out() -> void:
 	if busy: return
 	busy = true
+	_signing_out = true
 	changed.emit()
 	var result: Dictionary = await client.logout()
-	message = "Signed out." if result.ok else "Signed out on this device. The server could not be reached."
+	message = "Signed out." if result.ok else "Signed out on this device. Server revocation was not confirmed."
+	if result.get("error") == "SESSION_STORAGE_ERROR": message = "Session ended, but saved credentials could not be removed. Check writable storage before restarting."
+	_signing_out = false
 	busy = false
 	changed.emit()
 

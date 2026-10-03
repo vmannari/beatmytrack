@@ -33,8 +33,10 @@ func run() -> void:
 	app = load("res://core/app.tscn").instantiate()
 	app.set("records",records)
 	app.set("library",TrackLibrary.new(folder))
+	app.cloud_root_override = folder.path_join("cloud")
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
+	app.online.client.configure("")
 	check(app.get("selected_track").identity == "starter_circuit","removed last-track selection falls back to original starter")
 	check(BuiltinTracks.ids() == ["starter_circuit"],"playable catalog contains no retired collection")
 	for filename: String in DirAccess.open("res://resources/tracks").get_files():
@@ -52,7 +54,7 @@ func run() -> void:
 	for frame: int in range(8): await process_frame
 	var browser: TrackBrowser = app.get("root_ui").find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
-	check(browser.matches.size() == 1,"unsupported legacy remixes are absent from the playable library")
+	check(browser.matches.is_empty(),"isolated cloud-only Race has no publications and excludes the retired local remix")
 	check(button(app.get("root_ui"),"Delete track") == null,"bundled starter cannot be deleted as a user track")
 	await screenshot("library")
 	var doc: Dictionary = TrackDocument.create_blank()

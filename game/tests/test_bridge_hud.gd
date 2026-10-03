@@ -38,6 +38,7 @@ func run() -> void:
 		check(track.cells == cells and track.deck_cells == deck,"bridge mesh construction preserves both collision layers")
 		check(structure.get_child_count() >= 2,"bridge generates road and structural meshes")
 		var facets: int = 0
+		var roads: int = 0
 		for child: MeshInstance3D in structure.get_children():
 			var arrays: Array = child.mesh.surface_get_arrays(0)
 			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
@@ -45,8 +46,13 @@ func run() -> void:
 			for normal: Vector3 in normals:
 				if absf(normal.y) < 0.1: facets += 1
 				if normal.y <= 0.0: downward += 1
-			if child.material_override is ShaderMaterial:
+			var surface: ShaderMaterial = child.material_override as ShaderMaterial
+			# Shadow projection volumes have side/bottom faces; only road surfaces
+			# have the upward-normal lighting contract.
+			if surface != null and surface.shader.resource_path in ["res://track/bridge_road.gdshader","res://track/storm_bridge_road.gdshader"]:
+				roads += 1
 				check(downward == 0,"road faces point up for correct bridge lighting")
+		check(roads > 0,"bridge includes a road surface subject to the lighting invariant")
 		check(facets > 24,"bridge has vertical structural faces rather than only flat strips")
 		structure.free()
 	var painted_document: Dictionary = creator.metadata.creator_document.duplicate(true)
@@ -121,12 +127,11 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		check(hud.road_map.outlines == geometry and hud.road_map.world_bounds == bounds_before,"changing waypoints cannot change minimap roads or framing")
 		track.route = waypoints
 	if not practice:
-		var menu := hud.find_child("RaceMenu",true,false) as MenuButton
-		check(menu != null and menu.get_popup().item_count == 2,"icon menu provides restart and tracks without a camera action")
-		var popup: PopupMenu = menu.get_popup()
-		popup.about_to_popup.emit()
+		var menu: Control = hud.pause_menu
+		check(menu != null and menu.find_child("Restart",true,false) != null and menu.find_child("Quit",true,false) != null,"drawer provides restart and quit")
+		hud.menu_button.pressed.emit()
 		check(bool(game.get("paused")),"race menu pauses the drive")
-		popup.popup_hide.emit()
+		(menu.find_child("ClosePauseMenu",true,false) as Button).pressed.emit()
 		check(not bool(game.get("paused")),"dismissing race menu resumes a running drive")
 	game.call("_process",0.1)
 	var rebuilds: int = hud.road_map.rebuild_count
@@ -184,10 +189,10 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		check(backing.encloses(content) and backing.get_center().is_equal_approx(content.get_center()),"lap backing is centred on actual label group")
 	var before: Array = sim.state.snapshot()
 	var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
-	var buttons: Array[Control] = [hud.pause_button,hud.handling_button]
+	var buttons: Array[Control] = [hud.menu_button]
 	var actions := hud.find_child("RaceActions",true,false) as Control
 	for child: Control in actions.get_child(0).get_children():
-		if child != hud.pause_button: buttons.append(child)
+		if child != hud.menu_button: buttons.append(child)
 	for button: Control in buttons:
 		check(bounds.encloses(button.get_global_rect()),"action stays on screen at %s: %s" % [dimensions,button.name])
 		check(button.size.y >= 52,"action retains a 52-unit touch target")
@@ -210,23 +215,25 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 			check(not zone.intersects(speed.get_global_rect()),"speed does not cover a driving touch zone")
 	check(sim.state.snapshot() == before,"HUD presentation does not change simulation state")
 	await save_capture(filename)
-	hud.pause_button.pressed.emit()
+	hud.menu_button.pressed.emit()
 	game.call("_process",0.1)
 	check(bool(game.get("paused")) and not hud.touch.enabled,"pause action stops input")
 	if practice:
-		check(hud.pause_button.text == "Paused \u00b7 Resume","practice pause retains its resume label")
+		check(hud.pause_menu.visible,"practice pause shows the drawer")
 		check(not hud.title.visible and not hud.race_timer.visible,"practice has no race timing or lap HUD")
 		await save_capture("practice-paused")
-	hud.pause_button.pressed.emit()
+	hud.menu_button.pressed.emit()
 	game.call("_process",0.1)
 	check(not bool(game.get("paused")) and hud.touch.enabled,"resume restores input")
 	if not practice:
-		var menu := hud.find_child("RaceMenu",true,false) as MenuButton
-		menu.get_popup().id_pressed.emit(0)
-		check(sim.state.position == initial_position and sim.state.tick == 0,"race-menu restart returns to the actual start")
+		var menu: Control = hud.pause_menu
+		var retries: Dictionary = {"count":0}
+		game.retry_requested.connect(func() -> void: retries.count += 1)
+		(menu.find_child("Restart",true,false) as Button).pressed.emit()
+		check(retries.count == 1,"race-menu restart requests a fresh production attempt")
 		var observed: Dictionary = {"tracks":0}
 		hud.exit_requested.connect(func() -> void: observed.tracks += 1)
-		menu.get_popup().id_pressed.emit(1)
+		(menu.find_child("Quit",true,false) as Button).pressed.emit()
 		check(observed.tracks == 1,"race-menu tracks item requests exit")
 	game.queue_free()
 	await process_frame

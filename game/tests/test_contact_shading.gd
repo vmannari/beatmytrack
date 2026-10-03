@@ -3,7 +3,7 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 var graphical: bool = false
-const FOLDER: String = "res://../docs/evidence/environment-coherence-2026-10-03/contact-shading/"
+const FOLDER: String = "res://../docs/evidence/grass-cloud-coverage-2026-10-03/after/"
 
 func _initialize() -> void:
 	graphical = DisplayServer.get_name() != "headless"
@@ -101,6 +101,10 @@ func capture_views(game: Node, bridges: Array[Node]) -> void:
 	var camera: FollowCamera = game.get("camera")
 	# Production camera first. Subsequent inspection view is diagnostic only.
 	await shot("gameplay")
+	var production_cloud: MeshInstance3D = game.get("cloud_shadow")
+	(production_cloud.material_override as ShaderMaterial).set_shader_parameter("elapsed",8.0)
+	await shot("gameplay-8s")
+	(production_cloud.material_override as ShaderMaterial).set_shader_parameter("elapsed",0.0)
 	camera.size = 48.0
 	camera.position = Vector3(7,37,34)
 	camera.look_at(Vector3(0,0,0))

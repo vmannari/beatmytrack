@@ -93,7 +93,7 @@ func run() -> void:
 			frames.append(input.packed())
 			var previous: Vector2 = sim.state.position
 			sim.step(input,track)
-			session.advance(track,previous,sim.state.position,sim.state.route_index)
+			session.advance(track,previous,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 			if session.finished: break
 		check(session.finished and sim.state.collision_count==0 and session.shortcut_count==0,"five laps finish cleanly in each selected direction")
 		var replay := VehicleSimulation.new(config)

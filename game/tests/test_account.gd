@@ -70,7 +70,7 @@ func run() -> void:
 	check(not app.root_ui.find_child("PlayerUsername", true, false).visible, "provider choice has no username field")
 	check(app.root_ui.find_child("MenuNavigation", true, false) == null, "sign-in is a focused standalone screen")
 	app.root_ui.find_child("ContinueWithoutSignIn", true, false).pressed.emit()
-	check(app.screen == "play" and not online.client.signed_in(), "guest action returns to local play without an account")
+	check(app.screen == "tracks" and not online.client.signed_in(), "guest action opens Race without an account")
 	app._show_screen("account")
 	for physical: Vector2i in [Vector2i(1280,720), Vector2i(960,540)]:
 		root.size = physical
@@ -83,14 +83,16 @@ func run() -> void:
 	check(not online.client.signed_in() and not online.busy, "wrong key never produces a local fake login")
 	online._development_key = key
 	await online.sign_in_developer()
-	check(online.client.signed_in() and online.player_name() == "Beat My Track", "actual server authenticates developer")
+	check(online.client.signed_in() and online.player_name() == "Beat my track", "actual server authenticates developer")
 	await online.refresh_options()
-	check(online.client.signed_in() and online.player_name() == "Beat My Track", "account refresh checks authenticated profile")
+	check(online.client.signed_in() and online.player_name() == "Beat my track", "account refresh checks authenticated profile")
 	var player_id: String = online.client.player.id
 	app._show_screen("tracks")
 	var browser: Node = app.root_ui.find_child("TrackBrowser", true, false)
 	while browser.loading: await process_frame
-	check(app.track_catalog.entries.any(func(entry: Dictionary) -> bool: return entry.id == "creator_legacy_playable" and entry.get("read_only",false)), "existing tracks remain playable after signing in")
+	var retained: Dictionary = app.guest_library.load_document("legacy_playable")
+	check(not retained.is_empty() and TrackCompiler.compile(retained) != null, "existing local circuit remains intact and drivable after signing in")
+	check(app.track_catalog.entries.all(func(entry: Dictionary) -> bool: return entry.source == "cloud"), "sign-in does not silently publish local drafts into Race")
 	check(app.track_catalog.query({"section":"saved"}, []).is_empty(), "shared existing tracks are not claimed as My tracks")
 	for entry: Dictionary in app.track_catalog.entries:
 		if entry.id == "creator_legacy_playable":
@@ -103,9 +105,9 @@ func run() -> void:
 	var owned_document: Dictionary = TrackDocument.create_blank()
 	owned_document["creator"] = "Impersonated name"
 	check(app.library.save_wip(owned_document) == OK, "owned draft saves: " + app.library.last_error)
-	check(app.library.load_wip(owned_document.id).get("creator", "") == "Beat My Track", "track storage stamps authenticated author")
+	check(app.library.load_wip(owned_document.id).get("creator", "") == "Beat my track", "track storage stamps authenticated author")
 	app._new_document()
-	check(app.document["creator"] == "Beat My Track", "new track uses racing name")
+	check(app.document["creator"] == "Beat my track", "new track uses racing name")
 	await capture("developer-creator")
 	app._show_screen("account")
 
@@ -113,7 +115,7 @@ func run() -> void:
 	check(not app.root_ui.find_child("GoogleSignIn", true, false).visible, "signed-in screen hides login actions")
 	await capture("developer-960")
 	app._show_screen("tracks")
-	check(app.root_ui.find_child("MenuAccount", true, false).text == "Beat My Track", "menu displays developer")
+	check(app.root_ui.find_child("MenuAccount", true, false).text == "Beat my track", "menu displays developer")
 	app._show_screen("account")
 	check(online.client.signed_in(), "session survives menu navigation")
 	check(online.client.has_saved_session(), "login stores a refresh session")
@@ -133,13 +135,15 @@ func run() -> void:
 		await capture("remembered-startup")
 		restarted._show_screen("play")
 	check(restarted.records.settings.get("track_ratings",{}).get("profile_test",0) == 5, "same player recovers ratings after restart")
-	check(restarted.library.load_wip(owned_document.id).get("creator", "") == "Beat My Track", "same player recovers drafts after restart")
-	check(restarted.screen == "play" and restarted.online.player_name() == "Beat My Track", "fresh app restores identity and opens Home")
+	check(restarted.library.load_wip(owned_document.id).get("creator", "") == "Beat my track", "same player recovers drafts after restart")
+	check(restarted.screen == "tracks" and restarted.online.player_name() == "Beat my track", "fresh app restores identity and opens Race")
 	check(restarted.online.client.has_saved_session(), "rotation replaces saved refresh token")
 	var stored: String = FileAccess.get_file_as_string(saved_path)
 	check(not restarted.online.client._refresh_token.is_empty() and restarted.online.client._refresh_token != online.client._refresh_token, "restore rotates refresh token")
 	check(not restarted.online.client._access_token in stored and not key in stored, "saved session excludes access token and development key")
 	restarted.root_ui.find_child("MenuAccount", true, false).pressed.emit()
+	check(restarted.screen == "profile","menu account opens Profile")
+	restarted.root_ui.find_child("ManageAccount",true,false).pressed.emit()
 	while restarted.online.busy: await process_frame
 	check(restarted.screen == "account" and restarted.root_ui.find_child("SignOut", true, false).visible, "menu account provides logout")
 	await restarted.online.sign_out()

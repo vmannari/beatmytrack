@@ -42,9 +42,14 @@ func run() -> void:
 		app.set("records", LocalRecords.new(test_directory.path_join("records.json")))
 		root.add_child(app)
 		while not app.get("startup_complete"): await process_frame
-		app.call("_show_screen","play")
+		app.call("_show_screen","tracks")
 		await _settle()
-		await _capture("home-first", physical_size)
+		await _capture("race-first", physical_size)
+		var profile_button: Button = app.get("account_button") as Button
+		profile_button.text = "Beat My Track"
+		await _settle()
+		await _capture("profile-name-fixture", physical_size, true)
+		profile_button.text = "Guest"
 		await _navigate("garage")
 		await _capture("garage", physical_size)
 		await _navigate("tracks")
@@ -54,16 +59,18 @@ func run() -> void:
 		# track-selection/race flows; this also checks the settings icon entry.
 		await _navigate("settings")
 		await _capture("settings", physical_size)
-		await _navigate("play")
+		await _navigate("profile")
+		await _capture("profile", physical_size)
+		await _navigate("tracks")
 		await _result_fixture()
 		await _capture("results-fixture", physical_size, true)
 		if physical_size == Vector2i(1280, 720):
 			await _check_result_retry()
 		app.call("_leave_race")
 		await _settle()
-		app.call("_show_screen", "play")
+		app.call("_show_screen", "tracks")
 		await _settle()
-		await _capture("home-returning-fixture", physical_size, true)
+		await _capture("race-returning-fixture", physical_size, true)
 		app.queue_free()
 		await process_frame
 		_cleanup()
@@ -83,6 +90,7 @@ func run() -> void:
 func _navigate(destination: String) -> void:
 	if destination == "play" and (app.get("root_ui") as Node).find_child("Tab_play",true,false) == null: destination = "tracks"
 	var node_name: String = "MenuSettings" if destination == "settings" else "Tab_" + destination
+	if destination == "profile": node_name = "MenuAccount"
 	var button: Button = (app.get("root_ui") as Node).find_child(node_name, true, false)
 	check(button != null and button.is_visible_in_tree(), "visible navigation to " + destination)
 	if button == null:
@@ -185,7 +193,15 @@ func _check_actions(node: Node, bounds: Rect2, inside_scroll: bool, label: Strin
 		inside_scroll = true
 	if (node is BaseButton or node is LineEdit or node is Slider) and not inside_scroll:
 		var control: Control = node as Control
+		# Retained outgoing slide controls are visual-only and clipped by their slots.
+		if control.mouse_filter == Control.MOUSE_FILTER_IGNORE and control.focus_mode == Control.FOCUS_NONE: return
 		var rect: Rect2 = control.get_global_rect()
+		var ancestor: Node = control.get_parent()
+		while ancestor is Control:
+			if ancestor.name in ["HeroSlot", "RecordsSlot"]:
+				rect = rect.intersection((ancestor as Control).get_global_rect())
+				if not rect.has_area(): return
+			ancestor = ancestor.get_parent()
 		check(rect.size.x > 0.0 and rect.size.y > 0.0 and bounds.grow(1.0).encloses(rect), "%s action remains inside logical viewport: %s %s" % [label, node.name, rect])
 	for child: Node in node.get_children():
 		_check_actions(child, bounds, inside_scroll, label)
@@ -249,7 +265,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check(browser.find_child("DeleteUserTrack",true,false) == null and browser.find_child("RemixTrack",true,false) == null,"Play does not expose track modification actions")
 	await _capture("tracks-populated-fixture",physical_size,true)
 	# Presentation-only transition fixture; retain canonical selected track.
-	var transition_bounds: Rect2 = browser.hero.get_global_rect()
+	var transition_bounds: Rect2 = (browser.find_child("HeroSlot",true,false) as Control).get_global_rect()
 	browser.preview_entry = {"id":"transition_start","name":"Pine Ridge","creator":"Gallery fixture","theme":"pine","points":[[0,0],[80,0],[110,60],[40,90]]}
 	browser._show_hero("PINE RIDGE","pine")
 	await create_timer(0.2).timeout
@@ -261,9 +277,11 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await RenderingServer.frame_post_draw
 	check(is_equal_approx(browser.hero.position.x,browser.records_panel.position.x),"hero and records share the same slide offset")
 	var outgoing_alpha: float = browser.hero.modulate.a
-	check(outgoing_alpha > 0.0 and outgoing_alpha < 1.0,"scenery visibly blends during transition")
-	check(browser.hero.size == transition_bounds.size and (browser.find_child("HeroSlot",true,false) as Control).get_global_rect() == transition_bounds,"slide keeps the allocated section bounds fixed")
-	check(browser._section_offset > 0.0 and browser._section_offset < 180.0,"forward slide is between its start and centered position")
+	check(outgoing_alpha == 1.0 and browser._outgoing_panels.size() == 2,"both complete sections stay opaque during replacement")
+	check(is_equal_approx(browser._outgoing_panels[0].position.x + browser._slide_distance, browser.hero.position.x),"old and new sections meet edge to edge")
+	check((browser._outgoing_panels[0].find_child("HeroTrackTitle",true,false) as Label).text == "PINE RIDGE","outgoing section retains its old title")
+	check(browser.hero.size.is_equal_approx(transition_bounds.size) and (browser.find_child("HeroSlot",true,false) as Control).get_global_rect().is_equal_approx(transition_bounds),"slide keeps the allocated section bounds fixed: %s / %s" % [browser.hero.size,transition_bounds])
+	check(browser._section_offset > 0.0 and browser._section_offset < browser._slide_distance,"forward slide is between its start and centered position")
 	await _capture("section-slide-mid",physical_size,true)
 	# Interrupt before the first fade completes: newest title must win now.
 	browser._selection_serial += 1
@@ -274,12 +292,13 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "FROSTBITE RUN","interrupt updates title immediately")
 	await create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
-	check(browser._section_offset < 0.0 and browser._section_offset > -180.0,"reverse slide interrupts immediately from the left")
+	check(browser._section_offset < 0.0 and browser._section_offset > -browser._slide_distance,"reverse slide interrupts immediately from the left")
 	await _capture("section-slide-interrupted",physical_size,true)
 	await create_timer(0.5).timeout
 	await RenderingServer.frame_post_draw
 	check(browser._hero_scenery.get_child_count() == 1,"interrupted scenery settles without queued transitions")
 	check(is_zero_approx(browser._section_offset),"slide settles at the centered crop")
+	check(browser._outgoing_panels.is_empty(),"completed slide releases outgoing controls")
 	await _capture("section-slide-settled",physical_size,true)
 	browser.preview_entry = {}
 	browser._show_detail()
@@ -434,8 +453,18 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	await _settle()
 	var filter_scroll: ScrollContainer = browser.filter_dialog.panel.find_children("*","ScrollContainer",true,false)[0]
 	check(filter_scroll.scroll_vertical == 0,"drawer opens with the Show heading visible")
-	check(filter_scroll.get_v_scroll_bar().max_value <= filter_scroll.get_v_scroll_bar().page+1,"all filter groups fit the landscape drawer without scrolling")
+	check(filter_scroll.vertical_scroll_mode != ScrollContainer.SCROLL_MODE_DISABLED,"expanded filter groups remain reachable by scrolling")
 	await _capture("filters-default",physical_size,true)
+	filter_scroll.ensure_control_visible(browser.filter_dialog.find_child("Choice_race_history_unraced",true,false))
+	await _settle()
+	await _tap((browser.filter_dialog.find_child("Choice_age_days_30",true,false) as Button).get_global_rect().get_center())
+	await _tap((browser.filter_dialog.find_child("Choice_race_history_unraced",true,false) as Button).get_global_rect().get_center())
+	check(browser.filter_dialog.draft.age_days == 30 and browser.filter_dialog.draft.race_history == "unraced","age and personal history support touch selection")
+	check(browser.filter_dialog.active_count(browser.filter_dialog.draft) == 2,"age and personal history both count as active filters")
+	await _capture("filters-age-history",physical_size,true)
+	browser.filter_dialog.reset_choices()
+	filter_scroll.scroll_vertical = 0
+	await _settle()
 	var pending_before: Dictionary = browser.state.duplicate(true)
 	var drawer: CanvasLayer = browser.filter_dialog
 	var grass: Button = drawer.find_child("Choice_theme_pine",true,false)

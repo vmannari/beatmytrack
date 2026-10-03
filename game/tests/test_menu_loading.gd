@@ -60,7 +60,7 @@ func run() -> void:
 	check(browser.catalog.cached_track(a) != null,"superseded valid result is cached")
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"return selection uses compiled cache immediately")
-	check(browser._hero_direction == -1.0 and is_equal_approx(browser._section_offset,-180.0),"backward selection slides new scenery in from the left")
+	check(browser._hero_direction == -1.0 and is_equal_approx(browser._section_offset,-browser._slide_distance),"backward selection slides new scenery in from the left")
 	var third: Dictionary = second.duplicate(true)
 	third.id = "third_track"
 	check(library.save_document(third) == OK,"third fixture saved")
@@ -108,15 +108,16 @@ func run() -> void:
 	root.add_child(board)
 	browser.cloud = board
 	var ready_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	ready_track.identity = str(a.id)
 	ready_track.metadata.cloud_version = "fixture_ready"
 	browser.catalog.indexed_revision = library.revision
 	browser.catalog.remember_track(a,ready_track)
 	browser._select(a)
-	check(browser.selecting and browser.race_button.disabled,"cached cloud track waits for its standings before enabling Race")
+	check(not browser.selecting and not browser.race_button.disabled,"cached cloud track is playable while optional standings wait")
 	check(board.calls == 1,"cloud records request starts before the section transition")
 	board.finished.emit()
 	await process_frame
-	check(not browser.selecting and browser.detail.visible and browser._section_offset != 0.0,"cloud response completes before populated section starts sliding")
+	check(not browser.selecting and browser.detail.visible and not browser.race_button.disabled,"failed optional standings preserve the playable cached section")
 	browser.cloud = null
 	board.queue_free()
 	delayed.queue_free()
@@ -187,8 +188,10 @@ func _layout(browser: TrackBrowser) -> Dictionary:
 
 class DelayedCloud extends Node:
 	signal finished
+	var client: Node = self
 	var calls: int = 0
 	var last_error: String = "Fixture download unavailable"
+	func cancel_public_reads(_owner: int) -> void: pass
 	func download(_entry: Dictionary) -> bool:
 		calls += 1
 		await finished
@@ -199,7 +202,8 @@ class DelayedBoard extends Node:
 	signal finished
 	var client: Node = self
 	var calls: int = 0
-	func request_api(_path: String) -> Dictionary:
+	func cancel_public_reads(_owner: int) -> void: pass
+	func request_public(_path: String, _owner: int) -> Dictionary:
 		calls += 1
 		await finished
 		return {"ok":false,"error":"Fixture unavailable"}

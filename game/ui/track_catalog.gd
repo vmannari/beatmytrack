@@ -20,6 +20,9 @@ func cached_track(entry: Dictionary) -> NativeTrack:
 		_resolved_revision = indexed_revision
 	var id: String = str(entry.id)
 	var track: NativeTrack = _resolved.get(id)
+	if track != null and entry.get("source") == "cloud" and str(track.metadata.get("cloud_version","")) != str(entry.get("version_id","")):
+		_resolved.erase(id)
+		track = null
 	if track != null:
 		# Keep recently revisited tracks when browsing beyond the four-slot cache.
 		_resolved.erase(id)

@@ -5,8 +5,12 @@ signal test_requested(load_id: String)
 signal publish_requested(load_id: String)
 signal delete_requested(id: String, title: String)
 signal back_requested
+signal adopt_requested(document: Dictionary)
+signal fork_requested(document: Dictionary)
 
 var library: TrackLibrary
+var guest_library: TrackLibrary
+var lifecycle: TrackLifecycle
 var entries: Array[Dictionary] = []
 var query: String = ""
 var page: int = 0
@@ -21,8 +25,8 @@ var next: Button
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation",12)
-	entries = library.editable_entries()
-	for item: Dictionary in entries: item.tested = library.is_tested(item.document)
+	_load_entries()
+	if lifecycle != null: lifecycle.changed.connect(_status_changed)
 	var header := HBoxContainer.new()
 	add_child(header)
 	var title := MenuStyle.label("LOAD TRACK",32)
@@ -57,6 +61,7 @@ func _ready() -> void:
 	detail.add_theme_stylebox_override("panel",MenuStyle.card(14))
 	add_child(detail)
 	search.text_changed.connect(func(value: String) -> void: query = value; page = 0; _refresh())
+	get_viewport().size_changed.connect(_show_detail)
 	_refresh()
 
 func _refresh() -> void:
@@ -107,7 +112,7 @@ func _card(item: Dictionary) -> void:
 	tile.selected = selection == item
 	tile.pressed.connect(func() -> void: selection = item; _refresh())
 	column.add_child(tile)
-	tile.custom_minimum_size.y = 190
+	tile.custom_minimum_size.y = 140 if get_viewport_rect().size.y < 620 else 190
 	column.add_child(MenuStyle.label("Last saved  "+_stamp(item),14,true))
 
 func _show_detail() -> void:
@@ -120,7 +125,17 @@ func _show_detail() -> void:
 	var doc: Dictionary = item.document
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",12)
-	detail.add_child(row)
+	var actions: Control = row
+	if get_viewport_rect().size.x < 1100:
+		var stack := VBoxContainer.new()
+		detail.add_child(stack)
+		stack.add_child(row)
+		var flow := HFlowContainer.new()
+		flow.add_theme_constant_override("h_separation",12)
+		flow.add_theme_constant_override("v_separation",8)
+		stack.add_child(flow)
+		actions = flow
+	else: detail.add_child(row)
 	var preview: TrackTile = _tile(item)
 	preview.preview_only = true
 	preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -140,25 +155,39 @@ func _show_detail() -> void:
 	info.add_child(MenuStyle.label(TrackTheme.title(str(doc.theme))+" biome",15,true))
 	info.add_child(MenuStyle.label("Last saved "+_stamp(item),14,true))
 	info.add_child(MenuStyle.label(_counts(doc),14,true))
+	if item.get("guest",false):
+		info.add_child(MenuStyle.label("Saved as Guest on this device",14,true))
+		actions.add_child(_action("Use in my drafts","edit",func() -> void: adopt_requested.emit(doc.duplicate(true)),true))
+		return
+	if lifecycle != null:
+		var progress := MenuStyle.label(lifecycle.caption(doc),14,true)
+		progress.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(progress)
 	var edit: Button = _action("Edit track","edit",func() -> void: edit_requested.emit(str(item.load_id)))
 	edit.name = "ContinueEditing"
 	edit.custom_minimum_size.x = 150
-	row.add_child(edit)
+	actions.add_child(edit)
 	var test: Button = _action("Test drive","play",func() -> void: test_requested.emit(str(item.load_id)))
 	test.name = "TestDraft"
 	test.custom_minimum_size.x = 155
-	row.add_child(test)
+	actions.add_child(test)
 	var publish: Button = _action("Publish","publish",func() -> void: publish_requested.emit(str(item.load_id)),true)
 	publish.name = "PublishDraft"
-	publish.tooltip_text = "Upload to the backend, then complete five timed laps for server verification and publication."
+	publish.tooltip_text = "Publish this version after its completed test drive has been verified."
 	publish.custom_minimum_size.x = 252
-	publish.disabled = not bool(item.tested)
+	publish.clip_text = true
+	publish.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	publish.disabled = not lifecycle.ready_to_publish(doc) if lifecycle != null else not bool(item.tested)
 	if publish.disabled:
-		publish.text = "Publish\nComplete test run to publish"
+		publish.text = "Publish\n"+(lifecycle.caption(doc) if lifecycle != null else "Complete test run to publish")
 		publish.add_theme_font_size_override("font_size",17)
 		publish.add_theme_stylebox_override("disabled",MenuStyle.box(Color("30383f")))
 		publish.add_theme_color_override("font_disabled_color",Color("aeb8bf"))
-	row.add_child(publish)
+	actions.add_child(publish)
+	if lifecycle != null and lifecycle.can_retry(doc):
+		actions.add_child(_action("Retry","refresh",func() -> void: lifecycle.retry(doc)))
+	if lifecycle != null and str(lifecycle.status_for(doc).get("failure","")).contains("REVISION_CONFLICT"):
+		actions.add_child(_action("Save as new track","edit",func() -> void: fork_requested.emit(doc.duplicate(true))))
 	var remove: Button = _action("","delete",func() -> void: delete_requested.emit(str(doc.id),str(doc.name)))
 	remove.name = "DeleteDraft"
 	remove.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -169,7 +198,7 @@ func _show_detail() -> void:
 	remove.custom_minimum_size = Vector2(64,64)
 	remove.add_theme_stylebox_override("normal",MenuStyle.box(Color("8d233a")))
 	remove.add_theme_stylebox_override("hover",MenuStyle.box(Color("b3314b")))
-	row.add_child(remove)
+	actions.add_child(remove)
 
 func _action(caption: String, glyph: String, action: Callable, primary: bool = false) -> Button:
 	var button := MenuStyle.button(caption,action,primary)
@@ -180,6 +209,28 @@ func _action(caption: String, glyph: String, action: Callable, primary: bool = f
 		button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
 		button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
 	return button
+
+func _status_changed() -> void:
+	if not is_inside_tree(): return
+	var selected_id: String = str(selection.get("id",""))
+	_load_entries()
+	for item: Dictionary in entries:
+		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
+		if str(item.id) == selected_id: selection = item
+	_refresh()
+
+func _load_entries() -> void:
+	entries = library.editable_entries()
+	var owned_ids: Array[String] = []
+	for item: Dictionary in entries:
+		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
+		owned_ids.append(str(item.document.id))
+	if guest_library != null and guest_library.directory != library.directory:
+		for item: Dictionary in guest_library.editable_entries():
+			if str(item.document.id) in owned_ids: continue
+			item.guest = true
+			item.tested = false
+			entries.append(item)
 
 static func _counts(doc: Dictionary) -> String:
 	return "%d road pieces  ·  %d objects" % [doc.pieces.size(),doc.objects.size()]

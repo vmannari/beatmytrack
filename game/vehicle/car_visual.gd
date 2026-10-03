@@ -5,6 +5,7 @@ extends Node3D
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
 var headlights: Node3D
+var road_headlight: SpotLight3D
 var night_lights_enabled: bool = false
 var rear_braking: bool = false
 
@@ -14,6 +15,7 @@ func set_night_headlights(enabled: bool) -> void:
 	_update_rear_lights()
 	if headlights != null:
 		headlights.visible = enabled
+		if road_headlight != null: road_headlight.shadow_enabled = false
 		return
 	if not enabled: return
 	headlights = Node3D.new()
@@ -34,8 +36,10 @@ func set_night_headlights(enabled: bool) -> void:
 	beam.spot_angle_attenuation = 1.2
 	beam.spot_attenuation = 0.7
 	beam.shadow_enabled = false
+	beam.light_cull_mask = 3 # Ordinary world (1) plus bridge-only geometry (2).
 	beam.light_bake_mode = Light3D.BAKE_DISABLED
 	headlights.add_child(beam)
+	road_headlight = beam
 	var lens := StandardMaterial3D.new()
 	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	lens.albedo_color = Color("fff0d2")
@@ -55,6 +59,15 @@ func set_night_headlights(enabled: bool) -> void:
 		var mesh: MeshInstance3D = VisualGeometry.box(headlights,Vector3(0.24,0.13,0.025),Vector3(side*mount.x,mount.y,mount.z),lens)
 		mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	VisualGeometry.batch_static_parts(headlights)
+
+
+func set_headlight_bridge_occlusion(enabled: bool) -> void:
+	if road_headlight != null:
+		# Compatibility shadows do not reliably stop a light below a two-sided
+		# procedural deck from shading its top face. Bridge meshes use visual layer
+		# 2, so exclude that layer throughout ground-level travel (including the
+		# approach and exit) and restore it only when driving on the deck.
+		road_headlight.light_cull_mask = 1 if enabled else 3
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
 var rolling_wheels: Array[Node3D] = []

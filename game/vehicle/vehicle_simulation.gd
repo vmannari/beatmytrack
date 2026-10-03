@@ -3,7 +3,8 @@ extends RefCounted
 ## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
-const PHYSICS_VERSION: String = "arcade-planar-0.39"
+const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+const PHYSICS_VERSION: String = "arcade-planar-0.50"
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -27,6 +28,11 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	LaunchStart.advance(state, frame)
+	# Brake pressure is only input driven; no automatic drift latch.
+	var requested_handbrake: float = frame.handbrake / 255.0
+	state.handbrake_pressure = move_toward(state.handbrake_pressure, requested_handbrake,
+		(30.0 if requested_handbrake > state.handbrake_pressure else 3.0) * STEP)
 	var old_position: Vector2 = state.position
 	var old_heading: float = state.heading
 	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
@@ -76,8 +82,11 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
+	var handbrake: float = state.handbrake_pressure
 	if config.progressive_handling and brake > 0.0:
 		throttle = 0.0
+	# Automatic clutch disconnects drive while pulling the rear brake.
+	throttle *= 1.0 - requested_handbrake
 	var requested_steering: float = frame.steer / 127.0
 	var steering_response: float = config.steering_rate
 	if config.progressive_handling and state.steering != 0.0 and (signf(requested_steering) != signf(state.steering) or absf(requested_steering) < absf(state.steering)):
@@ -102,6 +111,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var soil_drag_rate: float = (7.5 + speed * 0.38) * smoothstep(3.0,14.0,speed) * config.soil_drag_multiplier
 	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
 	var lift: float = (1.0 - throttle) * (1.0 - brake) * smoothstep(8.0, 24.0, longitudinal)
+	# Explicit rear braking replaces lift-off unloading rather than stacking with it.
+	lift *= 1.0 - handbrake
 	target_yaw += state.steering * lift * config.lift_off_rotation
 	if config.progressive_handling:
 		# Front traction saturates smoothly: excess entry speed widens the path
@@ -115,12 +126,19 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	target_yaw += state.steering * throttle * config.throttle_rotation * speed_fraction * signf(longitudinal)
 	if longitudinal > 1.0 and not config.progressive_handling:
 		target_yaw += slip * config.countersteer_assistance
+	# Rear lock changes tire forces, not the front steering angle or a target radius.
+	var axle: Vector3 = _handbrake_axles(longitudinal, lateral, steer_angle, surface.x * tire_grip, requested_handbrake) if handbrake > 0.0 else Vector3.ZERO
+	var axle_acceleration: Vector2 = right * axle.x + forward * axle.y
+	# Retain low-speed hairpin rotation while limiting fast rear-lock spins.
+	var rear_lock_yaw_limit: float = lerpf(4.0, 3.2, smoothstep(12.0, 24.0, speed))
+	var yaw_limit: float = lerpf(config.maximum_yaw_rate, rear_lock_yaw_limit, handbrake)
 	target_yaw = clampf(target_yaw, -config.maximum_yaw_rate, config.maximum_yaw_rate)
 	var yaw_response: float = config.mass / config.rotational_inertia * 7.0
 	if config.progressive_handling and requested_steering * state.yaw_rate < 0.0:
 		# Follow the player's correction sooner; no road/heading target or speed gift.
 		yaw_response *= 1.0 + config.countersteer_assistance * smoothstep(0.04, 0.3, absf(slip))
-	state.yaw_rate = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
+	var normal_yaw: float = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
+	state.yaw_rate = lerpf(normal_yaw, state.yaw_rate + axle.z * STEP, handbrake)
 	# Differential wheel drag creates a moment about the centre of mass. This is
 	# applied as angular acceleration after steering response, so it adds to or
 	# opposes a corner instead of being hidden inside the requested steering yaw.
@@ -128,7 +146,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var soil_angular_acceleration: float = differential_deceleration * config.mass * config.track_width * 0.5 / config.rotational_inertia * SOIL_TORQUE_GAIN
 	state.yaw_rate += soil_angular_acceleration * STEP * signf(longitudinal)
 	state.yaw_rate += _soil_rough_yaw_acceleration(wheel_soil,speed) * STEP
-	state.yaw_rate = clampf(state.yaw_rate,-config.maximum_yaw_rate,config.maximum_yaw_rate)
+	state.yaw_rate = clampf(state.yaw_rate,-yaw_limit,yaw_limit)
 	state.heading = wrapf(state.heading + state.yaw_rate * STEP, -PI, PI)
 	# Use the newly turned chassis frame while retaining world-space momentum.
 	forward = state.forward()
@@ -146,13 +164,24 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		grip_limit *= 1.0 - brake_turn * config.brake_grip_loss
 	var lateral_acceleration: float = clampf(-lateral * config.lateral_response * tire_grip, -grip_limit, grip_limit)
 	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
+	if handbrake > 0.0:
+		next_lateral = lerpf(next_lateral, lateral + axle_acceleration.dot(right) * STEP, handbrake)
 	# Grip redirects most scrubbed lateral energy into travel instead of deleting it.
 	# Fade for broadside slides; retain direction in reverse. Apply before pedals so
 	# braking and drag still remove energy, and collisions never get compensated.
 	var removed_energy: float = maxf(0.0, lateral * lateral - next_lateral * next_lateral)
+	# During rear-grip recovery, sideways scrub must not feed backward travel
+	# after the nose has turned through the hairpin.
+	if handbrake > 0.0 and longitudinal < 0.0: removed_energy = 0.0
 	var alignment: float = clampf(absf(longitudinal) / maxf(absf(lateral), 0.01), 0.0, 1.0)
-	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment)
+	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment * (1.0 - requested_handbrake))
 	var drive_acceleration: float = _pedal_acceleration(longitudinal, frame.throttle / 255.0, brake)
+	if handbrake > 0.0:
+		state.reverse_wait = 0.0
+		if brake > 0.0:
+			drive_acceleration = -signf(longitudinal) * config.braking_force / config.mass * brake
+		else:
+			drive_acceleration = _pedal_acceleration(longitudinal, throttle, 0.0)
 	if config.progressive_handling and throttle > 0.0 and longitudinal > 0.0:
 		drive_acceleration *= 1.0 - config.slide_drive_loss * smoothstep(0.10, 0.55, absf(slip))
 	# Combined traction budgets make braking and acceleration compete with cornering.
@@ -163,15 +192,27 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var drive_tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	longitudinal_limit *= surface.x * drive_tire_grip
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
+	# Temporary forward drive only; braking/reverse and maximum speed stay unchanged.
+	if drive_acceleration > 0.0 and throttle > 0.0 and longitudinal >= 0.0:
+		if state.tick < state.launch_delay_until: drive_acceleration = 0.0
+		elif state.tick < state.launch_end_tick: drive_acceleration *= 1.0 + state.launch_gain
 	# Impact recoil may exceed powered reverse speed. Preserve that momentum,
 	# but the reverse pedal cannot sustain or increase an overspeed recoil.
 	if longitudinal < -config.reverse_speed:
 		drive_acceleration = maxf(0.0, drive_acceleration)
-	var next_longitudinal: float = longitudinal + drive_acceleration * STEP
+	var next_longitudinal: float = longitudinal + (drive_acceleration + axle_acceleration.dot(forward) * handbrake) * STEP
+	if requested_handbrake > 0.0 and longitudinal * next_longitudinal < 0.0: next_longitudinal = 0.0
+	if requested_handbrake == 0.0 and brake == 0.0 and handbrake > 0.0 and next_longitudinal < 0.0:
+		# Brief, dissipative exit assistance catches reverse chassis slip while
+		# rear traction recovers. It does not reverse momentum or supply power.
+		next_longitudinal = RALLY_HANDBRAKE.catch_backward(next_longitudinal,handbrake,surface.x*tire_grip,STEP)
 	# Braking never crosses zero into reverse until the stopped hold delay elapses.
 	if brake > 0.0 and longitudinal > 0.0 and next_longitudinal < 0.0:
 		next_longitudinal = 0.0
-	if throttle > 0.0 and longitudinal < 0.0 and next_longitudinal > 0.0:
+	# Tiny negative projections while the chassis finishes rotating are inside
+	# the stopped band; repeatedly clamping them strands a powered exit at zero.
+	var forward_crossing_threshold: float = -0.15 if handbrake > 0.0 and requested_handbrake == 0.0 else 0.0
+	if throttle > 0.0 and longitudinal < forward_crossing_threshold and next_longitudinal > 0.0:
 		next_longitudinal = 0.0
 	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
 	resistance += surface.y
@@ -187,6 +228,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	next_longitudinal = clampf(next_longitudinal, -maxf(config.reverse_speed, -longitudinal), config.maximum_speed)
 	state.velocity = forward * next_longitudinal + right * next_lateral
 	state.velocity = state.velocity.limit_length(config.maximum_speed)
+	if handbrake > 0.0 and throttle == 0.0: state.velocity = state.velocity.limit_length(speed)
 	var previous_position: Vector2 = state.position
 	state.position += state.velocity * STEP
 	if ground != null:
@@ -296,3 +338,8 @@ func _soil_rough_yaw_acceleration(contacts: Vector4, speed: float) -> float:
 	var roughness: float = sin(state.position.x*2.71+state.position.y*1.83)
 	roughness += sin(state.position.x*5.17-state.position.y*3.29+0.73)*0.45
 	return roughness/1.45 * SOIL_ROUGH_YAW_ACCELERATION * contact_count*0.25 * smoothstep(3.0,18.0,speed)
+
+
+# Rear braking acts through axle contact velocities, not a desired slip angle.
+func _handbrake_axles(longitudinal: float, lateral: float, steering: float, surface_grip: float, pressure: float) -> Vector3:
+	return RALLY_HANDBRAKE.forces(config, longitudinal, lateral, state.yaw_rate, steering, surface_grip, pressure, state.handbrake_pressure, STEP)

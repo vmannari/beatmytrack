@@ -26,6 +26,16 @@ func _soil() -> NativeTrack:
 	track.route = PackedVector2Array([Vector2(0,-400),Vector2(0,400)])
 	return track
 
+func _body_triangles(node: Node) -> int:
+	var triangles: int = 0
+	if node is MeshInstance3D:
+		var instance := node as MeshInstance3D
+		if instance.mesh != null:
+			triangles += instance.mesh.get_faces().size() / 3
+	for child: Node in node.get_children():
+		triangles += _body_triangles(child)
+	return triangles
+
 func _run() -> void:
 	var soil: NativeTrack = _soil()
 	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
@@ -71,8 +81,17 @@ func _run() -> void:
 		check(sim.state.snapshot() == replay.state.snapshot(), id + " mixed-input soil replay is exact")
 		var visual := CarVisual.new()
 		visual.vehicle_id = id
+		# Detail construction is checked before production material batching.
+		# Batching intentionally reduces child count without removing geometry.
+		visual.batch_parts = false
 		root.add_child(visual)
 		check(visual.front_wheels.size() == 2 and visual.body.get_child_count() > 10,id + " detailed model has steering wheels and body")
+		var batched := CarVisual.new()
+		batched.vehicle_id = id
+		root.add_child(batched)
+		check(_body_triangles(batched.body) == _body_triangles(visual.body),id + " production batching retains all body triangles")
+		check(batched.front_wheels.size() == 2 and batched.rolling_wheels.size() == 4,id + " production model retains steering and rolling wheels")
+		batched.queue_free()
 		visual.present(sim.state.position,sim.state.heading,sim.state,DriveFrame.new())
 		visual.present_suspension(sim.state,0)
 		var rolling := VehicleState.new()
@@ -146,7 +165,7 @@ func _laps(id: String, track_id: String) -> void:
 		var frame: DriveFrame = driver.sample(sim.state,track,config)
 		frames.append(frame.packed())
 		sim.step(frame,track)
-		session.advance(track,previous,sim.state.position,sim.state.route_index)
+		session.advance(track,previous,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if session.finished: break
 	check(session.finished and session.completed_laps == 5,id+" completes five laps on "+track_id)
 	var replay := VehicleSimulation.new(config)

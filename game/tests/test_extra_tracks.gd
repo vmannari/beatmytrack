@@ -41,7 +41,7 @@ func run() -> void:
 			var input: DriveFrame = driver.sample(sim.state, track, config)
 			frames.append(input.packed())
 			sim.step(input, track)
-			session.advance(track, previous, sim.state.position, sim.state.route_index)
+			session.advance(track, previous, sim.state.position,sim.state.route_index,sim.state.track_elevated)
 			if session.finished:
 				break
 		print("EXTRA_TRACK_RESULT ", name, " laps=", session.completed_laps, " next_cp=", session.next_checkpoint, " times=", session.lap_times, " collisions=", sim.state.collision_count, " ticks=", sim.state.tick)
@@ -60,7 +60,7 @@ func run() -> void:
 				frame.brake = int(packed_frames[i][2])
 				var previous: Vector2 = replay.state.position
 				replay.step(frame, track)
-				replay_session.advance(track, previous, replay.state.position, replay.state.route_index)
+				replay_session.advance(track, previous, replay.state.position,replay.state.route_index,replay.state.track_elevated)
 		check(replay.state.snapshot() == sim.state.snapshot() and replay_session.lap_times == session.lap_times, name + " full JSON replay exactly matches in batches of eight")
 		var final_ticks: int = session.elapsed_ticks
 		session.advance(track, track.spawn, track.spawn + Vector2.ONE, 0)

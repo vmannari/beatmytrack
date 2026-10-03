@@ -80,7 +80,7 @@ func _drive_replay(track: NativeTrack) -> void:
 		inputs.append([frame.steer,frame.throttle,frame.brake])
 		var previous: Vector2 = sim.state.position
 		sim.step(frame,track)
-		session.advance(track,previous,sim.state.position,sim.state.route_index)
+		session.advance(track,previous,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if session.finished: break
 	check(session.completed_laps == 3,"variable-width sharp-corner circuit completes three AI laps")
 	print("SHARP_RACE laps=",session.completed_laps," times=",session.lap_times," contacts=",sim.state.collision_count," state=",sim.state.position," checkpoint=",session.next_checkpoint)

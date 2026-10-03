@@ -138,7 +138,8 @@ func _ready() -> void:
 	add_child(filter_dialog)
 	filter_dialog.applied.connect(func(filters: Dictionary) -> void:
 		state.merge(filters,true)
-		_refresh())
+		_refresh()
+		if cloud != null: cloud.search(state))
 	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
 	search_dialog = SearchDrawer.new()
 	search_dialog.catalog = catalog
@@ -148,7 +149,8 @@ func _ready() -> void:
 	search_dialog.applied.connect(func(search: Dictionary) -> void:
 		state.merge(search,true)
 		state.page = 0
-		_refresh())
+		_refresh()
+		if cloud != null: cloud.search(state))
 	search_dialog.selected.connect(_select)
 	search_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
 	if cloud != null:
@@ -166,9 +168,10 @@ func _compact_button(text: String, action: Callable) -> Button:
 func _load_catalog() -> void:
 	if not is_inside_tree(): return
 	if catalog.indexed_revision == library.revision:
-		if cloud != null: cloud.add_to_catalog(catalog,discovery)
+		if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
 		loading = false
 		_refresh()
+		_show_detail()
 		_random_on_open()
 		if cloud != null: cloud.refresh()
 		return
@@ -179,6 +182,15 @@ func _load_catalog() -> void:
 	var revision: int = library.revision
 	var slice_start: int = Time.get_ticks_usec()
 	catalog.entries.clear()
+	if cloud != null:
+		cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+		loading = false
+		catalog.indexed_revision = revision
+		_refresh()
+		_show_detail()
+		_random_on_open()
+		cloud.refresh()
+		return
 	for index: int in range(builtin_ids.size()):
 		catalog.add_builtin(builtin_ids[index])
 		if Time.get_ticks_usec()-slice_start >= 3000:
@@ -196,7 +208,7 @@ func _load_catalog() -> void:
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
 	catalog.add_shared_tracks()
-	if cloud != null: cloud.add_to_catalog(catalog,discovery)
+	if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
 	loading = false
 	catalog.indexed_revision = revision
 	_refresh()
@@ -204,9 +216,19 @@ func _load_catalog() -> void:
 	if cloud != null: cloud.refresh()
 
 func _cloud_changed() -> void:
-	cloud.add_to_catalog(catalog,discovery)
+	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
 	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
 	_refresh()
+	if not selecting:
+		for entry: Dictionary in catalog.entries:
+			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
+				_select(entry)
+				return
+		if not _selected_is_available(): _show_detail()
+
+func _selected_is_available() -> bool:
+	if cloud == null: return true
+	return selected_track.metadata.has("cloud_version") and catalog.entries.any(func(entry: Dictionary) -> bool: return str(entry.id) == selected_track.identity)
 
 func _random_on_open() -> void:
 	if state.get("random_on_open",false):
@@ -307,6 +329,7 @@ func _random() -> void:
 	_select(entry)
 
 func _select(entry: Dictionary) -> void:
+	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
 	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
 	var previous_index: int = -1
 	var next_index: int = -1
@@ -383,11 +406,13 @@ func _process(_delta: float) -> void:
 	if result.track != null: catalog.remember_track(_working_entry,result.track)
 	if _working_serial != _selection_serial:
 		_start_selection()
-		if _requested_entry.is_empty() and not selecting and preview_entry.is_empty(): race_button.disabled = false
+		if _requested_entry.is_empty() and not selecting and preview_entry.is_empty(): race_button.disabled = not _selected_is_available()
 		return
 	_finish_selection(result)
 
 func _exit_tree() -> void:
+	_selection_serial += 1
+	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
 	if _resolve_thread != null:
 		_resolve_thread.wait_to_finish()
 		_resolve_thread = null
@@ -415,23 +440,21 @@ func _finish_selection(result: Dictionary) -> void:
 		pending_records.text = "Track unavailable. Select it again to retry."
 		notice.emit("This track could not be opened. Its saved route may need repair or reimporting.")
 		return
-	var serial: int = _selection_serial
 	selected_track = track
-	if cloud != null and track.metadata.has("cloud_version"):
-		selecting = true
-		race_button.disabled = true
-		await _load_cloud_detail(track)
-		if not is_inside_tree() or serial != _selection_serial: return
 	selecting = false
 	preview_entry = {}
 	pending_records.hide()
 	detail.show()
 	track_selected.emit(track)
 	_show_detail()
+	if cloud != null and track.metadata.has("cloud_version"):
+		_load_cloud_detail(track) # Optional records hydrate after the playable selection.
 
 func _load_cloud_detail(track: NativeTrack) -> void:
-	var response: Dictionary = await cloud.client.request_api("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+VehicleCatalog.selected.uri_encode())
-	if not is_inside_tree() or track != selected_track: return
+	var serial: int = _selection_serial
+	cloud.client.cancel_public_reads(get_instance_id())
+	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+VehicleCatalog.selected.uri_encode(),get_instance_id())
+	if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
 	var standings: Array = []
 	if response.ok:
 		for item: Dictionary in response.data.items:
@@ -440,15 +463,15 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 	discovery.records_by_rules_key[key] = {"friends":standings,"board_error":"" if response.ok else str(response.error)}
 	if response.ok and int(response.data.population) > 0:
 		var board: String = str(response.data.board_id)
-		var histogram: Dictionary = await cloud.client.request_api("/boards/"+board+"/histogram")
-		if not is_inside_tree() or track != selected_track: return
+		var histogram: Dictionary = await cloud.client.request_public("/boards/"+board+"/histogram",get_instance_id())
+		if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
 		if histogram.ok:
 			var bins: Array = []
 			for bin: Dictionary in histogram.data.bins: bins.append(int(bin.count))
 			discovery.records_by_rules_key[key].race_distribution = {"bins":bins,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0}
 		if cloud.client.signed_in():
 			var own: Dictionary = await cloud.client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
-			if not is_inside_tree() or track != selected_track: return
+			if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
 			if own.ok and own.data.player != null:
 				discovery.records_by_rules_key[key].race_ms = float(own.data.player.time_ticks)*1000.0/120.0
 				discovery.records_by_rules_key[key].race_rank = int(own.data.player.rank)
@@ -458,6 +481,7 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 					for index: int in range(histogram.data.bins.size()):
 						var bin: Dictionary = histogram.data.bins[index]
 						if int(own.data.player.time_ticks) >= int(bin.from_ticks) and int(own.data.player.time_ticks) < int(bin.to_ticks_exclusive): discovery.records_by_rules_key[key].race_distribution.player_bin = index
+	if is_inside_tree() and serial == _selection_serial: _show_detail()
 
 func _open_scores() -> void:
 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
@@ -525,6 +549,12 @@ func _heading(parent: Control, caption: String, icon: String) -> void:
 
 func _show_detail() -> void:
 	if selecting or not preview_entry.is_empty(): return
+	if not _selected_is_available():
+		_clear(detail)
+		_show_hero("CHOOSE A TRACK","pine")
+		detail.add_child(MenuStyle.label("Connect to load published tracks. Downloaded tracks remain available offline.",18,true))
+		if is_instance_valid(race_button): race_button.disabled = true
+		return
 	_prepare_outgoing_section()
 	_clear(detail)
 	var row := HBoxContainer.new()
@@ -644,7 +674,7 @@ func _open_rating() -> void:
 	rating.cloud_sync = cloud
 	column.add_child(rating)
 	rating.caption.reparent(column)
-	if cloud != null: rating.rated.connect(func() -> void: cloud.refresh())
+	if cloud != null: rating.rated.connect(func() -> void: cloud.refresh(true))
 	dialog.confirmed.connect(dialog.queue_free)
 	dialog.canceled.connect(dialog.queue_free)
 	dialog.popup_centered()
@@ -733,19 +763,45 @@ func _show_hero(title: String, theme_id: String) -> void:
 	info.add_theme_constant_override("separation",0)
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(info)
-	info.add_child(MenuStyle.label("TRACK DISCOVERY",20,true))
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.add_child(spacer)
 	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,16))
-	var heading := MenuStyle.label(title,44)
+	var heading := MenuStyle.label(title,60)
 	heading.name = "HeroTrackTitle"
 	heading.clip_text = true
 	heading.tooltip_text = title
 	info.add_child(heading)
 	var creator := MenuStyle.label("by "+hero_creator,18)
 	creator.clip_text = true
-	info.add_child(creator)
+	var attribution := HBoxContainer.new()
+	attribution.add_theme_constant_override("separation",16)
+	info.add_child(attribution)
+	creator.custom_minimum_size.x = minf(280.0,MenuStyle.BODY.get_string_size(creator.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x)
+	attribution.add_child(creator)
+	var rating_entry: Dictionary = preview_entry
+	if rating_entry.is_empty():
+		for candidate: Dictionary in catalog.entries:
+			if str(candidate.id) == selected_track.identity:
+				rating_entry = candidate
+				break
+	var rating_tile := TrackTile.new()
+	rating_tile.entry = rating_entry
+	rating_tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(rating_entry.get("id",selected_track.identity)),0))
+	var rating := HBoxContainer.new()
+	rating.name = "HeroRating"
+	rating.add_theme_constant_override("separation",7)
+	rating.tooltip_text = "Verified racers" if rating_entry.get("source") == "cloud" else "Local votes on this device"
+	attribution.add_child(rating)
+	var rating_star := TextureRect.new()
+	rating_star.texture = MenuIcon.texture("star_filled" if rating_tile.has_rating() else "star")
+	rating_star.modulate = MenuStyle.ACCENT if rating_tile.has_rating() else MenuStyle.MUTED
+	rating_star.custom_minimum_size = Vector2(22,22)
+	rating_star.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rating_star.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rating.add_child(rating_star)
+	rating.add_child(MenuStyle.label(rating_tile.rating_text(),18,true))
+	rating_tile.free()
 	var is_favorite: bool = preview_entry.get("id",selected_track.identity) in records.settings.get("favorites",[])
 	var favorite := MenuStyle.button("",_favorite)
 	favorite.name = "HeroFavorite"
@@ -781,7 +837,6 @@ func _show_hero(title: String, theme_id: String) -> void:
 		outline.draw_polyline(path,Color("06131c"),8,true)
 		outline.draw_polyline(path,Color.WHITE,4,true))
 	outline.resized.connect(outline.queue_redraw)
-	route_column.add_child(MenuStyle.label("5 LAPS",24))
 	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+"%.2f KM / LAP" % (hero_length/1000.0),20,true))
 	if animate: _slide_section()
 

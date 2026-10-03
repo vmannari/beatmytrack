@@ -15,6 +15,16 @@ static func texture(kind: String) -> Texture2D:
 		cache[kind] = biome_texture
 		return biome_texture
 	var paths: Dictionary = {
+		"controller":"<path d='M7 7h10c3 0 5 12 3 13-2 1-4-4-5-4H9c-1 0-3 5-5 4C2 19 4 7 7 7Z'/><path d='M8 10v5m-2.5-2.5h5M16 11h.1M18 14h.1'/>",
+		"phone":"<rect x='6' y='2' width='12' height='20' rx='2'/><path d='M10 5h4M11 19h2'/>",
+		"check":"<path d='m4 12 5 5L20 6'/>",
+		"resume":"<path d='M4 9a8 8 0 1 1 0 7M4 3v6h6'/>",
+		"restart":"<path d='M16 5a8 8 0 1 0 4 8M16 1v5h-5'/>",
+		"help":"<circle cx='12' cy='12' r='9'/><path d='M9 8a3 3 0 1 1 4 3c-1 1-1 1-1 3M12 17v1'/>",
+		"quit":"<path d='M13 3H4v18h9M10 12h12m-5-5 5 5-5 5'/>",
+		"avatar":"<circle cx='12' cy='12' r='10.5' fill='#284858' stroke='#607d8c'/><circle cx='12' cy='9' r='3' fill='#a4bac7' stroke='none'/><path d='M5.5 19c0-7 13-7 13 0' fill='#a4bac7' stroke='none'/>",
+		"chevron":"<path d='m6 9 6 6 6-6'/>",
+		"gear":"<path d='m10 2-.6 3-2 .9-2.7-1L2.7 8l2.2 2v3l-2.2 2 2 3.2 2.7-.9 2 .9.6 3h4l.6-3 2-.9 2.7.9 2-3.2-2.2-2v-3l2.2-2-2-3.1-2.7 1-2-.9L14 2Z'/><circle cx='12' cy='11.6' r='3.3'/>",
 		"close":"<path d='m5 5 14 14M19 5 5 19'/>",
 		"filter":"<path d='M3 4h18l-7 8v7l-4 2v-9Z'/>",
 		"trophy":"<path d='M7 3h10v7a5 5 0 0 1-10 0ZM7 5H3v3a5 5 0 0 0 5 5m9-8h4v3a5 5 0 0 1-5 5M12 15v5m-5 1h10'/>",

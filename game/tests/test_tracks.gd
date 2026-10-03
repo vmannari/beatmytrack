@@ -40,7 +40,7 @@ func run() -> void:
 			var input: DriveFrame = driver.sample(sim.state, track, config)
 			frames.append(input.packed())
 			sim.step(input, track)
-			session.advance(track, previous, sim.state.position, sim.state.route_index)
+			session.advance(track, previous, sim.state.position,sim.state.route_index,sim.state.track_elevated)
 			var axle: Vector2 = sim.state.forward() * config.wheelbase * 0.5
 			var height: float = (bridge.height_at(sim.state.position + axle, sim.state.route_index) + bridge.height_at(sim.state.position - axle, sim.state.route_index)) * 0.5
 			maximum_height_step = maxf(maximum_height_step, absf(height - previous_height))
@@ -77,7 +77,7 @@ func run() -> void:
 				f.steer = int(packed_frames[i][0]); f.throttle = int(packed_frames[i][1]); f.brake = int(packed_frames[i][2])
 				var from: Vector2 = replay.state.position
 				replay.step(f, track)
-				replay_session.advance(track, from, replay.state.position, replay.state.route_index)
+				replay_session.advance(track, from, replay.state.position,replay.state.route_index,replay.state.track_elevated)
 		check(replay.state.snapshot() == sim.state.snapshot() and replay_session.lap_times == session.lap_times, name + " exact full three-lap JSON replay in batches of eight")
 		var frozen_time: int = session.elapsed_ticks
 		session.advance(track, track.spawn, track.spawn + Vector2.ONE, 0)
@@ -463,7 +463,7 @@ func _check_tire_dirt() -> void:
 			track.cells.fill(2 if tick < 120 else 0)
 			sim.step(throttle, track)
 		states.append(sim.state.snapshot())
-	check(states[0] == states[1] and states[0].size() == 20 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
+	check(states[0] == states[1] and states[0].size() == 22 and states[0][21] == [false,"",0,0,0.0] and states[0][20] == 0.0 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
 
 
 func _check_blocked_speed() -> void:

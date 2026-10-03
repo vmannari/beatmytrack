@@ -193,7 +193,7 @@ func _original_laps() -> void:
 			var frame: DriveFrame = driver.sample(sim.state, track, config)
 			var previous: Vector2 = sim.state.position
 			sim.step(frame, track)
-			session.advance(track, previous, sim.state.position, sim.state.route_index)
+			session.advance(track, previous, sim.state.position,sim.state.route_index,sim.state.track_elevated)
 			frames.append(frame.packed())
 			if session.finished:
 				break
@@ -211,7 +211,7 @@ func _original_laps() -> void:
 			frame.brake = int(packed[2])
 			var previous: Vector2 = replay.state.position
 			replay.step(frame, track)
-			replay_session.advance(track, previous, replay.state.position, replay.state.route_index)
+			replay_session.advance(track, previous, replay.state.position,replay.state.route_index,replay.state.track_elevated)
 		check(replay.state.snapshot() == sim.state.snapshot() and replay_session.lap_times == session.lap_times, "Original+ " + name + " full race JSON replay is exact")
 		print("ORIGINAL_SLIDE_LAPS ", name, " times=", session.lap_times, " contacts=", sim.state.collision_count)
 

@@ -26,13 +26,13 @@ func run() -> void:
 					controls.left_handed = mirrored
 					var art: Array[Rect2] = controls.zones()
 					var hits: Array[Rect2] = controls.touch_zones()
-					for i: int in range(4):
+					for i: int in range(TouchControls.ACTIONS.size()):
 						check(hits[i].encloses(art[i]), "target encloses its artwork")
 						check(hits[i].get_area() > art[i].get_area()*1.5, "target is substantially larger than artwork")
 						var outside := Vector2(art[i].get_center().x, art[i].position.y-24)
 						check(controls.action_at(outside) == TouchControls.ACTIONS[i], "press above artwork reaches intended action")
 						check(controls.action_at(art[i].get_center()) == TouchControls.ACTIONS[i], "artwork center remains correct")
-						for j: int in range(i+1,4):
+						for j: int in range(i+1,TouchControls.ACTIONS.size()):
 							check(not hits[i].intersects(hits[j]), "expanded targets never overlap")
 					check(controls.action_at(Vector2(extent.x/2,extent.y-30)) == &"", "central HUD stays outside driving zones")
 	controls.mobile_layout = true
@@ -70,7 +70,7 @@ func run() -> void:
 		await RenderingServer.frame_post_draw
 		var held_draws: int = controls.draw_count
 		for tick: int in range(30):
-			for sample: int in range(4):
+			for sample: int in range(TouchControls.ACTIONS.size()):
 				var motion := InputEventScreenDrag.new()
 				motion.index = 3
 				motion.position = gas+Vector2(sin(tick+sample)*4,0)
@@ -96,7 +96,7 @@ func run() -> void:
 		for art: TouchControlArt in controls.artwork: artwork_draws += art.draw_count
 		for mask: int in range(16):
 			controls.driver.clear()
-			for index: int in range(4):
+			for index: int in range(TouchControls.ACTIONS.size()):
 				if mask & (1 << index): controls.driver.set_touch(index,TouchControls.ACTIONS[index])
 			await process_frame
 			await process_frame

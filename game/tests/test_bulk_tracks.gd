@@ -79,7 +79,7 @@ func check_ylikulku_crossing() -> void:
 	for tick: int in range(21600):
 		var before: Vector2 = sim.state.position
 		sim.step(driver.sample(sim.state,track,config),track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		if session.finished: break
 	print("YLIKULKU_LAPS: ",session.completed_laps," contacts=",sim.state.collision_count," times=",session.lap_times)
 	check(session.finished,"YLIKULKU AI completes three ordered laps through both crossing layers")

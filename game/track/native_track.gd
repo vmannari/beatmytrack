@@ -285,6 +285,16 @@ func cell_at(point: Vector2, elevated: bool = false) -> int:
 	return cells[index]
 
 
+func has_overhead_bridge(point: Vector2, current_layer_elevated: bool) -> bool:
+	if current_layer_elevated:
+		return false
+	if CreatorBridges.at_any(creator_bridges,point):
+		return true
+	var x: int = floori((point.x + half_extent.x) / cell_size)
+	var y: int = floori((half_extent.y - point.y) / cell_size)
+	return x >= 0 and y >= 0 and x < grid_width and y < grid_height and deck_cells[y * grid_width + x] >= 0
+
+
 func nearest_route(point: Vector2, previous: int = -1) -> int:
 	var best: int = 0 if previous < 0 else previous
 	var distance: float = INF

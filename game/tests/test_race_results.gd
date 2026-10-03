@@ -81,8 +81,11 @@ func run() -> void:
 	race_doc.layout = TrackDocument.road_layout(race_doc)
 	var track: NativeTrack = TrackCompiler.compile(race_doc)
 	check(track != null,"arbitrary curved creator track compiles")
-	app.call("_start_race",track,false)
+	track.metadata.cloud_version = "isolated-results-fixture"
+	await app._start_race(track,false,true)
 	var game: Node = app.get("game")
+	track.metadata.erase("cloud_version")
+	game.set("rating_records",app.records)
 	game.set_physics_process(false)
 	game.set("countdown_ticks",0)
 	game.set("ai_enabled",true)
@@ -96,7 +99,7 @@ func run() -> void:
 	for i: int in range(120*300):
 		var before: Vector2 = sim.state.position
 		sim.step(driver.sample(sim.state,track,game.get("handling")),track)
-		session.advance(track,before,sim.state.position,sim.state.route_index)
+		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
 		telemetry.observe(session,track,sim.state.position,sim.state.velocity.length(),false)
 		if session.finished: break
 	check(session.finished and telemetry.completed.size() == 5,"actual AI driving produces five completed telemetry laps")
@@ -357,7 +360,7 @@ func run() -> void:
 	complete_page = (app.get("root_ui") as Node).find_child("RaceComplete",true,false)
 	(complete_page.find_child("MainMenu",true,false) as Button).pressed.emit()
 	await settle()
-	check(app.get("game") == null and app.get("screen") == "play","Main Menu leaves race and opens Home")
+	check(app.get("game") == null and app.get("screen") == "tracks","Main Menu leaves race and opens Race discovery")
 	app.queue_free()
 	await settle()
 	print("RESULTS_TESTS: ",checks," checks, ",failures," failures")

@@ -229,7 +229,7 @@ func _race(track: NativeTrack) -> void:
 		frames.append(input.packed())
 		var before: Vector2 = simulation.state.position
 		simulation.step(input,track)
-		session.advance(track,before,simulation.state.position,simulation.state.route_index)
+		session.advance(track,before,simulation.state.position,simulation.state.route_index,simulation.state.track_elevated)
 		if session.finished: break
 	check(session.finished and session.completed_laps == 5,"piece-derived circuit completes five ordered laps")
 	print("ROAD_PIECES_RACE laps=",session.completed_laps," times=",session.lap_times," contacts=",simulation.state.collision_count)

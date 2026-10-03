@@ -23,7 +23,7 @@ func drive(session: TrackSession, track: NativeTrack, path: PackedVector2Array, 
 		for j: int in range(count):
 			var a: Vector2 = path[i].lerp(path[i+1],float(j)/count)
 			var b: Vector2 = path[i].lerp(path[i+1],float(j+1)/count)
-			session.advance(track,a,b,track.nearest_route(b))
+			session.advance(track,a,b,track.nearest_route(b),track.elevated_at(b,track.nearest_route(b)))
 			warned = warned or session.missed_checkpoint >= 0
 	return warned
 func run() -> void:
@@ -65,7 +65,7 @@ func run() -> void:
 	var automatic := TrackSession.new(120,1)
 	drive(automatic,sparse,loop)
 	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
-	check(RaceRules.KEY == "standing-5-road-gates-v13","checkpoint records use a new rules key")
+	check(RaceRules.KEY == "standing-5-road-gates-v18","checkpoint records use a new rules key")
 	# Real creator hairpins: a cut must block the eventual finish, even when
 	# the car rejoins and follows the rest of the route correctly.
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))

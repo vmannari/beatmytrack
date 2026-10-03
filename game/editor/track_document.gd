@@ -87,7 +87,7 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		elif _has_control(creator):
 			errors.append("The creator name cannot contain control characters.")
 	if not data.get("theme") is String or (data.theme not in THEMES and data.theme != "coast"):
-		errors.append("Choose Grass, Desert, Night city, Winter or Storm.")
+		errors.append("Choose Grass, Desert, Night, Winter or Storm.")
 	if data.get("surface") not in ["asphalt", "dirt"]:
 		errors.append("Choose asphalt or dirt for the road.")
 	var width: Variant = data.get("width")

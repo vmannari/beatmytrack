@@ -63,14 +63,11 @@ float pigment(vec2 p) {
 float grass_fringe(float coverage, vec2 p) {
 	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
 }
-// Exposed roadside shoulders keep a narrow soil contact, then yield to
-// broad meadow patches. UV coverage comes from the existing clipped verge;
-// intersections and authored paint retain their current ownership masks.
+// Keep a consistent worn shoulder. Only centimetre-scale grass breakup
+// interrupts its edge; broad meadow patches no longer change dirt width.
 float meadow_verge(float coverage, vec2 p) {
-	vec3 patches = texture(grass_macro_mask,p/32.0).rgb;
-	float edge = mix(0.54,0.84,smoothstep(0.25,0.75,patches.r));
-	float broken = (texture(surface_factors,p/16.0).g-0.5)*0.12;
-	return smoothstep(edge-0.08,edge+0.16,coverage+broken);
+	float broken = (texture(surface_factors,p/16.0).g-0.5)*0.04;
+	return smoothstep(0.60,0.94,coverage+broken);
 }
 // Matte sand shared by terrain paint and roadside shoulders. Grain is
 // isotropic (no grass-like diagonal strokes), with filtered fine minerals.

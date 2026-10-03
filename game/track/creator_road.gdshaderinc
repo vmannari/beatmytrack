@@ -1,4 +1,5 @@
 #include "res://track/surface_detail.gdshaderinc"
+#include "res://track/kerb_paint.gdshaderinc"
 
 uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
 uniform sampler2D verge_blend_mask : filter_linear, repeat_disable;
@@ -65,7 +66,6 @@ void fragment() {
 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
 		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
-		if (hybrid_grass) { shoulder *= vec3(0.88,0.94,0.98); }
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
 		wet_coverage *= asphalt_coverage;
 	}
@@ -91,11 +91,10 @@ void fragment() {
 		float aa = max(fwidth(UV.x),0.001);
 		float pale = smoothstep(block_length-aa,block_length+aa,phase);
 		if (UV.x < aa || UV.x > UV.y-aa) { pale = 1.0; }
-		ALBEDO = mix(road_color.rgb,kerb_pale.rgb,pale);
+		ALBEDO = racing_kerb_paint(mix(road_color.rgb,kerb_pale.rgb,pale),world_position.xz,UV.x,1.0);
 	}
 	if (gravel) {
 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
-		if (hybrid_grass) { ALBEDO *= vec3(0.88,0.94,0.98); }
 		if (packed_sand) {
 			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
 			ALBEDO *= 1.0-contact*0.16;

@@ -9,12 +9,19 @@ func check(ok: bool, description: String) -> void:
 		push_error(description)
 func run() -> void:
 	root.size = Vector2i(1280,720)
+	var library := TrackLibrary.new()
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--fixture-directory="):
+			var directory: String = argument.trim_prefix("--fixture-directory=")
+			check(directory.is_absolute_path() and DirAccess.dir_exists_absolute(directory),"explicit read-only fixture directory exists")
+			if failures > 0: quit(1); return
+			library.directory = directory
 	for track_id: String in ["track_acf29166cceaaa42","track_f7dc946b49ce9ea8"]:
-		await exercise(track_id)
+		await exercise(track_id,library)
 	print("SURFACE_PROFILE_TESTS: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)
-func exercise(track_id: String) -> void:
-	var document: Dictionary = TrackLibrary.new().load_document(track_id)
+func exercise(track_id: String, library: TrackLibrary) -> void:
+	var document: Dictionary = library.load_document(track_id)
 	check(not document.is_empty(),"saved Ajorata fixture available")
 	if document.is_empty(): quit(1); return
 	var game: Node = load("res://core/game.tscn").instantiate()

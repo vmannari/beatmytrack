@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sand, verge and kerb correction</title>
+<style>
+body{margin:0;background:#172025;color:#edf0e7;font:16px system-ui,sans-serif;padding:24px}
+main{max-width:1494px;margin:auto}h1{font-size:24px;margin:0 0 8px}p{color:#bec8c8}
+select,input{font:inherit;accent-color:#e9c75b}label{display:inline-flex;gap:12px;align-items:center;margin:12px 24px 20px 0}
+.pair{position:relative;overflow:hidden;background:#0b1115}.pair img{display:block;width:100%;height:auto}
+.pair .before{position:absolute;inset:0;clip-path:inset(0 50% 0 0)}
+.divider{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#e9c75b;pointer-events:none}
+.tag{position:absolute;top:12px;background:#172025e0;padding:6px 10px;border-radius:4px}.old{left:12px}.new{right:12px}
+a{color:#e9c75b}
+</style>
+<main>
+<h1>Sand, verge and kerb correction</h1>
+<p>Kit 103 before; kit 104 after. Drag the divider to compare the same view.</p>
+<label>View <select id="view"><option value="ajorata">Gameplay</option><option value="ajorata-corner">Corner</option><option value="kerb">Kerb detail</option></select></label>
+<label>Divider <input id="slider" type="range" min="0" max="100" value="50" aria-label="Before and after divider"></label>
+<div class="pair">
+<img id="after" src="ajorata-after.png" alt="Corrected roadside sand, stable verge and worn kerbs">
+<div class="before"><img id="before" src="ajorata-before.png" alt="Previous kit 103 materials"></div>
+<div class="divider"></div><span class="tag old">Before</span><span class="tag new">After</span>
+</div>
+<p>Gameplay retains the existing diagnostic overlays. The detail camera is used only by the kerb diagnostic. <a href="../../KERB_VERGE_CORRECTION.md">Changes, actual tests and acceptance limits</a></p>
+</main>
+<script>
+const slider=document.querySelector('#slider');
+slider.addEventListener('input',()=>{
+ document.querySelector('.before').style.clipPath=`inset(0 ${100-slider.value}% 0 0)`;
+ document.querySelector('.divider').style.left=`${slider.value}%`;
+});
+document.querySelector('#view').addEventListener('change',event=>{
+ const value=event.target.value;
+ document.querySelector('#before').src=value==='kerb'?'kerb-original-before.png':`${value}-before.png`;
+ document.querySelector('#after').src=value==='kerb'?'kerb-worn-before.png':`${value}-after.png`;
+});
+</script>
+</html>

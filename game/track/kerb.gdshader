@@ -4,6 +4,7 @@ uniform sampler2D exclusion : filter_nearest, repeat_disable;
 uniform vec2 map_extent;
 uniform bool sand_berm = false;
 uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
+#include "res://track/kerb_paint.gdshaderinc"
 uniform vec4 red : source_color = vec4(0.651,0.243,0.188,1.0);
 uniform vec4 pale_color : source_color = vec4(0.87,0.867,0.827,1.0);
 varying vec3 world_position;
@@ -41,6 +42,8 @@ void fragment() {
   vec3 grit = texture(surface_factors,world_position.xz/12.0).rgb;
   float clods = texture(surface_factors,world_position.xz/5.0).g;
   ALBEDO = red.rgb * (0.68+grit.b*0.40+clods*0.26) * mix(1.0,0.70,bevel);
+ } else {
+  ALBEDO = racing_kerb_paint(mix(red.rgb,pale_color.rgb,pale),world_position.xz,UV.x,face_up) * tone;
  }
  ROUGHNESS = 1.0;
 }

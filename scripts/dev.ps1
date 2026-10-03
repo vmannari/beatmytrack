@@ -391,7 +391,7 @@ try {
         'CaptureResults' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_race_results.gd', '--', '--capture') 'results-capture.log' }
         'BakeStormGlass' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/bake_storm_glass.gd') 'storm-glass-bake.log' }
         'ProfileStormReflections' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/profile_storm_reflections.gd', '--') + $trackArguments) 'storm-reflection-profile.log' }
-        'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd') 'surface-profile-tests.log' }
+        'TestSurfaceProfile' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_surface_profile.gd', '--', "--fixture-directory=$TracksPath") 'surface-profile-tests.log' }
         'CaptureCheckpoints' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd', '--') + $trackArguments) 'checkpoint-capture.log' }
         'TestHeadlights' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_headlights.gd') 'headlights-tests.log' }
         'CaptureHeadlights' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_headlights.gd', '--', '--capture') 'headlights-capture.log' }

@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-103"
+const VERSION: String = "track-kit-104"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -1285,9 +1285,9 @@ func _build_kerbs(track: NativeTrack) -> void:
 	mesh.mesh = tool.commit()
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/kerb.gdshader")
+	material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
 	if theme_id == "desert":
 		material.set_shader_parameter("sand_berm",true)
-		material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
 		material.set_shader_parameter("red",Color("ad8955"))
 		material.set_shader_parameter("pale_color",Color("bbae91"))
 	var mask := Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,track.kerbs.blocked)

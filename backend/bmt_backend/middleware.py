@@ -6,6 +6,8 @@ import logging
 import math
 import time
 import uuid
+import zlib
+import threading
 from collections import OrderedDict
 
 from fastapi.routing import APIRoute
@@ -22,6 +24,8 @@ log = logging.getLogger("bmt.requests")
 
 
 def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1) -> bool:
+    if amount > limit:
+        return False
     current = int(time.time())
     key = digest(f"{peer}:{category}:{current // 60}")
     with factory() as session:
@@ -35,6 +39,30 @@ def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1)
         value = session.scalar(statement)
         session.commit()
         return value is not None
+
+
+class IdentityBudgets:
+    """Small conservative leases shared in the DB, including across token rotation."""
+    def __init__(self, factory):
+        self.factory, self.leases, self.lock = factory, OrderedDict(), threading.Lock()
+
+    def allow(self, player, category, limit, cost=1):
+        key = (player, category, int(time.time()) // 60)
+        with self.lock:
+            remaining = self.leases.get(key, 0)
+            if remaining < cost:
+                batch = min(max(10, cost), limit)
+                if not check_budget(self.factory, player, category, limit, batch):
+                    # Spend the final partial lease without increasing the hard limit.
+                    if not check_budget(self.factory, player, category, limit, cost):
+                        return False
+                    batch = cost
+                remaining += batch
+            self.leases[key] = remaining - cost
+            self.leases.move_to_end(key)
+            while len(self.leases) > 4096:
+                self.leases.popitem(last=False)
+            return True
 
 
 def strict_object(pairs):
@@ -90,13 +118,13 @@ class ParsedJSONRoute(APIRoute):
 class RequestBoundary:
     def __init__(self, app, settings, session_factory):
         self.app, self.settings, self.session_factory = app, settings, session_factory
-        self.parsers = asyncio.Semaphore(2)
+        self.parsers = asyncio.Semaphore(settings.upload_concurrency)
         self.read_leases = OrderedDict()
 
-    async def read_budget(self, peer, limit):
+    async def read_budget(self, peer, limit, category="read"):
         # Reserve small chunks in PostgreSQL, so replicas still share a hard ceiling.
         # Unused reservations are conservative; they never permit excess requests.
-        key = (peer, int(time.time()) // 60)
+        key = (peer, category, int(time.time()) // 60)
         # Separate peers do not wait for each other's cold database reservation.
         lease = self.read_leases.setdefault(key, [0, asyncio.Lock()])
         self.read_leases.move_to_end(key)
@@ -105,7 +133,7 @@ class RequestBoundary:
             remaining = lease[0]
             if not remaining:
                 batch = min(10, limit)
-                if not await run_in_threadpool(check_budget, self.session_factory, peer, "read", limit, batch):
+                if not await run_in_threadpool(check_budget, self.session_factory, peer, category, limit, batch):
                     return False
                 remaining = batch
             lease[0] = remaining - 1
@@ -118,6 +146,7 @@ class RequestBoundary:
         request_id = str(uuid.uuid4())
         scope.setdefault("state", {})["request_id"] = request_id
         status = 500
+        acquired = False
 
         async def response_send(message):
             nonlocal status
@@ -155,25 +184,37 @@ class RequestBoundary:
                     if scope["path"].startswith("/v1/auth/")
                     else ("read" if method in ("GET", "HEAD") else "write")
                 )
+                # Carrier NATs share only a generous abuse ceiling. Authenticated
+                # players spend their own budget after session validation.
+                if b"authorization" in headers and category in ("read", "write"):
+                    category = "edge"
                 limit = {
                     "auth": self.settings.auth_limit_per_minute,
                     "auth_session": self.settings.rate_limit_per_minute,
                     "read": self.settings.rate_limit_per_minute,
                     "write": self.settings.write_limit_per_minute,
+                    "edge": self.settings.edge_limit_per_minute,
                 }[category]
                 try:
-                    allowed = await self.read_budget(peer, limit) if category == "read" else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
+                    allowed = await self.read_budget(peer, limit, category) if category in ("read", "edge") else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
                 except SQLAlchemyError:
                     return await error(503, "DATABASE_UNAVAILABLE")
                 if not allowed:
                     return await error(429, "RATE_LIMITED")
-            limit = (
-                min(32768, self.settings.max_body_bytes)
-                if scope["path"].startswith("/v1/auth/")
-                else self.settings.max_body_bytes
-            )
-            if headers.get(b"content-encoding", b"identity") != b"identity":
-                return await error(415, "COMPRESSED_REQUESTS_NOT_SUPPORTED")
+            path = scope["path"]
+            upload = method in ("POST", "PUT", "PATCH")
+            limit = min(self.settings.max_body_bytes, 8*1024*1024 if path == "/v1/runs" else
+                        600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
+            encoding = headers.get(b"content-encoding", b"identity")
+            if encoding not in (b"identity", b"gzip"):
+                return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
+            if upload:
+                try:
+                    await asyncio.wait_for(self.parsers.acquire(), timeout=0.1)
+                    acquired = True
+                except TimeoutError:
+                    return await error(503, "REQUEST_VALIDATION_BUSY")
+            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == b"gzip" else None
             length = headers.get(b"content-length")
             if length is not None:
                 try:
@@ -183,13 +224,23 @@ class RequestBoundary:
                 if declared < 0 or declared > limit:
                     return await error(413, "PAYLOAD_TOO_LARGE")
             body = bytearray()
+            wire_bytes = 0
             try:
                 body_deadline = time.monotonic() + 30
                 while True:
                     message = await asyncio.wait_for(receive(), max(0, body_deadline - time.monotonic()))
                     if message["type"] == "http.disconnect":
                         return
-                    body.extend(message.get("body", b""))
+                    chunk = message.get("body", b"")
+                    wire_bytes += len(chunk)
+                    if wire_bytes > limit:
+                        return await error(413, "PAYLOAD_TOO_LARGE")
+                    if inflater is not None:
+                        try:
+                            chunk = inflater.decompress(chunk, limit-len(body)+1)
+                        except zlib.error:
+                            return await error(400, "INVALID_GZIP")
+                    body.extend(chunk)
                     if health and body:
                         return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
                     if len(body) > limit:
@@ -198,15 +249,13 @@ class RequestBoundary:
                         break
             except TimeoutError:
                 return await error(408, "REQUEST_BODY_TIMEOUT")
+            if inflater is not None and (not inflater.eof or inflater.unused_data or inflater.unconsumed_tail):
+                return await error(400, "INVALID_GZIP")
             if body:
                 if headers.get(b"content-type", b"").split(b";")[0].strip().lower() != b"application/json":
                     return await error(415, "JSON_REQUIRED")
                 try:
-                    await asyncio.wait_for(self.parsers.acquire(), timeout=0.1)
-                    try:
-                        parsed = await run_in_threadpool(parse_body, body)
-                    finally:
-                        self.parsers.release()
+                    parsed = await run_in_threadpool(parse_body, body)
                 except TimeoutError:
                     return await error(503, "REQUEST_VALIDATION_BUSY")
                 except (ValueError, RecursionError, UnicodeDecodeError):
@@ -231,6 +280,11 @@ class RequestBoundary:
 
             await self.app(scope, buffered_receive, response_send)
         finally:
+            # Include Pydantic validation, the endpoint, storage and response
+            # serialization: releasing after json.loads did not bound live trees.
+            scope.get("state", {}).pop("bounded_json", None)
+            if acquired:
+                self.parsers.release()
             route = scope.get("route")
             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
             log.info(

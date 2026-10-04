@@ -9,6 +9,7 @@ class Settings:
     admin_analyst_key: str = ""
     environment: str = "production"
     dev_auth_enabled: bool = False
+    test_drivers_enabled: bool = False
     dev_auth_key: str = ""
     database_url: str = "postgresql+psycopg://bmt@localhost/bmt"
     public_base_url: str = "http://localhost:8080"
@@ -30,6 +31,14 @@ class Settings:
     worker_stale_seconds: int = 300
     retention_days: int = 90
     backup_marker_path: str = ""
+    database_pool_size: int = 4
+    database_pool_overflow: int = 0
+    database_pool_timeout_seconds: int = 3
+    database_statement_timeout_ms: int = 10000
+    upload_concurrency: int = 2
+    edge_limit_per_minute: int = 12000
+    persistent_verifier: bool = True
+    verifier_recycle_jobs: int = 100
 
     def __post_init__(self):
         for key in (self.admin_owner_key, self.admin_analyst_key):
@@ -54,10 +63,14 @@ class Settings:
             "max_queued_runs",
             "worker_stale_seconds",
             "retention_days",
+            "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
+            "upload_concurrency", "edge_limit_per_minute", "verifier_recycle_jobs",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
+        if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
+            raise ValueError("Invalid pool overflow or upload concurrency")
         if self.max_body_bytes > 8 * 1024 * 1024:
             raise ValueError("BMT_MAX_BODY_BYTES cannot exceed the 8 MiB storage/verifier limit")
         # A cold worker can run an engine version probe (10s), manifest process
@@ -70,6 +83,8 @@ class Settings:
             raise ValueError(
                 "Development auth requires development environment and a secret of at least 32 characters"
             )
+        if self.test_drivers_enabled and (self.environment != "development" or not self.dev_auth_enabled):
+            raise ValueError("Test drivers require explicitly enabled development authentication")
 
     @classmethod
     def from_env(cls):

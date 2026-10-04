@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import (
     JSON,
     Boolean,
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -46,6 +47,7 @@ class Track(Base):
     authoring_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    official: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 
@@ -74,6 +76,7 @@ class TrackVersion(Base):
 
 class TrackValidation(Base):
     __tablename__ = "track_validations"
+    __table_args__ = (Index("ix_validation_claim", "status", "lease_until", "created_at"),)
     version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
     status: Mapped[str] = mapped_column(String(16), default="queued")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -111,6 +114,7 @@ class Run(Base):
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
     replay_hash: Mapped[str] = mapped_column(String(64))
+    ghost_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="queued")
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -124,7 +128,8 @@ class Run(Base):
 
 class PersonalBest(Base):
     __tablename__ = "personal_bests"
-    __table_args__ = (Index("ix_pb_rank", "board_id", "time_ticks", "player_id"),)
+    __table_args__ = (Index("ix_pb_rank", "board_id", "time_ticks", "player_id"),
+                      Index("ix_pb_player_recent", "player_id", "achieved_at", "board_id"))
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
@@ -154,7 +159,30 @@ class IdempotencyRecord(Base):
 class QueuePlayer(Base):
     __tablename__ = "queue_players"
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
-    last_claim_at: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    last_claim_at: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+    pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class QueueCapacity(Base):
+    __tablename__ = "queue_capacity"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pending: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BoardTimeCount(Base):
+    """Exact tick frequencies; size is bounded by the replay tick limit, not players."""
+    __tablename__ = "board_time_counts"
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
+    time_ticks: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_count: Mapped[int] = mapped_column(Integer, default=0)
+    all_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class VersionFinisher(Base):
+    __tablename__ = "version_finishers"
+    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True, index=True)
+    board_count: Mapped[int] = mapped_column(Integer)
 
 
 class OperationState(Base):

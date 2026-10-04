@@ -38,6 +38,7 @@ class Player(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_test_driver: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 

@@ -55,6 +55,8 @@ bearer = HTTPBearer(auto_error=False)
 
 def development_session_disabled(request: Request, session: Session, player: Player) -> bool:
     settings = request.app.state.settings
+    if player.is_test_driver and not settings.test_drivers_enabled:
+        return True
     if settings.environment == "development" and settings.dev_auth_enabled:
         return False
     return (
@@ -91,4 +93,11 @@ def current_player(
     ):
         raise HTTPException(401, "INVALID_SESSION")
     request.state.session_family_id = family.id
+    if not getattr(request.state, "player_budget_checked", False):
+        read = request.method in ("GET", "HEAD")
+        limit = request.app.state.settings.rate_limit_per_minute if read else request.app.state.settings.write_limit_per_minute
+        cost = 4 if request.url.path == "/v1/runs" else 2 if request.url.path == "/v1/tracks" else 1
+        if not request.app.state.identity_budgets.allow(player.id, "player_read" if read else "player_write", limit, 1 if read else cost):
+            raise HTTPException(429, "RATE_LIMITED")
+        request.state.player_budget_checked = True
     return player

@@ -1,0 +1,461 @@
+diff --git a/docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md b/docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md
+new file mode 100644
+index 00000000..bb2c4e9a
+--- /dev/null
++++ b/docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md
+@@ -0,0 +1,75 @@
++# Backend/API scalability review — 2026-10-04
++
++The backend has useful reliability boundaries, but the current deployment and request patterns are not ready for a large player population. The main constraints are verification CPU, work performed under shared database locks, global queries in rivalry matching, repeated metadata traffic, and indefinitely retained competition evidence. Small response limits alone do not bound the work required to produce those responses.
++
++This is a review of the current working tree, including the uncommitted rivalry/test-driver/client changes. Requirements: B01–B07, B19–B20, B23, WR03–WR08, RW05–RW07 and Q01. No runtime source, simulation, schema, API contract, deployed data or service was changed. Recommendations below are proposed follow-up work; no production capacity or phone fluency acceptance is claimed.
++
++**Evidence and scope**
++
++The [isolated probe](evidence/backend-scalability-review-2026-10-04/review_probe.py) and [measurements](evidence/backend-scalability-review-2026-10-04/measurements.json) use disposable SQLite fixtures, synthetic players and the exact Windows engine. They do not contact the live PC backend. Canonical timing uses the existing 12,757-tick, five-lap oval and verifies the expected time on three runs. SQLite query counts describe application work, not PostgreSQL query plans or concurrency. Compression sizes are local estimates; compressed uploads are currently rejected, and the application does not configure response compression. A deployed reverse proxy might compress responses, but that was not verified.
++
++| Interaction/data | Current implementation or measured sample | Implication |
++| --- | --- | --- |
++| Ordinary race upload | 120 Hz, 3–5 quantized integer channels; 216,000-frame maximum; 8 MiB HTTP envelope maximum. The 106.3-second golden race is 121,429 bytes with its original three channels; padding the normal fourth channel makes 146,943 bytes. | Traffic scales with attempts and race duration. Four-channel sample compresses losslessly to 5,984 bytes. |
++| Track document | 512 KiB maximum; golden document 4,915 bytes. Downloaded when selected and cached by content hash. | Existing lazy download is appropriate. Documents already support conditional ETag retrieval while rechecking owner visibility. |
++| Discovery | Up to 100 entries/page, 96 preview points/entry. A synthetic 20-entry page is 52,459 bytes; approximately 262 KB for 100 equivalent entries. Client refresh requests up to three pages. | Roughly 0.79 MB per three-page refresh for this shape, before headers. This is an extrapolation, not a measured 300-entry page. Search already reaches the server; there is no need to load all tracks to search. |
++| Weekly snapshot | Five tracks, at most 20 drivers. Measured 35,520 bytes, 6,063 bytes gzip; 15 SQL statements for the sample. | Same preview geometry, names and IDs repeat during the 30-second visible-rivalry refresh. |
++| Rivalry ghost | Golden derived 20 Hz recording: 2,130 poses, 155,859 bytes; 60,437 bytes gzip. | Fetch on demand and cache by immutable run ID. The client currently downloads it again when starting/restarting a rival race. |
++| Pending verification | Outbox checks every two seconds. Rivalry result polling starts at 0.5 seconds, then 2 seconds after 15 seconds and 5 seconds after 60 seconds. | One pending rivalry run can generate about 2.5 reads/second initially through the two adapters. These are small payloads but substantial DB/request work at scale. |
++| Largest valid four-channel JSON parse | 4,104,037 input bytes produced a 40,809,754-byte traced allocation peak. The final run retained 26,998,182 bytes after parsing. | About 10× peak amplification before endpoint processing, storage encoding, transport buffers and Pydantic work. Instrumented parse duration is not an uninstrumented latency benchmark. |
++| Canonical verification | Final run: 3.434 / 2.571 / 2.571 seconds on the Windows desktop; median 2.571 seconds. Earlier sample median 3.051 seconds. | One sequential worker cannot support thousands of continuously racing players. These are not NAS or one-CPU-container timings. |
++
++**Prioritized findings**
++
++1. **P1 — Production rivalry verification cannot write its ghosts.** `backend/deploy/compose.yaml:105` mounts the worker object volume read-only; `backend/bmt_backend/worker.py:159` calls `put_json()` during rivalry finalization. The PC Compose volume is writable, which masks this difference in local rollout. Injecting the expected filesystem `EROFS` into a disposable job reproduced an uncaught exception: the run remains `verifying`, with one attempt consumed. `worker.main()` does not catch this finalization failure, so the process exits; container restart and lease expiry repeat the problem and ultimately exhaust attempts. Give the worker narrowly scoped object-write access and handle storage/database finalization failures with durable bounded recovery. Verify the actual production Compose permissions with a rivalry upload, ghost retrieval and worker restart test before release. This is a confirmed configuration/code mismatch; the probe simulates EROFS rather than deploying production containers.
++
++2. **P1 — Verification capacity is far below a large active population.** Compose starts one sequential verifier worker, limited to one CPU; every competitive submission starts a fresh headless process, compiles the track and records a positional ghost, including normal runs whose ghosts are not stored. The queue cap of 128 and per-player cap of eight bound backlog, not throughput. Approximate sizing is `workers >= concurrent_racers × mean_verify_seconds / (mean_race_interval_seconds × utilization_target)`. With 1,000 active racers completing one race every 120 seconds and the desktop 2.571–3.051-second sample medians, about 31–37 workers would be required at 70% utilization; this is illustrative sizing, not a NAS capacity claim. First measure Linux/NAS verification across small, large and hazard/bridge-heavy tracks, then reduce unnecessary ghost generation and repeated compilation/startup work. Keep full canonical verification for all competitive submissions. A reusable verifier process/cache must prove complete reset, determinism, bounded memory and crash isolation before replacing the current fresh-process boundary. Scale worker replicas separately from HTTP replicas and preserve visible asynchronous result status.
++
++3. **P1 — Global queue admission holds a shared lock during object storage.** `queueing.py:10`, `runs.py:225–235` and `tracks.py:223–236` hold the same `operation_state['queue']` lock through JSON encoding, immutable-object publication, fsync, inserts and idempotency commit. Worker claims also acquire that row (`worker.py:57`, `track_validation.py:16`). A slow upload publication stalls unrelated submissions and worker claims across every replica. `SKIP LOCKED` on job rows cannot remove contention on the separately locked shared row. Move durable object preparation outside this shared critical section, then perform a short atomic capacity reservation and job commit; preserve idempotency and safe collection of abandoned objects. Use bounded queue counters/reservations or partitioned admission rather than repeated counts under a global lock. PostgreSQL holds these locks until transaction end; this contention analysis is inferred from code and [PostgreSQL's locking rules](https://www.postgresql.org/docs/17/explicit-locking.html), not a measured contention run.
++
++4. **P1 — Rivalry discovery/matching performs work proportional to global history.** `rivalry.py:70–118` computes distinct finishers over PBs across versions, computes latest versions, random-orders eligible candidates and loads full version rows before filtering compatibility in Python. The 1,000-row limit occurs after aggregation/random selection and before compatibility filtering; it neither bounds query work nor ensures all compatible candidates are considered. Unjoined `/rivalry/current` invokes this query just to report eligibility. `skill_score()` issues up to 61 statements for 20 historical boards: one selection and three counts per board. It also lacks an index led by player/recent achievement time. Monday joins can concentrate these costs; creation of a group performs eligibility work while holding the cohort matchmaking lock (`rivalry.py:252`). Maintain eligibility projections per version and contract, precompute bounded player skill summaries, put compatibility predicates into indexed columns, and sample IDs from an eligible set. Keep projections synchronized with bans, official provenance, ratings and distinct verified finishers. Reduce three per-board counts to one aggregate as an interim repair, and move expensive selection outside capacity-reservation locks.
++
++5. **P2 — Reads lock rivalry writers, while the response repeats stable data.** `rivalry.py:170–192` takes `FOR UPDATE` on the group for every snapshot and then reads standings, all pending history and five version/track/owner records. Reads within a group serialize and can delay verification and joins. Five-track/twenty-player Python scoring is itself well bounded; the avoidable costs are locking, query round trips and repeated representation. Use a coherent read-only snapshot or a revisioned projection, batch metadata joins, and release database resources before response encoding. Return stable track/driver metadata once and a compact score/status revision for refreshes. A group revision must cover membership, PBs, bans and availability. At 10,000 users viewing rivalry, 30-second refreshes of this sample imply roughly 333 requests/second and 11.84 MB/second of uncompressed bodies (about 95 Mbps), even if nothing changes. This workload is a scenario calculation, not live usage.
++
++6. **P2 — Compression, conditional reads and coordinated polling are incomplete.** `middleware.py:175` rejects compressed requests; `app.py` has no compression middleware, and most reads get `no-store`. Public track documents already implement ETags correctly, so preserve that visibility check. Lossless compression cut the representative replay from 147 KB to 6 KB and weekly snapshot from 35.5 KB to 6.1 KB. Add response compression at the configured edge/application and a bounded, versioned compressed or binary input-upload format with strict expanded-byte/frame/node limits. Preserve the full quantized 120 Hz sequence, launch marker and rewind receipts. Consolidate the outbox/run-result and rivalry-result reads, honor a server-suggested delay, jitter retries and polls, and slow down while a queue is congested. Existing single-flight result polling, backoff and durable retry keys are valuable; extend them rather than introducing mandatory continuous WebSockets. Discovery should fetch the visible page, retain cursors/filter scope and request more on demand instead of three 100-entry pages on a routine refresh. Existing server search can be reused.
++
++7. **P2 — Popular leaderboards still require population-sized scans.** `runs.py:293–437` uses indexed PB ordering, bounded pages and coherent leaderboard transactions, but cursor positions, around-me ranks and percentiles issue exact count-range queries. Histograms scan board entries twice on cache misses. `board_cache.py` retains only 128 process-local results; every PB update increments `stats_revision`, making previous aggregates unusable, and concurrent misses are not coalesced. Hot boards can therefore continually recompute scans; replicas do not share the cache. Keyset pagination bounds returned rows, not the count work done to number them. Keep exact canonical PBs and tie semantics, but maintain/cache aggregate statistics and rank projections with an explicit freshness policy. Coalesce cache misses, combine related result queries and add a player-led recent-PB index where plans justify it. Exact PostgreSQL counts require scanning qualifying index/table entries; see the [aggregate-function documentation](https://www.postgresql.org/docs/17/functions-aggregate.html). Verify `EXPLAIN (ANALYZE, BUFFERS)` on realistically populated boards before choosing further indexes or a ranking store.
++
++8. **P2 — Valid large uploads can exceed aggregate memory budgets and cause phone stalls.** The parsing semaphore in `middleware.py:93` limits two simultaneous decodes, then releases before the handler has finished using the tree. At twenty-four such in-flight requests, the measured retained trees plus original body buffers alone would occupy approximately 712 MiB, exceeding the API's 640 MiB budget before other allocations; this is an allocation-envelope calculation, not an observed OOM. Untrusted bodies are also completely buffered before parsing. On the client, `backend_client.gd:216–247` and `379–406` create a new HTTPRequest for each call, copy/normalize all replay frames, stringify request bodies and parse response JSON on the main thread; outbox integrity checks and saves perform additional encoding/I/O there. Awaiting network completion does not make this CPU work asynchronous. Introduce a separate admission/memory budget for large-body lifetimes, smaller endpoint-specific bounds for ordinary requests, and background/bounded replay serialization and cache writes. Measure frame time during upload/retry/ghost download on a real phone. Godot supports threaded HTTP transport and gzip reception, but changing transport alone does not move surrounding GDScript JSON work off the main thread; see [HTTPRequest documentation](https://docs.godotengine.org/en/stable/classes/class_httprequest.html).
++
++9. **P2 — Optional ghosts can delay race start by a full request timeout.** `_start_rivalry_race()` awaits `_rivalry_ghost()` before starting the race (`game/core/app.gd:1087–1096`); the adapter permits a 30-second request timeout and does not persist/cache ghosts. Restart repeats the fetch (`app.gd:2309`). A slow ghost endpoint holds the loading screen even when the track is cached and the ticket has been issued. Cache by immutable run ID with an LRU/byte limit, prefetch the selected rival, fetch independent resources concurrently where possible, and give optional ghosts a short deadline/fallback. Visibility/auth checks must remain server-authoritative; do not make stale shared ghosts bypass account restrictions.
++
++10. **P2 — Long-term retained data and shared storage constrain migration.** `maintenance.py:34–44` correctly protects PBs and weekly bests, but all historical `RivalryBest` runs and every `RivalryTicket` are retained indefinitely; groups, memberships and embedded track previews have no archival lifecycle. Idempotency records are tombstoned rather than expired, and all immutable track revisions remain referenced. For an illustrative 10,000 daily racers × 20 races, the four-channel sample alone is 29.4 GB/day before compression, replicas or backups. Five weekly bests for 10,000 entrants retain roughly 15.1 GB/week of input+ghost objects at the measured sample sizes, about 0.79 TB/year, assuming one vehicle/field and all five tracks completed. Actual workloads may differ substantially. Define separate retry, non-PB, weekly evidence, historical-score and private-revision retention policies; historical score summaries need not retain every pose/input blob forever. Never expire permanent resume-grant identities or enable duplicate fulfillment by blindly deleting idempotency keys. The current destructive GC requires stopping every writer, and backup stops API/worker too. Both become availability limits as data grows. A cloud object adapter and tested consistent online backup/GC strategy are needed before multi-host scaling; `BlobStore` is a useful starting seam, but the implementation requires local paths, fsync and hard links, and operations/GC directly inspect that filesystem.
++
++11. **P2 — HTTP replicas require a deliberate database and abuse budget.** The API engine allows up to ten connections per process (`db.py:28–30`); production PostgreSQL allows forty total connections (`compose.yaml:51`). Adding API processes without reserving capacity for workers/migrations/administration can exhaust that pool. The default SQLAlchemy pool wait can consume much of the client's 30-second deadline. Make connection/pool deadlines and per-role limits configurable and test aggregate saturation. Read limiting is shared and reserves ten-request leases, which is a good safety property, but its 600/minute budget is keyed only by IP (`middleware.py:147–163`). Carrier NAT or a large shared network can throttle unrelated legitimate players; writes/auth can contend similarly. Preserve edge/IP protection and use authenticated player/session plus weighted expensive-operation budgets, with separate controls for public discovery and uploads. Rate-limit reservations themselves perform database writes, so include them in load tests rather than measuring handlers alone. The track API also retains a synchronous validation path when `defer_validation` is false (`tracks.py:113–138`, `170–172`): this starts Godot in the HTTP process while its session has already queried authentication/idempotency data, bypassing durable queue admission. Make deferred validation the enforced public path, or give any retained operator-only synchronous path a separate strict budget.
++
++12. **P2 for local/test correctness — SQLite migrations drop restriction cache invalidation.** After migration to 0012, the disposable database has only the three `pb_revision_*` triggers; `player_board_revision` is missing. The players-table rebuild in 0012 does not restore the 0008 trigger. The existing `test_board_cache_tracks_pbs_and_restrictions_across_sessions[sqlite]` reproduces population 3 after disabling Bob, where 2 is expected. This can leave count/histogram responses inconsistent with filtered rows in SQLite test instances. Production requires PostgreSQL and its ALTER-table path differs, so this is not evidence of the same production defect. Restore the SQLite trigger and require the regression to pass; separately verify PostgreSQL invalidation and account/test-population changes under concurrency.
++
++**Architecture that should be preserved**
++
++The modular monolith and PostgreSQL are reasonable for this product; a microservice rewrite is not required by these findings. Identity, immutable content, competition and fulfillment are separated; credentials are hashed, development identities are gated, grants/writes are idempotent, inputs are quantized, contracts are pinned and verification is server-authoritative. Leases fence stale workers, expensive simulation usually runs outside transactions, input/body deadlines are bounded, raw rival controls are not shared publicly, downloaded tracks are hash-checked and cached, and normal race results do not wait for backend verification. These reduce failure propagation. Improve the shared-lock boundaries and data projections before splitting services.
++
++A practical deployment progression is independently replicated stateless HTTP adapters, a measured verifier pool, PostgreSQL with explicit connection/query budgets, and an immutable shared-object adapter. Keep cached/read projections bounded and revisioned, with hard domain writes in PostgreSQL. An additional caching service is an option after measurements justify it, not a requirement for the first repairs. Offline local racing and canonical simulation must remain independent of all these changes.
++
++**Proposed acceptance work**
++
++Agree expected concurrent racers, browsing users, race interval, traffic budget and latency targets before setting capacity. Suggested initial engineering targets are ordinary metadata API p95 below 200 ms excluding network RTT, bounded verification queue age, and no serialization/upload-induced violation of the phone's frame budget; these are proposals, not owner-approved SLAs. Track bytes/request and bytes/player-session alongside p50/p95/p99, DB pool/lock waits, query rows scanned, RSS, verification seconds/track, admission failures, oldest job age and client frame time. Existing structured logs omit body/response byte counts and worker timing, so current instrumentation cannot enforce a traffic budget.
++
++Use representative distributions rather than one huge uniform fixture: 1K/10K/100K players; popular boards with 1K/10K/100K PBs; thousands of versions; carrier-NAT cohorts; Monday membership bursts; reconnecting outboxes; complex tracks; three rewinds; and a multi-day soak with retention/backups. Run cold/warm caches and multiple API/verifier replicas. Exercise disk-full/read-only errors, worker death after object publication, duplicate retries, DB outages, rate limiting and session refresh under packet loss. Prove no duplicate grants, no unverified rankings and no loss of saved attempts. Benchmark PostgreSQL plans/contention and the actual NAS CPU/disk before extrapolating the Windows sample. Capture physical-phone frame/network traces during race start, uploads, weak-network retries and ghost loads.
++
++**Actual commands and outcomes**
++
++| Command/action | Actual result |
++| --- | --- |
++| Source inspection with `rg`, `Get-Content`, `git status --short` and scoped `git diff --numstat` | Reviewed API/config/middleware/auth, all competition/content/queue/storage/maintenance paths, schema indexes, deployment manifests and Godot client/UI interactions. Existing mixed-tree edits preserved. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests -m 'not godot and not postgres' -q --tb=short` | Initial run interrupted; marker selection alone does not exclude parametrized PostgreSQL cases. Not reported as passed. |
++| Same command with `-k 'not postgres'` | Sandboxed run: **212 passed, 29 failed, 1 skipped, 134 deselected**, 101.55 seconds. Eight engine failures came from desktop log/certificate access; twenty compatibility fixtures and one cache regression failed separately. Some engine tests are not tagged `godot`, so this selection still runs them. |
++| Same `-k 'not postgres'` command with approved normal desktop access | **220 passed, 21 failed, 1 skipped, 134 deselected**, 126.20 seconds. Twenty tests still expect physics 0.49/rules v17 while the current contract upgrade returns 0.50/v18; they reject tickets and have obsolete assertions. One failure is the reproduced SQLite cache-invalidation defect. Neither tests nor invariants were weakened. One existing Starlette/httpx warning. Full suite is not green. |
++| `.tools/backend-venv/Scripts/python.exe docs/evidence/backend-scalability-review-2026-10-04/review_probe.py` | Initial sandbox engine measurements failed due to log/certificate-store access. Probe diagnostics were redirected into `build`; final approved desktop run without PowerShell output redirection **exit 0**, expected canonical time preserved on all three runs, payload/query/allocation measurements saved and read-only worker failure reproduced. An earlier redirected shell invocation returned exit 1 despite writing successful measurements; the final plain invocation exited 0. Only engine diagnostics are redirected; canonical sources/inputs are unchanged. |
++| Same maximum-input parser repeated with `tracemalloc.get_traced_memory()` after `parse_body()` returns | Retained allocation **26,999,417 bytes**, distinguishing persistent trees from transient parse peak. Final complete probe also recorded retained allocation of 26,998,182 bytes. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor` | Pinned engine 4.7.2 and matching template directory found; device listing failed because sandbox adb could not create its configuration directory. Device attachment is not established by this review. |
++| `scripts/dev.ps1 -Action CheckScript -Script res://backend/runner.gd` | Initial sandbox default-log access failed. With workspace APPDATA, parse **exit 0**; sandbox root-certificate warnings explain the verifier's fail-closed diagnostics. Normal desktop probe subsequently passed. |
++| `.tools/backend-venv/Scripts/python.exe -m ruff check --config backend/pyproject.toml docs/evidence/backend-scalability-review-2026-10-04/review_probe.py` | Initial unused-import finding corrected in the review probe; final **all checks passed**. |
++| `git diff --check -- DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md`; `git apply --reverse --check [checkpoint]`; same reverse check with `--whitespace=error-all` | Final checks **exit 0**. Initial checkpoint failed due to Windows path separators/newline conversion; regenerated from raw Git diffs with forward-slash paths, retaining only this review's documentation/evidence changes. |
++
++Changed deliverables are this report, the probe/measurements/verification evidence and review-only entries in `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. A scoped Git patch is saved with the evidence after final whitespace/reverse-application checks. No UI change, screenshot, APK export/install, physical-phone test, live-backend load test, deployed migration/restart, NAS or production deployment occurred. PostgreSQL execution plans, PostgreSQL lock contention, network byte measurements through the deployed proxy, device fluency and production recovery remain acceptance work. External sources used only to verify engine/database behavior are linked at the relevant findings; implementation conclusions come from this repository and the saved probe.
+diff --git a/docs/evidence/backend-scalability-review-2026-10-04/review_probe.py b/docs/evidence/backend-scalability-review-2026-10-04/review_probe.py
+new file mode 100644
+index 00000000..a0fd2887
+--- /dev/null
++++ b/docs/evidence/backend-scalability-review-2026-10-04/review_probe.py
+@@ -0,0 +1,229 @@
++"""Read-only source audit with disposable fixtures; never connects to deployed services.
++
++Run from repository root with .tools/backend-venv/Scripts/python.exe <this file>.
++Measurements use SQLite/Windows and are not NAS/PostgreSQL capacity claims.
++"""
++import gc
++import gzip
++import json
++import os
++import statistics
++import subprocess
++import sys
++import tempfile
++import time
++import tracemalloc
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(ROOT / "backend/tests"))
++
++from fastapi.testclient import TestClient
++from sqlalchemy import event, text
++from test_domains import FakeVerifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.identity_models import Player
++from bmt_backend.middleware import parse_body
++from bmt_backend.migrate import upgrade
++from bmt_backend.rivalry import eligible_versions, skill_score, snapshot
++from bmt_backend.rivalry_models import RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++from bmt_backend.runs import board_manifest
++from bmt_backend.storage import canonical_json
++from bmt_backend.track_models import Board, PersonalBest, Run, RunTicket, Track, TrackVersion, digest, now
++from bmt_backend.verifier import GodotVerifier, VerifierUnavailable
++from bmt_backend.worker import process_one
++
++
++def sizes(value):
++    body = canonical_json(value)
++    return {"json_bytes": len(body), "gzip_bytes": len(gzip.compress(body, mtime=0))}
++
++
++def rle(frames):
++    result = []
++    for frame in frames:
++        if result and result[-1][1] == frame:
++            result[-1][0] += 1
++        else:
++            result.append([1, frame])
++    return result
++
++
++def main():
++    output = {"scope": "disposable SQLite fixtures and exact Windows engine; no live traffic"}
++    # Keep engine logs inside the workspace, independently of the desktop profile.
++    profile = ROOT / "build/backend-review-appdata"
++    profile.mkdir(parents=True, exist_ok=True)
++    os.environ["APPDATA"] = str(profile)
++    fixture = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())
++    replay = fixture["replay"]
++    output["golden_replay"] = {"frames": len(replay["frames"]), "seconds": len(replay["frames"]) / 120,
++                               **sizes(replay), "rle": sizes({"frames": rle(replay["frames"])})}
++    frames = [[*frame, 0] if len(frame) == 3 else frame for frame in replay["frames"]]
++    output["golden_four_channel_replay"] = sizes({"schema": replay["schema"], "frames": frames})
++    output["golden_document"] = sizes(fixture["document"])
++    maximum = canonical_json({"schema": "bmt-replay-v1", "frames": [[-127, 255, 255, 255]] * 216000})
++    gc.collect()
++    tracemalloc.start()
++    start = time.perf_counter()
++    parsed = parse_body(maximum)
++    retained, peak = tracemalloc.get_traced_memory()
++    tracemalloc.stop()
++    output["max_four_channel_parse"] = {"bytes": len(maximum), "peak_traced_bytes": peak,
++                                        "retained_traced_bytes":retained,
++                                        "seconds_instrumented": time.perf_counter() - start,
++                                        "note": "parse allocation only; excludes transport, validation, hashing and encoding"}
++    del parsed, maximum
++    with tempfile.TemporaryDirectory(prefix="bmt-review-", dir=ROOT / "build") as folder:
++        app = create_app(Settings(database_url=f"sqlite:///{Path(folder).as_posix()}/db.sqlite",
++                                  object_dir=str(Path(folder) / "objects")), verifier=FakeVerifier())
++        upgrade(app.state.engine)
++        queries = []
++        with app.state.engine.connect() as connection:
++            output["sqlite_migrated_triggers"] = list(connection.scalars(text("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")))
++
++        @event.listens_for(app.state.engine, "before_cursor_execute")
++        def capture(_connection, _cursor, statement, _parameters, _context, _many):
++            queries.append(statement)
++
++        with app.state.session_factory() as session:
++            drivers = [Player(display_name=f"ReviewDriver{i:02}") for i in range(20)]
++            session.add_all(drivers)
++            session.flush()
++            ids = [player.id for player in drivers]
++            slots = []
++            boards = []
++            for index in range(20):
++                track = Track(owner_id=ids[0], official=True)
++                session.add(track)
++                session.flush()
++                doc = {"shape": "oval", "id": f"review_{index}", "name": f"Review Track {index}",
++                       "points": [[round(i * 1.112233, 6), round(i * 0.887766, 6)] for i in range(96)]}
++                version = TrackVersion(track_id=track.id, number=1, name=doc["name"], state="published",
++                                       published_at=now(), content_hash=app.state.blobs.put_json(doc),
++                                       manifest=app.state.verifier.validate_track(doc),
++                                       discovery={"theme": "pine", "points": doc["points"]})
++                session.add(version)
++                session.flush()
++                pinned = board_manifest(version, "compact")
++                board_id = digest({"version_id": version.id, **pinned})
++                session.add(Board(id=board_id, version_id=version.id, vehicle_id="compact", manifest=pinned))
++                session.flush()
++                boards.append(board_id)
++                for ordinal, pid in enumerate(ids):
++                    ticket = RunTicket(player_id=pid, board_id=board_id, expires_at=now() + 7200)
++                    session.add(ticket)
++                    session.flush()
++                    run = Run(ticket_id=ticket.id, player_id=pid, board_id=board_id,
++                              replay_hash="0" * 64, status="verified", time_ticks=12000 + ordinal,
++                              finished_at=now())
++                    session.add(run)
++                    session.flush()
++                    session.add(PersonalBest(board_id=board_id, player_id=pid, run_id=run.id,
++                                             time_ticks=run.time_ticks))
++                    if index < 5:
++                        slots.append((index, pid, run.id, run.time_ticks))
++            session.commit()
++        with TestClient(app) as client:
++            page = client.get("/v1/tracks?limit=100")
++            assert page.status_code == 200
++            output["discovery_page"] = {"items": len(page.json()["items"]), "wire_bytes": len(page.content), **sizes(page.json())}
++            with app.state.session_factory() as session:
++                selected = [session.get(Board, identity).version_id for identity in boards[:5]]
++                entries = [next(e for e in page.json()["items"] if e["version_id"] == identity) for identity in selected]
++                # Use five distinct circuits; all have the same bounded 96-point projection.
++                group = RivalryGroup(week_start=now() - 3600, ends_at=now() + 3600, vehicle_id="compact",
++                                     contract_key="review", skill_band=-1, member_count=20,
++                                     tracks=[{"version_id": e["version_id"], "board_id": boards[i],
++                                              "tick_rate":120, "entry":e} for i, e in enumerate(entries)])
++                session.add(group)
++                session.flush()
++                group_id = group.id
++                for pid in ids:
++                    session.add(RivalryMember(group_id=group_id, player_id=pid, week_start=group.week_start, contract_key="review"))
++                for slot, pid, run_id, ticks in slots:
++                    session.add(RivalryBest(group_id=group_id, player_id=pid, slot=slot, run_id=run_id, time_ticks=ticks))
++                session.commit()
++            with app.state.session_factory() as session:
++                group = session.get(RivalryGroup, group_id)
++                queries.clear()
++                value = snapshot(session, group, ids[1])
++                output["rivalry_snapshot"] = {**sizes(value), "sql_statements": len(queries), "drivers": 20}
++            with app.state.session_factory() as session:
++                queries.clear()
++                skill = skill_score(session, ids[1], "compact", app.state.verifier.manifest(), now())
++                output["rivalry_skill"] = {"value":skill, "boards":20, "sql_statements":len(queries)}
++                queries.clear()
++                eligible = eligible_versions(session, app.state.verifier.manifest(), "compact")
++                output["eligibility"] = {"candidates":len(eligible), "sql": list(queries)}
++            with app.state.session_factory() as session:
++                race_ticket = RunTicket(player_id=ids[1], board_id=boards[0], expires_at=now() + 7200)
++                session.add(race_ticket)
++                session.flush()
++                run = Run(ticket_id=race_ticket.id, player_id=ids[1], board_id=boards[0],
++                          replay_hash=app.state.blobs.put_json({"schema":"bmt-replay-v1", "frames":[[0,255,0]] * 20}))
++                session.add(run)
++                session.flush()
++                run_id = run.id
++                session.add(RivalryTicket(ticket_id=race_ticket.id, group_id=group_id, slot=0))
++                session.commit()
++            # Inject the EROFS expected from the production read-only volume only for ghost writes.
++            original = app.state.blobs.put_json
++
++            def read_only_ghost(value):
++                if "poses" in value:
++                    raise OSError(30, "Read-only file system")
++                return original(value)
++
++            verify = app.state.verifier.verify_run
++
++            def with_ghost(*args, **kwargs):
++                return {**verify(*args, **kwargs), "ghost":{"poses":[[0,0,0,0,0,0,0]], "ticks":100}}
++
++            with patch.object(app.state.blobs, "put_json", read_only_ghost), patch.object(app.state.verifier, "verify_run", with_ghost):
++                try:
++                    process_one(app)
++                    output["readonly_worker_reproduction"] = {"raised":False}
++                except OSError as error:
++                    with app.state.session_factory() as session:
++                        saved = session.get(Run, run_id)
++                        output["readonly_worker_reproduction"] = {"raised":True, "errno":error.errno,
++                                                                  "run_status":saved.status, "attempts":saved.attempts}
++        app.state.engine.dispose()
++    binary = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
++    if binary.is_file():
++        verifier = GodotVerifier(SimpleNamespace(godot_bin=str(binary), game_project=ROOT / "game", verifier_timeout_seconds=90))
++        times = []
++        run_process = subprocess.run
++
++        def workspace_log(command, **kwargs):
++            # Windows Godot resolves its log directory via a known-folder API,
++            # independently of APPDATA. Only redirect diagnostics; exact engine,
++            # canonical runner, source and fixture remain unchanged.
++            if "--script" in command:
++                command = [*command[:1], "--log-file", str(ROOT / "build/backend-review-engine.log"), *command[1:]]
++            return run_process(command, **kwargs)
++
++        try:
++            with patch("bmt_backend.verifier.subprocess.run", workspace_log):
++                for _ in range(3):
++                    start = time.perf_counter()
++                    result = verifier.verify_run(fixture["document"], replay, fixture["vehicle_id"])
++                    assert result["time_ticks"] == fixture["time_ticks"]
++                    times.append(time.perf_counter() - start)
++            output["canonical_golden_verification"] = {"seconds":times, "median_seconds":statistics.median(times),
++                                                        "ghost":sizes(result["ghost"]),
++                                                        "poses":len(result["ghost"]["poses"])}
++        except VerifierUnavailable as error:
++            output["canonical_golden_verification"] = {"error": str(error), "passed":False}
++    target = Path(__file__).with_name("measurements.json")
++    target.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({k:v for k,v in output.items() if k != "eligibility"}, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/backend-scalability-review-2026-10-04/measurements.json b/docs/evidence/backend-scalability-review-2026-10-04/measurements.json
+new file mode 100644
+index 00000000..61f9e3da
+--- /dev/null
++++ b/docs/evidence/backend-scalability-review-2026-10-04/measurements.json
+@@ -0,0 +1,85 @@
++{
++  "scope": "disposable SQLite fixtures and exact Windows engine; no live traffic",
++  "golden_replay": {
++    "frames": 12757,
++    "seconds": 106.30833333333334,
++    "json_bytes": 121429,
++    "gzip_bytes": 5746,
++    "rle": {
++      "json_bytes": 82381,
++      "gzip_bytes": 6199
++    }
++  },
++  "golden_four_channel_replay": {
++    "json_bytes": 146943,
++    "gzip_bytes": 5984
++  },
++  "golden_document": {
++    "json_bytes": 4915,
++    "gzip_bytes": 1570
++  },
++  "max_four_channel_parse": {
++    "bytes": 4104037,
++    "peak_traced_bytes": 40809754,
++    "retained_traced_bytes": 26998182,
++    "seconds_instrumented": 2.2686866000003647,
++    "note": "parse allocation only; excludes transport, validation, hashing and encoding",
++    "earlier_retained_traced_bytes": 26999417
++  },
++  "sqlite_migrated_triggers": [
++    "pb_revision_delete",
++    "pb_revision_insert",
++    "pb_revision_update"
++  ],
++  "discovery_page": {
++    "items": 20,
++    "wire_bytes": 52459,
++    "json_bytes": 52459,
++    "gzip_bytes": 3785
++  },
++  "rivalry_snapshot": {
++    "json_bytes": 35520,
++    "gzip_bytes": 6063,
++    "sql_statements": 15,
++    "drivers": 20
++  },
++  "rivalry_skill": {
++    "value": 947,
++    "boards": 20,
++    "sql_statements": 61
++  },
++  "eligibility": {
++    "candidates": 20,
++    "sql": [
++      "SELECT track_versions.id, track_versions.track_id, track_versions.number, track_versions.name, track_versions.content_hash, track_versions.revision_key, track_versions.manifest, track_versions.discovery, track_versions.state, track_versions.created_at, track_versions.published_at, track_versions.creator_test_run_id, track_versions.rating_sum, track_versions.rating_count \nFROM track_versions JOIN tracks ON tracks.id = track_versions.track_id JOIN players ON players.id = tracks.owner_id JOIN (SELECT track_versions.track_id AS track, max(track_versions.number) AS number \nFROM track_versions \nWHERE track_versions.state = ? GROUP BY track_versions.track_id) AS anon_1 ON anon_1.track = tracks.id AND anon_1.number = track_versions.number LEFT OUTER JOIN (SELECT boards.version_id AS version, count(distinct(personal_bests.player_id)) AS drivers \nFROM boards JOIN personal_bests ON personal_bests.board_id = boards.id JOIN players ON players.id = personal_bests.player_id \nWHERE players.disabled IS 0 AND players.is_test_driver IS 0 AND JSON_EXTRACT(boards.manifest, ?) IS NULL AND JSON_EXTRACT(boards.manifest, ?) IS NOT 1 GROUP BY boards.version_id) AS anon_2 ON anon_2.version = track_versions.id \nWHERE track_versions.state = ? AND tracks.hidden IS 0 AND players.disabled IS 0 AND (tracks.official IS 1 OR track_versions.rating_count > ? AND track_versions.rating_sum > ? * track_versions.rating_count AND anon_2.drivers > ?) ORDER BY random()\n LIMIT ? OFFSET ?"
++    ]
++  },
++  "readonly_worker_reproduction": {
++    "raised": true,
++    "errno": 30,
++    "run_status": "verifying",
++    "attempts": 1
++  },
++  "canonical_golden_verification": {
++    "seconds": [
++      3.434253200000967,
++      2.570500699992408,
++      2.5710876999946777
++    ],
++    "median_seconds": 2.5710876999946777,
++    "ghost": {
++      "json_bytes": 155859,
++      "gzip_bytes": 60437
++    },
++    "poses": 2130
++  },
++  "previous_canonical_golden_verification": {
++    "seconds": [
++      3.5539713999896776,
++      3.0510283000039635,
++      2.761102899996331
++    ],
++    "median_seconds": 3.0510283000039635,
++    "note": "Earlier approved desktop run; final run above exited 0 without PowerShell redirection"
++  }
++}
+diff --git a/docs/evidence/backend-scalability-review-2026-10-04/verification.txt b/docs/evidence/backend-scalability-review-2026-10-04/verification.txt
+new file mode 100644
+index 00000000..7c54dddc
+--- /dev/null
++++ b/docs/evidence/backend-scalability-review-2026-10-04/verification.txt
+@@ -0,0 +1,24 @@
++Final desktop pytest run, unchanged runtime code
++
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v12-race-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v12-race-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v12-creator_test-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v12-creator_test-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v13-race-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v13-race-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v13-creator_test-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v13-creator_test-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v14-race-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v14-race-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v14-creator_test-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v14-creator_test-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v15-race-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v15-race-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v15-creator_test-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v15-creator_test-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v16-race-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v16-race-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v16-creator_test-arcade-planar-0.39]
++FAILED backend\tests\test_review_reliability.py::test_full_manifest_upgrade_verifies[sqlite-standing-5-road-gates-v16-creator_test-arcade-planar-0.48]
++FAILED backend\tests\test_review_reliability.py::test_board_cache_tracks_pbs_and_restrictions_across_sessions[sqlite]
++21 failed, 220 passed, 1 skipped, 134 deselected, 1 warning in 126.20s (0:02:06)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 8406a371..c1da344d 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
++2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification sample medians 2.571-3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
+ 
+ 2026-10-04 R01/V05/Q01: owner-reported Pixel 9 load slowdown addressed with native x86_64 Godot/music beside ARM64, plus saved host GPU/4096 MB/cold-boot AVD configuration. New debug/release native targets and 16 KB ELF alignment pass; music 36 and focused export 72/21/48 pass, APK installs with primaryCpuAbi=x86_64. Observed track selections 7.8/7.5 s before, 1.57/0.72 s after native build and cold boot; repeated selection 8 ms. Actual countdown visible within 3.7 s at first host screenshot check. Initial network-error runs discarded; pre-cold-boot native clock CPU sample motivated cold boot, later sample failed and is not claimed. Original AVD config backed up; app data retained, probes removed, ads Off. Physical DN2103 enumerated but no phone install/test, full Validate, successful ad playback (one preview retry still fails with SDK code 0), physics change or backend deployment. Files, exact commands, evidence, limitations and scoped checkpoint: docs/EMULATOR_PERFORMANCE.md. Unrelated concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 0863bca3..f957b088 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
++2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification sample medians 2.571-3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
+ 
+ 2026-10-04 R01/V05/Q01: owner-reported Pixel 9 load slowdown addressed with native x86_64 Godot/music beside ARM64, plus saved host GPU/4096 MB/cold-boot AVD configuration. New debug/release native targets and 16 KB ELF alignment pass; music 36 and focused export 72/21/48 pass, APK installs with primaryCpuAbi=x86_64. Observed track selections 7.8/7.5 s before, 1.57/0.72 s after native build and cold boot; repeated selection 8 ms. Actual countdown visible within 3.7 s at first host screenshot check. Initial network-error runs discarded; pre-cold-boot native clock CPU sample motivated cold boot, later sample failed and is not claimed. Original AVD config backed up; app data retained, probes removed, ads Off. Physical DN2103 enumerated but no phone install/test, full Validate, successful ad playback (one preview retry still fails with SDK code 0), physics change or backend deployment. Files, exact commands, evidence, limitations and scoped checkpoint: docs/EMULATOR_PERFORMANCE.md. Unrelated concurrent work preserved.

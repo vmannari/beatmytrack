@@ -11,6 +11,7 @@ from .config import Settings
 from .db import make_engine, make_session_factory
 from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
 from .resume_models import ResumeRace, ResumeReceipt
+from .rivalry_models import RivalryBest, RivalryTicket
 from .storage import LocalBlobStore
 from .track_models import IdempotencyRecord, OperationState, PersonalBest, Run, RunTicket, TrackVersion
 
@@ -33,12 +34,14 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         candidates = session.scalars(select(Run).where(
             Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
             ~Run.id.in_(select(PersonalBest.run_id)),
+            ~Run.id.in_(select(RivalryBest.run_id)),
             ~Run.id.in_(select(TrackVersion.creator_test_run_id).where(TrackVersion.creator_test_run_id.is_not(None))),
         ).order_by(Run.finished_at, Run.id).limit(1000)).all()
         run_ids = {r.id for r in candidates}
         tickets = set(session.scalars(select(RunTicket.id).where(
             RunTicket.expires_at < cutoff,
             ~RunTicket.id.in_(select(Run.ticket_id).where(~Run.id.in_(run_ids))),
+            ~RunTicket.id.in_(select(RivalryTicket.ticket_id)),
             ~RunTicket.id.in_(select(ResumeRace.ticket_id).where(ResumeRace.ticket_id.is_not(None), ResumeRace.expires_at >= cutoff)),
         ).limit(1000)))
         races = set(session.scalars(select(ResumeRace.id).where(ResumeRace.expires_at < cutoff,
@@ -75,6 +78,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         hashes = [p.stem for p in eligible]
         referenced = set(session.scalars(select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes))))
         referenced.update(session.scalars(select(Run.replay_hash).where(Run.replay_hash.in_(hashes), ~Run.id.in_(run_ids))))
+        referenced.update(session.scalars(select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), ~Run.id.in_(run_ids))))
         orphaned = [p for p in eligible if p.stem not in referenced]
         if apply:
             offset -= sum(p.parent.name == f"{shard:02x}" for p in orphaned)

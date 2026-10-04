@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .cursors import decode_cursor, encode_cursor
 from .db import get_session
-from .identity_models import Player
+from .identity_models import Identity, Player
 from .middleware import ParsedJSONRoute
 from .queueing import admit
 from .security import current_player
@@ -160,6 +160,9 @@ def create_track(payload: UploadTrack, request: Request, session: DB, player: Au
         track = Track(owner_id=player.id, authoring_id=source_id)
         session.add(track)
         session.flush()
+    if session.scalar(select(Identity.player_id).where(Identity.player_id == player.id,
+            Identity.provider == "development", Identity.subject == "developer")) is not None:
+        track.official = True
     version = _save_revision(session, track, payload, content_hash, manifest, request.app.state.settings.max_queued_runs, request.app.state.blobs)
     return commit_response(session, player.id, "create_track", key, body, _payload(request, session, version))
 
@@ -488,9 +491,10 @@ def public_document(version_id: str, request: Request, session: DB) -> Response:
 def own_rating(version_id: str, session: DB, player: Auth) -> dict:
     version = published_version(session, version_id)
     rating = session.get(Rating, (version_id, player.id))
-    eligible = session.get(Track, version.track_id).owner_id != player.id and bool(session.scalar(
+    eligible = not player.is_test_driver and session.get(Track, version.track_id).owner_id != player.id and bool(session.scalar(
         select(PersonalBest.player_id).join(Board).where(
-            Board.version_id == version_id, PersonalBest.player_id == player.id
+            Board.version_id == version_id, PersonalBest.player_id == player.id,
+            Board.manifest["test_population"].as_boolean().is_not(True)
         ).limit(1)
     ))
     return {"score": rating.score if rating else 0, "eligible": eligible}
@@ -508,6 +512,8 @@ def private_document(version_id: str, request: Request, session: DB, player: Aut
 
 @router.put("/track-versions/{version_id}/rating")
 def rate(version_id: str, payload: Vote, session: DB, player: Auth, key: Key) -> dict:
+    if player.is_test_driver:
+        raise HTTPException(403, "Test drivers cannot rate tracks")
     scope, body = f"rating:{version_id}", payload.model_dump()
     old = replay_response(session, player.id, scope, key, body)
     if old is not None:
@@ -524,7 +530,8 @@ def rate(version_id: str, payload: Vote, session: DB, player: Auth, key: Key) ->
     if not session.scalar(
         select(PersonalBest.player_id)
         .join(Board)
-        .where(Board.version_id == version_id, PersonalBest.player_id == player.id)
+        .where(Board.version_id == version_id, PersonalBest.player_id == player.id,
+               Board.manifest["test_population"].as_boolean().is_not(True))
         .limit(1)
     ):
         raise HTTPException(403, "Complete a verified race on this version before rating")

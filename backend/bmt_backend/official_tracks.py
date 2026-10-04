@@ -68,6 +68,7 @@ def seed_documents(session_factory, blobs, verifier, documents: Iterable[dict]) 
             )
             if existing is not None:
                 existing_track = session.get(Track, existing.track_id)
+                existing_track.official = True
                 if existing_track.authoring_id is None:
                     existing_track.authoring_id = document.get("id")
                 existing.discovery = discovery_projection(document)
@@ -88,6 +89,7 @@ def seed_documents(session_factory, blobs, verifier, documents: Iterable[dict]) 
                 track = Track(owner_id=owner.id, authoring_id=document.get("id"))
                 session.add(track)
                 session.flush()
+            track.official = True
             head = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id).order_by(TrackVersion.number.desc()).limit(1))
             version = TrackVersion(
                 track_id=track.id,

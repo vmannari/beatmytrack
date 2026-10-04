@@ -1,3 +1,17 @@
+2026-10-04 artificial test drivers require migration `0012_test_drivers` and matching API/worker/verifier artifacts. They are explicitly gated by `BMT_TEST_DRIVERS_ENABLED=true` plus development authentication. Production configuration rejects this flag. The local PC launcher accepts `BackendStart -TestDrivers`; fill/fleet/tick/watch tools run through normal verified race uploads into isolated test boards and groups. No existing service or production rollout was performed. See [setup, actual verification and limits](../../docs/TEST_DRIVERS.md).
+
+2026-10-04 Weekly Rivalry requires migration `0011_weekly_rivalry` and matching
+API/worker images. The standalone verifier now includes derived ghost recording
+and the pure bridge elevation sampler. Keep the existing rules v18 / physics
+0.50 contract; no driving rule changes accompany rivalry. Migrate a backed-up
+database to the current head using the existing deployment procedure, then run
+the rebuilt API and worker together. Existing official tracks are identified by
+the reserved `developer` identity, not the creator's display name. New weekly
+groups need five eligible published tracks; no sample player field is seeded.
+This task tested disposable local services only and did not rebuild/restart the
+existing services, migrate their database or deploy to the NAS/production.
+See [implementation and actual verification](../../docs/WEEKLY_RIVALRY.md).
+
 2026-10-03 launch-start update: the current source uses rules v18 / physics 0.50.
 Rebuild API and verifier together before online client acceptance; existing running
 services were not rebuilt by this task. v18 adds a tick-zero launch input marker,
@@ -9,8 +23,8 @@ See [launch start](../../docs/LAUNCH_START.md) for actual tests and limits.
 The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying still requires stopped writers and `--offline`. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
 
 The October reliability fixes require migration to the current Alembic head
-(currently `0010_archive_drafts`, including `0008_review_reliability` and
-`0009_track_lifecycle`) and a matching rules-v17 canonical verifier image. Keep historical boards pinned; an
+(currently `0012_test_drivers`, including `0011_weekly_rivalry`, `0008_review_reliability`,
+`0009_track_lifecycle` and `0010_archive_drafts`) and a matching rules-v18 canonical verifier image. Keep historical boards pinned; an
 old in-flight contract fails explicitly instead of being rescored with new rules.
 
 The [bridge-exit checkpoint repair](../../docs/BRIDGE_EXIT_CHECKPOINTS.md) adds

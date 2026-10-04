@@ -64,6 +64,7 @@ def public_player(player: Player) -> dict:
         "display_name": player.display_name,
         "created_at": player.created_at,
         "needs_username": player.needs_username,
+        "is_test_driver": player.is_test_driver,
     }
 
 
@@ -98,6 +99,8 @@ def development_login(
     if identity:
         player = session.get(Player, identity.player_id)
     else:
+        if body.subject.startswith("bmt-test-"):
+            raise HTTPException(403, "Register test profiles through the operator tool")
         name = DEVELOPER_NAME if body.subject == "developer" else body.display_name
         if body.subject != "developer" and username_key(name) == DEVELOPER_NAME_KEY:
             raise HTTPException(409, "USERNAME_TAKEN")
@@ -117,6 +120,8 @@ def development_login(
             player = session.get(Player, identity.player_id)
     if player.disabled:
         raise HTTPException(403, "ACCOUNT_DISABLED")
+    if player.is_test_driver and not settings.test_drivers_enabled:
+        raise HTTPException(403, "TEST_DRIVERS_DISABLED")
     if body.subject == "developer":
         player.display_name = DEVELOPER_NAME
     family = SessionFamily(player_id=player.id, expires_at=now() + settings.refresh_ttl_seconds)

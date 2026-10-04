@@ -21,11 +21,12 @@ SCRIPTS = {
         "track_compiler",
         "track_document",
     ),
-    "input": ("drive_frame", "route_driver"),
+    "input": ("drive_frame", "route_driver", "profiled_route_driver"),
     "persistence": ("track_library",),
-    "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry"),
+    "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry", "personal_ghost_run"),
     "track": (
         "builtin_tracks",
+        "bridge_elevation",
         "creator_bridges",
         "native_track",
         "playground_data",
@@ -62,7 +63,7 @@ def stage(repo: Path, destination: Path) -> None:
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("Destination must be absent or empty; existing files are never removed")
     files = [source / folder / (name + ".gd") for folder, names in SCRIPTS.items() for name in names]
-    runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd")]
+    runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd", "generate_test_driver.gd")]
     files.extend(runners)
     # TrackTheme preloads this resource even in the headless canonical project.
     files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))

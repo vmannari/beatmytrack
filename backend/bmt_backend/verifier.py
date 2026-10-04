@@ -168,7 +168,8 @@ class GodotVerifier:
                 diagnostics = log_path.read_text(encoding="utf-8", errors="replace")
                 if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
                     raise VerifierUnavailable("Canonical verifier reported an engine error")
-                if not output_path.is_file() or output_path.stat().st_size > MAX_TRACK_BYTES + 4096:
+                result_limit = MAX_REQUEST_BYTES if payload.get("operation") == "run" else MAX_TRACK_BYTES + 4096
+                if not output_path.is_file() or output_path.stat().st_size > result_limit:
                     raise VerifierUnavailable("Canonical verifier returned no bounded result")
                 response = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -230,4 +231,25 @@ class GodotVerifier:
             or sum(laps) != ticks
         ):
             raise VerifierUnavailable("Canonical result failed timing invariants")
+        if not creator_test:
+            validate_ghost(result.get("ghost"), ticks)
         return result
+
+
+def validate_ghost(recording, race_ticks):
+    """Derived presentation only; retain strict 20 Hz, duration and finite bounds."""
+    if type(recording) is not dict or set(recording) != {"ticks", "poses"}:
+        raise VerifierUnavailable("Canonical ghost is missing")
+    duration, poses = recording["ticks"], recording["poses"]
+    if (type(duration) not in (int, float) or not math.isfinite(duration) or not 0 < duration <= race_ticks
+            or type(poses) is not list or not 2 <= len(poses) <= MAX_FRAMES // 6 + 7):
+        raise VerifierUnavailable("Canonical ghost exceeds recording bounds")
+    previous = -1
+    for pose in poses:
+        if (type(pose) is not list or len(pose) != 7
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in pose)
+                or not previous < pose[0] <= duration):
+            raise VerifierUnavailable("Canonical ghost has malformed samples")
+        previous = pose[0]
+    if poses[0][0] != 0 or poses[-1][0] != duration:
+        raise VerifierUnavailable("Canonical ghost endpoints do not match the race")

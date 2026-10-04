@@ -1,0 +1,85 @@
+{
+  "scope": "disposable SQLite fixtures and exact Windows engine; no live traffic",
+  "golden_replay": {
+    "frames": 12757,
+    "seconds": 106.30833333333334,
+    "json_bytes": 121429,
+    "gzip_bytes": 5746,
+    "rle": {
+      "json_bytes": 82381,
+      "gzip_bytes": 6199
+    }
+  },
+  "golden_four_channel_replay": {
+    "json_bytes": 146943,
+    "gzip_bytes": 5984
+  },
+  "golden_document": {
+    "json_bytes": 4915,
+    "gzip_bytes": 1570
+  },
+  "max_four_channel_parse": {
+    "bytes": 4104037,
+    "peak_traced_bytes": 40809754,
+    "retained_traced_bytes": 26998182,
+    "seconds_instrumented": 2.2686866000003647,
+    "note": "parse allocation only; excludes transport, validation, hashing and encoding",
+    "earlier_retained_traced_bytes": 26999417
+  },
+  "sqlite_migrated_triggers": [
+    "pb_revision_delete",
+    "pb_revision_insert",
+    "pb_revision_update"
+  ],
+  "discovery_page": {
+    "items": 20,
+    "wire_bytes": 52459,
+    "json_bytes": 52459,
+    "gzip_bytes": 3785
+  },
+  "rivalry_snapshot": {
+    "json_bytes": 35520,
+    "gzip_bytes": 6063,
+    "sql_statements": 15,
+    "drivers": 20
+  },
+  "rivalry_skill": {
+    "value": 947,
+    "boards": 20,
+    "sql_statements": 61
+  },
+  "eligibility": {
+    "candidates": 20,
+    "sql": [
+      "SELECT track_versions.id, track_versions.track_id, track_versions.number, track_versions.name, track_versions.content_hash, track_versions.revision_key, track_versions.manifest, track_versions.discovery, track_versions.state, track_versions.created_at, track_versions.published_at, track_versions.creator_test_run_id, track_versions.rating_sum, track_versions.rating_count \nFROM track_versions JOIN tracks ON tracks.id = track_versions.track_id JOIN players ON players.id = tracks.owner_id JOIN (SELECT track_versions.track_id AS track, max(track_versions.number) AS number \nFROM track_versions \nWHERE track_versions.state = ? GROUP BY track_versions.track_id) AS anon_1 ON anon_1.track = tracks.id AND anon_1.number = track_versions.number LEFT OUTER JOIN (SELECT boards.version_id AS version, count(distinct(personal_bests.player_id)) AS drivers \nFROM boards JOIN personal_bests ON personal_bests.board_id = boards.id JOIN players ON players.id = personal_bests.player_id \nWHERE players.disabled IS 0 AND players.is_test_driver IS 0 AND JSON_EXTRACT(boards.manifest, ?) IS NULL AND JSON_EXTRACT(boards.manifest, ?) IS NOT 1 GROUP BY boards.version_id) AS anon_2 ON anon_2.version = track_versions.id \nWHERE track_versions.state = ? AND tracks.hidden IS 0 AND players.disabled IS 0 AND (tracks.official IS 1 OR track_versions.rating_count > ? AND track_versions.rating_sum > ? * track_versions.rating_count AND anon_2.drivers > ?) ORDER BY random()\n LIMIT ? OFFSET ?"
+    ]
+  },
+  "readonly_worker_reproduction": {
+    "raised": true,
+    "errno": 30,
+    "run_status": "verifying",
+    "attempts": 1
+  },
+  "canonical_golden_verification": {
+    "seconds": [
+      3.434253200000967,
+      2.570500699992408,
+      2.5710876999946777
+    ],
+    "median_seconds": 2.5710876999946777,
+    "ghost": {
+      "json_bytes": 155859,
+      "gzip_bytes": 60437
+    },
+    "poses": 2130
+  },
+  "previous_canonical_golden_verification": {
+    "seconds": [
+      3.5539713999896776,
+      3.0510283000039635,
+      2.761102899996331
+    ],
+    "median_seconds": 3.0510283000039635,
+    "note": "Earlier approved desktop run; final run above exited 0 without PowerShell redirection"
+  }
+}

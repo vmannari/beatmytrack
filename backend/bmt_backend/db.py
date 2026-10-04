@@ -10,7 +10,7 @@ class Base(DeclarativeBase):
     pass
 
 
-def make_engine(url: str):
+def make_engine(url: str, settings=None):
     if url.startswith("sqlite"):
         options = {"connect_args": {"check_same_thread": False}}
         if url.endswith(":memory:") or url == "sqlite://":
@@ -25,9 +25,10 @@ def make_engine(url: str):
     return create_engine(
         url,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
-        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=15000"},
+        pool_size=getattr(settings, "database_pool_size", 4),
+        max_overflow=getattr(settings, "database_pool_overflow", 0),
+        pool_timeout=getattr(settings, "database_pool_timeout_seconds", 3),
+        connect_args={"connect_timeout": 3, "options": "-c statement_timeout=%d -c lock_timeout=2000 -c idle_in_transaction_session_timeout=15000" % getattr(settings, "database_statement_timeout_ms", 10000)},
     )
 
 

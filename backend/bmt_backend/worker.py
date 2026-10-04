@@ -139,10 +139,11 @@ def process_one(app) -> bool:
             session.commit()
             return True
         player = session.get(Player, run.player_id)
-        if player.disabled:
+        test_disabled = (player.is_test_driver or pinned_manifest.get("test_population")) and not settings.test_drivers_enabled
+        if player.disabled or test_disabled:
             run.status, run.failure_code, run.finished_at, run.lease_token = (
                 "rejected",
-                "account_disabled",
+                "test_population_disabled" if test_disabled else "account_disabled",
                 now(),
                 None,
             )
@@ -152,6 +153,11 @@ def process_one(app) -> bool:
         run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
         session.flush()
         if not creator_test:
+            from .rivalry import accept_verified
+            from .rivalry_models import RivalryTicket
+            if session.get(RivalryTicket, run.ticket_id) is not None and result.get("ghost"):
+                run.ghost_hash = app.state.blobs.put_json(result["ghost"])
+            accept_verified(session, run)
             values = {
                 "board_id": run.board_id,
                 "player_id": run.player_id,

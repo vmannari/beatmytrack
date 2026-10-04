@@ -30,6 +30,7 @@ from .track_models import (
     replay_response,
 )
 from .tracks import DB, Auth, Key, published_version
+from .test_population import check_scope
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["races"])
 PINNED_FIELDS = (
@@ -44,7 +45,7 @@ PINNED_FIELDS = (
     "laps",
 )
 MAX_FRAMES = 216000
-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v17")
+CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v18")
 
 
 def leaderboard_session(request: Request):
@@ -70,6 +71,7 @@ class TicketRequest(BaseModel):
     version_id: str = Field(min_length=36, max_length=36)
     vehicle_id: str = Field(min_length=1, max_length=80)
     purpose: Literal["race", "creator_test"] = "race"
+    test_population: bool = False
 
 
 class SubmitRun(BaseModel):
@@ -128,6 +130,7 @@ def manifest(request: Request) -> dict:
 
 @router.post("/run-tickets", status_code=201)
 def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    check_scope(request, payload.test_population, player)
     body = payload.model_dump()
     old = replay_response(session, player.id, "ticket", key, body)
     if old is not None:
@@ -159,6 +162,8 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         )
     if payload.purpose == "creator_test":
         pinned = {**pinned, "purpose": "creator_test", "laps": 1}
+    if payload.test_population:
+        pinned = {**pinned, "test_population": True}
     board_id = digest({"version_id": version.id, **pinned})
     board = session.get(Board, board_id)
     if board is None:
@@ -210,6 +215,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     if ticket.expires_at <= now():
         raise HTTPException(410, "Run ticket expired")
     board = session.get(Board, ticket.board_id)
+    check_scope(request, bool(board.manifest.get("test_population")), player)
     if board.manifest.get("purpose") == "creator_test":
         repeated = session.scalar(select(Run).where(Run.player_id == player.id,
             Run.board_id == ticket.board_id, Run.replay_hash == body["replay_hash"])
@@ -246,6 +252,7 @@ def retry_run(run_id: str, request: Request, session: DB, player: Auth, key: Key
     run = session.scalar(select(Run).where(Run.id == run_id, Run.player_id == player.id).with_for_update())
     if run is None:
         raise HTTPException(404, "Run not found")
+    check_scope(request, bool(session.get(Board, run.board_id).manifest.get("test_population")), player)
     if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch"):
         board = session.get(Board, run.board_id)
         try:
@@ -266,7 +273,7 @@ def retry_run(run_id: str, request: Request, session: DB, player: Auth, key: Key
 
 def public_board(session, board_id: str) -> Board:
     board = session.get(Board, board_id)
-    if board is None or board.manifest.get("purpose") == "creator_test":
+    if board is None or board.manifest.get("purpose") == "creator_test" or board.manifest.get("test_population"):
         raise HTTPException(404, "Leaderboard not found")
     published_version(session, board.version_id)
     return board
@@ -282,7 +289,7 @@ def population(board_id: str):
             PersonalBest.achieved_at,
         )
         .join(Player, Player.id == PersonalBest.player_id)
-        .where(PersonalBest.board_id == board_id, Player.disabled.is_(False))
+        .where(PersonalBest.board_id == board_id, Player.disabled.is_(False), Player.is_test_driver.is_(False))
     )
 
 

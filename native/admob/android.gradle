@@ -1,0 +1,40 @@
+// Applied by scripts/dev.ps1 to the generated, version-pinned Godot template.
+// No source or Google ads SDK is compiled into the release variant.
+android.sourceSets.debug.java.srcDirs += [file('../../../native/admob/src')]
+// Optional, explicit local diagnostic trust configuration. No certificate is
+// shipped in source control, and release never sees these resources/manifest.
+def localAdTrust = System.getenv('BMT_ADMOB_DEBUG_CA_DIR')
+if (localAdTrust) {
+    def trustDirectory = file(localAdTrust)
+    if (!new File(trustDirectory, 'AndroidManifest.xml').isFile()) {
+        throw new GradleException('BMT_ADMOB_DEBUG_CA_DIR must contain its debug manifest.')
+    }
+    // Godot regenerates src/debug/AndroidManifest.xml with its plugin metadata
+    // on every export. Preserve that entire manifest when adding local trust.
+    def trustManifestText = new File(trustDirectory, 'AndroidManifest.xml').getText('UTF-8')
+    def trustAttribute = trustManifestText =~ /android:networkSecurityConfig="(@xml\/[a-z0-9_]+)"/
+    if (!trustAttribute.find()) {
+        throw new GradleException('Local ad trust manifest must select an XML networkSecurityConfig.')
+    }
+    def generatedText = file('src/debug/AndroidManifest.xml').getText('UTF-8')
+    if (!generatedText.contains('org.godotengine.plugin.v2.BmtAdMob') ||
+            !generatedText.contains('com.google.android.gms.ads.APPLICATION_ID')) {
+        throw new GradleException('Godot debug manifest is missing AdMob export metadata.')
+    }
+    def applicationOffset = generatedText.indexOf('<application ')
+    if (applicationOffset < 0 || generatedText.contains('android:networkSecurityConfig=')) {
+        throw new GradleException('Review the existing debug network trust before adding local ad trust.')
+    }
+    // Godot invokes Gradle clean after configuration on a fresh exporter.
+    // Keep this input outside Gradle's output directory so clean cannot erase it.
+    def combinedManifest = file('.bmt-admob/admob-debug-manifest.xml')
+    combinedManifest.parentFile.mkdirs()
+    combinedManifest.setText(generatedText.substring(0, applicationOffset) +
+        '<application android:networkSecurityConfig="' + trustAttribute.group(1) + '" ' +
+        generatedText.substring(applicationOffset + '<application '.length()), 'UTF-8')
+    android.sourceSets.debug.manifest.srcFile combinedManifest
+    android.sourceSets.debug.res.srcDirs += [new File(trustDirectory, 'res')]
+}
+dependencies {
+    debugImplementation 'com.google.android.gms:play-services-ads:25.5.0'
+}

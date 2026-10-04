@@ -1,5 +1,6 @@
 param(
     [ValidateSet('windows','android','all')][string]$Platform = 'all',
+    [ValidateSet('arm64','x86_64')][string[]]$AndroidArch = @('arm64','x86_64'),
     [string]$NdkPath = '',
     [int]$Jobs = 8
 )
@@ -28,11 +29,14 @@ try {
             $env:ANDROID_NDK_ROOT = $NdkPath
         }
         foreach ($target in @('template_debug','template_release')) {
-            $arguments = @((Join-Path $scons 'scripts/scons.py'),"platform=$platformName","target=$target",'build_profile=profile.json',"-j$Jobs")
-            if ($platformName -eq 'windows') { $arguments += 'use_mingw=yes' }
-            else { $arguments += @('arch=arm64','ANDROID_HOME=') }
-            & python @arguments
-            if ($LASTEXITCODE) { throw "Native music build failed: $platformName / $target" }
+            $architectures = if ($platformName -eq 'android') { $AndroidArch } else { @('x86_64') }
+            foreach ($architecture in $architectures) {
+                $arguments = @((Join-Path $scons 'scripts/scons.py'),"platform=$platformName","target=$target",'build_profile=profile.json',"-j$Jobs")
+                if ($platformName -eq 'windows') { $arguments += 'use_mingw=yes' }
+                else { $arguments += @("arch=$architecture",'ANDROID_HOME=') }
+                & python @arguments
+                if ($LASTEXITCODE) { throw "Native music build failed: $platformName / $target / $architecture" }
+            }
         }
     }
 } finally {

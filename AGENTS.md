@@ -134,3 +134,20 @@ The owner authorizes two optional driving-camera experiments: delayed car-headin
 ## Speed-dependent camera override (2026-10-03)
 
 The owner additionally requests a slight camera pullback at higher speeds. This authorizes smoothly bounded whole-scene speed zoom with any driving view, superseding constant live magnification when Speed zoom is enabled. Keep the 1.15x baseline at low speed and with Speed zoom off, unchanged HUD/mesh/collision scale, no horizon and canonical simulation separation. See docs/CAMERA_OPTIONS.md for parameters, actual evidence and remaining owner/device acceptance.
+
+## Weekly Rivalry override (2026-10-04)
+
+The owner authorizes Weekly Rivalry inside Race, selected from the left trophy rail, with Overview/Tracks/Standings, rival-focused detail, verified race feedback and an Overview finale state. Five randomly chosen tracks, roughly 10–20 actual similar-skill drivers and Monday–Sunday UTC weeks are confirmed defaults. This supersedes the rivalry placeholder and authorizes the associated backend membership, matching, weekly verified PB scoring and ghost APIs. Community tracks require rating >4.0 and >100 distinct verified finishers; trusted official Beat my track authorship is an alternative. Preserve shared menu art/style and the canonical racer. Division/progression balance remains provisional; do not invent entrants, scores or rewards. Production deployment still requires authorization. See docs/WEEKLY_RIVALRY.md for actual tests, evidence and acceptance limits.
+
+## Weekly Rivalry results correction (2026-10-04)
+
+The owner requires normal race results first, including personal-best feedback and lap analysis. Continue opens weekly rivalry position/points feedback. Backend verification must never interrupt the normal summary. See docs/WEEKLY_RIVALRY.md.
+
+## AdMob development override (2026-10-04)
+
+The owner selects AdMob and requests Settings → Development → Show ads. Off retains the temporary free resume; On uses real Google rewarded demo ads after banked and daily allowances. Debug completion gates existing `ad_preview` receipts only, never unverified banked grants. Native SDK/code and the development menu are excluded from release behavior. The owner explicitly approved the existing Windows-trusted Avast public CA for local debug emulator testing, restricted to Google ad/resource domains, with generated CA/configuration outside Git and release builds. Production placements, consent and signed idempotent SSV fulfillment remain unconfigured. See docs/ADMOB_DEVELOPMENT.md.
+
+
+## Artificial test drivers override (2026-10-04)
+
+The owner explicitly authorizes artificial development drivers for Weekly Rivalry. Persistent traits, canonical recorded input generation, verified submissions, focused 14-driver fixtures and larger 150-driver matching populations supersede the no-invented-entrant restriction for explicitly labeled test championships only. Keep the feature configured for development, isolate test boards/membership contracts, exclude artificial identities from public rankings, ratings and community eligibility, and reject their existing sessions when disabled. Normal rivalries still contain real entrants only. See docs/TEST_DRIVERS.md for tools, actual tests, evidence and remaining acceptance.

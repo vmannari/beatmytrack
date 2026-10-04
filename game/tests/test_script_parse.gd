@@ -16,6 +16,9 @@ func scan(path: String) -> void:
 	if directory == null:
 		failed = true
 		return
+	# Match Godot's resource import boundary. Android's ignored Gradle template
+	# includes vendor instrumented-test assets that are not project scripts.
+	if directory.file_exists(".gdignore"): return
 	for filename: String in directory.get_files():
 		if not filename.ends_with(".gd") or filename == "test_script_parse.gd": continue
 		checked += 1

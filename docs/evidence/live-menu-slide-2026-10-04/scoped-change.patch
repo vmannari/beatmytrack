@@ -1,0 +1,827 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -11,8 +11,12 @@
+ var menu_body_slot: Control
+ var menu_body_backgrounds: Array[Control] = []
+ var outgoing_menu_page: Control
++var menu_neighbors: Dictionary = {}
++var menu_neighbor_direction: int = 0
++var returning_menu_neighbor: Dictionary = {}
+ var menu_page_motion: Tween
+ var menu_edge_motion: Tween
++var menu_drag_offset: float = 0.0
+ var content: VBoxContainer
+ var menu_layer: CanvasLayer
+ var game: Node
+@@ -233,12 +237,16 @@
+ 	_navigation_generation += 1
+ 	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
+ 	if next == "play": next = "tracks"
++	var drag_offset: float = menu_body.position.x if is_instance_valid(menu_body) and not is_zero_approx(menu_drag_offset) else 0.0
+ 	_stop_menu_page_motion()
++	menu_neighbors.clear()
++	menu_neighbor_direction = 0
+ 	var pages: Array[String] = ["tracks", "biome", "garage"]
+ 	var previous_page: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
+ 	var next_page: String = "biome" if next == "drafts" else "tracks" if next == "rivalry" else next
+ 	var slide: bool = is_instance_valid(root_ui) and root_ui.is_visible_in_tree() and previous_page in pages and next_page in pages and previous_page != next_page
+ 	var slide_direction: int = 1 if pages.find(next_page) > pages.find(previous_page) else -1
++	if drag_offset * slide_direction > 0.0: drag_offset = 0.0
+ 	_finish_preview_thread()
+ 	if is_instance_valid(object_browser):
+ 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
+@@ -252,6 +260,7 @@
+ 	if is_instance_valid(root_ui):
+ 		if slide:
+ 			outgoing_menu_page = menu_body
++			outgoing_menu_page.position.x = drag_offset
+ 			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+ 			outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
+ 			_disable_outgoing_menu(outgoing_menu_page)
+@@ -274,6 +283,7 @@
+ 		swipe.gesture_started.connect(_stop_menu_edge_motion)
+ 		swipe.drag_changed.connect(_drag_menu_edge)
+ 		swipe.drag_finished.connect(_settle_menu_edge)
++		swipe.settle_requested.connect(_settle_menu_before_touch)
+ 		root_ui.add_child(swipe)
+ 	if screen == "restoring":
+ 		account_button = null
+@@ -398,6 +408,7 @@
+ 		if is_instance_valid(outgoing_menu_page): menu_body_slot.add_child(outgoing_menu_page)
+ 		menu_body = Control.new()
+ 		menu_body.name = "MenuContentPage"
++		menu_body.clip_contents = true
+ 		MenuStyle.fill(menu_body)
+ 		menu_body_slot.add_child(menu_body)
+ 		var body_background := MenuBackdrop.new()
+@@ -427,13 +438,19 @@
+ 			if online.client.signed_in(): content.add_child(MenuStyle.button("Race uploads",cloud.show_uploads.bind(root_ui)))
+ 		"account": _account()
+ 		_: _tracks()
+-	if slide: _slide_menu_page(slide_direction)
++	var page_swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
++	# _input visits children in reverse order: settle before the carousel hit-tests.
++	if page_swipe != null: root_ui.move_child(page_swipe, root_ui.get_child_count() - 1)
++	if slide: _slide_menu_page(slide_direction, drag_offset)
++	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
+ 
+ func _layout_menu_body() -> void:
+ 	if not is_instance_valid(menu_body_slot): return
+ 	# Keep the established full-screen scenic framing, clipped below the header.
+ 	var inset: Vector2 = menu_body_slot.get_global_position() - root_ui.get_global_position()
+-	for background: Control in menu_body_backgrounds:
++	var backgrounds: Array[Control] = menu_body_backgrounds.duplicate()
++	for neighbor: Dictionary in menu_neighbors.values(): backgrounds.append_array(neighbor.backgrounds)
++	for background: Control in backgrounds:
+ 		background.set_anchors_preset(Control.PRESET_TOP_LEFT)
+ 		background.position = -inset
+ 		background.size = root_ui.size
+@@ -451,47 +468,227 @@
+ 		menu_page_motion.kill()
+ 		menu_page_motion = null
+ 	if is_instance_valid(outgoing_menu_page):
+-		if outgoing_menu_page.get_parent() != null:
+-			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+-		outgoing_menu_page.queue_free()
++		if not returning_menu_neighbor.is_empty():
++			outgoing_menu_page.hide()
++			menu_neighbors[int(returning_menu_neighbor.direction)] = returning_menu_neighbor
++		else:
++			if outgoing_menu_page.get_parent() != null:
++				outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
++			outgoing_menu_page.queue_free()
+ 		outgoing_menu_page = null
++	returning_menu_neighbor = {}
+ 	if is_instance_valid(root_ui):
+ 		if is_instance_valid(menu_body): menu_body.position.x = 0.0
+ 		var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+ 		if swipe != null: swipe.set_process_input(true)
+ 
+-func _slide_menu_page(direction: int) -> void:
+-	var distance: float = get_viewport().get_visible_rect().size.x * direction
+-	menu_body.position.x = distance
+-	# Input coordinates move with the page. A gesture during its arrival cannot
+-	# be classified safely against the final carousel/content rectangles.
+-	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+-	if swipe != null: swipe.set_process_input(false)
++func _slide_menu_page(direction: int, drag_offset: float = 0.0) -> void:
++	# A freshly built shell has not had its first container layout yet.
++	var width: float = menu_body_slot.size.x
++	if width <= 0.0:
++		var margin: MarginContainer = menu_body_slot.get_parent().get_parent()
++		width = get_viewport().get_visible_rect().size.x - margin.get_theme_constant("margin_left") - margin.get_theme_constant("margin_right")
++	var distance: float = width * direction
++	menu_body.position.x = distance + drag_offset
++	# A new press settles this tween before any content hit-test, so rapid swipes
++	# remain responsive and the track carousel still owns its final rectangle.
+ 	menu_page_motion = create_tween().set_parallel(true)
+ 	menu_page_motion.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+-	menu_page_motion.tween_property(menu_body, "position:x", 0.0, 0.28)
+-	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, 0.28)
+-	menu_page_motion.chain().tween_callback(_stop_menu_page_motion)
++	var duration: float = clampf(0.28 * (1.0 - absf(drag_offset) / absf(distance)), 0.10, 0.28)
++	menu_page_motion.tween_property(menu_body, "position:x", 0.0, duration)
++	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, duration)
++	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
+ 
+ func _stop_menu_edge_motion() -> void:
+ 	if menu_edge_motion != null:
+ 		menu_edge_motion.kill()
+ 		menu_edge_motion = null
+ 	if is_instance_valid(menu_body): menu_body.position.x = 0.0
++	menu_drag_offset = 0.0
++	menu_neighbor_direction = 0
++	for neighbor: Dictionary in menu_neighbors.values():
++		if is_instance_valid(neighbor.body): neighbor.body.hide()
+ 
+ func _drag_menu_edge(distance: float) -> void:
+ 	if not is_instance_valid(menu_body): return
++	var direction: int = 1 if distance < 0.0 else -1
++	menu_neighbor_direction = direction
++	for neighbor_direction: int in menu_neighbors:
++		menu_neighbors[neighbor_direction].body.visible = neighbor_direction == direction
+ 	if (screen in ["tracks", "rivalry"] and distance > 0.0) or (screen == "garage" and distance < 0.0):
+ 		# Match the track carousel's bounded resistance, followed by its spring return.
+ 		menu_body.position.x = signf(distance) * 64.0 * (1.0 - exp(-absf(distance) / 160.0))
+-	else: menu_body.position.x = 0.0
++		menu_drag_offset = 0.0
++	else:
++		var width: float = menu_body_slot.size.x
++		menu_drag_offset = clampf(distance, -width, width)
++		menu_body.position.x = menu_drag_offset
++		if menu_neighbors.has(direction):
++			menu_neighbors[direction].body.position.x = width * direction + menu_drag_offset
+ 
+ func _settle_menu_edge() -> void:
+ 	if not is_instance_valid(menu_body) or is_zero_approx(menu_body.position.x): return
+ 	if menu_edge_motion != null: menu_edge_motion.kill()
+-	menu_edge_motion = create_tween()
+-	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, 0.38).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+-	menu_edge_motion.tween_callback(func() -> void: menu_edge_motion = null)
++	menu_edge_motion = create_tween().set_parallel(true)
++	var edge: bool = is_zero_approx(menu_drag_offset)
++	var duration: float = 0.38 if edge else 0.20
++	var transition: Tween.TransitionType = Tween.TRANS_BACK if edge else Tween.TRANS_CUBIC
++	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, duration).set_trans(transition).set_ease(Tween.EASE_OUT)
++	if menu_neighbors.has(menu_neighbor_direction):
++		var neighbor: Control = menu_neighbors[menu_neighbor_direction].body
++		menu_edge_motion.tween_property(neighbor, "position:x", menu_body_slot.size.x * menu_neighbor_direction, duration).set_trans(transition).set_ease(Tween.EASE_OUT)
++	menu_edge_motion.chain().tween_callback(func() -> void:
++		menu_edge_motion = null
++		menu_drag_offset = 0.0
++		menu_neighbor_direction = 0
++		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide())
++
++func _prepare_menu_neighbors(generation: int) -> void:
++	# Warm actual page controls between gestures, after the viewport has laid out.
++	await get_tree().process_frame
++	if generation != _navigation_generation or not is_instance_valid(menu_body_slot): return
++	if menu_page_motion != null: return
++	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
++	if swipe == null: return
++	if swipe.pointer != -1:
++		_prepare_menu_neighbors.call_deferred(generation)
++		return
++	var pages: Array[String] = ["tracks", "biome", "garage"]
++	var current: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
++	var index: int = pages.find(current)
++	if index < 0: return
++	# Keep the third primary page warm too, for another swipe immediately after
++	# commitment. These are shared textures and inactive controls, not extra apps.
++	for destination: int in range(pages.size()):
++		var direction: int = destination - index
++		if direction == 0: continue
++		if menu_neighbors.has(direction): continue
++		var next: String = pages[destination]
++		if next == "tracks" and race_area_mode == "rivalry": next = "rivalry"
++		var body := Control.new()
++		body.name = "AdjacentMenuPage"
++		MenuStyle.fill(body)
++		body.clip_contents = true
++		body.process_mode = Node.PROCESS_MODE_DISABLED
++		menu_body_slot.add_child(body)
++		body.position.x = menu_body_slot.size.x * direction
++		var backgrounds: Array[Control] = []
++		var background := MenuBackdrop.new()
++		body.add_child(background)
++		backgrounds.append(background)
++		if next == "garage":
++			var stage := MenuStage.new()
++			stage.setting = str(selected_track.metadata.get("theme","pine"))
++			stage.garage = true
++			body.add_child(stage)
++			backgrounds.append(stage)
++			var scrim := MenuScrim.new()
++			body.add_child(scrim)
++			backgrounds.append(scrim)
++		var column := VBoxContainer.new()
++		MenuStyle.fill(column)
++		body.add_child(column)
++		match next:
++			"tracks": _tracks(column, true)
++			"rivalry": _rivalry(column)
++			"biome": _choose_biome(column, true)
++			"garage": _garage(column)
++		_set_menu_preview_input(body, true)
++		menu_neighbors[direction] = {"body":body,"content":column,"backgrounds":backgrounds,"screen":next}
++		body.position.x = menu_body_slot.size.x * direction
++		_layout_menu_body()
++	_hide_warmed_menu_neighbors.call_deferred(generation)
++
++func _hide_warmed_menu_neighbors(generation: int) -> void:
++	# Let CanvasItems prepare draw commands and font glyphs once, offscreen and
++	# clipped, so revealing them does not defer that work to the finger's first move.
++	await get_tree().process_frame
++	if generation != _navigation_generation: return
++	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
++	if swipe != null and swipe.pointer != -1: return
++	for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
++
++func _set_menu_preview_input(node: Node, disabled: bool) -> void:
++	if node is Control:
++		if disabled:
++			node.set_meta("page_mouse_filter", node.mouse_filter)
++			node.set_meta("page_focus_mode", node.focus_mode)
++			node.mouse_filter = Control.MOUSE_FILTER_IGNORE
++			node.focus_mode = Control.FOCUS_NONE
++		elif node.has_meta("page_mouse_filter"):
++			node.mouse_filter = node.get_meta("page_mouse_filter")
++			node.focus_mode = node.get_meta("page_focus_mode")
++			node.remove_meta("page_mouse_filter")
++			node.remove_meta("page_focus_mode")
++	for child: Node in node.get_children(): _set_menu_preview_input(child, disabled)
++
++func _commit_menu_neighbor(direction: int) -> void:
++	var neighbor: Dictionary = menu_neighbors[direction]
++	var offset: float = menu_body.position.x
++	_stop_menu_page_motion()
++	menu_neighbors.erase(direction)
++	# Keep the prepared page and the header alive. Commitment only changes ownership
++	# and animates the remaining distance; no page construction runs under the finger.
++	outgoing_menu_page = menu_body
++	outgoing_menu_page.position.x = offset
++	outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
++	_set_menu_preview_input(outgoing_menu_page, true)
++	returning_menu_neighbor = {"body":menu_body,"content":content,"backgrounds":menu_body_backgrounds,"screen":screen,"direction":-direction}
++	var outgoing_browser: TrackBrowser = outgoing_menu_page.find_child("TrackBrowser", true, false)
++	if outgoing_browser != null: outgoing_browser.page_preview = true
++	menu_body = neighbor.body
++	menu_body.show()
++	menu_body.process_mode = Node.PROCESS_MODE_INHERIT
++	_set_menu_preview_input(menu_body, false)
++	content = neighbor.content
++	menu_body_backgrounds = neighbor.backgrounds
++	var remaining: Dictionary = {}
++	for old_direction: int in menu_neighbors:
++		remaining[old_direction - direction] = menu_neighbors[old_direction]
++	menu_neighbors = remaining
++	_navigation_generation += 1
++	if rivalry_racing and rivalry_section in ["race_results", "result"] and neighbor.screen != "rivalry" and is_instance_valid(game):
++		remove_child(game)
++		game.queue_free()
++		game = null
++		rivalry_racing = false
++	screen = neighbor.screen
++	if screen == "biome" and document.is_empty():
++		document = TrackDocument.create_blank()
++		document.id = TrackLibrary.unique_id()
++		_stamp_creator()
++		history.clear()
++		redo_history.clear()
++	for id: String in ["tracks", "create", "garage"]:
++		var tab: Button = root_ui.find_child("Tab_" + id, true, false)
++		var selected: bool = (id == "tracks" and screen in ["tracks", "rivalry"]) or (id == "create" and screen == "biome") or id == screen
++		tab.add_theme_stylebox_override("normal", MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
++		tab.add_theme_color_override("font_color", MenuStyle.ACCENT if selected else MenuStyle.MUTED)
++	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
++	if browser != null:
++		browser_state = browser.state
++	_slide_menu_page(direction, offset)
++
++func _finish_menu_page_slide() -> void:
++	_stop_menu_page_motion()
++	_activate_menu_page.call_deferred(_navigation_generation)
++	_prepare_menu_neighbors.call_deferred(_navigation_generation)
++
++func _settle_menu_before_touch() -> void:
++	if menu_page_motion != null: _finish_menu_page_slide()
++	if menu_edge_motion != null: _stop_menu_edge_motion()
++
++func _activate_menu_page(generation: int) -> void:
++	if generation != _navigation_generation or not is_instance_valid(menu_body): return
++	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
++	if menu_page_motion != null or (swipe != null and swipe.pointer != -1):
++		await get_tree().process_frame
++		if is_inside_tree(): _activate_menu_page.call_deferred(generation)
++		return
++	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
++	if browser != null and browser.page_preview:
++		browser.activate_page()
++	if screen == "rivalry" and not rivalry.model.sample: rivalry.refresh()
+ 
+ func _account_changed() -> void:
+ 	var previous_profile: String = active_profile
+@@ -666,7 +863,8 @@
+ 				if profile == active_profile: continue
+ 				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
+ 
+-func _tracks() -> void:
++func _tracks(parent: VBoxContainer = null, preview: bool = false) -> void:
++	if parent == null: parent = content
+ 	var began: int = Time.get_ticks_usec()
+ 	var browser := TrackBrowser.new()
+ 	var created: int = Time.get_ticks_usec()
+@@ -679,7 +877,8 @@
+ 	browser.records = records
+ 	browser.builtin_ids = BUILTIN_IDS
+ 	browser.selected_track = selected_track
+-	browser.state = browser_state
++	browser.page_preview = preview
++	browser.state = browser_state.duplicate(true) if preview else browser_state
+ 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
+ 	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
+ 	browser.home_requested.connect(func() -> void: _show_screen("tracks"))
+@@ -693,8 +892,8 @@
+ 		history.clear()
+ 		redo_history.clear()
+ 		_show_screen("create"))
+-	content.add_child(browser)
+-	menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
++	parent.add_child(browser)
++	if not preview: menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
+ 
+ func _open_race_area() -> void:
+ 	if race_area_mode == "rivalry": _open_rivalry()
+@@ -711,9 +910,10 @@
+ 	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
+ 		_rivalry()
+ 
+-func _rivalry() -> void:
+-	for child: Node in content.get_children():
+-		content.remove_child(child)
++func _rivalry(parent: VBoxContainer = null) -> void:
++	if parent == null: parent = content
++	for child: Node in parent.get_children():
++		parent.remove_child(child)
+ 		child.queue_free()
+ 	var page := WeeklyRivalryPage.new()
+ 	page.model = rivalry.model
+@@ -767,7 +967,7 @@
+ 			_rivalry()
+ 		else: rivalry.continue_week())
+ 	page.retry_requested.connect(_retry_race)
+-	content.add_child(page)
++	parent.add_child(page)
+ 
+ func _rivalry_ghost(index: int, choice: int) -> Dictionary:
+ 	if choice == 3: return {}
+@@ -817,11 +1017,12 @@
+ 	selected_track = track
+ 	await _start_race(track,false,false,issued)
+ 
+-func _garage() -> void:
++func _garage(parent: VBoxContainer = null) -> void:
++	if parent == null: parent = content
+ 	var row := HBoxContainer.new()
+ 	row.add_theme_constant_override("separation",24)
+ 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	content.add_child(row)
++	parent.add_child(row)
+ 	var scene_copy := VBoxContainer.new()
+ 	scene_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(scene_copy)
+@@ -905,6 +1106,9 @@
+ 	if index < 0: return
+ 	var destination: int = index + direction
+ 	if destination < 0 or destination >= pages.size(): return
++	if menu_neighbors.has(direction):
++		_commit_menu_neighbor(direction)
++		return
+ 	# Revisit the current creation choices without replacing an in-progress draft.
+ 	if pages[destination] == "biome" and document.is_empty(): _new_document()
+ 	elif pages[destination] == "tracks": _open_race_area()
+@@ -2531,15 +2735,16 @@
+ 	editor_status.text=CreatorObjects.description(kind)+" / tap to place; Objects > Select to adjust"
+ 
+ 
+-func _choose_biome() -> void:
+-	if screen != "biome": return
+-	if document.is_empty():
++func _choose_biome(parent: VBoxContainer = null, preview: bool = false) -> void:
++	if parent == null: parent = content
++	if not preview and screen != "biome": return
++	if document.is_empty() and not preview:
+ 		document = TrackDocument.create_blank()
+ 		document.id = TrackLibrary.unique_id()
+ 		_stamp_creator()
+ 	var heading_row := HBoxContainer.new()
+ 	heading_row.add_theme_constant_override("separation",20)
+-	content.add_child(heading_row)
++	parent.add_child(heading_row)
+ 	var heading_copy := VBoxContainer.new()
+ 	heading_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	heading_copy.add_theme_constant_override("separation",2)
+@@ -2558,7 +2763,7 @@
+ 	cards.name = "BiomePicker"
+ 	cards.add_theme_constant_override("separation",16)
+ 	cards.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	content.add_child(cards)
++	parent.add_child(cards)
+ 	for biome: String in TrackDocument.THEMES:
+ 		var card := Button.new()
+ 		card.name = "Biome_"+biome
+@@ -2621,7 +2826,7 @@
+ 	summary_panel.name = "BiomeSummary"
+ 	summary_panel.custom_minimum_size.y = 118
+ 	summary_panel.add_theme_stylebox_override("panel",MenuStyle.card(16))
+-	content.add_child(summary_panel)
++	parent.add_child(summary_panel)
+ 	var summary_row := HBoxContainer.new()
+ 	summary_row.add_theme_constant_override("separation",20)
+ 	summary_panel.add_child(summary_row)
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -4,6 +4,7 @@
+ signal gesture_started
+ signal drag_changed(distance: float)
+ signal drag_finished
++signal settle_requested
+ 
+ var menu: Control
+ var modal_root: Node
+@@ -12,8 +13,8 @@
+ var dragging: bool = false
+ var rejected: bool = false
+ var target: BaseButton
+-const CLAIM_DISTANCE: float = 16.0
+-const PAGE_DISTANCE: float = 72.0
++const CLAIM_DISTANCE: float = 6.0
++const PAGE_DISTANCE: float = 56.0
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+@@ -24,6 +25,9 @@
+ 				rejected = true
+ 				drag_finished.emit()
+ 				return
++			# Finish an earlier arrival before hit-testing the new touch. This avoids
++			# dropping a whole swipe just because it began during the settling tween.
++			settle_requested.emit()
+ 			if event.canceled or _modal_open(modal_root) or _owns_gesture(menu, event.position): return
+ 			pointer = event.index
+ 			origin = event.position
+@@ -35,9 +39,11 @@
+ 			if is_instance_valid(target): get_viewport().set_input_as_handled()
+ 		elif event.index == pointer:
+ 			var distance: Vector2 = event.position - origin
+-			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and absf(distance.x) >= PAGE_DISTANCE and absf(distance.x) > absf(distance.y) * 1.5
++			# Once horizontal intent is established, vertical finger drift cannot revoke it.
++			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and absf(distance.x) >= PAGE_DISTANCE
+ 			var tap: BaseButton = target
+ 			var activate: bool = not dragging and not rejected and not event.canceled and distance.length() < CLAIM_DISTANCE and is_instance_valid(tap) and not tap.disabled and tap.get_global_rect().has_point(event.position)
++			if dragging and not rejected and not event.canceled: drag_changed.emit(distance.x)
+ 			if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 			pointer = -1
+ 			target = null
+@@ -50,9 +56,10 @@
+ 				tap.pressed.emit()
+ 	elif event is InputEventScreenDrag and event.index == pointer:
+ 		var distance: Vector2 = event.position - origin
+-		if not dragging and not rejected and distance.length() >= CLAIM_DISTANCE:
+-			if absf(distance.x) > absf(distance.y) * 1.5: dragging = true
+-			else: rejected = true
++		if not dragging and not rejected and absf(distance.x) >= CLAIM_DISTANCE:
++			# Scrollable controls already own their touches. Allow a static-content
++			# gesture to establish horizontal intent after initial vertical jitter.
++			if absf(distance.x) > absf(distance.y) * 1.15: dragging = true
+ 		if dragging and not rejected: drag_changed.emit(distance.x)
+ 		if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -15,6 +15,7 @@
+ var builtin_ids: Array[String]
+ var selected_track: NativeTrack
+ var state: Dictionary
++var page_preview: bool = false
+ var catalog: TrackCatalog
+ var matches: Array[Dictionary] = []
+ var grid: GridContainer
+@@ -168,6 +169,16 @@
+ 
+ func _load_catalog() -> void:
+ 	if not is_inside_tree(): return
++	if page_preview:
++		# Adjacent menu preparation reads cached metadata only. No random choice,
++		# download, account write or HTTP request may start during a page drag.
++		if cloud != null:
++			cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++			catalog.indexed_revision = library.revision
++		loading = false
++		_refresh()
++		_show_detail()
++		return
+ 	if catalog.indexed_revision == library.revision:
+ 		if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+ 		loading = false
+@@ -216,7 +227,19 @@
+ 	_random_on_open()
+ 	if cloud != null: cloud.refresh()
+ 
++func activate_page() -> void:
++	if not page_preview: return
++	page_preview = false
++	# The cached controls and metadata are already current. Rebuilding both
++	# sections here introduces a visible hitch just as the page finishes arriving.
++	if catalog.indexed_revision != library.revision:
++		_load_catalog()
++	else:
++		_random_on_open()
++		if cloud != null: cloud.refresh()
++
+ func _cloud_changed() -> void:
++	if page_preview: return
+ 	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+ 	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
+ 	_refresh()
+--- a/game/diagnostics/mobile_menu_probe.gd
++++ b/game/diagnostics/mobile_menu_probe.gd
+@@ -12,6 +12,10 @@
+ func _run() -> void:
+ 	var app: Node = get_parent()
+ 	await get_tree().create_timer(2.0).timeout
++	var options: Variant = JSON.parse_string(FileAccess.get_file_as_string("user://menu_probe.json"))
++	if options is Dictionary and options.get("page_swipes", false):
++		await _run_page_swipes(app)
++		return
+ 	var started: int = Time.get_ticks_usec()
+ 	app.call("_show_screen","tracks")
+ 	var report: Dictionary = {"open_ms":(Time.get_ticks_usec()-started)/1000.0,"selections":[]}
+@@ -55,6 +59,59 @@
+ 	output.store_string(JSON.stringify(report,"\t"))
+ 	queue_free()
+ 
++func _run_page_swipes(app: Node) -> void:
++	# Opt-in debug measurement of actual viewport input/rendering on the phone.
++	# No races, settings, records, downloads or persisted drafts are created here.
++	app._show_screen("tracks")
++	await get_tree().create_timer(1.0).timeout
++	var report: Dictionary = {"page_swipes":[],"failures":[],"device":OS.get_model_name()}
++	for direction: int in [1,1,-1,-1,1,1,-1,-1]:
++		var pages: Array[String] = ["tracks","biome","garage"]
++		var expected: String = pages[pages.find(app.screen)+direction]
++		var neighbor: Control = app.menu_neighbors[direction].body
++		var slot: Rect2 = app.menu_body_slot.get_global_rect()
++		var origin: Vector2 = slot.position + Vector2(slot.size.x * 0.65, 20)
++		var touch := InputEventScreenTouch.new()
++		touch.position = origin
++		touch.pressed = true
++		get_viewport().push_input(touch,true)
++		var drag := InputEventScreenDrag.new()
++		drag.position = origin + Vector2(-2 * direction,9)
++		get_viewport().push_input(drag,true)
++		frame_ms.clear()
++		var drag_max_usec: int = 0
++		for step: int in range(1,31):
++			await get_tree().process_frame
++			drag.position = origin + Vector2(-direction * slot.size.x * 0.4 * step / 30.0,12)
++			var began: int = Time.get_ticks_usec()
++			get_viewport().push_input(drag,true)
++			drag_max_usec = maxi(drag_max_usec,Time.get_ticks_usec()-began)
++		if not neighbor.visible: report.failures.append("neighbor hidden during drag")
++		var drag_frames: Array[float] = frame_ms.duplicate()
++		drag_frames.sort()
++		touch.position = drag.position
++		touch.pressed = false
++		var began: int = Time.get_ticks_usec()
++		get_viewport().push_input(touch,true)
++		var sample: Dictionary = {"destination":expected,"commit_call_ms":(Time.get_ticks_usec()-began)/1000.0,"drag_call_max_ms":drag_max_usec/1000.0}
++		if not drag_frames.is_empty():
++			sample.drag_frame_p95_ms = drag_frames[mini(drag_frames.size()-1,int(drag_frames.size()*0.95))]
++			sample.drag_frame_max_ms = drag_frames[-1]
++		if app.screen != expected or app.menu_body != neighbor: report.failures.append("prepared page not committed: " + expected)
++		await get_tree().create_timer(0.35).timeout
++		frame_ms.sort()
++		if not frame_ms.is_empty():
++			sample.frame_count = frame_ms.size()
++			sample.frame_p50_ms = frame_ms[mini(frame_ms.size()-1,int(frame_ms.size()*0.5))]
++			sample.frame_p95_ms = frame_ms[mini(frame_ms.size()-1,int(frame_ms.size()*0.95))]
++			sample.frame_p99_ms = frame_ms[mini(frame_ms.size()-1,int(frame_ms.size()*0.99))]
++			sample.frame_max_ms = frame_ms[-1]
++		report.page_swipes.append(sample)
++	print("MENU_PAGE_PROBE ",JSON.stringify(report))
++	var output := FileAccess.open("user://menu_probe_results.json",FileAccess.WRITE)
++	output.store_string(JSON.stringify(report,"\t"))
++	queue_free()
++
+ func _abort() -> void:
+ 	print("MENU_PROBE interrupted by navigation")
+ 	var output := FileAccess.open("user://menu_probe_results.json",FileAccess.WRITE)
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -31,16 +31,13 @@
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
+ 		root.size = dimensions
+ 		await show("tracks")
++		check(app.menu_neighbors.size() == 2, "both other primary pages are warm before navigating")
+ 		var header_rect: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+ 		var tab_rect: Rect2 = app.root_ui.find_child("Tab_create",true,false).get_global_rect()
+ 		app._show_screen("biome")
+ 		check(app.menu_body.position.x > 0.0 and is_instance_valid(app.outgoing_menu_page), "forward content enters from right with outgoing content retained")
+ 		check(not app.outgoing_menu_page.can_process() and app.outgoing_menu_page.mouse_filter == Control.MOUSE_FILTER_IGNORE, "outgoing page cannot receive gestures or taps")
+-		check(not app.root_ui.get_node("MenuPageSwipe").is_processing_input(), "arriving page blocks ambiguous gestures while rectangles move")
+-		touch(Vector2(600,180), true)
+-		drag(Vector2(450,180))
+-		touch(Vector2(450,180), false)
+-		check(app.screen == "biome", "a second swipe during slide cannot advance a page")
++		check(app.root_ui.get_node("MenuPageSwipe").is_processing_input(), "arriving page remains responsive to a new press")
+ 		await create_timer(0.08).timeout
+ 		check(app.menu_body.position.x > 0.0 and app.menu_body.position.x < dimensions.x, "slide progresses between content positions")
+ 		check(app.root_ui.position == Vector2.ZERO and app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header_rect), "entire header remains fixed during forward slide")
+@@ -62,6 +59,7 @@
+ 		check(not is_instance_valid(app.outgoing_menu_page) and is_zero_approx(app.root_ui.position.x), "leaving page tabs clears transition")
+ 		await show("tracks")
+ 		var point := Vector2(dimensions.x * 0.6, 180)
++		await check_live_slide(point, dimensions)
+ 		await swipe(point, Vector2(-150, 0))
+ 		check(app.screen == "biome", "left swipe Race to Create")
+ 		var retained: Dictionary = app.document.duplicate(true)
+@@ -141,6 +139,103 @@
+ 	print("MENU_PAGE_SWIPE: %d checks, %d failures" % [checks, failures])
+ 	quit(0 if failures == 0 else 1)
+ 
++func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
++	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
++	var page_width: float = app.menu_body_slot.size.x
++	check(app.menu_neighbors.has(1), "next page is prepared before touching the screen")
++	var neighbor: Control = app.menu_neighbors[1].body
++	var draft: Dictionary = app.document.duplicate(true)
++	var root_before: Control = app.root_ui
++	touch(point, true)
++	drag(point + Vector2(-4,0))
++	check(is_zero_approx(app.menu_body.position.x), "tiny touch jitter does not start a slide")
++	drag(point + Vector2(-10,0))
++	check(is_equal_approx(app.menu_body.position.x,-10.0) and app.screen == "tracks", "small horizontal movement starts live slide before release")
++	drag(point + Vector2(-50,0))
++	check(is_equal_approx(app.menu_body.position.x,-50.0), "content tracks finger distance immediately")
++	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width-50.0), "actual next page is visible and follows the same finger distance")
++	check(neighbor.find_child("BiomePicker",true,false) != null and not neighbor.can_process() and neighbor.mouse_filter == Control.MOUSE_FILTER_IGNORE, "neighbor has real page content with its input disabled")
++	check(app.document == draft, "preparing and revealing Create leaves the draft unchanged")
++	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header), "navigation remains fixed during live drag")
++	await capture("live-race", dimensions)
++	touch(point + Vector2(-50,0), false)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "insufficient live drag returns to original page")
++	check(not neighbor.visible and app.document == draft, "canceling returns both pages and preserves the draft")
++	touch(point,true)
++	drag(point + Vector2(-75,0))
++	touch(point + Vector2(-75,0),false)
++	check(app.screen == "biome" and is_equal_approx(app.outgoing_menu_page.position.x,-75.0), "enough movement completes without resetting outgoing dragged position")
++	check(is_equal_approx(app.menu_body.position.x,page_width-75.0), "incoming completion continues from existing drag offset")
++	check(app.menu_body == neighbor and app.root_ui == root_before, "commit promotes the prepared page and keeps the header alive without rebuilding")
++	check(app.menu_neighbors.has(1), "the next consecutive page is already warm at commitment")
++	await settle()
++	check(is_zero_approx(app.menu_body.position.x) and not is_instance_valid(app.outgoing_menu_page), "committed drag settles with outgoing content disposed")
++	check(app.menu_neighbors.has(-1) and app.menu_neighbors[-1].body.find_child("TrackBrowser",true,false) != null, "previous Race page is retained for a reverse drag")
++	touch(point,true)
++	drag(point + Vector2(10,0))
++	check(is_equal_approx(app.menu_body.position.x,10.0) and app.screen == "biome", "reverse slide also starts with small movement")
++	await capture("live-create-reverse", dimensions)
++	drag(point + Vector2(75,0))
++	touch(point + Vector2(75,0),false)
++	check(app.screen == "tracks" and is_equal_approx(app.outgoing_menu_page.position.x,75.0) and is_equal_approx(app.menu_body.position.x,-page_width+75.0), "reverse completion continues from dragged position")
++	await settle()
++	touch(point,true)
++	drag(point + Vector2(-150,0))
++	touch(point + Vector2(-150,0),false,true)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "canceled substantial live drag returns instead of committing")
++	touch(point,true)
++	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-20,0))
++	check(is_equal_approx(app.menu_body.position.x,-20.0), "reversing finger movement reverses content movement")
++	touch(point + Vector2(-20,0),false)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "completion uses release distance rather than maximum excursion")
++	touch(point,true)
++	drag(point + Vector2(-150,0))
++	touch(point,true,false,1)
++	touch(point + Vector2(-150,0),false)
++	touch(point,false,false,1)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "second finger cancels and restores a live page drag")
++	touch(point,true)
++	drag(point + Vector2(-2,9))
++	drag(point + Vector2(-60,14))
++	check(app.menu_body.position.x == -60.0, "initial vertical jitter can become a horizontal page drag")
++	touch(point + Vector2(-60,70),false)
++	await settle()
++	check(app.screen == "biome", "claimed horizontal drag commits despite subsequent vertical drift")
++	touch(point,true)
++	drag(point + Vector2(-page_width * 0.45,12))
++	var garage: Control = app.menu_neighbors[1].body
++	check(garage.visible and garage.find_child("VehicleSelector",true,false) != null, "Garage content is visible during a held Create swipe")
++	await capture("live-create-garage", dimensions)
++	touch(point + Vector2(-page_width * 0.45,12),false)
++	await settle()
++	check(app.screen == "garage" and app.menu_body == garage, "prepared Garage becomes interactive after completion")
++	check(app.menu_body.find_child("VehicleSelector",true,false).mouse_filter != Control.MOUSE_FILTER_IGNORE, "promoted controls recover their original mouse input")
++	await swipe(point, Vector2(75,0))
++	await swipe(point, Vector2(75,0))
++	check(app.screen == "tracks", "prepared reverse neighbors return through Create to Race")
++	app._show_screen("biome")
++	touch(point,true)
++	drag(point + Vector2(-75,0))
++	touch(point + Vector2(-75,0),false)
++	await settle()
++	check(app.screen == "garage", "new static swipe during arrival settles first and is not discarded")
++	app._show_screen("tracks")
++	await process_frame
++	await process_frame
++	var gallery: ScrollContainer = app.menu_body.find_child("TrackCarousel",true,false)
++	# Its current rectangle is displaced by the animation. Press where it settles.
++	var carousel_point: Vector2 = gallery.get_global_rect().get_center() - Vector2(app.menu_body.position.x,0)
++	touch(carousel_point,true)
++	drag(carousel_point + Vector2(-150,0))
++	touch(carousel_point + Vector2(-150,0),false)
++	await settle()
++	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel touch during page arrival settles first and retains scrolling ownership")
++
+ func check_edge(screen: String, point: Vector2, direction: int, dimensions: Vector2i) -> void:
+ 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+ 	touch(point, true)
+@@ -212,6 +307,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/menu-end-effects-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/live-menu-slide-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -4,8 +4,8 @@
+ 
+ ## Behavior and changed files
+ 
+-- `game/ui/menu_page_swipe.gd` (and `.uid`): touch recognition owns a gesture according to its starting position. Horizontal intent claims after 16 logical units; release needs 72 units and a 1.5 horizontal/vertical ratio. Short, vertical, canceled and two-finger gestures do not navigate. Ordinary button taps still activate; a swipe starting on a button never fires its action. Native scrolling, text entry, ranges/sliders, popup selectors and press-action controls retain their input. Visible drawers/dialogs block page gestures.
+-- `game/core/app.gd`: swiping left advances Race -> Create -> Garage; right reverses, with no wrapping. Create means the biome/draft menus. Reopening creation choices preserves the current document. The editor canvas retains its existing pan/edit gestures. Menu changes between these tabs use a 280 ms horizontal cubic ease-out. The logo, tabs, account and Settings stay fixed; both outgoing and incoming content/scenery slide in a viewport clipped below the header. Full-screen scenic framing is retained inside that clip. Outgoing content ignores GUI input and stops processing; completion, rapid replacement, leaving the tab group and starting a race dispose it. Page gestures are blocked during the slide, when carousel rectangles are moving, then restored at completion. The existing track-selection slide is independent. Same-tab refreshes are immediate.
++- `game/ui/menu_page_swipe.gd` (and `.uid`): touch recognition owns a gesture according to its starting position. Horizontal intent now claims after 6 logical units (latest owner correction); release needs 56 logical units once horizontal intent is established. Initial vertical jitter can become horizontal intent; later vertical drift does not revoke a claimed swipe. Short, vertical, canceled and two-finger gestures do not navigate. Ordinary button taps still activate; a swipe starting on a button never fires its action. Native scrolling, text entry, ranges/sliders, popup selectors and press-action controls retain their input. Visible drawers/dialogs block page gestures.
++- `game/core/app.gd`: swiping left advances Race -> Create -> Garage; right reverses, with no wrapping. Create means the biome/draft menus. Reopening creation choices preserves the current document. The editor canvas retains its existing pan/edit gestures. Menu changes between these tabs use a 280 ms horizontal cubic ease-out. The logo, tabs, account and Settings stay fixed; both outgoing and incoming content/scenery slide in a viewport clipped below the header. Full-screen scenic framing is retained inside that clip. Outgoing content ignores GUI input and stops processing; swipe completion parks it as an inactive reverse neighbor; leaving the tab group and starting a race clean up transitions. A new press settles an earlier animation before hit-testing, allowing rapid consecutive swipes while retaining carousel ownership. The existing track-selection slide is independent. Same-tab refreshes are immediate.
+ - `game/tests/test_menu_page_swipe.gd` (and `.uid`): real viewport-dispatched touches at 1280x720 and 960x540 cover both directions, boundaries, draft preservation, cancellation, multitouch, button taps, carousel scrolling/edge ownership, leaving the carousel, dialogs, editor panning, animation progress/disposal and rapid replacement.
+ - This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and the evidence directory record the slice. No simulation/rules/schema changes.
+ 
+@@ -60,3 +60,37 @@
+ Inspected [Garage held pull](evidence/menu-end-effects-2026-10-04/edge-garage-960x540.png); [Race held pull](evidence/menu-end-effects-2026-10-04/edge-tracks-960x540.png) captures the opposite edge. Evidence uses isolated synthetic gallery data. Phone deployment and verification are recorded below. Full Validate/replay, gameplay driving, sustained device performance and human finger/feel acceptance are outside these checks. No backend or service action.
+ 
+ `DeployAndroid -QuickValidation` (`DeployAndroid-9900`) passed import/startup, driving 72, catalog 21 and menu presentation 48 checks, export/install/cold launch on DN2103 (735 ms). Existing three driving shutdown instance warnings and build-tools fallback remain. Actual adb-generated outward Race/Garage swipes and return navigation ran on the final phone build; inspected [Race return](evidence/menu-end-effects-2026-10-04/phone-race-return.png) and [Garage return](evidence/menu-end-effects-2026-10-04/phone-garage-return.png). A subsequent carousel swipe retains Race; Guest Race is left open. These snapshots are after release, not a claimed video or held-finger capture. Final logs: gesture `TestScript-17268`, app `TestApp-22672`, parse `TestScript-23892`; verification/install/launch logs and a scoped end-effect-only Git patch are saved with the evidence. Reverse-applicability and targeted whitespace checks pass. No mixed-workspace commit; the debug APK contains the current workspace, including concurrent rivalry work.
++
++## Immediate finger-following slide and phone correction (2026-10-04)
++
++Requirements R01/V03/V04/V05/Q01. Owner requests immediate sliding and sufficient-movement completion, then reports missed/rough phone swipes and requires the next page to be visible while dragging. This supersedes the initial live-drag version that revealed the workshop backdrop until release.
++
++Horizontal recognition starts at 6 logical units with a 1.15 horizontal/vertical ratio. Initial vertical motion no longer permanently rejects a later horizontal gesture. Once claimed, 56 logical units at release commit even with subsequent vertical drift. Moving back below threshold, cancellation and a second finger return both pages. Short page returns use 200 ms cubic easing; the original 64-unit/160-unit-scale/380 ms spring at the two outer edges remains.
++
++Actual primary-page controls and backgrounds are prepared between gestures, drawn once outside the clipped viewport, and retained with input/processing disabled. Both visible pages follow the finger one-for-one across the content viewport width, without a gap. Preparing Create never initializes or changes the current draft. Commit promotes the prepared controls and keeps the existing header alive; the previous page becomes a disabled reverse neighbor after the remaining-distance 100–280 ms animation. The third page is already warm for another immediate swipe. Page builders take explicit parents rather than changing the active app state during preparation. Race previews read cached metadata only; authentication, HTTP, random track selection and downloads do not run as preview actions. Returning to Race activates the cached browser without rebuilding its hero/record sections. Normal background refresh resumes after settling. Profile/navigation/race cleanup and the independent carousel, editor, sliders, text entry and modals remain protected.
++
++A new touch finishes an earlier arrival/return before hit-testing, rather than discarding that whole gesture. The page handler runs before the carousel's input hook, so a touch in the settled carousel rectangle stays with the track list. Logical screen/tab selection changes only at commitment.
++
++Changed files: `game/ui/menu_page_swipe.gd`, `game/core/app.gd`, `game/ui/track_browser.gd`, `game/diagnostics/mobile_menu_probe.gd` (opt-in debug timing mode), `game/tests/test_menu_page_swipe.gd`, this document, status/plan notes and `docs/evidence/live-menu-slide-2026-10-04/`. No canonical/rules/schema change or backend/service action. Concurrent rivalry/test-driver/ghost work is preserved; the APK contains the current workspace.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and the pinned engine/templates:
++
++| Command suffix | Final outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical` | **180 checks, zero failures** (`TestScript-26020`), twenty desktop/compact captures. Checks real viewport touches, prepared content visibility, exact positions, fixed header, promotion without rebuild, draft preservation, cached reverse/third pages, early vertical drift, release drift, rapid arrival interruption, carousel ownership, both edges, cancellation, multitouch, taps and editor input. |
++| `TestApp` | **96 checks, zero failures** (`TestApp-23436`). |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **280 scripts, zero failures** (`TestScript-34328`). |
++| `DeployAndroid -QuickValidation -DeviceSerial PRQKU4U4PREQNRWG` | Import/startup, driving **72**, catalog **21**, menus **48** and export passed (`DeployAndroid-32056`). The command stopped at an adb daemon protocol reset before installation. |
++| Explicit SDK `adb -s PRQKU4U4PREQNRWG install -r build/android/circuit01-debug.apk` | **Success**, final exported APK installed on physical **DN2103**. |
++| `LaunchAndroid -DeviceSerial PRQKU4U4PREQNRWG` after force-stop | Final **COLD**, status **ok**, 784 ms (`LaunchAndroid-16568`). |
++| `git diff --check` on changed tracked source/docs | Passed; existing TrackBrowser CRLF normalization notice only. |
++
++Initial simplistic live-drag tests passed 146 checks, app 96 and parse 277; that version was installed before the latest correction and is superseded. Two earlier compact assertions used physical image width instead of logical runtime coordinates and were corrected. First adjacent-page run (`TestScript-35788`) exposed a zero-width freshly built viewport before container layout; runtime now derives that initial width from viewport/margins. Two rapid-carousel test runs (`TestScript-1512`, `TestScript-18760`) had four failures because the fixture read a brand-new carousel rectangle before layout; waiting two process frames corrected the press position without waiting for the animation to finish. Final movement/ownership invariants remain intact.
++
++Both exports during this correction passed focused checks but encountered adb daemon resets (`DeployAndroid-4476`, `DeployAndroid-32056`); an initial install retry also failed without a reason (`InstallAndroid-3600`). Explicit device install and cold launch recovered successfully. The dozing/unlocked test phone was awakened before testing; no credentials or lock challenge were bypassed. Existing three driving shutdown instance warnings and build-tools fallback to 35.0.1 remain.
++
++Inspected desktop [Create/Garage held drag](evidence/live-menu-slide-2026-10-04/live-create-garage-1280x720.png). Actual Android `input touchscreen motionevent DOWN/MOVE/UP` sequences verify small initial vertical drift, early movement, held destination visibility and release commitment. Inspected [early phone movement](evidence/live-menu-slide-2026-10-04/phone-final-early.png), [held Race/Create](evidence/live-menu-slide-2026-10-04/phone-final-held.png), [committed Create](evidence/live-menu-slide-2026-10-04/phone-final-create.png), [held Create/Garage](evidence/live-menu-slide-2026-10-04/phone-final-garage-held.png) and [final Race after carousel gesture](evidence/live-menu-slide-2026-10-04/phone-final-carousel.png). Native reverse swipes return through Create; the five cached track cards fit this wide phone, so its carousel gesture demonstrates independent edge ownership rather than overflowing-list scrolling. Desktop fixtures separately verify real overflowing-list scrolling. Guest Race is left open. Earlier `phone-launch/early-held/enough-held/committed.png` files are historical first-version captures.
++
++The opt-in `menu_probe.json` with `{"page_swipes":true}` measures real viewport dispatch/rendering on the physical phone: eight 30-frame drags, including initial vertical jitter, all promote the expected already visible neighbor; **zero failures**. In the first cached build, returning to Race still rebuilt sections: maximum frames were 89.396/85.700 ms. After removing that rebuild and warming draw commands, final return maxima were **41.014/41.915 ms**, and the first Garage maximum fell **74.662 → 24.278 ms**. Final window medians are **16.594–16.906 ms**, p95 **20.102–24.876 ms**, worst **41.915 ms**. Drag dispatch calls max **0.693–1.708 ms**, commit calls **6.154–9.874 ms**. Retained [first](evidence/live-menu-slide-2026-10-04/phone-page-timing-first.json) and [final raw timing](evidence/live-menu-slide-2026-10-04/phone-page-timing.json) reports. This compares two iterations of this correction, not the original installed implementation, and is a short synthetic-input sample rather than sustained performance or a human-finger acceptance result. Temporary probe/transfer triggers were removed; normal play is restored.
++
++Full Validate/replay regression, gameplay driving, sustained thermal/large-catalog/other-device testing and human-finger feel remain acceptance checks. A scoped reverse-checked Git patch, focused logs, phone commands/results and screenshots are retained with the evidence; no mixed-workspace commit.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+ 
+ 2026-10-04 R01/V05/Q01: Pixel_9 Android 17/API37 Google Play/16 KB AVD launched as emulator-5554; reported ARM64 translation permits existing APK. Fresh pinned export passes startup/driving 72/catalog 21/menus 48, installs and cold-launches successfully. ADB reverse tcp:18181 connects to existing ready schema-0011 PC backend; sign-in/gameplay screenshots inspected, no sampled game-process errors. Initial sandbox ADB failure and boot/offline state recorded. No game code, ad integration, backend restart/deployment, full Validate or physical-phone test; DN2103 attached. Rewarded AdMob test integration is the recommended next slice, with verified/idempotent banked grants still required. Commands, files, evidence, scoped checkpoint and acceptance: docs/ANDROID.md (Pixel 9 emulator).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+ 
+ 2026-10-04 R01/V05/Q01: owner's Pixel_9 emulator deployed with fresh pinned debug APK; Android 17/API37 Google Play/16 KB image supports ARM64 translation. Startup/driving 72/catalog 21/menus 48 pass, install/cold launches succeed. Emulator API loopback forwarded to existing PC port 18181; connected sign-in and five-lap gameplay captures inspected, no sampled game-process errors. Initial sandbox ADB/offline-boot failures recorded. No canonical/game code, ads SDK, service restart/deployment, full Validate or physical-phone test; DN2103 attached. Ad provider/test integration and verified banked rewards remain next steps. Commands, files, screenshots, scoped checkpoint and acceptance: ANDROID.md (Pixel 9 emulator).

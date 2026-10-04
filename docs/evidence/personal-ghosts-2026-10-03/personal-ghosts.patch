@@ -1,0 +1,970 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-03 GH01-GH07/V03/Q01: local personal-best lap/race ghosts added with saved Settings/pause choice and grey rewind-style car. Profile/track/car/handling/rules partitions, fractional lap timing, bounded pose interpolation and rewind branch truncation; finished ordinary races save qualifying PBs only. Ghost 38, records 54, rewind 57, app 96, Settings 235 and parse 268 checks pass; five race/pause plus three Settings desktop captures inspected. Final headless ghost fixture reports three shutdown instance warnings. Doctor finds DN2103 attached; no Android export/install/device driving, full Validate/canonical regression or backend action. Files, commands, initial failures, schema/evidence, scoped patch and owner/phone acceptance: docs/PERSONAL_GHOSTS.md. No mixed-tree commit.
++
+ 2026-10-03 V03/V04/Q01: selected results lap now uses shared navy at 48% opacity and a restrained yellow top rule. Nine three-size/mode desktop captures saved; selected-lap geometry/interaction checks emit no failures. CaptureResults fails later on the unrelated local recommendation fixture/card index; full pass not claimed. Doctor/targeted whitespace pass, DN2103 attached; no Android export/install/device test. UI-only patch, files, actual commands, screenshots and remaining acceptance: docs/PREMIUM_RESULTS.md (Translucent selected lap).
+ 
+ 2026-10-03 V02/V04/V05/Q01: owner requests fewer Grass clouds and more visible motion. Contact-lighting-12 raises cloud thresholds to 0.62-0.80 and increases drift fourfold to about 1.2 m/s, retaining balanced glow/resources. Graphical 49/headless 23 checks pass; 0/8-second captures inspected. DeployAndroid -QuickValidation passes focused checks, export/install/cold launch on DN2103; no phone driving/GPU/thermal/full-suite rerun. Actual files, commands, evidence and acceptance: docs/GRASS_SUNLIGHT.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-03 GH01-GH07/V03/Q01: local personal-best lap/race ghosts added with saved Settings/pause choice and grey rewind-style car. Profile/track/car/handling/rules partitions, fractional lap timing, bounded pose interpolation and rewind branch truncation; finished ordinary races save qualifying PBs only. Ghost 38, records 54, rewind 57, app 96, Settings 235 and parse 268 checks pass; five race/pause plus three Settings desktop captures inspected. Final headless ghost fixture reports three shutdown instance warnings. Doctor finds DN2103 attached; no Android export/install/device driving, full Validate/canonical regression or backend action. Files, commands, initial failures, schema/evidence, scoped patch and owner/phone acceptance: docs/PERSONAL_GHOSTS.md. No mixed-tree commit.
++
+ 2026-10-03 V03/V04/Q01: selected results lap now uses shared navy at 48% opacity and a restrained yellow top rule. Nine three-size/mode desktop captures saved; selected-lap geometry/interaction checks emit no failures. CaptureResults fails later on the unrelated local recommendation fixture/card index; full pass not claimed. Doctor/targeted whitespace pass, DN2103 attached; no Android export/install/device test. UI-only patch, files, actual commands, screenshots and remaining acceptance: docs/PREMIUM_RESULTS.md (Translucent selected lap).
+ 
+ 2026-10-03 V02/V04/V05/Q01: owner requests fewer Grass clouds and more visible motion. Contact-lighting-12 raises cloud thresholds to 0.62-0.80 and increases drift fourfold to about 1.2 m/s, retaining balanced glow/resources. Graphical 49/headless 23 checks pass; 0/8-second captures inspected. DeployAndroid -QuickValidation passes focused checks, export/install/cold launch on DN2103; no phone driving/GPU/thermal/full-suite rerun. Actual files, commands, evidence and acceptance: docs/GRASS_SUNLIGHT.md.
+diff --git a/game/core/app.gd b/game/core/app.gd
+index 91dc112..b6e2041 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1518,6 +1518,9 @@ func _results() -> void:
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+ 	var saved: bool = not clean
+ 	if clean: saved = result_records.record(track, game.get("handling"), total, session.lap_times) == OK
++	if clean and saved:
++		var ghost_error: Error = game.save_personal_ghost()
++		if ghost_error != OK: pending_menu_notice = "Best time saved. Could not save its local ghost."
+ 	(game.get("hud") as PlaygroundHUD).hide()
+ 	root_ui.visible = true
+ 	for child: Node in root_ui.get_children():
+diff --git a/game/core/game.gd b/game/core/game.gd
+index e7307ed..b218bd0 100644
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -41,6 +41,11 @@ var rewind_selected: int = 0
+ var rewind_was_paused: bool = false
+ var rewind_return := RewindReturn.new()
+ var rewind_ghosts: Node3D
++var personal_ghost: PersonalGhost
++var ghost_mode: String = "lap"
++var ghost_run := PersonalGhostRun.new()
++var ghost_store: LocalGhosts
++var ghost_bests: Dictionary = {}
+ var finish_rating_pending: bool = false
+ const FINISH_TICKS: int = 216
+ 
+@@ -153,6 +158,10 @@ func _ready() -> void:
+ 	car = CarVisual.new()
+ 	car.vehicle_id = vehicle_id
+ 	world.add_child(car)
++	if production_mode and not editor_test and native_track != null and preference_records != null:
++		personal_ghost = PersonalGhost.new()
++		world.add_child(personal_ghost)
++		personal_ghost.configure(car)
+ 	contact_shadow = ContactShading.car_shadow(world)
+ 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
+ 	trails = SkidTrails.new()
+@@ -298,6 +311,7 @@ func _physics_process(_delta: float) -> void:
+ 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
+ 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
+ 		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry,impact_cracks.side_damage)
++		if ghost_store != null: ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling)
+ 		if production_mode and track_session.finished:
+ 			_begin_finish()
+ 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
+@@ -377,6 +391,7 @@ func _process(delta: float) -> void:
+ 	if not paused and finish_sim == null: weight = rewind_return.interpolation(weight)
+ 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
+ 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
++	_present_personal_ghost(weight)
+ 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
+ 	car.present(point, heading, presented.state, frame)
+ 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
+@@ -495,6 +510,16 @@ func restart() -> void:
+ 	if production_mode and not editor_test and native_track != null:
+ 		track_session._configure(native_track)
+ 		rewind_history.capture(sim.state,track_session,true,lap_telemetry)
++	ghost_run = PersonalGhostRun.new()
++	ghost_store = null
++	ghost_bests = {}
++	if personal_ghost != null and preference_records != null:
++		ghost_mode = str(preference_records.settings.get("ghost_mode", "lap"))
++		ghost_store = LocalGhosts.new(preference_records.path)
++		var ghost_key: String = preference_records.key_for(native_track,handling)
++		ghost_bests = ghost_store.load_best(ghost_key,preference_records.records.get(ghost_key,{}))
++		ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
++		personal_ghost.hide()
+ 	previous_position = sim.state.position
+ 	previous_heading = sim.state.heading
+ 	trails.clear()
+@@ -611,6 +636,41 @@ func _unhandled_key_input(event: InputEvent) -> void:
+ 				restart()
+ 
+ 
++func set_ghost_mode(value: String) -> Error:
++	if value not in PersonalGhostRun.MODES: return ERR_INVALID_PARAMETER
++	ghost_mode = value
++	if preference_records == null: return OK
++	preference_records.settings.ghost_mode = value
++	return preference_records.save_records()
++
++
++func ghost_description() -> String:
++	var index: int = PersonalGhostRun.MODES.find(ghost_mode)
++	var description: String = PersonalGhostRun.DESCRIPTIONS[index]
++	if ghost_mode != "off" and not ghost_bests.has(ghost_mode):
++		description += " No recording yet. Match or improve your best in a completed race."
++	return description
++
++
++func _present_personal_ghost(weight: float) -> void:
++	if personal_ghost == null: return
++	if countdown_ticks > 0 or finish_sim != null or is_instance_valid(rewind_panel) or ghost_mode == "off":
++		personal_ghost.hide()
++		return
++	var tick: float = float(track_session.elapsed_ticks)
++	if not paused: tick = maxf(0.0,tick - 1.0 + weight)
++	if ghost_mode == "lap":
++		# Boundary ticks reset exactly at the player's accepted finish crossing.
++		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
++	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
++
++
++func save_personal_ghost() -> Error:
++	if ghost_store == null or not track_session.finished or attempt_practice or editor_test: return OK
++	var key: String = preference_records.key_for(native_track,handling)
++	return ghost_store.save_run(key,preference_records.records.get(key,{}),ghost_run)
++
++
+ func set_camera_mode(value: String) -> Error:
+ 	camera.set_mode(value)
+ 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+@@ -830,6 +890,8 @@ func confirm_rewind() -> void:
+ 	RewindHistory.restore(track_session,target.session)
+ 	RewindHistory.restore(lap_telemetry,target.telemetry)
+ 	rewind_history.branch(int(target.tick))
++	ghost_run.branch(int(target.tick))
++	if ghost_store != null: ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
+ 	trails.clear()
+ 	sand_dust.clear()
+ 	impact_cracks.restore_damage(target.glass_damage)
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+index a8177d0..9f5f286 100644
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -149,6 +149,8 @@ static func _normalize(data: Variant) -> Dictionary:
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+ 		elif field == "camera_mode":
+ 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
++		elif field == "ghost_mode":
++			if not preferences[field] is String or preferences[field] not in PersonalGhostRun.MODES: return {}
+ 		elif field == "track_ratings":
+ 			if not preferences[field] is Dictionary: return {}
+ 			for id: Variant in preferences[field]:
+diff --git a/game/ui/settings_page.gd b/game/ui/settings_page.gd
+index acb3673..7c6f13e 100644
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -13,6 +13,7 @@ var draft_haptics: float = 0.2
+ var draft_camera: String = "overhead"
+ var draft_speed_zoom: bool = true
+ var draft_labels: bool = true
++var draft_ghost: String = "lap"
+ var body: VBoxContainer
+ var heading: Label
+ var subtitle: Label
+@@ -23,6 +24,7 @@ var reset_button: Button
+ const TITLES: Dictionary = {
+ 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
+ 	"camera": ["Camera", "Choose the view you prefer while driving."],
++	"ghosts": ["Ghosts", "Race against your own locally saved best."],
+ 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
+ 	"account": ["Account", "Manage the profile you race with."],
+ }
+@@ -37,6 +39,7 @@ func _ready() -> void:
+ 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
+ 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
+ 	draft_labels = bool(records.settings.get("control_labels", true))
++	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
+ 	_build_sidebar()
+ 	_build_panel()
+ 	_show_section(section)
+@@ -62,6 +65,7 @@ func _build_sidebar() -> void:
+ 	for item: Array in [
+ 		["controls", "Controls", "Steering and layout", "controller"],
+ 		["camera", "Camera", "View and road ahead", "compass"],
++		["ghosts", "Ghosts", "Your personal best", "garage"],
+ 		["haptics", "Haptics", "Feedback and vibration", "phone"],
+ 		["account", "Account", "Profile and sign-in", "person"],
+ 	]:
+@@ -69,7 +73,7 @@ func _build_sidebar() -> void:
+ 		var button: Button = MenuStyle.button("", _show_section.bind(id))
+ 		button.name = "SettingsCategory_" + id
+ 		button.tooltip_text = item[1]
+-		button.custom_minimum_size.y = 82
++		button.custom_minimum_size.y = 66
+ 		column.add_child(button)
+ 		var margin := MarginContainer.new()
+ 		margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -158,13 +162,14 @@ func _show_section(id: String) -> void:
+ 		for field: String in ["caption", "glyph", "arrow"]:
+ 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
+ 	reset_button.visible = id != "account"
+-	reset_button.text = "Reset camera" if id == "camera" else "Reset controls"
++	reset_button.text = "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
+ 	for child: Node in body.get_children():
+ 		body.remove_child(child)
+ 		child.queue_free()
+ 	match id:
+ 		"controls": _controls()
+ 		"camera": _camera()
++		"ghosts": _ghosts()
+ 		"haptics": _haptics()
+ 		"account": _account()
+ 
+@@ -267,6 +272,21 @@ func _camera() -> void:
+ 	zoom_row.add_child(zoom)
+ 	body.add_child(_label("You can also change the view in Pause > Settings, or press C while driving.", 16, true))
+ 
++func _ghosts() -> void:
++	for index: int in range(PersonalGhostRun.MODES.size()):
++		var mode: String = PersonalGhostRun.MODES[index]
++		var row: HBoxContainer = _row("GhostRow_" + mode, 14)
++		row.add_child(_copy(PersonalGhostRun.TITLES[index], PersonalGhostRun.DESCRIPTIONS[index]))
++		var choice: Button = _choice("Selected" if draft_ghost == mode else "Select", draft_ghost == mode, func() -> void:
++			draft_ghost = mode
++			_changed()
++			_show_section("ghosts"))
++		choice.name = "Ghost_" + mode
++		choice.custom_minimum_size.x = 150
++		choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		row.add_child(choice)
++	body.add_child(_label("Ghosts are saved after completed races, separately for each track, car and handling setup. Existing times need a matching or better run to create a ghost. You can change this in Pause > Settings.", 16, true))
++
+ func _haptics() -> void:
+ 	var row: HBoxContainer = _row("HapticSettings", 18)
+ 	var column := VBoxContainer.new()
+@@ -306,7 +326,9 @@ func _changed() -> void:
+ 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
+ 
+ func _reset() -> void:
+-	if section == "camera":
++	if section == "ghosts":
++		draft_ghost = "lap"
++	elif section == "camera":
+ 		draft_camera = "overhead"
+ 		draft_speed_zoom = true
+ 	else:
+@@ -322,6 +344,7 @@ func _apply() -> bool:
+ 	records.settings.camera_mode = draft_camera
+ 	records.settings.camera_speed_zoom = draft_speed_zoom
+ 	records.settings.control_labels = draft_labels
++	records.settings.ghost_mode = draft_ghost
+ 	var error: Error = records.save_records()
+ 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
+ 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
+diff --git a/game/ui/race_pause_menu.gd b/game/ui/race_pause_menu.gd
+index ad44b16..1847566 100644
+--- a/game/ui/race_pause_menu.gd
++++ b/game/ui/race_pause_menu.gd
+@@ -175,6 +175,22 @@ func _settings() -> void:
+ 		status.text = "Speed zoom changed" if error == OK else "Zoom changed for this race. Could not save preference."
+ 	)
+ 	column.add_child(speed_zoom)
++	if game.personal_ghost != null:
++		column.add_child(MenuStyle.label("Ghost",22))
++		var ghost_choice := OptionButton.new()
++		ghost_choice.name = "RaceGhostMode"
++		ghost_choice.custom_minimum_size.y = 52
++		for title: String in PersonalGhostRun.TITLES: ghost_choice.add_item(title)
++		ghost_choice.select(PersonalGhostRun.MODES.find(game.ghost_mode))
++		var ghost_description: Label = MenuStyle.label(game.ghost_description(),16,true)
++		ghost_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++		ghost_choice.item_selected.connect(func(index: int) -> void:
++			var error: Error = game.set_ghost_mode(PersonalGhostRun.MODES[index])
++			ghost_description.text = game.ghost_description()
++			status.text = "Ghost changed" if error == OK else "Ghost changed for this race. Could not save preference."
++		)
++		column.add_child(ghost_choice)
++		column.add_child(ghost_description)
+ 	column.add_child(MenuStyle.label("Steering",22))
+ 	var steering := OptionButton.new()
+ 	for title: String in ["Buttons","Horizontal slider","Joystick"]: steering.add_item(title)
+@@ -190,7 +206,7 @@ func _settings() -> void:
+ 			if records.save_records() != OK: status.text = "Could not save controls."
+ 	)
+ 	column.add_child(steering)
+-	status = MenuStyle.label("Sound applies to this session. Camera and controls are saved when available.",16,true)
++	status = MenuStyle.label("Sound applies to this session. Driving preferences are saved when available.",16,true)
+ 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	column.add_child(status)
+ 	_row("Back","Return to pause menu","arrow",show_main)
+diff --git a/game/tests/capture_settings.gd b/game/tests/capture_settings.gd
+index a55cf31..3edc52a 100644
+--- a/game/tests/capture_settings.gd
++++ b/game/tests/capture_settings.gd
+@@ -58,6 +58,12 @@ func run() -> void:
+ 		var zoom_choice: CheckButton = page.find_child("CameraSpeedZoom", true, false)
+ 		check(zoom_choice != null and zoom_choice.is_visible_in_tree() and zoom_choice.size.y >= 52, "reachable speed zoom toggle")
+ 		await _capture("camera", dimensions)
++		await _press("SettingsCategory_ghosts")
++		check(page.section == "ghosts" and panel.get_global_rect().is_equal_approx(panel_rect), "ghosts keep panel geometry")
++		for mode: String in PersonalGhostRun.MODES:
++			var choice: Button = page.find_child("Ghost_" + mode, true, false)
++			check(choice != null and choice.is_visible_in_tree() and choice.size.y >= 52, "reachable ghost choice " + mode)
++		await _capture("ghosts", dimensions)
+ 		await _press("SettingsCategory_haptics")
+ 		check(page.section == "haptics" and panel.get_global_rect().is_equal_approx(panel_rect), "haptics keeps panel geometry")
+ 		await _capture("haptics", dimensions)
+@@ -79,6 +85,9 @@ func _preferences() -> void:
+ 	var store: LocalRecords = app.get("records")
+ 	store.settings.favorites = ["starter_circuit"]
+ 	check(store.save_records() == OK, "unrelated preference fixture saved")
++	await _press("SettingsCategory_ghosts")
++	await _press("Ghost_race")
++	check(_page().draft_ghost == "race" and store.settings.get("ghost_mode", "lap") == "lap", "ghost choice stages until Apply")
+ 	await _press("SettingsCategory_camera")
+ 	await _press("Camera_follow_car")
+ 	check(_page().draft_camera == "follow_car" and store.settings.get("camera_mode", "overhead") == "overhead", "camera stages until Apply")
+@@ -96,6 +105,7 @@ func _preferences() -> void:
+ 	reloaded.load_records()
+ 	check(ControlLayout.from_settings(reloaded.settings).steering_type == "joystick", "apply persists steering after reload")
+ 	check(reloaded.settings.camera_mode == "follow_car", "apply persists camera after reload")
++	check(reloaded.settings.ghost_mode == "race", "apply persists ghost choice after reload")
+ 	check(not reloaded.settings.camera_speed_zoom, "apply persists disabled speed zoom after reload")
+ 	check(not reloaded.settings.control_labels, "apply persists hidden labels after reload")
+ 	await _press("SettingsCategory_haptics")
+@@ -129,6 +139,13 @@ func _preferences() -> void:
+ 	reloaded.load_records()
+ 	check(reloaded.settings.camera_mode == "overhead" and reloaded.settings.favorites == ["starter_circuit"], "camera reset commits without changing favorites")
+ 	check(reloaded.settings.camera_speed_zoom, "camera reset restores speed zoom default")
++	check(reloaded.settings.ghost_mode == "race", "other resets preserve ghost mode")
++	await _press("SettingsCategory_ghosts")
++	await _press("ResetSettings")
++	check(_page().draft_ghost == "lap" and store.settings.ghost_mode == "race", "ghost reset stages without changing committed choice")
++	await _press("ApplySettings")
++	reloaded.load_records()
++	check(reloaded.settings.ghost_mode == "lap" and reloaded.settings.favorites == ["starter_circuit"], "ghost reset commits default and preserves unrelated preferences")
+ 	await _press("SettingsCategory_controls")
+ 	await _press("Steering_horizontal")
+ 	await _press("Tab_tracks")
+@@ -136,13 +153,17 @@ func _preferences() -> void:
+ 	check(_page().draft_layout.steering_type == "buttons", "leaving without apply preserves committed preferences")
+ 	await _press("Steering_horizontal")
+ 	await _press("ShowControlLabels")
++	await _press("SettingsCategory_ghosts")
++	await _press("Ghost_off")
+ 	var valid_path: String = store.path
+ 	store.path = directory.path_join("missing_parent/records.json")
+ 	await _press("ApplySettings")
+ 	check(_page().status.text.begins_with("Could not save") and ControlLayout.from_settings(store.settings).steering_type == "buttons", "save failure reports error and rolls back committed preference")
+ 	check(_page().draft_layout.steering_type == "horizontal", "save failure retains draft for retry")
+ 	check(not _page().draft_labels and store.settings.control_labels, "failed label save retains draft and committed preference")
++	check(_page().draft_ghost == "off" and store.settings.ghost_mode == "lap", "failed ghost save retains draft and committed preference")
+ 	store.path = valid_path
++	await _press("SettingsCategory_controls")
+ 	await _press("CustomizeControls")
+ 	var editor: ControlLayoutEditor
+ 	for child: Node in app.get_children():
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+index 1a0ba47..063932d 100644
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -174,6 +174,7 @@ function Invoke-Validation {
+     }
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_review_reliability.gd') 'review-reliability-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_personal_ghosts.gd') 'personal-ghost-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_camera_modes.gd') 'camera-mode-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_catalog.gd') 'catalog-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_menu_loading.gd') 'menu-loading-tests.log'
+diff --git a/docs/PERSONAL_GHOSTS.md b/docs/PERSONAL_GHOSTS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PERSONAL_GHOSTS.md
+@@ -0,0 +1,48 @@
++# Local personal ghosts — 2026-10-03
++
++The owner requests their own personal-best lap and race ghosts, stored locally, with the rewind car silhouette in grey. This is the first ghost slice; there is no shared or downloaded ghost flow.
++
++| Requirement | Implemented behavior |
++| --- | --- |
++| GH01 | Settings > Ghosts has Off, Personal best lap and Personal best race. Default is lap. Staged Apply, scoped reset, persistence and failed-save rollback use existing preferences. Pause > Settings changes the choice for the current race and saves it when possible. |
++| GH02 | Lap mode uses the best flying lap, matching the existing local lap PB (standing first lap excluded). It starts with every player lap, using that lap's precise accepted start crossing. Race mode starts with the race clock. Both hide after their recording ends; no extrapolation or repeated race playback. |
++| GH03 | Only completed ordinary five-lap races supply recordings, including accepted rewind-assisted races. Match or improve the existing PB to create a recording for an older time. Lap/race PB updates are independent. Abandoned races and editor practice do not overwrite recordings. |
++| GH04 | Grey translucent body/edge treatment mirrors the rewind ghost material. One flattened mesh of the selected fictional car; no collision, shadows, particles or canonical simulation interaction. Mesh/body/camera scale is unchanged. |
++| GH05 | Storage is local and profile-scoped, using the same track-content/physics/handling/rules key as LocalRecords. Recordings never enter online replay payloads. Different cars, track revisions, handling and local accounts cannot share a PB recording. |
++| GH06 | Rewind confirmation truncates discarded poses and lap crossings, then records the restored position. Playback follows restored race/lap clocks. Countdown, rewind selection and the finish presentation hide the racing ghost. |
++| GH07 | Bounded 20 Hz poses with display-rate interpolation, shortest-angle wrapping, bridge/ground layer height, jump, water/ramp and kerb pose. Swept finish timestamps and interpolated endpoint poses preserve fractional ticks. Thirty-minute recording cap, strict finite/ordered sample validation and 16 MiB file cap. |
++
++`<records-path-without-extension>_ghosts/<PB-key>.json` stores optional independent `lap` and `race` recordings under schema 1. Each pose is `[relative_tick,x,y,world_height,heading,pitch,roll]`. Primary/backup recovery ignores uncommitted `.tmp` files; write, flush and validate before rotating a valid primary to `.bak` and renaming the temporary. Corrupt primary replacement preserves the good backup. A matching ghost is accepted only when its rounded milliseconds equal the current local PB. Ghost-save failure retains the saved time and queues a visible return-to-menu notice. No older player files are deleted or migrated.
++
++Changed files:
++
++- `game/race/personal_ghost_run.gd`, `game/persistence/local_ghosts.gd`, `game/vehicle/personal_ghost.gd` and their engine UID files: capture/slicing/interpolation, bounded local storage and grey mesh presentation.
++- `game/core/game.gd`, `game/core/app.gd`: race/restart/rewind/result lifecycle, saved selector and error reporting.
++- `game/persistence/local_records.gd`, `game/ui/settings_page.gd`, `game/ui/race_pause_menu.gd`: validated preference and two selectors. Settings category height is 66 logical units so five categories fit the existing panel.
++- `game/tests/test_personal_ghosts.gd`, `game/tests/capture_personal_ghosts.gd`, `game/tests/capture_settings.gd`: persistence, fractional timing, actual AI five-lap integration, selection/reset/save failure and desktop evidence.
++- `scripts/dev.ps1`: ghost regression added to full validation; existing TestScript remains the focused entry point.
++- `docs/schemas/local-personal-ghost-v1.schema.json`, this record, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `docs/evidence/personal-ghosts-2026-10-03/`.
++
++Actual verification (pinned Godot 4.7.2):
++
++| Actual command | Outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import` | Passed with matching engine/templates. Initial direct script invocation was denied by PowerShell execution policy; initial sandboxed engine import failed Windows certificate-store access. Normal entry-point runs with certificate access succeeded. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_personal_ghosts.gd` | Final 38 checks, zero failures: persistence/backup/corruption, fractional finish, independent PBs, profile/car/content partitions, limits, actual five-lap recording, restart and race/lap clock playback. Final run reports three ObjectDB shutdown instance warnings; earlier runs reported four. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestRecords` | 54 checks, zero failures. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestRewind` | 57 checks, zero failures. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp` | 96 checks, zero failures. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureSettings` | Final 235 checks, zero failures; three sizes, staged ghost selection, Apply/reload, scoped reset, unrelated-preference preservation and failed-save rollback/retry. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/capture_personal_ghosts.gd -Graphical` | Passed; five desktop screenshots and actual completed-race recording/pause selection checks. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | 268 scripts, zero failures. An initial mistaken `check_scripts.gd` path was rejected before engine execution, then corrected. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Doctor` | Correct engine/templates; DN2103 attached. Device listing is not driving acceptance. |
++| `python build/ghost_checkpoint.py` and `git apply --reverse --check docs/evidence/personal-ghosts-2026-10-03/personal-ghosts.patch` | Scoped review patch generated and reverse-check passed; existing unrelated work is excluded. |
++| `git diff --check -- game/core/app.gd game/core/game.gd game/persistence/local_records.gd game/ui/settings_page.gd game/ui/race_pause_menu.gd game/tests/capture_settings.gd scripts/dev.ps1 DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md` | Passed; only existing line-ending conversion notices. |
++
++Initial focused failures were corrected: JSON corruption now uses quiet parser errors; an unrelated stale ghost cannot block replacement with a matching current PB; Vector3/JSON comparison uses appropriate float tolerance. No failing invariant was removed. Settings' first added checks passed 225 before expanding reset/failure coverage to 235. No full Validate, canonical replay/physics gate, Android export/install or physical-device test is claimed.
++
++Evidence: [race ghost](evidence/personal-ghosts-2026-10-03/race-ghost-1280x720.png), [lap ghost](evidence/personal-ghosts-2026-10-03/lap-ghost-1280x720.png), compact variants, [pause selector](evidence/personal-ghosts-2026-10-03/pause-ghost-settings-1280x720.png), and three `settings-ghosts-*.png` menu captures copied from `build/settings`. Final focused raw output is retained under the evidence `logs/` directory. Race screenshots use an actual completed-race recording with the live car staged beside it to expose the translucent silhouette; they are visual evidence, not a device benchmark. Grey body, heading and compact menu layout were inspected.
++
++Remaining acceptance: owner driving/visual approval, real-phone selector touch targets and ghost legibility in desert dust/night/shadows, frame pacing/thermal measurements and all-five-car motion on a phone. Recordings use static flattened vehicle geometry: wheels, body suspension and rollover animation do not reproduce every live animation. Changes to physics/rules/content naturally start new partitions. Recording caps prevent saving overlong races; older PBs cannot be reconstructed from timing-only files. Two separate local files commit best times and poses, so a failed ghost save leaves the time valid with no matching ghost until a future qualifying race. No production/backend deployment or owner data changes were performed.
++
++The workspace already contained unrelated visual/dust/results changes. A scoped Git patch at `docs/evidence/personal-ghosts-2026-10-03/personal-ghosts.patch` is the reviewable checkpoint; it excludes pre-existing launch-cue changes and other tasks. No mixed-tree commit.
+diff --git a/docs/schemas/local-personal-ghost-v1.schema.json b/docs/schemas/local-personal-ghost-v1.schema.json
+new file mode 100644
+--- /dev/null
++++ b/docs/schemas/local-personal-ghost-v1.schema.json
+@@ -0,0 +1,36 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Local personal best ghosts v1",
++  "type": "object",
++  "additionalProperties": false,
++  "required": ["schema", "key"],
++  "anyOf": [{"required": ["lap"]}, {"required": ["race"]}],
++  "properties": {
++    "schema": {"const": 1},
++    "key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
++    "lap": {"$ref": "#/$defs/recording"},
++    "race": {"$ref": "#/$defs/recording"}
++  },
++  "$defs": {
++    "recording": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["ticks", "poses"],
++      "properties": {
++        "ticks": {"type": "number", "exclusiveMinimum": 0, "maximum": 216000},
++        "poses": {
++          "type": "array",
++          "minItems": 2,
++          "maxItems": 36007,
++          "items": {
++            "description": "Relative tick, simulation x/y, world height, heading, pitch, roll. Fractional endpoint ticks preserve swept finish timing. First tick is zero; last equals duration; ticks strictly increase.",
++            "type": "array",
++            "minItems": 7,
++            "maxItems": 7,
++            "items": {"type": "number", "minimum": -1000000, "maximum": 1000000}
++          }
++        }
++      }
++    }
++  }
++}
+diff --git a/game/race/personal_ghost_run.gd b/game/race/personal_ghost_run.gd
+new file mode 100644
+--- /dev/null
++++ b/game/race/personal_ghost_run.gd
+@@ -0,0 +1,87 @@
++class_name PersonalGhostRun
++extends RefCounted
++## Presentation samples only; never inputs to canonical driving or race rules.
++const STRIDE: int = 6 # 20 Hz, interpolated at display rate.
++const MAX_TICKS: int = 216000
++const MODES: Array[String] = ["off", "lap", "race"]
++const TITLES: Array[String] = ["Off", "Personal best lap", "Personal best race"]
++const DESCRIPTIONS: Array[String] = [
++	"Drive without a ghost.",
++	"Your best flying lap starts again with each of your laps.",
++	"Your best complete race starts when the race begins.",
++]
++var poses: Array = [] # tick, x, y, world height, heading, pitch, roll
++var lap_ends: Array[float] = []
++var overflow: bool = false
++
++func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bridge: BridgePresentation, handling: HandlingConfig, force: bool = false) -> void:
++	if state.tick > MAX_TICKS:
++		overflow = true
++		return
++	var boundary: bool = session.completed_laps > lap_ends.size()
++	if boundary: lap_ends.append(session.lap_start_time * VehicleSimulation.TICK_RATE)
++	if not force and not boundary and state.tick % STRIDE != 0: return
++	if not poses.is_empty() and int(poses[-1][0]) == state.tick: return
++	var point: Vector2 = state.position
++	var axle: Vector2 = state.forward() * handling.wheelbase * 0.5
++	var layer: int = int(state.track_elevated)
++	var front: float = bridge.height_at(point + axle, state.route_index, layer)
++	var rear: float = bridge.height_at(point - axle, state.route_index, layer)
++	var height: float = (front + rear) * 0.5 + state.jump_height
++	var pitch: float = atan2(front - rear, handling.wheelbase)
++	if state.jump_height > 0.0:
++		pitch = atan2(state.jump_velocity, maxf(5.0, state.velocity.length()))
++	elif not state.track_elevated:
++		height += TrackHazards.ramp_height(point, track.hazard_objects) - track.water_depth(point)
++		pitch += TrackHazards.ramp_pitch(point, axle.normalized(), track.hazard_objects)
++	if state.jump_height == 0.0:
++		height += state.kerb_offset.x
++		pitch += state.kerb_offset.y
++	poses.append([state.tick, point.x, point.y, height, state.heading, pitch, state.kerb_offset.z])
++
++func branch(tick: int) -> void:
++	while not poses.is_empty() and int(poses[-1][0]) > tick: poses.pop_back()
++	while not lap_ends.is_empty() and lap_ends[-1] > tick: lap_ends.pop_back()
++	overflow = tick > MAX_TICKS
++
++func recording(mode: String) -> Dictionary:
++	if overflow or lap_ends.size() != RaceRules.LAPS or poses.is_empty(): return {}
++	var start: float = 0.0
++	var end: float = lap_ends[-1]
++	if mode == "lap":
++		# Match LocalRecords: the standing first lap is excluded from flying PBs.
++		var best: float = MAX_TICKS + 1.0
++		for index: int in range(1, lap_ends.size()):
++			var duration: float = lap_ends[index] - lap_ends[index - 1]
++			if duration < best:
++				best = duration
++				start = lap_ends[index - 1]
++				end = lap_ends[index]
++	var source: Dictionary = {"ticks": poses[-1][0], "poses": poses}
++	var first: Array = sample(source,start)
++	first[0] = 0.0
++	var samples: Array = [first]
++	for pose: Array in poses:
++		if float(pose[0]) <= start: continue
++		if float(pose[0]) >= end: break
++		var sample: Array = pose.duplicate()
++		sample[0] = float(sample[0]) - start
++		samples.append(sample)
++	var last: Array = sample(source,end)
++	last[0] = end - start
++	samples.append(last)
++	return {"ticks": end - start, "poses": samples}
++
++static func sample(recording: Dictionary, tick: float) -> Array:
++	if recording.is_empty() or tick < 0.0 or tick > float(recording.ticks): return []
++	var samples: Array = recording.poses
++	var low: int = 0
++	var high: int = samples.size() - 1
++	while low < high:
++		var middle: int = (low + high + 1) / 2
++		if float(samples[middle][0]) <= tick: low = middle
++		else: high = middle - 1
++	var a: Array = samples[low]
++	var b: Array = samples[mini(low + 1, samples.size() - 1)]
++	var weight: float = clampf((tick - float(a[0])) / maxf(1.0, float(b[0]) - float(a[0])), 0.0, 1.0)
++	return [tick, lerpf(a[1], b[1], weight), lerpf(a[2], b[2], weight), lerpf(a[3], b[3], weight), lerp_angle(a[4], b[4], weight), lerp_angle(a[5], b[5], weight), lerp_angle(a[6], b[6], weight)]
+diff --git a/game/persistence/local_ghosts.gd b/game/persistence/local_ghosts.gd
+new file mode 100644
+--- /dev/null
++++ b/game/persistence/local_ghosts.gd
+@@ -0,0 +1,106 @@
++class_name LocalGhosts
++extends RefCounted
++## Profile-scoped, atomic local PB poses. No ghost data is uploaded.
++const SCHEMA: int = 1
++const MAX_BYTES: int = 16777216
++var folder: String
++
++func _init(records_path: String = "user://local_records.json") -> void:
++	folder = records_path.get_basename() + "_ghosts"
++
++func load_best(key: String, best: Dictionary) -> Dictionary:
++	var data: Dictionary = _load(key)
++	var result: Dictionary = {}
++	for mode: String in ["lap", "race"]:
++		var recording: Dictionary = data.get(mode, {})
++		if _matches(recording, best, mode): result[mode] = recording
++	return result
++
++func save_run(key: String, best: Dictionary, run: PersonalGhostRun) -> Error:
++	if run.overflow: return ERR_OUT_OF_MEMORY
++	var data: Dictionary = _load(key)
++	var changed: bool = false
++	for mode: String in ["lap", "race"]:
++		var candidate: Dictionary = run.recording(mode)
++		if not _matches(candidate, best, mode): continue
++		var previous: Dictionary = data.get(mode, {})
++		if _matches(previous,best,mode) and float(previous.ticks) <= float(candidate.ticks): continue
++		data[mode] = candidate
++		changed = true
++	if not changed: return OK
++	data.schema = SCHEMA
++	data.key = key
++	if not _valid(data, key): return ERR_INVALID_DATA
++	var error: Error = DirAccess.make_dir_recursive_absolute(folder)
++	if error != OK: return error
++	var path: String = folder.path_join(key + ".json")
++	var content: String = JSON.stringify(data)
++	if content.to_utf8_buffer().size() > MAX_BYTES: return ERR_OUT_OF_MEMORY
++	var file := FileAccess.open(path + ".tmp", FileAccess.WRITE)
++	if file == null: return FileAccess.get_open_error()
++	file.store_string(content)
++	file.flush()
++	error = file.get_error()
++	file.close()
++	if error != OK or _read(path + ".tmp", key).is_empty(): return ERR_FILE_CANT_WRITE
++	if FileAccess.file_exists(path):
++		if not _read(path, key).is_empty():
++			if FileAccess.file_exists(path + ".bak"):
++				error = DirAccess.remove_absolute(path + ".bak")
++				if error != OK: return error
++			error = DirAccess.rename_absolute(path, path + ".bak")
++		else: error = DirAccess.remove_absolute(path)
++		if error != OK: return error
++	return DirAccess.rename_absolute(path + ".tmp", path)
++
++func _load(key: String) -> Dictionary:
++	if not _key_valid(key): return {}
++	var path: String = folder.path_join(key + ".json")
++	for candidate: String in [path, path + ".bak"]:
++		var result: Dictionary = _read(candidate, key)
++		if not result.is_empty(): return result
++	return {}
++
++static func _matches(recording: Dictionary, best: Dictionary, mode: String) -> bool:
++	return not recording.is_empty() and roundi(float(recording.ticks) * 1000.0 / VehicleSimulation.TICK_RATE) == int(best.get("flying_ms" if mode == "lap" else "race_ms", 0))
++
++static func _read(path: String, key: String) -> Dictionary:
++	var file := FileAccess.open(path, FileAccess.READ)
++	if file == null: return {}
++	if file.get_length() > MAX_BYTES:
++		file.close()
++		return {}
++	var content: String = file.get_as_text()
++	file.close()
++	var parser := JSON.new()
++	if parser.parse(content) != OK: return {}
++	return parser.data if _valid(parser.data, key) else {}
++
++static func _key_valid(key: String) -> bool:
++	if key.length() != 64: return false
++	for character: String in key:
++		if character not in "0123456789abcdef": return false
++	return true
++
++static func _valid(value: Variant, key: String) -> bool:
++	if not _key_valid(key) or not value is Dictionary: return false
++	if value.get("schema") != SCHEMA or value.get("key") != key or value.size() < 3 or value.size() > 4: return false
++	for field: Variant in value:
++		if field not in ["schema", "key", "lap", "race"]: return false
++	for mode: String in ["lap", "race"]:
++		if not value.has(mode): continue
++		var recording: Variant = value[mode]
++		if not recording is Dictionary or recording.size() != 2: return false
++		var duration: Variant = recording.get("ticks")
++		if not LocalRecords._number(duration) or duration <= 0 or duration > PersonalGhostRun.MAX_TICKS: return false
++		var samples: Variant = recording.get("poses")
++		if not samples is Array or samples.size() < 2 or samples.size() > PersonalGhostRun.MAX_TICKS / PersonalGhostRun.STRIDE + RaceRules.LAPS + 2: return false
++		var previous: float = -1.0
++		for pose: Variant in samples:
++			if not pose is Array or pose.size() != 7: return false
++			for component: Variant in pose:
++				if not LocalRecords._number(component) or absf(float(component)) > 1000000.0: return false
++			if pose[0] <= previous or pose[0] > duration: return false
++			previous = float(pose[0])
++		if samples[0][0] != 0 or previous != float(duration): return false
++	return true
+diff --git a/game/vehicle/personal_ghost.gd b/game/vehicle/personal_ghost.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/personal_ghost.gd
+@@ -0,0 +1,39 @@
++class_name PersonalGhost
++extends MeshInstance3D
++## One non-colliding mesh, with the rewind silhouette treatment in neutral grey.
++func configure(car: CarVisual) -> void:
++	mesh = mesh_for(car)
++	scale = car.scale
++	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	var surface := ShaderMaterial.new()
++	var shader := Shader.new()
++	shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }"
++	surface.shader = shader
++	material_override = surface
++	hide()
++
++func present(pose: Array) -> void:
++	visible = not pose.is_empty()
++	if not visible: return
++	position = Vector3(pose[1], pose[3] + 0.05, -pose[2])
++	rotation = Vector3(pose[5], -pose[4], pose[6])
++
++static func mesh_for(car: CarVisual) -> ArrayMesh:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	_append_meshes(car, car.global_transform.affine_inverse(), tool)
++	tool.generate_normals()
++	return tool.commit()
++
++static func _append_meshes(node: Node, inverse: Transform3D, tool: SurfaceTool) -> void:
++	if node is MeshInstance3D and node.is_visible_in_tree() and node.mesh != null:
++		for surface: int in range(node.mesh.get_surface_count()):
++			var arrays: Array = node.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			var transform: Transform3D = inverse * node.global_transform
++			if indices.is_empty():
++				for vertex: Vector3 in vertices: tool.add_vertex(transform * vertex)
++			else:
++				for index: int in indices: tool.add_vertex(transform * vertices[index])
++	for child: Node in node.get_children(): _append_meshes(child, inverse, tool)
+diff --git a/game/tests/test_personal_ghosts.gd b/game/tests/test_personal_ghosts.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_personal_ghosts.gd
+@@ -0,0 +1,140 @@
++extends SceneTree
++## PB partition/recovery, fractional finish timing, rewind branches and actual race integration.
++var checks: int = 0
++var failures: int = 0
++var folder: String
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: " + message)
++
++func fixture(ends: Array[float]) -> PersonalGhostRun:
++	var run := PersonalGhostRun.new()
++	run.lap_ends = ends
++	for tick: int in range(0, ceili(ends[-1]) + 1):
++		if tick % PersonalGhostRun.STRIDE == 0 or tick == ceili(ends[-1]):
++			run.poses.append([tick, float(tick), 2.0, 3.0, deg_to_rad(179.0 if tick < 6 else -179.0), 0.1, 0.2])
++	return run
++
++func best_for(run: PersonalGhostRun) -> Dictionary:
++	return {"race_ms": roundi(float(run.recording("race").ticks) * 1000.0 / 120.0), "flying_ms": roundi(float(run.recording("lap").ticks) * 1000.0 / 120.0)}
++
++func run() -> void:
++	folder = "user://personal_ghost_tests_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var records := LocalRecords.new(folder.path_join("records.json"))
++	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	var handling: HandlingConfig = VehicleCatalog.config("compact",HandlingSelection.ORIGINAL_PLUS_INDEX)
++	var key: String = records.key_for(track,handling)
++	var store := LocalGhosts.new(records.path)
++	var recording: PersonalGhostRun = fixture([120.4,240.8,350.2,490.5,620.9])
++	var best: Dictionary = best_for(recording)
++	check(is_equal_approx(recording.recording("lap").ticks,109.4),"fastest flying lap excludes standing first and retains fractional ticks")
++	check(store.save_run(key,best,recording) == OK,"PB ghosts atomically saved")
++	var loaded: Dictionary = LocalGhosts.new(records.path).load_best(key,best)
++	check(loaded.size() == 2,"both PB modes survive reload")
++	check(is_equal_approx(loaded.lap.poses[0][1],240.8) and is_equal_approx(loaded.lap.poses[-1][1],350.2),"exact crossing endpoints interpolated from recorded poses")
++	check(absf(absf(PersonalGhostRun.sample(loaded.race,3.0)[4]) - PI) < 0.001,"heading interpolation takes shortest wrap")
++	check(is_equal_approx(PersonalGhostRun.sample(loaded.lap,50.0)[1],290.8),"lap playback uses relative clock")
++	check(PersonalGhostRun.sample(loaded.lap,110.0).is_empty(),"completed ghost hides without extrapolation")
++	check(store.load_best(records.key_for(track,VehicleCatalog.config("kart",HandlingSelection.ORIGINAL_PLUS_INDEX)),best).is_empty(),"car handling partitions isolated")
++	var modified: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	modified.content_hash += "changed"
++	check(store.load_best(records.key_for(modified,handling),best).is_empty(),"track revisions isolated")
++	check(LocalGhosts.new(folder.path_join("another_profile.json")).load_best(key,best).is_empty(),"profiles isolated")
++	var improved: PersonalGhostRun = fixture([120.4,240.8,330.2,490.5,650.9])
++	var next_best: Dictionary = best.duplicate()
++	next_best.flying_ms = best_for(improved).flying_ms
++	check(store.save_run(key,next_best,improved) == OK,"slower complete race can improve lap ghost")
++	loaded = store.load_best(key,next_best)
++	check(is_equal_approx(loaded.race.ticks,620.9) and is_equal_approx(loaded.lap.ticks,89.4),"race and lap best recordings update independently")
++	var missing_best: Dictionary = next_best.duplicate()
++	missing_best.race_ms -= 100
++	check(not store.load_best(key,missing_best).has("race"),"older faster PB never gets an inaccurately labelled slower ghost")
++	check(store.save_run(key,next_best,recording) == OK and is_equal_approx(store.load_best(key,next_best).lap.ticks,89.4),"slower run retains best")
++	var file := FileAccess.open(store.folder.path_join(key + ".json"),FileAccess.WRITE)
++	file.store_string("{broken")
++	file.close()
++	check(store.load_best(key,best).size() == 2,"corrupt primary recovers committed backup")
++	check(store.save_run(key,next_best,improved) == OK,"corrupt primary replaced without deleting good backup")
++	var abandoned: PersonalGhostRun = fixture([120.4,240.8,350.2,490.5,620.9])
++	abandoned.branch(250)
++	check(abandoned.lap_ends.size() == 2 and abandoned.poses[-1][0] <= 250 and abandoned.recording("race").is_empty(),"rewind removes future poses and completed laps")
++	abandoned.overflow = true
++	check(abandoned.recording("lap").is_empty(),"overlong recordings cannot replace PBs")
++	check(store.save_run(key,best,abandoned) == ERR_OUT_OF_MEMORY,"recording cap reports missing ghost without changing saved PB")
++	var invalid: Dictionary = {"schema":1,"key":key,"race":{"ticks":2,"poses":[[0,0,0,0,0,0,0],[0,0,0,0,0,0,0]]}}
++	check(not LocalGhosts._valid(invalid,key),"duplicate ticks rejected")
++	invalid.race.poses[1][0] = 2
++	invalid.race.poses[1][1] = NAN
++	check(not LocalGhosts._valid(invalid,key),"nonfinite poses rejected")
++	check(LocalGhosts.new(folder.path_join("missing/records.json")).save_run(key,best,recording) == OK,"new profile directory created")
++	var blocked := LocalGhosts.new(records.path)
++	blocked.folder = records.path
++	records.settings.ghost_mode = "race"
++	check(records.save_records() == OK,"ghost mode saves with preferences")
++	check(blocked.save_run(key,best,recording) != OK,"save failure reported without changing PB times")
++	var reloaded := LocalRecords.new(records.path)
++	reloaded.load_records()
++	check(reloaded.settings.ghost_mode == "race","selected mode survives restart")
++	check(not records._normalize({"schema":2,"records":{},"settings":{"ghost_mode":"other"}}).size(),"unknown preference mode rejected")
++	await _game(records,track)
++	_cleanup(folder)
++	print("PERSONAL_GHOST_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _game(records: LocalRecords, track: NativeTrack) -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.production_mode = true
++	game.preference_records = records
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	game.countdown_ticks = 0
++	game.ai_enabled = true
++	check(game.personal_ghost != null and game.ghost_run.poses[0][0] == 0,"ordinary race creates ghost and records tick-zero spawn")
++	var source: String = (game.personal_ghost.material_override as ShaderMaterial).shader.code
++	check("vec3(0.78,0.80,0.82)" in source and game.personal_ghost.get_child_count() == 0,"neutral grey silhouette has no collision nodes")
++	while not game.track_session.finished and game.sim.state.tick < 30000: game._physics_process(1.0 / 120.0)
++	check(game.track_session.finished,"real five-lap AI race completes")
++	var session: TrackSession = game.track_session
++	check(records.record(track,game.handling,session.race_time_seconds(),session.lap_times) == OK,"actual fractional lap and race times committed")
++	check(game.save_personal_ghost() == OK,"actual completed race saves both matching ghosts")
++	game.restart()
++	game.set_physics_process(false)
++	game.set_process(false)
++	check(game.ghost_bests.size() == 2,"restart loads actual lap and race ghosts")
++	game.countdown_ticks = 0
++	game.track_session.elapsed_ticks = 30
++	game.set_ghost_mode("race")
++	var state_before: Array = game.sim.state.snapshot()
++	game._present_personal_ghost(0.5)
++	check(game.personal_ghost.visible and game.sim.state.snapshot() == state_before,"playback leaves canonical state unchanged")
++	var expected: Array = PersonalGhostRun.sample(game.ghost_bests.race,29.5)
++	check(game.personal_ghost.position.distance_to(Vector3(expected[1],expected[3]+0.05,-expected[2])) < 0.00001,"race ghost shares interpolated race clock")
++	game.set_ghost_mode("lap")
++	game.track_session.lap_start_time = 30.0/120.0
++	game._present_personal_ghost(1.0)
++	check(is_equal_approx(game.personal_ghost.position.x,game.ghost_bests.lap.poses[0][1]),"lap ghost resets at player's lap boundary")
++	game.track_session.lap_start_time = 10.0/120.0
++	game._present_personal_ghost(1.0)
++	check(is_equal_approx(game.personal_ghost.position.x,PersonalGhostRun.sample(game.ghost_bests.lap,20.0)[1]),"restored lap start resynchronizes after rewind")
++	game.countdown_ticks = 1
++	game._present_personal_ghost(1.0)
++	check(not game.personal_ghost.visible,"countdown hides ghost")
++	game.countdown_ticks = 0
++	game.set_ghost_mode("off")
++	game._present_personal_ghost(1.0)
++	check(not game.personal_ghost.visible,"Off hides ghost")
++	game.queue_free()
++	await process_frame
++
++func _cleanup(path: String) -> void:
++	for child: String in DirAccess.get_directories_at(path): _cleanup(path.path_join(child))
++	for file: String in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
++	DirAccess.remove_absolute(path)
+diff --git a/game/tests/capture_personal_ghosts.gd b/game/tests/capture_personal_ghosts.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_personal_ghosts.gd
+@@ -0,0 +1,76 @@
++extends SceneTree
++## Real completed-race recording with staged side-by-side poses for visual inspection.
++var output: String = "res://../docs/evidence/personal-ghosts-2026-10-03"
++var captures: int = 0
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var folder: String = "user://ghost_capture_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var records := LocalRecords.new(folder.path_join("records.json"))
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(TrackDocument.create_default())
++	game.production_mode = true
++	game.preference_records = records
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	game.countdown_ticks = 0
++	game.ai_enabled = true
++	while not game.track_session.finished and game.sim.state.tick < 30000: game._physics_process(1.0 / 120.0)
++	assert(game.track_session.finished)
++	assert(records.record(game.native_track,game.handling,game.track_session.race_time_seconds(),game.track_session.lap_times) == OK)
++	assert(game.save_personal_ghost() == OK)
++	game.restart()
++	game.set_physics_process(false)
++	game.set_process(false)
++	game.countdown_ticks = 0
++	game.race_cues.hide()
++	game.trails.clear()
++	game.sand_dust.clear()
++	for mode: String in ["race", "lap"]:
++		game.set_ghost_mode(mode)
++		var pose: Array = PersonalGhostRun.sample(game.ghost_bests[mode],360.0)
++		var forward := Vector2(sin(pose[4]),cos(pose[4]))
++		game.sim.state.position = Vector2(pose[1],pose[2]) - forward * 2.5 + forward.orthogonal()*1.3
++		game.sim.state.heading = pose[4]
++		game.sim.state.velocity = forward*14.0
++		game.sim.state.tick = 360
++		game.track_session.elapsed_ticks = 360
++		game.track_session.lap_start_time = 0.0
++		game.previous_position = game.sim.state.position
++		game.previous_heading = game.sim.state.heading
++		game.camera.follow(game.sim.state.position,game.sim.state.velocity,game.sim.state.heading,0.0,true)
++		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++			root.size = dimensions
++			root.content_scale_size = dimensions
++			game._process(0.0)
++			game._present_personal_ghost(1.0)
++			assert(game.personal_ghost.visible)
++			await capture("%s-ghost-%dx%d.png" % [mode,dimensions.x,dimensions.y])
++	game.toggle_pause()
++	game.hud.pause_menu._settings()
++	var selector: OptionButton = game.hud.pause_menu.find_child("RaceGhostMode",true,false)
++	assert(selector != null and selector.size.y >= 52)
++	selector.select(2)
++	selector.item_selected.emit(2)
++	assert(game.ghost_mode == "race")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	await capture("pause-ghost-settings-1280x720.png")
++	game.queue_free()
++	await process_frame
++	for child: String in DirAccess.get_directories_at(folder):
++		for file: String in DirAccess.get_files_at(folder.path_join(child)): DirAccess.remove_absolute(folder.path_join(child).path_join(file))
++		DirAccess.remove_absolute(folder.path_join(child))
++	for file: String in DirAccess.get_files_at(folder): DirAccess.remove_absolute(folder.path_join(file))
++	DirAccess.remove_absolute(folder)
++	print("PERSONAL_GHOST_CAPTURE: %d screenshots, actual race recordings and pause selector passed" % captures)
++	quit()
++
++func capture(filename: String) -> void:
++	for frame: int in range(6): await process_frame
++	await RenderingServer.frame_post_draw
++	assert(root.get_texture().get_image().save_png(ProjectSettings.globalize_path(output.path_join(filename))) == OK)
++	captures += 1
+diff --git a/game/race/personal_ghost_run.gd.uid b/game/race/personal_ghost_run.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/race/personal_ghost_run.gd.uid
+@@ -0,0 +1 @@
++uid://bnqmtpxwhu70b
+diff --git a/game/persistence/local_ghosts.gd.uid b/game/persistence/local_ghosts.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/persistence/local_ghosts.gd.uid
+@@ -0,0 +1 @@
++uid://cuj1xwyl1yy8t
+diff --git a/game/vehicle/personal_ghost.gd.uid b/game/vehicle/personal_ghost.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/personal_ghost.gd.uid
+@@ -0,0 +1 @@
++uid://dqyvhp6cwye8o
+diff --git a/game/tests/test_personal_ghosts.gd.uid b/game/tests/test_personal_ghosts.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_personal_ghosts.gd.uid
+@@ -0,0 +1 @@
++uid://b66pv473b1vu0
+diff --git a/game/tests/capture_personal_ghosts.gd.uid b/game/tests/capture_personal_ghosts.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_personal_ghosts.gd.uid
+@@ -0,0 +1 @@
++uid://c8wsjeebc0xu4

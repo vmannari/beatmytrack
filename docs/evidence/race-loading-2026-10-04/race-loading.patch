@@ -1,0 +1,726 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
++
+ 2026-10-04 R01/V05/Q01: owner-reported Pixel 9 load slowdown addressed with native x86_64 Godot/music beside ARM64, plus saved host GPU/4096 MB/cold-boot AVD configuration. New debug/release native targets and 16 KB ELF alignment pass; music 36 and focused export 72/21/48 pass, APK installs with primaryCpuAbi=x86_64. Observed track selections 7.8/7.5 s before, 1.57/0.72 s after native build and cold boot; repeated selection 8 ms. Actual countdown visible within 3.7 s at first host screenshot check. Initial network-error runs discarded; pre-cold-boot native clock CPU sample motivated cold boot, later sample failed and is not claimed. Original AVD config backed up; app data retained, probes removed, ads Off. Physical DN2103 enumerated but no phone install/test, full Validate, successful ad playback (one preview retry still fails with SDK code 0), physics change or backend deployment. Files, exact commands, evidence, limitations and scoped checkpoint: docs/EMULATOR_PERFORMANCE.md. Unrelated concurrent work preserved.
+ 
+ 2026-10-04 WR08/WR06/TD07/R01/V03-V05/Q01: rivalry feedback now immediately projects rank, rival gap and points from loaded standings with explicit provisional/pending labels, then replaces them with server verification. Canonical ticks and all affected points are used; verified boards/PBs are untouched. Single-flight 0.5-second polling continues during normal results, with bounded backoff and account/ticket fences; confirmed feedback precedes board refresh. Final feedback 24, rivalry 764, app 96 and parser 288 checks pass. Four auth HTTP cases plus immediate-Continue HTTP pass; measured Continue 22 ms, calculation 552 us and automatic confirmation roughly 3.4-4.5 s on desktop fixtures. Six inspected screenshots and reverse-checked scoped patch saved. Initial sandbox/log, viewport-unit, async board and unrealistic first-render timing failures corrected without weakening limits. Doctor lists DN2103/emulator; no change-specific phone test/export/install, backend restart/deployment or physics change. Files, commands, evidence and limitations: docs/WEEKLY_RIVALRY.md (Immediate result feedback). Unrelated work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
++
+ 2026-10-04 R01/V05/Q01: owner-reported Pixel 9 load slowdown addressed with native x86_64 Godot/music beside ARM64, plus saved host GPU/4096 MB/cold-boot AVD configuration. New debug/release native targets and 16 KB ELF alignment pass; music 36 and focused export 72/21/48 pass, APK installs with primaryCpuAbi=x86_64. Observed track selections 7.8/7.5 s before, 1.57/0.72 s after native build and cold boot; repeated selection 8 ms. Actual countdown visible within 3.7 s at first host screenshot check. Initial network-error runs discarded; pre-cold-boot native clock CPU sample motivated cold boot, later sample failed and is not claimed. Original AVD config backed up; app data retained, probes removed, ads Off. Physical DN2103 enumerated but no phone install/test, full Validate, successful ad playback (one preview retry still fails with SDK code 0), physics change or backend deployment. Files, exact commands, evidence, limitations and scoped checkpoint: docs/EMULATOR_PERFORMANCE.md. Unrelated concurrent work preserved.
+ 
+ 2026-10-04 WR08/WR06/TD07/R01/V03-V05/Q01: rivalry feedback now immediately projects rank, rival gap and points from loaded standings with explicit provisional/pending labels, then replaces them with server verification. Canonical ticks and all affected points are used; verified boards/PBs are untouched. Single-flight 0.5-second polling continues during normal results, with bounded backoff and account/ticket fences; confirmed feedback precedes board refresh. Final feedback 24, rivalry 764, app 96 and parser 288 checks pass. Four auth HTTP cases plus immediate-Continue HTTP pass; measured Continue 22 ms, calculation 552 us and automatic confirmation roughly 3.4-4.5 s on desktop fixtures. Six inspected screenshots and reverse-checked scoped patch saved. Initial sandbox/log, viewport-unit, async board and unrealistic first-render timing failures corrected without weakening limits. Doctor lists DN2103/emulator; no change-specific phone test/export/install, backend restart/deployment or physics change. Files, commands, evidence and limitations: docs/WEEKLY_RIVALRY.md (Immediate result feedback). Unrelated work preserved.
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3,6 +3,8 @@
+ 
+ const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
+ const AccountController = preload("res://backend/account_controller.gd")
++const RaceLoading = preload("res://ui/race_loading.gd")
++var race_loading: RaceLoading
+ var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
+ var screen: String = "tracks"
+ var menu_open_costs: Dictionary = {}
+@@ -230,6 +232,7 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	_close_race_loading()
+ 	if rivalry_racing and rivalry_section in ["race_results", "result"] and next != "rivalry" and is_instance_valid(game):
+ 		remove_child(game)
+ 		game.queue_free()
+@@ -1033,32 +1036,58 @@
+ 	var original_scope: String = rivalry.scope()
+ 	cloud_starting = true
+ 	_rivalry()
++	var loading: RaceLoading = _open_race_loading()
++	var loading_id: int = loading.get_instance_id()
++	var metadata: Dictionary = rivalry.model.tracks[index].entry
++	var points := PackedVector2Array()
++	for point: Array in metadata.get("points", []): points.append(Vector2(point[0], point[1]))
++	loading.configure(str(metadata.get("name", "Weekly Rivalry")), str(metadata.get("theme", "pine")), points)
++	loading.stage("Connecting race…")
++	await _present_race_loading()
++	if navigation != _navigation_generation or original_scope != rivalry.scope():
++		cloud_starting = false
++		_close_race_loading(loading_id)
++		return
+ 	var issued: Dictionary = await rivalry.ticket(index)
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+ 		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		return
+ 	if issued.is_empty():
+ 		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		_rivalry()
+ 		return
+ 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
++	loading.stage("Downloading track…")
+ 	var downloaded: bool = await cloud.download(entry)
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+ 		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		return
+ 	if not downloaded:
+ 		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		rivalry.error = cloud.last_error
+ 		_rivalry()
++		return
++	loading.stage("Preparing track…")
++	await _present_race_loading()
++	if navigation != _navigation_generation or original_scope != rivalry.scope():
++		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		return
+ 	var track: NativeTrack = cloud.compile_entry(entry)
+ 	if track == null:
+ 		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		rivalry.error = "Track could not be prepared. Try again."
+ 		_rivalry()
+ 		return
++	loading.stage("Loading ghost…")
+ 	var recording: Dictionary = await _rivalry_ghost(index,choice)
+ 	cloud_starting = false
++	_close_race_loading(loading_id)
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope(): return
+ 	rivalry_track = index
+ 	rivalry_ghost_choice = choice
+@@ -1842,7 +1871,7 @@
+ 	if track != null and not test_button.disabled:
+ 		track.spawn = _practice_start(track)
+ 		track.spawn_heading = _practice_heading(track)
+-		_start_race(track, true)
++		await _start_race(track, true)
+ 
+ func _publish_current_document() -> void:
+ 	if not canvas.paint_points.is_empty() or not canvas.ghost.is_empty():
+@@ -1952,29 +1981,61 @@
+ var test_return_to_drafts: bool = false
+ var test_document_snapshot: Dictionary = {}
+ 
++func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
++	_stop_menu_page_motion()
++	race_loading = RaceLoading.new()
++	add_child(race_loading)
++	if track != null:
++		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice)
++	return race_loading
++
++func _present_race_loading() -> void:
++	# Layout and actually draw the overlay before synchronous scene construction.
++	await get_tree().process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func _close_race_loading(expected_id: int = 0) -> void:
++	if not is_instance_valid(race_loading): return
++	if expected_id != 0 and race_loading.get_instance_id() != expected_id: return
++	remove_child(race_loading)
++	race_loading.queue_free()
++	race_loading = null
++
+ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}) -> void:
+-	if cloud_starting: return
++	if cloud_starting or is_instance_valid(race_loading): return
+ 	if not from_editor and not track.metadata.has("cloud_version") and cloud != null:
+ 		_notice("Choose a published backend track from Race.")
++		return
++	var original_scope: String = lifecycle.scope()
++	var navigation_generation: int = _navigation_generation
++	var starting_screen: String = screen
++	var selected_vehicle: String = VehicleCatalog.selected
++	var starting_selection: NativeTrack = selected_track
++	var loading: RaceLoading = _open_race_loading(track, from_editor)
++	var loading_id: int = loading.get_instance_id()
++	cloud_starting = true
++	await _present_race_loading()
++	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
++		cloud_starting = false
++		_close_race_loading(loading_id)
+ 		return
+ 	cloud_ticket = {}
+ 	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
+ 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+-		var original_scope: String = lifecycle.scope()
+-		var navigation_generation: int = _navigation_generation
+-		var starting_screen: String = screen
+-		var selected_vehicle: String = VehicleCatalog.selected
+-		var starting_selection: NativeTrack = selected_track
+-		cloud_starting = true
++		loading.stage("Connecting race…")
+ 		var issued: Dictionary = await cloud.ticket(track,false,VehicleCatalog.selected,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
+-		cloud_starting = false
+-		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection: return
++		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
++			cloud_starting = false
++			_close_race_loading(loading_id)
++			return
+ 		cloud_ticket = issued
+ 		if not cloud_ticket.is_empty():
+ 			cloud_ticket._owner_id = str(online.client.player.id)
+ 			cloud_ticket._origin = str(online.client.base_url())
+ 			if not rivalry_issued.is_empty(): rivalry.result_ticket = str(cloud_ticket.ticket_id)
+ 		if cloud_ticket.is_empty():
++			cloud_starting = false
++			_close_race_loading(loading_id)
+ 			if not rivalry_issued.is_empty():
+ 				rivalry.error = cloud.last_error
+ 				_rivalry()
+@@ -1989,6 +2050,12 @@
+ 					_start_race(track,from_editor,true))
+ 			offline_dialog.popup_centered()
+ 			return
++	loading.stage("Loading track…")
++	await _present_race_loading()
++	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
++		cloud_starting = false
++		_close_race_loading(loading_id)
++		return
+ 	returning_to_editor = from_editor
+ 	rivalry_racing = not rivalry_issued.is_empty()
+ 	test_return_to_drafts = from_editor and screen == "drafts"
+@@ -2021,6 +2088,7 @@
+ 	game.connect("practice_lap_completed", _complete_draft_test,CONNECT_DEFERRED)
+ 	game.connect("retry_requested", _retry_race)
+ 	add_child(game)
++	var prepared_game: Node = game
+ 	if rivalry_racing:
+ 		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
+ 		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
+@@ -2030,6 +2098,22 @@
+ 	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
+ 	hud.touch.layout = ControlLayout.from_settings(records.settings)
+ 	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
++	# Render the prepared world once with the countdown/input still frozen.
++	game.call("_process", 0.0)
++	loading.stage("Preparing start…")
++	await _present_race_loading()
++	if not is_instance_valid(prepared_game) or game != prepared_game:
++		cloud_starting = false
++		_close_race_loading(loading_id)
++		return
++	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation:
++		cloud_starting = false
++		_close_race_loading(loading_id)
++		_leave_race()
++		return
++	game.process_mode = Node.PROCESS_MODE_INHERIT
++	cloud_starting = false
++	_close_race_loading(loading_id)
+ 
+ func _edit_here(position: Vector2) -> void:
+ 	_leave_race()
+@@ -2588,7 +2672,7 @@
+ 	redo_history.clear()
+ 	track.spawn = _practice_start(track)
+ 	track.spawn_heading = _practice_heading(track)
+-	_start_race(track,true)
++	await _start_race(track,true)
+ 
+ func _complete_draft_test() -> void:
+ 	if not is_instance_valid(game) or test_document_snapshot.is_empty(): return
+--- a/game/diagnostics/mobile_race_probe.gd
++++ b/game/diagnostics/mobile_race_probe.gd
+@@ -87,7 +87,7 @@
+ 	# Local diagnostic tracks use the authorized practice launch path. Ordinary
+ 	# Race now requires a published track; a probe must never request a ticket
+ 	# or write last-track preferences/competitive records just to benchmark it.
+-	app.call("_start_race", track, true, true)
++	await app.call("_start_race", track, true, true)
+ 	probe_track = track
+ 	game = app.get("game")
+ 	if not is_instance_valid(game):
+--- a/game/tests/capture_cars.gd
++++ b/game/tests/capture_cars.gd
+@@ -56,7 +56,7 @@
+ 		await capture(id+"-race")
+ 		var race_nav: Button = app.root_ui.find_child("Tab_tracks",true,false)
+ 		check(app.root_ui.get_global_rect().encloses(race_nav.get_global_rect()),id+" Race navigation stays within viewport")
+-		app.call("_start_race",app.selected_track,false)
++		await app.call("_start_race",app.selected_track,false)
+ 		await settle()
+ 		var game: Node = app.game
+ 		game.set_physics_process(false)
+@@ -99,7 +99,7 @@
+ 		await settle()
+ 		if id in ["formula","kart"]: await capture(id+"-tracks")
+ 		# Result fixture checks record partition, vehicle label and retry identity.
+-		app.call("_start_race",app.selected_track,false)
++		await app.call("_start_race",app.selected_track,false)
+ 		await settle()
+ 		game = app.game
+ 		game.set_physics_process(false)
+@@ -119,7 +119,7 @@
+ 		app.call("_leave_race")
+ 		await settle()
+ 		# Practice uses same selected vehicle and remains untimed.
+-		app.call("_start_race",app.selected_track,true)
++		await app.call("_start_race",app.selected_track,true)
+ 		await settle()
+ 		check(app.game.editor_test and app.game.handling.vehicle_id == id,id+" creator practice keeps selected car")
+ 		app.returning_to_editor = false
+--- a/game/tests/capture_premium_menus.gd
++++ b/game/tests/capture_premium_menus.gd
+@@ -143,7 +143,7 @@
+ 	# Stand-in publication metadata permits the isolated scene fixture through the
+ 	# cloud-only Race gate. No ticket, upload or verified result is requested.
+ 	track.metadata.cloud_version = "menu-results-fixture"
+-	app.call("_start_race", track, false, true)
++	await app.call("_start_race", track, false, true)
+ 	var game: Node = app.get("game")
+ 	game.set_physics_process(false)
+ 	var completed := TrackSession.new()
+--- a/game/tests/review_creator_usability.gd
++++ b/game/tests/review_creator_usability.gd
+@@ -64,7 +64,7 @@
+ 	canvas = app.get("canvas")
+ 	canvas.choose_piece("straight")
+ 	var pieces_before: int = canvas.document.pieces.size()
+-	app.call("_test_document")
++	await app.call("_test_document")
+ 	await process_frame
+ 	var game: Node = app.get("game")
+ 	var test_started: bool = game != null
+--- a/game/tests/test_app.gd
++++ b/game/tests/test_app.gd
+@@ -208,7 +208,7 @@
+ 	await process_frame
+ 	await _capture("track-favorites")
+ 	(browser.find_child("LibraryRace",true,false) as Button).pressed.emit()
+-	await process_frame
++	while app.cloud_starting: await process_frame
+ 	check((app.get("game").get("native_track") as NativeTrack).identity == chosen.identity,"library Race starts the selected favorite")
+ 	check((app.get("game").get("track_session") as TrackSession).target_laps == 5,"production menu starts a five-lap race")
+ 	app.call("_leave_race")
+@@ -369,7 +369,9 @@
+ 	var compiled: NativeTrack = TrackCompiler.compile(before)
+ 	var zoom_before: float = (app.get("canvas") as EditorCanvas).zoom
+ 	(app.get("test_button") as Button).pressed.emit()
+-	await process_frame
++	var deadline: int = Time.get_ticks_msec() + 15000
++	while app.cloud_starting and Time.get_ticks_msec() < deadline: await process_frame
++	check(not app.cloud_starting, "practice finishes track loading within its deadline")
+ 	var game: Node = app.get("game")
+ 	check(game != null and bool(game.get("production_mode")) and bool(game.get("editor_test")), "Test launches the real gameplay scene in untimed editor practice")
+ 	if game == null:
+@@ -426,7 +428,7 @@
+ 	# driving is covered above; it does not claim a second driven race.
+ 	app._restore_cloud_selection("cloud_fixture-track")
+ 	var track: NativeTrack = app.get("selected_track")
+-	app.call("_start_race", track, false)
++	await app.call("_start_race", track, false)
+ 	var game: Node = app.get("game")
+ 	game.set_physics_process(false)
+ 	var completed := TrackSession.new()
+--- a/game/tests/test_construction.gd
++++ b/game/tests/test_construction.gd
+@@ -223,7 +223,7 @@
+ 		await RenderingServer.frame_post_draw
+ 		await RenderingServer.frame_post_draw
+ 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/construction-editor.png")) == OK,"editor overpass screenshot")
+-	app.call("_test_document")
++	await app.call("_test_document")
+ 	await process_frame
+ 	var game: Node = app.get("game")
+ 	check(game != null,"overpass can be tested in actual practice")
+--- a/game/tests/test_control_layout.gd
++++ b/game/tests/test_control_layout.gd
+@@ -227,7 +227,7 @@
+ 	# This is a UI integration fixture, never a real backend publication.
+ 	var race_fixture: NativeTrack = app.get("selected_track")
+ 	race_fixture.metadata.cloud_version = "control-layout-fixture"
+-	app.call("_start_race",race_fixture,false,true)
++	await app.call("_start_race",race_fixture,false,true)
+ 	await process_frame
+ 	var race_hud: PlaygroundHUD = app.get("game").get("hud")
+ 	check(same_layout(race_hud.touch.layout,saved_layout),"new race receives persisted editor layout")
+--- a/game/tests/test_creator_refinement.gd
++++ b/game/tests/test_creator_refinement.gd
+@@ -137,7 +137,7 @@
+ 	check((app.get("selected_track") as NativeTrack).content_hash==saved_expected.content_hash,"Save refreshes the selected circuit without reselecting it")
+ 	# Current Race contains backend publications; saved local geometry is tested
+ 	# through the editor's Practice action before creator proof/publication.
+-	app.call("_test_document")
++	await app.call("_test_document")
+ 	await process_frame
+ 	var immediate_game: Node = app.get("game")
+ 	check(immediate_game!=null and immediate_game.editor_test and (immediate_game.get("native_track") as NativeTrack).content_hash==saved_expected.content_hash,"immediate Practice uses the saved geometry")
+@@ -156,10 +156,10 @@
+ 	if capture:
+ 		await RenderingServer.frame_post_draw
+ 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/refinement-library.png"))==OK,"saved circuits screenshot")
+-	app.call("_start_race",loaded,false)
++	await app.call("_start_race",loaded,false)
+ 	await process_frame
+ 	check(app.get("game")==null,"an unpublished local draft cannot enter ordinary backend Race")
+-	app.call("_start_race",tyre_track,true)
++	await app.call("_start_race",tyre_track,true)
+ 	await process_frame
+ 	var game: Node = app.get("game")
+ 	game.set_physics_process(false)
+--- a/game/tests/test_hazards.gd
++++ b/game/tests/test_hazards.gd
+@@ -155,7 +155,7 @@
+ 	if capture:
+ 		for i: int in range(4): await RenderingServer.frame_post_draw
+ 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-editor.png"))==OK,"editor screenshot")
+-	app.call("_start_race",TrackCompiler.compile(demo),true)
++	await app.call("_start_race",TrackCompiler.compile(demo),true)
+ 	await process_frame
+ 	var game: Node = app.get("game"); game.set_physics_process(false)
+ 	var actual: VehicleSimulation=game.get("sim"); actual.reset(Vector2(-7,0),PI*0.5); actual.state.jump_height=1.9; actual.state.jump_velocity=2.0; actual.state.velocity=Vector2(14,0)
+@@ -177,7 +177,7 @@
+ 	if capture:
+ 		game.queue_free()
+ 		await process_frame
+-		app.call("_start_race",pond,true)
++		await app.call("_start_race",pond,true)
+ 		await process_frame
+ 		game=app.get("game"); game.set_physics_process(false)
+ 		actual=game.get("sim"); actual.reset(Vector2(18.7,0),0.0)
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -327,7 +327,7 @@
+ 	(page.find_child("ChooseTrack",true,false) as Button).pressed.emit()
+ 	await settle()
+ 	check(app.get("game") == null and app.get("screen") == "tracks","placeholder track action returns to selection")
+-	app.call("_start_race",track,false)
++	await app.call("_start_race",track,false)
+ 	(app.get("game") as Node).set_physics_process(false)
+ 	app.call("_results")
+ 	await settle()
+--- /dev/null
++++ b/game/ui/race_loading.gd
+@@ -0,0 +1,113 @@
++extends CanvasLayer
++## Race preparation overlay. Uses existing menu art and the actual route only.
++
++var surface: Control
++var scenery: TextureRect
++var panel: PanelContainer
++var title_label: Label
++var facts_label: Label
++var status_label: Label
++var route_view: Control
++var route: PackedVector2Array = []
++var activity: ProgressBar
++
++func _ready() -> void:
++	layer = 80
++	surface = Control.new()
++	surface.name = "RaceLoadingScreen"
++	surface.theme = MenuStyle.theme()
++	surface.mouse_filter = Control.MOUSE_FILTER_STOP
++	add_child(surface)
++	MenuStyle.fill(surface)
++	var background := ColorRect.new()
++	background.color = MenuStyle.INK
++	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	surface.add_child(background)
++	MenuStyle.fill(background)
++	scenery = TextureRect.new()
++	scenery.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	scenery.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	scenery.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	surface.add_child(scenery)
++	MenuStyle.fill(scenery)
++	var shade := ColorRect.new()
++	shade.color = Color(0.02, 0.045, 0.065, 0.7)
++	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	surface.add_child(shade)
++	MenuStyle.fill(shade)
++	panel = PanelContainer.new()
++	panel.add_theme_stylebox_override("panel", MenuStyle.card(32))
++	surface.add_child(panel)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation", 16)
++	panel.add_child(column)
++	var heading := MenuStyle.label("LOADING TRACK", 20)
++	heading.add_theme_color_override("font_color", MenuStyle.ACCENT)
++	column.add_child(heading)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation", 32)
++	column.add_child(row)
++	var details := VBoxContainer.new()
++	details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	details.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	row.add_child(details)
++	title_label = MenuStyle.label("", 48)
++	title_label.name = "LoadingTrackTitle"
++	title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	details.add_child(title_label)
++	facts_label = MenuStyle.label("", 17, true)
++	facts_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	details.add_child(facts_label)
++	route_view = Control.new()
++	route_view.name = "LoadingRoute"
++	route_view.custom_minimum_size = Vector2(230, 144)
++	route_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	row.add_child(route_view)
++	route_view.draw.connect(_draw_route)
++	route_view.resized.connect(route_view.queue_redraw)
++	activity = ProgressBar.new()
++	activity.name = "LoadingActivity"
++	activity.custom_minimum_size.y = 5
++	activity.show_percentage = false
++	activity.indeterminate = true
++	column.add_child(activity)
++	status_label = MenuStyle.label("Preparing race…", 18, true)
++	status_label.name = "LoadingStatus"
++	column.add_child(status_label)
++	surface.resized.connect(_layout)
++	_layout()
++
++func configure(title: String, theme_id: String, points: PackedVector2Array, practice: bool = false) -> void:
++	title_label.text = title
++	scenery.texture = TrackTile.scenery_texture(theme_id)
++	facts_label.text = TrackTheme.title(theme_id) + "  ·  " + ("Practice (untimed)" if practice else "5 laps") + "  ·  " + VehicleCatalog.title()
++	route = points
++	route_view.queue_redraw()
++
++func stage(text: String) -> void:
++	status_label.text = text
++
++func _layout() -> void:
++	var width: float = minf(900.0, maxf(280.0, surface.size.x - 80.0))
++	panel.size = Vector2(width, panel.get_combined_minimum_size().y)
++	panel.position = (surface.size - panel.size) * 0.5
++	route_view.visible = width >= 650.0
++	title_label.add_theme_font_size_override("font_size", 48 if width >= 760.0 else 36)
++
++func _draw_route() -> void:
++	if route.size() < 2: return
++	var bounds := Rect2(route[0], Vector2.ZERO)
++	for point: Vector2 in route: bounds = bounds.expand(point)
++	var scale_factor: float = minf((route_view.size.x - 24.0) / maxf(1.0, bounds.size.x), (route_view.size.y - 24.0) / maxf(1.0, bounds.size.y))
++	var path := PackedVector2Array()
++	for point: Vector2 in route:
++		var offset: Vector2 = (point - bounds.get_center()) * scale_factor
++		path.append(route_view.size * 0.5 + Vector2(offset.x, -offset.y))
++	path.append(path[0])
++	route_view.draw_polyline(path, MenuStyle.INK, 9.0, true)
++	route_view.draw_polyline(path, MenuStyle.TEXT, 4.0, true)
++	route_view.draw_circle(path[0], 6.0, MenuStyle.ACCENT, true, -1, true)
++
++func _input(_event: InputEvent) -> void:
++	# Keep preparation taps/keys from reaching menus or the race HUD.
++	get_viewport().set_input_as_handled()
+--- /dev/null
++++ b/game/ui/race_loading.gd.uid
+@@ -0,0 +1 @@
++uid://crluhhv5tqmqa
+--- /dev/null
++++ b/game/tests/test_race_loading.gd
+@@ -0,0 +1,154 @@
++extends SceneTree
++## Real preparation/render/countdown boundaries, with isolated persistence.
++
++const Loading = preload("res://ui/race_loading.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = "res://../docs/evidence/race-loading-2026-10-04"
++var drawn_loading: int = 0
++var frozen_world: int = 0
++var saved_transition: bool = false
++var graphical: bool = false
++var countdown_at_reveal: int = -1
++
++class FailedTicket extends Node:
++	var last_error: String = "Isolated ticket failure fixture"
++	var app: Node
++	var saw_loading: bool = false
++	func ticket(_track: NativeTrack) -> Dictionary:
++		saw_loading = is_instance_valid(app.race_loading) and app.race_loading.status_label.text == "Connecting race…"
++		await get_tree().process_frame
++		return {}
++	func flush_outbox() -> void: pass
++
++func _initialize() -> void: call_deferred("run")
++
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: " + message)
++
++func run() -> void:
++	graphical = DisplayServer.get_name() != "headless"
++	root.size = Vector2i(1280, 720)
++	OS.set_environment("BMT_API_URL", "")
++	if graphical:
++		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence))
++		RenderingServer.frame_post_draw.connect(_observe_draw)
++	else:
++		process_frame.connect(_observe_draw)
++	var directory: String = "user://race_loading_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory)
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	track.metadata.cloud_version = "isolated-loading-fixture"
++	app.selected_track = track
++	app._start_race(track, false, true)
++	check(app.race_loading != null and app.game == null, "loading appears before race scene construction")
++	check(app.race_loading.title_label.text == app.track_title(track), "loading names the actual track")
++	check(app.race_loading.activity.indeterminate and not app.race_loading.activity.show_percentage, "activity indicator does not invent percentage progress")
++	var first: Node = app.race_loading
++	first.tree_exiting.connect(func() -> void:
++		if is_instance_valid(app.game): countdown_at_reveal = app.game.countdown_ticks)
++	app._start_race(track, false, true)
++	check(app.race_loading == first, "repeated start requests keep one loading operation")
++	var key := InputEventKey.new()
++	key.keycode = KEY_ESCAPE
++	key.physical_keycode = KEY_ESCAPE
++	key.pressed = true
++	root.push_input(key, true)
++	check(app.race_loading == first and app.game == null, "preparation consumes Escape without opening race or menu controls")
++	await _wait_loading()
++	check(app.game != null and app.race_loading == null and not app.cloud_starting, "prepared race replaces loading and clears its busy state")
++	check(drawn_loading >= 2, "loading spans actual preparation frames")
++	check(frozen_world > 0, "prepared world has a render frame with simulation and countdown frozen")
++	if app.game != null:
++		app.game.set_physics_process(false)
++		check(app.game.track_session.target_laps == 5, "ordinary race keeps five laps")
++		check(app.game.sim.state.tick == 0 and app.game.track_session.elapsed_ticks == 0, "loading does not add canonical time or recorded inputs")
++		check(countdown_at_reveal == 360 and app.game.process_mode == Node.PROCESS_MODE_INHERIT, "all three countdown seconds remain when loading is dismissed")
++		app._leave_race()
++	app._start_race(track, false, true)
++	app._show_screen("garage")
++	await _wait_loading()
++	check(app.game == null and app.race_loading == null and app.screen == "garage", "navigation cancels stale preparation without launching a hidden race")
++	await app._start_race(track, true, true)
++	check(app.game != null and app.game.editor_test and app.game.countdown_ticks == 0 and app.race_loading == null, "editor practice uses loading then remains untimed")
++	if app.game != null: app._leave_race()
++	await _check_ticket_failure(track)
++	if graphical:
++		await _capture_layouts(track)
++		check(saved_transition, "real menu-to-race loading screenshot saved")
++	app.queue_free()
++	await process_frame
++	print("RACE_LOADING: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func _check_ticket_failure(track: NativeTrack) -> void:
++	var original_cloud: Node = app.cloud
++	var fixture := FailedTicket.new()
++	fixture.app = app
++	app.add_child(fixture)
++	app.cloud = fixture
++	# Test credentials stay in this disposable app and never touch a real API.
++	app.online.client._access_token = "isolated-loading-test-token"
++	app.online.client.player = {"id": "isolated-loading-test-player"}
++	await app._start_race(track, false)
++	check(fixture.saw_loading, "online ticket preparation displays loading")
++	check(app.game == null and app.race_loading == null and not app.cloud_starting and app.root_ui.visible, "failed ticket returns to the visible menu without a stuck loading overlay")
++	var confirmation: ConfirmationDialog
++	for child: Node in app.root_ui.get_children():
++		if child is ConfirmationDialog: confirmation = child
++	check(confirmation != null and confirmation.visible and confirmation.ok_button_text == "Race offline", "existing offline choice remains available after failed preparation")
++	if confirmation != null:
++		confirmation.hide()
++		confirmation.queue_free()
++	app.cloud = original_cloud
++	app.online.client._access_token = ""
++	app.online.client.player = {}
++	fixture.queue_free()
++	await process_frame
++
++func _wait_loading() -> void:
++	var deadline: int = Time.get_ticks_msec() + 20000
++	while app.cloud_starting and Time.get_ticks_msec() < deadline: await process_frame
++	check(not app.cloud_starting, "race preparation completes within its deadline")
++
++func _observe_draw() -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app.race_loading): return
++	drawn_loading += 1
++	if app.game != null:
++		check(app.game.process_mode == Node.PROCESS_MODE_DISABLED and app.game.sim.state.tick == 0 and app.game.countdown_ticks in [0, 360], "loading never advances the race/countdown beneath the overlay")
++		frozen_world += 1
++	if graphical and not saved_transition:
++		saved_transition = root.get_texture().get_image().save_png(ProjectSettings.globalize_path(evidence.path_join("race-transition-1280x720.png"))) == OK
++
++func _capture_layouts(track: NativeTrack) -> void:
++	for viewport_size: Vector2i in [Vector2i(1280, 720), Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = viewport_size
++		for biome: String in ["pine", "desert", "winter", "night_city", "storm"]:
++			var loading := Loading.new()
++			root.add_child(loading)
++			loading.configure("Starter Circuit", biome, track.route)
++			loading.stage("Loading track…")
++			await process_frame
++			await process_frame
++			await RenderingServer.frame_post_draw
++			check(loading.surface.get_global_rect().encloses(loading.panel.get_global_rect()), "loading panel fits %s at %s" % [biome, viewport_size])
++			check(loading.panel.get_global_rect().encloses(loading.status_label.get_global_rect()), "loading status fits its panel")
++			check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path(evidence.path_join("loading-%s-%dx%d.png" % [biome, viewport_size.x, viewport_size.y]))) == OK, "biome loading screenshot saved")
++			loading.configure("A very long community circuit title that must stay inside the loading panel", biome, track.route, true)
++			await process_frame
++			await RenderingServer.frame_post_draw
++			check(loading.panel.get_global_rect().encloses(loading.title_label.get_global_rect()), "long title stays within loading panel")
++			root.remove_child(loading)
++			loading.queue_free()
++			await process_frame
+--- /dev/null
++++ b/game/tests/test_race_loading.gd.uid
+@@ -0,0 +1 @@
++uid://btgof2vy84sl8
+--- /dev/null
++++ b/docs/RACE_LOADING.md
+@@ -0,0 +1,45 @@
++# Race loading screen — 2026-10-04
++
++Owner request: “add loading screen for the races when loading the track”. Requirements: R01 (race navigation), V03/V04 (shared menu presentation and readable layout), V05 (device acceptance), Q01 (actual verification and evidence).
++
++Race now opens a full-screen loading view with the actual track title, its route outline, selected vehicle, biome and five-lap/untimed-practice label. Existing original discovery biome artwork, Barlow fonts, navy panels and yellow accents are reused. No new art, dependencies or asset licensing assumptions were introduced.
++
++The overlay is laid out and drawn before synchronous track/world construction. Online Free Race ticket preparation and Weekly Rivalry tickets, track download/compilation and ghost preparation are covered. Its activity bar is indeterminate; stage labels describe actual work and do not invent percentage progress. No artificial minimum wait is imposed.
++
++The prepared game has processing disabled until its first rendered frame. Initial camera/HUD presentation runs with zero presentation delta; simulation, race timer, recorded inputs and all 360 countdown ticks remain untouched. The overlay then disappears and the normal countdown begins. Untimed editor practice uses the same world-loading screen without adding a countdown. Restarting an already loaded race does not rebuild its track and retains its existing restart flow.
++
++Preparation consumes input and rejects repeated launches. Existing navigation/account/vehicle/selection fences remain. Navigation removes stale overlays; instance IDs make later asynchronous cleanup safe after the overlay has been freed. Ticket failure restores the existing offline-race choice, and rivalry failures restore the rivalry view.
++
++Changed files:
++
++- `game/ui/race_loading.gd` and `.uid`: loading presentation and input blocker.
++- `game/core/app.gd`: loading lifecycle, preparation/render fences, frozen scene construction, rivalry preparation and awaited creator launch.
++- `game/tests/test_race_loading.gd` and `.uid`: isolated real transition, frozen countdown, duplicate start, interrupted navigation, practice, ticket failure and graphical layout/capture checks.
++- `game/tests/test_app.gd`: wait for asynchronous library/practice launch completion.
++- `game/tests/capture_cars.gd`, `capture_premium_menus.gd`, `review_creator_usability.gd`, `test_construction.gd`, `test_control_layout.gd`, `test_creator_refinement.gd`, `test_hazards.gd`, `test_race_results.gd`, and `game/diagnostics/mobile_race_probe.gd`: await their existing direct launch calls.
++- `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this document and the evidence directory below.
++
++Actual commands and outcomes (all `scripts/dev.ps1` commands use `powershell -NoProfile -ExecutionPolicy Bypass -File`; engine is pinned to `4.7.2.stable.official.ed1daf0bf`):
++
++| Command | Actual outcome |
++| --- | --- |
++| `scripts/dev.ps1 CheckScript -ScriptPath res://ui/race_loading.gd` | Passed after sandbox log access was resolved with execution approval. |
++| `scripts/dev.ps1 Import` | Passed; generated both new script UIDs. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | Final: 291 scripts, zero failures. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_race_loading.gd` | 20 checks, zero failures. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_race_loading.gd -Graphical` | Final: 81 checks, zero failures; actual transition and all five biomes at 1280×720, 960×540 and 1600×720 captured. |
++| `scripts/dev.ps1 TestApp` | 97 checks, zero failures. |
++| `scripts/dev.ps1 TestConstruction` | 104 checks, zero failures. |
++| `scripts/dev.ps1 TestMenus` | 48 checks, zero failures. |
++| `scripts/dev.ps1 BackendTestLifecycle` | Final isolated canonical HTTP cloud-race and track-lifecycle suites: 2 passed. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_http.py -k test_weekly_rivalry_through_native_app -q` with repository `backend` on `PYTHONPATH` and the pinned `GODOT_BIN` | Real native Weekly Rivalry ticket/download/ghost/race/results integration: 1 passed, 4 deselected. Disposable backend only. |
++| `scripts/dev.ps1 TestResults` | Failed at the existing local-track recommendation fixture, before its later rating/card actions. This fixture still expects three local recommendations although current Race recommendations use published backend tracks. No assertions or production admission rules were weakened. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_cloud_tracks.gd` without its HTTP harness | Failed: the required replay fixture/API environment was absent. The correct `BackendTestLifecycle` harness above was then used. |
++| `scripts/dev.ps1 Doctor` | DN2103 physical phone and emulator-5554 attached; pinned templates found. No race-loading-specific device test was performed. |
++| `git diff --check -- <changed source files>` | Passed. |
++
++Initial attempts are not counted as passes. App tests first exposed old synchronous expectations; their launch waits were updated. Graphical interruption then exposed a freed typed overlay argument; cleanup now uses instance IDs. The first countdown assertion sampled after normal physics had already resumed; the final assertion samples the overlay's tree-exit boundary and verifies exactly 360 ticks there. The first correctly configured cloud HTTP run reported an unrelated menu comparison assertion; the subsequent correctly configured run passed both suites. Concurrent menu/emulator work was retained.
++
++Evidence: [actual loading transition](evidence/race-loading-2026-10-04/race-transition-1280x720.png), [compact Desert loading](evidence/race-loading-2026-10-04/loading-desert-960x540.png), plus all other biome/size captures in `docs/evidence/race-loading-2026-10-04/`. Desktop/compact captures were visually inspected. Verification logs and the scoped source checkpoint are saved alongside them; the checkpoint excludes unrelated concurrent edits and is reverse-apply checked rather than committing the mixed workspace.
++
++Remaining acceptance: owner visual/transition acceptance, physical-phone loading and safe-area checks, sustained device performance, and fixing the historical Results recommendation fixture independently. Track visual construction remains synchronous; the loading artwork remains visible during this work, while its animation can pause during a main-thread build. Editor draft validation/compilation before entering the shared race launcher is unchanged. Diagnostic direct `--track`/`--demo` playground launches remain outside the menu loading flow. No Android export/install, phone/emulator gameplay, backend deployment/restart or full physics/replay regression was performed by this task; canonical physics and rules were not changed.

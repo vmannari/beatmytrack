@@ -1,0 +1,314 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -14,6 +14,7 @@
+ var menu_neighbors: Dictionary = {}
+ var menu_neighbor_direction: int = 0
+ var returning_menu_neighbor: Dictionary = {}
++const MENU_PAGE_GAP: float = 64.0
+ var menu_page_motion: Tween
+ var menu_edge_motion: Tween
+ var menu_drag_offset: float = 0.0
+@@ -488,13 +489,14 @@
+ 	if width <= 0.0:
+ 		var margin: MarginContainer = menu_body_slot.get_parent().get_parent()
+ 		width = get_viewport().get_visible_rect().size.x - margin.get_theme_constant("margin_left") - margin.get_theme_constant("margin_right")
+-	var distance: float = width * direction
++	var gap: float = _menu_page_gap(drag_offset) if not is_zero_approx(drag_offset) else MENU_PAGE_GAP
++	var distance: float = (width + gap) * direction
+ 	menu_body.position.x = distance + drag_offset
+ 	# A new press settles this tween before any content hit-test, so rapid swipes
+ 	# remain responsive and the track carousel still owns its final rectangle.
+ 	menu_page_motion = create_tween().set_parallel(true)
+-	menu_page_motion.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+-	var duration: float = clampf(0.28 * (1.0 - absf(drag_offset) / absf(distance)), 0.10, 0.28)
++	menu_page_motion.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
++	var duration: float = clampf(0.32 * (1.0 - absf(drag_offset) / absf(distance)), 0.18, 0.32)
+ 	menu_page_motion.tween_property(menu_body, "position:x", 0.0, duration)
+ 	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, duration)
+ 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
+@@ -524,19 +526,24 @@
+ 		menu_drag_offset = clampf(distance, -width, width)
+ 		menu_body.position.x = menu_drag_offset
+ 		if menu_neighbors.has(direction):
+-			menu_neighbors[direction].body.position.x = width * direction + menu_drag_offset
++			menu_neighbors[direction].body.position.x = (width + _menu_page_gap(menu_drag_offset)) * direction + menu_drag_offset
++
++func _menu_page_gap(distance: float) -> float:
++	# A growing gutter leaves the next page visible even on the first small pull.
++	return minf(MENU_PAGE_GAP, absf(distance) * 0.5)
+ 
+ func _settle_menu_edge() -> void:
+ 	if not is_instance_valid(menu_body) or is_zero_approx(menu_body.position.x): return
+ 	if menu_edge_motion != null: menu_edge_motion.kill()
+ 	menu_edge_motion = create_tween().set_parallel(true)
+ 	var edge: bool = is_zero_approx(menu_drag_offset)
+-	var duration: float = 0.38 if edge else 0.20
+-	var transition: Tween.TransitionType = Tween.TRANS_BACK if edge else Tween.TRANS_CUBIC
+-	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, duration).set_trans(transition).set_ease(Tween.EASE_OUT)
++	var duration: float = 0.38 if edge else 0.28 + 0.10 * minf(1.0, absf(menu_drag_offset) / menu_body_slot.size.x)
++	var transition: Tween.TransitionType = Tween.TRANS_BACK if edge else Tween.TRANS_SINE
++	var easing: Tween.EaseType = Tween.EASE_OUT if edge else Tween.EASE_IN_OUT
++	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, duration).set_trans(transition).set_ease(easing)
+ 	if menu_neighbors.has(menu_neighbor_direction):
+ 		var neighbor: Control = menu_neighbors[menu_neighbor_direction].body
+-		menu_edge_motion.tween_property(neighbor, "position:x", menu_body_slot.size.x * menu_neighbor_direction, duration).set_trans(transition).set_ease(Tween.EASE_OUT)
++		menu_edge_motion.tween_property(neighbor, "position:x", menu_body_slot.size.x * menu_neighbor_direction, duration).set_trans(transition).set_ease(easing)
+ 	menu_edge_motion.chain().tween_callback(func() -> void:
+ 		menu_edge_motion = null
+ 		menu_drag_offset = 0.0
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -13,8 +13,11 @@
+ var dragging: bool = false
+ var rejected: bool = false
+ var target: BaseButton
++var last_drag_distance: float = 0.0
++var commit_direction: int = 0
+ const CLAIM_DISTANCE: float = 6.0
+-const PAGE_DISTANCE: float = 56.0
++const PAGE_DISTANCE: float = 32.0
++const CANCEL_DISTANCE: float = 12.0
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+@@ -33,6 +36,8 @@
+ 			origin = event.position
+ 			dragging = false
+ 			rejected = false
++			last_drag_distance = 0.0
++			commit_direction = 0
+ 			target = _button_at(menu, origin)
+ 			gesture_started.emit()
+ 			# Match the carousel's tap dispatch; a swipe never activates its starting button.
+@@ -40,16 +45,19 @@
+ 		elif event.index == pointer:
+ 			var distance: Vector2 = event.position - origin
+ 			# Once horizontal intent is established, vertical finger drift cannot revoke it.
+-			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and absf(distance.x) >= PAGE_DISTANCE
++			# Keep the last displayed drag and its armed direction. Lift coordinates
++			# can jitter toward the press; only a deliberate drag back cancels intent.
++			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and commit_direction != 0
++			var direction: int = commit_direction
+ 			var tap: BaseButton = target
+ 			var activate: bool = not dragging and not rejected and not event.canceled and distance.length() < CLAIM_DISTANCE and is_instance_valid(tap) and not tap.disabled and tap.get_global_rect().has_point(event.position)
+-			if dragging and not rejected and not event.canceled: drag_changed.emit(distance.x)
++			if dragging and not rejected and not event.canceled: drag_changed.emit(last_drag_distance)
+ 			if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 			pointer = -1
+ 			target = null
+ 			drag_finished.emit()
+ 			if navigate:
+-				page_requested.emit(1 if distance.x < 0.0 else -1)
++				page_requested.emit(direction)
+ 			elif activate:
+ 				tap.grab_focus()
+ 				if tap.toggle_mode: tap.button_pressed = not tap.button_pressed
+@@ -60,7 +68,15 @@
+ 			# Scrollable controls already own their touches. Allow a static-content
+ 			# gesture to establish horizontal intent after initial vertical jitter.
+ 			if absf(distance.x) > absf(distance.y) * 1.15: dragging = true
+-		if dragging and not rejected: drag_changed.emit(distance.x)
++		if dragging and not rejected:
++			last_drag_distance = distance.x
++			# Hysteresis lets a short completed swipe survive finger relaxation,
++			# while returning close to the origin or crossing it cancels that direction.
++			if commit_direction != 0 and -commit_direction * distance.x <= CANCEL_DISTANCE:
++				commit_direction = 0
++			if absf(distance.x) >= PAGE_DISTANCE:
++				commit_direction = 1 if distance.x < 0.0 else -1
++			drag_changed.emit(distance.x)
+ 		if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 
+ func _owns_gesture(node: Node, location: Vector2) -> bool:
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -38,8 +38,9 @@
+ 		check(app.menu_body.position.x > 0.0 and is_instance_valid(app.outgoing_menu_page), "forward content enters from right with outgoing content retained")
+ 		check(not app.outgoing_menu_page.can_process() and app.outgoing_menu_page.mouse_filter == Control.MOUSE_FILTER_IGNORE, "outgoing page cannot receive gestures or taps")
+ 		check(app.root_ui.get_node("MenuPageSwipe").is_processing_input(), "arriving page remains responsive to a new press")
++		var initial_page_position: float = app.menu_body.position.x
+ 		await create_timer(0.08).timeout
+-		check(app.menu_body.position.x > 0.0 and app.menu_body.position.x < dimensions.x, "slide progresses between content positions")
++		check(app.menu_body.position.x > 0.0 and app.menu_body.position.x < initial_page_position, "slide progresses between logical content positions")
+ 		check(app.root_ui.position == Vector2.ZERO and app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header_rect), "entire header remains fixed during forward slide")
+ 		check(app.root_ui.find_child("Tab_create",true,false).get_global_rect().is_equal_approx(tab_rect), "tab position remains fixed during forward slide")
+ 		check(app.menu_body_slot.clip_contents and app.menu_body_slot.get_global_rect().position.y >= header_rect.end.y, "sliding content is clipped strictly below navigation")
+@@ -77,7 +78,7 @@
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "tracks", "first tab has no wrap")
+ 		await check_edge("tracks", point, 1, dimensions)
+-		await swipe(point, Vector2(-35, 0))
++		await swipe(point, Vector2(-24, 0))
+ 		check(app.screen == "tracks", "short drag does not navigate")
+ 		await swipe(point, Vector2(-100, 160))
+ 		check(app.screen == "tracks", "vertical gesture does not navigate")
+@@ -142,6 +143,7 @@
+ func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
+ 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+ 	var page_width: float = app.menu_body_slot.size.x
++	var gap: float = 37.5
+ 	check(app.menu_neighbors.has(1), "next page is prepared before touching the screen")
+ 	var neighbor: Control = app.menu_neighbors[1].body
+ 	var draft: Dictionary = app.document.duplicate(true)
+@@ -151,24 +153,42 @@
+ 	check(is_zero_approx(app.menu_body.position.x), "tiny touch jitter does not start a slide")
+ 	drag(point + Vector2(-10,0))
+ 	check(is_equal_approx(app.menu_body.position.x,-10.0) and app.screen == "tracks", "small horizontal movement starts live slide before release")
+-	drag(point + Vector2(-50,0))
+-	check(is_equal_approx(app.menu_body.position.x,-50.0), "content tracks finger distance immediately")
+-	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width-50.0), "actual next page is visible and follows the same finger distance")
++	drag(point + Vector2(-24,0))
++	check(is_equal_approx(app.menu_body.position.x,-24.0), "content tracks finger distance immediately")
++	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width+12.0-24.0), "next page is visible early with a growing empty gutter")
+ 	check(neighbor.find_child("BiomePicker",true,false) != null and not neighbor.can_process() and neighbor.mouse_filter == Control.MOUSE_FILTER_IGNORE, "neighbor has real page content with its input disabled")
+ 	check(app.document == draft, "preparing and revealing Create leaves the draft unchanged")
+ 	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header), "navigation remains fixed during live drag")
+-	await capture("live-race", dimensions)
+-	touch(point + Vector2(-50,0), false)
++	var held_position: float = app.menu_body.position.x
++	var neighbor_position: float = neighbor.position.x
++	touch(point, false)
++	check(app.menu_body.position.x == held_position and neighbor.position.x == neighbor_position, "release-coordinate jitter leaves both pages at their displayed positions")
++	# Step the real engine tween by one display frame. PNG encoding and OS
++	# scheduling cannot change the sampled time or conceal a fast release jump.
++	app.menu_edge_motion.pause()
++	app.menu_edge_motion.custom_step(1.0 / 60.0)
++	check(absf(app.menu_body.position.x) > absf(held_position) * 0.97 and absf(app.menu_body.position.x) < absf(held_position), "return starts gently instead of jumping toward the origin")
++	app.menu_edge_motion.play()
+ 	await settle()
+ 	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "insufficient live drag returns to original page")
+ 	check(not neighbor.visible and app.document == draft, "canceling returns both pages and preserves the draft")
++	touch(point,true)
++	drag(point + Vector2(-24,0))
++	await capture("live-race", dimensions)
++	touch(point + Vector2(-24,0),false)
++	await settle()
+ 	touch(point,true)
+ 	drag(point + Vector2(-75,0))
+ 	touch(point + Vector2(-75,0),false)
+ 	check(app.screen == "biome" and is_equal_approx(app.outgoing_menu_page.position.x,-75.0), "enough movement completes without resetting outgoing dragged position")
+-	check(is_equal_approx(app.menu_body.position.x,page_width-75.0), "incoming completion continues from existing drag offset")
++	check(is_equal_approx(app.menu_body.position.x,page_width+gap-75.0), "incoming completion preserves the dragged position and gutter")
+ 	check(app.menu_body == neighbor and app.root_ui == root_before, "commit promotes the prepared page and keeps the header alive without rebuilding")
+ 	check(app.menu_neighbors.has(1), "the next consecutive page is already warm at commitment")
++	var arrival_start: float = app.menu_body.position.x
++	app.menu_page_motion.pause()
++	app.menu_page_motion.custom_step(1.0 / 60.0)
++	check(app.menu_body.position.x > arrival_start * 0.97 and app.menu_body.position.x < arrival_start, "completion starts gently from the held position")
++	app.menu_page_motion.play()
+ 	await settle()
+ 	check(is_zero_approx(app.menu_body.position.x) and not is_instance_valid(app.outgoing_menu_page), "committed drag settles with outgoing content disposed")
+ 	check(app.menu_neighbors.has(-1) and app.menu_neighbors[-1].body.find_child("TrackBrowser",true,false) != null, "previous Race page is retained for a reverse drag")
+@@ -178,7 +198,7 @@
+ 	await capture("live-create-reverse", dimensions)
+ 	drag(point + Vector2(75,0))
+ 	touch(point + Vector2(75,0),false)
+-	check(app.screen == "tracks" and is_equal_approx(app.outgoing_menu_page.position.x,75.0) and is_equal_approx(app.menu_body.position.x,-page_width+75.0), "reverse completion continues from dragged position")
++	check(app.screen == "tracks" and is_equal_approx(app.outgoing_menu_page.position.x,75.0) and is_equal_approx(app.menu_body.position.x,-page_width-gap+75.0), "reverse completion preserves the dragged position and gutter")
+ 	await settle()
+ 	touch(point,true)
+ 	drag(point + Vector2(-150,0))
+@@ -187,11 +207,20 @@
+ 	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "canceled substantial live drag returns instead of committing")
+ 	touch(point,true)
+ 	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-8,0))
++	check(is_equal_approx(app.menu_body.position.x,-8.0), "reversing finger movement reverses content movement")
++	touch(point + Vector2(-8,0),false)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "deliberately dragging back near the starting point cancels commitment")
++	touch(point,true)
++	drag(point + Vector2(-40,0))
+ 	drag(point + Vector2(-20,0))
+-	check(is_equal_approx(app.menu_body.position.x,-20.0), "reversing finger movement reverses content movement")
+-	touch(point + Vector2(-20,0),false)
+-	await settle()
+-	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "completion uses release distance rather than maximum excursion")
++	touch(point,false)
++	check(app.screen == "biome" and app.outgoing_menu_page.position.x == -20.0, "short swipe survives finger relaxation and release-coordinate jitter")
++	check(is_equal_approx(app.menu_body.position.x,page_width+10.0-20.0), "short relaxed commitment preserves incoming position without a release jump")
++	await settle()
++	await swipe(point, Vector2(34,0))
++	check(app.screen == "tracks", "small reverse swipe is sufficient to return to Race")
+ 	touch(point,true)
+ 	drag(point + Vector2(-150,0))
+ 	touch(point,true,false,1)
+@@ -210,6 +239,7 @@
+ 	drag(point + Vector2(-page_width * 0.45,12))
+ 	var garage: Control = app.menu_neighbors[1].body
+ 	check(garage.visible and garage.find_child("VehicleSelector",true,false) != null, "Garage content is visible during a held Create swipe")
++	check(is_equal_approx(garage.position.x - (app.menu_body.position.x + page_width),64.0), "held pages have the full empty gutter between their content edges")
+ 	await capture("live-create-garage", dimensions)
+ 	touch(point + Vector2(-page_width * 0.45,12),false)
+ 	await settle()
+@@ -307,6 +337,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/live-menu-slide-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/short-menu-swipes-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -4,8 +4,8 @@
+ 
+ ## Behavior and changed files
+ 
+-- `game/ui/menu_page_swipe.gd` (and `.uid`): touch recognition owns a gesture according to its starting position. Horizontal intent now claims after 6 logical units (latest owner correction); release needs 56 logical units once horizontal intent is established. Initial vertical jitter can become horizontal intent; later vertical drift does not revoke a claimed swipe. Short, vertical, canceled and two-finger gestures do not navigate. Ordinary button taps still activate; a swipe starting on a button never fires its action. Native scrolling, text entry, ranges/sliders, popup selectors and press-action controls retain their input. Visible drawers/dialogs block page gestures.
+-- `game/core/app.gd`: swiping left advances Race -> Create -> Garage; right reverses, with no wrapping. Create means the biome/draft menus. Reopening creation choices preserves the current document. The editor canvas retains its existing pan/edit gestures. Menu changes between these tabs use a 280 ms horizontal cubic ease-out. The logo, tabs, account and Settings stay fixed; both outgoing and incoming content/scenery slide in a viewport clipped below the header. Full-screen scenic framing is retained inside that clip. Outgoing content ignores GUI input and stops processing; swipe completion parks it as an inactive reverse neighbor; leaving the tab group and starting a race clean up transitions. A new press settles an earlier animation before hit-testing, allowing rapid consecutive swipes while retaining carousel ownership. The existing track-selection slide is independent. Same-tab refreshes are immediate.
++- `game/ui/menu_page_swipe.gd` (and `.uid`): touch recognition owns a gesture according to its starting position. Horizontal intent now claims after 6 logical units (latest owner correction); 32 logical units arm commitment; dragging back within 12 units cancels it. Release uses the last displayed drag instead of lift-coordinate jitter. Initial vertical jitter can become horizontal intent; later vertical drift does not revoke a claimed swipe. Below-threshold, unclaimed vertical, canceled and two-finger gestures do not navigate. Ordinary button taps still activate; a swipe starting on a button never fires its action. Native scrolling, text entry, ranges/sliders, popup selectors and press-action controls retain their input. Visible drawers/dialogs block page gestures.
++- `game/core/app.gd`: swiping left advances Race -> Create -> Garage; right reverses, with no wrapping. Create means the biome/draft menus. Reopening creation choices preserves the current document. The editor canvas retains its existing pan/edit gestures. Release completion uses a 180–320 ms sine ease-in/out; ordinary page returns use 280–380 ms with the same gentle start/end. A growing gutter reaches 64 logical units between visible pages. The logo, tabs, account and Settings stay fixed; both outgoing and incoming content/scenery slide in a viewport clipped below the header. Full-screen scenic framing is retained inside that clip. Outgoing content ignores GUI input and stops processing; swipe completion parks it as an inactive reverse neighbor; leaving the tab group and starting a race clean up transitions. A new press settles an earlier animation before hit-testing, allowing rapid consecutive swipes while retaining carousel ownership. The existing track-selection slide is independent. Same-tab refreshes are immediate.
+ - `game/tests/test_menu_page_swipe.gd` (and `.uid`): real viewport-dispatched touches at 1280x720 and 960x540 cover both directions, boundaries, draft preservation, cancellation, multitouch, button taps, carousel scrolling/edge ownership, leaving the carousel, dialogs, editor panning, animation progress/disposal and rapid replacement.
+ - This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and the evidence directory record the slice. No simulation/rules/schema changes.
+ 
+@@ -94,3 +94,33 @@
+ The opt-in `menu_probe.json` with `{"page_swipes":true}` measures real viewport dispatch/rendering on the physical phone: eight 30-frame drags, including initial vertical jitter, all promote the expected already visible neighbor; **zero failures**. In the first cached build, returning to Race still rebuilt sections: maximum frames were 89.396/85.700 ms. After removing that rebuild and warming draw commands, final return maxima were **41.014/41.915 ms**, and the first Garage maximum fell **74.662 → 24.278 ms**. Final window medians are **16.594–16.906 ms**, p95 **20.102–24.876 ms**, worst **41.915 ms**. Drag dispatch calls max **0.693–1.708 ms**, commit calls **6.154–9.874 ms**. Retained [first](evidence/live-menu-slide-2026-10-04/phone-page-timing-first.json) and [final raw timing](evidence/live-menu-slide-2026-10-04/phone-page-timing.json) reports. This compares two iterations of this correction, not the original installed implementation, and is a short synthetic-input sample rather than sustained performance or a human-finger acceptance result. Temporary probe/transfer triggers were removed; normal play is restored.
+ 
+ Full Validate/replay regression, gameplay driving, sustained thermal/large-catalog/other-device testing and human-finger feel remain acceptance checks. A scoped reverse-checked Git patch, focused logs, phone commands/results and screenshots are retained with the evidence; no mixed-workspace commit.
++
++## Short swipes, wider gutter and gentle release (2026-10-04)
++
++Requirements R01/V03/V04/V05/Q01. Owner still found navigation cumbersome and too prone to reverting, asked for a short gesture of a few centimetres to suffice, more empty space between visible pages, and smoother release especially when returning to the original page. This correction supersedes the 56-unit release threshold and fast-start easing above.
++
++Commitment now arms at **32 logical units**, rather than 56, and remains armed through slight backward finger relaxation. Only an actual drag back within **12 units** of the origin, crossing toward the opposite direction, cancellation, a second finger or a modal can revoke that direction. The latest displayed drag position determines the animation start; a noisy lift coordinate cannot undo commitment or teleport the pages. A deliberate return near the origin still cancels normally. Recognition and carousel/editor/slider/modal ownership remain unchanged.
++
++The gutter grows at half the finger displacement up to **64 logical units**. This leaves part of the next page visible from the first small movement, then opens a clearly wider empty strip on longer drags. Both directions preserve exact outgoing/incoming positions and spacing on commitment. Cancellation closes the gutter smoothly. Tab transitions use the full gutter too. Top navigation stays fixed and cached page controls remain reused.
++
++Completion now uses **sine ease-in/out over 180–320 ms**. Ordinary cancellation uses the same gentle start/end over **280–380 ms**, depending on the displayed travel. The original capped outer-edge spring remains. Release begins at the held position, with zero starting slope, rather than beginning with the return's maximum speed.
++
++Changed files: `game/ui/menu_page_swipe.gd`, `game/core/app.gd`, `game/tests/test_menu_page_swipe.gd`, this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `docs/evidence/short-menu-swipes-2026-10-04/`. No physics/rules/schema changes. Original Android export settings and concurrent AdMob/backend work were preserved; no service action or ad test was performed.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` with pinned Godot 4.7.2:
++
++| Command | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical` | **194 checks, zero failures**, `TestScript-26980`; twenty desktop/compact screenshots. Includes short commitment, backward relaxation, noisy lift coordinates, deliberate cancellation, growing/full gutter, exact release continuity and gentle first-frame movement, alongside carousel/header/edge/modal/tap/editor regressions. |
++| `TestApp` | **96 checks, zero failures**, `TestApp-36644`. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **284 scripts, zero failures**, `TestScript-28160`. |
++| `DeployAndroid -QuickValidation -DeviceSerial PRQKU4U4PREQNRWG -AdbPath <SDK adb>` | Focused import/startup/driving **72**/catalog **21**/menus **48** passed, then export failed because concurrent Gradle/plugin settings needed missing `android_source.zip` and an uninstalled Android build template (`DeployAndroid-36536`). No install from this failed command. |
++| Isolated staged `scripts/dev.ps1 ExportAndroid -QuickValidation` | **Passed**, `build/short-menu-phone-export/build/logs/ExportAndroid-28324`: same pinned engine and existing matching APK template, focused checks and fresh signed export. Only the copied preset disables Gradle; shared source/preset remains intact. |
++| Staged `InstallAndroid` / `LaunchAndroid` with explicit physical serial and SDK adb | **Success** / **COLD, ok, 732 ms**, `InstallAndroid-26880` / `LaunchAndroid-26332`. Installed APK: `build/short-menu-phone-export/build/android/circuit01-debug.apk`. This is a UI test build using the existing APK template; the unfinished native AdMob plugin is not packaged. |
++| `git diff --check` / `git apply --reverse --check <scoped patch>` | Passed. |
++
++Initial graphical run had three failures (`TestScript-13788`): its early return sample was distorted by preceding PNG encoding/render-frame timing, and a compact-window assertion compared logical motion against physical image width. The second run retained one width assertion failure (`TestScript-23348`). Final tests compare against the actual initial logical position, and step the **real engine tween by 1/60 second** before resuming normal animation. Both release types must retain more than **97%** of their held distance after that first frame while still making progress; the previous fast-start easing would fail this bound. No runtime movement/ownership invariant was weakened.
++
++Actual phone verification on **DN2103**, after choosing Guest: a native Android drag moved **60 physical pixels**, relaxed halfway to **30 pixels**, then released at the original press coordinate. It still completed Race → Create; a separate **60-pixel reverse swipe** returned to Race. The physical centimetre threshold depends on device scaling; a gesture of a few centimetres comfortably exceeds this tested small movement. Inspected [short committed swipe](evidence/short-menu-swipes-2026-10-04/phone-short-committed.png), [wide gutter while held](evidence/short-menu-swipes-2026-10-04/phone-gutter-held.png), [canceled return](evidence/short-menu-swipes-2026-10-04/phone-canceled-return.png) and desktop [Create/Garage gutter](evidence/short-menu-swipes-2026-10-04/live-create-garage-1280x720.png). A native track-list gesture keeps Race. First gutter capture attempt encountered an adb daemon reset; the complete held/cancel sequence was repeated successfully. Guest Race is left open, and the temporary remote screenshot was removed.
++
++Evidence retains scoped source patch, focused test/install/launch logs and phone/build commands. Staged `app.gd` and `menu_page_swipe.gd` SHA-256 hashes match the tested workspace source. Existing three driving shutdown instance warnings and build-tools fallback to 35.0.1 remain. Full Validate/replay, new frame-time/GPU/thermal/large-catalog benchmarks, other-device testing and human-finger release/spacing feel remain acceptance checks. No mixed-workspace commit.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner follow-up makes short page swipes easier and release gentler. Commitment arms at 32 logical units and survives relaxation until dragged back within 12; lift-coordinate jitter cannot undo intent or jump content. Gutter grows to 64 units while revealing the neighbor early. Completion/ordinary return now use sine ease-in/out; fixed header, cached pages, carousel ownership and outer-edge spring retained. Final gesture 194, app 96, parse 284 and focused staged export checks pass. UI test APK installed/cold-launched on DN2103: 60-pixel swipe with halfway relaxation and noisy release commits; short reverse, held gutter, cancellation and carousel verified. Shared export initially blocked by unfinished Gradle/plugin setup; isolated pinned-template build preserves it and excludes unfinished native AdMob packaging. Existing driving warnings; human finger feel/full Validate/performance acceptance remain. Actual commands, files, screenshots and scoped patch: docs/MENU_PAGE_SWIPES.md (Short swipes, wider gutter and gentle release).
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner follow-up makes short page swipes easier and release gentler. Commitment arms at 32 logical units and survives relaxation until dragged back within 12; lift-coordinate jitter cannot undo intent or jump content. Gutter grows to 64 units while revealing the neighbor early. Completion/ordinary return now use sine ease-in/out; fixed header, cached pages, carousel ownership and outer-edge spring retained. Final gesture 194, app 96, parse 284 and focused staged export checks pass. UI test APK installed/cold-launched on DN2103: 60-pixel swipe with halfway relaxation and noisy release commits; short reverse, held gutter, cancellation and carousel verified. Shared export initially blocked by unfinished Gradle/plugin setup; isolated pinned-template build preserves it and excludes unfinished native AdMob packaging. Existing driving warnings; human finger feel/full Validate/performance acceptance remain. Actual commands, files, screenshots and scoped patch: docs/MENU_PAGE_SWIPES.md (Short swipes, wider gutter and gentle release).
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.

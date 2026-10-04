@@ -1,0 +1,1150 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -354,8 +354,9 @@
+ 	nav.add_child(tabs)
+ 	for item: Array in [["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
+ 		var id: String = item[0]
+-		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _show_screen.bind(id), screen == id or (id == "tracks" and screen == "rivalry") or (id == "create" and screen in ["biome","drafts"]))
++		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _navigate_menu_page.bind(id), screen == id or (id == "tracks" and screen == "rivalry") or (id == "create" and screen in ["biome","drafts"]))
+ 		button.name = "Tab_" + id
++		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+ 		button.custom_minimum_size.y = 64
+ 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		tabs.add_child(button)
+@@ -626,21 +636,22 @@
+ 	for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
+ 
+ func _set_menu_preview_input(node: Node, disabled: bool) -> void:
+-	if node is Control:
+-		if disabled:
+-			node.set_meta("page_mouse_filter", node.mouse_filter)
+-			node.set_meta("page_focus_mode", node.focus_mode)
+-			node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-			node.focus_mode = Control.FOCUS_NONE
+-		elif node.has_meta("page_mouse_filter"):
+-			node.mouse_filter = node.get_meta("page_mouse_filter")
+-			node.focus_mode = node.get_meta("page_focus_mode")
+-			node.remove_meta("page_mouse_filter")
+-			node.remove_meta("page_focus_mode")
+-	for child: Node in node.get_children(): _set_menu_preview_input(child, disabled)
++	var control := node as Control
++	if control == null: return
++	# The pinned engine propagates these overrides natively. Keep descendant
++	# mouse/focus preferences intact instead of rewriting hundreds of controls.
++	control.mouse_behavior_recursive = Control.MOUSE_BEHAVIOR_DISABLED if disabled else Control.MOUSE_BEHAVIOR_INHERITED
++	control.focus_behavior_recursive = Control.FOCUS_BEHAVIOR_DISABLED if disabled else Control.FOCUS_BEHAVIOR_INHERITED
++	if disabled and not control.has_meta("page_mouse_filter"):
++		control.set_meta("page_mouse_filter",control.mouse_filter)
++		control.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	elif not disabled and control.has_meta("page_mouse_filter"):
++		control.mouse_filter = control.get_meta("page_mouse_filter")
++		control.remove_meta("page_mouse_filter")
+ 
+ func _commit_menu_neighbor(direction: int) -> void:
+ 	var neighbor: Dictionary = menu_neighbors[direction]
++	_refresh_cached_menu_page(neighbor.screen, neighbor.content)
+ 	var offset: float = menu_body.position.x
+ 	_stop_menu_page_motion()
+ 	menu_neighbors.erase(direction)
+@@ -684,7 +695,36 @@
+ 	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
+ 	if browser != null:
+ 		browser_state = browser.state
+-	_slide_menu_page(direction, offset)
++	_slide_menu_page(signi(direction), offset)
++
++func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> void:
++	if destination == "garage":
++		var circuit: MenuFeature = column.find_child("GarageCircuit",true,false)
++		if circuit != null:
++			var title: String = track_title(selected_track).to_upper()+" · 5 LAPS"
++			if circuit.heading != title:
++				circuit.heading = title
++				circuit.tooltip_text = title+". "+circuit.description
++				circuit.queue_redraw()
++	elif destination == "biome" and str(column.get_meta("biome_theme","")) != str(document.get("theme",TrackDocument.THEMES[0])):
++		for child: Node in column.get_children():
++			column.remove_child(child)
++			child.queue_free()
++		_choose_biome(column,true)
++
++func _navigate_menu_page(next: String) -> void:
++	# Explicit refreshes still use _show_screen. User navigation promotes the same
++	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
++	if menu_page_motion != null: _finish_menu_page_slide()
++	if next == screen and is_instance_valid(menu_body):
++		_refresh_cached_menu_page(next,content)
++		_set_menu_preview_input(menu_body,false)
++		return
++	for direction: int in menu_neighbors:
++		if menu_neighbors[direction].screen == next:
++			_commit_menu_neighbor(direction)
++			return
++	_show_screen(next)
+ 
+ func _finish_menu_page_slide() -> void:
+ 	_stop_menu_page_motion()
+@@ -898,7 +938,7 @@
+ 	browser.page_preview = preview
+ 	browser.state = browser_state.duplicate(true) if preview else browser_state
+ 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
+-	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
++	browser.track_selected.connect(_menu_track_selected)
+ 	browser.home_requested.connect(func() -> void: _show_screen("tracks"))
+ 	browser.import_requested.connect(_import_dialog)
+ 	browser.delete_requested.connect(_confirm_delete_track)
+@@ -913,14 +953,20 @@
+ 	parent.add_child(browser)
+ 	if not preview: menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
+ 
++func _menu_track_selected(track: NativeTrack) -> void:
++	selected_track = track
++	if screen == "garage" and is_instance_valid(content): _refresh_cached_menu_page("garage",content)
++	for neighbor: Dictionary in menu_neighbors.values():
++		if neighbor.screen == "garage": _refresh_cached_menu_page("garage",neighbor.content)
++
+ func _open_race_area() -> void:
+ 	if race_area_mode == "rivalry": _open_rivalry()
+-	else: _show_screen("tracks")
++	else: _navigate_menu_page("tracks")
+ 
+ func _open_rivalry() -> void:
+ 	race_area_mode = "rivalry"
+ 	if rivalry.snapshot_scope != rivalry.scope() and not rivalry.model.sample: rivalry.reset()
+-	_show_screen("rivalry")
++	_navigate_menu_page("rivalry")
+ 	if not rivalry.model.sample: rivalry.refresh()
+ 
+ func _rivalry_changed() -> void:
+@@ -1080,6 +1127,7 @@
+ 	var footer := HBoxContainer.new()
+ 	scene_copy.add_child(footer)
+ 	_feature(footer,track_title(selected_track).to_upper()+" · 5 LAPS","Return to your selected circuit",_show_screen.bind("tracks"))
++	footer.get_child(footer.get_child_count()-1).name = "GarageCircuit"
+ 	_feature(footer,"DRIVING CONTROLS","Find your preferred layout",_show_screen.bind("settings"))
+ 	var info: VBoxContainer = _menu_card(row)
+ 	info.add_theme_constant_override("separation",6)
+@@ -1116,7 +1164,7 @@
+ 	var space := Control.new()
+ 	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	info.add_child(space)
+-	var race := MenuStyle.button("RACE  →",_start_race.bind(selected_track,false),true)
++	var race := MenuStyle.button("RACE  →",func() -> void: _start_race(selected_track,false),true)
+ 	race.custom_minimum_size.y = 64
+ 	info.add_child(race)
+ 	info.add_child(MenuStyle.button("Choose circuit",_open_library.bind("all")))
+@@ -1174,7 +1222,7 @@
+ 	_stamp_creator()
+ 	history.clear()
+ 	redo_history.clear()
+-	_show_screen("biome")
++	_navigate_menu_page("biome")
+ 	object_browser = null
+ 	object_browser_state.clear()
+ 
+@@ -2836,6 +2885,7 @@
+ 
+ func _choose_biome(parent: VBoxContainer = null, preview: bool = false) -> void:
+ 	if parent == null: parent = content
++	parent.set_meta("biome_theme",str(document.get("theme",TrackDocument.THEMES[0])))
+ 	if not preview and screen != "biome": return
+ 	if document.is_empty() and not preview:
+ 		document = TrackDocument.create_blank()
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -60,6 +60,10 @@
+ var _query_signature: String = ""
+ var tile_stride: int = 202
+ var gallery_slot: Control
++var _cloud_catalog_state: Array = []
++var _page_dirty: bool = false
++var _detail_state: Array = []
++var _hero_state: Array = []
+ 
+ func _ready() -> void:
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -173,14 +177,14 @@
+ 		# Adjacent menu preparation reads cached metadata only. No random choice,
+ 		# download, account write or HTTP request may start during a page drag.
+ 		if cloud != null:
+-			cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++			_sync_cloud_catalog()
+ 			catalog.indexed_revision = library.revision
+ 		loading = false
+ 		_refresh()
+ 		_show_detail()
+ 		return
+ 	if catalog.indexed_revision == library.revision:
+-		if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++		if cloud != null: _sync_cloud_catalog()
+ 		loading = false
+ 		_refresh()
+ 		_show_detail()
+@@ -194,8 +198,9 @@
+ 	var revision: int = library.revision
+ 	var slice_start: int = Time.get_ticks_usec()
+ 	catalog.entries.clear()
++	_cloud_catalog_state.clear()
+ 	if cloud != null:
+-		cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++		_sync_cloud_catalog()
+ 		loading = false
+ 		catalog.indexed_revision = revision
+ 		_refresh()
+@@ -220,7 +225,7 @@
+ 			if not is_inside_tree(): return
+ 			slice_start = Time.get_ticks_usec()
+ 	catalog.add_shared_tracks()
+-	if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++	if cloud != null: _sync_cloud_catalog()
+ 	loading = false
+ 	catalog.indexed_revision = revision
+ 	_refresh()
+@@ -235,20 +240,35 @@
+ 	if catalog.indexed_revision != library.revision:
+ 		_load_catalog()
+ 	else:
++		if _page_dirty:
++			if cloud != null: _cloud_changed()
++			_refresh()
++			_show_detail()
++			_page_dirty = false
+ 		_random_on_open()
+ 		if cloud != null: cloud.refresh()
+ 
++func _sync_cloud_catalog() -> bool:
++	if cloud == null: return false
++	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
++	if current == _cloud_catalog_state: return false
++	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++	_cloud_catalog_state = current.duplicate(true)
++	return true
++
+ func _cloud_changed() -> void:
+-	if page_preview: return
+-	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
++	if page_preview:
++		_page_dirty = true
++		return
+ 	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
++	if not _sync_cloud_catalog(): return
+ 	_refresh()
+ 	if not selecting:
+ 		for entry: Dictionary in catalog.entries:
+ 			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
+ 				_select(entry)
+ 				return
+-		if not _selected_is_available(): _show_detail()
++		_show_detail()
+ 
+ func _selected_is_available() -> bool:
+ 	if cloud == null: return true
+@@ -266,15 +286,15 @@
+ 
+ func _refresh() -> void:
+ 	if not is_instance_valid(grid): return
+-	gallery.call("_stop_snap")
+ 	matches = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
+-	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any")])
+-	if signature != _query_signature: gallery.scroll_horizontal = 0
++	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any"),state.get("age_days",0),state.get("race_history","any")])
++	if signature != _query_signature:
++		gallery.call("_stop_snap")
++		gallery.scroll_horizontal = 0
+ 	_query_signature = signature
+-	_tile_start = -1
+ 	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
+-	_render_tiles()
+-	if matches.is_empty():
++	_render_tiles(true)
++	if matches.is_empty() and grid.get_child_count() == 0:
+ 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
+ 		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
+ 			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
+@@ -293,28 +313,32 @@
+ 	if filter_dialog.visible: filter_dialog.refresh_choices()
+ 	if search_dialog != null and search_dialog.visible: search_dialog.refresh_results()
+ 
+-func _render_tiles() -> void:
++func _render_tiles(reconcile: bool = false) -> void:
+ 	if not is_instance_valid(grid): return
+ 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+-	if first == _tile_start: return
++	if first == _tile_start and not reconcile: return
+ 	# Keep overlapping cards alive: scrolling one card must not rebuild twelve
+ 	# buttons, resample every route and invalidate all their draw commands.
+-	if _tile_start == -1: _clear(grid)
+ 	_tile_start = first
+ 	var end: int = mini(matches.size(),first+12)
++	var wanted: Dictionary = {}
++	for index: int in range(first,end): wanted[str(matches[index].id)] = index
+ 	var retained: Dictionary = {}
+ 	for child: Node in grid.get_children():
+-		var index: int = int(child.get_meta("catalog_index",-1))
+-		if index < first or index >= end:
++		var identity: String = str(child.entry.id) if child is TrackTile else ""
++		if not wanted.has(identity):
+ 			grid.remove_child(child)
+ 			child.queue_free()
+-		else: retained[index] = child
++		else: retained[identity] = child
+ 	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
+ 	for index: int in range(first,end):
+-		if retained.has(index):
+-			grid.move_child(retained[index],index-first)
++		var entry: Dictionary = matches[index]
++		if retained.has(str(entry.id)):
++			var existing: TrackTile = retained[str(entry.id)]
++			if int(existing.get_meta("catalog_index")) != index: existing.set_meta("catalog_index",index)
++			if reconcile: existing.update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),entry.id == preview_entry.get("id",selected_track.identity))
++			grid.move_child(existing,index-first)
+ 			continue
+-		var entry: Dictionary = matches[index]
+ 		var tile := TrackTile.new()
+ 		tile.set_meta("catalog_index",index)
+ 		tile.compact = true
+@@ -323,8 +347,8 @@
+ 		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
+ 		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
+ 		tile.name = "Track_"+str(entry.id)
+-		tile.pressed.connect(_select.bind(entry))
+-		tile.focus_entered.connect(_focus_card.bind(index))
++		tile.pressed.connect(_select_tile.bind(tile))
++		tile.focus_entered.connect(_focus_tile.bind(tile))
+ 		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
+ 		grid.add_child(tile)
+ 		grid.move_child(tile,index-first)
+@@ -353,6 +377,8 @@
+ 	_select(entry)
+ 
+ func _select(entry: Dictionary) -> void:
++	var cached: NativeTrack = catalog.cached_track(entry)
++	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null: return
+ 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
+ 	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
+ 	var previous_index: int = -1
+@@ -363,7 +389,6 @@
+ 	_hero_direction = -1.0 if previous_index >= 0 and next_index >= 0 and next_index < previous_index else 1.0
+ 	_selection_serial += 1
+ 	_requested_entry = {}
+-	var cached: NativeTrack = catalog.cached_track(entry)
+ 	if cached != null:
+ 		_finish_selection({"track":cached,"draft":{}})
+ 		race_button.disabled = selecting or _resolve_thread != null
+@@ -380,8 +405,10 @@
+ 		records_panel.modulate.a = 1.0
+ 	for tile: Node in grid.get_children():
+ 		if tile is TrackTile:
+-			tile.selected = tile.entry.id == entry.id
+-			tile.queue_redraw()
++			var chosen: bool = tile.entry.id == entry.id
++			if tile.selected != chosen:
++				tile.selected = chosen
++				tile.queue_redraw()
+ 	if cached != null: return
+ 	var serial: int = _selection_serial
+ 	if entry.source == "cloud" and cloud != null:
+@@ -518,6 +545,9 @@
+ 	dialog.popup_centered()
+ 
+ func _discovery_changed() -> void:
++	if page_preview:
++		_page_dirty = true
++		return
+ 	_refresh()
+ 	if not selecting: _show_detail()
+ 
+@@ -573,7 +603,16 @@
+ 
+ func _show_detail() -> void:
+ 	if selecting or not preview_entry.is_empty(): return
+-	if not _selected_is_available():
++	var key: String = records.key_for(selected_track,HandlingSelection.config())
++	var pb: Dictionary = records.records.get(key,{})
++	var snapshot: Dictionary = discovery.record_snapshot(key)
++	var available: bool = _selected_is_available()
++	var current: Array = [selected_track,key,available,pb,snapshot,str(selected_track.metadata.get("cloud_version",""))]
++	if current == _detail_state:
++		_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper() if available else "CHOOSE A TRACK",str(selected_track.metadata.get("theme","pine")) if available else "pine")
++		return
++	_detail_state = current.duplicate(true)
++	if not available:
+ 		_clear(detail)
+ 		_show_hero("CHOOSE A TRACK","pine")
+ 		detail.add_child(MenuStyle.label("Connect to load published tracks. Downloaded tracks remain available offline.",18,true))
+@@ -594,9 +633,6 @@
+ 	_fixed_column(row,personal,"PersonalRecords",230)
+ 	_heading(personal,"YOUR RECORDS","timer")
+ 	var personal_body: VBoxContainer = _section_body(personal)
+-	var key: String = records.key_for(selected_track,HandlingSelection.config())
+-	var pb: Dictionary = records.records.get(key,{})
+-	var snapshot: Dictionary = discovery.record_snapshot(key)
+ 	var best_ms: int = int(snapshot.get("race_ms",pb.get("race_ms",0)))
+ 	if best_ms <= 0:
+ 		var empty_time := MenuStyle.label("No time yet",18)
+@@ -715,6 +751,7 @@
+ 	records.settings.favorites = favorites
+ 	if records.save_records() != OK: notice.emit("Favorite could not be saved. Check available storage.")
+ 	_refresh()
++	if id == selected_track.identity: _show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
+ 
+ func _build_mode_rail(parent: Control) -> void:
+ 	var rail := RaceModeRail.new()
+@@ -723,6 +760,15 @@
+ 	parent.add_child(rail)
+ 
+ func _show_hero(title: String, theme_id: String) -> void:
++	var rating_entry: Dictionary = preview_entry
++	if rating_entry.is_empty():
++		for candidate: Dictionary in catalog.entries:
++			if str(candidate.id) == selected_track.identity:
++				rating_entry = candidate
++				break
++	var current: Array = [selected_track,_selection_serial,title,theme_id,preview_entry,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),rating_entry]
++	if current == _hero_state: return
++	_hero_state = current.duplicate(true)
+ 	_prepare_outgoing_section()
+ 	if not preview_entry.is_empty():
+ 		title = str(preview_entry.name).to_upper()
+@@ -785,12 +831,6 @@
+ 	info.add_child(attribution)
+ 	creator.custom_minimum_size.x = minf(280.0,MenuStyle.BODY.get_string_size(creator.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x)
+ 	attribution.add_child(creator)
+-	var rating_entry: Dictionary = preview_entry
+-	if rating_entry.is_empty():
+-		for candidate: Dictionary in catalog.entries:
+-			if str(candidate.id) == selected_track.identity:
+-				rating_entry = candidate
+-				break
+ 	var rating_tile := TrackTile.new()
+ 	rating_tile.entry = rating_entry
+ 	rating_tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(rating_entry.get("id",selected_track.identity)),0))
+@@ -937,3 +977,9 @@
+ 	if left < gallery.scroll_horizontal or left+tile_stride-12 > gallery.scroll_horizontal+gallery.size.x:
+ 		gallery.call("_stop_snap")
+ 		gallery.scroll_horizontal = left
++
++func _select_tile(tile: TrackTile) -> void:
++	_select(tile.entry)
++
++func _focus_tile(tile: TrackTile) -> void:
++	_focus_card(int(tile.get_meta("catalog_index")))
+diff --git a/game/ui/track_tile.gd b/game/ui/track_tile.gd
+--- a/game/ui/track_tile.gd
++++ b/game/ui/track_tile.gd
+@@ -19,24 +19,49 @@
+ var compact: bool = false
+ var paths: Array[PackedVector2Array] = []
+ var route_bounds: Rect2
++static var scenery_cache: Dictionary = {}
++var _projected_size: Vector2 = Vector2(-1,-1)
++var _projected_compact: bool = false
++var _projected_paths: Array[PackedVector2Array] = []
++var _projected_shadows: Array[PackedVector2Array] = []
+ 
+ static func scenery_texture(theme_id: String) -> Texture2D:
+ 	if theme_id == "storm": return STORM_SCENERY
++	if scenery_cache.has(theme_id): return scenery_cache[theme_id]
+ 	var quadrant: Vector2 = {"pine":Vector2(0,0),"desert":Vector2(1,0),"night_city":Vector2(0,1),"winter":Vector2(1,1)}.get(theme_id,Vector2.ZERO)
+ 	var cell: Vector2 = SCENERY.get_size()*0.5
+ 	var atlas := AtlasTexture.new()
+ 	atlas.atlas = SCENERY
+ 	atlas.region = Rect2(quadrant*cell,cell)
++	scenery_cache[theme_id] = atlas
+ 	return atlas
++
++func update_entry(value: Dictionary, saved_favorite: bool, saved_rating: int, chosen: bool) -> void:
++	if entry == value and favorite == saved_favorite and personal_rating == saved_rating and selected == chosen: return
++	var route_changed: bool = entry.get("points",[]) != value.get("points",[]) or entry.get("pieces",[]) != value.get("pieces",[])
++	entry = value
++	favorite = saved_favorite
++	personal_rating = saved_rating
++	selected = chosen
++	if route_changed: _cache_route()
++	_update_tooltip()
++	var star: Button = get_node("ToggleFavorite")
++	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
++	star.tooltip_text = "Remove favorite" if favorite else "Save favorite"
++	star.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if favorite else MenuStyle.TEXT)
++	queue_redraw()
++
++func _update_tooltip() -> void:
++	tooltip_text = str(entry.name)+" — "+str(entry.creator)
++	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
++	if not draft_mode: tooltip_text += "\n" + rating_text() + (" — verified racers" if entry.get("source") == "cloud" else " — local votes on this device")
+ 
+ func _ready() -> void:
+ 	clip_contents = true
+ 	custom_minimum_size = Vector2(190,220)
+ 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+-	tooltip_text = str(entry.name)+" — "+str(entry.creator)
+-	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
+-	if not draft_mode: tooltip_text += "\n" + rating_text() + (" — verified racers" if entry.get("source") == "cloud" else " — local votes on this device")
++	_update_tooltip()
+ 	var star := MenuStyle.button("",func() -> void: favorite_requested.emit())
+ 	star.name = "ToggleFavorite"
+ 	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
+@@ -59,6 +84,8 @@
+ 	focus_exited.connect(queue_redraw)
+ 
+ func _cache_route() -> void:
++	paths.clear()
++	_projected_size = Vector2(-1,-1)
+ 	var pieces: Variant = entry.get("pieces",[])
+ 	if pieces is Array and pieces.size() <= RoadPieces.MAX_PIECES:
+ 		for piece: Variant in pieces:
+@@ -149,6 +176,23 @@
+ 		draw_rect(Rect2(area.position.x,area.end.y-30+band*3,area.size.x,3),Color(0.02,0.07,0.08,float(band)*0.03))
+ 
+ func _draw_route(area: Rect2) -> void:
++	if _projected_size != size or _projected_compact != compact:
++		_project_route(area)
++	for index: int in range(_projected_paths.size()):
++		var points: PackedVector2Array = _projected_paths[index]
++		draw_polyline(_projected_shadows[index],Color(0.025,0.055,0.035,0.4),10,true)
++		draw_polyline(points,Color("15202a"),9,true)
++		draw_polyline(points,Color("f0ede0"),5,true)
++		draw_polyline(points,Color("ffffff"),1.2,true)
++		if index == 0 and not draft_mode:
++			draw_circle(points[0],5,Color("091720"))
++			draw_circle(points[0],2.7,MenuStyle.ACCENT)
++
++func _project_route(area: Rect2) -> void:
++	_projected_size = size
++	_projected_compact = compact
++	_projected_paths.clear()
++	_projected_shadows.clear()
+ 	var available := Rect2(area.position+Vector2(26,26),area.size-Vector2(52,52))
+ 	if compact: available = Rect2(area.position+Vector2(46,12),area.size-Vector2(92,24))
+ 	var scale: float = minf(available.size.x/route_bounds.size.x,available.size.y/route_bounds.size.y)
+@@ -160,10 +204,5 @@
+ 			var projected: Vector2 = (Vector2(point.x,-point.y)-route_bounds.get_center())*scale+available.get_center()
+ 			points.append(projected)
+ 			shadow.append(projected+Vector2(2,3))
+-		draw_polyline(shadow,Color(0.025,0.055,0.035,0.4),10,true)
+-		draw_polyline(points,Color("15202a"),9,true)
+-		draw_polyline(points,Color("f0ede0"),5,true)
+-		draw_polyline(points,Color("ffffff"),1.2,true)
+-		if path == paths[0] and not draft_mode:
+-			draw_circle(points[0],5,Color("091720"))
+-			draw_circle(points[0],2.7,MenuStyle.ACCENT)
++		_projected_paths.append(points)
++		_projected_shadows.append(shadow)
+diff --git a/game/ui/menu_style.gd b/game/ui/menu_style.gd
+--- a/game/ui/menu_style.gd
++++ b/game/ui/menu_style.gd
+@@ -11,6 +11,7 @@
+ const POSITIVE := Color("66dfbb")
+ const DISPLAY: Font = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
+ const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
++static var _theme: Theme
+ 
+ static func box(color: Color, padding: int = 12) -> StyleBoxFlat:
+ 	var style := StyleBoxFlat.new()
+@@ -20,6 +21,7 @@
+ 	return style
+ 
+ static func theme() -> Theme:
++	if _theme != null: return _theme
+ 	var value := Theme.new()
+ 	value.default_font_size = 18
+ 	value.default_font = BODY
+@@ -58,6 +60,7 @@
+ 	value.set_stylebox("fill", "ProgressBar", box(ACCENT,0))
+ 	value.set_constant("separation", "HBoxContainer", 12)
+ 	value.set_constant("separation", "VBoxContainer", 12)
++	_theme = value
+ 	return value
+ 
+ static func card(padding: int = 20) -> StyleBoxFlat:
+diff --git a/game/ui/menu_page_swipe.gd b/game/ui/menu_page_swipe.gd
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -15,13 +15,17 @@
+ var target: BaseButton
+ var last_drag_distance: float = 0.0
+ var commit_direction: int = 0
++var intent_sign: float = 0.0
++var intent_origin: float = 0.0
++var intent_peak: float = 0.0
+ const CLAIM_DISTANCE: float = 6.0
+ const PAGE_DISTANCE: float = 20.0
+ const CANCEL_DISTANCE: float = 6.0
++const REVERSE_DISTANCE: float = 20.0
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+-	if event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION:
++	if event is InputEventMouse and (event.device == InputEvent.DEVICE_ID_EMULATION or pointer != -1):
+ 		# Godot dispatches a touch's emulated mouse event BEFORE the touch itself.
+ 		# A moving button stays under the finger: its mouse UP would activate it,
+ 		# rebuild the original page and discard the pending touch release.
+@@ -49,6 +53,9 @@
+ 			rejected = false
+ 			last_drag_distance = 0.0
+ 			commit_direction = 0
++			intent_sign = 0.0
++			intent_origin = 0.0
++			intent_peak = 0.0
+ 			target = _button_at(menu, origin)
+ 			gesture_started.emit()
+ 			# Match the carousel's tap dispatch; a swipe never activates its starting button.
+@@ -64,7 +71,7 @@
+ 				var horizontal_release: bool = dragging or absf(distance.x) > absf(distance.y) * 1.05
+ 				if forward_release and horizontal_release and absf(distance.x) >= PAGE_DISTANCE:
+ 					dragging = true
+-					commit_direction = 1 if distance.x < 0.0 else -1
++					_update_intent(distance.x)
+ 			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and commit_direction != 0
+ 			var direction: int = commit_direction
+ 			var tap: BaseButton = target
+@@ -87,19 +94,36 @@
+ 			# gesture to establish horizontal intent after initial vertical jitter.
+ 			if absf(distance.x) > absf(distance.y) * 1.05: dragging = true
+ 		if dragging and not rejected:
++			_update_intent(distance.x)
+ 			last_drag_distance = distance.x
+-			# Hysteresis lets a short completed swipe survive finger relaxation,
+-			# while returning close to the origin or crossing it cancels that direction.
+-			if commit_direction != 0 and -commit_direction * distance.x <= CANCEL_DISTANCE:
+-				commit_direction = 0
+-			if absf(distance.x) >= PAGE_DISTANCE:
+-				commit_direction = 1 if distance.x < 0.0 else -1
+ 			drag_changed.emit(distance.x)
+ 		if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
++
++func _update_intent(distance: float) -> void:
++	var direction: float = signf(distance)
++	if direction != intent_sign:
++		intent_sign = direction
++		intent_origin = 0.0
++		intent_peak = direction * distance
++		commit_direction = 0
++	var progress: float = intent_sign * distance
++	if commit_direction != 0:
++		intent_peak = maxf(intent_peak, progress)
++		if progress <= CANCEL_DISTANCE or intent_peak - progress >= REVERSE_DISTANCE:
++			# A deliberate backward stroke cancels even far from the press. It
++			# takes fresh forward travel to rearm, rather than a noisy UP event.
++			commit_direction = 0
++			intent_origin = distance
++	else:
++		if intent_sign * (distance - intent_origin) < 0.0: intent_origin = distance
++		if progress >= PAGE_DISTANCE and intent_sign * (distance - intent_origin) >= PAGE_DISTANCE:
++			commit_direction = -int(intent_sign)
++			intent_peak = progress
+ 
+ func _owns_gesture(node: Node, location: Vector2) -> bool:
+ 	if node is Control:
+ 		var control := node as Control
++		if control.mouse_behavior_recursive == Control.MOUSE_BEHAVIOR_DISABLED: return false
+ 		if not control.is_visible_in_tree(): return false
+ 		if control.clip_contents and not control.get_global_rect().has_point(location): return false
+ 		if control.get_global_rect().has_point(location) and (control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
+@@ -119,6 +143,7 @@
+ func _button_at(node: Node, location: Vector2) -> BaseButton:
+ 	if node is Control:
+ 		var control := node as Control
++		if control.mouse_behavior_recursive == Control.MOUSE_BEHAVIOR_DISABLED: return null
+ 		if not control.is_visible_in_tree(): return null
+ 		if control.clip_contents and not control.get_global_rect().has_point(location): return null
+ 	var children: Array[Node] = node.get_children()
+@@ -126,5 +151,5 @@
+ 	for child: Node in children:
+ 		var button: BaseButton = _button_at(child, location)
+ 		if button != null: return button
+-	if node is BaseButton and node.mouse_filter != Control.MOUSE_FILTER_IGNORE and node.get_global_rect().has_point(location): return node
++	if node is BaseButton and node.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE and node.get_global_rect().has_point(location): return node
+ 	return null
+diff --git a/game/diagnostics/mobile_menu_probe.gd b/game/diagnostics/mobile_menu_probe.gd
+--- a/game/diagnostics/mobile_menu_probe.gd
++++ b/game/diagnostics/mobile_menu_probe.gd
+@@ -13,6 +13,9 @@
+ 	var app: Node = get_parent()
+ 	await get_tree().create_timer(2.0).timeout
+ 	var options: Variant = JSON.parse_string(FileAccess.get_file_as_string("user://menu_probe.json"))
++	if options is Dictionary and options.get("quality_review", false):
++		await _run_quality_review(app)
++		return
+ 	if options is Dictionary and options.get("page_swipes", false):
+ 		await _run_page_swipes(app)
+ 		return
+@@ -117,3 +120,46 @@
+ 	var output := FileAccess.open("user://menu_probe_results.json",FileAccess.WRITE)
+ 	output.store_string('{"interrupted":true}')
+ 	queue_free()
++
++func _sample_frames(count: int) -> Dictionary:
++	frame_ms.clear()
++	for frame: int in range(count): await get_tree().process_frame
++	var ordered: Array[float] = frame_ms.duplicate()
++	ordered.sort()
++	if ordered.is_empty(): return {}
++	return {"count":ordered.size(),"p50_ms":ordered[int((ordered.size()-1)*0.50)],"p95_ms":ordered[int((ordered.size()-1)*0.95)],"p99_ms":ordered[int((ordered.size()-1)*0.99)],"max_ms":ordered[-1]}
++
++func _run_quality_review(app: Node) -> void:
++	app._show_screen("tracks")
++	await get_tree().create_timer(1.5).timeout
++	var report: Dictionary = {"quality_review":true,"device":OS.get_model_name(),"catalog_count":app.track_catalog.entries.size(),"status_calls_ms":[],"tab_calls_ms":[],"tab_frames":[]}
++	report.idle_frames = await _sample_frames(120)
++	var browser: TrackBrowser = app.menu_body.find_child("TrackBrowser",true,false)
++	var cards: Array[int] = []
++	for card: Node in browser.grid.get_children(): cards.append(card.get_instance_id())
++	frame_ms.clear()
++	for iteration: int in range(30):
++		await get_tree().process_frame
++		var began: int = Time.get_ticks_usec()
++		app.cloud.changed.emit()
++		report.status_calls_ms.append((Time.get_ticks_usec()-began)/1000.0)
++	var after: Array[int] = []
++	for card: Node in browser.grid.get_children(): after.append(card.get_instance_id())
++	report.status_retained_cards = cards == after
++	var status_frames: Array[float] = frame_ms.duplicate()
++	status_frames.sort()
++	report.status_frame_max_ms = status_frames[-1] if not status_frames.is_empty() else 0.0
++	# Exercise the real navigation callbacks, including Create's draft setup.
++	for destination: String in ["biome","garage","tracks","garage","biome","tracks"]:
++		var began: int = Time.get_ticks_usec()
++		if destination == "biome": app._new_document()
++		elif destination == "tracks": app._open_race_area()
++		else: app.root_ui.find_child("Tab_garage",true,false).pressed.emit()
++		report.tab_calls_ms.append({"destination":destination,"ms":(Time.get_ticks_usec()-began)/1000.0})
++		report.tab_frames.append(await _sample_frames(45))
++	app._show_screen("tracks")
++	await get_tree().create_timer(0.7).timeout
++	print("MENU_QUALITY_PROBE ",JSON.stringify(report))
++	var output := FileAccess.open("user://menu_probe_results.json",FileAccess.WRITE)
++	output.store_string(JSON.stringify(report,"\t"))
++	queue_free()
+diff --git a/game/tests/capture_premium_menus.gd b/game/tests/capture_premium_menus.gd
+--- a/game/tests/capture_premium_menus.gd
++++ b/game/tests/capture_premium_menus.gd
+@@ -23,6 +23,7 @@
+ 
+ 
+ func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--capture-menus="):
+ 			capture_directory = argument.trim_prefix("--capture-menus=")
+@@ -40,6 +41,7 @@
+ 		app = (load("res://core/app.tscn") as PackedScene).instantiate()
+ 		app.set("library", TrackLibrary.new(test_directory))
+ 		app.set("records", LocalRecords.new(test_directory.path_join("records.json")))
++		app.set("cloud_root_override", test_directory.path_join("cloud"))
+ 		root.add_child(app)
+ 		while not app.get("startup_complete"): await process_frame
+ 		app.call("_show_screen","tracks")
+@@ -138,7 +140,10 @@
+ 	var records: LocalRecords = app.get("records")
+ 	var baseline_laps: Array[float] = [22.0, 21.0, 23.0, 22.0, 21.0]
+ 	check(records.record(track, load("res://resources/balanced.tres") as HandlingConfig, 109.0, baseline_laps) == OK, "isolated result fixture baseline saved")
+-	app.call("_start_race", track, false)
++	# Stand-in publication metadata permits the isolated scene fixture through the
++	# cloud-only Race gate. No ticket, upload or verified result is requested.
++	track.metadata.cloud_version = "menu-results-fixture"
++	await app.call("_start_race", track, false, true)
+ 	var game: Node = app.get("game")
+ 	game.set_physics_process(false)
+ 	var completed := TrackSession.new()
+@@ -157,6 +162,7 @@
+ func _settle() -> void:
+ 	await process_frame
+ 	await process_frame
++	while app.menu_page_motion != null or app.menu_edge_motion != null: await process_frame
+ 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser", true, false)
+ 	if browser != null:
+ 		while browser.loading:
+@@ -233,6 +239,10 @@
+ 	var sample: Dictionary = {}
+ 	for entry: Dictionary in original:
+ 		if entry.source == "builtin": sample = entry.duplicate(true); break
++	if sample.is_empty():
++		var fixtures := TrackCatalog.new(browser.library)
++		fixtures.add_builtin(BuiltinTracks.ids()[0])
++		sample = fixtures.entries[0].duplicate(true)
+ 	browser.catalog.entries.assign([sample])
+ 	# Metadata-only gallery fixtures, never saved into the owner catalog.
+ 	for index: int in range(7):
+@@ -244,6 +254,7 @@
+ 		browser.catalog.entries.append(entry)
+ 	browser.records.settings["track_ratings"] = {"gallery_fixture_0":4,"gallery_fixture_2":5}
+ 	browser.call("_refresh")
++	browser._show_detail()
+ 	await _settle()
+ 	check(browser.grid.get_child_count() == mini(12,browser.matches.size()),"all eight fixture tracks are reachable in one continuous row")
+ 	for card: TrackTile in browser.grid.get_children():
+diff --git a/game/tests/test_menu_quality.gd b/game/tests/test_menu_quality.gd
+--- a/game/tests/test_menu_quality.gd
++++ b/game/tests/test_menu_quality.gd
+@@ -0,0 +1,174 @@
++extends SceneTree
++## Isolated behavior regressions and repeatable menu CPU measurements.
++var checks: int = 0
++var failures: int = 0
++var directory: String
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: ", label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	directory = "user://menu_quality_" + TrackLibrary.unique_id()
++	var app := ProbeApp.new()
++	app.library = TrackLibrary.new(directory)
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var document: Dictionary = TrackDocument.create_default()
++	for index: int in range(40):
++		app.cloud.entries.append({"track_id":"quality-%02d" % index,"version_id":"version-%02d" % index,"content_hash":"hash-%02d" % index,"name":"Quality %02d" % index,"creator":"Fixture","creator_id":"fixture","points":document.points,"theme":"pine","rating_count":0,"rating_average":null})
++	app._show_screen("tracks")
++	await create_timer(0.7).timeout
++	var browser: TrackBrowser = app.menu_body.find_child("TrackBrowser", true, false)
++	var card: TrackTile = browser.grid.get_child(0)
++	var card_id: int = card.get_instance_id()
++	var hero_id: int = browser.hero.find_child("HeroTrackTitle", true, false).get_instance_id()
++	var began: int = Time.get_ticks_usec()
++	for iteration: int in range(30): app.cloud.changed.emit()
++	print("MENU_QUALITY_STATUS_30_MS ", (Time.get_ticks_usec() - began) / 1000.0)
++	check(browser.grid.get_child(0).get_instance_id() == card_id, "unchanged cloud status retains cards")
++	check(browser.hero.find_child("HeroTrackTitle", true, false).get_instance_id() == hero_id, "unchanged detail retains hero controls")
++	browser.gallery.settle_cards(1)
++	var motion: Tween = browser.gallery.snap_tween
++	app.cloud.changed.emit()
++	check(motion.is_running(), "status update preserves an active carousel snap")
++	await create_timer(0.3).timeout
++	check(browser.gallery.scroll_horizontal == browser.tile_stride, "status update still settles on the intended full card")
++	browser.gallery.scroll_horizontal = 0
++	browser._favorite_id(str(browser.matches[0].id))
++	check((browser.grid.get_child(0) as TrackTile).favorite, "favorite updates a retained card")
++	app.cloud.entries[0].name = "Updated quality title"
++	app.cloud.changed.emit()
++	check(browser.matches.any(func(entry: Dictionary) -> bool: return entry.name == "Updated quality title"), "changed cloud metadata reaches the carousel")
++	var warm_garage: Control = app.menu_neighbors[2].body
++	var selector: OptionButton = warm_garage.find_child("VehicleSelector",true,false)
++	check(selector.get_mouse_filter_with_override() == Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() == Control.FOCUS_NONE, "warmed page descendants reject mouse and keyboard focus")
++	var next_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	next_track.identity = "quality_new_selection"
++	next_track.metadata.title = "New selected circuit"
++	app.selected_track = next_track
++	app._commit_menu_neighbor(2)
++	await create_timer(0.4).timeout
++	var garage_race: Button = _race_button(warm_garage)
++	check(selector.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() != Control.FOCUS_NONE, "promotion restores descendant input preferences")
++	garage_race.pressed.emit()
++	check(app.raced_track == next_track, "cached Garage races the current selected track")
++	check(_contains_text(warm_garage, "NEW SELECTED CIRCUIT"), "cached Garage displays the current selected circuit")
++	var shell: Control = app.root_ui
++	var warmed_race: Control = app.menu_neighbors[-2].body
++	app._open_race_area()
++	check(app.root_ui == shell and app.menu_body == warmed_race, "Race tab promotes cached controls and keeps the header")
++	await create_timer(0.4).timeout
++	app.root_ui.find_child("Tab_garage",true,false).pressed.emit()
++	check(app.root_ui == shell and app.menu_body == warm_garage, "Garage tab promotes cached controls across two page positions")
++	await create_timer(0.4).timeout
++	app._new_document()
++	check(app.root_ui == shell and app.screen == "biome", "Create tab keeps the warmed menu shell")
++	await create_timer(0.4).timeout
++	app._preview_creation_biome("winter")
++	await create_timer(0.7).timeout
++	app._new_document()
++	check(app.document.theme == "pine" and app.content.get_meta("biome_theme") == "pine", "new draft resets the cached biome choice")
++	check(app.menu_body.find_child("Biome_pine",true,false).get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE, "reset biome controls remain reachable after cached-page refresh")
++	app.queue_free()
++	await process_frame
++	# Selection and draw measurements require no network or owner data.
++	var local := TrackBrowser.new()
++	local.library = TrackLibrary.new(directory)
++	local.records = LocalRecords.new(directory.path_join("unused.json"))
++	local.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	local.builtin_ids = BuiltinTracks.ids()
++	local.state = {}
++	local.size = Vector2(1280, 620)
++	root.add_child(local)
++	while local.loading: await process_frame
++	var entry: Dictionary = local.catalog.entries[0]
++	local.catalog.remember_track(entry, local.selected_track)
++	var selections: Array[int] = [0]
++	local.track_selected.connect(func(_track: NativeTrack) -> void: selections[0] += 1)
++	var title_id: int = local.hero.find_child("HeroTrackTitle", true, false).get_instance_id()
++	began = Time.get_ticks_usec()
++	for iteration: int in range(30): local._select(entry)
++	print("MENU_QUALITY_SAME_SELECTION_30_MS ", (Time.get_ticks_usec() - began) / 1000.0)
++	check(local.hero.find_child("HeroTrackTitle", true, false).get_instance_id() == title_id, "reselecting the ready track retains hero controls")
++	check(selections[0] == 0, "reselecting the ready track emits no redundant selection")
++	local._favorite_id(str(entry.id))
++	check(local.hero.find_child("HeroFavorite",true,false).tooltip_text == "Remove favorite", "carousel favorite updates the matching hero star")
++	local.state = {"search":"missing track"}
++	local._refresh()
++	local._refresh()
++	check(local.grid.get_child_count() == 1, "repeated empty search keeps one empty-state message")
++	local.state = {}
++	local._refresh()
++	local.gallery.scroll_horizontal = local.tile_stride
++	local.state.race_history = "unraced"
++	local._refresh()
++	check(local.gallery.scroll_horizontal == 0, "changed race-history filter resets carousel position")
++	local.queue_free()
++	await process_frame
++	var callbacks := CallbackBrowser.new()
++	callbacks.library = TrackLibrary.new(directory)
++	callbacks.records = LocalRecords.new(directory.path_join("unused.json"))
++	callbacks.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	callbacks.state = {}
++	callbacks.size = Vector2(1280,620)
++	root.add_child(callbacks)
++	while callbacks.loading: await process_frame
++	for index: int in range(20):
++		callbacks.catalog.entries.append({"id":"callback_%d" % index,"name":"Fixture %02d" % index,"creator":"Fixture","theme":"pine","source":"builtin","points":document.points})
++	callbacks._refresh()
++	var retained_card: TrackTile = callbacks.grid.get_child(0)
++	var revised: Dictionary = callbacks.catalog.entries[0].duplicate(true)
++	revised.name = "Fixture 05 revised"
++	callbacks.catalog.entries[0] = revised
++	callbacks._refresh()
++	await process_frame
++	await process_frame
++	check(is_instance_valid(retained_card) and retained_card.get_parent() == callbacks.grid, "catalog reorder retains an overlapping track card")
++	retained_card.pressed.emit()
++	check(callbacks.observed_entry.name == revised.name, "retained card selects its updated publication metadata")
++	callbacks.gallery.size.x = callbacks.tile_stride
++	retained_card.focus_entered.emit()
++	check(callbacks.gallery.scroll_horizontal == int(retained_card.get_meta("catalog_index"))*callbacks.tile_stride, "retained card focus uses its updated catalog position: %d / %d" % [callbacks.gallery.scroll_horizontal,int(retained_card.get_meta("catalog_index"))*callbacks.tile_stride])
++	callbacks.queue_free()
++	await process_frame
++	_remove_fixture(directory)
++	print("MENU_QUALITY: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func _race_button(node: Node) -> Button:
++	for child: Node in node.get_children():
++		if child is Button and child.text.begins_with("RACE"): return child
++		var found: Button = _race_button(child)
++		if found != null: return found
++	return null
++
++func _contains_text(node: Node, fragment: String) -> bool:
++	if node is MenuFeature and fragment in node.heading: return true
++	if (node is Label or node is Button) and fragment in node.text: return true
++	for child: Node in node.get_children():
++		if _contains_text(child, fragment): return true
++	return false
++
++func _remove_fixture(path: String) -> void:
++	var folder := DirAccess.open(path)
++	if folder == null: return
++	for name: String in folder.get_directories(): _remove_fixture(path.path_join(name))
++	for name: String in folder.get_files(): DirAccess.remove_absolute(path.path_join(name))
++	DirAccess.remove_absolute(path)
++
++class ProbeApp extends "res://core/app.gd":
++	var raced_track: NativeTrack
++	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}) -> void:
++		raced_track = track
++
++class CallbackBrowser extends TrackBrowser:
++	var observed_entry: Dictionary
++	func _select(entry: Dictionary) -> void: observed_entry = entry
+diff --git a/game/tests/test_menu_quality.gd.uid b/game/tests/test_menu_quality.gd.uid
+--- a/game/tests/test_menu_quality.gd.uid
++++ b/game/tests/test_menu_quality.gd.uid
+@@ -0,0 +1 @@
++uid://ct3ds2aocn2od
+diff --git a/scripts/profile-menu-quality-phone.ps1 b/scripts/profile-menu-quality-phone.ps1
+--- a/scripts/profile-menu-quality-phone.ps1
++++ b/scripts/profile-menu-quality-phone.ps1
+@@ -0,0 +1,56 @@
++[CmdletBinding()]
++param(
++    [Parameter(Mandatory = $true)][string]$DeviceSerial,
++    [Parameter(Mandatory = $true)][string]$Output,
++    [ValidateSet('Quality','PageSwipes')][string]$Mode = 'Quality',
++    [string]$AdbPath = (Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe')
++)
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++$evidence = Join-Path $repoRoot $Output
++$package = 'org.circuit01.handlinglab'
++New-Item -ItemType Directory -Force -Path $evidence | Out-Null
++function Invoke-Adb([string[]]$Arguments) {
++    $result = & $AdbPath -s $DeviceSerial @Arguments
++    if ($LASTEXITCODE -ne 0) { throw "adb failed: $Arguments" }
++    return $result
++}
++$files = Invoke-Adb @('shell','run-as',$package,'ls','files')
++foreach ($marker in @('menu_probe.json','mobile_probe.json','control_probe.json')) {
++    if ($files -contains $marker) { throw "Existing diagnostic $marker is active; its markers were preserved." }
++}
++$configuration = if ($Mode -eq 'Quality') { '{"quality_review":true}' } else { '{"page_swipes":true}' }
++$configuration | Set-Content -LiteralPath (Join-Path $evidence 'config.json') -Encoding ASCII
++Invoke-Adb @('shell','getprop','ro.product.model') | Set-Content -LiteralPath (Join-Path $evidence 'device.txt')
++try {
++    Invoke-Adb @('shell','am','force-stop',$package) | Out-Null
++    Invoke-Adb @('push',(Join-Path $evidence 'config.json'),'/data/local/tmp/menu-quality.json') | Out-Null
++    Invoke-Adb @('shell','run-as',$package,'cp','/data/local/tmp/menu-quality.json','files/menu_probe.json') | Out-Null
++    Invoke-Adb @('shell','run-as',$package,'rm','-f','files/menu_probe_results.json') | Out-Null
++    Invoke-Adb @('shell','input','keyevent','KEYCODE_WAKEUP') | Out-Null
++    Invoke-Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package)
++    $deadline = (Get-Date).AddSeconds(100)
++    $completed = $false
++    while ((Get-Date) -lt $deadline) {
++        Start-Sleep -Seconds 2
++        $files = Invoke-Adb @('shell','run-as',$package,'ls','files')
++        if ($files -notcontains 'menu_probe_results.json') { continue }
++        $raw = Invoke-Adb @('shell','run-as',$package,'cat','files/menu_probe_results.json')
++        $raw | Set-Content -LiteralPath (Join-Path $evidence 'report.json') -Encoding UTF8
++        $report = $raw -join "`n" | ConvertFrom-Json
++        if ($Mode -eq 'Quality' -and -not $report.quality_review) { throw 'Installed APK lacks the quality review diagnostic.' }
++        if ($Mode -eq 'PageSwipes' -and $report.failures.Count -gt 0) { throw "Page swipe failures: $($report.failures -join ', ')" }
++        $report | ConvertTo-Json -Depth 8
++        Invoke-Adb @('shell','screencap','-p','/data/local/tmp/menu-quality.png') | Out-Null
++        Invoke-Adb @('pull','/data/local/tmp/menu-quality.png',(Join-Path $evidence 'menu.png')) | Out-Null
++        $completed = $true
++        break
++    }
++    if (-not $completed) { throw 'Menu diagnostic timed out.' }
++} finally {
++    Invoke-Adb @('shell','am','force-stop',$package) | Out-Null
++    Invoke-Adb @('shell','run-as',$package,'rm','-f','files/menu_probe.json','files/menu_probe_results.json') | Out-Null
++    Invoke-Adb @('shell','rm','-f','/data/local/tmp/menu-quality.json','/data/local/tmp/menu-quality.png') | Out-Null
++    Invoke-Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package) | Out-Null
++    Write-Host 'Menu diagnostic removed; normal startup restored.'
++}
+diff --git a/docs/MENU_QUALITY.md b/docs/MENU_QUALITY.md
+--- a/docs/MENU_QUALITY.md
++++ b/docs/MENU_QUALITY.md
+@@ -0,0 +1,98 @@
++# Menu correctness and performance review — 2026-10-04
++
++Requirements: **R01, V03, V04, V05, Q01**. Owner requested a review of menu behavior, correctness, general quality and performance, prioritizing fluent interaction. This slice fixes measured menu work and input correctness while retaining the established artwork, dimensions and gesture thresholds.
++
++## Findings and changes
++
++1. **Primary tab taps rebuilt the menu shell and its warmed pages.** Race/Create/Garage now promote the existing page controls through the same cache used by swipes. The header stays alive, including jumps across two page positions. Explicit `_show_screen` refreshes retain their refresh semantics. Create still starts a fresh draft; cached biome choices reset when required.
++2. **Cloud status signals rebuilt the catalog/cards and stopped carousel settlement.** A browser compares a copied cloud read-model snapshot, including server/player scope and retained favorites, before reconciling the catalog. Status-only signals update status text. Changed metadata still reaches the UI. Dirty inactive pages catch up on activation.
++3. **Repeated refreshes rebuilt cards and hero/record sections with unchanged data.** Cards retain identity across refreshes/reordering. Changed route metadata invalidates their geometry cache; favorite/rating/title updates refresh presentation. Ready-track reselection is a no-op. Record/detail and hero snapshots avoid identical reconstruction; optional standings still hydrate asynchronously.
++4. **The warmed Garage bound its Race action to the track selected when it was created.** Its action now reads the current selection, and its circuit caption updates both on page promotion and when a pending Race selection completes.
++5. **Each page promotion rewrote every descendant's mouse/focus state in GDScript.** The page root now applies the pinned engine's recursive mouse/focus overrides. Descendant preferences remain intact, and gesture hit-testing honors the effective override. A refreshed biome column inherits its page gate rather than owning a second gate. [Godot Control reference](https://docs.godotengine.org/en/stable/classes/class_control.html#class-control-property-mouse-behavior-recursive) documents the inherited behavior; availability/interaction were verified with the pinned 4.7.2 engine.
++6. **Route projection and atlas creation repeated during card redraws.** Cards cache projected paths/shadows until their route or dimensions change. The five biome atlas resources and the shared menu Theme are reused. Callers that customize shared styles already duplicate them or install their own overrides.
++7. **Age/race-history filters were absent from the carousel query signature.** Changing them now resets the carousel consistently with the other filters. Carousel favorite actions also update the matching hero star.
++
++Retained-card callbacks read the card's current metadata and catalog index. The first retention implementation's captured entry/index callbacks were caught by new regressions and corrected before the final device build.
++
++## Changed files
++
++- `game/core/app.gd`: cached primary navigation, page-root input ownership and current Garage selection/caption.
++- `game/ui/track_browser.gd`: read-model/section reconciliation, card retention and current callbacks, no-op selection, filter/favorite correctness.
++- `game/ui/track_tile.gd`: in-place metadata presentation, projected route cache and shared biome atlases.
++- `game/ui/menu_style.gd`: shared Theme cache.
++- `game/ui/menu_page_swipe.gd`: inherited input overrides in gesture ownership and button hit-testing.
++- `game/diagnostics/mobile_menu_probe.gd`: opt-in debug CPU/frame/tab diagnostic, with no race or persisted draft created by the probe.
++- `game/tests/test_menu_quality.gd` / `.uid`: isolated behavioral regressions and repeatable CPU measurements.
++- `game/tests/capture_premium_menus.gd`: explicit page settlement, isolated cloud root/API, native metadata fallback and an explicitly offline controlled results fixture.
++- `scripts/profile-menu-quality-phone.ps1`: explicit device targeting, existing-marker protection and cleanup/restoration in `finally`.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `docs/evidence/menu-quality-2026-10-04/`.
++
++## Desktop verification and evidence
++
++All commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and Godot **4.7.2.stable.official.ed1daf0bf**, with matching Android templates.
++
++| Actual command/action | Actual outcome |
++|---|---|
++| `Doctor` | Initial sandbox adb home-directory failure; authorized rerun lists physical DN2103 and Pixel_9 emulator. |
++| `TestScript -ScriptPath res://tests/test_menu_quality.gd -CommandTimeoutSeconds 60/90` | Baseline: **10 checks / 8 reproduced failures**. Final: **23 / 0**. |
++| `TestMenuLoading -CommandTimeoutSeconds 90` | **38 / 0**. Cold/rapid/cached selection, stale worker draining and optional standings covered. |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical -CommandTimeoutSeconds 120` | Final **246 / 0**; earlier run **224 / 0**. Includes actual viewport input, fixed header, modal/carousel ownership and cached-page restoration. |
++| `TestApp -CommandTimeoutSeconds 120` | **97 / 0**. |
++| `TestMenus -CommandTimeoutSeconds 90` | **48 / 0**. |
++| `TestCatalog -CommandTimeoutSeconds 90` | **21 / 0**, with 5,000 entries and bounded overlapping cards. |
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 90` | **764 / 0**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **291 scripts / 0 failures**. |
++| `CaptureMenus -CommandTimeoutSeconds 180` | **1,744 / 0** at 1280×720, 960×540 and 1600×720. |
++| `ExportAndroid -QuickValidation -CommandTimeoutSeconds 180` | Baseline and optimized builds pass import/startup, driving **72**, catalog **21**, menu **48**, then export. Full Validate is not run by this mode. |
++
++On the isolated 40-entry fixture, 30 status signals took **177.030 → 0.503 ms** total CPU time. Thirty selections of the already-ready track took **160.784 → 0.046 ms**. These measure eliminating redundant work, not end-to-end network or race-start latency. The final export's 5,000-entry scrolling fixture measured **481 μs median / 759 μs p95 / 954 μs maximum** per boundary. Earlier runs varied under concurrent graphical/CPU work; a general carousel speedup is not claimed from those samples.
++
++Saved logs: [baseline failures](evidence/menu-quality-2026-10-04/baseline-regression.log), [final quality](evidence/menu-quality-2026-10-04/quality-final.log), [gesture checks](evidence/menu-quality-2026-10-04/gestures-final.log), [captures](evidence/menu-quality-2026-10-04/captures.log), [app](evidence/menu-quality-2026-10-04/app.log), [selection](evidence/menu-quality-2026-10-04/loading.log), [rivalry](evidence/menu-quality-2026-10-04/weekly.log), [parser](evidence/menu-quality-2026-10-04/parser.log).
++
++Inspected graphical evidence: [compact Race](evidence/menu-quality-2026-10-04/desktop/tracks-populated-fixture-960x540.png), [Garage](evidence/menu-quality-2026-10-04/desktop/garage-1280x720.png), [rating filter](evidence/menu-quality-2026-10-04/desktop/filters-rating-960x540.png), [keyboard search](evidence/menu-quality-2026-10-04/desktop/search-keyboard-960x540.png), [wide comparison data](evidence/menu-quality-2026-10-04/desktop/tracks-data-fixture-1600x720.png), [controlled results](evidence/menu-quality-2026-10-04/desktop/results-fixture-960x540.png). Fixtures are presentation evidence; they are not claimed verified racing results.
++
++Initial capture runs exposed assumptions in the old harness: it checked action rectangles during a live slide, assumed a native entry existed in the cloud-only catalog, omitted rebuilding native fixture detail after disconnecting its cloud adapter, and tried to drive a native fixture through the cloud-only Race gate. The repaired harness waits for actual settlement, supplies explicit local metadata and marks the controlled results fixture with stand-in publication metadata while explicitly requesting offline start. No gameplay gate or assertion was weakened. An early quality fixture omitted builtin IDs, and the retained-focus fixture initially checked before scrollbar layout; both fixture defects were corrected. The native input change also reproduced and fixed a disabled nested biome gate.
++
++## Device method and limits
++
++Physical **DN2103**, serial `PRQKU4U4PREQNRWG`, was attached and used for installs and measurements. The emulator was listed but was not used for this comparison. Every probe targets that serial, cold-launches the debug APK, warms Race for 1.5 seconds, samples 120 idle frames, issues 30 status signals and traverses six tab destinations with 45 frames per transition. The device's existing five-entry cached catalog is unchanged. Frame measurements are process callback clock intervals and include scheduling; they are not a GPU trace or Android compositor presentation timings.
++
++Actual device commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 InstallAndroid -DeviceSerial PRQKU4U4PREQNRWG
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/profile-menu-quality-phone.ps1 -DeviceSerial PRQKU4U4PREQNRWG -Output docs/evidence/menu-quality-2026-10-04/phone-before
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/profile-menu-quality-phone.ps1 -DeviceSerial PRQKU4U4PREQNRWG -Output docs/evidence/menu-quality-2026-10-04/phone-after
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/profile-menu-quality-phone.ps1 -DeviceSerial PRQKU4U4PREQNRWG -Output docs/evidence/menu-quality-2026-10-04/phone-swipes -Mode PageSwipes
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/profile-menu-quality-phone.ps1 -DeviceSerial PRQKU4U4PREQNRWG -Output docs/evidence/menu-quality-2026-10-04/phone-final
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/profile-menu-quality-phone.ps1 -DeviceSerial PRQKU4U4PREQNRWG -Output docs/evidence/menu-quality-2026-10-04/phone-final-swipes -Mode PageSwipes
++```
++
++The baseline's Garage diagnostic invoked its then-current `_show_screen` callback directly; the later diagnostic invokes the actual Garage tab callback, which now promotes cached controls. Race/Create use their existing navigation callbacks in both builds. The six destinations and timing windows are identical.
++
++The first optimized phone run, before native input gating, reduced maximum tab frames **263.367 → 60.833 ms** and maximum status-window frames **41.938 → 21.066 ms**. Cards were retained. Its eight page swipes all reached the prepared destination with no reported failure; median frame intervals were **16.43–16.965 ms**, with a maximum **43.290 ms**. [Baseline raw report](evidence/menu-quality-2026-10-04/phone-before/report.json), [first optimized report](evidence/menu-quality-2026-10-04/phone-after/report.json), [first swipe report](evidence/menu-quality-2026-10-04/phone-swipes/report.json).
++
++Final physical-device comparison, after native input gating:
++
++| Measurement | Baseline | Final |
++|---|---:|---:|
++| Median unchanged status call | 5.889 ms | **0.454 ms** |
++| Maximum primary tab call | 108.203 ms | **4.152 ms** |
++| Maximum frame across six tab transitions | 263.367 ms | **46.022 ms** |
++| Maximum status-window frame | 41.938 ms | **19.389 ms** |
++| Idle median process-frame interval | 17.005 ms | **16.730 ms** |
++| Track cards retained after status signals | No | **Yes** |
++
++[Final raw report](evidence/menu-quality-2026-10-04/phone-final/report.json), [comparison data](evidence/menu-quality-2026-10-04/comparison.json) and [inspected phone Race](evidence/menu-quality-2026-10-04/phone-final/menu.png). Transition p95 intervals are **17.901–20.219 ms**. The maximum transition frame improved about **82.5%**; the CPU call improved about **96.2%**. The remaining 46 ms spike prevents a claim of a perfectly locked 60 fps.
++
++The final [eight-swipe report](evidence/menu-quality-2026-10-04/phone-final-swipes/report.json) has **zero failures**, median frame intervals **16.718–16.931 ms**, drag-call maxima **0.653–1.325 ms**, and maximum full-window frame **43.328 ms**. These viewport-dispatched gestures establish actual device behavior and short-window timing, not human finger feel.
++
++Additional native Android input checked the final installed build: Race → Garage shows the current [Dust Cloud caption](evidence/menu-quality-2026-10-04/phone-native/garage.png); Create accepts [Winter](evidence/menu-quality-2026-10-04/phone-native/winter.png), tapping Create again [resets to Grass](evidence/menu-quality-2026-10-04/phone-native/create-reset.png), and the rebuilt palette still accepts [Desert](evidence/menu-quality-2026-10-04/phone-native/desert-after-reset.png). Returning to Race and swiping over its five visible cards [keeps Race active](evidence/menu-quality-2026-10-04/phone-native/carousel.png). Screenshots were inspected; [actual adb commands](evidence/menu-quality-2026-10-04/phone-native/commands.log) are saved. No race or persisted draft was created by these checks.
++
++Baseline debug APK SHA-256: `430027202684A56C4682263F8EEB7C03D1121BAD0826C3FD75392F71C5576650`. Final installed debug APK: `629616E50A0EA28866C1879EEC9B044508D5E36603EFBF8E4888F747C35F4242`. The final export passes the focused checks and installation reports **Success**; final probe cold launches report **881 ms** and **904 ms**. [Final export logs](evidence/menu-quality-2026-10-04/export-final/android-export.log), [installation](evidence/menu-quality-2026-10-04/install-final/adb-install.log). Temporary probe markers were removed and normal startup restored after every completed probe.
++
++## Checkpoint and remaining acceptance
++
++[Scoped source patch](evidence/menu-quality-2026-10-04/changes.patch), generated against the saved task-entry snapshots and verified with `git apply --reverse --check`, is the reviewable checkpoint. Base Git reference: `0cd3a71ced9f2473f20d5acbd6df44e003bb3641`; the initial workspace already contained unrelated changes. Concurrent race-loading/backend/ad work is preserved and excluded from this patch. Shared Android builds contain the contemporaneous workspace, so these tests do not independently accept those unrelated features. No mixed-tree commit, canonical change, backend restart/migration/deployment or full physics Validate was performed.
++
++This is a short single-phone benchmark. Human finger feel, long sessions/thermal behavior, other phones, large live catalog updates, cold track restoration and sustained authenticated network activity remain acceptance targets. Actual changed-catalog querying still sorts metadata on the main thread; departing a browser with an unfinished compilation still joins that worker. Those paths merit separate measurements before changing their ownership/consistency contracts. Focused driving validation reports existing shutdown instance warnings in some runs; none were suppressed.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,8 @@
+-2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification median 3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
++2026-10-04 R01/V03/V04/V05/Q01: owner-requested menu correctness/quality/performance review completed. Primary navigation promotes cached pages; unchanged status signals retain cards/carousel settlement; hero/detail, route geometry, biome atlases and Theme are reused; native page-root mouse/focus gates replace recursive child rewrites. Fixed stale Garage Race/caption, filter reset, favorite hero and retained-card callback metadata. Final quality 23, graphical gestures 246, app 97, selection 38, rivalry 764, parser 291 and graphical capture 1744 checks pass; focused export driving 72/catalog 21/menus 48 passes. Final debug APK installed on physical DN2103: maximum measured tab frame 263.367 to 46.022 ms, maximum tab CPU call 108.203 to 4.152 ms, status median 5.889 to 0.454 ms; eight device swipes pass, native Garage/Create reset and input screenshots inspected. Probe markers removed; normal startup restored. Short-window process timings do not establish locked 60 fps, human finger feel or sustained thermal/other-device acceptance. No full physics Validate, backend/deployment or canonical change; concurrent work preserved. Files, actual commands, logs, screenshots, limitations and scoped review checkpoint: docs/MENU_QUALITY.md.
++
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
++2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification sample medians 2.571-3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,8 @@
+-2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification median 3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
++2026-10-04 R01/V03/V04/V05/Q01: owner-requested menu correctness/quality/performance review completed. Primary navigation promotes cached pages; unchanged status signals retain cards/carousel settlement; hero/detail, route geometry, biome atlases and Theme are reused; native page-root mouse/focus gates replace recursive child rewrites. Fixed stale Garage Race/caption, filter reset, favorite hero and retained-card callback metadata. Final quality 23, graphical gestures 246, app 97, selection 38, rivalry 764, parser 291 and graphical capture 1744 checks pass; focused export driving 72/catalog 21/menus 48 passes. Final debug APK installed on physical DN2103: maximum measured tab frame 263.367 to 46.022 ms, maximum tab CPU call 108.203 to 4.152 ms, status median 5.889 to 0.454 ms; eight device swipes pass, native Garage/Create reset and input screenshots inspected. Probe markers removed; normal startup restored. Short-window process timings do not establish locked 60 fps, human finger feel or sustained thermal/other-device acceptance. No full physics Validate, backend/deployment or canonical change; concurrent work preserved. Files, actual commands, logs, screenshots, limitations and scoped review checkpoint: docs/MENU_QUALITY.md.
++
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
++2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification sample medians 2.571-3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
+ 

@@ -1,5 +1,7 @@
 # Startup and remembered sign-in
 
+2026-10-04 renewal repair: clients sharing the private session file coordinate refresh and the following authenticated retry. Saves add noncredential `login_id` and `player_id` metadata; old saves gain these on successful renewal. A different explicit login is preserved rather than silently adopted. See [PC rivalry logout repair](RIVALRY_SESSION_FIX.md).
+
 2026-09-28 owner request; requirements B01/B19 authentication, R01 isolation, Q01 verification.
 
 Normal startup opens the sign-in screen. If a saved session exists, the game verifies

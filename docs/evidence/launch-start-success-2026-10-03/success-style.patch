@@ -1,0 +1,50 @@
+--- a/game/ui/launch_notice.gd
++++ b/game/ui/launch_notice.gd
+@@ -14,8 +14,9 @@
+ 	queue_redraw()
+ func _draw() -> void:
+ 	if label == null or label.text.is_empty(): return
+-	var amber: Color = CheckpointNotice.AMBER
+-	amber.a = label.modulate.a
++	var warning: bool = label.text == "JUMPED START"
++	var accent: Color = CheckpointNotice.AMBER if warning else Color("79d4aa")
++	accent.a = label.modulate.a
+ 	var center: Vector2 = size*0.5 + Vector2(0,-120)
+ 	var p: Vector2 = center - Vector2(186,27)
+ 	var polygon := PackedVector2Array([p+Vector2(28,0),p+Vector2(372,0),p+Vector2(344,54),p+Vector2(28,54)])
+@@ -24,16 +25,16 @@
+ 	draw_colored_polygon(polygon,fill)
+ 	var border: PackedVector2Array = polygon.duplicate()
+ 	border.append(polygon[0])
+-	draw_polyline(border,amber,1.5,true)
+-	for offset: float in [0.0,12.0]:
+-		draw_colored_polygon(PackedVector2Array([p+Vector2(378+offset,0),p+Vector2(386+offset,0),p+Vector2(358+offset,54),p+Vector2(350+offset,54)]),amber)
++	draw_polyline(border,accent,1.5,true)
++	for offset: float in ([0.0,12.0] if warning else []):
++		draw_colored_polygon(PackedVector2Array([p+Vector2(378+offset,0),p+Vector2(386+offset,0),p+Vector2(358+offset,54),p+Vector2(350+offset,54)]),accent)
+ 	var badge: Vector2 = p+Vector2(28,27)
+ 	var badge_fill := Color("111e22f2")
+ 	badge_fill.a *= label.modulate.a
+ 	draw_circle(badge,33,badge_fill)
+-	draw_arc(badge,33,0,TAU,64,amber,2.5,true)
+-	if label.text == "JUMPED START":
+-		draw_line(badge+Vector2(0,-14),badge+Vector2(0,4),amber,5,true)
+-		draw_circle(badge+Vector2(0,13),3,amber)
++	draw_arc(badge,33,0,TAU,64,accent,2.5,true)
++	if warning:
++		draw_line(badge+Vector2(0,-14),badge+Vector2(0,4),accent,5,true)
++		draw_circle(badge+Vector2(0,13),3,accent)
+ 	else:
+-		draw_polyline(PackedVector2Array([badge+Vector2(-12,0),badge+Vector2(-3,10),badge+Vector2(14,-12)]),amber,4,true)
++		draw_polyline(PackedVector2Array([badge+Vector2(-12,0),badge+Vector2(-3,10),badge+Vector2(14,-12)]),accent,4,true)
+--- a/game/tests/capture_launch_start.gd
++++ b/game/tests/capture_launch_start.gd
+@@ -9,7 +9,7 @@
+ 	game.set_physics_process(false)
+ 	root.size = Vector2i(1280,720)
+ 	root.content_scale_size = root.size
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/launch-start-style-2026-10-03")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/launch-start-success-2026-10-03")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	for reaction: int in [-1,12,26,42,60]:
+ 		game.restart()

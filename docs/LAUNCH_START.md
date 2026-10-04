@@ -53,3 +53,17 @@ Initial failures were corrected: test used nonexistent throttle action (changed 
 ## Remaining acceptance
 
 Owner launch feel/tuning, touch reaction on the physical phone, pedal/cue readability on additional phone aspect ratios, Android latency/performance and rebuilt matched online services remain untested. No phone test or production acceptance is claimed. Reviewable scoped patch retained in `docs/evidence/launch-start-2026-10-03/launch-start.patch`; shared workspace changes prevent a mixed-tree commit.
+
+
+## Checkpoint-style labels (owner correction, 2026-10-03)
+
+G03/V03/Q01: replaced large outlined yellow words with checkpoint-style 26 px uppercase light text, a dark translucent angled panel, amber outline/twin trailing bars and a circular icon. Perfect/Great/Good use a check; Jumped uses the same warning mark as missed checkpoints. Existing timing/fade and canonical launch behavior retained. `game/ui/launch_notice.gd` draws the banner and only redraws when text/alpha changes; `game/core/game.gd` supplies the original Label; the capture script writes a separate evidence directory.
+
+Actual `dev.ps1 -Action TestScript -ScriptPath res://tests/capture_launch_start.gd -Graphical` exits 0; six desktop captures saved, Perfect inspected. [Updated Perfect label](evidence/launch-start-style-2026-10-03/launch-12.png). `test_launch_start.gd` passes 13,328 checks; four shutdown instance leaks reported. Scoped `style.patch` reverse-apply check passes. No Android export/install/device test or full regression/backend rebuild performed for this presentation-only correction. Phone layout and owner visual acceptance remain.
+
+
+## Success versus warning (owner correction, 2026-10-03)
+
+G03/V03/Q01: only Jumped Start uses the amber warning badge and trailing warning bars. Perfect/Great/Good now use a soft green outline/check badge (`#79d4aa`) and omit warning bars, retaining the compact dark checkpoint-style panel and white typography. `game/ui/launch_notice.gd` and capture output path changed; launch mechanics unchanged.
+
+Actual `dev.ps1 -Action TestScript -ScriptPath res://tests/capture_launch_start.gd -Graphical` exits 0 with six saved desktop screenshots. Perfect success and Jumped warning inspected. [Success appearance](evidence/launch-start-success-2026-10-03/launch-12.png), [warning appearance](evidence/launch-start-success-2026-10-03/launch--1.png). `git apply --reverse --check docs/evidence/launch-start-success-2026-10-03/success-style.patch` passes. No new simulation/full regression, Android export/install, physical-phone test or backend deployment; owner visual/mobile acceptance remains. Scoped patch retains this correction separately from prior work.

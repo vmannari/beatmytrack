@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+    [ValidateSet('BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -16,6 +16,11 @@ param(
     [switch]$QuickValidation,
     [switch]$Graphical,
     [switch]$AI,
+    [switch]$TestDrivers,
+    [switch]$InstantDrivers,
+    [string]$DriverPlan = '',
+    [int]$DriverCount = 0,
+    [int]$DriverSeed = 27,
     [int]$CaptureTick = 0,
     [ValidateRange(1, 7200)]
     [int]$CommandTimeoutSeconds = 300
@@ -174,6 +179,7 @@ function Invoke-Validation {
     }
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_review_reliability.gd') 'review-reliability-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_records.gd') 'records-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_personal_ghosts.gd') 'personal-ghost-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_camera_modes.gd') 'camera-mode-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_catalog.gd') 'catalog-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_menu_loading.gd') 'menu-loading-tests.log'
@@ -245,13 +251,73 @@ function Get-SelectedDevice([string]$AdbExecutable) {
     return $available[0]
 }
 
+function Prepare-AndroidGradle {
+    # Reproduce the pinned engine's Project > Install Android Build Template,
+    # then attach the project's original development-only Java bridge.
+    $android = Get-AndroidPaths
+    $source = Join-Path $android.Templates 'android_source.zip'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        $source = Join-Path $repoRoot '.tools/admob/android_source.zip'
+    }
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw 'Matching Godot 4.7.2 android_source.zip is required for AdMob. See docs/ADMOB_DEVELOPMENT.md.'
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    if ($sourceHash -ne 'A15416B528EFB0A19A7D187E4D9F4E5336D0689144B111329FB4BD12C4447AD3') {
+        throw 'Android Gradle source does not match the pinned official Godot 4.7.2 template.'
+    }
+    $androidRoot = Join-Path $projectRoot 'android'
+    $gradleRoot = Join-Path $androidRoot 'build'
+    $versionFile = Join-Path $androidRoot '.build_version'
+    $templateVersion = $expectedVersion -replace '\.official\..+$', ''
+    if (Test-Path -LiteralPath (Join-Path $gradleRoot 'gradlew.bat')) {
+        if (-not (Test-Path -LiteralPath $versionFile) -or (Get-Content -LiteralPath $versionFile -Raw).Trim() -ne $templateVersion) {
+            throw 'Existing Android Gradle directory has a different/missing version. Preserve it and install the matching template before exporting.'
+        }
+    } else {
+        if ((Test-Path -LiteralPath $gradleRoot) -and @(Get-ChildItem -LiteralPath $gradleRoot -Force).Count -gt 0) {
+            throw 'Android Gradle directory is incomplete; preserve/review its contents before reinstalling the template.'
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        New-Item -ItemType Directory -Path $gradleRoot -Force | Out-Null
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($source, $gradleRoot)
+        [System.IO.File]::WriteAllText($versionFile, $templateVersion + "`n", (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText((Join-Path $gradleRoot '.gdignore'), "`n")
+    }
+    $gradleFile = Join-Path $gradleRoot 'build.gradle'
+    $hook = "apply from: '../../../native/admob/android.gradle'"
+    $gradleText = Get-Content -LiteralPath $gradleFile -Raw
+    if (-not $gradleText.Contains($hook)) {
+        [System.IO.File]::AppendAllText($gradleFile, "`n" + $hook + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    # A persistent Gradle daemon inherits the Godot console wrapper's pipe.
+    # Finish this build's own Gradle process so command completion is reliable.
+    $propertiesFile = Join-Path $gradleRoot 'gradle.properties'
+    $propertiesText = Get-Content -LiteralPath $propertiesFile -Raw
+    if ($propertiesText -notmatch '(?m)^org\.gradle\.daemon=false\s*$') {
+        [System.IO.File]::AppendAllText($propertiesFile, "`norg.gradle.daemon=false`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    Write-Host "Android Gradle template: $templateVersion; AdMob debug bridge attached."
+}
+
 function Export-Android {
-    Invoke-Validation
     Test-AndroidTools
+    Prepare-AndroidGradle
+    Invoke-Validation
     New-Item -ItemType Directory -Path (Split-Path -Parent $apkPath) -Force | Out-Null
     # Export to a fresh name so a failed build can never deploy a stale APK.
     $freshApk = Join-Path (Split-Path -Parent $apkPath) ('circuit01-' + [guid]::NewGuid().ToString('N') + '.apk')
-    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-debug', 'Android Debug', $freshApk) 'android-export.log'
+    $savedJavaOptions = $env:JAVA_TOOL_OPTIONS
+    try {
+        # Java's bundled CA list can differ from Windows. Keep verified HTTPS
+        # downloads and respect a caller's explicit custom trust-store setting.
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and [string]$savedJavaOptions -notmatch 'javax\.net\.ssl\.trustStore') {
+            $env:JAVA_TOOL_OPTIONS = ([string]$savedJavaOptions + ' -Djavax.net.ssl.trustStoreType=Windows-ROOT -Djavax.net.ssl.trustStore=NONE').Trim()
+        }
+        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-debug', 'Android Debug', $freshApk) 'android-export.log'
+    } finally {
+        $env:JAVA_TOOL_OPTIONS = $savedJavaOptions
+    }
     if (-not (Test-Path -LiteralPath $freshApk -PathType Leaf)) { throw 'Export returned without an APK.' }
     Move-Item -LiteralPath $freshApk -Destination $apkPath -Force
     Write-Host "APK: $apkPath"
@@ -351,8 +417,29 @@ try {
         }
         $env:BMT_GODOT_BIN = $script:godot
         $env:BMT_GAME_PROJECT = $projectRoot
+        if ($Action.StartsWith('BackendDrivers')) {
+            if (-not $DriverPlan) { throw 'Pass -DriverPlan with a persistent JSON state path.' }
+            # Read the existing private operator configuration without printing it.
+            $driverEnvPath = Join-Path $repoRoot '.tools/bmt-pc.env'
+            if (-not $env:BMT_DEV_AUTH_KEY -and (Test-Path -LiteralPath $driverEnvPath)) {
+                foreach ($driverLine in Get-Content -LiteralPath $driverEnvPath) {
+                    if ($driverLine.StartsWith('BMT_DEV_AUTH_KEY=')) { $env:BMT_DEV_AUTH_KEY = $driverLine.Substring(17) }
+                }
+            }
+            $driverCommand = $Action.Substring('BackendDrivers'.Length).ToLowerInvariant()
+            $driverArguments = @('-m','bmt_backend.test_population_tool',$driverCommand,'--state',$DriverPlan,'--seed',[string]$DriverSeed)
+            if ($DriverCount -gt 0) { $driverArguments += @('--count',[string]$DriverCount) }
+            if ($InstantDrivers) { $driverArguments += '--instant' }
+            & $backendPython @driverArguments
+            if ($LASTEXITCODE -ne 0) { throw 'Test-driver tool failed. The saved plan can be resumed.' }
+            return
+        }
         switch ($Action) {
-            'BackendStart' { & $backendPython (Join-Path $repoRoot 'backend/deploy/pc_development.py') start }
+            'BackendStart' {
+                $startArguments = @((Join-Path $repoRoot 'backend/deploy/pc_development.py'), 'start')
+                if ($TestDrivers) { $startArguments += '--test-drivers' }
+                & $backendPython @startArguments
+            }
             'BackendStop' { & $backendPython (Join-Path $repoRoot 'backend/deploy/pc_development.py') stop }
             'BackendTestLifecycle' { & $backendPython -m pytest (Join-Path $repoRoot 'backend/tests/test_cloud_client.py') -q }
             'BackendTest' {

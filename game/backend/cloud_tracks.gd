@@ -365,12 +365,12 @@ static func compile_entry(entry: Dictionary) -> NativeTrack:
 		track.metadata["cloud_creator"] = str(entry.creator)
 	return track
 
-func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null) -> Dictionary:
+func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null, issued: Dictionary = {}) -> Dictionary:
 	if not client.signed_in(): return {}
 	var version: String = str(track.metadata.get("cloud_version",""))
 	if version.is_empty(): return {}
 	var selected_vehicle: String = VehicleCatalog.selected if vehicle_id.is_empty() else vehicle_id
-	var response: Dictionary = await client.race_ticket(version,selected_vehicle,Client.new_idempotency_key(),"creator_test" if creator_test else "race")
+	var response: Dictionary = {"ok":true,"data":issued} if not issued.is_empty() else await client.race_ticket(version,selected_vehicle,Client.new_idempotency_key(),"creator_test" if creator_test else "race")
 	if not response.ok:
 		last_error = str(response.error)
 		return {}

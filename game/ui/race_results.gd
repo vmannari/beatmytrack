@@ -347,7 +347,13 @@ func _is_lap_pb(index: int) -> bool:
 	return prior <= 0.0 or laps[index] < prior-0.0005
 
 static func _selection_style(selected: bool) -> StyleBoxFlat:
-	var style := MenuStyle.box(Color(0.07,0.15,0.20,0.85) if selected else Color.TRANSPARENT, 5)
+	var fill: Color = MenuStyle.PANEL
+	fill.a = 0.48
+	var style := MenuStyle.box(fill if selected else Color.TRANSPARENT, 5)
+	if selected:
+		# A quiet yellow top rule marks selection without hiding the race scenery.
+		style.border_color = Color(MenuStyle.ACCENT, 0.70)
+		style.border_width_top = 2
 	return style
 
 static func _card(parent: Control, padding: int) -> VBoxContainer:

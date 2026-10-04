@@ -8,12 +8,14 @@ signal edit_requested(document: Dictionary)
 signal delete_requested(id: String, title: String)
 signal import_requested
 signal notice(message: String)
+signal rivalry_requested
 
 var library: TrackLibrary
 var records: LocalRecords
 var builtin_ids: Array[String]
 var selected_track: NativeTrack
 var state: Dictionary
+var page_preview: bool = false
 var catalog: TrackCatalog
 var matches: Array[Dictionary] = []
 var grid: GridContainer
@@ -58,6 +60,10 @@ var _tile_start: int = -1
 var _query_signature: String = ""
 var tile_stride: int = 202
 var gallery_slot: Control
+var _cloud_catalog_state: Array = []
+var _page_dirty: bool = false
+var _detail_state: Array = []
+var _hero_state: Array = []
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -167,8 +173,18 @@ func _compact_button(text: String, action: Callable) -> Button:
 
 func _load_catalog() -> void:
 	if not is_inside_tree(): return
+	if page_preview:
+		# Adjacent menu preparation reads cached metadata only. No random choice,
+		# download, account write or HTTP request may start during a page drag.
+		if cloud != null:
+			_sync_cloud_catalog()
+			catalog.indexed_revision = library.revision
+		loading = false
+		_refresh()
+		_show_detail()
+		return
 	if catalog.indexed_revision == library.revision:
-		if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+		if cloud != null: _sync_cloud_catalog()
 		loading = false
 		_refresh()
 		_show_detail()
@@ -182,8 +198,9 @@ func _load_catalog() -> void:
 	var revision: int = library.revision
 	var slice_start: int = Time.get_ticks_usec()
 	catalog.entries.clear()
+	_cloud_catalog_state.clear()
 	if cloud != null:
-		cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+		_sync_cloud_catalog()
 		loading = false
 		catalog.indexed_revision = revision
 		_refresh()
@@ -208,23 +225,50 @@ func _load_catalog() -> void:
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
 	catalog.add_shared_tracks()
-	if cloud != null: cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+	if cloud != null: _sync_cloud_catalog()
 	loading = false
 	catalog.indexed_revision = revision
 	_refresh()
 	_random_on_open()
 	if cloud != null: cloud.refresh()
 
-func _cloud_changed() -> void:
+func activate_page() -> void:
+	if not page_preview: return
+	page_preview = false
+	# The cached controls and metadata are already current. Rebuilding both
+	# sections here introduces a visible hitch just as the page finishes arriving.
+	if catalog.indexed_revision != library.revision:
+		_load_catalog()
+	else:
+		if _page_dirty:
+			if cloud != null: _cloud_changed()
+			_refresh()
+			_show_detail()
+			_page_dirty = false
+		_random_on_open()
+		if cloud != null: cloud.refresh()
+
+func _sync_cloud_catalog() -> bool:
+	if cloud == null: return false
+	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
+	if current == _cloud_catalog_state: return false
 	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+	_cloud_catalog_state = current.duplicate(true)
+	return true
+
+func _cloud_changed() -> void:
+	if page_preview:
+		_page_dirty = true
+		return
 	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
+	if not _sync_cloud_catalog(): return
 	_refresh()
 	if not selecting:
 		for entry: Dictionary in catalog.entries:
 			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
 				_select(entry)
 				return
-		if not _selected_is_available(): _show_detail()
+		_show_detail()
 
 func _selected_is_available() -> bool:
 	if cloud == null: return true
@@ -242,15 +286,15 @@ func _clear(parent: Node) -> void:
 
 func _refresh() -> void:
 	if not is_instance_valid(grid): return
-	gallery.call("_stop_snap")
 	matches = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
-	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any")])
-	if signature != _query_signature: gallery.scroll_horizontal = 0
+	var signature: String = str([state.get("section","all"),state.get("feed","recommended"),state.get("search",""),state.get("search_kind",0),state.get("theme","all"),state.get("sort","name"),state.get("minimum_rating",0.0),state.get("race_count","any"),state.get("age_days",0),state.get("race_history","any")])
+	if signature != _query_signature:
+		gallery.call("_stop_snap")
+		gallery.scroll_horizontal = 0
 	_query_signature = signature
-	_tile_start = -1
 	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
-	_render_tiles()
-	if matches.is_empty():
+	_render_tiles(true)
+	if matches.is_empty() and grid.get_child_count() == 0:
 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
 		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
 			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
@@ -269,28 +313,32 @@ func _refresh() -> void:
 	if filter_dialog.visible: filter_dialog.refresh_choices()
 	if search_dialog != null and search_dialog.visible: search_dialog.refresh_results()
 
-func _render_tiles() -> void:
+func _render_tiles(reconcile: bool = false) -> void:
 	if not is_instance_valid(grid): return
 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
-	if first == _tile_start: return
+	if first == _tile_start and not reconcile: return
 	# Keep overlapping cards alive: scrolling one card must not rebuild twelve
 	# buttons, resample every route and invalidate all their draw commands.
-	if _tile_start == -1: _clear(grid)
 	_tile_start = first
 	var end: int = mini(matches.size(),first+12)
+	var wanted: Dictionary = {}
+	for index: int in range(first,end): wanted[str(matches[index].id)] = index
 	var retained: Dictionary = {}
 	for child: Node in grid.get_children():
-		var index: int = int(child.get_meta("catalog_index",-1))
-		if index < first or index >= end:
+		var identity: String = str(child.entry.id) if child is TrackTile else ""
+		if not wanted.has(identity):
 			grid.remove_child(child)
 			child.queue_free()
-		else: retained[index] = child
+		else: retained[identity] = child
 	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
 	for index: int in range(first,end):
-		if retained.has(index):
-			grid.move_child(retained[index],index-first)
-			continue
 		var entry: Dictionary = matches[index]
+		if retained.has(str(entry.id)):
+			var existing: TrackTile = retained[str(entry.id)]
+			if int(existing.get_meta("catalog_index")) != index: existing.set_meta("catalog_index",index)
+			if reconcile: existing.update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),entry.id == preview_entry.get("id",selected_track.identity))
+			grid.move_child(existing,index-first)
+			continue
 		var tile := TrackTile.new()
 		tile.set_meta("catalog_index",index)
 		tile.compact = true
@@ -299,8 +347,8 @@ func _render_tiles() -> void:
 		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
 		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
 		tile.name = "Track_"+str(entry.id)
-		tile.pressed.connect(_select.bind(entry))
-		tile.focus_entered.connect(_focus_card.bind(index))
+		tile.pressed.connect(_select_tile.bind(tile))
+		tile.focus_entered.connect(_focus_tile.bind(tile))
 		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
 		grid.add_child(tile)
 		grid.move_child(tile,index-first)
@@ -329,6 +377,8 @@ func _random() -> void:
 	_select(entry)
 
 func _select(entry: Dictionary) -> void:
+	var cached: NativeTrack = catalog.cached_track(entry)
+	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null: return
 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
 	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
 	var previous_index: int = -1
@@ -339,7 +389,6 @@ func _select(entry: Dictionary) -> void:
 	_hero_direction = -1.0 if previous_index >= 0 and next_index >= 0 and next_index < previous_index else 1.0
 	_selection_serial += 1
 	_requested_entry = {}
-	var cached: NativeTrack = catalog.cached_track(entry)
 	if cached != null:
 		_finish_selection({"track":cached,"draft":{}})
 		race_button.disabled = selecting or _resolve_thread != null
@@ -356,8 +405,10 @@ func _select(entry: Dictionary) -> void:
 		records_panel.modulate.a = 1.0
 	for tile: Node in grid.get_children():
 		if tile is TrackTile:
-			tile.selected = tile.entry.id == entry.id
-			tile.queue_redraw()
+			var chosen: bool = tile.entry.id == entry.id
+			if tile.selected != chosen:
+				tile.selected = chosen
+				tile.queue_redraw()
 	if cached != null: return
 	var serial: int = _selection_serial
 	if entry.source == "cloud" and cloud != null:
@@ -494,6 +545,9 @@ func _open_scores() -> void:
 	dialog.popup_centered()
 
 func _discovery_changed() -> void:
+	if page_preview:
+		_page_dirty = true
+		return
 	_refresh()
 	if not selecting: _show_detail()
 
@@ -549,7 +603,16 @@ func _heading(parent: Control, caption: String, icon: String) -> void:
 
 func _show_detail() -> void:
 	if selecting or not preview_entry.is_empty(): return
-	if not _selected_is_available():
+	var key: String = records.key_for(selected_track,HandlingSelection.config())
+	var pb: Dictionary = records.records.get(key,{})
+	var snapshot: Dictionary = discovery.record_snapshot(key)
+	var available: bool = _selected_is_available()
+	var current: Array = [selected_track,key,available,pb,snapshot,str(selected_track.metadata.get("cloud_version",""))]
+	if current == _detail_state:
+		_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper() if available else "CHOOSE A TRACK",str(selected_track.metadata.get("theme","pine")) if available else "pine")
+		return
+	_detail_state = current.duplicate(true)
+	if not available:
 		_clear(detail)
 		_show_hero("CHOOSE A TRACK","pine")
 		detail.add_child(MenuStyle.label("Connect to load published tracks. Downloaded tracks remain available offline.",18,true))
@@ -570,9 +633,6 @@ func _show_detail() -> void:
 	_fixed_column(row,personal,"PersonalRecords",230)
 	_heading(personal,"YOUR RECORDS","timer")
 	var personal_body: VBoxContainer = _section_body(personal)
-	var key: String = records.key_for(selected_track,HandlingSelection.config())
-	var pb: Dictionary = records.records.get(key,{})
-	var snapshot: Dictionary = discovery.record_snapshot(key)
 	var best_ms: int = int(snapshot.get("race_ms",pb.get("race_ms",0)))
 	if best_ms <= 0:
 		var empty_time := MenuStyle.label("No time yet",18)
@@ -691,32 +751,24 @@ func _favorite_id(id: String) -> void:
 	records.settings.favorites = favorites
 	if records.save_records() != OK: notice.emit("Favorite could not be saved. Check available storage.")
 	_refresh()
+	if id == selected_track.identity: _show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
 
 func _build_mode_rail(parent: Control) -> void:
-	var rail := VBoxContainer.new()
-	rail.name = "RaceModes"
-	rail.add_theme_constant_override("separation",12)
+	var rail := RaceModeRail.new()
+	rail.mode_requested.connect(func(mode: String) -> void:
+		if mode == "rivalry": rivalry_requested.emit())
 	parent.add_child(rail)
-	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"]]:
-		var active: bool = item[1] == "Free race"
-		var button := MenuStyle.button("",func() -> void: pass,active)
-		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
-		button.expand_icon = true
-		button.add_theme_constant_override("icon_max_width",38)
-		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-		button.add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.TEXT)
-		button.add_theme_color_override("icon_disabled_color",Color("9cbbc8"))
-		var tile_style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"),10)
-		tile_style.border_color = Color("ffe792") if active else Color("2a4655")
-		tile_style.set_border_width_all(1)
-		button.add_theme_stylebox_override("normal" if active else "disabled",tile_style)
-		button.name = "Mode_"+str(item[0])
-		button.custom_minimum_size = Vector2(60,60)
-		button.tooltip_text = str(item[1])+("" if active else " - Coming soon")
-		button.disabled = not active
-		rail.add_child(button)
 
 func _show_hero(title: String, theme_id: String) -> void:
+	var rating_entry: Dictionary = preview_entry
+	if rating_entry.is_empty():
+		for candidate: Dictionary in catalog.entries:
+			if str(candidate.id) == selected_track.identity:
+				rating_entry = candidate
+				break
+	var current: Array = [selected_track,_selection_serial,title,theme_id,preview_entry,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),rating_entry]
+	if current == _hero_state: return
+	_hero_state = current.duplicate(true)
 	_prepare_outgoing_section()
 	if not preview_entry.is_empty():
 		title = str(preview_entry.name).to_upper()
@@ -779,12 +831,6 @@ func _show_hero(title: String, theme_id: String) -> void:
 	info.add_child(attribution)
 	creator.custom_minimum_size.x = minf(280.0,MenuStyle.BODY.get_string_size(creator.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x)
 	attribution.add_child(creator)
-	var rating_entry: Dictionary = preview_entry
-	if rating_entry.is_empty():
-		for candidate: Dictionary in catalog.entries:
-			if str(candidate.id) == selected_track.identity:
-				rating_entry = candidate
-				break
 	var rating_tile := TrackTile.new()
 	rating_tile.entry = rating_entry
 	rating_tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(rating_entry.get("id",selected_track.identity)),0))
@@ -931,3 +977,9 @@ func _focus_card(index: int) -> void:
 	if left < gallery.scroll_horizontal or left+tile_stride-12 > gallery.scroll_horizontal+gallery.size.x:
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = left
+
+func _select_tile(tile: TrackTile) -> void:
+	_select(tile.entry)
+
+func _focus_tile(tile: TrackTile) -> void:
+	_focus_card(int(tile.get_meta("catalog_index")))

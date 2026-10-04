@@ -1,0 +1,518 @@
+diff --git a/backend/deploy/pc_development.py b/backend/deploy/pc_development.py
+--- a/backend/deploy/pc_development.py
++++ b/backend/deploy/pc_development.py
+@@ -2,12 +2,14 @@
+ 
+ import argparse
+ import configparser
++import hashlib
+ import json
+ import os
+ import secrets
+ import subprocess
+ import sys
+ import urllib.request
++from datetime import datetime, timezone
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[2]
+@@ -58,22 +60,94 @@
+     temporary.replace(target)
+ 
+ 
++def enable_test_drivers(config):
++    """Persist the explicit local opt-in without changing private credentials."""
++    lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
++    lines = [line for line in lines if not line.startswith("BMT_TEST_DRIVERS_ENABLED=")]
++    lines.append("BMT_TEST_DRIVERS_ENABLED=true")
++    temporary = ENV_FILE.with_suffix(".env.tmp")
++    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
++    temporary.replace(ENV_FILE)
++    config["BMT_TEST_DRIVERS_ENABLED"] = "true"
++
++
++def backup_local_data(command):
++    """Quiesce the PC writers and save logical data before the additive migration."""
++    running = subprocess.run(
++        [*command, "ps", "--status", "running", "--services"],
++        cwd=ROOT,
++        check=True,
++        capture_output=True,
++        text=True,
++    ).stdout.split()
++    if "db" not in running:
++        return None
++    subprocess.run([*command, "stop", "api", "worker"], cwd=ROOT, check=True)
++    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
++    destination = ROOT / "build" / "pc-backups" / stamp
++    destination.mkdir(parents=True, mode=0o700)
++    commands = {
++        "database.dump": [
++            *command,
++            "exec",
++            "-T",
++            "db",
++            "pg_dump",
++            "-U",
++            "bmt",
++            "-d",
++            "bmt",
++            "--format=custom",
++            "--no-owner",
++            "--no-privileges",
++        ],
++        "objects.tar": [
++            *command,
++            "run",
++            "--rm",
++            "--no-deps",
++            "-T",
++            "--entrypoint",
++            "python",
++            "api",
++            "/app/deploy/object_archive.py",
++            "archive",
++        ],
++    }
++    hashes = {}
++    for name, arguments in commands.items():
++        with (destination / name).open("xb") as output:
++            subprocess.run(arguments, cwd=ROOT, stdout=output, check=True)
++        checksum = hashlib.sha256()
++        with (destination / name).open("rb") as source:
++            for chunk in iter(lambda: source.read(1024 * 1024), b""):
++                checksum.update(chunk)
++        hashes[name] = checksum.hexdigest()
++    (destination / "SHA256SUMS").write_text("".join(f"{value}  {name}\n" for name, value in hashes.items()))
++    (destination / "COMPLETE").write_text("Local PC data backup complete\n")
++    print(f"Local data backed up to {destination}")
++    return destination
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("action", choices=("start", "stop"))
+-    parser.add_argument("--test-drivers", action="store_true", help="Enable the isolated artificial test population")
++    parser.add_argument(
++        "--test-drivers", action="store_true", help="Enable the isolated artificial test population"
++    )
+     args = parser.parse_args()
+     if sys.platform != "win32":
+         raise RuntimeError("This launcher configures the Windows PC; use compose.pc.yaml directly on Linux")
+     config = local_configuration()
+     if args.test_drivers:
+-        # Scope this opt-in to the isolated PC Compose process, never production.
+-        os.environ["BMT_TEST_DRIVERS_ENABLED"] = "true"
++        enable_test_drivers(config)
+     command = [
+         "wsl",
+         "-d",
+         "Ubuntu",
+         "--",
++        # Windows process variables are not implicitly forwarded into WSL.
++        *(["env", "BMT_TEST_DRIVERS_ENABLED=true"] if args.test_drivers else []),
+         "docker",
+         "compose",
+         "--env-file",
+@@ -89,12 +163,22 @@
+     # Python is bind-mounted, but the canonical Godot validator is baked into
+     # the image. Build and verify it before replacing either running service.
+     subprocess.run([*command, "build", "api"], cwd=ROOT, check=True)
++    if args.test_drivers:
++        # Also works when the local project is new or its database was stopped.
++        subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "90", "db"], cwd=ROOT, check=True)
++        backup_local_data(command)
++        subprocess.run([*command, "run", "--rm", "--no-deps", "-T", "migrate"], cwd=ROOT, check=True)
+     subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "90"], cwd=ROOT, check=True)
+     probe = "import json; from bmt_backend.config import Settings; from bmt_backend.verifier import GodotVerifier; print(json.dumps(GodotVerifier(Settings.from_env()).manifest()))"
+     manifests = []
+     for service in ("api", "worker"):
+-        checked = subprocess.run([*command, "exec", "-T", service, "python", "-c", probe], cwd=ROOT,
+-                                 check=True, capture_output=True, text=True)
++        checked = subprocess.run(
++            [*command, "exec", "-T", service, "python", "-c", probe],
++            cwd=ROOT,
++            check=True,
++            capture_output=True,
++            text=True,
++        )
+         manifests.append(json.loads(checked.stdout))
+     if manifests[0] != manifests[1]:
+         raise RuntimeError("API and worker verifier artifacts differ; client configuration was not changed")
+diff --git a/backend/tests/test_pc_test_driver_rollout.py b/backend/tests/test_pc_test_driver_rollout.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_pc_test_driver_rollout.py
+@@ -0,0 +1,93 @@
++"""The local opt-in reaches WSL and backs up existing data before migration."""
++
++import importlib.util
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++@pytest.fixture
++def launcher():
++    spec = importlib.util.spec_from_file_location("pc_launcher", ROOT / "backend/deploy/pc_development.py")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_local_opt_in_preserves_credentials_and_survives_restart(launcher, tmp_path, monkeypatch):
++    path = tmp_path / "pc.env"
++    original = "# private local config\nBMT_DEV_AUTH_KEY=test-key-preserved\nBMT_DB_PASSWORD=also-preserved\nBMT_TEST_DRIVERS_ENABLED=false\n"
++    path.write_text(original)
++    monkeypatch.setattr(launcher, "ENV_FILE", path)
++    config = {"BMT_DEV_AUTH_KEY": "test-key-preserved", "BMT_DB_PASSWORD": "also-preserved"}
++    launcher.enable_test_drivers(config)
++    launcher.enable_test_drivers(config)
++    result = path.read_text()
++    assert "BMT_DEV_AUTH_KEY=test-key-preserved" in result
++    assert "BMT_DB_PASSWORD=also-preserved" in result
++    assert result.count("BMT_TEST_DRIVERS_ENABLED=") == 1
++    assert "BMT_TEST_DRIVERS_ENABLED=true" in result
++    assert config["BMT_TEST_DRIVERS_ENABLED"] == "true"
++
++
++def test_backup_quiesces_writers_before_copy_and_records_checksums(launcher, tmp_path, monkeypatch):
++    calls = []
++
++    def execute(command, **kwargs):
++        calls.append(command)
++        if "--services" in command:
++            return SimpleNamespace(stdout="db\napi\nworker\n")
++        if "stdout" in kwargs:
++            kwargs["stdout"].write(b"logical data fixture")
++        return SimpleNamespace(stdout="")
++
++    monkeypatch.setattr(launcher, "ROOT", tmp_path)
++    monkeypatch.setattr(launcher.subprocess, "run", execute)
++    destination = launcher.backup_local_data(["compose"])
++    assert calls[1] == ["compose", "stop", "api", "worker"]
++    assert "pg_dump" in calls[2] and "objects.tar" not in calls[2]
++    assert (destination / "database.dump").read_bytes() == b"logical data fixture"
++    assert (destination / "objects.tar").read_bytes() == b"logical data fixture"
++    assert len((destination / "SHA256SUMS").read_text().splitlines()) == 2
++    assert (destination / "COMPLETE").is_file()
++
++
++def test_wsl_receives_nonsecret_flag_before_any_migration(launcher, tmp_path, monkeypatch):
++    calls = []
++    monkeypatch.setattr(launcher.sys, "platform", "win32")
++    monkeypatch.setattr(launcher.sys, "argv", ["pc_development.py", "start", "--test-drivers"])
++    monkeypatch.setattr(launcher, "local_configuration", lambda: {"BMT_DEV_AUTH_KEY": "private-test-key"})
++    monkeypatch.setattr(launcher, "enable_test_drivers", lambda config: calls.append("enable"))
++    monkeypatch.setattr(launcher, "backup_local_data", lambda command: calls.append("backup"))
++
++    def execute(command, **kwargs):
++        assert command[:7] == ["wsl", "-d", "Ubuntu", "--", "env", "BMT_TEST_DRIVERS_ENABLED=true", "docker"]
++        assert "private-test-key" not in command
++        calls.append(command)
++        if "exec" in command:
++            return SimpleNamespace(stdout='{"manifest":"test"}')
++        return SimpleNamespace(stdout="")
++
++    monkeypatch.setattr(launcher.subprocess, "run", execute)
++
++    class Response:
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *args):
++            pass
++
++        def read(self):
++            return b'{"manifest":"test"}'
++
++    monkeypatch.setattr(launcher.urllib.request, "urlopen", lambda *args, **kwargs: Response())
++    monkeypatch.setattr(launcher, "configure_game", lambda config: calls.append("configure"))
++    launcher.main()
++    assert calls[0] == "enable" and calls[3] == "backup"
++    assert calls[1][-2:] == ["build", "api"]
++    assert calls[2][-6:] == ["up", "-d", "--wait", "--wait-timeout", "90", "db"]
++    assert calls[4][-5:] == ["run", "--rm", "--no-deps", "-T", "migrate"]
++    assert calls[5][-5:] == ["up", "-d", "--wait", "--wait-timeout", "90"]
+diff --git a/game/tests/test_test_driver_live.gd b/game/tests/test_test_driver_live.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_test_driver_live.gd
+@@ -0,0 +1,83 @@
++extends SceneTree
++## Explicit loopback acceptance of the operator-created developer test field.
++## Uses isolated client storage; never submits a human PB or changes membership.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++
++func _initialize() -> void:
++	call_deferred("run")
++	root.ready.connect(func() -> void:
++		create_timer(120.0).timeout.connect(func() -> void:
++			print("FAIL: live test-driver acceptance deadline")
++			quit(1)))
++
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	if OS.get_environment("BMT_API_URL") != "http://127.0.0.1:18181" or OS.get_environment("BMT_DEV_AUTH_KEY").is_empty():
++		print("Set the explicit local API and private development key before this live check")
++		quit(1)
++		return
++	var folder: String = "user://test_driver_live_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await app.online.sign_in_developer()
++	check(app.online.client.signed_in(),"developer authenticates against the live local service")
++	check(app.online.capabilities.get("test_drivers",false),"live bootstrap advertises test drivers")
++	app.rivalry.set_test_population(true)
++	await app.rivalry.refresh()
++	check(app.rivalry.model.status == "active" and app.rivalry.model.test_population,"live weekly test membership loads")
++	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == 14,"live field has five tracks and fourteen drivers")
++	if app.rivalry.model.tracks.size() != 5:
++		quit(1)
++		return
++	var test_count: int = 0
++	for driver: Dictionary in app.rivalry.model.standing():
++		if driver.get("is_test_driver",false): test_count += 1
++	check(test_count == 13,"thirteen rivals carry explicit test identity markers")
++	var ghost_slot: int = -1
++	var ghost_driver: String = ""
++	for slot: int in range(5):
++		for row: Dictionary in app.rivalry.model.tracks[slot].entries:
++			if row.get("is_test_driver",false) and float(row.ms) > 0.0:
++				ghost_slot = slot
++				ghost_driver = str(row.id)
++				break
++		if ghost_slot >= 0: break
++	check(ghost_slot >= 0,"at least one test rival has a verified five-lap finish")
++	if ghost_slot >= 0:
++		var recording: Dictionary = await app.rivalry.ghost(ghost_slot,ghost_driver)
++		check(not recording.is_empty() and not recording.has("replay"),"client downloads a verified rival's derived ghost")
++		check(not PersonalGhostRun.sample(recording,0.0).is_empty(),"downloaded ghost begins at the real start")
++		check(PersonalGhostRun.sample(recording,float(recording.get("ticks",0))+1.0).is_empty(),"downloaded ghost ends without extrapolation")
++	var evidence: String = OS.get_environment("BMT_CAPTURE_CLOUD")
++	if not evidence.is_empty(): DirAccess.make_dir_recursive_absolute(evidence)
++	app._show_screen("rivalry")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		for section: String in ["overview","tracks","detail","standings"]:
++			app.rivalry_section = section
++			app.rivalry_track = ghost_slot if ghost_slot >= 0 else 0
++			app._rivalry()
++			for _frame: int in range(8): await process_frame
++			var notice: Label = app.root_ui.find_child("RivalryDataNotice",true,false)
++			check(notice != null and notice.text.begins_with("TEST RIVALRY"),"live menu clearly identifies its test field")
++			if not evidence.is_empty() and DisplayServer.get_name() != "headless":
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(evidence.path_join("live-%s-%dx%d.png" % [section,dimensions.x,dimensions.y])) == OK,"live screenshot saves")
++	var ticket: Dictionary = await app.rivalry.ticket(0)
++	check(not ticket.is_empty(),"human can request a real race ticket for the test field")
++	await app.online.client.logout()
++	app.queue_free()
++	await process_frame
++	print("TEST_DRIVER_LIVE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_test_driver_live.gd.uid b/game/tests/test_test_driver_live.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_test_driver_live.gd.uid
+@@ -0,0 +1 @@
++uid://b1g3oal6voqye
+diff --git a/docs/TEST_DRIVERS.md b/docs/TEST_DRIVERS.md
+--- a/docs/TEST_DRIVERS.md
++++ b/docs/TEST_DRIVERS.md
+@@ -72,4 +72,47 @@
+ 
+ Godot/ADB needed Windows certificate/user-directory access outside the filesystem sandbox. Initial denied certificate reads and the first ADB-directory error were corrected by running the same authorized checks with normal desktop access. No automatic approval rejection occurred.
+ 
+-Doctor detects the physical **DN2103** and an emulator. **No test-driver phone export, installation or device driving test was performed.** No existing PC/NAS/production service was restarted or migrated by this task; the setup commands above remain necessary for that local instance. PostgreSQL concurrency, NAS rollout, human visual acceptance, long-lived weekly scheduling, throughput for a fully verified 150-driver seed and pace calibration against real player records remain acceptance checks. No canonical physics/rules change was made, so a full physics regression/Android build was not required for this slice.
++Doctor detects the physical **DN2103** and an emulator. **No test-driver phone export, installation or device driving test was performed.** The implementation verification above used disposable services; the subsequent authorized PC rollout is recorded below. PostgreSQL concurrency, NAS rollout, human visual acceptance, long-lived weekly scheduling, throughput for a fully verified 150-driver seed and pace calibration against real player records remain acceptance checks. No canonical physics/rules change was made, so a full physics regression/Android build was not required for this slice.
++
++## Local PC rollout (2026-10-04)
++
++TD01–TD07 / WR03–WR07 / B01–B07 / Q01: the owner authorized enabling the existing local development instance. `BackendStart -TestDrivers` now persists the opt-in in the private local configuration and explicitly forwards the nonsecret flag into WSL. Windows process environment alone did not reliably reach Compose. Before migration, the launcher builds the pinned verifier image, starts/checks the database, stops the PC API/worker writers and saves a PostgreSQL custom dump plus an object archive. Completed backups have SHA-256 checksums and a completion marker. A failed backup/migration leaves writers stopped for inspection; it does not proceed to startup. Only the isolated `bmt-pc-dev` Compose project is targeted.
++
++Actual commands used the pinned `scripts/dev.ps1` entry point:
++
++```powershell
++./scripts/dev.ps1 -Action BackendStart -TestDrivers
++./scripts/dev.ps1 -Action BackendDriversFill -DriverPlan build/rivalry-drivers-live-2026-10-04.json -DriverSeed 27 -InstantDrivers
++./scripts/dev.ps1 -Action BackendDriversWatch -DriverPlan build/rivalry-drivers-live-2026-10-04.json
++./scripts/dev.ps1 -Action TestScript -Script res://tests/test_test_driver_live.gd -Graphical
++./scripts/dev.ps1 -Action Doctor
++```
++
++The live client check requires explicit `BMT_API_URL=http://127.0.0.1:18181`, the private key in `BMT_DEV_AUTH_KEY` and optional `BMT_CAPTURE_CLOUD`. Credentials are read locally, never printed or placed in process arguments. It authenticates the fixed developer account with isolated client storage, reads the actual field, downloads a derived rival ghost, captures menus and requests one race ticket. It does not submit a human time or alter membership.
++
++Actual outcomes:
++
++- Readiness advanced from `0011_weekly_rivalry` to **`0012_test_drivers`**. Live bootstrap advertises the test capability. API/worker verifier manifests match; five laps, rules v18 and physics 0.50 remain pinned. Both services are healthy.
++- Backup `build/pc-backups/20261004T143115008964Z` is complete. Both checksums pass, PostgreSQL can read its archive and the object tar contains 80 regular files. The original two ordinary players and 27 tracks remain present.
++- The developer's Week 40 compact championship has **14 entrants: one human and 13 test drivers**, on Over and under, Curvy, My way, Spiral and Knit. **61 initial races were verified**, none rejected or failed; each circuit has 11–13 distinct verified rival times. Quiet profiles leave some circuits unplayed. There are 86 later scheduled attempts at the recorded checkpoint.
++- Aggregate live PostgreSQL checks show **zero** test-driver PBs on public boards, test-driver ratings or test-driver memberships in normal groups. Normal populations remain separate.
++- `pytest backend/tests/test_pc_test_driver_rollout.py backend/tests/test_test_drivers.py -q --tb=short --show-capture=no`: **14 passed**. Following the stopped/new-database ordering correction, the three rollout tests also pass independently. Ruff passes. The mocked launcher test covers database startup order; a fresh empty PC instance was not manually created.
++- `TestScript res://tests/test_test_driver_live.gd -Graphical`: **26 checks, zero failures** on both actual runs. Eight refreshed screenshots at 1280×720 and 960×540 were inspected. [Live overview](evidence/test-driver-rollout-2026-10-04/live-overview-1280x720.png), [compact duel](evidence/test-driver-rollout-2026-10-04/live-detail-960x540.png), [tracks](evidence/test-driver-rollout-2026-10-04/live-tracks-1280x720.png), [aggregate evidence](evidence/test-driver-rollout-2026-10-04/rollout-summary.json).
++
++The watch process was moved to a hidden background process after its initial jobs completed, preserving the same atomic plan. Its launcher PID/start time and log locations are in `build/rivalry-drivers-live-2026-10-04-watch.json`; output goes to the adjacent `-watch.log` / `-watch-error.log`. It continues on this PC until this plan finishes. This is a development operator process, with no automatic Windows startup or next-week plan creation. After a reboot, resume with `BackendDriversWatch` and this plan. The OS plan lock prevents duplicate writers. For the next UTC week, create a new dated plan with the same seed/parameters and run its watch process.
++
++To stop this specific background scheduler from PowerShell, select only Python processes whose command lines contain both its module and this exact plan name:
++
++```powershell
++Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
++    Where-Object {
++        $_.CommandLine -like '*bmt_backend.test_population_tool watch*' -and
++        $_.CommandLine -like '*rivalry-drivers-live-2026-10-04.json*'
++    } | ForEach-Object { Stop-Process -Id $_.ProcessId }
++```
++
++Pace remains a controller prototype. Real developer PB calibration on two selected circuits reported closest neutral five-lap times **69% and 53% slower** than those PBs, even at the allowed pace ceiling. The tool retained actual driven times. This populated fixture exercises results, points, ghosts and scheduled variation; human-level pace matching on these complex circuits still needs controller improvement. The 150-driver verified-history flow was not run against this live service.
++
++Changed source files in this rollout: `backend/deploy/pc_development.py`, `backend/tests/test_pc_test_driver_rollout.py`, `game/tests/test_test_driver_live.gd` and its Godot UID. Documentation/status and [rollout-only Git patch](evidence/test-driver-rollout-2026-10-04/test-driver-rollout.patch) record this follow-up separately from the earlier feature implementation. No mixed-workspace commit was made. The initial sandbox CIM query was denied; the same narrowly scoped process check succeeded with normal desktop access. No automatic approval rejection occurred.
++
++Doctor currently lists **DN2103 and emulator-5554**. **No phone/emulator driving test, APK export or installation was performed for this rollout.** NAS/production deployment, a restored-service rehearsal, multi-week unattended scheduling, 150-driver throughput, PostgreSQL concurrency stress and human visual/pace acceptance remain unperformed. The live migration and aggregate isolation checks above were performed on PostgreSQL.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
+ 
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
+ 
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+diff --git a/docs/evidence/test-driver-rollout-2026-10-04/rollout-summary.json b/docs/evidence/test-driver-rollout-2026-10-04/rollout-summary.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/test-driver-rollout-2026-10-04/rollout-summary.json
+@@ -0,0 +1,110 @@
++{
++  "captured_utc": "2026-10-04T14:43:37Z",
++  "service": "local-pc-development",
++  "schema": "0012_test_drivers",
++  "vehicle": "compact",
++  "week": 40,
++  "drivers": 14,
++  "test_driver_count": 13,
++  "circuits": [
++    {
++      "name": "Over and under",
++      "verified_drivers": 13,
++      "distinct_times": 13,
++      "fastest_ticks": 17930,
++      "slowest_ticks": 20087
++    },
++    {
++      "name": "Curvy",
++      "verified_drivers": 11,
++      "distinct_times": 11,
++      "fastest_ticks": 14816,
++      "slowest_ticks": 15565
++    },
++    {
++      "name": "My way",
++      "verified_drivers": 13,
++      "distinct_times": 13,
++      "fastest_ticks": 33316,
++      "slowest_ticks": 39679
++    },
++    {
++      "name": "Spiral",
++      "verified_drivers": 12,
++      "distinct_times": 12,
++      "fastest_ticks": 26682,
++      "slowest_ticks": 30548
++    },
++    {
++      "name": "Knit",
++      "verified_drivers": 12,
++      "distinct_times": 12,
++      "fastest_ticks": 17507,
++      "slowest_ticks": 20428
++    }
++  ],
++  "attempts": {
++    "verified": 61,
++    "waiting": 86
++  },
++  "waiting_due_now": 0,
++  "backup": {
++    "complete": true,
++    "checksums_valid": true,
++    "postgres_archive_readable": true,
++    "object_files": 80,
++    "original_counts": {
++      "players": 2,
++      "tracks": 27
++    }
++  },
++  "isolation": {
++    "players": 2,
++    "test_drivers": 13,
++    "tracks": 27,
++    "public_test_pbs": 0,
++    "test_ratings": 0,
++    "normal_test_members": 0
++  },
++  "manifest": {
++    "compiler_version": "creator-compiler-20",
++    "engine_version": "4.7.2.stable.official.ed1daf0bf",
++    "laps": 5,
++    "max_frames": 216000,
++    "physics_version": "arcade-planar-0.50",
++    "replay_schema": "bmt-replay-v1",
++    "rules_key": "standing-5-road-gates-v18",
++    "tick_rate": 120,
++    "track_schema": "creator-track-v5",
++    "vehicles": {
++      "classic": {
++        "config_hash": "da4f783ceaf1196945f346af8950ccc14b404cc630db343effb731ee4ffea124",
++        "handling_version": "cars-1"
++      },
++      "compact": {
++        "config_hash": "8baea3700f862a563f1f47f46dd511e21fb2187277efebf94eebc1d3cb1bafb9",
++        "handling_version": "handling-0.15-original-slide"
++      },
++      "formula": {
++        "config_hash": "39cf24863079a9b63b7c53d9d95f2ee8c62ead30503f323dcdf8f9ece3155392",
++        "handling_version": "cars-1"
++      },
++      "kart": {
++        "config_hash": "58683e71e86505719ed27974e7a5055255960c1b327d47fd79df6e3cffaa4da4",
++        "handling_version": "kart-4"
++      },
++      "pickup": {
++        "config_hash": "0e265623b5cc55b9d62983f01e423466c54374de164442b4df95623fc670d03f",
++        "handling_version": "cars-1"
++      }
++    },
++    "verifier_version": "canonical-verifier-1"
++  },
++  "calibration_relative_error": [
++    0.6932380428807037,
++    0.528709541824296
++  ],
++  "live_godot_checks": 26,
++  "live_godot_failures": 0,
++  "phone_test_performed": false
++}

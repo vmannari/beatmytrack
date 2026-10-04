@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local personal best ghosts v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "key"],
+  "anyOf": [{"required": ["lap"]}, {"required": ["race"]}],
+  "properties": {
+    "schema": {"const": 1},
+    "key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "lap": {"$ref": "#/$defs/recording"},
+    "race": {"$ref": "#/$defs/recording"}
+  },
+  "$defs": {
+    "recording": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticks", "poses"],
+      "properties": {
+        "ticks": {"type": "number", "exclusiveMinimum": 0, "maximum": 216000},
+        "poses": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 36007,
+          "items": {
+            "description": "Relative tick, simulation x/y, world height, heading, pitch, roll. Fractional endpoint ticks preserve swept finish timing. First tick is zero; last equals duration; ticks strictly increase.",
+            "type": "array",
+            "minItems": 7,
+            "maxItems": 7,
+            "items": {"type": "number", "minimum": -1000000, "maximum": 1000000}
+          }
+        }
+      }
+    }
+  }
+}

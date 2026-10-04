@@ -23,6 +23,7 @@ func check(condition: bool, description: String) -> void:
 
 
 func run() -> void:
+	OS.set_environment("BMT_API_URL", "")
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--capture-menus="):
 			capture_directory = argument.trim_prefix("--capture-menus=")
@@ -40,6 +41,7 @@ func run() -> void:
 		app = (load("res://core/app.tscn") as PackedScene).instantiate()
 		app.set("library", TrackLibrary.new(test_directory))
 		app.set("records", LocalRecords.new(test_directory.path_join("records.json")))
+		app.set("cloud_root_override", test_directory.path_join("cloud"))
 		root.add_child(app)
 		while not app.get("startup_complete"): await process_frame
 		app.call("_show_screen","tracks")
@@ -138,7 +140,10 @@ func _result_fixture() -> void:
 	var records: LocalRecords = app.get("records")
 	var baseline_laps: Array[float] = [22.0, 21.0, 23.0, 22.0, 21.0]
 	check(records.record(track, load("res://resources/balanced.tres") as HandlingConfig, 109.0, baseline_laps) == OK, "isolated result fixture baseline saved")
-	app.call("_start_race", track, false)
+	# Stand-in publication metadata permits the isolated scene fixture through the
+	# cloud-only Race gate. No ticket, upload or verified result is requested.
+	track.metadata.cloud_version = "menu-results-fixture"
+	await app.call("_start_race", track, false, true)
 	var game: Node = app.get("game")
 	game.set_physics_process(false)
 	var completed := TrackSession.new()
@@ -157,6 +162,7 @@ func _result_fixture() -> void:
 func _settle() -> void:
 	await process_frame
 	await process_frame
+	while app.menu_page_motion != null or app.menu_edge_motion != null: await process_frame
 	var browser: TrackBrowser = (app.get("root_ui") as Node).find_child("TrackBrowser", true, false)
 	if browser != null:
 		while browser.loading:
@@ -233,6 +239,10 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 	var sample: Dictionary = {}
 	for entry: Dictionary in original:
 		if entry.source == "builtin": sample = entry.duplicate(true); break
+	if sample.is_empty():
+		var fixtures := TrackCatalog.new(browser.library)
+		fixtures.add_builtin(BuiltinTracks.ids()[0])
+		sample = fixtures.entries[0].duplicate(true)
 	browser.catalog.entries.assign([sample])
 	# Metadata-only gallery fixtures, never saved into the owner catalog.
 	for index: int in range(7):
@@ -244,6 +254,7 @@ func _populated_gallery(physical_size: Vector2i) -> void:
 		browser.catalog.entries.append(entry)
 	browser.records.settings["track_ratings"] = {"gallery_fixture_0":4,"gallery_fixture_2":5}
 	browser.call("_refresh")
+	browser._show_detail()
 	await _settle()
 	check(browser.grid.get_child_count() == mini(12,browser.matches.size()),"all eight fixture tracks are reachable in one continuous row")
 	for card: TrackTile in browser.grid.get_children():

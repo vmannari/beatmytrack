@@ -19,24 +19,49 @@ var preview_only: bool = false
 var compact: bool = false
 var paths: Array[PackedVector2Array] = []
 var route_bounds: Rect2
+static var scenery_cache: Dictionary = {}
+var _projected_size: Vector2 = Vector2(-1,-1)
+var _projected_compact: bool = false
+var _projected_paths: Array[PackedVector2Array] = []
+var _projected_shadows: Array[PackedVector2Array] = []
 
 static func scenery_texture(theme_id: String) -> Texture2D:
 	if theme_id == "storm": return STORM_SCENERY
+	if scenery_cache.has(theme_id): return scenery_cache[theme_id]
 	var quadrant: Vector2 = {"pine":Vector2(0,0),"desert":Vector2(1,0),"night_city":Vector2(0,1),"winter":Vector2(1,1)}.get(theme_id,Vector2.ZERO)
 	var cell: Vector2 = SCENERY.get_size()*0.5
 	var atlas := AtlasTexture.new()
 	atlas.atlas = SCENERY
 	atlas.region = Rect2(quadrant*cell,cell)
+	scenery_cache[theme_id] = atlas
 	return atlas
+
+func update_entry(value: Dictionary, saved_favorite: bool, saved_rating: int, chosen: bool) -> void:
+	if entry == value and favorite == saved_favorite and personal_rating == saved_rating and selected == chosen: return
+	var route_changed: bool = entry.get("points",[]) != value.get("points",[]) or entry.get("pieces",[]) != value.get("pieces",[])
+	entry = value
+	favorite = saved_favorite
+	personal_rating = saved_rating
+	selected = chosen
+	if route_changed: _cache_route()
+	_update_tooltip()
+	var star: Button = get_node("ToggleFavorite")
+	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
+	star.tooltip_text = "Remove favorite" if favorite else "Save favorite"
+	star.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if favorite else MenuStyle.TEXT)
+	queue_redraw()
+
+func _update_tooltip() -> void:
+	tooltip_text = str(entry.name)+" — "+str(entry.creator)
+	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
+	if not draft_mode: tooltip_text += "\n" + rating_text() + (" — verified racers" if entry.get("source") == "cloud" else " — local votes on this device")
 
 func _ready() -> void:
 	clip_contents = true
 	custom_minimum_size = Vector2(190,220)
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	tooltip_text = str(entry.name)+" — "+str(entry.creator)
-	if entry.get("creator_kind", "source") == "fictional": tooltip_text += " (fictional creator)"
-	if not draft_mode: tooltip_text += "\n" + rating_text() + (" — verified racers" if entry.get("source") == "cloud" else " — local votes on this device")
+	_update_tooltip()
 	var star := MenuStyle.button("",func() -> void: favorite_requested.emit())
 	star.name = "ToggleFavorite"
 	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
@@ -59,6 +84,8 @@ func _ready() -> void:
 	focus_exited.connect(queue_redraw)
 
 func _cache_route() -> void:
+	paths.clear()
+	_projected_size = Vector2(-1,-1)
 	var pieces: Variant = entry.get("pieces",[])
 	if pieces is Array and pieces.size() <= RoadPieces.MAX_PIECES:
 		for piece: Variant in pieces:
@@ -149,6 +176,23 @@ func _draw_terrain(area: Rect2) -> void:
 		draw_rect(Rect2(area.position.x,area.end.y-30+band*3,area.size.x,3),Color(0.02,0.07,0.08,float(band)*0.03))
 
 func _draw_route(area: Rect2) -> void:
+	if _projected_size != size or _projected_compact != compact:
+		_project_route(area)
+	for index: int in range(_projected_paths.size()):
+		var points: PackedVector2Array = _projected_paths[index]
+		draw_polyline(_projected_shadows[index],Color(0.025,0.055,0.035,0.4),10,true)
+		draw_polyline(points,Color("15202a"),9,true)
+		draw_polyline(points,Color("f0ede0"),5,true)
+		draw_polyline(points,Color("ffffff"),1.2,true)
+		if index == 0 and not draft_mode:
+			draw_circle(points[0],5,Color("091720"))
+			draw_circle(points[0],2.7,MenuStyle.ACCENT)
+
+func _project_route(area: Rect2) -> void:
+	_projected_size = size
+	_projected_compact = compact
+	_projected_paths.clear()
+	_projected_shadows.clear()
 	var available := Rect2(area.position+Vector2(26,26),area.size-Vector2(52,52))
 	if compact: available = Rect2(area.position+Vector2(46,12),area.size-Vector2(92,24))
 	var scale: float = minf(available.size.x/route_bounds.size.x,available.size.y/route_bounds.size.y)
@@ -160,10 +204,5 @@ func _draw_route(area: Rect2) -> void:
 			var projected: Vector2 = (Vector2(point.x,-point.y)-route_bounds.get_center())*scale+available.get_center()
 			points.append(projected)
 			shadow.append(projected+Vector2(2,3))
-		draw_polyline(shadow,Color(0.025,0.055,0.035,0.4),10,true)
-		draw_polyline(points,Color("15202a"),9,true)
-		draw_polyline(points,Color("f0ede0"),5,true)
-		draw_polyline(points,Color("ffffff"),1.2,true)
-		if path == paths[0] and not draft_mode:
-			draw_circle(points[0],5,Color("091720"))
-			draw_circle(points[0],2.7,MenuStyle.ACCENT)
+		_projected_paths.append(points)
+		_projected_shadows.append(shadow)

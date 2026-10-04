@@ -1,0 +1,512 @@
+extends SceneTree
+## Dispatch real viewport touches through the app and carousel, with isolated saves.
+var checks: int = 0
+var failures: int = 0
+var app: Node
+var directory: String
+
+func _initialize() -> void:
+	call_deferred("run")
+
+func check(value: bool, message: String) -> void:
+	checks += 1
+	if not value:
+		failures += 1
+		print("FAIL: " + message)
+
+func run() -> void:
+	OS.set_environment("BMT_API_URL", "")
+	directory = "user://page_swipe_test_" + TrackLibrary.unique_id()
+	DirAccess.make_dir_recursive_absolute(directory)
+	app = load("res://core/app.tscn").instantiate()
+	app.library = TrackLibrary.new(directory)
+	app.records = LocalRecords.new(directory.path_join("records.json"))
+	app.cloud_root_override = directory.path_join("cloud")
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	# Supply metadata only: page and carousel gestures require no service/race writes.
+	var doc: Dictionary = TrackDocument.create_default()
+	for i: int in range(12):
+		app.cloud.entries.append({"track_id":"swipe-%d" % i,"version_id":"version-%d" % i,"content_hash":"hash-%d" % i,"name":"Swipe fixture %d" % i,"creator":"Fixture","creator_id":"fixture","points":doc.points,"theme":"pine","rating_count":0,"rating_average":null})
+	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
+		root.size = dimensions
+		await show("tracks")
+		check(app.menu_neighbors.size() == 2, "both other primary pages are warm before navigating")
+		var header_rect: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+		var tab_rect: Rect2 = app.root_ui.find_child("Tab_create",true,false).get_global_rect()
+		app._show_screen("biome")
+		check(app.menu_body.position.x > 0.0 and is_instance_valid(app.outgoing_menu_page), "forward content enters from right with outgoing content retained")
+		check(not app.outgoing_menu_page.can_process() and app.outgoing_menu_page.mouse_filter == Control.MOUSE_FILTER_IGNORE, "outgoing page cannot receive gestures or taps")
+		check(app.root_ui.get_node("MenuPageSwipe").is_processing_input(), "arriving page remains responsive to a new press")
+		var initial_page_position: float = app.menu_body.position.x
+		await create_timer(0.08).timeout
+		check(app.menu_body.position.x > 0.0 and app.menu_body.position.x < initial_page_position, "slide progresses between logical content positions")
+		check(app.root_ui.position == Vector2.ZERO and app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header_rect), "entire header remains fixed during forward slide")
+		check(app.root_ui.find_child("Tab_create",true,false).get_global_rect().is_equal_approx(tab_rect), "tab position remains fixed during forward slide")
+		check(app.menu_body_slot.clip_contents and app.menu_body_slot.get_global_rect().position.y >= header_rect.end.y, "sliding content is clipped strictly below navigation")
+		await capture("slide-forward", dimensions)
+		await settle()
+		check(is_zero_approx(app.menu_body.position.x) and not is_instance_valid(app.outgoing_menu_page), "slide settles and disposes outgoing content")
+		check(app.root_ui.get_node("MenuPageSwipe").is_processing_input(), "settled page restores page gestures")
+		app._show_screen("tracks")
+		check(app.menu_body.position.x < 0.0, "reverse content enters from left")
+		await create_timer(0.08).timeout
+		check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header_rect), "entire header remains fixed during reverse slide")
+		await capture("slide-reverse", dimensions)
+		var previous_outgoing: Control = app.outgoing_menu_page
+		app._show_screen("garage")
+		check(not previous_outgoing.is_inside_tree() and app.screen == "garage", "rapid tab change disposes previous transition")
+		app._show_screen("settings")
+		check(not is_instance_valid(app.outgoing_menu_page) and is_zero_approx(app.root_ui.position.x), "leaving page tabs clears transition")
+		await show("tracks")
+		var point := Vector2(dimensions.x * 0.6, 180)
+		await check_live_slide(point, dimensions)
+		# Android can deliver the end of a forward stroke only in its UP event.
+		for last_move: float in [0.0, 4.0, 14.0]:
+			touch(point, true)
+			if last_move > 0.0: drag(point + Vector2(-last_move, 0))
+			var displayed_offset: float = app.menu_body.position.x
+			touch(point + Vector2(-60, 3), false)
+			check(app.screen == "biome", "forward release completes sparse swipe after %.0f move" % last_move)
+			if is_instance_valid(app.outgoing_menu_page):
+				check(is_equal_approx(app.outgoing_menu_page.position.x, displayed_offset), "forward release animates from last displayed position")
+			await settle()
+			await show("tracks")
+		await swipe(point, Vector2(-20,18))
+		check(app.screen == "biome", "short mostly horizontal diagonal swipe commits")
+		await swipe(point, Vector2(20,18))
+		check(app.screen == "tracks", "short diagonal reverse commits too")
+		touch(point, true)
+		touch(point + Vector2(-100, 160), false)
+		await settle()
+		check(app.screen == "tracks", "vertical release without moves does not navigate")
+		touch(point, true)
+		drag(point + Vector2(-24, 0))
+		touch(point + Vector2(-60, 0), false, true)
+		await settle()
+		check(app.screen == "tracks", "canceled forward release cannot complete sparse swipe")
+		await swipe(point, Vector2(-150, 0))
+		check(app.screen == "biome", "left swipe Race to Create")
+		var retained: Dictionary = app.document.duplicate(true)
+		await capture("create", dimensions)
+		await swipe(point, Vector2(-150, 0))
+		check(app.screen == "garage", "left swipe Create to Garage")
+		await capture("garage", dimensions)
+		await swipe(point, Vector2(-150, 0))
+		check(app.screen == "garage", "last tab has no wrap")
+		await check_edge("garage", point, -1, dimensions)
+		await swipe(point, Vector2(150, 0))
+		check(app.screen == "biome" and app.document == retained, "return to Create preserves draft")
+		await swipe(point, Vector2(150, 0))
+		check(app.screen == "tracks", "right swipe Create to Race")
+		await swipe(point, Vector2(150, 0))
+		check(app.screen == "tracks", "first tab has no wrap")
+		await check_edge("tracks", point, 1, dimensions)
+		await swipe(point, Vector2(-14, 0))
+		check(app.screen == "tracks", "short drag does not navigate")
+		await swipe(point, Vector2(-100, 160))
+		check(app.screen == "tracks", "vertical gesture does not navigate")
+		await swipe(point, Vector2(-150, 0), true)
+		check(app.screen == "tracks", "canceled gesture does not navigate")
+		touch(point, true)
+		touch(point + Vector2(20, 0), true, false, 1)
+		drag(point + Vector2(-150,0))
+		touch(point + Vector2(-150,0), false)
+		touch(point + Vector2(20,0), false, false, 1)
+		await settle()
+		check(app.screen == "tracks", "two fingers do not navigate")
+		var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
+		check(gallery != null and gallery.get_h_scroll_bar().max_value > gallery.size.x, "populated carousel can scroll")
+		var begin: Vector2 = gallery.get_global_rect().get_center()
+		await swipe(begin, Vector2(-180,0))
+		check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel scrolls without changing page")
+		await swipe(begin, Vector2(180,0))
+		check(app.screen == "tracks", "carousel at first edge still owns swipe")
+		touch(begin, true)
+		drag(begin + Vector2(150,0))
+		check(is_zero_approx(app.menu_body.position.x) and float(gallery.get("overscroll_offset")) > 0.0, "carousel edge effect remains separate from menu edge effect")
+		touch(begin + Vector2(150,0), false)
+		await settle()
+		await swipe(begin, Vector2(-180,-gallery.size.y-30))
+		check(app.screen == "tracks", "leaving carousel cannot become a page swipe")
+		await capture("race-carousel", dimensions)
+		var drawer: CanvasLayer = load("res://ui/track_filter_drawer.gd").new()
+		drawer.catalog = app.track_catalog
+		drawer.discovery = app.discovery_provider
+		drawer.records = app.records
+		app.root_ui.add_child(drawer)
+		drawer.open_for(app.browser_state, null)
+		await settle()
+		await swipe(point, Vector2(-150,0))
+		check(app.screen == "tracks", "filter drawer blocks page swipe")
+		drawer.queue_free()
+		await settle()
+		var dialog := AcceptDialog.new()
+		app.root_ui.add_child(dialog)
+		dialog.popup_centered()
+		await swipe(point, Vector2(-150,0))
+		check(app.screen == "tracks", "dialog blocks page swipe")
+		dialog.queue_free()
+		await settle()
+		var button: Button = app.root_ui.find_child("Tab_create",true,false)
+		await swipe(button.get_global_rect().get_center(), Vector2(150,0))
+		check(app.screen == "tracks", "swiping a tab never activates its tap")
+		touch(button.get_global_rect().get_center(), true)
+		touch(button.get_global_rect().get_center(), false)
+		await settle()
+		check(app.screen == "biome", "ordinary tab tap still works")
+		await show("create")
+		var before: Vector2 = app.canvas.pan
+		await swipe(Vector2(dimensions.x * 0.55, dimensions.y * 0.45), Vector2(-150,0))
+		check(app.screen == "create" and app.canvas.pan != before, "editor canvas keeps its pan gesture")
+		await check_engine_button_swipe(dimensions)
+		await check_parallel_mouse_swipe()
+	app.queue_free()
+	await process_frame
+	print("MENU_PAGE_SWIPE: %d checks, %d failures" % [checks, failures])
+	quit(0 if failures == 0 else 1)
+
+func check_engine_button_swipe(dimensions: Vector2i) -> void:
+	await show("biome")
+	var card: Button = app.root_ui.find_child("Biome_night_city",true,false)
+	var actions: Array[int] = [0]
+	card.pressed.connect(func() -> void: actions[0] += 1)
+	var shell: Control = app.root_ui
+	var original_body: Control = app.menu_body
+	var point: Vector2 = card.get_global_rect().get_center()
+	var end: Vector2 = point - Vector2(point.x * 0.75,0)
+	engine_touch(point,true)
+	await process_frame
+	for step: int in range(1,6):
+		engine_drag(point.lerp(end,step / 5.0), (end-point) / 5.0)
+		await process_frame
+	var held: float = original_body.position.x
+	await create_timer(0.8).timeout
+	check(original_body.position.x == held and held < -100.0, "engine-routed swipe keeps its held position while resting")
+	engine_touch(end,false)
+	await process_frame
+	check(actions[0] == 0, "emulated mouse release cannot activate the button underneath a page swipe")
+	check(app.root_ui == shell and app.screen == "garage", "held button swipe commits without rebuilding the original page")
+	check(app.menu_body != original_body, "held button swipe promotes its visible neighbor")
+	await settle()
+	await capture("engine-held-committed",dimensions)
+	await show("biome")
+	card = app.root_ui.find_child("Biome_night_city",true,false)
+	actions[0] = 0
+	card.pressed.connect(func() -> void: actions[0] += 1)
+	shell = app.root_ui
+	original_body = app.menu_body
+	point = card.get_global_rect().get_center()
+	engine_touch(point,true)
+	await process_frame
+	engine_drag(point - Vector2(14,0),Vector2(-14,0))
+	await process_frame
+	await create_timer(0.6).timeout
+	engine_touch(point - Vector2(14,0),false)
+	check(actions[0] == 0 and app.root_ui == shell, "failed engine swipe cannot select its starting biome button")
+	check(app.menu_body == original_body and original_body.position.x == -14.0 and app.menu_edge_motion != null, "failed engine swipe returns by tween without snapping to center")
+	await settle()
+	check(app.screen == "biome" and original_body.position.x == 0.0, "failed engine swipe settles on its original page")
+	engine_touch(point,true)
+	await process_frame
+	engine_touch(point,false)
+	await settle()
+	check(actions[0] == 1 and app.document.theme == "night_city", "ordinary engine-routed biome tap activates exactly once")
+	card = app.root_ui.find_child("Biome_desert",true,false)
+	point = card.get_global_rect().get_center()
+	engine_mouse(point,true)
+	await process_frame
+	engine_mouse(point,false)
+	await settle()
+	check(app.document.theme == "desert", "real desktop mouse clicks remain available")
+	await show("tracks")
+	var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
+	point = gallery.get_global_rect().get_center()
+	engine_touch(point,true)
+	await process_frame
+	engine_drag(point-Vector2(180,0),Vector2(-180,0))
+	await process_frame
+	engine_touch(point-Vector2(180,0),false)
+	await settle()
+	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "engine-emulated carousel input retains its scrolling ownership")
+
+func engine_touch(point: Vector2, pressed: bool) -> void:
+	var event := InputEventScreenTouch.new()
+	event.position = root.get_final_transform() * point
+	event.pressed = pressed
+	Input.parse_input_event(event)
+	Input.flush_buffered_events()
+
+func check_parallel_mouse_swipe() -> void:
+	await show("biome")
+	var card: Button = app.root_ui.find_child("Biome_night_city",true,false)
+	var actions: Array[int] = [0]
+	card.pressed.connect(func() -> void: actions[0] += 1)
+	var shell: Control = app.root_ui
+	var point: Vector2 = card.get_global_rect().get_center()
+	var end: Vector2 = point - Vector2(point.x * 0.75,0)
+	# A GUI mouse press may precede the touch stream on a touchscreen platform.
+	engine_mouse(point,true)
+	engine_touch(point,true)
+	await process_frame
+	engine_drag(end,end-point)
+	await process_frame
+	await create_timer(0.8).timeout
+	# Reported platform mouse events need not use Godot's emulation device ID.
+	engine_mouse(end,false)
+	engine_touch(end,false)
+	await process_frame
+	check(actions[0] == 0 and app.root_ui == shell, "parallel platform mouse release cannot rebuild the page during a held touch swipe")
+	check(app.screen == "garage", "held swipe commits despite a parallel mouse stream")
+	await settle()
+	await show("tracks")
+
+func engine_drag(point: Vector2, relative: Vector2) -> void:
+	var event := InputEventScreenDrag.new()
+	event.position = root.get_final_transform() * point
+	event.relative = root.get_final_transform().basis_xform(relative)
+	Input.parse_input_event(event)
+	Input.flush_buffered_events()
+
+func engine_mouse(point: Vector2, pressed: bool) -> void:
+	var event := InputEventMouseButton.new()
+	event.position = root.get_final_transform() * point
+	event.global_position = event.position
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = pressed
+	Input.parse_input_event(event)
+	Input.flush_buffered_events()
+
+func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
+	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+	var page_width: float = app.menu_body_slot.size.x
+	var gap: float = 37.5
+	check(app.menu_neighbors.has(1), "next page is prepared before touching the screen")
+	var neighbor: Control = app.menu_neighbors[1].body
+	var draft: Dictionary = app.document.duplicate(true)
+	var root_before: Control = app.root_ui
+	touch(point, true)
+	drag(point + Vector2(-4,0))
+	check(is_zero_approx(app.menu_body.position.x), "tiny touch jitter does not start a slide")
+	drag(point + Vector2(-10,0))
+	check(is_equal_approx(app.menu_body.position.x,-10.0) and app.screen == "tracks", "small horizontal movement starts live slide before release")
+	drag(point + Vector2(-14,0))
+	check(is_equal_approx(app.menu_body.position.x,-14.0), "content tracks finger distance immediately")
+	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width+7.0-14.0), "next page is visible early with a growing empty gutter")
+	check(neighbor.find_child("BiomePicker",true,false) != null and not neighbor.can_process() and neighbor.mouse_filter == Control.MOUSE_FILTER_IGNORE, "neighbor has real page content with its input disabled")
+	check(app.document == draft, "preparing and revealing Create leaves the draft unchanged")
+	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header), "navigation remains fixed during live drag")
+	var held_position: float = app.menu_body.position.x
+	var neighbor_position: float = neighbor.position.x
+	touch(point, false)
+	check(app.menu_body.position.x == held_position and neighbor.position.x == neighbor_position, "release-coordinate jitter leaves both pages at their displayed positions")
+	# Step the real engine tween by one display frame. PNG encoding and OS
+	# scheduling cannot change the sampled time or conceal a fast release jump.
+	app.menu_edge_motion.pause()
+	app.menu_edge_motion.custom_step(1.0 / 60.0)
+	check(absf(app.menu_body.position.x) > absf(held_position) * 0.999 and absf(app.menu_body.position.x) < absf(held_position), "failed swipe has a softer first frame with less than 0.1 percent movement")
+	var return_start: float = app.menu_body.position.x
+	app.menu_edge_motion.custom_step(0.10)
+	check(absf(app.menu_body.position.x) > absf(held_position) * 0.85 and absf(app.menu_body.position.x) < absf(return_start), "failed swipe gathers speed gently over its first 0.12 seconds")
+	var return_blend: float = app.menu_body.position.x / held_position
+	check(is_equal_approx(neighbor.position.x - page_width, (neighbor_position - page_width) * return_blend), "failed swipe moves both pages together with the gutter closing smoothly")
+	await capture("failed-return-early", dimensions)
+	app.menu_edge_motion.custom_step(0.28)
+	check(absf(app.menu_body.position.x) > 0.0 and absf(app.menu_body.position.x) < absf(held_position) * 0.01, "failed return slows gently near the original page")
+	await capture("failed-return-near-end", dimensions)
+	app.menu_edge_motion.play()
+	await settle()
+	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "insufficient live drag returns to original page")
+	check(not neighbor.visible and app.document == draft, "canceling returns both pages and preserves the draft")
+	touch(point,true)
+	drag(point + Vector2(-14,0))
+	await capture("live-race", dimensions)
+	touch(point + Vector2(-14,0),false)
+	await settle()
+	touch(point,true)
+	drag(point + Vector2(-75,0))
+	touch(point + Vector2(-75,0),false)
+	check(app.screen == "biome" and is_equal_approx(app.outgoing_menu_page.position.x,-75.0), "enough movement completes without resetting outgoing dragged position")
+	check(is_equal_approx(app.menu_body.position.x,page_width+gap-75.0), "incoming completion preserves the dragged position and gutter")
+	check(app.menu_body == neighbor and app.root_ui == root_before, "commit promotes the prepared page and keeps the header alive without rebuilding")
+	check(app.menu_neighbors.has(1), "the next consecutive page is already warm at commitment")
+	var arrival_start: float = app.menu_body.position.x
+	app.menu_page_motion.pause()
+	app.menu_page_motion.custom_step(1.0 / 60.0)
+	check(app.menu_body.position.x > arrival_start * 0.97 and app.menu_body.position.x < arrival_start, "completion starts gently from the held position")
+	app.menu_page_motion.play()
+	await settle()
+	check(is_zero_approx(app.menu_body.position.x) and not is_instance_valid(app.outgoing_menu_page), "committed drag settles with outgoing content disposed")
+	check(app.menu_neighbors.has(-1) and app.menu_neighbors[-1].body.find_child("TrackBrowser",true,false) != null, "previous Race page is retained for a reverse drag")
+	touch(point,true)
+	drag(point + Vector2(10,0))
+	check(is_equal_approx(app.menu_body.position.x,10.0) and app.screen == "biome", "reverse slide also starts with small movement")
+	await capture("live-create-reverse", dimensions)
+	drag(point + Vector2(75,0))
+	touch(point + Vector2(75,0),false)
+	check(app.screen == "tracks" and is_equal_approx(app.outgoing_menu_page.position.x,75.0) and is_equal_approx(app.menu_body.position.x,-page_width-gap+75.0), "reverse completion preserves the dragged position and gutter")
+	await settle()
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	touch(point + Vector2(-150,0),false,true)
+	await settle()
+	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "canceled substantial live drag returns instead of committing")
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	drag(point + Vector2(-4,0))
+	check(is_equal_approx(app.menu_body.position.x,-4.0), "reversing finger movement reverses content movement")
+	touch(point + Vector2(-4,0),false)
+	await settle()
+	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "deliberately dragging back near the starting point cancels commitment")
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	drag(point + Vector2(-90,0))
+	touch(point + Vector2(-91,0),false)
+	check(app.screen == "tracks" and app.menu_body.position.x == -90.0 and app.menu_edge_motion != null, "backward stroke far from the origin cancels with a smooth return despite forward lift jitter")
+	await settle()
+	check(app.menu_body.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE, "canceled swipe restores page interaction")
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	drag(point + Vector2(-70,0))
+	drag(point + Vector2(-130,0))
+	drag(point + Vector2(-80,0))
+	touch(point + Vector2(-80,0),false)
+	await settle()
+	check(app.screen == "tracks", "repeated back-and-forth strokes ending backward stay on the original page")
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	drag(point + Vector2(-90,0))
+	drag(point + Vector2(-110,0))
+	touch(point + Vector2(-110,0),false)
+	await settle()
+	check(app.screen == "biome", "a fresh short forward stroke after cancellation rearms the intended page change")
+	await swipe(point, Vector2(20,0))
+	check(app.screen == "tracks", "short reverse returns after rearmed commitment")
+	touch(point,true)
+	drag(point + Vector2(-20,0))
+	drag(point + Vector2(-8,0))
+	touch(point,false)
+	check(app.screen == "biome" and app.outgoing_menu_page.position.x == -8.0, "20-unit swipe survives relaxation to eight units and release-coordinate jitter")
+	check(is_equal_approx(app.menu_body.position.x,page_width+4.0-8.0), "short relaxed commitment preserves incoming position without a release jump")
+	await settle()
+	await swipe(point, Vector2(20,0))
+	check(app.screen == "tracks", "small reverse swipe is sufficient to return to Race")
+	touch(point,true)
+	drag(point + Vector2(-150,0))
+	touch(point,true,false,1)
+	touch(point + Vector2(-150,0),false)
+	touch(point,false,false,1)
+	await settle()
+	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "second finger cancels and restores a live page drag")
+	touch(point,true)
+	drag(point + Vector2(-2,9))
+	drag(point + Vector2(-60,14))
+	check(app.menu_body.position.x == -60.0, "initial vertical jitter can become a horizontal page drag")
+	touch(point + Vector2(-60,70),false)
+	await settle()
+	check(app.screen == "biome", "claimed horizontal drag commits despite subsequent vertical drift")
+	touch(point,true)
+	drag(point + Vector2(-page_width * 0.45,12))
+	var garage: Control = app.menu_neighbors[1].body
+	check(garage.visible and garage.find_child("VehicleSelector",true,false) != null, "Garage content is visible during a held Create swipe")
+	check(is_equal_approx(garage.position.x - (app.menu_body.position.x + page_width),64.0), "held pages have the full empty gutter between their content edges")
+	await capture("live-create-garage", dimensions)
+	touch(point + Vector2(-page_width * 0.45,12),false)
+	await settle()
+	check(app.screen == "garage" and app.menu_body == garage, "prepared Garage becomes interactive after completion")
+	check(app.menu_body.find_child("VehicleSelector",true,false).mouse_filter != Control.MOUSE_FILTER_IGNORE, "promoted controls recover their original mouse input")
+	await swipe(point, Vector2(75,0))
+	await swipe(point, Vector2(75,0))
+	check(app.screen == "tracks", "prepared reverse neighbors return through Create to Race")
+	app._show_screen("biome")
+	touch(point,true)
+	drag(point + Vector2(-75,0))
+	touch(point + Vector2(-75,0),false)
+	await settle()
+	check(app.screen == "garage", "new static swipe during arrival settles first and is not discarded")
+	app._show_screen("tracks")
+	await process_frame
+	await process_frame
+	var gallery: ScrollContainer = app.menu_body.find_child("TrackCarousel",true,false)
+	# Its current rectangle is displaced by the animation. Press where it settles.
+	var carousel_point: Vector2 = gallery.get_global_rect().get_center() - Vector2(app.menu_body.position.x,0)
+	touch(carousel_point,true)
+	drag(carousel_point + Vector2(-150,0))
+	touch(carousel_point + Vector2(-150,0),false)
+	await settle()
+	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel touch during page arrival settles first and retains scrolling ownership")
+
+func check_edge(screen: String, point: Vector2, direction: int, dimensions: Vector2i) -> void:
+	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+	touch(point, true)
+	drag(point + Vector2(direction * 96, 0))
+	var short_pull: float = absf(app.menu_body.position.x)
+	check(short_pull > 0.0 and short_pull < 96.0, "edge content follows finger with resistance")
+	drag(point + Vector2(direction * 900, 0))
+	check(absf(app.menu_body.position.x) > short_pull and absf(app.menu_body.position.x) <= 64.0 and signf(app.menu_body.position.x) == direction, "both edge directions have a bounded stronger pull")
+	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header) and app.screen == screen, "edge pull keeps navigation fixed without wrapping")
+	await capture("edge-" + screen, dimensions)
+	var held: float = absf(app.menu_body.position.x)
+	touch(point + Vector2(direction * 900, 0), false)
+	# Capture resumes at frame_post_draw; let the newly created tween enter
+	# processing before sampling its return, rather than that render frame's timer.
+	await process_frame
+	await process_frame
+	await create_timer(0.08).timeout
+	check(absf(app.menu_body.position.x) < held, "released edge springs back")
+	await settle()
+	check(app.screen == screen and is_zero_approx(app.menu_body.position.x) and app.menu_edge_motion == null, "edge return settles exactly on original page")
+	touch(point, true)
+	drag(point + Vector2(direction * 150, 0))
+	touch(point + Vector2(direction * 150, 0), false, true)
+	await settle()
+	check(app.screen == screen and is_zero_approx(app.menu_body.position.x), "canceled edge gesture restores content")
+	touch(point, true)
+	drag(point + Vector2(direction * 150, 0))
+	touch(point, true, false, 1)
+	touch(point + Vector2(direction * 150, 0), false)
+	touch(point, false, false, 1)
+	await settle()
+	check(app.screen == screen and is_zero_approx(app.menu_body.position.x), "two-finger edge cancellation restores content")
+	touch(point, true)
+	drag(point + Vector2(direction * 150, 0))
+	touch(point + Vector2(direction * 150, 0), false)
+	app._show_screen("settings")
+	await settle()
+	check(app.menu_edge_motion == null and app.screen == "settings", "navigation safely interrupts edge return")
+	await show(screen)
+
+func show(screen: String) -> void:
+	app._show_screen(screen)
+	await settle()
+
+func settle() -> void:
+	for i: int in range(6): await process_frame
+	await create_timer(0.45).timeout
+
+func touch(point: Vector2, pressed: bool, canceled: bool = false, index: int = 0) -> void:
+	var event := InputEventScreenTouch.new()
+	event.index = index
+	event.position = point
+	event.pressed = pressed
+	event.canceled = canceled
+	root.push_input(event, true)
+
+func drag(point: Vector2) -> void:
+	var event := InputEventScreenDrag.new()
+	event.index = 0
+	event.position = point
+	root.push_input(event, true)
+
+func swipe(point: Vector2, distance: Vector2, canceled: bool = false) -> void:
+	touch(point, true)
+	drag(point + distance)
+	touch(point + distance, false, canceled)
+	await settle()
+
+func capture(title: String, dimensions: Vector2i) -> void:
+	if DisplayServer.get_name() == "headless": return
+	await RenderingServer.frame_post_draw
+	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/exclusive-menu-swipes-2026-10-04")
+	DirAccess.make_dir_recursive_absolute(output)
+	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")

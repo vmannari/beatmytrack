@@ -165,6 +165,9 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 			sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
 	var session := TrackSession.new(VehicleSimulation.TICK_RATE,target_laps)
 	if not creator_test: session._configure(track)
+	var ghost := PersonalGhostRun.new()
+	var bridge := BridgeElevation.new(track)
+	ghost.capture(sim.state,session,track,bridge,sim.config,true)
 	var lap_ticks: Array[int] = []
 	var last_lap_tick: int = 0
 	var events: Array = replay.get("rewinds",[])
@@ -184,6 +187,7 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 			var checkpoint: Dictionary = saved[int(event.to_tick)]
 			RewindHistory.restore(sim.state,checkpoint.state)
 			RewindHistory.restore(session,checkpoint.session)
+			ghost.branch(sim.state.tick)
 			lap_ticks.assign(checkpoint.laps)
 			last_lap_tick = int(checkpoint.last_lap)
 			for key: int in saved.keys():
@@ -201,13 +205,14 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 		var previous_layer: int = int(sim.state.track_elevated)
 		sim.step(frame,track)
 		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
+		ghost.capture(sim.state,session,track,bridge,sim.config,session.finished)
 		if session.completed_laps > lap_ticks.size():
 			lap_ticks.append(session.elapsed_ticks-last_lap_tick)
 			last_lap_tick = session.elapsed_ticks
 	if not session.finished or session.completed_laps != target_laps or lap_ticks.size() != target_laps:
 		respond({},"Replay does not complete the required laps and ordered road gates")
 		return
-	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info})
+	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if not creator_test else {}})
 
 func run() -> void:
 	var input_path: String = ""

@@ -1,5 +1,11 @@
 # Rewind and resume — 2026-09-29
 
+## AdMob development resume gate — 2026-10-04
+
+AD01–AD06 / RW05–RW07 / RW17 / V03 / V05 / Q01: the owner authorized AdMob and a saved Settings → Development → Show ads switch. In debug builds Off keeps the existing immediate temporary resume; On opens a real Google rewarded demo ad once banked and daily credits are exhausted. Early close/failure spends nothing. Completion authorizes only the existing race-bound `ad_preview` consumption; no banked credit or provider proof is created. Retry/account/race fencing, banked-first priority, ten-second window and three-resume cap remain. Settings includes a standalone preview that never spends/adds resumes.
+
+Actual SDK/build/test evidence and known limitations are in [ADMOB_DEVELOPMENT.md](ADMOB_DEVELOPMENT.md). The development adapter and Google SDK are excluded from release source sets; the menu category/setting effects are guarded by debug build checks. The historical statements below about no SDK refer to their original dates. `ads_available` still describes verified production banked fulfillment and remains false; real placement/consent/SSV configuration and production cutover remain outstanding.
+
 2026-10-02 RW22/V03/Q01 car-label follow-up: removed the selected car's RESUME HERE/CURRENT annotation and its small pointer from `game/ui/rewind_panel.gd`. Ghost time labels remain. Actual command `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks; inspected `build/rewind.png`. Both status documents updated. No Android export or physical-device test; owner visual acceptance remains.
 
 2026-10-02 RW22/V03/Q01 spacing follow-up: `game/ui/rewind_panel.gd` widens the play action's layout area from 68 to 116 logical units, adding 24 units of empty space on each side of the centered circle. Actual command: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev.ps1 CaptureRewind` passed 65 checks. Inspected `build/rewind.png` and `build/rewind-compact.png`; badges clear the divider. Both status documents updated. No Android export or physical-device test; owner visual acceptance remains.

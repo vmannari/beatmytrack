@@ -175,6 +175,22 @@ func _settings() -> void:
 		status.text = "Speed zoom changed" if error == OK else "Zoom changed for this race. Could not save preference."
 	)
 	column.add_child(speed_zoom)
+	if game.personal_ghost != null:
+		column.add_child(MenuStyle.label("Ghost",22))
+		var ghost_choice := OptionButton.new()
+		ghost_choice.name = "RaceGhostMode"
+		ghost_choice.custom_minimum_size.y = 52
+		for title: String in PersonalGhostRun.TITLES: ghost_choice.add_item(title)
+		ghost_choice.select(PersonalGhostRun.MODES.find(game.ghost_mode))
+		var ghost_description: Label = MenuStyle.label(game.ghost_description(),16,true)
+		ghost_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		ghost_choice.item_selected.connect(func(index: int) -> void:
+			var error: Error = game.set_ghost_mode(PersonalGhostRun.MODES[index])
+			ghost_description.text = game.ghost_description()
+			status.text = "Ghost changed" if error == OK else "Ghost changed for this race. Could not save preference."
+		)
+		column.add_child(ghost_choice)
+		column.add_child(ghost_description)
 	column.add_child(MenuStyle.label("Steering",22))
 	var steering := OptionButton.new()
 	for title: String in ["Buttons","Horizontal slider","Joystick"]: steering.add_item(title)
@@ -190,7 +206,7 @@ func _settings() -> void:
 			if records.save_records() != OK: status.text = "Could not save controls."
 	)
 	column.add_child(steering)
-	status = MenuStyle.label("Sound applies to this session. Camera and controls are saved when available.",16,true)
+	status = MenuStyle.label("Sound applies to this session. Driving preferences are saved when available.",16,true)
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(status)
 	_row("Back","Return to pause menu","arrow",show_main)

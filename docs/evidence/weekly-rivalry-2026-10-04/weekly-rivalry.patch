@@ -1,0 +1,3209 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -76,6 +76,15 @@
+ var cloud_starting: bool = false
+ var _navigation_generation: int = 0
+ var _profile_draft_recovery: Dictionary = {}
++var rivalry: Node
++var race_area_mode: String = "free"
++var rivalry_section: String = "overview"
++var rivalry_track: int = 0
++var rivalry_ghost_choice: int = 0
++var rivalry_racing: bool = false
++var rivalry_recording: Dictionary = {}
++var rivalry_result_pending: bool = false
++var rivalry_refresh_ticks: int = 0
+ 
+ func _exit_tree() -> void:
+ 	_finish_preview_thread()
+@@ -146,6 +155,22 @@
+ 	cloud.root_override = cloud_root_override
+ 	add_child(cloud)
+ 	cloud.load_cached()
++	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
++	rivalry.client = online.client
++	add_child(rivalry)
++	rivalry.changed.connect(_rivalry_changed)
++	var rivalry_timer := Timer.new()
++	rivalry_timer.wait_time = 5.0
++	rivalry_timer.autostart = true
++	rivalry_timer.timeout.connect(func() -> void:
++		if screen != "rivalry" or rivalry.busy or rivalry.model.sample: return
++		if rivalry_result_pending: rivalry.poll_result()
++		elif not is_instance_valid(game):
++			rivalry_refresh_ticks += 1
++			if rivalry_refresh_ticks >= 6:
++				rivalry_refresh_ticks = 0
++				rivalry.refresh())
++	add_child(rivalry_timer)
+ 	lifecycle = TrackLifecycle.new()
+ 	lifecycle.cloud = cloud
+ 	lifecycle.library = library
+@@ -200,13 +225,18 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	if rivalry_racing and rivalry_section == "result" and next != "rivalry" and is_instance_valid(game):
++		remove_child(game)
++		game.queue_free()
++		game = null
++		rivalry_racing = false
+ 	_navigation_generation += 1
+ 	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
+ 	if next == "play": next = "tracks"
+ 	_stop_menu_page_motion()
+ 	var pages: Array[String] = ["tracks", "biome", "garage"]
+-	var previous_page: String = "biome" if screen == "drafts" else screen
+-	var next_page: String = "biome" if next == "drafts" else next
++	var previous_page: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
++	var next_page: String = "biome" if next == "drafts" else "tracks" if next == "rivalry" else next
+ 	var slide: bool = is_instance_valid(root_ui) and root_ui.is_visible_in_tree() and previous_page in pages and next_page in pages and previous_page != next_page
+ 	var slide_direction: int = 1 if pages.find(next_page) > pages.find(previous_page) else -1
+ 	_finish_preview_thread()
+@@ -235,7 +265,7 @@
+ 	MenuStyle.fill(root_ui)
+ 	root_ui.theme = MenuStyle.theme()
+ 	menu_layer.add_child(root_ui)
+-	if screen in ["tracks", "biome", "drafts", "garage"]:
++	if screen in ["tracks", "rivalry", "biome", "drafts", "garage"]:
+ 		var swipe := preload("res://ui/menu_page_swipe.gd").new()
+ 		swipe.name = "MenuPageSwipe"
+ 		swipe.menu = root_ui
+@@ -310,7 +340,7 @@
+ 	nav.add_child(tabs)
+ 	for item: Array in [["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
+ 		var id: String = item[0]
+-		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id or (id == "create" and screen in ["biome","drafts"]))
++		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _show_screen.bind(id), screen == id or (id == "tracks" and screen == "rivalry") or (id == "create" and screen in ["biome","drafts"]))
+ 		button.name = "Tab_" + id
+ 		button.custom_minimum_size.y = 64
+ 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -359,7 +389,7 @@
+ 	layout.add_child(HSeparator.new())
+ 	content = VBoxContainer.new()
+ 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	if screen in ["tracks", "biome", "drafts", "garage"]:
++	if screen in ["tracks", "rivalry", "biome", "drafts", "garage"]:
+ 		menu_body_slot = Control.new()
+ 		menu_body_slot.name = "MenuContentViewport"
+ 		menu_body_slot.clip_contents = true
+@@ -385,6 +415,7 @@
+ 		"drafts": _drafts()
+ 		"biome": _choose_biome()
+ 		"tracks": _tracks()
++		"rivalry": _rivalry()
+ 		"create": _editor()
+ 		"garage": _garage()
+ 		"settings": _settings()
+@@ -450,7 +481,7 @@
+ 
+ func _drag_menu_edge(distance: float) -> void:
+ 	if not is_instance_valid(menu_body): return
+-	if (screen == "tracks" and distance > 0.0) or (screen == "garage" and distance < 0.0):
++	if (screen in ["tracks", "rivalry"] and distance > 0.0) or (screen == "garage" and distance < 0.0):
+ 		# Match the track carousel's bounded resistance, followed by its spring return.
+ 		menu_body.position.x = signf(distance) * 64.0 * (1.0 - exp(-absf(distance) / 160.0))
+ 	else: menu_body.position.x = 0.0
+@@ -502,6 +533,7 @@
+ 	_navigation_generation += 1
+ 	_finish_preview_thread()
+ 	active_profile = scope
++	if rivalry != null: rivalry.reset()
+ 	if scope.is_empty():
+ 		records = guest_records
+ 		library = guest_library
+@@ -652,6 +684,7 @@
+ 	browser.import_requested.connect(_import_dialog)
+ 	browser.delete_requested.connect(_confirm_delete_track)
+ 	browser.notice.connect(_notice)
++	browser.rivalry_requested.connect(_open_rivalry)
+ 	browser.edit_requested.connect(func(doc: Dictionary) -> void:
+ 		document = doc.duplicate(true)
+ 		editor_view.clear()
+@@ -660,6 +693,116 @@
+ 		_show_screen("create"))
+ 	content.add_child(browser)
+ 	menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
++
++func _open_race_area() -> void:
++	if race_area_mode == "rivalry": _open_rivalry()
++	else: _show_screen("tracks")
++
++func _open_rivalry() -> void:
++	race_area_mode = "rivalry"
++	if rivalry.snapshot_scope != rivalry.scope() and not rivalry.model.sample: rivalry.reset()
++	_show_screen("rivalry")
++	if not rivalry.model.sample: rivalry.refresh()
++
++func _rivalry_changed() -> void:
++	if rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
++	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
++		_rivalry()
++
++func _rivalry() -> void:
++	for child: Node in content.get_children():
++		content.remove_child(child)
++		child.queue_free()
++	var page := WeeklyRivalryPage.new()
++	page.model = rivalry.model
++	page.section = rivalry_section
++	page.selected = rivalry_track
++	page.ghost_choice = rivalry_ghost_choice
++	page.busy = rivalry.busy or cloud_starting
++	page.error = rivalry.error
++	page.signed_in = online.client.signed_in()
++	page.pending_result = rivalry_result_pending
++	page.section_requested.connect(func(section: String) -> void:
++		if is_instance_valid(game):
++			remove_child(game)
++			game.queue_free()
++			game = null
++			rivalry_racing = false
++		rivalry_section = section
++		_rivalry()
++		if not rivalry.model.sample: rivalry.refresh())
++	page.track_requested.connect(func(index: int) -> void:
++		rivalry_track = index
++		rivalry_section = "detail"
++		_rivalry())
++	page.race_requested.connect(_start_rivalry_race)
++	page.free_race_requested.connect(func() -> void:
++		if is_instance_valid(game):
++			remove_child(game)
++			game.queue_free()
++			game = null
++			rivalry_racing = false
++		race_area_mode = "free"
++		_show_screen("tracks"))
++	page.join_requested.connect(func() -> void:
++		if online.client.signed_in(): rivalry.join()
++		else: _open_account())
++	page.refresh_requested.connect(func() -> void: rivalry.refresh())
++	page.continue_requested.connect(func() -> void:
++		if rivalry.model.sample:
++			rivalry.model.next_week()
++			_rivalry()
++		else: rivalry.continue_week())
++	page.retry_requested.connect(_retry_race)
++	content.add_child(page)
++
++func _rivalry_ghost(index: int, choice: int) -> Dictionary:
++	if choice == 3: return {}
++	var gap: Dictionary = rivalry.model.gaps(index)
++	var target: Dictionary = gap.ahead if choice == 0 else gap.leader if choice == 1 else gap.own
++	return await rivalry.ghost(index,str(target.get("driver_id","")))
++
++func _start_rivalry_race(index: int, choice: int) -> void:
++	if cloud_starting or rivalry.busy or not online.client.signed_in() or rivalry.model.sample: return
++	var navigation: int = _navigation_generation
++	var original_scope: String = rivalry.scope()
++	cloud_starting = true
++	_rivalry()
++	var issued: Dictionary = await rivalry.ticket(index)
++	if navigation != _navigation_generation or original_scope != rivalry.scope():
++		cloud_starting = false
++		return
++	if issued.is_empty():
++		cloud_starting = false
++		_rivalry()
++		return
++	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
++	var downloaded: bool = await cloud.download(entry)
++	if navigation != _navigation_generation or original_scope != rivalry.scope():
++		cloud_starting = false
++		return
++	if not downloaded:
++		cloud_starting = false
++		rivalry.error = cloud.last_error
++		_rivalry()
++		return
++	var track: NativeTrack = cloud.compile_entry(entry)
++	if track == null:
++		cloud_starting = false
++		rivalry.error = "Track could not be prepared. Try again."
++		_rivalry()
++		return
++	var recording: Dictionary = await _rivalry_ghost(index,choice)
++	cloud_starting = false
++	if navigation != _navigation_generation or original_scope != rivalry.scope(): return
++	rivalry_track = index
++	rivalry_ghost_choice = choice
++	rivalry_recording = recording
++	rivalry_result_pending = false
++	rivalry.result_ticket = ""
++	rivalry.result_state = ""
++	selected_track = track
++	await _start_race(track,false,false,issued)
+ 
+ func _garage() -> void:
+ 	var row := HBoxContainer.new()
+@@ -744,13 +887,14 @@
+ 
+ func _swipe_menu_page(direction: int) -> void:
+ 	var pages: Array[String] = ["tracks", "biome", "garage"]
+-	var current: String = "biome" if screen == "drafts" else screen
++	var current: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
+ 	var index: int = pages.find(current)
+ 	if index < 0: return
+ 	var destination: int = index + direction
+ 	if destination < 0 or destination >= pages.size(): return
+ 	# Revisit the current creation choices without replacing an in-progress draft.
+ 	if pages[destination] == "biome" and document.is_empty(): _new_document()
++	elif pages[destination] == "tracks": _open_race_area()
+ 	else: _show_screen(pages[destination])
+ 
+ func _new_document() -> void:
+@@ -1538,7 +1682,7 @@
+ var test_return_to_drafts: bool = false
+ var test_document_snapshot: Dictionary = {}
+ 
+-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false) -> void:
++func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}) -> void:
+ 	if cloud_starting: return
+ 	if not from_editor and not track.metadata.has("cloud_version") and cloud != null:
+ 		_notice("Choose a published backend track from Race.")
+@@ -1552,14 +1696,19 @@
+ 		var selected_vehicle: String = VehicleCatalog.selected
+ 		var starting_selection: NativeTrack = selected_track
+ 		cloud_starting = true
+-		var issued: Dictionary = await cloud.ticket(track)
++		var issued: Dictionary = await cloud.ticket(track,false,VehicleCatalog.selected,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
+ 		cloud_starting = false
+ 		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection: return
+ 		cloud_ticket = issued
+ 		if not cloud_ticket.is_empty():
+ 			cloud_ticket._owner_id = str(online.client.player.id)
+ 			cloud_ticket._origin = str(online.client.base_url())
++			if not rivalry_issued.is_empty(): rivalry.result_ticket = str(cloud_ticket.ticket_id)
+ 		if cloud_ticket.is_empty():
++			if not rivalry_issued.is_empty():
++				rivalry.error = cloud.last_error
++				_rivalry()
++				return
+ 			var offline_dialog := ConfirmationDialog.new()
+ 			offline_dialog.title = "Online race unavailable"
+ 			offline_dialog.dialog_text = cloud.last_error+"\nRace offline with a local time? This attempt will not enter the online leaderboard."
+@@ -1571,6 +1720,7 @@
+ 			offline_dialog.popup_centered()
+ 			return
+ 	returning_to_editor = from_editor
++	rivalry_racing = not rivalry_issued.is_empty()
+ 	test_return_to_drafts = from_editor and screen == "drafts"
+ 	test_document_snapshot = document.duplicate(true) if from_editor else {}
+ 	if from_editor:
+@@ -1600,6 +1750,9 @@
+ 	game.connect("practice_lap_completed", _complete_draft_test,CONNECT_DEFERRED)
+ 	game.connect("retry_requested", _retry_race)
+ 	add_child(game)
++	if rivalry_racing:
++		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
++		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
+ 	var hud: PlaygroundHUD = game.get("hud")
+ 	hud.touch.control_scale = ui_touch_scale
+ 	hud.touch.left_handed = ui_left_handed
+@@ -1621,7 +1774,11 @@
+ 		remove_child(game)
+ 		game.queue_free()
+ 	game = null
+-	_show_screen("drafts" if test_return_to_drafts else "create" if returning_to_editor else "tracks")
++	if rivalry_racing:
++		rivalry_racing = false
++		rivalry_section = "overview"
++		_show_screen("rivalry")
++	else: _show_screen("drafts" if test_return_to_drafts else "create" if returning_to_editor else "tracks")
+ 	test_return_to_drafts = false
+ 	if not pending_menu_notice.is_empty():
+ 		_notice(pending_menu_notice)
+@@ -1647,6 +1804,15 @@
+ 		cloud_ticket = {}
+ 		cloud_publish_version = ""
+ 		cloud.flush_outbox()
++	if rivalry_racing:
++		(game.get("hud") as PlaygroundHUD).hide()
++		rivalry_result_pending = online_queued
++		rivalry_section = "result"
++		rivalry.model.last_result = {"ms":roundi(total*1000.0)}
++		root_ui.visible = true
++		_show_screen("rivalry")
++		if online_queued: rivalry.poll_result()
++		return
+ 	var previous: float = result_records.best_for(track, game.get("handling"))
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+ 	var saved: bool = not clean
+@@ -1773,13 +1939,24 @@
+ 	var replacement: Dictionary = {}
+ 	if track.metadata.has("cloud_version") and online.client.signed_in():
+ 		cloud_starting = true
+-		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"))
++		var issued: Dictionary = await rivalry.ticket(rivalry_track) if rivalry_racing else {}
++		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"),issued) if not rivalry_racing or not issued.is_empty() else {}
+ 		cloud_starting = false
+ 		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+ 		if replacement.is_empty():
+ 			_notice("Could not start verified retry: "+cloud.last_error)
+ 			return
++	if rivalry_racing:
++		cloud_starting = true
++		var refreshed_recording: Dictionary = await _rivalry_ghost(rivalry_track,rivalry_ghost_choice)
++		cloud_starting = false
++		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
++		rivalry_recording = refreshed_recording
+ 	cloud_ticket = replacement
++	if rivalry_racing:
++		rivalry.result_ticket = str(replacement.get("ticket_id",""))
++		rivalry.result_state = ""
++		rivalry_result_pending = false
+ 	if not cloud_ticket.is_empty():
+ 		cloud_ticket._owner_id = account_id
+ 		cloud_ticket._origin = origin
+@@ -1790,6 +1967,9 @@
+ 	game.set("preference_records",records) # A confirmed restart begins a new attempt.
+ 	game.set("rating_records",null if track.metadata.has("cloud_version") else records)
+ 	game.call("restart")
++	if rivalry_racing:
++		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
++		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
+ 
+ static func track_title(track: NativeTrack) -> String:
+ 	return str(track.metadata.get("title", track.metadata.get("name", track.identity.replace("_"," ").to_upper())))
+diff --git a/game/race/personal_ghost_run.gd b/game/race/personal_ghost_run.gd
+--- a/game/race/personal_ghost_run.gd
++++ b/game/race/personal_ghost_run.gd
+@@ -14,7 +14,7 @@
+ var lap_ends: Array[float] = []
+ var overflow: bool = false
+ 
+-func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bridge: BridgePresentation, handling: HandlingConfig, force: bool = false) -> void:
++func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bridge: BridgeElevation, handling: HandlingConfig, force: bool = false) -> void:
+ 	if state.tick > MAX_TICKS:
+ 		overflow = true
+ 		return
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 WR01-WR08/R01/V03-V05/B01-B07/T01-T04/Q01: Weekly Rivalry added inside Race with Overview, Tracks, focused detail, Standings, verified result feedback and Overview finale. Confirmed five random eligible tracks, Monday-Sunday UTC and similar-pace real entrants (20 cap; honest forming/placement groups). Community eligibility is rating >4.0 AND >100 distinct verified drivers, or trusted official provenance. Server-pinned tickets and verified weekly PBs determine points; slower attempts add none. Migration 0011, derived ghosts and client/account fencing implemented. Final menu 791, app 96, menus 48, bridges 16, ghosts 38, gestures 100 and parser 277 checks pass; 27 desktop screenshots. Weekly/official 13 backend tests, verifier/HTTP 58 and affected-domain 58 pass; normal cloud and lifecycle pass after historical-start fixture repair. PostgreSQL concurrency setup timed out; three existing ghost shutdown warnings. DN2103 attached, no rivalry phone/export/install/full Validate or service deployment/migration/restart by this task. Files, schema, actual commands, screenshots, scoped checkpoint and acceptance: [docs/WEEKLY_RIVALRY.md](docs/WEEKLY_RIVALRY.md). Unrelated workspace edits preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner correction keeps the complete menu top navigation fixed; only clipped content and scenic layers below it slide over 280 ms. Forward/reverse header/tab bounds, gesture ownership and cleanup pass 76 checks; app 96, parse 272 and focused deployment checks pass. Updated debug APK installed/cold-launched on DN2103; final phone transition/carousel screenshots inspected, Race left open. Initial concurrent RaceModeRail cache miss resolved by Import; three existing driving shutdown leaks remain. No full Validate, gameplay/thermal/human-finger acceptance or backend action. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Fixed top navigation correction).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 WR01-WR08/R01/V03-V05/B01-B07/T01-T04/Q01: owner-authorized Weekly Rivalry inside Race implemented through real backend membership/matching, five pinned random eligible tracks, UTC weeks and verified best-only scores. Overview/Tracks/Standings, duel detail, verified feedback and Overview finale reuse established art/nav. Strict >4.0/>100 distinct-driver community thresholds and trusted official exception; honest placement/forming fields, 20-driver cap and derived recorded ghosts. Migration 0011 and API/worker packaging ready. Final UI 791, parser 277, app 96, menus 48, bridge 16, ghosts 38 and gestures 100 checks pass; backend weekly/official 13, canonical/HTTP 58 and affected domains 58 pass. Cloud/lifecycle pass after legacy-start fixture repair. 27 screenshots; PostgreSQL concurrency setup timed out, existing three ghost shutdown warnings. DN2103 attached; no rivalry phone/export/install/full Validate or existing-service restart/deployed migration/production rollout. Contracts, actual commands, evidence, scoped checkpoint and remaining acceptance: docs/WEEKLY_RIVALRY.md. Unrelated changes preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner correction keeps the complete menu top navigation fixed; only clipped content and scenic layers below it slide over 280 ms. Forward/reverse header/tab bounds, gesture ownership and cleanup pass 76 checks; app 96, parse 272 and focused deployment checks pass. Updated debug APK installed/cold-launched on DN2103; final phone transition/carousel screenshots inspected, Race left open. Initial concurrent RaceModeRail cache miss resolved by Import; three existing driving shutdown leaks remain. No full Validate, gameplay/thermal/human-finger acceptance or backend action. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Fixed top navigation correction).
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -134,3 +134,7 @@
+ ## Speed-dependent camera override (2026-10-03)
+ 
+ The owner additionally requests a slight camera pullback at higher speeds. This authorizes smoothly bounded whole-scene speed zoom with any driving view, superseding constant live magnification when Speed zoom is enabled. Keep the 1.15x baseline at low speed and with Speed zoom off, unchanged HUD/mesh/collision scale, no horizon and canonical simulation separation. See docs/CAMERA_OPTIONS.md for parameters, actual evidence and remaining owner/device acceptance.
++
++## Weekly Rivalry override (2026-10-04)
++
++The owner authorizes Weekly Rivalry inside Race, selected from the left trophy rail, with Overview/Tracks/Standings, rival-focused detail, verified race feedback and an Overview finale state. Five randomly chosen tracks, roughly 10–20 actual similar-skill drivers and Monday–Sunday UTC weeks are confirmed defaults. This supersedes the rivalry placeholder and authorizes the associated backend membership, matching, weekly verified PB scoring and ghost APIs. Community tracks require rating >4.0 and >100 distinct verified finishers; trusted official Beat my track authorship is an alternative. Preserve shared menu art/style and the canonical racer. Division/progression balance remains provisional; do not invent entrants, scores or rewards. Production deployment still requires authorization. See docs/WEEKLY_RIVALRY.md for actual tests, evidence and acceptance limits.
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -15,7 +15,7 @@
+ 
+ 
+ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
+-    from . import admin, browser_auth, resumes, runs, tracks
++    from . import admin, browser_auth, resumes, rivalry, runs, tracks
+     from .verifier import GodotVerifier
+ 
+     settings = settings or Settings.from_env()
+@@ -34,6 +34,7 @@
+     app.include_router(tracks.router, prefix="/v1")
+     app.include_router(runs.router, prefix="/v1")
+     app.include_router(resumes.router, prefix="/v1")
++    app.include_router(rivalry.router, prefix="/v1")
+ 
+     @app.exception_handler(RequestValidationError)
+     async def invalid_request(request: Request, _error):
+diff --git a/backend/bmt_backend/maintenance.py b/backend/bmt_backend/maintenance.py
+--- a/backend/bmt_backend/maintenance.py
++++ b/backend/bmt_backend/maintenance.py
+@@ -11,6 +11,7 @@
+ from .db import make_engine, make_session_factory
+ from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
+ from .resume_models import ResumeRace, ResumeReceipt
++from .rivalry_models import RivalryBest, RivalryTicket
+ from .storage import LocalBlobStore
+ from .track_models import IdempotencyRecord, OperationState, PersonalBest, Run, RunTicket, TrackVersion
+ 
+@@ -33,12 +34,14 @@
+         candidates = session.scalars(select(Run).where(
+             Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
+             ~Run.id.in_(select(PersonalBest.run_id)),
++            ~Run.id.in_(select(RivalryBest.run_id)),
+             ~Run.id.in_(select(TrackVersion.creator_test_run_id).where(TrackVersion.creator_test_run_id.is_not(None))),
+         ).order_by(Run.finished_at, Run.id).limit(1000)).all()
+         run_ids = {r.id for r in candidates}
+         tickets = set(session.scalars(select(RunTicket.id).where(
+             RunTicket.expires_at < cutoff,
+             ~RunTicket.id.in_(select(Run.ticket_id).where(~Run.id.in_(run_ids))),
++            ~RunTicket.id.in_(select(RivalryTicket.ticket_id)),
+             ~RunTicket.id.in_(select(ResumeRace.ticket_id).where(ResumeRace.ticket_id.is_not(None), ResumeRace.expires_at >= cutoff)),
+         ).limit(1000)))
+         races = set(session.scalars(select(ResumeRace.id).where(ResumeRace.expires_at < cutoff,
+@@ -75,6 +78,7 @@
+         hashes = [p.stem for p in eligible]
+         referenced = set(session.scalars(select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes))))
+         referenced.update(session.scalars(select(Run.replay_hash).where(Run.replay_hash.in_(hashes), ~Run.id.in_(run_ids))))
++        referenced.update(session.scalars(select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), ~Run.id.in_(run_ids))))
+         orphaned = [p for p in eligible if p.stem not in referenced]
+         if apply:
+             offset -= sum(p.parent.name == f"{shard:02x}" for p in orphaned)
+diff --git a/backend/bmt_backend/migrations/env.py b/backend/bmt_backend/migrations/env.py
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -1,7 +1,13 @@
+ from alembic import context
+ from sqlalchemy import text
+ 
+-from bmt_backend import admin_models, identity_models, resume_models, track_models  # noqa: F401
++from bmt_backend import (  # noqa: F401
++    admin_models,
++    identity_models,
++    resume_models,
++    rivalry_models,
++    track_models,
++)
+ from bmt_backend.db import Base
+ 
+ engine = context.config.attributes["engine"]
+diff --git a/backend/bmt_backend/official_tracks.py b/backend/bmt_backend/official_tracks.py
+--- a/backend/bmt_backend/official_tracks.py
++++ b/backend/bmt_backend/official_tracks.py
+@@ -68,6 +68,7 @@
+             )
+             if existing is not None:
+                 existing_track = session.get(Track, existing.track_id)
++                existing_track.official = True
+                 if existing_track.authoring_id is None:
+                     existing_track.authoring_id = document.get("id")
+                 existing.discovery = discovery_projection(document)
+@@ -88,6 +89,7 @@
+                 track = Track(owner_id=owner.id, authoring_id=document.get("id"))
+                 session.add(track)
+                 session.flush()
++            track.official = True
+             head = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id).order_by(TrackVersion.number.desc()).limit(1))
+             version = TrackVersion(
+                 track_id=track.id,
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -44,7 +44,7 @@
+     "laps",
+ )
+ MAX_FRAMES = 216000
+-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v17")
++CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v18")
+ 
+ 
+ def leaderboard_session(request: Request):
+diff --git a/backend/bmt_backend/track_models.py b/backend/bmt_backend/track_models.py
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -46,6 +46,7 @@
+     authoring_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+     hidden: Mapped[bool] = mapped_column(Boolean, default=False)
+     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
++    official: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+ 
+ 
+@@ -111,6 +112,7 @@
+     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
+     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
+     replay_hash: Mapped[str] = mapped_column(String(64))
++    ghost_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+     status: Mapped[str] = mapped_column(String(16), default="queued")
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+     finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+diff --git a/backend/bmt_backend/tracks.py b/backend/bmt_backend/tracks.py
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -14,7 +14,7 @@
+ 
+ from .cursors import decode_cursor, encode_cursor
+ from .db import get_session
+-from .identity_models import Player
++from .identity_models import Identity, Player
+ from .middleware import ParsedJSONRoute
+ from .queueing import admit
+ from .security import current_player
+@@ -160,6 +160,9 @@
+         track = Track(owner_id=player.id, authoring_id=source_id)
+         session.add(track)
+         session.flush()
++    if session.scalar(select(Identity.player_id).where(Identity.player_id == player.id,
++            Identity.provider == "development", Identity.subject == "developer")) is not None:
++        track.official = True
+     version = _save_revision(session, track, payload, content_hash, manifest, request.app.state.settings.max_queued_runs, request.app.state.blobs)
+     return commit_response(session, player.id, "create_track", key, body, _payload(request, session, version))
+ 
+diff --git a/backend/bmt_backend/verifier.py b/backend/bmt_backend/verifier.py
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -168,7 +168,8 @@
+                 diagnostics = log_path.read_text(encoding="utf-8", errors="replace")
+                 if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
+                     raise VerifierUnavailable("Canonical verifier reported an engine error")
+-                if not output_path.is_file() or output_path.stat().st_size > MAX_TRACK_BYTES + 4096:
++                result_limit = MAX_REQUEST_BYTES if payload.get("operation") == "run" else MAX_TRACK_BYTES + 4096
++                if not output_path.is_file() or output_path.stat().st_size > result_limit:
+                     raise VerifierUnavailable("Canonical verifier returned no bounded result")
+                 response = json.loads(output_path.read_text(encoding="utf-8"))
+             except (OSError, subprocess.SubprocessError, ValueError) as exc:
+@@ -230,4 +231,25 @@
+             or sum(laps) != ticks
+         ):
+             raise VerifierUnavailable("Canonical result failed timing invariants")
++        if not creator_test:
++            validate_ghost(result.get("ghost"), ticks)
+         return result
++
++
++def validate_ghost(recording, race_ticks):
++    """Derived presentation only; retain strict 20 Hz, duration and finite bounds."""
++    if type(recording) is not dict or set(recording) != {"ticks", "poses"}:
++        raise VerifierUnavailable("Canonical ghost is missing")
++    duration, poses = recording["ticks"], recording["poses"]
++    if (type(duration) not in (int, float) or not math.isfinite(duration) or not 0 < duration <= race_ticks
++            or type(poses) is not list or not 2 <= len(poses) <= MAX_FRAMES // 6 + 7):
++        raise VerifierUnavailable("Canonical ghost exceeds recording bounds")
++    previous = -1
++    for pose in poses:
++        if (type(pose) is not list or len(pose) != 7
++                or any(type(value) not in (int, float) or not math.isfinite(value) for value in pose)
++                or not previous < pose[0] <= duration):
++            raise VerifierUnavailable("Canonical ghost has malformed samples")
++        previous = pose[0]
++    if poses[0][0] != 0 or poses[-1][0] != duration:
++        raise VerifierUnavailable("Canonical ghost endpoints do not match the race")
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -152,6 +152,11 @@
+         run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
+         session.flush()
+         if not creator_test:
++            from .rivalry import accept_verified
++            from .rivalry_models import RivalryTicket
++            if session.get(RivalryTicket, run.ticket_id) is not None and result.get("ghost"):
++                run.ghost_hash = app.state.blobs.put_json(result["ghost"])
++            accept_verified(session, run)
+             values = {
+                 "board_id": run.board_id,
+                 "player_id": run.player_id,
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -23,9 +23,10 @@
+     ),
+     "input": ("drive_frame", "route_driver"),
+     "persistence": ("track_library",),
+-    "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry"),
++    "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry", "personal_ghost_run"),
+     "track": (
+         "builtin_tracks",
++        "bridge_elevation",
+         "creator_bridges",
+         "native_track",
+         "playground_data",
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,15 @@
++2026-10-04 Weekly Rivalry requires migration `0011_weekly_rivalry` and matching
++API/worker images. The standalone verifier now includes derived ghost recording
++and the pure bridge elevation sampler. Keep the existing rules v18 / physics
++0.50 contract; no driving rule changes accompany rivalry. Migrate a backed-up
++database to the current head using the existing deployment procedure, then run
++the rebuilt API and worker together. Existing official tracks are identified by
++the reserved `developer` identity, not the creator's display name. New weekly
++groups need five eligible published tracks; no sample player field is seeded.
++This task tested disposable local services only and did not rebuild/restart the
++existing services, migrate their database or deploy to the NAS/production.
++See [implementation and actual verification](../../docs/WEEKLY_RIVALRY.md).
++
+ 2026-10-03 launch-start update: the current source uses rules v18 / physics 0.50.
+ Rebuild API and verifier together before online client acceptance; existing running
+ services were not rebuilt by this task. v18 adds a tick-zero launch input marker,
+@@ -9,8 +21,8 @@
+ The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying still requires stopped writers and `--offline`. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
+ 
+ The October reliability fixes require migration to the current Alembic head
+-(currently `0010_archive_drafts`, including `0008_review_reliability` and
+-`0009_track_lifecycle`) and a matching rules-v17 canonical verifier image. Keep historical boards pinned; an
++(currently `0011_weekly_rivalry`, including `0008_review_reliability`,
++`0009_track_lifecycle` and `0010_archive_drafts`) and a matching rules-v18 canonical verifier image. Keep historical boards pinned; an
+ old in-flight contract fails explicitly instead of being rescored with new rules.
+ 
+ The [bridge-exit checkpoint repair](../../docs/BRIDGE_EXIT_CHECKPOINTS.md) adds
+diff --git a/backend/tests/test_cloud_client.py b/backend/tests/test_cloud_client.py
+--- a/backend/tests/test_cloud_client.py
++++ b/backend/tests/test_cloud_client.py
+@@ -27,7 +27,7 @@
+     run_client(tmp_path, "res://tests/test_track_lifecycle.gd")
+ 
+ 
+-def run_client(tmp_path, script):
++def run_client(tmp_path, script, prepare=None):
+     root = Path(__file__).resolve().parents[2]
+     binary = os.environ.get("GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
+     if not Path(binary).is_file():
+@@ -42,6 +42,8 @@
+         game_project=str(root / "game"), write_limit_per_minute=1000,
+     ))
+     upgrade(app.state.engine)
++    if prepare is not None:
++        prepare(app)
+     server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
+     thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+     thread.start()
+diff --git a/game/backend/cloud_tracks.gd b/game/backend/cloud_tracks.gd
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -365,12 +365,12 @@
+ 		track.metadata["cloud_creator"] = str(entry.creator)
+ 	return track
+ 
+-func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null) -> Dictionary:
++func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null, issued: Dictionary = {}) -> Dictionary:
+ 	if not client.signed_in(): return {}
+ 	var version: String = str(track.metadata.get("cloud_version",""))
+ 	if version.is_empty(): return {}
+ 	var selected_vehicle: String = VehicleCatalog.selected if vehicle_id.is_empty() else vehicle_id
+-	var response: Dictionary = await client.race_ticket(version,selected_vehicle,Client.new_idempotency_key(),"creator_test" if creator_test else "race")
++	var response: Dictionary = {"ok":true,"data":issued} if not issued.is_empty() else await client.race_ticket(version,selected_vehicle,Client.new_idempotency_key(),"creator_test" if creator_test else "race")
+ 	if not response.ok:
+ 		last_error = str(response.error)
+ 		return {}
+diff --git a/game/backend/runner.gd b/game/backend/runner.gd
+--- a/game/backend/runner.gd
++++ b/game/backend/runner.gd
+@@ -165,6 +165,9 @@
+ 			sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
+ 	var session := TrackSession.new(VehicleSimulation.TICK_RATE,target_laps)
+ 	if not creator_test: session._configure(track)
++	var ghost := PersonalGhostRun.new()
++	var bridge := BridgeElevation.new(track)
++	ghost.capture(sim.state,session,track,bridge,sim.config,true)
+ 	var lap_ticks: Array[int] = []
+ 	var last_lap_tick: int = 0
+ 	var events: Array = replay.get("rewinds",[])
+@@ -184,6 +187,7 @@
+ 			var checkpoint: Dictionary = saved[int(event.to_tick)]
+ 			RewindHistory.restore(sim.state,checkpoint.state)
+ 			RewindHistory.restore(session,checkpoint.session)
++			ghost.branch(sim.state.tick)
+ 			lap_ticks.assign(checkpoint.laps)
+ 			last_lap_tick = int(checkpoint.last_lap)
+ 			for key: int in saved.keys():
+@@ -201,13 +205,14 @@
+ 		var previous_layer: int = int(sim.state.track_elevated)
+ 		sim.step(frame,track)
+ 		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
++		ghost.capture(sim.state,session,track,bridge,sim.config,session.finished)
+ 		if session.completed_laps > lap_ticks.size():
+ 			lap_ticks.append(session.elapsed_ticks-last_lap_tick)
+ 			last_lap_tick = session.elapsed_ticks
+ 	if not session.finished or session.completed_laps != target_laps or lap_ticks.size() != target_laps:
+ 		respond({},"Replay does not complete the required laps and ordered road gates")
+ 		return
+-	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info})
++	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if not creator_test else {}})
+ 
+ func run() -> void:
+ 	var input_path: String = ""
+diff --git a/game/track/bridge_presentation.gd b/game/track/bridge_presentation.gd
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -1,109 +1,9 @@
+ class_name BridgePresentation
+-extends RefCounted
+-## Spatial road elevation shared by bridge meshes and vehicle presentation.
+-## Presentation only: no temporal easing and no changes to canonical handling.
+-
+-const VERSION: String = "bridge-ramps-4"
+-const APPROACH: float = 4.0
+-const INSET: float = 4.0
+-var track: NativeTrack
+-var roles := PackedInt32Array()
+-var upper_route := PackedByteArray()
+-var minimum: float = INF
+-var maximum: float = -INF
+-var inset: float = 0.0
+-
++extends BridgeElevation
++## Mesh construction over the shared pure elevation sampler.
+ 
+ func _init(data: NativeTrack) -> void:
+-	track = data
+-	roles = track.deck_cells.duplicate()
+-	if track.metadata.has("legacy_deck"):
+-		roles.fill(-1)
+-		track._expand(track.metadata.legacy_deck,roles)
+-	var legacy_roles: PackedInt32Array = roles.duplicate()
+-	upper_route.resize(track.route.size())
+-	if track.bridge_height == 0.0:
+-		return
+-	for y: int in range(track.grid_height):
+-		for x: int in range(track.grid_width):
+-			if roles[y * track.grid_width + x] < 0:
+-				continue
+-			for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x,y+1),Vector2(x+1,y+1)]:
+-				var along: float = point(corner).dot(track.bridge_axis)
+-				minimum = minf(minimum, along)
+-				maximum = maxf(maximum, along)
+-	inset = minf(INSET, (maximum - minimum) * 0.22)
+-	# Extend only the deck's longitudinal ends, preserving its transverse outline.
+-	for y: int in range(track.grid_height):
+-		for x: int in range(track.grid_width):
+-			var index: int = y * track.grid_width + x
+-			if roles[index] >= 0:
+-				continue
+-			var p: Vector2 = point(Vector2(x+0.5,y+0.5))
+-			var u: float = p.dot(track.bridge_axis)
+-			if u < minimum - APPROACH or u > maximum + APPROACH or (u >= minimum + inset and u <= maximum - inset):
+-				continue
+-			var direction: Vector2 = track.bridge_axis * (1.0 if u < (minimum + maximum) * 0.5 else -1.0)
+-			for step: int in range(1, ceili(APPROACH / track.cell_size) + 2):
+-				var sample_point: Vector2 = p + direction * step * track.cell_size
+-				var cell: Vector2i = cell_for(sample_point)
+-				if inside(cell):
+-					var kind: int = legacy_roles[cell.y * track.grid_width + cell.x]
+-					if kind >= 0:
+-						# New approaches are road only. Keep rail geometry confined
+-						# to the existing canonical rail cells, where it collides.
+-						roles[index] = 0
+-						break
+-	# Extend each upper route branch far enough to cover its approaches. Local
+-	# progression, rather than heading, keeps the underpass at ground height.
+-	for i: int in range(track.route.size()):
+-		var route_cell: Vector2i = cell_for(track.route[i])
+-		if not inside(route_cell) or legacy_roles[route_cell.y*track.grid_width+route_cell.x] < 0: continue
+-		if not track.elevated_at(track.route[i], i):
+-			continue
+-		upper_route[i] = 1
+-		for direction: int in [-1,1]:
+-			var distance: float = 0.0
+-			var previous: int = i
+-			for offset: int in range(1, track.route.size()):
+-				var j: int = posmod(i + direction * offset, track.route.size())
+-				distance += track.route[previous].distance_to(track.route[j])
+-				if distance > APPROACH + 3.0:
+-					break
+-				upper_route[j] = 1
+-				previous = j
+-
+-
+-func point(cell: Vector2) -> Vector2:
+-	return Vector2(cell.x * track.cell_size - track.half_extent.x, track.half_extent.y - cell.y * track.cell_size)
+-
+-
+-func cell_for(p: Vector2) -> Vector2i:
+-	return Vector2i(floori((p.x + track.half_extent.x) / track.cell_size), floori((track.half_extent.y - p.y) / track.cell_size))
+-
+-
+-func inside(cell: Vector2i) -> bool:
+-	return cell.x >= 0 and cell.y >= 0 and cell.x < track.grid_width and cell.y < track.grid_height
+-
+-
+-func profile_height(p: Vector2) -> float:
+-	if track.bridge_height == 0.0:
+-		return 0.0
+-	var u: float = p.dot(track.bridge_axis)
+-	return track.bridge_height * minf(smoothstep(minimum - APPROACH, minimum + inset, u), 1.0 - smoothstep(maximum - inset, maximum + APPROACH, u))
+-
+-
+-func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
+-	for span: Dictionary in track.creator_bridges:
+-		if CreatorBridges.contains(span,p):
+-			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
+-			return CreatorBridges.height(span,p) if elevated else 0.0
+-	if route_index < 0 or upper_route[route_index] == 0:
+-		return 0.0
+-	var cell: Vector2i = cell_for(p)
+-	if not inside(cell) or roles[cell.y * track.grid_width + cell.x] < 0:
+-		return 0.0
+-	return profile_height(p)
++	super(data)
+ 
+ 
+ func build(parent: Node3D) -> void:
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -8,6 +8,7 @@
+ signal delete_requested(id: String, title: String)
+ signal import_requested
+ signal notice(message: String)
++signal rivalry_requested
+ 
+ var library: TrackLibrary
+ var records: LocalRecords
+@@ -693,28 +694,10 @@
+ 	_refresh()
+ 
+ func _build_mode_rail(parent: Control) -> void:
+-	var rail := VBoxContainer.new()
+-	rail.name = "RaceModes"
+-	rail.add_theme_constant_override("separation",12)
++	var rail := RaceModeRail.new()
++	rail.mode_requested.connect(func(mode: String) -> void:
++		if mode == "rivalry": rivalry_requested.emit())
+ 	parent.add_child(rail)
+-	for item: Array in [["trophy","Season"],["flag","Free race"],["target","Challenges"],["friends","Friends"]]:
+-		var active: bool = item[1] == "Free race"
+-		var button := MenuStyle.button("",func() -> void: pass,active)
+-		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
+-		button.expand_icon = true
+-		button.add_theme_constant_override("icon_max_width",38)
+-		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+-		button.add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.TEXT)
+-		button.add_theme_color_override("icon_disabled_color",Color("9cbbc8"))
+-		var tile_style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"),10)
+-		tile_style.border_color = Color("ffe792") if active else Color("2a4655")
+-		tile_style.set_border_width_all(1)
+-		button.add_theme_stylebox_override("normal" if active else "disabled",tile_style)
+-		button.name = "Mode_"+str(item[0])
+-		button.custom_minimum_size = Vector2(60,60)
+-		button.tooltip_text = str(item[1])+("" if active else " - Coming soon")
+-		button.disabled = not active
+-		rail.add_child(button)
+ 
+ func _show_hero(title: String, theme_id: String) -> void:
+ 	_prepare_outgoing_section()
+diff --git a/game/tests/test_cloud_tracks.gd b/game/tests/test_cloud_tracks.gd
+--- a/game/tests/test_cloud_tracks.gd
++++ b/game/tests/test_cloud_tracks.gd
+@@ -119,6 +119,11 @@
+ 	game._physics_process(1.0/120.0)
+ 	check(game.online_frames.is_empty(),"pause excluded from replay")
+ 	game.paused = false
++	# This retained replay predates launch markers. Replay its exact standing
++	# start after the countdown/pause checks; current launch behavior has its
++	# own canonical tests. Countdown sampling must not consume a fixture frame.
++	game.launch_countdown_seen = false
++	input.cursor = 0
+ 	for tick: int in range(3600): game._physics_process(1.0/120.0)
+ 	await game.open_rewind()
+ 	check(game.rewind_panel != null and game.rewind_panel.confirm.disabled,"current-position entry cannot spend a signed-in resume")
+@@ -244,6 +249,7 @@
+ 	input.frames = fixture.replay.frames
+ 	game.driver = input
+ 	game.countdown_ticks = 0
++	game.launch_countdown_seen = false
+ 	for tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+ 	app._results()
+ 	await settle(app.cloud)
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/rivalry.py
+@@ -0,0 +1,376 @@
++"""Weekly championships over immutable tracks and server-verified races."""
++from __future__ import annotations
++
++import secrets
++import statistics
++from datetime import datetime, timezone
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import func, or_, select, update
++from sqlalchemy.exc import IntegrityError
++
++from .contracts import build_contract, current_manifest
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .rivalry_models import RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++from .runs import PINNED_FIELDS, _ticket_payload, board_manifest
++from .track_models import (
++    Board,
++    OperationState,
++    PersonalBest,
++    Run,
++    RunTicket,
++    Track,
++    TrackVersion,
++    commit_response,
++    digest,
++    now,
++    replay_response,
++)
++from .tracks import DB, Auth, Key, track_payload
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["weekly rivalry"])
++TRACK_COUNT = 5
++GROUP_CAPACITY = 20
++POINTS = (30, 26, 23, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2, 1, 1, 1, 1, 1, 1, 1)
++random = secrets.SystemRandom()
++
++
++class Join(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    vehicle_id: str = Field(min_length=1, max_length=80)
++
++
++class Race(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    slot: int = Field(strict=True, ge=0, lt=TRACK_COUNT)
++
++
++def week_window(timestamp: int) -> tuple[int, int, int, int]:
++    day = timestamp // 86400
++    start = (day - (day + 3) % 7) * 86400  # Monday 00:00 UTC.
++    iso = datetime.fromtimestamp(start, timezone.utc).isocalendar()
++    return start, start + 7 * 86400, iso.year, iso.week
++
++
++def active_contract(request, vehicle):
++    try:
++        active = request.app.state.verifier.manifest()
++    except RuntimeError:
++        raise HTTPException(503, "Race verifier temporarily unavailable") from None
++    config = active.get("vehicles", {}).get(vehicle)
++    if not config:
++        raise HTTPException(422, "Vehicle is not allowed by the server manifest")
++    return active, digest({**build_contract(active), "vehicles": {vehicle: config}, "vehicle_id": vehicle})
++
++
++def eligible_versions(session, active, vehicle):
++    """Strict >4.0 AND >100 distinct verified finishers; official bypass only."""
++    finishers = (select(Board.version_id.label("version"), func.count(func.distinct(PersonalBest.player_id)).label("drivers"))
++                 .join(PersonalBest, PersonalBest.board_id == Board.id)
++                 .join(Player, Player.id == PersonalBest.player_id)
++                 .where(Player.disabled.is_(False), Board.manifest["purpose"].as_string().is_(None))
++                 .group_by(Board.version_id).subquery())
++    latest = (select(TrackVersion.track_id.label("track"), func.max(TrackVersion.number).label("number"))
++              .where(TrackVersion.state == "published").group_by(TrackVersion.track_id).subquery())
++    candidates = session.scalars(select(TrackVersion).join(Track).join(Player, Player.id == Track.owner_id)
++        .join(latest, (latest.c.track == Track.id) & (latest.c.number == TrackVersion.number))
++        .outerjoin(finishers, finishers.c.version == TrackVersion.id)
++        .where(TrackVersion.state == "published", Track.hidden.is_(False), Player.disabled.is_(False),
++               or_(Track.official.is_(True), (TrackVersion.rating_count > 0)
++                   & (TrackVersion.rating_sum > 4 * TrackVersion.rating_count) & (finishers.c.drivers > 100)))
++        .order_by(func.random()).limit(1000)).all()
++    return [version for version in candidates
++            if all(current_manifest(version.manifest).get(field) == active.get(field) for field in PINNED_FIELDS)
++            and version.manifest.get("vehicles", {}).get(vehicle) == active.get("vehicles", {}).get(vehicle)]
++
++
++def skill_score(session, player_id, vehicle, active, timestamp):
++    """Median percentage beaten on up to 20 recent comparable verified boards."""
++    own = session.execute(select(PersonalBest, Board).join(Board)
++        .where(PersonalBest.player_id == player_id, Board.vehicle_id == vehicle,
++               PersonalBest.achieved_at >= timestamp - 90 * 86400)
++        .order_by(PersonalBest.achieved_at.desc(), Board.id).limit(20)).all()
++    scores = []
++    config = active["vehicles"][vehicle]
++    for best, board in own:
++        if (board.manifest.get("purpose") or board.manifest.get("rules_key") != active["rules_key"]
++                or board.manifest.get("config_hash") != config["config_hash"]
++                or board.manifest.get("physics_version") != active["physics_version"]):
++            continue
++        times = (select(PersonalBest.time_ticks).join(Player)
++                 .where(PersonalBest.board_id == board.id, Player.disabled.is_(False)).subquery())
++        total = session.scalar(select(func.count()).select_from(times))
++        if total < 5:
++            continue
++        slower = session.scalar(select(func.count()).select_from(times).where(times.c.time_ticks > best.time_ticks))
++        tied = session.scalar(select(func.count()).select_from(times).where(times.c.time_ticks == best.time_ticks))
++        scores.append(round(1000 * (slower + (tied - 1) / 2) / (total - 1)))
++    return round(statistics.median(scores)) if len(scores) >= 3 else None
++
++
++def require_member(session, group_id, player_id):
++    member = session.get(RivalryMember, (group_id, player_id))
++    group = session.get(RivalryGroup, group_id)
++    if member is None or group is None:
++        raise HTTPException(404, "Rivalry not found")
++    return group, member
++
++
++def rankings(rows, key, reverse=False):
++    rows.sort(key=lambda row: (row[key] is None, -row[key] if reverse and row[key] is not None else row[key] or 0, row["id"]))
++    previous, rank = None, None
++    for position, row in enumerate(rows):
++        if row[key] is None:
++            row["rank"] = None
++            continue
++        if rank is None or row[key] != previous:
++            rank = position + 1
++        row["rank"], previous = rank, row[key]
++    return rows
++
++
++def standings_data(session, group):
++    players = session.execute(select(Player.id, Player.display_name).join(RivalryMember)
++        .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
++    bests = {(best.slot, best.player_id): best for best in session.scalars(select(RivalryBest).where(RivalryBest.group_id == group.id))}
++    totals = {pid: {"id": pid, "name": name, "points": 0, "completed": 0} for pid, name in players}
++    tracks = []
++    for slot, entry in enumerate(group.tracks):
++        rows = []
++        for pid, name in players:
++            best = bests.get((slot, pid))
++            rows.append({"id": pid, "name": name, "ticks": best.time_ticks if best else None,
++                         "ms": round(best.time_ticks * 1000 / entry["tick_rate"]) if best else None,
++                         "run_id": best.run_id if best else None})
++        rankings(rows, "ticks")
++        for row in rows:
++            row["points"] = POINTS[row["rank"] - 1] if row["rank"] else 0
++            totals[row["id"]]["points"] += row["points"]
++            totals[row["id"]]["completed"] += int(row["ticks"] is not None)
++        tracks.append(rows)
++    overall = rankings(list(totals.values()), "points", True)
++    for row in overall:
++        if row["completed"] == 0:
++            row["rank"] = None
++    return tracks, overall
++
++
++def snapshot(session, group, player_id, timestamp=None):
++    # Join and verification writers share this lock, so every view has one
++    # coherent membership/points snapshot even with concurrent PostgreSQL jobs.
++    group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == group.id)
++                           .with_for_update().execution_options(populate_existing=True))
++    timestamp = now() if timestamp is None else timestamp
++    tracks, overall = standings_data(session, group)
++    pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
++        .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
++    state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
++    iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
++    result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
++              "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
++              "vehicle_id": group.vehicle_id, "placement": group.skill_band == -1, "driver_count": len(overall),
++              "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
++              "points_policy": list(POINTS), "pending_runs": pending}
++    for slot, pinned in enumerate(group.tracks):
++        version = session.get(TrackVersion, pinned["version_id"])
++        track = session.get(Track, version.track_id)
++        owner = session.get(Player, track.owner_id)
++        result["tracks"].append({"slot": slot, "entry": pinned["entry"], "board_id": pinned["board_id"],
++                                 "available": version.state == "published" and not track.hidden and not owner.disabled,
++                                 "entries": tracks[slot]})
++    return result
++
++
++@router.get("/rivalry/current")
++def current(request: Request, session: DB, player: Auth, vehicle_id: str = Query(min_length=1, max_length=80)):
++    active, contract = active_contract(request, vehicle_id)
++    start, end, year, week = week_window(now())
++    member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
++        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
++    if member:
++        return snapshot(session, session.get(RivalryGroup, member.group_id), player.id)
++    previous = session.scalar(select(RivalryMember).join(RivalryGroup)
++        .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
++               RivalryMember.week_start < start, RivalryMember.acknowledged.is_(False))
++        .order_by(RivalryMember.week_start.desc()).limit(1))
++    if previous:
++        return snapshot(session, session.get(RivalryGroup, previous.group_id), player.id)
++    return {"state": "not_joined", "week": week, "year": year, "ends_at": end, "server_now": now(),
++            "eligible_track_count": len(eligible_versions(session, active, vehicle_id)), "required_track_count": TRACK_COUNT}
++
++
++@router.post("/rivalry/join")
++def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
++    body = payload.model_dump()
++    old = replay_response(session, player.id, "rivalry_join", key, body)
++    if old is not None:
++        return old
++    if player.needs_username:
++        raise HTTPException(409, "USERNAME_REQUIRED")
++    active, contract = active_contract(request, payload.vehicle_id)
++    timestamp = now()
++    start, end, _, _ = week_window(timestamp)
++    member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
++        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
++    if member:
++        return commit_response(session, player.id, "rivalry_join", key, body,
++                               snapshot(session, session.get(RivalryGroup, member.group_id), player.id, timestamp))
++    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
++    member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
++        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
++    if member:
++        return commit_response(session, player.id, "rivalry_join", key, body,
++                               snapshot(session, session.get(RivalryGroup, member.group_id), player.id, timestamp))
++    skill = skill_score(session, player.id, payload.vehicle_id, active, timestamp)
++    band = min(9, skill // 100) if skill is not None else -1
++    lock_id = digest({"week": start, "contract": contract, "band": band})
++    if session.get(OperationState, lock_id) is None:
++        try:
++            with session.begin_nested():
++                session.add(OperationState(id=lock_id))
++                session.flush()
++        except IntegrityError:
++            pass
++    session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
++    groups = session.scalars(select(RivalryGroup).where(RivalryGroup.week_start == start,
++        RivalryGroup.contract_key == contract, RivalryGroup.skill_band == band,
++        RivalryGroup.member_count < GROUP_CAPACITY).order_by(RivalryGroup.created_at).limit(100)).all()
++    random.shuffle(groups)
++    group = None
++    for candidate in groups:
++        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == candidate.id).with_for_update())
++        # The conditional increment also protects the capacity on SQLite,
++        # whose SELECT FOR UPDATE has no effect. A failed reservation retries
++        # another open group; membership and reservation commit together.
++        reserved = session.execute(update(RivalryGroup).where(RivalryGroup.id == candidate.id,
++            RivalryGroup.member_count < GROUP_CAPACITY).values(member_count=RivalryGroup.member_count+1)).rowcount
++        if reserved:
++            group = candidate
++            break
++    if group is None:
++        eligible = eligible_versions(session, active, payload.vehicle_id)
++        if len(eligible) < TRACK_COUNT:
++            raise HTTPException(409, "NOT_ENOUGH_ELIGIBLE_TRACKS")
++        slots = []
++        for version in random.sample(eligible, TRACK_COUNT):
++            pinned = board_manifest(version, payload.vehicle_id)
++            board_id = digest({"version_id": version.id, **pinned})
++            if session.get(Board, board_id) is None:
++                try:
++                    with session.begin_nested():
++                        session.add(Board(id=board_id, version_id=version.id, vehicle_id=payload.vehicle_id, manifest=pinned))
++                        session.flush()
++                except IntegrityError:
++                    pass
++            track = session.get(Track, version.track_id)
++            owner = session.get(Player, track.owner_id)
++            entry = track_payload(version, track, owner.display_name, request.app.state.settings.public_base_url)
++            entry.pop("manifest", None)
++            slots.append({"version_id": version.id, "board_id": board_id, "tick_rate": pinned["tick_rate"], "entry": entry})
++        group = RivalryGroup(week_start=start, ends_at=end, vehicle_id=payload.vehicle_id,
++                             contract_key=contract, skill_band=band, tracks=slots, member_count=1)
++        session.add(group)
++        session.flush()
++    session.add(RivalryMember(group_id=group.id, player_id=player.id, week_start=start, contract_key=contract, skill=skill))
++    session.flush()
++    return commit_response(session, player.id, "rivalry_join", key, body, snapshot(session, group, player.id, timestamp))
++
++
++@router.get("/rivalry/{group_id}")
++def view(group_id: str, session: DB, player: Auth):
++    group, _ = require_member(session, group_id, player.id)
++    return snapshot(session, group, player.id)
++
++
++@router.post("/rivalry/{group_id}/tickets", status_code=201)
++def ticket(group_id: str, payload: Race, request: Request, session: DB, player: Auth, key: Key):
++    body, scope = payload.model_dump(), "rivalry_ticket:" + group_id
++    old = replay_response(session, player.id, scope, key, body)
++    if old is not None:
++        return old
++    group, _ = require_member(session, group_id, player.id)
++    if now() >= group.ends_at:
++        raise HTTPException(410, "RIVALRY_WEEK_ENDED")
++    _active, contract = active_contract(request, group.vehicle_id)
++    if contract != group.contract_key:
++        raise HTTPException(409, "RIVALRY_BUILD_CHANGED")
++    pinned = group.tracks[payload.slot]
++    version = session.get(TrackVersion, pinned["version_id"])
++    track = session.get(Track, version.track_id)
++    if version.state != "published" or track.hidden or session.get(Player, track.owner_id).disabled:
++        raise HTTPException(404, "Rivalry track unavailable")
++    board = session.get(Board, pinned["board_id"])
++    race_ticket = RunTicket(player_id=player.id, board_id=board.id, expires_at=min(now() + 7200, group.ends_at))
++    session.add(race_ticket)
++    session.flush()
++    session.add(RivalryTicket(ticket_id=race_ticket.id, group_id=group.id, slot=payload.slot))
++    return commit_response(session, player.id, scope, key, body,
++                           {**_ticket_payload(race_ticket, board), "rivalry_group": group.id, "rivalry_slot": payload.slot})
++
++
++def accept_verified(session, run):
++    """Called within fenced worker finalization; retries/slower runs mint no points."""
++    binding = session.get(RivalryTicket, run.ticket_id)
++    if binding is None or binding.outcome is not None:
++        return
++    group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == binding.group_id).with_for_update())
++    if not group.week_start <= run.created_at < group.ends_at:
++        return
++    before_tracks, before_overall = standings_data(session, group)
++    prior = next(row for row in before_tracks[binding.slot] if row["id"] == run.player_id)
++    best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
++    improved = best is None or run.time_ticks < best.time_ticks
++    if improved:
++        if best is None:
++            best = RivalryBest(group_id=group.id, player_id=run.player_id, slot=binding.slot)
++            session.add(best)
++        best.run_id, best.time_ticks, best.achieved_at = run.id, run.time_ticks, now()
++        session.flush()
++    after_tracks, after_overall = standings_data(session, group)
++    after = next(row for row in after_tracks[binding.slot] if row["id"] == run.player_id)
++    beaten = [row for row in before_tracks[binding.slot] if row["id"] != run.player_id and row["ticks"] is not None
++              and run.time_ticks < row["ticks"] and (prior["ticks"] is None or row["ticks"] < prior["ticks"])] if improved else []
++    binding.outcome = {"improved": improved, "before": prior, "after": after,
++                       "points_delta": after["points"] - prior["points"], "beaten": beaten,
++                       "ms": round(run.time_ticks * 1000 / group.tracks[binding.slot]["tick_rate"]),
++                       "overall_before": next(row for row in before_overall if row["id"] == run.player_id),
++                       "overall_after": next(row for row in after_overall if row["id"] == run.player_id)}
++
++
++@router.get("/rivalry/tickets/{ticket_id}/result")
++def result(ticket_id: str, session: DB, player: Auth):
++    own = session.get(RunTicket, ticket_id)
++    binding = session.get(RivalryTicket, ticket_id)
++    if own is None or binding is None or own.player_id != player.id:
++        raise HTTPException(404, "Rivalry result not found")
++    run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
++    status = run.status if run else "verified" if binding.outcome else "expired" if now() >= own.expires_at else "upload_pending"
++    return {"status": status, "failure_code": run.failure_code if run else None,
++            "outcome": binding.outcome, "slot": binding.slot}
++
++
++@router.post("/rivalry/{group_id}/continue")
++def acknowledge(group_id: str, session: DB, player: Auth, key: Key):
++    scope = "rivalry_continue:" + group_id
++    old = replay_response(session, player.id, scope, key, {})
++    if old is not None:
++        return old
++    group, member = require_member(session, group_id, player.id)
++    if snapshot(session, group, player.id)["state"] != "complete":
++        raise HTTPException(409, "RIVALRY_NOT_COMPLETE")
++    member.acknowledged = True
++    return commit_response(session, player.id, scope, key, {}, {"acknowledged": True})
++
++
++@router.get("/rivalry/{group_id}/tracks/{slot}/ghosts/{driver_id}")
++def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: DB, player: Auth):
++    require_member(session, group_id, player.id)
++    if session.get(RivalryMember, (group_id, driver_id)) is None or session.get(Player, driver_id).disabled:
++        raise HTTPException(404, "Rival ghost unavailable")
++    best = session.get(RivalryBest, (group_id, driver_id, slot))
++    run = session.get(Run, best.run_id) if best else None
++    if run is None or not run.ghost_hash:
++        raise HTTPException(404, "Rival ghost unavailable")
++    return {"run_id": run.id, "recording": request.app.state.blobs.get_json(run.ghost_hash)}
+diff --git a/backend/bmt_backend/rivalry_models.py b/backend/bmt_backend/rivalry_models.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/rivalry_models.py
+@@ -0,0 +1,50 @@
++"""Pinned weekly fields; results are written only by canonical verification."""
++from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++from .track_models import new_id, now
++
++
++class RivalryGroup(Base):
++    __tablename__ = "rivalry_groups"
++    __table_args__ = (Index("ix_rivalry_matching", "week_start", "contract_key", "skill_band"),)
++    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
++    week_start: Mapped[int] = mapped_column(Integer)
++    ends_at: Mapped[int] = mapped_column(Integer)
++    vehicle_id: Mapped[str] = mapped_column(String(80))
++    contract_key: Mapped[str] = mapped_column(String(64))
++    skill_band: Mapped[int] = mapped_column(Integer)
++    member_count: Mapped[int] = mapped_column(Integer, default=0)
++    tracks: Mapped[list] = mapped_column(JSON)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class RivalryMember(Base):
++    __tablename__ = "rivalry_members"
++    __table_args__ = (UniqueConstraint("week_start", "player_id", "contract_key"),)
++    group_id: Mapped[str] = mapped_column(ForeignKey("rivalry_groups.id"), primary_key=True)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    week_start: Mapped[int] = mapped_column(Integer)
++    contract_key: Mapped[str] = mapped_column(String(64))
++    skill: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
++    joined_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class RivalryBest(Base):
++    __tablename__ = "rivalry_bests"
++    group_id: Mapped[str] = mapped_column(ForeignKey("rivalry_groups.id"), primary_key=True)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
++    time_ticks: Mapped[int] = mapped_column(Integer)
++    achieved_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class RivalryTicket(Base):
++    __tablename__ = "rivalry_tickets"
++    ticket_id: Mapped[str] = mapped_column(ForeignKey("run_tickets.id"), primary_key=True)
++    group_id: Mapped[str] = mapped_column(ForeignKey("rivalry_groups.id"), index=True)
++    slot: Mapped[int] = mapped_column(Integer)
++    outcome: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+diff --git a/backend/bmt_backend/migrations/versions/0011_weekly_rivalry.py b/backend/bmt_backend/migrations/versions/0011_weekly_rivalry.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0011_weekly_rivalry.py
+@@ -0,0 +1,31 @@
++"""Weekly skill groups, verified weekly bests and trusted official provenance."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0011_weekly_rivalry"
++down_revision = "0010_archive_drafts"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    with op.batch_alter_table("tracks") as table:
++        table.add_column(sa.Column("official", sa.Boolean(), nullable=False, server_default=sa.false()))
++    # Historical official author is the reserved, operator-authenticated account,
++    # not any Google account that happens to choose a similar display name.
++    op.execute(sa.text("UPDATE tracks SET official = true WHERE owner_id IN "
++                       "(SELECT player_id FROM identities WHERE provider = 'development' AND subject = 'developer')"))
++    with op.batch_alter_table("runs") as table:
++        table.add_column(sa.Column("ghost_hash", sa.String(64), nullable=True))
++    from bmt_backend.rivalry_models import RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++    for model in (RivalryGroup, RivalryMember, RivalryBest, RivalryTicket):
++        model.__table__.create(op.get_bind())
++
++
++def downgrade():
++    for name in ("rivalry_tickets", "rivalry_bests", "rivalry_members", "rivalry_groups"):
++        op.drop_table(name)
++    with op.batch_alter_table("runs") as table:
++        table.drop_column("ghost_hash")
++    with op.batch_alter_table("tracks") as table:
++        table.drop_column("official")
+diff --git a/backend/tests/test_rivalry.py b/backend/tests/test_rivalry.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_rivalry.py
+@@ -0,0 +1,282 @@
++"""Weekly eligibility, grouping, deadlines and verified-only scoring."""
++import json
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++
++from sqlalchemy import select
++from test_domains import domain as _domain_fixture
++from test_domains import headers, submit, upload
++
++from bmt_backend.identity_models import Identity, Player
++from bmt_backend.rivalry import eligible_versions, skill_score, week_window
++from bmt_backend.rivalry_models import RivalryBest, RivalryGroup, RivalryMember
++from bmt_backend.runs import board_manifest
++from bmt_backend.track_models import Board, PersonalBest, Run, RunTicket, Track, TrackVersion, digest, now
++from bmt_backend.worker import process_one
++
++rivalry_domain = _domain_fixture
++
++
++def seed(rivalry_domain, count=6, official=True):
++    versions = []
++    with rivalry_domain.factory() as session:
++        for index in range(count):
++            track = Track(owner_id=rivalry_domain.players["Creator"], official=official)
++            session.add(track)
++            session.flush()
++            document = {"shape": "oval", "id": f"weekly_{index}", "name": f"Circuit {index}", "points": [[0, 0], [10, 0], [10, 10], [0, 10]]}
++            version = TrackVersion(track_id=track.id, number=1, name=document["name"], state="published",
++                content_hash=rivalry_domain.app.state.blobs.put_json(document), manifest=rivalry_domain.app.state.verifier.validate_track(document),
++                discovery={"theme": "pine", "points": document["points"]}, rating_sum=41, rating_count=10)
++            session.add(version)
++            session.flush()
++            versions.append(version.id)
++        session.commit()
++    return versions
++
++
++def join(rivalry_domain, player="Alice", key=None):
++    response = rivalry_domain.client.post("/v1/rivalry/join", json={"vehicle_id": "compact"}, headers=headers(rivalry_domain, player, key))
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++def rivalry_ticket(rivalry_domain, group, player="Alice", slot=0):
++    response = rivalry_domain.client.post(f"/v1/rivalry/{group}/tickets", json={"slot": slot}, headers=headers(rivalry_domain, player))
++    assert response.status_code == 201, response.text
++    return response.json()
++
++
++def add_finishes(rivalry_domain, version_id, count, *, same_players=None):
++    with rivalry_domain.factory() as session:
++        version = session.get(TrackVersion, version_id)
++        pinned = board_manifest(version, "compact")
++        board_id = digest({"version_id": version.id, **pinned})
++        board = session.get(Board, board_id)
++        if board is None:
++            session.add(Board(id=board_id, version_id=version.id, vehicle_id="compact", manifest=pinned))
++            session.flush()
++        players = same_players or []
++        for index in range(count):
++            if same_players is None:
++                player = Player(display_name="Racer_" + uuid.uuid4().hex[:15])
++                session.add(player)
++                session.flush()
++                players.append(player.id)
++            ticket = RunTicket(player_id=players[index], board_id=board_id, expires_at=now()+7200)
++            session.add(ticket)
++            session.flush()
++            run = Run(ticket_id=ticket.id, player_id=players[index], board_id=board_id, replay_hash="0"*64,
++                      status="verified", time_ticks=100+index, finished_at=now())
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=board_id, player_id=players[index], run_id=run.id, time_ticks=100+index))
++        session.commit()
++    return players
++
++
++def test_exact_eligibility_and_official_provenance(rivalry_domain):
++    versions = seed(rivalry_domain, 1, False)
++    active = rivalry_domain.app.state.verifier.manifest()
++    add_finishes(rivalry_domain, versions[0], 100)
++    with rivalry_domain.factory() as session:
++        assert eligible_versions(session, active, "compact") == []
++    add_finishes(rivalry_domain, versions[0], 1)
++    with rivalry_domain.factory() as session:
++        assert len(eligible_versions(session, active, "compact")) == 1
++        version = session.get(TrackVersion, versions[0])
++        version.rating_sum = 40
++        session.commit()
++        assert eligible_versions(session, active, "compact") == []
++        track = session.get(Track, version.track_id)
++        track.official = True
++        session.commit()
++        assert len(eligible_versions(session, active, "compact")) == 1
++        track.hidden = True
++        session.commit()
++        assert eligible_versions(session, active, "compact") == []
++
++
++def test_insufficient_tracks_no_fabricated_field(rivalry_domain):
++    seed(rivalry_domain, 4)
++    current = rivalry_domain.client.get("/v1/rivalry/current?vehicle_id=compact", headers=headers(rivalry_domain, "Alice"))
++    assert current.json()["eligible_track_count"] == 4
++    response = rivalry_domain.client.post("/v1/rivalry/join", json={"vehicle_id": "compact"}, headers=headers(rivalry_domain, "Alice"))
++    assert response.status_code == 409
++    with rivalry_domain.factory() as session:
++        assert session.scalars(select(RivalryGroup)).all() == []
++
++
++def test_random_pinned_unique_selection_idempotent_membership_and_private_views(rivalry_domain):
++    eligible = seed(rivalry_domain)
++    first = join(rivalry_domain, key="join-once-key")
++    retry = join(rivalry_domain, key="join-once-key")
++    again = join(rivalry_domain)
++    assert first == retry
++    assert again["group_id"] == first["group_id"]
++    selected = [item["entry"]["version_id"] for item in first["tracks"]]
++    assert len(set(selected)) == 5 and set(selected).issubset(eligible)
++    assert first["driver_count"] == 1 and first["placement"] and first["group_forming"]
++    assert first["standings"][0]["rank"] is None
++    second = join(rivalry_domain, "Bob")
++    assert second["group_id"] == first["group_id"]
++    denied = rivalry_domain.client.get(f"/v1/rivalry/{first['group_id']}", headers=headers(rivalry_domain, "Carol"))
++    assert denied.status_code == 404
++    bad_slot = rivalry_domain.client.post(f"/v1/rivalry/{first['group_id']}/tickets", json={"slot":5}, headers=headers(rivalry_domain, "Alice"))
++    assert bad_slot.status_code == 422
++    with rivalry_domain.factory() as session:
++        assert len(session.scalars(select(RivalryMember)).all()) == 2
++
++
++def test_verified_weekly_bests_points_ties_and_no_attempt_farming(rivalry_domain):
++    seed(rivalry_domain)
++    group = join(rivalry_domain)["group_id"]
++    join(rivalry_domain, "Bob")
++    first = rivalry_ticket(rivalry_domain, group)
++    queued = submit(rivalry_domain, first, "Alice", frames=30)
++    snapshot = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
++    assert snapshot["standings"][0]["points"] == 0
++    assert process_one(rivalry_domain.app)
++    result = rivalry_domain.client.get(f"/v1/rivalry/tickets/{first['ticket_id']}/result", headers=headers(rivalry_domain,"Alice")).json()
++    assert result["outcome"]["points_delta"] == 30
++    assert result["status"] == "verified"
++    bob = rivalry_ticket(rivalry_domain, group, "Bob")
++    submit(rivalry_domain, bob, "Bob", frames=20)
++    assert process_one(rivalry_domain.app)
++    next_race = rivalry_ticket(rivalry_domain, group)
++    submit(rivalry_domain, next_race, "Alice", frames=19)
++    assert process_one(rivalry_domain.app)
++    change = rivalry_domain.client.get(f"/v1/rivalry/tickets/{next_race['ticket_id']}/result", headers=headers(rivalry_domain,"Alice")).json()["outcome"]
++    assert change["before"]["rank"] == 2 and change["after"]["rank"] == 1
++    assert change["points_delta"] == 4 and change["beaten"][0]["id"] == rivalry_domain.players["Bob"]
++    slower = rivalry_ticket(rivalry_domain, group)
++    submit(rivalry_domain, slower, "Alice", frames=40)
++    assert process_one(rivalry_domain.app)
++    held = rivalry_domain.client.get(f"/v1/rivalry/tickets/{slower['ticket_id']}/result", headers=headers(rivalry_domain,"Alice")).json()["outcome"]
++    assert not held["improved"] and held["points_delta"] == 0
++    tie = rivalry_ticket(rivalry_domain, group, "Bob")
++    submit(rivalry_domain, tie, "Bob", frames=19)
++    assert process_one(rivalry_domain.app)
++    board = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain,"Alice")).json()["tracks"][0]["entries"]
++    assert all(row["rank"] == 1 and row["points"] == 30 for row in board)
++    with rivalry_domain.factory() as session:
++        assert len(session.scalars(select(RivalryBest)).all()) == 2
++        assert session.get(Run, queued["run_id"]).status == "verified"
++
++
++def test_skill_uses_verified_comparable_percentiles_and_separates_placement(rivalry_domain):
++    versions = seed(rivalry_domain)
++    players = add_finishes(rivalry_domain, versions[0], 5)
++    for version in versions[1:3]:
++        add_finishes(rivalry_domain, version, 5, same_players=players)
++    active = rivalry_domain.app.state.verifier.manifest()
++    with rivalry_domain.factory() as session:
++        assert skill_score(session, players[0], "compact", active, now()) == 1000
++        assert skill_score(session, players[4], "compact", active, now()) == 0
++        assert skill_score(session, rivalry_domain.players["Alice"], "compact", active, now()) is None
++    response = rivalry_domain.client.post("/v1/rivalry/join",json={"vehicle_id":"compact"},headers={"x-test-player":players[0],"Idempotency-Key":str(uuid.uuid4())})
++    assert response.status_code == 200
++    assert not response.json()["placement"]
++    assert join(rivalry_domain)["group_id"] != response.json()["group_id"]
++
++
++def test_deadline_settlement_and_continue_no_claimed_rewards(rivalry_domain, monkeypatch):
++    seed(rivalry_domain)
++    original = join(rivalry_domain)
++    issued = rivalry_ticket(rivalry_domain, original["group_id"])
++    abandoned = rivalry_ticket(rivalry_domain, original["group_id"])
++    submit(rivalry_domain, issued, "Alice", frames=20)
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
++    at_end = rivalry_domain.client.get(f"/v1/rivalry/{original['group_id']}", headers=headers(rivalry_domain,"Alice")).json()
++    assert at_end["state"] == "settling"
++    expired = rivalry_domain.client.get(f"/v1/rivalry/tickets/{abandoned['ticket_id']}/result", headers=headers(rivalry_domain,"Alice"))
++    assert expired.json()["status"] == "expired" and expired.json()["outcome"] is None
++    denied = rivalry_domain.client.post(f"/v1/rivalry/{original['group_id']}/tickets",json={"slot":0},headers=headers(rivalry_domain,"Alice"))
++    assert denied.status_code == 410
++    assert process_one(rivalry_domain.app)
++    finished = rivalry_domain.client.get(f"/v1/rivalry/{original['group_id']}", headers=headers(rivalry_domain,"Alice")).json()
++    assert finished["state"] == "complete" and finished["standings"][0]["points"] == 30
++    response = rivalry_domain.client.post(f"/v1/rivalry/{original['group_id']}/continue",json={},headers=headers(rivalry_domain,"Alice"))
++    assert response.json() == {"acknowledged": True}
++
++
++def test_group_capacity_and_repeat_joins(rivalry_domain):
++    seed(rivalry_domain)
++    with rivalry_domain.factory() as session:
++        players = [Player(display_name="Entrant_"+str(index)) for index in range(21)]
++        session.add_all(players)
++        session.flush()
++        ids = [player.id for player in players]
++        session.commit()
++
++    def enroll(player_id):
++        response = rivalry_domain.client.post("/v1/rivalry/join", json={"vehicle_id":"compact"},
++            headers={"x-test-player":player_id,"Idempotency-Key":str(uuid.uuid4())})
++        assert response.status_code == 200, response.text
++        return response.json()
++
++    if rivalry_domain.postgres:
++        with ThreadPoolExecutor(max_workers=8) as pool:
++            joined = list(pool.map(enroll, ids))
++        with ThreadPoolExecutor(max_workers=4) as pool:
++            repeated = list(pool.map(enroll, [ids[0]]*4))
++    else:
++        joined = [enroll(player_id) for player_id in ids]
++        repeated = [enroll(ids[0]) for _ in range(4)]
++    assert len({item["group_id"] for item in joined}) == 2
++    assert all(item["group_id"] == joined[0]["group_id"] for item in repeated)
++    with rivalry_domain.factory() as session:
++        counts = sorted(group.member_count for group in session.scalars(select(RivalryGroup)))
++        assert counts == [1,20]
++        assert len(session.scalars(select(RivalryMember)).all()) == 21
++
++
++def test_five_track_championship_golden_points(rivalry_domain):
++    fixture = json.loads((Path(__file__).parent / "fixtures/weekly_points_v1.json").read_text())
++    seed(rivalry_domain)
++    group = join(rivalry_domain)["group_id"]
++    join(rivalry_domain, "Bob")
++    for name, expected in fixture["drivers"].items():
++        for slot, ticks in enumerate(expected["ticks"]):
++            if ticks is None:
++                continue
++            issued = rivalry_ticket(rivalry_domain, group, name, slot)
++            submit(rivalry_domain, issued, name, frames=ticks//5)
++            assert process_one(rivalry_domain.app)
++    value = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain,"Alice")).json()
++    assert value["points_policy"] == fixture["policy"]
++    for name, expected in fixture["drivers"].items():
++        overall = next(row for row in value["standings"] if row["name"] == name)
++        assert (overall["points"],overall["rank"],overall["completed"]) == (expected["total"],expected["rank"],expected["completed"])
++        points = [next(row["points"] for row in item["entries"] if row["name"] == name) for item in value["tracks"]]
++        assert points == expected["track_points"]
++
++
++def test_official_flag_cannot_be_claimed_by_player_or_display_name(rivalry_domain):
++    version_id = seed(rivalry_domain, 1, False)[0]
++    with rivalry_domain.factory() as session:
++        session.get(Player, rivalry_domain.players["Creator"]).display_name = "Beat my track"
++        session.commit()
++        assert eligible_versions(session, rivalry_domain.app.state.verifier.manifest(), "compact") == []
++        assert not session.get(Track, session.get(TrackVersion, version_id).track_id).official
++    spoof = rivalry_domain.client.post("/v1/rivalry/join", json={"vehicle_id":"compact","skill":1000,"official":True},
++        headers=headers(rivalry_domain,"Alice"))
++    assert spoof.status_code == 422
++    assert rivalry_domain.client.get("/v1/rivalry/current?vehicle_id=compact").status_code == 401
++    # Future uploads inherit official provenance from the authenticated reserved
++    # identity; clients cannot opt into it through a name or document field.
++    ordinary = upload(rivalry_domain, "Carol", document={"shape":"oval","creator":"Beat my track"})
++    with rivalry_domain.factory() as session:
++        assert not session.get(Track, ordinary["track_id"]).official
++        session.add(Identity(player_id=rivalry_domain.players["Creator"],provider="development",subject="developer"))
++        session.commit()
++    official = upload(rivalry_domain)
++    with rivalry_domain.factory() as session:
++        assert session.get(Track, official["track_id"]).official
++
++
++def test_monday_utc_window():
++    start, end, year, week = week_window(1791072000)  # 2026-10-04 UTC
++    assert end-start == 604800 and year == 2026 and week == 40
++    assert week_window(end)[0] == end
+diff --git a/backend/tests/test_rivalry_http.py b/backend/tests/test_rivalry_http.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_rivalry_http.py
+@@ -0,0 +1,32 @@
++"""Native Race menu to disposable HTTP service to pinned canonical verifier."""
++import copy
++import json
++from pathlib import Path
++
++import pytest
++from test_cloud_client import run_client
++
++from bmt_backend.identity_models import Identity, Player
++from bmt_backend.official_tracks import OFFICIAL_NAME, seed_documents
++
++
++def seed(app):
++    with app.state.session_factory() as session:
++        owner = Player(display_name=OFFICIAL_NAME)
++        session.add(owner)
++        session.flush()
++        session.add(Identity(player_id=owner.id, provider="development", subject="developer"))
++        session.commit()
++    root = Path(__file__).resolve().parents[2]
++    fixture = json.loads((root / "backend/tests/fixtures/verified_oval.json").read_text())
++    documents = []
++    for index in range(5):
++        doc = copy.deepcopy(fixture["document"])
++        doc["id"], doc["name"] = f"weekly_fixture_{index}", f"Weekly fixture {index}"
++        documents.append(doc)
++    seed_documents(app.state.session_factory, app.state.blobs, app.state.verifier, documents)
++
++
++@pytest.mark.godot
++def test_weekly_rivalry_through_native_app(tmp_path):
++    run_client(tmp_path, "res://tests/test_weekly_rivalry_http.gd", prepare=seed)
+diff --git a/backend/tests/fixtures/weekly_points_v1.json b/backend/tests/fixtures/weekly_points_v1.json
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/fixtures/weekly_points_v1.json
+@@ -0,0 +1,8 @@
++{
++  "schema": "bmt-weekly-points-v1",
++  "policy": [30, 26, 23, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2, 1, 1, 1, 1, 1, 1, 1],
++  "drivers": {
++    "Alice": {"ticks": [100, 200, null, 150, 120], "track_points": [30, 26, 0, 30, 30], "total": 116, "rank": 1, "completed": 4},
++    "Bob": {"ticks": [110, 180, 130, 150, null], "track_points": [26, 30, 30, 30, 0], "total": 116, "rank": 1, "completed": 4}
++  }
++}
+diff --git a/backend/tests/test_rivalry_concurrency.py b/backend/tests/test_rivalry_concurrency.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_rivalry_concurrency.py
+@@ -0,0 +1,57 @@
++"""Concurrent capacity reservations in a disposable file-backed SQLite DB."""
++from concurrent.futures import ThreadPoolExecutor
++from types import SimpleNamespace
++
++from fastapi import HTTPException, Request
++from fastapi.testclient import TestClient
++from sqlalchemy import func, select
++from test_domains import FakeVerifier
++from test_rivalry import join, seed
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import upgrade
++from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.security import current_player
++
++
++def test_simultaneous_capacity_reservations(tmp_path):
++    app = create_app(Settings(database_url=f"sqlite:///{(tmp_path/'rivals.sqlite').as_posix()}",
++        object_dir=str(tmp_path/'objects'), rate_limit_per_minute=10000, write_limit_per_minute=10000),
++        verifier=FakeVerifier())
++    upgrade(app.state.engine)
++    factory = app.state.session_factory
++    with factory() as session:
++        players = [Player(display_name=name) for name in ["Creator","Alice"] + [f"Entrant_{i}" for i in range(21)]]
++        session.add_all(players)
++        session.flush()
++        ids = {player.display_name:player.id for player in players}
++        session.commit()
++
++    def authenticated(request: Request):
++        with factory() as session:
++            player = session.get(Player, request.headers.get("x-test-player",""))
++            if player is None:
++                raise HTTPException(401,"Test auth required")
++            session.expunge(player)
++            return player
++
++    app.dependency_overrides[current_player] = authenticated
++    try:
++        with TestClient(app) as client:
++            domain = SimpleNamespace(app=app,client=client,factory=factory,players=ids)
++            seed(domain)
++            join(domain)
++            with ThreadPoolExecutor(max_workers=8) as pool:
++                results = list(pool.map(lambda name:join(domain,name), [f"Entrant_{i}" for i in range(21)]))
++            assert all(item["driver_count"] <= 20 for item in results)
++            with factory() as session:
++                groups = session.scalars(select(RivalryGroup)).all()
++                assert sum(group.member_count for group in groups) == 22
++                assert all(1 <= group.member_count <= 20 for group in groups)
++                for group in groups:
++                    actual = session.scalar(select(func.count()).select_from(RivalryMember).where(RivalryMember.group_id == group.id))
++                    assert actual == group.member_count
++    finally:
++        app.state.engine.dispose()
+diff --git a/docs/WEEKLY_RIVALRY.md b/docs/WEEKLY_RIVALRY.md
+new file mode 100644
+--- /dev/null
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -0,0 +1,66 @@
++# Weekly Rivalry — 2026-10-04
++
++The owner authorizes a championship inside **Race**, selected with the left trophy icon. The confirmed defaults are five tracks, groups of roughly 10–20 real drivers, and Monday 00:00 to the following Monday 00:00 UTC. Shared typography, navy panels, original scenic art, yellow actions and the fixed Race/Create/Garage header connect it to Free Race; championship status and targeted rival gaps distinguish its purpose.
++
++| Requirement | Implemented behavior |
++|---|---|
++| WR01 / R01 / V03 | Trophy opens Weekly Rivalry inside Race; flag returns to Free Race. Race remembers its selected mode. Overview/Tracks/Standings persist; detail has Back to Tracks. Existing page swipes and fixed header remain. |
++| WR02 / V04 / V05 | Overview prioritizes overall rank, points gaps, leaders and Continue to the closest opportunity. Tracks shows only competitive position/gaps. Detail shows four nearby drivers and a ghost choice. Standings scrolls up to 20 drivers. |
++| WR03 / B01–B07 | Authenticated server memberships, pinned immutable track versions and vehicle/build contracts. A player joins at most once per week and contract. Random selection without replacement gives five tracks; random assignment chooses among open groups in the same skill band, capped at 20. |
++| WR04 | Recent comparable verified PBs determine pace: median percentage of drivers beaten on up to 20 boards in 90 days, with at least three boards containing five drivers. Ten percentile bands keep known-skill drivers near their pace. Insufficient history uses an explicitly labeled placement pool. No client-supplied skill. |
++| WR05 | Community eligibility requires rating **strictly above 4.0 AND strictly more than 100 distinct verified finishers** on the selected version. Multiple boards/attempts do not duplicate a driver. Official Beat my track tracks bypass popularity thresholds, with server-owned provenance. Published, visible, compatible tracks and active creators are required in either case. Latest published versions are selected; revisions stay pinned for the week. |
++| WR06 / T01–T04 | Only a completed, canonically verified, weekly ticket-bound race changes the weekly PB. Scores use each track's best result; unlimited retries and slower results award no extra points. Equal ticks share rank and points. Overall points sum five track scores. |
++| WR07 / GH01 / RW03 | Detail targets the rival ahead, weekly leader, own weekly PB or no ghost. Race Again refreshes the selected target's latest verified recording. Ghost poses come from server replay verification, not client uploads; no raw opponent inputs are exposed. Recorded positions include bridge/jump/kerb height, rewind branches and fractional endpoints, with bounded interpolation and no extrapolation. |
++| WR08 / Q01 | Results show verified before/after position, beaten rival, exact gap and points change. Pending verification remains visibly pending. Ended weeks settle queued races before the Overview finale; Continue acknowledges the completed week. Account/server/car changes fence old requests and snapshots. |
++
++New groups form from actual entrants. Below ten drivers the UI says the group is forming; it never invents rivals or their times. Five eligible tracks are mandatory: otherwise join returns `NOT_ENOUGH_ELIGIBLE_TRACKS`. A new entrant starts without weekly times even if an all-time PB exists. Matches are per vehicle and pinned build, avoiding a car change becoming an advantage on a shared board.
++
++The initial proposed track points are `30,26,23,20,18,16,14,12,10,8,6,4,2,1,1,1,1,1,1,1`. This is configurable balance code for review, not an approved progression economy. Divisions, promotion, rewards, PB-count awards and claims are not fabricated: no division progression system has been agreed. The finale reports actual rank, track wins and completed tracks and offers Continue.
++
++Tickets expire after two hours or at week end, whichever comes first. Upload must reach the server before expiry; a timely upload can finish verification after week end. Expired unuploaded tickets are terminal. Periodic menu refresh is every 30 seconds; pending results poll every five seconds. The existing durable outbox retains finished uploads across connection loss. Rivalry requires authentication and online ticket creation; no offline rivalry scores are inferred.
++
++## Changed files and contracts
++
++- Backend domain/API: `backend/bmt_backend/rivalry.py`, `rivalry_models.py`, `app.py`, `tracks.py`, `track_models.py`, `official_tracks.py`, `worker.py`, `maintenance.py`, `verifier.py`, `runs.py`, migration environment and `migrations/versions/0011_weekly_rivalry.py`.
++- Server packaging: `backend/deploy/stage_verifier.py` now includes the pure bridge elevation sampler and personal recording class. The run-response bound is 8 MiB for bounded ghosts; track-result bounds and canonical frame limits remain unchanged.
++- Client: `game/backend/weekly_rivalry_client.gd`, `cloud_tracks.gd`, `runner.gd`, `game/race/weekly_rivalry.gd`, `game/ui/weekly_rivalry_page.gd`, `race_mode_rail.gd`, `track_browser.gd`, `game/core/app.gd` and generated Godot UIDs.
++- Shared presentation: `game/track/bridge_elevation.gd` extracts the existing pure height sampler verbatim. `bridge_presentation.gd` inherits it; the existing `personal_ghost_run.gd` parameter accepts that base. Mesh construction and canonical driving are unchanged.
++- Tests: `backend/tests/test_rivalry.py`, `test_rivalry_http.py`, `test_rivalry_concurrency.py`, `fixtures/weekly_points_v1.json`, the preparation hook in `test_cloud_client.py`, `game/tests/test_weekly_rivalry.gd`, `test_weekly_rivalry_http.gd` and the historical start setup in `test_cloud_tracks.gd`.
++- Contracts/evidence: [snapshot schema](schemas/weekly-rivalry-v1.schema.json), this document, deployment README, project instructions, status/plan entries and `docs/evidence/weekly-rivalry-2026-10-04/`.
++
++Authenticated endpoints are `GET /v1/rivalry/current?vehicle_id=…`, `POST /v1/rivalry/join`, `GET /v1/rivalry/{group}`, `POST /v1/rivalry/{group}/tickets`, `GET /v1/rivalry/tickets/{ticket}/result`, `GET /v1/rivalry/{group}/tracks/{slot}/ghosts/{driver}`, and `POST /v1/rivalry/{group}/continue`. Writes require the existing idempotency key. A nonmember cannot read a group or ghost; results belong to their ticket owner. Snapshot, enrollment and verification share group locks for coherent PostgreSQL views.
++
++Capacity reservations use a conditional atomic SQL increment and commit with membership; this preserves the 20-driver cap on SQLite, where row-lock syntax has no effect. The PostgreSQL skill-bucket lock also serializes new group creation.
++
++Migration `0011_weekly_rivalry` adds four tables, `tracks.official` and `runs.ghost_hash`. Historical official provenance comes from the reserved development identity `developer`, not the display name. Operator seeding and future uploads by that identity set the flag; clients cannot set it. Weekly best runs/ghosts are protected by reference-aware retention. Weekly groups and ticket outcomes currently remain retained; a separate historical-season retention policy is not implemented.
++
++## Actual verification
++
++All Godot commands used the pinned **4.7.2 stable ed1daf0bf** via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Python used `.tools/backend-venv/Scripts/python.exe`.
++
++| Actual command suffix | Outcome |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical` | Final **791 checks, zero failures**. Nine states at 1280×720, 960×540 and 1600×720; 27 screenshots. Button targets, viewport bounds, clipped footer, navigation, ties/points fixture, unranked 20-driver field, unavailable ghosts and malformed response checks. |
++| `-m pytest backend/tests/test_rivalry.py backend/tests/test_official_tracks.py -k 'not postgres' -q --tb=short` | Final **13 passed, nine deselected**. Strict thresholds, trusted official provenance, five unique tracks, capped membership/rejoins, skill pools, privacy, idempotency, ties, queued/slower scores, settlement/expiry and a retained five-track scoring golden fixture. |
++| `-m pytest backend/tests/test_rivalry_http.py backend/tests/test_verifier.py -q` | **58 passed**. Actual authenticated native game race → durable upload → canonical verification → points → derived ghost → fresh retry ticket → sign-out fencing. Also includes standalone staged verifier and completed 216,000-frame recording. |
++| `-m pytest backend/tests/test_rivalry_http.py -q -s --tb=short --log-level=WARNING` | Final **one passed**, **17 native checks**, including refreshed own-weekly-PB ghost on retry. |
++| `-m pytest backend/tests/test_rivalry.py backend/tests/test_official_tracks.py backend/tests/test_rivalry_http.py -k 'not postgres' -q --tb=short` | Final **14 passed, nine deselected**, after the atomic capacity reservation change. |
++| `-m pytest backend/tests/test_rivalry_concurrency.py -q --tb=short --show-capture=no` | **One passed**. 21 concurrent newcomers plus one existing entrant in a disposable file-backed SQLite database retain groups ≤20, with exact membership/count agreement. |
++| `-m pytest backend/tests/test_rivalry.py backend/tests/test_domains.py backend/tests/test_resumes.py backend/tests/test_official_tracks.py backend/tests/test_maintenance.py backend/tests/test_review_followups.py -k 'not postgres' -q` | **58 passed, 56 deselected** before the additional capacity/provenance cases; migration, existing domains/resumes/retention and canonical follow-ups pass. |
++| `-m pytest backend/tests/test_rivalry_http.py backend/tests/test_cloud_client.py -q --tb=short` | Weekly integration and track lifecycle passed; historical normal cloud race fixture initially failed. Corrected its recorded start; final `test_cloud_client.py::test_cloud_library_against_http` rerun **one passed**, including actual Free Race, rewind upload and qualified ratings. |
++| `TestApp` / `TestMenus` / `TestBridgeContacts` | **96 / 48 / 16 checks**, zero failures. |
++| `TestScript -ScriptPath res://tests/test_personal_ghosts.gd` | **38 checks**, zero failures; three existing shutdown instance warnings. |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd` | Headless **100 checks**, zero failures. |
++| `CheckScript -ScriptPath res://core/app.gd` | Passed, exit 0. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **277 scripts**, zero failures. |
++| `Doctor` | Pinned engine/templates found; **DN2103 attached**. No rivalry phone test, Android export/install or device driving performed by this task. |
++| Ruff over backend/domain/tests/staging | Passed. |
++| PostgreSQL `test_group_capacity_and_repeat_joins` | **One setup error**: configured disposable localhost PostgreSQL connection timed out. Concurrent enrollment is implemented/tested by that fixture but **not claimed verified** on PostgreSQL. SQLite sequential capacity/rejoin checks pass. |
++
++Initial checks identified and repaired missing ghost dependencies in the staged verifier, its formerly too-small response bound, a stale v17 transition constant against the already-current v18 contract, and compact Overview/finale footer clipping. The Free Race replay fixture predates launch markers; after countdown/pause checks it now resets countdown observation and its input cursor to replay that exact historic start. Current launch rules and simulation were not weakened. An accidental `CheckScript` without `-ScriptPath` started the app and was interrupted; it is not a successful parse check. Sandbox engine certificate-store failures were resolved by authorized execution with Windows certificate access. FastAPI/httpx deprecation warnings remain.
++
++Inspected evidence: [Overview](evidence/weekly-rivalry-2026-10-04/overview-1280x720.png), [Tracks](evidence/weekly-rivalry-2026-10-04/tracks-1280x720.png), [Detail](evidence/weekly-rivalry-2026-10-04/track-detail-960x540.png), [Standings](evidence/weekly-rivalry-2026-10-04/standings-1280x720.png), [Result](evidence/weekly-rivalry-2026-10-04/race-result-1280x720.png), [Finale](evidence/weekly-rivalry-2026-10-04/weekly-finale-960x540.png), [Forming group](evidence/weekly-rivalry-2026-10-04/forming-group-960x540.png). These use explicit synthetic UI fixtures; shipping never falls back to them. Existing cleared original menu atlas/backdrop assets are reused. The owner's reference board is not shipped.
++
++Owner visual/gesture approval, real population balancing, PostgreSQL concurrency, real-Google/NAS acceptance and physical-device rivalry checks remain. Full Validate/physics regression, service rebuild/restart, deployed DB migration, production deployment and live player-data seeding were not performed. The additive migration and matching API/worker image are required before an existing service can serve this mode. A scoped Git patch is retained for review; unrelated workspace changes are preserved rather than committed together.
++
++Review checkpoint: [weekly-rivalry.patch](evidence/weekly-rivalry-2026-10-04/weekly-rivalry.patch). `git apply --reverse --check --ignore-space-change` and targeted `git diff --check` pass. The app/ghost/status baselines preserve concurrent work. Raw Godot test logs accompany the screenshots; Python outcomes above come from actual disposable-service test runs.
+diff --git a/docs/schemas/weekly-rivalry-v1.schema.json b/docs/schemas/weekly-rivalry-v1.schema.json
+new file mode 100644
+--- /dev/null
++++ b/docs/schemas/weekly-rivalry-v1.schema.json
+@@ -0,0 +1,83 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "urn:bmt:weekly-rivalry-v1",
++  "title": "Weekly Rivalry snapshot v1",
++  "oneOf": [
++    {
++      "type": "object",
++      "required": ["state", "week", "year", "ends_at", "server_now", "eligible_track_count", "required_track_count"],
++      "properties": {
++        "state": {"const": "not_joined"},
++        "week": {"type": "integer", "minimum": 1, "maximum": 53},
++        "year": {"type": "integer"},
++        "ends_at": {"type": "integer"},
++        "server_now": {"type": "integer"},
++        "eligible_track_count": {"type": "integer", "minimum": 0, "maximum": 1000},
++        "required_track_count": {"const": 5}
++      }
++    },
++    {
++      "type": "object",
++      "required": ["state", "group_id", "self_id", "week", "year", "vehicle_id", "ends_at", "server_now", "remaining_seconds", "driver_count", "group_forming", "placement", "points_policy", "pending_runs", "tracks", "standings"],
++      "properties": {
++        "state": {"enum": ["active", "settling", "complete"]},
++        "group_id": {"type": "string", "minLength": 1, "maxLength": 36},
++        "self_id": {"type": "string", "minLength": 1, "maxLength": 36},
++        "week": {"type": "integer", "minimum": 1, "maximum": 53},
++        "year": {"type": "integer"},
++        "vehicle_id": {"type": "string", "minLength": 1, "maxLength": 80},
++        "ends_at": {"type": "integer"},
++        "server_now": {"type": "integer"},
++        "remaining_seconds": {"type": "integer", "minimum": 0, "maximum": 604800},
++        "driver_count": {"type": "integer", "minimum": 1, "maximum": 20},
++        "group_forming": {"type": "boolean"},
++        "placement": {"type": "boolean"},
++        "pending_runs": {"type": "integer", "minimum": 0},
++        "points_policy": {"type": "array", "minItems": 20, "maxItems": 20, "items": {"type": "integer", "minimum": 0}},
++        "standings": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"$ref": "#/$defs/driver"}},
++        "tracks": {
++          "type": "array", "minItems": 5, "maxItems": 5,
++          "items": {
++            "type": "object", "required": ["slot", "board_id", "available", "entry", "entries"],
++            "properties": {
++              "slot": {"type": "integer", "minimum": 0, "maximum": 4},
++              "board_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
++              "available": {"type": "boolean"},
++              "entry": {
++                "type": "object", "required": ["track_id", "version_id", "content_hash", "name", "creator"],
++                "properties": {
++                  "track_id": {"type": "string"},
++                  "version_id": {"type": "string"},
++                  "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
++                  "name": {"type": "string", "minLength": 1, "maxLength": 80},
++                  "creator": {"type": "string"},
++                  "points": {"type": "array", "maxItems": 96, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}}
++                }
++              },
++              "entries": {
++                "type": "array", "minItems": 1, "maxItems": 20,
++                "items": {"allOf": [{"$ref": "#/$defs/driver"}, {"required": ["ticks", "ms", "run_id"], "properties": {
++                  "ticks": {"type": ["integer", "null"], "minimum": 1, "maximum": 216000},
++                  "ms": {"type": ["integer", "null"], "minimum": 1, "maximum": 1800000},
++                  "run_id": {"type": ["string", "null"]}
++                }}]}
++              }
++            }
++          }
++        }
++      }
++    }
++  ],
++  "$defs": {
++    "driver": {
++      "type": "object", "required": ["id", "name", "rank", "points"],
++      "properties": {
++        "id": {"type": "string", "minLength": 1, "maxLength": 36},
++        "name": {"type": "string"},
++        "rank": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
++        "points": {"type": "integer", "minimum": 0, "maximum": 150},
++        "completed": {"type": "integer", "minimum": 0, "maximum": 5}
++      }
++    }
++  }
++}
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+new file mode 100644
+--- /dev/null
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -0,0 +1,152 @@
++extends Node
++## Authenticated rivalry adapter. All points and results come from the server.
++signal changed
++var client: Node
++var model := WeeklyRivalry.new()
++var busy: bool = false
++var error: String = ""
++var snapshot_scope: String = ""
++var result_ticket: String = ""
++var result_state: String = ""
++var _generation: int = 0
++
++func scope() -> String:
++	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected
++
++func reset() -> void:
++	_generation += 1
++	model = WeeklyRivalry.new()
++	snapshot_scope = ""
++	result_ticket = ""
++	result_state = ""
++	error = ""
++	busy = false
++
++static func valid_snapshot(value: Dictionary) -> bool:
++	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
++	if value.get("state") == "not_joined": return value.has_all(["week","ends_at","server_now"])
++	if not value.has_all(["group_id","self_id","week","tracks","standings"]): return false
++	if not value.tracks is Array or value.tracks.size() != 5 or not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
++	var self_found: bool = false
++	for row: Variant in value.standings:
++		if not row is Dictionary or not row.has_all(["id","name","points","rank"]): return false
++		if row.id == value.self_id: self_found = true
++	for track: Variant in value.tracks:
++		if not track is Dictionary or not track.has_all(["board_id","entry","entries"]) or not track.get("entry") is Dictionary or not track.get("entries") is Array: return false
++		if not track.entry.has_all(["name","version_id","content_hash","points","creator","track_id"]): return false
++		if track.entries.size() != value.standings.size(): return false
++		for row: Variant in track.entries:
++			if not row is Dictionary or not row.has_all(["id","name","ms","rank","points"]): return false
++	return self_found
++
++static func valid_outcome(value: Dictionary) -> bool:
++	if not value.has_all(["improved","before","after","overall_before","overall_after","points_delta","ms","beaten"]): return false
++	if not value.improved is bool or not value.beaten is Array or value.beaten.size() > 19: return false
++	if not (value.ms is float or value.ms is int) or not is_finite(float(value.ms)) or float(value.ms) <= 0.0: return false
++	if not (value.points_delta is float or value.points_delta is int) or not is_finite(float(value.points_delta)) or float(value.points_delta) < 0.0 or float(value.points_delta) > 30.0: return false
++	for key: String in ["before","after","overall_before","overall_after"]:
++		if not value[key] is Dictionary or not value[key].has_all(["id","name","rank","points"]): return false
++	for row: Variant in value.beaten:
++		if not row is Dictionary or not row.has_all(["id","name","rank","ms"]): return false
++	return true
++
++func refresh() -> void:
++	if busy: return
++	if snapshot_scope != scope(): reset()
++	if not client.signed_in():
++		error = "Sign in to join Weekly Rivalry."
++		changed.emit()
++		return
++	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode())
++
++func join() -> void:
++	if busy: return
++	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected})
++
++func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
++	busy = true
++	error = ""
++	var original: String = scope()
++	var generation: int = _generation
++	changed.emit()
++	var response: Dictionary = await client.request_api(path,method,payload,client.new_idempotency_key() if method == HTTPClient.METHOD_POST else "",true)
++	if generation != _generation or original != scope(): return
++	busy = false
++	if response.ok and valid_snapshot(response.data):
++		model.apply_snapshot(response.data)
++		snapshot_scope = original
++	else:
++		error = "Five eligible tracks are needed before a rivalry can open." if str(response.get("error","")) == "NOT_ENOUGH_ELIGIBLE_TRACKS" else "Rivalry unavailable. Check your connection and try again."
++	changed.emit()
++
++func ticket(slot: int) -> Dictionary:
++	if busy or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
++	var original: String = scope()
++	var generation: int = _generation
++	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tickets",HTTPClient.METHOD_POST,{"slot":slot},client.new_idempotency_key(),true)
++	if original != scope() or generation != _generation: return {}
++	if not response.ok:
++		error = str(response.get("error","Race unavailable"))
++		changed.emit()
++		return {}
++	return response.data
++
++func ghost(slot: int, driver: String) -> Dictionary:
++	if driver.is_empty() or snapshot_scope != scope(): return {}
++	var original: String = scope()
++	var generation: int = _generation
++	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
++	if generation != _generation or original != scope() or not response.ok: return {}
++	var recording: Variant = response.data.get("recording",{})
++	if not recording is Dictionary or not recording.has_all(["poses","ticks"]) or not recording.poses is Array or recording.poses.size() < 2 or recording.poses.size() > 36007: return {}
++	var previous: float = -1.0
++	for pose: Variant in recording.poses:
++		if not pose is Array or pose.size() != 7: return {}
++		for number: Variant in pose:
++			if not (number is float or number is int) or not is_finite(float(number)): return {}
++		if float(pose[0]) <= previous: return {}
++		previous = float(pose[0])
++	if not (recording.ticks is float or recording.ticks is int) or not is_finite(float(recording.ticks)): return {}
++	if float(recording.ticks) <= 0 or float(recording.ticks) > PersonalGhostRun.MAX_TICKS or previous != float(recording.ticks) or float(recording.poses[0][0]) != 0.0: return {}
++	return recording
++
++func poll_result() -> void:
++	if busy or result_ticket.is_empty() or snapshot_scope != scope(): return
++	var original: String = scope()
++	var ticket_id: String = result_ticket
++	var generation: int = _generation
++	busy = true
++	var response: Dictionary = await client.request_api("/rivalry/tickets/"+ticket_id+"/result",HTTPClient.METHOD_GET,{},"",true)
++	if generation != _generation or original != scope() or result_ticket != ticket_id: return
++	busy = false
++	if not response.ok:
++		error = "Result saved. Reconnect to verify your rivalry result."
++		changed.emit()
++		return
++	result_state = str(response.data.get("status","upload_pending"))
++	if result_state == "verified" and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
++		var outcome: Dictionary = response.data.outcome
++		var index: int = int(response.data.slot)
++		await _fetch("/rivalry/"+model.group_id)
++		if original != scope() or generation != _generation: return
++		model.apply_outcome(outcome,index)
++		changed.emit()
++	elif result_state == "verified":
++		error = "Result details unavailable. Refresh Rivalry to check your standings."
++		changed.emit()
++	elif result_state in ["rejected","failed","expired"]:
++		error = "This race was not verified. Your weekly best is unchanged."
++		changed.emit()
++
++func continue_week() -> void:
++	if busy or not model.completed: return
++	var original: String = scope()
++	var generation: int = _generation
++	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/continue",HTTPClient.METHOD_POST,{},client.new_idempotency_key(),true)
++	if original != scope() or generation != _generation: return
++	if response.ok:
++		reset()
++		await refresh()
++	else:
++		error = "Could not continue. Try again."
++		changed.emit()
+diff --git a/game/race/weekly_rivalry.gd b/game/race/weekly_rivalry.gd
+new file mode 100644
+--- /dev/null
++++ b/game/race/weekly_rivalry.gd
+@@ -0,0 +1,236 @@
++class_name WeeklyRivalry
++extends RefCounted
++## Menu projection of server standings. Sample data is opt-in for UI evidence only.
++const SELF: String = "you"
++const POINTS: Array[int] = [30,26,23,20,18,16,14,12,10,8,6,4,2,1]
++const NAMES: Array[String] = ["Mika","Alex","You","Janne","Sophie","Elias","Nora","Leo","Aino","Oscar","Emil","Sara","Luca","Iris"]
++var week: int = 27
++var completed: bool = false
++var scope: String = ""
++var tracks: Array[Dictionary] = []
++var recordings: Dictionary = {}
++var recorded_times: Dictionary = {}
++var pb_count: int = 0
++var last_result: Dictionary = {}
++var native_cache: Dictionary = {}
++var sample: bool = false
++var server_standings: Array[Dictionary] = []
++var group_id: String = ""
++var status: String = "not_joined"
++var remaining_seconds: int = 0
++var received_msec: int = 0
++var placement: bool = false
++var forming: bool = false
++var vehicle_id: String = "compact"
++var source_self: String = ""
++
++func _init(use_sample: bool = false) -> void:
++	sample = use_sample
++	if sample:
++		_seed()
++		status = "active"
++		remaining_seconds = 4*86400+12*3600
++		received_msec = Time.get_ticks_msec()
++
++func apply_snapshot(value: Dictionary) -> void:
++	sample = false
++	status = str(value.get("state","not_joined"))
++	week = int(value.get("week",0))
++	group_id = str(value.get("group_id",""))
++	completed = status == "complete"
++	remaining_seconds = int(value.get("remaining_seconds",maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0)))))
++	received_msec = Time.get_ticks_msec()
++	placement = bool(value.get("placement",false))
++	forming = bool(value.get("group_forming",false))
++	vehicle_id = str(value.get("vehicle_id",VehicleCatalog.selected))
++	source_self = str(value.get("self_id",""))
++	tracks.clear()
++	server_standings.clear()
++	for row: Dictionary in value.get("standings",[]): server_standings.append(_map_row(row))
++	for track: Dictionary in value.get("tracks",[]):
++		var entry: Dictionary = track.entry.duplicate(true)
++		var rows: Array[Dictionary] = []
++		for row: Dictionary in track.entries: rows.append(_map_row(row))
++		tracks.append({"id":str(entry.version_id),"name":str(entry.name),"theme":str(entry.get("theme","pine")),"document":{"points":entry.get("points",[])},"entry":entry,"entries":rows,"board_id":str(track.board_id),"available":bool(track.get("available",true))})
++
++func _map_row(row: Dictionary) -> Dictionary:
++	var mapped: Dictionary = row.duplicate(true)
++	mapped.driver_id = str(row.get("id",""))
++	if mapped.driver_id == source_self:
++		mapped.id = SELF
++		mapped.name = "You"
++	return mapped
++
++func apply_outcome(value: Dictionary, index: int) -> void:
++	last_result = value.duplicate(true)
++	last_result.index = index
++	last_result.valid = true
++	for key: String in ["before","after","overall_before","overall_after"]: last_result[key] = _map_row(value[key])
++	last_result.beaten = []
++	for row: Dictionary in value.get("beaten",[]): last_result.beaten.append(_map_row(row))
++
++func countdown() -> String:
++	if sample and completed: return "Week complete"
++	if status == "settling": return "Final results being verified"
++	if completed: return "Week complete"
++	var left: int = maxi(0,remaining_seconds-(Time.get_ticks_msec()-received_msec)/1000)
++	return "%dd %dh remaining" % [left/86400,(left%86400)/3600] if left > 0 else "Week closing"
++
++func _seed() -> void:
++	tracks.clear()
++	recordings.clear()
++	recorded_times.clear()
++	native_cache.clear()
++	pb_count = 0
++	last_result = {}
++	var titles: Array[String] = ["Frostbite","Dust Cloud","Knot","Night Shift","Riverside"]
++	var themes: Array[String] = ["winter","desert","pine","night_city","storm"]
++	var routes: Array = [
++		[[-42,-24],[-48,12],[-18,36],[15,27],[44,8],[38,-28],[0,-37]],
++		[[-48,-20],[-43,22],[-12,39],[40,31],[50,-6],[20,-33],[-13,-27]],
++		[[-45,-30],[-48,21],[-18,35],[2,12],[25,34],[48,12],[43,-29],[0,-39]],
++		[[-50,-27],[-50,27],[-18,38],[18,28],[50,30],[50,-28],[15,-39],[-20,-25]],
++		[[-45,-23],[-38,23],[-12,39],[8,24],[36,36],[48,3],[29,-30],[-8,-35]],
++	]
++	var orders: Array = [[0,1,2,3,4,5,6,7,8,9,10,11,12,13],[2,0,1,3,5,4,7,6,9,8,11,10,13,12],[0,1,3,2,4,6,5,8,7,10,9,12,11,13],[0,2,1,3,6,4,5,9,7,8,12,10,11,13],[0,1,3,4,5,6,2,7,8,9,10,11,12,13]]
++	var base_ms: Array[int] = [91521,78500,83981,88310,94500]
++	for index: int in range(titles.size()):
++		var doc: Dictionary = TrackDocument.create_default()
++		doc.id = "rivalry_" + str(index)
++		doc.name = titles[index]
++		doc.creator = "Beat my track · concept"
++		doc.theme = themes[index]
++		doc.points = routes[index].duplicate(true)
++		doc.widths = []
++		doc.corners = []
++		for _point: Array in doc.points:
++			doc.widths.append(10.0)
++			doc.corners.append("smooth")
++		doc.layout = TrackDocument.road_layout(doc)
++		var entries: Array[Dictionary] = []
++		var elapsed: int = base_ms[index]
++		for place: int in range(NAMES.size()):
++			var player: int = orders[index][place]
++			if place > 0: elapsed += [80,60,150,210,320,180,410,290,520,440,600,730,880][place-1]
++			entries.append({"id":SELF if player == 2 else "driver_"+str(player),"name":NAMES[player],"ms":elapsed})
++		tracks.append({"id":str(doc.id),"name":titles[index],"theme":themes[index],"document":doc,"entries":entries})
++
++func next_week() -> void:
++	week += 1
++	completed = false
++	_seed()
++
++func board(index: int) -> Array[Dictionary]:
++	var rows: Array[Dictionary] = []
++	rows.assign(tracks[index].entries.duplicate(true))
++	if not sample: return rows
++	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.ms) < int(b.ms) if a.ms != b.ms else str(a.id) < str(b.id))
++	var rank: int = 1
++	for i: int in range(rows.size()):
++		if i == 0 or rows[i].ms != rows[i-1].ms: rank = i+1
++		rows[i].rank = rank
++		rows[i].points = POINTS[rank-1]
++	return rows
++
++func standing() -> Array[Dictionary]:
++	if not sample: return server_standings.duplicate(true)
++	var totals: Dictionary = {}
++	for index: int in range(tracks.size()):
++		for row: Dictionary in board(index):
++			if not totals.has(row.id): totals[row.id] = {"id":row.id,"name":row.name,"points":0}
++			totals[row.id].points += int(row.points)
++	var rows: Array[Dictionary] = []
++	for row: Dictionary in totals.values(): rows.append(row.duplicate())
++	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.points) > int(b.points) if a.points != b.points else str(a.id) < str(b.id))
++	var rank: int = 1
++	for i: int in range(rows.size()):
++		if i == 0 or rows[i].points != rows[i-1].points: rank = i+1
++		rows[i].rank = rank
++	return rows
++
++static func self_row(rows: Array[Dictionary]) -> Dictionary:
++	for row: Dictionary in rows:
++		if row.id == SELF: return row
++	return {}
++
++func gaps(index: int) -> Dictionary:
++	var rows: Array[Dictionary] = board(index)
++	var own: Dictionary = self_row(rows)
++	var ahead: Dictionary = {}
++	var behind: Dictionary = {}
++	for row: Dictionary in rows:
++		if own.get("ms") == null or row.get("ms") == null: continue
++		if int(row.ms) < int(own.ms): ahead = row
++		elif int(row.ms) > int(own.ms) and behind.is_empty(): behind = row
++	return {"own":own,"ahead":ahead,"behind":behind,"leader":rows[0] if not rows.is_empty() and rows[0].get("ms") != null else {}}
++
++func overall_gaps() -> Dictionary:
++	var rows: Array[Dictionary] = standing()
++	var own: Dictionary = self_row(rows)
++	var ahead: Dictionary = {}
++	var behind: Dictionary = {}
++	for row: Dictionary in rows:
++		if row.get("rank") == null: continue
++		if int(row.points) > int(own.points): ahead = row
++		elif int(row.points) < int(own.points) and behind.is_empty(): behind = row
++	return {"own":own,"ahead":ahead,"behind":behind}
++
++func opportunity() -> int:
++	var selected: int = 0
++	var smallest: int = 2147483647
++	for index: int in range(tracks.size()):
++		if not bool(tracks[index].get("available",true)): continue
++		var gap: Dictionary = gaps(index)
++		if gap.own.get("ms") == null: return index
++		if gap.ahead.is_empty(): continue
++		var distance: int = int(gap.own.ms)-int(gap.ahead.ms)
++		if distance < smallest:
++			smallest = distance
++			selected = index
++	return selected
++
++func nearby(index: int) -> Array[Dictionary]:
++	var rows: Array[Dictionary] = board(index)
++	var position: int = 0
++	for i: int in range(rows.size()):
++		if rows[i].id == SELF: position = i
++	var start: int = clampi(position-2,0,maxi(0,rows.size()-4))
++	var slice: Array[Dictionary] = []
++	slice.assign(rows.slice(start,start+4))
++	return slice
++
++func submit(index: int, seconds: float, valid: bool = true) -> Dictionary:
++	if not sample or completed or index < 0 or index >= tracks.size() or not is_finite(seconds) or seconds <= 0.0 or seconds > 1800.0: return {}
++	var ms: int = roundi(seconds*1000.0)
++	if ms < 1: return {}
++	var before: Dictionary = gaps(index)
++	var overall_before: Dictionary = self_row(standing())
++	var improved: bool = valid and ms < int(before.own.ms)
++	var beaten: Array[Dictionary] = []
++	if improved:
++		for row: Dictionary in board(index):
++			if row.id != SELF and int(row.ms) < int(before.own.ms) and int(row.ms) > ms: beaten.append(row)
++		for row: Dictionary in tracks[index].entries:
++			if row.id == SELF: row.ms = ms
++		pb_count += 1
++	var after: Dictionary = gaps(index)
++	last_result = {"index":index,"ms":ms,"valid":valid,"improved":improved,"before":before.own,"after":after.own,"points_delta":int(after.own.points)-int(before.own.points),"overall_before":overall_before,"overall_after":self_row(standing()),"beaten":beaten}
++	return last_result.duplicate(true)
++
++func wins() -> int:
++	var count: int = 0
++	for index: int in range(tracks.size()):
++		if gaps(index).own.get("rank") != null and int(gaps(index).own.rank) == 1: count += 1
++	return count
++
++func resolve(index: int) -> NativeTrack:
++	if index < 0 or index >= tracks.size(): return null
++	if not native_cache.has(index):
++		var native: NativeTrack = TrackCompiler.compile(tracks[index].document)
++		if native == null: return null
++		native.metadata["rivalry_concept"] = true
++		native_cache[index] = native
++	return native_cache[index]
++
++static func gap_text(milliseconds: int) -> String:
++	return "%.2f s" % (milliseconds/1000.0)
+diff --git a/game/track/bridge_elevation.gd b/game/track/bridge_elevation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/track/bridge_elevation.gd
+@@ -0,0 +1,108 @@
++class_name BridgeElevation
++extends RefCounted
++## Pure spatial elevation shared by client presentation and verified ghosts.
++## Presentation only: no temporal easing and no changes to canonical handling.
++
++const VERSION: String = "bridge-ramps-4"
++const APPROACH: float = 4.0
++const INSET: float = 4.0
++var track: NativeTrack
++var roles := PackedInt32Array()
++var upper_route := PackedByteArray()
++var minimum: float = INF
++var maximum: float = -INF
++var inset: float = 0.0
++
++
++func _init(data: NativeTrack) -> void:
++	track = data
++	roles = track.deck_cells.duplicate()
++	if track.metadata.has("legacy_deck"):
++		roles.fill(-1)
++		track._expand(track.metadata.legacy_deck,roles)
++	var legacy_roles: PackedInt32Array = roles.duplicate()
++	upper_route.resize(track.route.size())
++	if track.bridge_height == 0.0:
++		return
++	for y: int in range(track.grid_height):
++		for x: int in range(track.grid_width):
++			if roles[y * track.grid_width + x] < 0:
++				continue
++			for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x,y+1),Vector2(x+1,y+1)]:
++				var along: float = point(corner).dot(track.bridge_axis)
++				minimum = minf(minimum, along)
++				maximum = maxf(maximum, along)
++	inset = minf(INSET, (maximum - minimum) * 0.22)
++	# Extend only the deck's longitudinal ends, preserving its transverse outline.
++	for y: int in range(track.grid_height):
++		for x: int in range(track.grid_width):
++			var index: int = y * track.grid_width + x
++			if roles[index] >= 0:
++				continue
++			var p: Vector2 = point(Vector2(x+0.5,y+0.5))
++			var u: float = p.dot(track.bridge_axis)
++			if u < minimum - APPROACH or u > maximum + APPROACH or (u >= minimum + inset and u <= maximum - inset):
++				continue
++			var direction: Vector2 = track.bridge_axis * (1.0 if u < (minimum + maximum) * 0.5 else -1.0)
++			for step: int in range(1, ceili(APPROACH / track.cell_size) + 2):
++				var sample_point: Vector2 = p + direction * step * track.cell_size
++				var cell: Vector2i = cell_for(sample_point)
++				if inside(cell):
++					var kind: int = legacy_roles[cell.y * track.grid_width + cell.x]
++					if kind >= 0:
++						# New approaches are road only. Keep rail geometry confined
++						# to the existing canonical rail cells, where it collides.
++						roles[index] = 0
++						break
++	# Extend each upper route branch far enough to cover its approaches. Local
++	# progression, rather than heading, keeps the underpass at ground height.
++	for i: int in range(track.route.size()):
++		var route_cell: Vector2i = cell_for(track.route[i])
++		if not inside(route_cell) or legacy_roles[route_cell.y*track.grid_width+route_cell.x] < 0: continue
++		if not track.elevated_at(track.route[i], i):
++			continue
++		upper_route[i] = 1
++		for direction: int in [-1,1]:
++			var distance: float = 0.0
++			var previous: int = i
++			for offset: int in range(1, track.route.size()):
++				var j: int = posmod(i + direction * offset, track.route.size())
++				distance += track.route[previous].distance_to(track.route[j])
++				if distance > APPROACH + 3.0:
++					break
++				upper_route[j] = 1
++				previous = j
++
++
++func point(cell: Vector2) -> Vector2:
++	return Vector2(cell.x * track.cell_size - track.half_extent.x, track.half_extent.y - cell.y * track.cell_size)
++
++
++func cell_for(p: Vector2) -> Vector2i:
++	return Vector2i(floori((p.x + track.half_extent.x) / track.cell_size), floori((track.half_extent.y - p.y) / track.cell_size))
++
++
++func inside(cell: Vector2i) -> bool:
++	return cell.x >= 0 and cell.y >= 0 and cell.x < track.grid_width and cell.y < track.grid_height
++
++
++func profile_height(p: Vector2) -> float:
++	if track.bridge_height == 0.0:
++		return 0.0
++	var u: float = p.dot(track.bridge_axis)
++	return track.bridge_height * minf(smoothstep(minimum - APPROACH, minimum + inset, u), 1.0 - smoothstep(maximum - inset, maximum + APPROACH, u))
++
++
++func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
++	for span: Dictionary in track.creator_bridges:
++		if CreatorBridges.contains(span,p):
++			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
++			return CreatorBridges.height(span,p) if elevated else 0.0
++	if route_index < 0 or upper_route[route_index] == 0:
++		return 0.0
++	var cell: Vector2i = cell_for(p)
++	if not inside(cell) or roles[cell.y * track.grid_width + cell.x] < 0:
++		return 0.0
++	return profile_height(p)
++
++
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -0,0 +1,413 @@
++class_name WeeklyRivalryPage
++extends VBoxContainer
++## One question per view, using the same scenic art and controls as Free Race.
++signal section_requested(section: String)
++signal track_requested(index: int)
++signal race_requested(index: int, ghost_choice: int)
++signal free_race_requested
++signal join_requested
++signal refresh_requested
++signal continue_requested
++signal retry_requested
++var model: WeeklyRivalry
++var section: String = "overview"
++var selected: int = 0
++var busy: bool = false
++var error: String = ""
++var signed_in: bool = false
++var pending_result: bool = false
++var ghost_choice: int = 0
++var clock_label: Label
++const Badge = preload("res://ui/biome_badge.gd")
++
++func _ready() -> void:
++	name = "WeeklyRivalryPage"
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	var row := HBoxContainer.new()
++	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_child(row)
++	var rail := RaceModeRail.new()
++	rail.selected = "rivalry"
++	rail.mode_requested.connect(func(mode: String) -> void:
++		if mode == "free": free_race_requested.emit()
++		elif mode == "rivalry": section_requested.emit("overview"))
++	row.add_child(rail)
++	var main := VBoxContainer.new()
++	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(main)
++	var header := HBoxContainer.new()
++	header.name = "RivalrySectionNavigation"
++	main.add_child(header)
++	var heading := MenuStyle.label("WEEKLY RIVALRY",30)
++	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	header.add_child(heading)
++	for id: String in ["overview","tracks","standings"]:
++		var tab := MenuStyle.tab(id.to_upper(),func() -> void: section_requested.emit(id),section == id or (section == "detail" and id == "tracks"))
++		tab.name = "RivalryTab_"+id
++		tab.custom_minimum_size = Vector2(116,52)
++		tab.add_theme_font_size_override("font_size",19)
++		header.add_child(tab)
++	var context := HBoxContainer.new()
++	main.add_child(context)
++	var week_label := MenuStyle.label("WEEK %02d" % model.week,16)
++	week_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	context.add_child(week_label)
++	clock_label = MenuStyle.label(model.countdown(),16,true)
++	clock_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	clock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	context.add_child(clock_label)
++	var timer := Timer.new()
++	timer.wait_time = 1.0
++	timer.autostart = true
++	timer.timeout.connect(func() -> void: clock_label.text = model.countdown())
++	add_child(timer)
++	var body := HBoxContainer.new()
++	body.name = "RivalryBody"
++	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	main.add_child(body)
++	if model.tracks.is_empty(): _empty(body)
++	elif section == "result": _result(body)
++	elif section == "overview" and model.completed: _finale(body)
++	elif section == "tracks": _tracks(body)
++	elif section == "detail": _detail(body)
++	elif section == "standings": _standings(body)
++	else: _overview(body)
++	var foot := MenuStyle.label("CONCEPT PREVIEW · Sample drivers and results" if model.sample else ("Placement group · Building your pace profile" if model.placement else "Matched by verified pace")+"   ·   "+VehicleCatalog.title(model.vehicle_id),14,true)
++	foot.name = "RivalryDataNotice"
++	main.add_child(foot)
++
++func _card(parent: Control, theme_id: String = "", padding: int = 20) -> VBoxContainer:
++	var panel := PanelContainer.new()
++	panel.clip_contents = true
++	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	panel.add_theme_stylebox_override("panel",MenuStyle.card(padding))
++	parent.add_child(panel)
++	if not theme_id.is_empty():
++		var art := TextureRect.new()
++		art.texture = TrackTile.scenery_texture(theme_id)
++		art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		panel.add_child(art)
++		var overlay := TextureRect.new()
++		var gradient := Gradient.new()
++		gradient.colors = PackedColorArray([Color("07152070"),Color("06121bd9"),Color("06121bfa")])
++		gradient.offsets = PackedFloat32Array([0.0,0.5,1.0])
++		var texture := GradientTexture2D.new()
++		texture.gradient = gradient
++		texture.fill_from = Vector2(0,0)
++		texture.fill_to = Vector2(0,1)
++		overlay.texture = texture
++		overlay.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		panel.add_child(overlay)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",10)
++	panel.add_child(column)
++	return column
++
++func _space(parent: Control) -> void:
++	var spacer := Control.new()
++	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	parent.add_child(spacer)
++
++func _copy(parent: Control, text: String, font_size: int = 18, color: Color = MenuStyle.TEXT) -> Label:
++	var label := MenuStyle.label(text,font_size)
++	label.add_theme_color_override("font_color",color)
++	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	if parent is HBoxContainer: label.autowrap_mode = TextServer.AUTOWRAP_OFF
++	parent.add_child(label)
++	return label
++
++func _action(parent: Control, text: String, id: String, action: Callable, primary: bool = false) -> Button:
++	var button := MenuStyle.button(text,action,primary)
++	button.name = id
++	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	parent.add_child(button)
++	return button
++
++static func rank_text(row: Dictionary) -> String:
++	return "#%d" % int(row.rank) if row.get("rank") != null else "—"
++
++func _rank(parent: Control, row: Dictionary, count: int, font_size: int = 64) -> void:
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",8)
++	parent.add_child(line)
++	_copy(line,rank_text(row),font_size,MenuStyle.ACCENT)
++	var total := _copy(line,"/ %d" % count,32,MenuStyle.MUTED)
++	total.size_flags_vertical = Control.SIZE_SHRINK_END
++
++func _route(parent: Control, index: int, height: int = 82) -> void:
++	var route := LapRouteView.new()
++	route.miniature = true
++	for point: Array in model.tracks[index].document.get("points",[]): route.route.append(Vector2(point[0],point[1]))
++	route.custom_minimum_size = Vector2(0,height)
++	route.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	route.modulate = Color("ffffff")
++	parent.add_child(route)
++
++func _table_row(parent: Control, row: Dictionary, value: String, compact: bool = false) -> void:
++	var panel := PanelContainer.new()
++	panel.name = "Driver_"+str(row.id)
++	var style := MenuStyle.box(Color("ffd34820") if row.id == WeeklyRivalry.SELF else Color("0b1c2799"),8)
++	if row.id == WeeklyRivalry.SELF:
++		style.border_color = MenuStyle.ACCENT
++		style.set_border_width_all(1)
++	panel.add_theme_stylebox_override("panel",style)
++	parent.add_child(panel)
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",10)
++	panel.add_child(line)
++	var color: Color = MenuStyle.ACCENT if row.id == WeeklyRivalry.SELF else MenuStyle.TEXT
++	var place := _copy(line,rank_text(row),19,color)
++	place.custom_minimum_size.x = 34
++	var monogram := _copy(line,str(row.name).left(1).to_upper(),18,MenuStyle.MUTED)
++	monogram.custom_minimum_size.x = 18
++	var driver := _copy(line,str(row.name),18 if not compact else 16,color)
++	driver.autowrap_mode = TextServer.AUTOWRAP_OFF
++	driver.clip_text = true
++	driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_copy(line,value,18 if not compact else 16,color)
++
++func _gaps(parent: Control) -> void:
++	var gap: Dictionary = model.overall_gaps()
++	if not gap.ahead.is_empty(): _copy(parent,"%d pts to #%d" % [int(gap.ahead.points)-int(gap.own.points),int(gap.ahead.rank)],22,MenuStyle.MUTED)
++	if not gap.behind.is_empty(): _copy(parent,"%d pts ahead of #%d" % [int(gap.own.points)-int(gap.behind.points),int(gap.behind.rank)],22,MenuStyle.MUTED)
++	if gap.own.get("rank") == null: _copy(parent,"Set a time to enter the standings.",18,MenuStyle.MUTED)
++	elif gap.ahead.is_empty(): _copy(parent,"You're leading the rivalry",22,MenuStyle.POSITIVE)
++
++func _empty(parent: Control) -> void:
++	var hero: VBoxContainer = _card(parent,"winter",28)
++	_copy(hero,"A SMALL CHAMPIONSHIP.\nA NEW RIVALRY EACH WEEK.",46)
++	_copy(hero,"Five tracks. Drivers near your pace.\nYour best result on each track counts.",22,MenuStyle.MUTED)
++	_space(hero)
++	if not error.is_empty(): _copy(hero,error,20,MenuStyle.MUTED)
++	elif busy: _copy(hero,"Finding this week's rivalry…",20,MenuStyle.MUTED)
++	else: _copy(hero,"Race as often as you like. Find your next rival.",20,MenuStyle.MUTED)
++	var actions := HBoxContainer.new()
++	hero.add_child(actions)
++	var join_button: Button = _action(actions,"JOIN THIS WEEK  →" if signed_in else "SIGN IN TO JOIN  →","RivalryJoin",func() -> void: join_requested.emit(),true)
++	join_button.disabled = busy
++	_action(actions,"FREE RACE","RivalryFreeRace",func() -> void: free_race_requested.emit())
++	_action(hero,"Refresh","RivalryRefresh",func() -> void: refresh_requested.emit()).disabled = busy
++
++func _overview(parent: Control) -> void:
++	var hero: VBoxContainer = _card(parent,"winter",26)
++	hero.get_parent().size_flags_stretch_ratio = 1.6
++	_copy(hero,"FIVE TRACKS. ONE RIVALRY.",18,MenuStyle.ACCENT)
++	_copy(hero,"MAKE THIS\nYOUR WEEK.",56 if model.forming else 66)
++	_copy(hero,"%d drivers · Best results count" % model.standing().size(),22,MenuStyle.MUTED)
++	if model.forming: _copy(hero,"Your group is forming. More drivers can join this week.",17,MenuStyle.MUTED)
++	_space(hero)
++	var index: int = model.opportunity()
++	_action(hero,"CONTINUE RIVALRY  →","RivalryContinue",func() -> void: track_requested.emit(index),true).disabled = model.status != "active"
++	var opportunity := MenuStyle.button("",func() -> void: track_requested.emit(index))
++	opportunity.name = "RivalryOpportunity"
++	opportunity.custom_minimum_size.y = 78
++	hero.add_child(opportunity)
++	var line := HBoxContainer.new()
++	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	opportunity.add_child(line)
++	MenuStyle.fill(line)
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(model.tracks[index].theme)
++	art.custom_minimum_size = Vector2(88,72)
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	line.add_child(art)
++	var copy := VBoxContainer.new()
++	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	line.add_child(copy)
++	_copy(copy,str(model.tracks[index].name)+" is your next opportunity",20)
++	var gap: Dictionary = model.gaps(index)
++	_copy(copy,(WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" to gain a position") if not gap.ahead.is_empty() else "Set your first time and enter the battle" if gap.own.get("ms") == null else "You're leading here. Push your best further.",16,MenuStyle.MUTED)
++	_copy(line,"→",28,MenuStyle.ACCENT).size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var side := VBoxContainer.new()
++	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	parent.add_child(side)
++	var position: VBoxContainer = _card(side)
++	_copy(position,"YOUR POSITION",18,MenuStyle.MUTED)
++	_rank(position,WeeklyRivalry.self_row(model.standing()),model.standing().size())
++	_gaps(position)
++	var leaders: VBoxContainer = _card(side)
++	leaders.add_theme_constant_override("separation",6)
++	_copy(leaders,"LEADING THE WEEK" if model.standing()[0].get("rank") != null else "THE FIELD",18,MenuStyle.MUTED)
++	for row: Dictionary in model.standing().slice(0,3): _table_row(leaders,row,str(row.points))
++	_space(leaders)
++
++func _tracks(parent: Control) -> void:
++	for index: int in range(model.tracks.size()):
++		var track: Dictionary = model.tracks[index]
++		var card: VBoxContainer = _card(parent,str(track.theme),12)
++		var panel: PanelContainer = card.get_parent()
++		panel.name = "RivalryTrack_"+str(index)
++		var button := MenuStyle.button("",func() -> void: track_requested.emit(index))
++		button.name = "OpenRivalryTrack_"+str(index)
++		button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++		button.add_theme_stylebox_override("hover",MenuStyle.box(Color("ffd34812"),0))
++		button.add_theme_stylebox_override("pressed",MenuStyle.box(Color("ffd34824"),0))
++		button.tooltip_text = "Open "+str(track.name)
++		panel.add_child(button)
++		panel.move_child(button,2)
++		card.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		card.add_child(Badge.view(str(track.theme),13))
++		_route(card,index,100)
++		_copy(card,str(track.name).to_upper(),26)
++		var gap: Dictionary = model.gaps(index)
++		_rank(card,gap.own,model.board(index).size(),42)
++		if gap.own.get("ms") == null:
++			_copy(card,"Set your first time",17,MenuStyle.ACCENT)
++			_copy(card,"A place is waiting",16,MenuStyle.MUTED)
++		elif gap.ahead.is_empty():
++			_copy(card,"You're leading",17,MenuStyle.POSITIVE)
++			_copy(card,WeeklyRivalry.gap_text(int(gap.behind.ms)-int(gap.own.ms))+" ahead" if not gap.behind.is_empty() else "First time on the board",16,MenuStyle.MUTED)
++		else:
++			_copy(card,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" to #"+str(gap.ahead.rank),17)
++			_copy(card,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to #1" if gap.ahead.rank != 1 else "The lead is within reach",16,MenuStyle.MUTED)
++		_copy(card,"VIEW DUEL  →",16,MenuStyle.ACCENT)
++		_ignore_tree(card)
++
++func _ignore_tree(node: Node) -> void:
++	if node is Control: node.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for child: Node in node.get_children(): _ignore_tree(child)
++
++func _detail(parent: Control) -> void:
++	selected = clampi(selected,0,model.tracks.size()-1)
++	var track: Dictionary = model.tracks[selected]
++	var scene: VBoxContainer = _card(parent,str(track.theme))
++	scene.get_parent().size_flags_stretch_ratio = 1.25
++	_action(scene,"←  BACK TO TRACKS","RivalryBackToTracks",func() -> void: section_requested.emit("tracks"))
++	scene.add_child(Badge.view(str(track.theme),15))
++	_copy(scene,str(track.name).to_upper(),48)
++	_route(scene,selected,100)
++	_copy(scene,"5 laps · "+VehicleCatalog.title(model.vehicle_id),18,MenuStyle.MUTED)
++	var board: VBoxContainer = _card(parent,"",14)
++	_copy(board,"YOUR POSITION",18,MenuStyle.MUTED)
++	var gap: Dictionary = model.gaps(selected)
++	_rank(board,gap.own,model.board(selected).size(),52)
++	_space(board)
++	for row: Dictionary in model.nearby(selected): _table_row(board,row,MenuStyle.time_text(int(row.ms)/1000.0) if row.get("ms") != null else "No time",true)
++	var duel: VBoxContainer = _card(parent,"",16)
++	_copy(duel,"YOUR NEXT RIVAL",18,MenuStyle.MUTED)
++	if not gap.ahead.is_empty():
++		_copy(duel,str(gap.ahead.name).to_upper(),38)
++		_copy(duel,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" ahead of you",22,MenuStyle.ACCENT)
++	elif gap.own.get("ms") == null:
++		_copy(duel,"SET THE PACE",38)
++		_copy(duel,"Your first finish puts you on the board.",19,MenuStyle.MUTED)
++	else:
++		_copy(duel,"DEFEND THE LEAD",34)
++		_copy(duel,"Push your best further.",19,MenuStyle.MUTED)
++	_space(duel)
++	_copy(duel,"Race with ghost",18,MenuStyle.MUTED)
++	var selector := OptionButton.new()
++	selector.name = "RivalryGhostSelector"
++	selector.custom_minimum_size = Vector2(0,54)
++	selector.fit_to_longest_item = false
++	selector.add_theme_font_size_override("font_size",17)
++	selector.add_item(str(gap.ahead.name)+" (#"+str(gap.ahead.rank)+")" if not gap.ahead.is_empty() else "Rival ahead · unavailable")
++	selector.add_item("Leader: "+str(gap.leader.name) if not gap.leader.is_empty() else "Weekly leader · unavailable")
++	selector.add_item("My weekly PB")
++	selector.add_item("No ghost")
++	selector.set_item_disabled(0,gap.ahead.is_empty())
++	selector.set_item_disabled(1,gap.leader.is_empty())
++	selector.set_item_disabled(2,gap.own.get("ms") == null)
++	if selector.is_item_disabled(ghost_choice): ghost_choice = 3
++	selector.select(ghost_choice)
++	duel.add_child(selector)
++	var ghost_copy := _copy(duel,"Your recorded weekly best." if ghost_choice == 2 else "Drive without a ghost." if ghost_choice == 3 else "Follow your rival and find time.",15,MenuStyle.MUTED)
++	selector.item_selected.connect(func(index: int) -> void:
++		ghost_choice = index
++		ghost_copy.text = "Your recorded weekly best." if index == 2 else "Drive without a ghost." if index == 3 else "Follow the rival's verified recording.")
++	var race: Button = _action(duel,"RACE "+str(track.name).to_upper()+"  →","RivalryStartRace",func() -> void: race_requested.emit(selected,ghost_choice),true)
++	race.disabled = busy or model.status != "active" or not bool(track.get("available",true))
++	if not bool(track.get("available",true)): _copy(duel,"This track is unavailable for racing.",15,MenuStyle.MUTED)
++	if not error.is_empty(): _copy(duel,error,15,MenuStyle.MUTED)
++
++func _standings(parent: Control) -> void:
++	var table: VBoxContainer = _card(parent,"",16)
++	table.get_parent().size_flags_stretch_ratio = 1.1
++	_copy(table,"OVERALL STANDINGS",32)
++	var scroll := ScrollContainer.new()
++	scroll.name = "RivalryStandingsScroll"
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	table.add_child(scroll)
++	var rows := VBoxContainer.new()
++	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	rows.add_theme_constant_override("separation",4)
++	scroll.add_child(rows)
++	for row: Dictionary in model.standing(): _table_row(rows,row,str(row.points)+" pts")
++	var context: VBoxContainer = _card(parent,"winter",26)
++	_copy(context,"THE CHAMPIONSHIP",18,MenuStyle.MUTED)
++	_rank(context,WeeklyRivalry.self_row(model.standing()),model.standing().size(),72)
++	_gaps(context)
++	_space(context)
++	_copy(context,"Every track is a chance\nto move up.",38)
++	_action(context,"FIND YOUR NEXT DUEL  →","RivalryStandingsTracks",func() -> void: section_requested.emit("tracks"),true)
++
++func _result(parent: Control) -> void:
++	var index: int = clampi(selected,0,model.tracks.size()-1)
++	var result: Dictionary = model.last_result
++	var scene: VBoxContainer = _card(parent,str(model.tracks[index].theme),26)
++	scene.get_parent().size_flags_stretch_ratio = 1.3
++	scene.add_child(Badge.view(str(model.tracks[index].theme),16))
++	_copy(scene,str(model.tracks[index].name).to_upper(),36)
++	_space(scene)
++	_copy(scene,"VERIFYING YOUR RACE" if pending_result else "NEW WEEKLY BEST" if result.get("improved",false) else "RACE COMPLETE",23,MenuStyle.MUTED if pending_result else MenuStyle.POSITIVE)
++	if result.has("ms"): _copy(scene,MenuStyle.time_text(int(result.ms)/1000.0),76)
++	_copy(scene,"Your weekly result updates after replay verification." if pending_result else "Your best result counts. Race again anytime.",19,MenuStyle.MUTED)
++	var feedback: VBoxContainer = _card(parent,"",24)
++	if pending_result:
++		_copy(feedback,"RESULT SAVED",32)
++		_copy(feedback,"Checking your race…",24,MenuStyle.ACCENT)
++		_copy(feedback,"Your standings will update automatically.",18,MenuStyle.MUTED)
++	elif result.has_all(["before","after","overall_before","overall_after"]):
++		_copy(feedback,"POSITION IMPROVED" if result.get("improved",false) and result.before.get("rank") != result.after.get("rank") else "YOUR TRACK POSITION",18,MenuStyle.POSITIVE)
++		_copy(feedback,rank_text(result.before)+"  →  "+rank_text(result.after),64,MenuStyle.ACCENT)
++		var beaten: Array = result.get("beaten",[])
++		if not beaten.is_empty():
++			var nearest: Dictionary = beaten[-1]
++			_copy(feedback,"You beat %s by %.3f s" % [str(nearest.name),(int(nearest.ms)-int(result.ms))/1000.0],21)
++		_copy(feedback,"Weekly points  +%d" % int(result.get("points_delta",0)),28,MenuStyle.ACCENT)
++		_copy(feedback,"Overall "+rank_text(result.overall_before)+"  →  "+rank_text(result.overall_after),20,MenuStyle.MUTED)
++	else:
++		_copy(feedback,"WEEKLY BEST UNCHANGED",32)
++		_copy(feedback,"This attempt has no verified rivalry result.",20,MenuStyle.MUTED)
++	if not error.is_empty(): _copy(feedback,error,18,MenuStyle.MUTED)
++	_space(feedback)
++	_action(feedback,"RACE AGAIN","RivalryRaceAgain",func() -> void: retry_requested.emit()).disabled = busy or model.status != "active"
++	_action(feedback,"BACK TO RIVALRY  →","RivalryResultHome",func() -> void: section_requested.emit("overview"),true)
++
++func _finale(parent: Control) -> void:
++	var body: VBoxContainer = _card(parent,"winter",20)
++	_copy(body,"WEEK %02d COMPLETE" % model.week,40)
++	var own: Dictionary = WeeklyRivalry.self_row(model.standing())
++	_copy(body,"You finished "+rank_text(own)+" / "+str(model.standing().size()) if own.get("rank") != null else "Next week is another chance to set your pace.",22,MenuStyle.ACCENT)
++	var podium := HBoxContainer.new()
++	podium.name = "RivalryPodium"
++	podium.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	body.add_child(podium)
++	var leaders: Array[Dictionary] = []
++	for driver: Dictionary in model.standing():
++		if driver.get("rank") != null and leaders.size() < 3: leaders.append(driver)
++	for position: int in [1,0,2]:
++		if position >= leaders.size(): continue
++		var column: VBoxContainer = _card(podium,"",12)
++		_space(column)
++		_copy(column,rank_text(leaders[position]),38,MenuStyle.ACCENT if position == 0 else MenuStyle.MUTED)
++		_copy(column,str(leaders[position].name),26)
++		_copy(column,str(leaders[position].points)+" pts",20,MenuStyle.ACCENT)
++		if position == 0: _copy(column,"WEEKLY WINNER",14,MenuStyle.ACCENT)
++	var summary := HBoxContainer.new()
++	body.add_child(summary)
++	_copy(summary,"%d track wins" % model.wins(),23)
++	_copy(summary,"%d / 5 tracks completed" % int(own.get("completed",5 if model.sample else 0)),23,MenuStyle.MUTED)
++	var actions := HBoxContainer.new()
++	body.add_child(actions)
++	_action(actions,"VIEW FULL RESULTS","RivalryFullResults",func() -> void: section_requested.emit("standings"))
++	_action(actions,"CONTINUE  →","RivalryNextWeek",func() -> void: continue_requested.emit(),true).disabled = busy
+diff --git a/game/ui/race_mode_rail.gd b/game/ui/race_mode_rail.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/race_mode_rail.gd
+@@ -0,0 +1,29 @@
++class_name RaceModeRail
++extends VBoxContainer
++## One shared race-mode vocabulary and visual language across Race views.
++signal mode_requested(mode: String)
++var selected: String = "free"
++
++func _ready() -> void:
++	name = "RaceModes"
++	add_theme_constant_override("separation",12)
++	for item: Array in [["trophy","Weekly Rivalry","rivalry"],["flag","Free race","free"],["target","Challenges","challenges"],["friends","Friends","friends"]]:
++		var active: bool = item[2] == selected
++		var available: bool = item[2] in ["rivalry","free"]
++		var button := MenuStyle.button("",func() -> void: mode_requested.emit(item[2]),active)
++		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
++		button.expand_icon = true
++		button.add_theme_constant_override("icon_max_width",38)
++		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++		button.add_theme_color_override("icon_normal_color",MenuStyle.INK if active else MenuStyle.TEXT)
++		button.add_theme_color_override("icon_disabled_color",Color("9cbbc8"))
++		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"),10)
++		style.border_color = Color("ffe792") if active else Color("2a4655")
++		style.set_border_width_all(1)
++		button.add_theme_stylebox_override("normal",style)
++		button.add_theme_stylebox_override("disabled",style)
++		button.name = "Mode_"+str(item[0])
++		button.custom_minimum_size = Vector2(60,60)
++		button.tooltip_text = str(item[1])+("" if available else " · Coming soon")
++		button.disabled = not available
++		add_child(button)
+diff --git a/game/tests/test_weekly_rivalry.gd b/game/tests/test_weekly_rivalry.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -0,0 +1,161 @@
++extends SceneTree
++## Isolated menu evidence. Sample rivalry is never a shipping fallback.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var folder: String
++var evidence: String
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++
++func forming_snapshot(count: int = 20) -> Dictionary:
++	var fixture := WeeklyRivalry.new(true)
++	var drivers: Array = []
++	for index: int in range(count):
++		drivers.append({"id":"entrant_"+str(index),"name":"A driver with a long username" if index else "You","rank":null,"points":0,"completed":0})
++	var value: Dictionary = {"state":"active","group_id":"group","self_id":"entrant_0","week":40,"ends_at":604800,"server_now":0,"placement":true,"group_forming":count < 10,"tracks":[],"standings":drivers}
++	for index: int in range(5):
++		var entries: Array = []
++		for driver: Dictionary in drivers:
++			var row: Dictionary = driver.duplicate()
++			row.ms = null
++			entries.append(row)
++		value.tracks.append({"board_id":"board_"+str(index),"entries":entries,"entry":{"name":fixture.tracks[index].name,"creator":"Beat my track","track_id":"track_"+str(index),"version_id":"version_"+str(index),"content_hash":"a".repeat(64),"theme":fixture.tracks[index].theme,"points":fixture.tracks[index].document.points}})
++	return value
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(condition: bool, text: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: "+text)
++
++func settle() -> void:
++	for _frame: int in range(5): await process_frame
++
++func capture(id: String, dimensions: Vector2i) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id+" screenshot")
++
++func inspect(node: Node, bounds: Rect2) -> void:
++	if node is Control and node.name == "RivalryDataNotice":
++		check(app.menu_body_slot.get_global_rect().grow(1).encloses(node.get_global_rect()),"rivalry status notice stays inside the clipped page")
++	if node is Button and node.is_visible_in_tree():
++		var rectangle: Rect2 = node.get_global_rect()
++		check(bounds.grow(1).encloses(rectangle),str(node.name)+" stays inside the viewport")
++		check(rectangle.size.y >= 48,str(node.name)+" retains a touch target")
++	for child: Node in node.get_children(): inspect(child,bounds)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/weekly-rivalry-2026-10-04")
++	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
++	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
++	var fixture := WeeklyRivalry.new(true)
++	check(fixture.board(2).size() == 14 and fixture.gaps(2).own.rank == 4,"concept has a bounded 14-driver field")
++	check(fixture.gaps(1).own.rank == 1,"leading track uses a leading state")
++	check(WeeklyRivalry.self_row(fixture.standing()).points == 113,"overall points equal the sum of track points")
++	var result: Dictionary = fixture.submit(2,84.100)
++	check(result.before.rank == 4 and result.after.rank == 3 and result.points_delta == 3,"PB improvement updates rank and points together")
++	check(Adapter.valid_outcome(result) and not Adapter.valid_outcome({"improved":true}),"incomplete server results cannot enter result feedback")
++	var unranked: Dictionary = forming_snapshot()
++	check(Adapter.valid_snapshot(unranked),"a real field may have no times yet")
++	var malformed: Dictionary = unranked.duplicate(true)
++	malformed.tracks[0].erase("board_id")
++	check(not Adapter.valid_snapshot(malformed),"missing pinned board rejects the whole snapshot")
++	check(fixture.submit(2,90.0).points_delta == 0,"slower retry earns no rivalry points")
++	fixture.completed = true
++	check(fixture.submit(2,80.0).is_empty(),"complete week rejects further concept results")
++	fixture.next_week()
++	check(fixture.week == 28 and not fixture.completed,"continue resets only the concept fixture")
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		app._show_screen("tracks")
++		await settle()
++		var trophy: Button = app.root_ui.find_child("Mode_trophy",true,false)
++		check(trophy != null and not trophy.disabled,"Free Race exposes enabled Weekly Rivalry trophy")
++		trophy.pressed.emit()
++		await settle()
++		check(app.screen == "rivalry","trophy opens rivalry inside Race")
++		check(app.root_ui.find_child("Tab_tracks",true,false) != null and app.root_ui.find_child("Tab_rivalry",true,false) == null,"rivalry adds no top-level tab")
++		await capture("sign-in",dimensions)
++		app.rivalry.model = WeeklyRivalry.new(true)
++		app.rivalry.model.status = "active"
++		app.rivalry.error = ""
++		app.rivalry_section = "overview"
++		app._rivalry()
++		await settle()
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("overview",dimensions)
++		(app.root_ui.find_child("RivalryContinue",true,false) as Button).pressed.emit()
++		await settle()
++		check(app.rivalry_section == "detail" and app.rivalry_track == app.rivalry.model.opportunity(),"Continue targets the closest opportunity")
++		app.rivalry_track = 2
++		app._rivalry()
++		await settle()
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("track-detail",dimensions)
++		(app.root_ui.find_child("RivalryBackToTracks",true,false) as Button).pressed.emit()
++		await settle()
++		check(app.rivalry_section == "tracks","drill-down returns directly to Tracks")
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("tracks",dimensions)
++		(app.root_ui.find_child("RivalryTab_standings",true,false) as Button).pressed.emit()
++		await settle()
++		check(app.rivalry_section == "standings","persistent navigation opens Standings")
++		await capture("standings",dimensions)
++		app.rivalry.model.submit(2,84.100)
++		app.rivalry_section = "result"
++		app._rivalry()
++		await settle()
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("race-result",dimensions)
++		app.rivalry_result_pending = true
++		app._rivalry()
++		await settle()
++		await capture("verification-pending",dimensions)
++		app.rivalry_result_pending = false
++		app.rivalry.model.completed = true
++		app.rivalry_section = "overview"
++		app._rivalry()
++		await settle()
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("weekly-finale",dimensions)
++		check(app.root_ui.find_child("RivalryPodium",true,false) != null,"weekly finale is an Overview state")
++		(app.root_ui.find_child("Mode_flag",true,false) as Button).pressed.emit()
++		await settle()
++		check(app.screen == "tracks" and app.race_area_mode == "free","mode rail returns to Free Race")
++		app.rivalry.model = WeeklyRivalry.new()
++		app.rivalry.model.apply_snapshot(forming_snapshot(3))
++		app.rivalry_section = "overview"
++		app._show_screen("rivalry")
++		await settle()
++		check(app.rivalry.model.gaps(0).own.rank == null and app.rivalry.model.overall_gaps().behind.is_empty(),"uncompleted drivers do not produce invented position gaps")
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		await capture("forming-group",dimensions)
++		app.rivalry_section = "detail"
++		app._rivalry()
++		await settle()
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++		var selector: OptionButton = app.root_ui.find_child("RivalryGhostSelector",true,false)
++		check(selector.selected == 3 and selector.is_item_disabled(0),"missing recordings start with No ghost")
++		app.rivalry.model.apply_snapshot(unranked)
++		app.rivalry_section = "standings"
++		app._rivalry()
++		await settle()
++		check(app.root_ui.find_child("RivalryStandingsScroll",true,false) != null,"20 real entrants remain accessible in scrolling standings")
++		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
++	app.queue_free()
++	await process_frame
++	print("WEEKLY_RIVALRY_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_weekly_rivalry_http.gd b/game/tests/test_weekly_rivalry_http.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -0,0 +1,92 @@
++extends SceneTree
++## A real game race, upload, verifier result and derived rival ghost over HTTP.
++var checks: int = 0
++var failures: int = 0
++
++class ReplayInput extends DriverInput:
++	var frames: Array = []
++	var cursor: int = 0
++	func sample() -> DriveFrame:
++		var frame := DriveFrame.new()
++		if cursor < frames.size():
++			frame.steer = int(frames[cursor][0])
++			frame.throttle = int(frames[cursor][1])
++			frame.brake = int(frames[cursor][2])
++			frame.handbrake = int(frames[cursor][3]) if frames[cursor].size() >= 4 else 0
++			cursor += 1
++		return frame
++
++func _initialize() -> void:
++	call_deferred("run")
++	root.ready.connect(func() -> void:
++		create_timer(100.0).timeout.connect(func() -> void:
++			print("FAIL: weekly HTTP integration deadline")
++			quit(1)))
++
++func check(condition: bool, description: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: "+description)
++
++func run() -> void:
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(OS.get_environment("BMT_CLOUD_FIXTURE")))
++	var folder: String = "user://weekly_http_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var login: Dictionary = await app.online.client.development_login("weekly-alice","Weekly Alice",OS.get_environment("BMT_DEV_AUTH_KEY"))
++	check(login.ok,"isolated driver authenticates")
++	app._open_rivalry()
++	while app.rivalry.busy: await process_frame
++	check(app.rivalry.model.status == "not_joined" and app.rivalry.model.tracks.is_empty(),"no invented results before joining")
++	await app.rivalry.join()
++	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == 1,"server pins five eligible official tracks and real member")
++	check(not app.rivalry.model.sample,"shipping view uses the server field")
++	app.rivalry_section = "detail"
++	app._rivalry()
++	await app._start_rivalry_race(0,3)
++	check(app.game != null and app.rivalry_racing and not app.cloud_ticket.is_empty(),"pre-race starts with a rivalry-bound verified ticket")
++	if app.game == null:
++		print(app.rivalry.error)
++		quit(1)
++		return
++	var game: Node = app.game
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	var driver := ReplayInput.new()
++	driver.frames = fixture.replay.frames
++	game.driver = driver
++	for _tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
++	check(game.track_session.finished,"actual pinned replay finishes five legal laps")
++	check(game.online_frames.size() == fixture.replay.frames.size(),"rivalry records all canonical inputs")
++	app._results()
++	check(app.rivalry_result_pending and app.rivalry_section == "result","results wait for backend verification")
++	for _poll: int in range(200):
++		await app.cloud.flush_outbox()
++		await app.rivalry.poll_result()
++		if app.rivalry.result_state in ["verified","failed","rejected"]: break
++		await create_timer(0.2).timeout
++	check(app.rivalry.result_state == "verified","real worker verifies the rivalry upload")
++	check(not app.rivalry_result_pending and app.rivalry.model.last_result.get("points_delta") == 30,"verified result changes the championship points")
++	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.standing())
++	check(own.points == 30 and own.rank == 1,"Overview reflects one best result")
++	var recording: Dictionary = await app.rivalry.ghost(0,str(app.online.client.player.id))
++	check(not recording.is_empty() and not recording.has("replay"),"weekly ghost contains derived poses without raw driver controls")
++	check(not PersonalGhostRun.sample(recording,0.0).is_empty() and PersonalGhostRun.sample(recording,float(recording.get("ticks",0))+1.0).is_empty(),"verified recording is bounded without extrapolation")
++	app.rivalry_ghost_choice = 2
++	await app._retry_race()
++	check(app.rivalry_racing and app.game.online_frames.is_empty() and not app.cloud_ticket.is_empty(),"Rivalry Race Again gets a fresh weekly ticket")
++	check(app.game.ghost_mode == "race" and not app.game.ghost_bests.get("race",{}).is_empty(),"retry loads the latest chosen verified weekly ghost")
++	app._leave_race()
++	check(app.game == null and app.screen == "rivalry","exit returns to championship Overview")
++	await app.online.client.logout()
++	check(app.rivalry.model.tracks.is_empty() and app.rivalry.result_ticket.is_empty(),"sign-out fences old rivalry standings and result polling")
++	app.queue_free()
++	await process_frame
++	print("WEEKLY_RIVALRY_HTTP_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/backend/weekly_rivalry_client.gd.uid b/game/backend/weekly_rivalry_client.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/backend/weekly_rivalry_client.gd.uid
+@@ -0,0 +1 @@
++uid://bkyyi42cbhean
+diff --git a/game/race/weekly_rivalry.gd.uid b/game/race/weekly_rivalry.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/race/weekly_rivalry.gd.uid
+@@ -0,0 +1 @@
++uid://istdsqex442j
+diff --git a/game/track/bridge_elevation.gd.uid b/game/track/bridge_elevation.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/track/bridge_elevation.gd.uid
+@@ -0,0 +1 @@
++uid://b51jp3vaxexyg
+diff --git a/game/ui/weekly_rivalry_page.gd.uid b/game/ui/weekly_rivalry_page.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/weekly_rivalry_page.gd.uid
+@@ -0,0 +1 @@
++uid://dtmdsd4xa3cxq
+diff --git a/game/ui/race_mode_rail.gd.uid b/game/ui/race_mode_rail.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/race_mode_rail.gd.uid
+@@ -0,0 +1 @@
++uid://b3318wtwje5h4
+diff --git a/game/tests/test_weekly_rivalry.gd.uid b/game/tests/test_weekly_rivalry.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_weekly_rivalry.gd.uid
+@@ -0,0 +1 @@
++uid://dyekl26r2x1bx
+diff --git a/game/tests/test_weekly_rivalry_http.gd.uid b/game/tests/test_weekly_rivalry_http.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_weekly_rivalry_http.gd.uid
+@@ -0,0 +1 @@
++uid://dqmk1rh66vpov

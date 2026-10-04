@@ -1,0 +1,228 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -12,6 +12,7 @@
+ var menu_body_backgrounds: Array[Control] = []
+ var outgoing_menu_page: Control
+ var menu_page_motion: Tween
++var menu_edge_motion: Tween
+ var content: VBoxContainer
+ var menu_layer: CanvasLayer
+ var game: Node
+@@ -263,6 +264,9 @@
+ 		swipe.menu = root_ui
+ 		swipe.modal_root = self
+ 		swipe.page_requested.connect(_swipe_menu_page)
++		swipe.gesture_started.connect(_stop_menu_edge_motion)
++		swipe.drag_changed.connect(_drag_menu_edge)
++		swipe.drag_finished.connect(_settle_menu_edge)
+ 		root_ui.add_child(swipe)
+ 	if screen == "restoring":
+ 		account_button = null
+@@ -435,6 +439,7 @@
+ 	for child: Node in node.get_children(): _disable_outgoing_menu(child)
+ 
+ func _stop_menu_page_motion() -> void:
++	_stop_menu_edge_motion()
+ 	if menu_page_motion != null:
+ 		menu_page_motion.kill()
+ 		menu_page_motion = null
+@@ -460,6 +465,26 @@
+ 	menu_page_motion.tween_property(menu_body, "position:x", 0.0, 0.28)
+ 	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, 0.28)
+ 	menu_page_motion.chain().tween_callback(_stop_menu_page_motion)
++
++func _stop_menu_edge_motion() -> void:
++	if menu_edge_motion != null:
++		menu_edge_motion.kill()
++		menu_edge_motion = null
++	if is_instance_valid(menu_body): menu_body.position.x = 0.0
++
++func _drag_menu_edge(distance: float) -> void:
++	if not is_instance_valid(menu_body): return
++	if (screen in ["tracks", "rivalry"] and distance > 0.0) or (screen == "garage" and distance < 0.0):
++		# Match the track carousel's bounded resistance, followed by its spring return.
++		menu_body.position.x = signf(distance) * 64.0 * (1.0 - exp(-absf(distance) / 160.0))
++	else: menu_body.position.x = 0.0
++
++func _settle_menu_edge() -> void:
++	if not is_instance_valid(menu_body) or is_zero_approx(menu_body.position.x): return
++	if menu_edge_motion != null: menu_edge_motion.kill()
++	menu_edge_motion = create_tween()
++	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, 0.38).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
++	menu_edge_motion.tween_callback(func() -> void: menu_edge_motion = null)
+ 
+ func _account_changed() -> void:
+ 	var previous_profile: String = active_profile
+diff --git a/game/ui/menu_page_swipe.gd b/game/ui/menu_page_swipe.gd
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -1,6 +1,9 @@
+ extends Node
+ ## Touch ownership is decided at press, so entering/leaving a carousel cannot steal it.
+ signal page_requested(direction: int)
++signal gesture_started
++signal drag_changed(distance: float)
++signal drag_finished
+ 
+ var menu: Control
+ var modal_root: Node
+@@ -19,6 +22,7 @@
+ 			if pointer != -1:
+ 				# A second finger belongs to neither page navigation nor a tap.
+ 				rejected = true
++				drag_finished.emit()
+ 				return
+ 			if event.canceled or _modal_open(modal_root) or _owns_gesture(menu, event.position): return
+ 			pointer = event.index
+@@ -26,6 +30,7 @@
+ 			dragging = false
+ 			rejected = false
+ 			target = _button_at(menu, origin)
++			gesture_started.emit()
+ 			# Match the carousel's tap dispatch; a swipe never activates its starting button.
+ 			if is_instance_valid(target): get_viewport().set_input_as_handled()
+ 		elif event.index == pointer:
+@@ -36,6 +41,7 @@
+ 			if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 			pointer = -1
+ 			target = null
++			drag_finished.emit()
+ 			if navigate:
+ 				page_requested.emit(1 if distance.x < 0.0 else -1)
+ 			elif activate:
+@@ -47,6 +53,7 @@
+ 		if not dragging and not rejected and distance.length() >= CLAIM_DISTANCE:
+ 			if absf(distance.x) > absf(distance.y) * 1.5: dragging = true
+ 			else: rejected = true
++		if dragging and not rejected: drag_changed.emit(distance.x)
+ 		if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
+ 
+ func _owns_gesture(node: Node, location: Vector2) -> bool:
+diff --git a/game/tests/test_menu_page_swipe.gd b/game/tests/test_menu_page_swipe.gd
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -71,12 +71,14 @@
+ 		await capture("garage", dimensions)
+ 		await swipe(point, Vector2(-150, 0))
+ 		check(app.screen == "garage", "last tab has no wrap")
++		await check_edge("garage", point, -1, dimensions)
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "biome" and app.document == retained, "return to Create preserves draft")
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "tracks", "right swipe Create to Race")
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "tracks", "first tab has no wrap")
++		await check_edge("tracks", point, 1, dimensions)
+ 		await swipe(point, Vector2(-35, 0))
+ 		check(app.screen == "tracks", "short drag does not navigate")
+ 		await swipe(point, Vector2(-100, 160))
+@@ -97,6 +99,11 @@
+ 		check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel scrolls without changing page")
+ 		await swipe(begin, Vector2(180,0))
+ 		check(app.screen == "tracks", "carousel at first edge still owns swipe")
++		touch(begin, true)
++		drag(begin + Vector2(150,0))
++		check(is_zero_approx(app.menu_body.position.x) and float(gallery.get("overscroll_offset")) > 0.0, "carousel edge effect remains separate from menu edge effect")
++		touch(begin + Vector2(150,0), false)
++		await settle()
+ 		await swipe(begin, Vector2(-180,-gallery.size.y-30))
+ 		check(app.screen == "tracks", "leaving carousel cannot become a page swipe")
+ 		await capture("race-carousel", dimensions)
+@@ -134,6 +141,46 @@
+ 	print("MENU_PAGE_SWIPE: %d checks, %d failures" % [checks, failures])
+ 	quit(0 if failures == 0 else 1)
+ 
++func check_edge(screen: String, point: Vector2, direction: int, dimensions: Vector2i) -> void:
++	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
++	touch(point, true)
++	drag(point + Vector2(direction * 96, 0))
++	var short_pull: float = absf(app.menu_body.position.x)
++	check(short_pull > 0.0 and short_pull < 96.0, "edge content follows finger with resistance")
++	drag(point + Vector2(direction * 900, 0))
++	check(absf(app.menu_body.position.x) > short_pull and absf(app.menu_body.position.x) <= 64.0 and signf(app.menu_body.position.x) == direction, "both edge directions have a bounded stronger pull")
++	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header) and app.screen == screen, "edge pull keeps navigation fixed without wrapping")
++	await capture("edge-" + screen, dimensions)
++	var held: float = absf(app.menu_body.position.x)
++	touch(point + Vector2(direction * 900, 0), false)
++	# Capture resumes at frame_post_draw; let the newly created tween enter
++	# processing before sampling its return, rather than that render frame's timer.
++	await process_frame
++	await process_frame
++	await create_timer(0.08).timeout
++	check(absf(app.menu_body.position.x) < held, "released edge springs back")
++	await settle()
++	check(app.screen == screen and is_zero_approx(app.menu_body.position.x) and app.menu_edge_motion == null, "edge return settles exactly on original page")
++	touch(point, true)
++	drag(point + Vector2(direction * 150, 0))
++	touch(point + Vector2(direction * 150, 0), false, true)
++	await settle()
++	check(app.screen == screen and is_zero_approx(app.menu_body.position.x), "canceled edge gesture restores content")
++	touch(point, true)
++	drag(point + Vector2(direction * 150, 0))
++	touch(point, true, false, 1)
++	touch(point + Vector2(direction * 150, 0), false)
++	touch(point, false, false, 1)
++	await settle()
++	check(app.screen == screen and is_zero_approx(app.menu_body.position.x), "two-finger edge cancellation restores content")
++	touch(point, true)
++	drag(point + Vector2(direction * 150, 0))
++	touch(point + Vector2(direction * 150, 0), false)
++	app._show_screen("settings")
++	await settle()
++	check(app.menu_edge_motion == null and app.screen == "settings", "navigation safely interrupts edge return")
++	await show(screen)
++
+ func show(screen: String) -> void:
+ 	app._show_screen(screen)
+ 	await settle()
+@@ -165,6 +212,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/fixed-menu-navigation-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/menu-end-effects-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+diff --git a/docs/MENU_PAGE_SWIPES.md b/docs/MENU_PAGE_SWIPES.md
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -43,3 +43,20 @@
+ New evidence is under `docs/evidence/fixed-menu-navigation-2026-10-04/`; inspected [forward frame](evidence/fixed-menu-navigation-2026-10-04/slide-forward-960x540.png) shows one stationary top bar above sliding content. Previous whole-page motion screenshots above are historical.
+ 
+ `DeployAndroid -QuickValidation` (`DeployAndroid-2264`) passes import/startup, driving 72, catalog 21 and menu presentation 48 checks, export, installation and cold launch on the attached DN2103 (803 ms). The same three existing driving shutdown instance warnings and build-tools fallback remain. Actual adb-generated left/right swipes were exercised on the final phone build; inspected [phone Garage transition](evidence/fixed-menu-navigation-2026-10-04/phone-garage-slide.png) shows the whole bar fixed while content/scenery move below it. A subsequent carousel-area swipe retains Race, which is left open for the owner. Phone finger feel, full Validate/replay, gameplay driving and thermal/performance acceptance remain untested. No backend/service action or mixed-tree commit. Changed files for this correction: `game/core/app.gd`, `game/tests/test_menu_page_swipe.gd`, this document, status/plan notes and the new evidence directory. A scoped cumulative menu patch and final verification/deployment logs are retained there; reverse-applicability and whitespace checks pass.
++
++## Page end effects (2026-10-04)
++
++Requirements R01/V03/V04/V05/Q01. Owner requests an end effect like the track list at both menu ends. Static-content outward pulls now resist at Race's first edge (including its concurrent rivalry view) and Garage's last edge. Only the clipped body/scenery moves; navigation stays fixed. The pull matches the carousel: 64 logical-unit cap, `1-exp(-distance/160)` resistance, and a 380 ms `TRANS_BACK` ease-out return. There is no wrapping. Release, cancellation and a second finger settle the pull; a new gesture, navigation or race start clears an active return. Track-carousel overscroll remains independent.
++
++Changed files: `game/ui/menu_page_swipe.gd` emits gesture lifecycle/drag signals; `game/core/app.gd` owns the separate edge-return tween; `game/tests/test_menu_page_swipe.gd` checks both directions, resistance/cap, fixed header, spring motion/settlement, cancellation, two fingers, navigation interruption and separate carousel overscroll. This document, status/plan notes and `docs/evidence/menu-end-effects-2026-10-04/` retain verification. No canonical/rules/schema changes; concurrent rivalry work is preserved.
++
++Actual pinned commands (same `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` prefix):
++
++- `-Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical`: final **114 checks, zero failures**, with fourteen desktop/compact captures. Initial two runs had four spring-sampling failures: diagnostic elapsed time was zero because the fixture resumed at `frame_post_draw` and its timer completed before the new tween entered processing. The fixture now waits two process frames before its 80 ms sample; the movement invariant is unchanged.
++- `-Action TestApp`: **96 checks, zero failures**.
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd`: **275 scripts, zero failures**.
++- `git diff --check -- game/core/app.gd`: passed, existing CRLF normalization notice only.
++
++Inspected [Garage held pull](evidence/menu-end-effects-2026-10-04/edge-garage-960x540.png); [Race held pull](evidence/menu-end-effects-2026-10-04/edge-tracks-960x540.png) captures the opposite edge. Evidence uses isolated synthetic gallery data. Phone deployment and verification are recorded below. Full Validate/replay, gameplay driving, sustained device performance and human finger/feel acceptance are outside these checks. No backend or service action.
++
++`DeployAndroid -QuickValidation` (`DeployAndroid-9900`) passed import/startup, driving 72, catalog 21 and menu presentation 48 checks, export/install/cold launch on DN2103 (735 ms). Existing three driving shutdown instance warnings and build-tools fallback remain. Actual adb-generated outward Race/Garage swipes and return navigation ran on the final phone build; inspected [Race return](evidence/menu-end-effects-2026-10-04/phone-race-return.png) and [Garage return](evidence/menu-end-effects-2026-10-04/phone-garage-return.png). A subsequent carousel swipe retains Race; Guest Race is left open. These snapshots are after release, not a claimed video or held-finger capture. Final logs: gesture `TestScript-17268`, app `TestApp-22672`, parse `TestScript-23892`; verification/install/launch logs and a scoped end-effect-only Git patch are saved with the evidence. Reverse-applicability and targeted whitespace checks pass. No mixed-workspace commit; the debug APK contains the current workspace, including concurrent rivalry work.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner correction keeps the complete menu top navigation fixed; only clipped content and scenic layers below it slide over 280 ms. Forward/reverse header/tab bounds, gesture ownership and cleanup pass 76 checks; app 96, parse 272 and focused deployment checks pass. Updated debug APK installed/cold-launched on DN2103; final phone transition/carousel screenshots inspected, Race left open. Initial concurrent RaceModeRail cache miss resolved by Import; three existing driving shutdown leaks remain. No full Validate, gameplay/thermal/human-finger acceptance or backend action. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Fixed top navigation correction).
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: static-content page swipes added between Race/Create/Garage, preserving carousel, editor and modal gestures. Tab/swipe changes slide horizontally over 280 ms; incoming page gestures wait for settlement after a phone-discovered rapid-swipe edge case. Final gesture/slide 68, app 96, parser 270 and focused deployment checks pass. Final debug APK installed/cold-launched on DN2103; adb-generated page/carousel/rapid swipes and screenshots verified. Three existing driving shutdown leaks; full Validate, gameplay driving/thermal and human gesture feel not tested. Files, commands, desktop/phone evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md. Unrelated workspace edits preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner correction keeps the complete menu top navigation fixed; only clipped content and scenic layers below it slide over 280 ms. Forward/reverse header/tab bounds, gesture ownership and cleanup pass 76 checks; app 96, parse 272 and focused deployment checks pass. Updated debug APK installed/cold-launched on DN2103; final phone transition/carousel screenshots inspected, Race left open. Initial concurrent RaceModeRail cache miss resolved by Import; three existing driving shutdown leaks remain. No full Validate, gameplay/thermal/human-finger acceptance or backend action. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Fixed top navigation correction).
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: static-content page swipes added between Race/Create/Garage, preserving carousel, editor and modal gestures. Tab/swipe changes slide horizontally over 280 ms; incoming page gestures wait for settlement after a phone-discovered rapid-swipe edge case. Final gesture/slide 68, app 96, parser 270 and focused deployment checks pass. Final debug APK installed/cold-launched on DN2103; adb-generated page/carousel/rapid swipes and screenshots verified. Three existing driving shutdown leaks; full Validate, gameplay driving/thermal and human gesture feel not tested. Files, commands, desktop/phone evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md. Unrelated workspace edits preserved.

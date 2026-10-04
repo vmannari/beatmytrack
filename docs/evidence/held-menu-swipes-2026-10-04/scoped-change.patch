@@ -1,0 +1,179 @@
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -21,6 +21,17 @@
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
++	if event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION:
++		# Godot dispatches a touch's emulated mouse event BEFORE the touch itself.
++		# A moving button stays under the finger: its mouse UP would activate it,
++		# rebuild the original page and discard the pending touch release.
++		if pointer != -1:
++			get_viewport().set_input_as_handled()
++		elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
++			settle_requested.emit()
++			if not _modal_open(modal_root) and not _owns_gesture(menu,event.position):
++				get_viewport().set_input_as_handled()
++		return
+ 	if event is InputEventScreenTouch:
+ 		if event.pressed:
+ 			if pointer != -1:
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -159,10 +159,98 @@
+ 		var before: Vector2 = app.canvas.pan
+ 		await swipe(Vector2(dimensions.x * 0.55, dimensions.y * 0.45), Vector2(-150,0))
+ 		check(app.screen == "create" and app.canvas.pan != before, "editor canvas keeps its pan gesture")
++		await check_engine_button_swipe(dimensions)
+ 	app.queue_free()
+ 	await process_frame
+ 	print("MENU_PAGE_SWIPE: %d checks, %d failures" % [checks, failures])
+ 	quit(0 if failures == 0 else 1)
++
++func check_engine_button_swipe(dimensions: Vector2i) -> void:
++	await show("biome")
++	var card: Button = app.root_ui.find_child("Biome_night_city",true,false)
++	var actions: Array[int] = [0]
++	card.pressed.connect(func() -> void: actions[0] += 1)
++	var shell: Control = app.root_ui
++	var original_body: Control = app.menu_body
++	var point: Vector2 = card.get_global_rect().get_center()
++	var end: Vector2 = point - Vector2(point.x * 0.75,0)
++	engine_touch(point,true)
++	await process_frame
++	for step: int in range(1,6):
++		engine_drag(point.lerp(end,step / 5.0), (end-point) / 5.0)
++		await process_frame
++	var held: float = original_body.position.x
++	await create_timer(0.8).timeout
++	check(original_body.position.x == held and held < -100.0, "engine-routed swipe keeps its held position while resting")
++	engine_touch(end,false)
++	await process_frame
++	check(actions[0] == 0, "emulated mouse release cannot activate the button underneath a page swipe")
++	check(app.root_ui == shell and app.screen == "garage", "held button swipe commits without rebuilding the original page")
++	check(app.menu_body != original_body, "held button swipe promotes its visible neighbor")
++	await settle()
++	await capture("engine-held-committed",dimensions)
++	await show("biome")
++	card = app.root_ui.find_child("Biome_night_city",true,false)
++	actions[0] = 0
++	card.pressed.connect(func() -> void: actions[0] += 1)
++	shell = app.root_ui
++	original_body = app.menu_body
++	point = card.get_global_rect().get_center()
++	engine_touch(point,true)
++	await process_frame
++	engine_drag(point - Vector2(14,0),Vector2(-14,0))
++	await process_frame
++	await create_timer(0.6).timeout
++	engine_touch(point - Vector2(14,0),false)
++	check(actions[0] == 0 and app.root_ui == shell, "failed engine swipe cannot select its starting biome button")
++	check(app.menu_body == original_body and original_body.position.x == -14.0 and app.menu_edge_motion != null, "failed engine swipe returns by tween without snapping to center")
++	await settle()
++	check(app.screen == "biome" and original_body.position.x == 0.0, "failed engine swipe settles on its original page")
++	engine_touch(point,true)
++	await process_frame
++	engine_touch(point,false)
++	await settle()
++	check(actions[0] == 1 and app.document.theme == "night_city", "ordinary engine-routed biome tap activates exactly once")
++	card = app.root_ui.find_child("Biome_desert",true,false)
++	point = card.get_global_rect().get_center()
++	engine_mouse(point,true)
++	await process_frame
++	engine_mouse(point,false)
++	await settle()
++	check(app.document.theme == "desert", "real desktop mouse clicks remain available")
++	await show("tracks")
++	var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
++	point = gallery.get_global_rect().get_center()
++	engine_touch(point,true)
++	await process_frame
++	engine_drag(point-Vector2(180,0),Vector2(-180,0))
++	await process_frame
++	engine_touch(point-Vector2(180,0),false)
++	await settle()
++	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "engine-emulated carousel input retains its scrolling ownership")
++
++func engine_touch(point: Vector2, pressed: bool) -> void:
++	var event := InputEventScreenTouch.new()
++	event.position = root.get_final_transform() * point
++	event.pressed = pressed
++	Input.parse_input_event(event)
++	Input.flush_buffered_events()
++
++func engine_drag(point: Vector2, relative: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.position = root.get_final_transform() * point
++	event.relative = root.get_final_transform().basis_xform(relative)
++	Input.parse_input_event(event)
++	Input.flush_buffered_events()
++
++func engine_mouse(point: Vector2, pressed: bool) -> void:
++	var event := InputEventMouseButton.new()
++	event.position = root.get_final_transform() * point
++	event.global_position = event.position
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.pressed = pressed
++	Input.parse_input_event(event)
++	Input.flush_buffered_events()
+ 
+ func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
+ 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+@@ -370,6 +458,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/sensitive-menu-swipes-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/held-menu-swipes-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -166,3 +166,31 @@
+ Installed APK `build/android/circuit01-debug.apk`, SHA-256 **8C2AFFE8D56852DFA74BFD9419235453B01B213539528F87725584B7C280B911**. Evidence includes source checkpoint, actual test/export/install/launch logs and phone commands. Concurrent backend/session/ad changes were retained in the normal current-tree build; this task did not independently test those features.
+ 
+ Actual physical **DN2103** verification after choosing Guest and waiting for startup: Android `input swipe 1500 220 1464 222 450` (36 physical pixels) committed Race to Create; `input swipe 1500 220 1536 222 450` returned to Race. Both strokes are below the previous 48-physical-pixel commitment distance at this device scaling. A 20-physical-pixel stroke (`1500,220` to `1480,220`) returned to the original Race page; a track-list swipe (`1350,840` to `950,840`) kept Race and changed the carousel edge presentation. Inspected [short commitment](evidence/sensitive-menu-swipes-2026-10-04/phone-short-forward.png), [short reverse](evidence/sensitive-menu-swipes-2026-10-04/phone-short-reverse.png), [settled failed swipe](evidence/sensitive-menu-swipes-2026-10-04/phone-return-settled.png), [carousel](evidence/sensitive-menu-swipes-2026-10-04/phone-carousel.png), and desktop [early return](evidence/sensitive-menu-swipes-2026-10-04/failed-return-early-1280x720.png). Phone left on Guest Race; temporary remote screenshot removed. Native checks confirm behavior, not human-finger subjective smoothness. No fresh video/frame-time/GPU/thermal measurements, full Validate/replay suite, real Google/ad tests or other-device acceptance.
++
++## Held biome swipes and duplicate input (2026-10-04)
++
++Requirements **R01/V03/V04/V05/Q01**. The owner describes a long swipe, stationary stop, release and immediate jump to the original page; they confirmed it starts in the **Create biome area**. This is reproduced through Godot's full input pipeline, not a threshold failure. A touch generates an emulated mouse event **before** the original touch is dispatched. During a page swipe, the starting biome button moves with the finger. The earlier mouse UP selects that button and `_preview_creation_biome` rebuilds Create, destroying its swipe handler before the subsequent ScreenTouch UP. A stationary hold makes this particularly easy because the button is exactly under the resting finger.
++
++Engine ordering and emulation identity are supported by the [Godot 4.7 input implementation](https://github.com/godotengine/godot/blob/4.7/core/input/input.cpp#L836) and [InputEvent documentation](https://docs.godotengine.org/en/4.7/classes/class_inputevent.html#class-inputevent-constant-device-id-emulation). The observed rebuild/activation is directly reproduced by local tests. The older `Viewport.push_input` fixtures bypassed this engine emulation path; their passing movement tests therefore missed this phone failure.
++
++`game/ui/menu_page_swipe.gd` now intercepts **only** emulated mouse events for touches owned by page navigation. The first emulated press settles an arriving page before the same ownership hit-test; emulated motion/release for an active page gesture is consumed. The actual touch handles the swipe or one deliberate tap. Carousel, ranges, text fields, press-action buttons and modals retain their input, and real desktop mouse events remain available. No additional sensitivity/easing adjustment, global emulation setting, physics, account or backend change. Current 20-unit commitment, six-unit relaxation boundary, fixed header, adjacent content, gutter, gentle failed return and end spring retain their behavior.
++
++Changed files for this task: `game/ui/menu_page_swipe.gd` (the new emulated-event branch), `game/tests/test_menu_page_swipe.gd` (full engine routing regression), this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `docs/evidence/held-menu-swipes-2026-10-04/`. Concurrent cached-page mouse-behavior corrections in the handler/app were preserved; the scoped patch excludes those independent edits. No mixed-workspace commit.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned Godot **4.7.2.stable.official.ed1daf0bf** and matching templates:
++
++| Action | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical` before the routing fix | **234 checks, four reproduced failures**, `TestScript-35848`. At both viewport sizes the starting button activates and the original shell rebuilds rather than committing. |
++| Same command after the fix and expanded coverage | **246 checks, zero failures**, `TestScript-10384`. Real `Input.parse_input_event`/`flush_buffered_events` path covers long card swipe with 0.8-second rest; 14-unit failed swipe with 0.6-second rest preserves shell/position and creates the return tween; ordinary biome tap fires exactly once; real mouse selection and engine-emulated track carousel work. All previous gesture/header/neighbor/gutter/edge/modal/editor checks remain. Twenty-six desktop screenshots. |
++| `TestApp` | **97 checks, zero failures**, `TestApp-14716`. |
++| `ExportAndroid -QuickValidation -CommandTimeoutSeconds 600` | **Passed**, `ExportAndroid-13008`: import/startup, driving **72**, catalog **21**, menus **48**, normal Gradle debug APK. Existing three driving shutdown ObjectDB warnings remain. |
++| `InstallAndroid -DeviceSerial PRQKU4U4PREQNRWG -AdbPath <SDK adb>` | **Success**, `InstallAndroid-19748`. |
++| `LaunchAndroid` with the same serial/adb | **Status ok / COLD / 811 ms**, `LaunchAndroid-14020`. |
++| Scoped `git diff --check` and `git apply --reverse --check --ignore-space-change` | Passed; whitespace option handles mixed CRLF/LF context. |
++
++Preserved deployment copy: `build/held-menu-phone.apk`, SHA-256 **AC8DF37142D8051B9FB696818E99748F8256B19B08CF46DA5BCD72F24BE9FF21**. Evidence retains actual failing/passing test, export, install and launch logs and the source checkpoint.
++
++Actual **DN2103** verification after confirmed install: choose Guest, open Create, DOWN (2150,500) over a biome card, MOVE through (2000,500), (1500,500), (800,500), (220,500), remain still **1.5 seconds**, then UP (220,500). [Held content](evidence/held-menu-swipes-2026-10-04/phone-fixed-held.png) remains displaced with Garage visible; [release](evidence/held-menu-swipes-2026-10-04/phone-fixed-committed.png) completes Garage. Inspected both captures. This exercises the user-confirmed starting area with a near-full-width stroke and stationary hold.
++
++Initial native header-origin swipe with a one-second rest already passed, showing why a static-area-only check was insufficient. A later initial card attempt was interrupted by sign-in/relaunch; restored Guest Create and repeated it, with successful held/committed screenshots retained as `phone-initial-*`, without claiming controlled pre-fix device reproduction. The decisive pre-fix reproduction is the full-engine regression above. A post-install attempt to check a short return and normal tap encountered an independently active desert race instead of Create; captures are renamed `interrupted-phone-*` and **not** counted as menu acceptance. Last observed phone state was the paused race, so no further blind input was sent. Temporary remote screenshot removed. No human-finger subjective acceptance, new video/performance/thermal measurements, full Validate/replay, real Google or ad test, or service deployment. Other shared-tree work remains intact.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
+ 2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification median 3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
++
+ 2026-10-04 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend/API data-volume, robustness and scalability review completed against current working tree. Twelve prioritized findings include read-only production ghost writes, verifier capacity, shared queue locks, global matching scans, repeated metadata/polls, memory/phone serialization, ghost-start blocking and indefinite weekly evidence. Disposable probe measures four-channel replay 146,943 bytes (gzip 5,984), rivalry snapshot 35,520 bytes, skill matching 61 SQL statements and exact Windows verification median 3.051 seconds; injected EROFS reproduces uncaught finalization failure. Desktop tests: 220 passed, 21 failed (20 obsolete compatibility fixtures, one SQLite cache-invalidation defect), one skipped; initial sandbox engine failures resolved with approved desktop access. Review probe lint passes. Report, evidence, actual commands, proposed repair sequence and scoped Git checkpoint: docs/BACKEND_SCALABILITY_REVIEW_2026_10_04.md. No runtime/schema/service/data change, phone test/export/install or production deployment; Doctor device listing failed under sandbox, PostgreSQL/NAS/network/device/load acceptance remains.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: race loading screen added with existing biome art, actual track/route/vehicle and honest preparation stages. Overlay renders before world construction; race processing/countdown remain frozen through first scene render. Free Race online tickets, Weekly Rivalry download/compile/ghosts and editor practice covered; interruption/failure cleanup and async diagnostic/test callers updated. Graphical loading 81, headless 20, app 97, construction 104, menus 48 and parse 291 checks pass; isolated cloud/lifecycle HTTP 2 and native rivalry HTTP 1 pass. Desktop/compact screenshots inspected. Historical Results local-recommendation fixture still fails; initial async/freed-overlay/sampling failures corrected. Doctor finds DN2103/emulator; no loading-specific device test, export/install, backend deployment or physics change. Actual commands, files, limitations, evidence and scoped checkpoint: docs/RACE_LOADING.md. Unrelated concurrent edits preserved.

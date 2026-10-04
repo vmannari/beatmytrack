@@ -1,0 +1,523 @@
+diff --git a/game/race/weekly_rivalry.gd b/game/race/weekly_rivalry.gd
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -3,6 +3,7 @@
+ ## Menu projection of server standings. Sample data is opt-in for UI evidence only.
+ const SELF: String = "you"
+ const POINTS: Array[int] = [30,26,23,20,18,16,14,12,10,8,6,4,2,1]
++var points_policy: Array[int] = [30,26,23,20,18,16,14,12,10,8,6,4,2,1,1,1,1,1,1,1]
+ const NAMES: Array[String] = ["Mika","Alex","You","Janne","Sophie","Elias","Nora","Leo","Aino","Oscar","Emil","Sara","Luca","Iris"]
+ var week: int = 27
+ var completed: bool = false
+@@ -46,6 +47,7 @@
+ 	forming = bool(value.get("group_forming",false))
+ 	vehicle_id = str(value.get("vehicle_id",VehicleCatalog.selected))
+ 	source_self = str(value.get("self_id",""))
++	if value.get("points_policy") is Array: points_policy.assign(value.points_policy)
+ 	tracks.clear()
+ 	server_standings.clear()
+ 	for row: Dictionary in value.get("standings",[]): server_standings.append(_map_row(row))
+@@ -70,6 +72,68 @@
+ 	for key: String in ["before","after","overall_before","overall_after"]: last_result[key] = _map_row(value[key])
+ 	last_result.beaten = []
+ 	for row: Dictionary in value.get("beaten",[]): last_result.beaten.append(_map_row(row))
++
++func preview_result(index: int, ticks: int, seconds: float) -> Dictionary:
++	# Presentation only: the verified boards/PBs remain untouched. Use canonical
++	# ticks for ties, and update every affected driver's points in the projection.
++	last_result = {}
++	if not is_finite(seconds) or seconds <= 0.0: return last_result
++	last_result = {"ms":roundi(seconds*1000.0)}
++	if sample or index < 0 or index >= tracks.size() or ticks <= 0: return last_result
++	var before: Dictionary = self_row(board(index))
++	var overall_before: Dictionary = self_row(standing())
++	if before.is_empty() or overall_before.is_empty() or not before.has("ticks"): return last_result
++	var improved: bool = before.ticks == null or ticks < int(before.ticks)
++	var totals: Dictionary = {}
++	for driver: Dictionary in standing():
++		totals[driver.id] = driver.duplicate(true)
++		totals[driver.id].points = 0
++		totals[driver.id].completed = 0
++	var projected: Array[Dictionary] = []
++	var beaten: Array[Dictionary] = []
++	for slot: int in range(tracks.size()):
++		var rows: Array[Dictionary] = board(slot)
++		for row: Dictionary in rows:
++			if not row.has("ticks") or not totals.has(row.id): return last_result
++			if slot == index and improved:
++				if row.id == SELF:
++					row.ticks = ticks
++					row.ms = last_result.ms
++				elif row.ticks != null and ticks < int(row.ticks) and (before.ticks == null or int(row.ticks) < int(before.ticks)):
++					beaten.append(row.duplicate(true))
++		rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
++			if a.ticks == null: return false
++			return b.ticks == null or int(a.ticks) < int(b.ticks))
++		var rank: int = 0
++		var previous: int = -1
++		for position: int in range(rows.size()):
++			var row: Dictionary = rows[position]
++			if row.ticks == null:
++				row.rank = null
++				row.points = 0
++			else:
++				if int(row.ticks) != previous: rank = position+1
++				previous = int(row.ticks)
++				if rank > points_policy.size(): return last_result
++				row.rank = rank
++				row.points = points_policy[rank-1]
++				totals[row.id].completed += 1
++			totals[row.id].points += int(row.points)
++		if slot == index: projected = rows
++	var overall: Array[Dictionary] = []
++	for row: Dictionary in totals.values(): overall.append(row)
++	overall.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.points) > int(b.points))
++	var overall_rank: int = 0
++	var previous_points: int = -1
++	for position: int in range(overall.size()):
++		if int(overall[position].points) != previous_points: overall_rank = position+1
++		previous_points = int(overall[position].points)
++		overall[position].rank = overall_rank if int(overall[position].completed) > 0 else null
++	var after: Dictionary = self_row(projected)
++	last_result = {"index":index,"ms":roundi(seconds*1000.0),"valid":false,"provisional":true,"improved":improved,
++		"before":before,"after":after,"points_delta":int(after.points)-int(before.points),
++		"overall_before":overall_before,"overall_after":self_row(overall),"beaten":beaten}
++	return last_result.duplicate(true)
+ 
+ func countdown() -> String:
+ 	if sample and completed: return "Week complete"
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -10,6 +10,10 @@
+ var result_state: String = ""
+ var test_population: bool = false
+ var _generation: int = 0
++var result_polling: bool = false
++var _poll_ticket: String = ""
++var _poll_started_msec: int = 0
++var _next_poll_msec: int = 0
+ 
+ func scope() -> String:
+ 	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected+("/test" if test_population else "/real")
+@@ -28,6 +32,9 @@
+ 	result_state = ""
+ 	error = ""
+ 	busy = false
++	result_polling = false
++	_poll_ticket = ""
++	_next_poll_msec = 0
+ 
+ static func valid_snapshot(value: Dictionary) -> bool:
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+@@ -120,30 +127,45 @@
+ 	return recording
+ 
+ func poll_result() -> void:
+-	if busy or result_ticket.is_empty() or snapshot_scope != scope(): return
++	if busy or result_polling or result_ticket.is_empty() or snapshot_scope != scope(): return
++	var current_msec: int = Time.get_ticks_msec()
++	if _poll_ticket != result_ticket:
++		_poll_ticket = result_ticket
++		_poll_started_msec = current_msec
++		_next_poll_msec = 0
++	if current_msec < _next_poll_msec: return
+ 	var original: String = scope()
+ 	var ticket_id: String = result_ticket
+ 	var generation: int = _generation
+-	busy = true
++	result_polling = true
+ 	var response: Dictionary = await client.request_api("/rivalry/tickets/"+ticket_id+"/result",HTTPClient.METHOD_GET,{},"",true)
+-	if generation != _generation or original != scope() or result_ticket != ticket_id: return
+-	busy = false
++	if generation != _generation: return
++	result_polling = false
++	if original != scope() or result_ticket != ticket_id: return
++	var elapsed: int = Time.get_ticks_msec()-_poll_started_msec
++	_next_poll_msec = Time.get_ticks_msec()+(500 if elapsed < 15000 else 2000 if elapsed < 60000 else 5000)
+ 	if not response.ok:
++		_next_poll_msec = Time.get_ticks_msec()+maxi(5000,int(response.get("retry_after",0))*1000)
+ 		error = "Result saved. Reconnect to verify your rivalry result."
+ 		changed.emit()
+ 		return
++	error = ""
+ 	result_state = str(response.data.get("status","upload_pending"))
+ 	if result_state == "verified" and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
+ 		var outcome: Dictionary = response.data.outcome
+ 		var index: int = int(response.data.slot)
++		# Confirm feedback as soon as its proof arrives. Refresh the full board
++		# afterwards; that extra request must not hold the result screen pending.
++		model.apply_outcome(outcome,index)
++		changed.emit()
+ 		await _fetch("/rivalry/"+model.group_id)
+ 		if original != scope() or generation != _generation: return
+-		model.apply_outcome(outcome,index)
+-		changed.emit()
+ 	elif result_state == "verified":
++		model.last_result = {"ms":model.last_result.get("ms",0)}
+ 		error = "Result details unavailable. Refresh Rivalry to check your standings."
+ 		changed.emit()
+ 	elif result_state in ["rejected","failed","expired"]:
++		model.last_result = {"ms":model.last_result.get("ms",0)}
+ 		error = "This race was not verified. Your weekly best is unchanged."
+ 		changed.emit()
+ 
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -167,14 +167,14 @@
+ 	add_child(rivalry)
+ 	rivalry.changed.connect(_rivalry_changed)
+ 	var rivalry_timer := Timer.new()
+-	rivalry_timer.wait_time = 5.0
++	rivalry_timer.wait_time = 0.5
+ 	rivalry_timer.autostart = true
+ 	rivalry_timer.timeout.connect(func() -> void:
+-		if screen != "rivalry" or rivalry.busy or rivalry.model.sample: return
++		if rivalry.busy or rivalry.model.sample: return
+ 		if rivalry_result_pending: rivalry.poll_result()
+-		elif not is_instance_valid(game):
++		elif screen == "rivalry" and not is_instance_valid(game):
+ 			rivalry_refresh_ticks += 1
+-			if rivalry_refresh_ticks >= 6:
++			if rivalry_refresh_ticks >= 60:
+ 				rivalry_refresh_ticks = 0
+ 				rivalry.refresh())
+ 	add_child(rivalry_timer)
+@@ -750,6 +750,7 @@
+ 	if rivalry != null:
+ 		rivalry.test_population = false
+ 		rivalry.reset()
++		rivalry_result_pending = false
+ 	if scope.is_empty():
+ 		records = guest_records
+ 		library = guest_library
+@@ -923,7 +924,7 @@
+ 	if not rivalry.model.sample: rivalry.refresh()
+ 
+ func _rivalry_changed() -> void:
+-	if rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
++	if rivalry.result_ticket.is_empty() or rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
+ 	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
+ 		_rivalry()
+ 
+@@ -2122,7 +2123,8 @@
+ 		rivalry_result_pending = online_queued
+ 		# Verification runs behind the normal PB/lap summary until Continue.
+ 		rivalry_section = "race_results"
+-		rivalry.model.last_result = {"ms":roundi(total*1000.0)}
++		if online_queued: rivalry.model.preview_result(rivalry_track,session.elapsed_ticks,total)
++		else: rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+ 		if online_queued: rivalry.poll_result()
+ 	var previous: float = result_records.best_for(track, game.get("handling"))
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -370,28 +370,30 @@
+ func _result(parent: Control) -> void:
+ 	var index: int = clampi(selected,0,model.tracks.size()-1)
+ 	var result: Dictionary = model.last_result
++	var preview: bool = pending_result and bool(result.get("provisional",false))
+ 	var scene: VBoxContainer = _card(parent,str(model.tracks[index].theme),26)
+ 	scene.get_parent().size_flags_stretch_ratio = 1.3
+ 	scene.add_child(Badge.view(str(model.tracks[index].theme),16))
+ 	_copy(scene,str(model.tracks[index].name).to_upper(),36)
+ 	_space(scene)
+-	_copy(scene,"VERIFYING YOUR RACE" if pending_result else "NEW WEEKLY BEST" if result.get("improved",false) else "RACE COMPLETE",23,MenuStyle.MUTED if pending_result else MenuStyle.POSITIVE)
++	_copy(scene,"PROVISIONAL RESULT" if preview else "VERIFYING YOUR RACE" if pending_result else "NEW WEEKLY BEST" if result.get("improved",false) else "RACE COMPLETE",23,MenuStyle.MUTED if pending_result else MenuStyle.POSITIVE)
+ 	if result.has("ms"): _copy(scene,MenuStyle.time_text(int(result.ms)/1000.0),76)
+-	_copy(scene,"Your weekly result updates after replay verification." if pending_result else "Your best result counts. Race again anytime.",19,MenuStyle.MUTED)
++	_copy(scene,"Based on current standings · verification pending." if preview else "Your weekly result updates after replay verification." if pending_result else "Your best result counts. Race again anytime.",19,MenuStyle.MUTED)
+ 	var feedback: VBoxContainer = _card(parent,"",24)
+-	if pending_result:
++	if pending_result and not preview:
+ 		_copy(feedback,"RESULT SAVED",32)
+ 		_copy(feedback,"Checking your race…",24,MenuStyle.ACCENT)
+ 		_copy(feedback,"Your standings will update automatically.",18,MenuStyle.MUTED)
+ 	elif result.has_all(["before","after","overall_before","overall_after"]):
+-		_copy(feedback,"POSITION IMPROVED" if result.get("improved",false) and result.before.get("rank") != result.after.get("rank") else "YOUR TRACK POSITION",18,MenuStyle.POSITIVE)
++		_copy(feedback,"EXPECTED TRACK POSITION" if preview else "POSITION IMPROVED" if result.get("improved",false) and result.before.get("rank") != result.after.get("rank") else "YOUR TRACK POSITION",18,MenuStyle.ACCENT if preview else MenuStyle.POSITIVE)
+ 		_copy(feedback,rank_text(result.before)+"  →  "+rank_text(result.after),64,MenuStyle.ACCENT)
+ 		var beaten: Array = result.get("beaten",[])
+ 		if not beaten.is_empty():
+ 			var nearest: Dictionary = beaten[-1]
+-			_copy(feedback,"You beat %s by %.3f s" % [str(nearest.name),(int(nearest.ms)-int(result.ms))/1000.0],21)
++			_copy(feedback,("Ahead of %s by %.3f s" if preview else "You beat %s by %.3f s") % [str(nearest.name),(int(nearest.ms)-int(result.ms))/1000.0],21)
+ 		_copy(feedback,"Weekly points  +%d" % int(result.get("points_delta",0)),28,MenuStyle.ACCENT)
+ 		_copy(feedback,"Overall "+rank_text(result.overall_before)+"  →  "+rank_text(result.overall_after),20,MenuStyle.MUTED)
++		if preview: _copy(feedback,"Final standings update after verification.",18,MenuStyle.MUTED)
+ 	else:
+ 		_copy(feedback,"WEEKLY BEST UNCHANGED",32)
+ 		_copy(feedback,"This attempt has no verified rivalry result.",20,MenuStyle.MUTED)
+diff --git a/game/tests/test_weekly_rivalry_http.gd b/game/tests/test_weekly_rivalry_http.gd
+--- a/game/tests/test_weekly_rivalry_http.gd
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -64,6 +64,9 @@
+ 	var driver := ReplayInput.new()
+ 	driver.frames = fixture.replay.frames
+ 	game.driver = driver
++	# The real player has rendered the race before reaching results. Do not
++	# charge first-ever 3D shader compilation to a later Continue interaction.
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+ 	for _tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+ 	check(game.track_session.finished,"actual pinned replay finishes five legal laps")
+ 	check(game.online_frames.size() == fixture.replay.frames.size(),"rivalry records all canonical inputs")
+@@ -94,6 +97,7 @@
+ 	for i: int in range(old_laps.size()): old_laps[i] += 0.2
+ 	check(records.record(game.native_track,game.handling,total+1.0,old_laps) == OK,"isolated prior PB fixture saves")
+ 	app._results()
++	check(app.rivalry.model.last_result.get("provisional",false) and app.rivalry.model.last_result.get("points_delta") == 30,"finished race immediately projects weekly rank and points before verification")
+ 	var summary: RaceResults = app.root_ui.find_child("RaceResults",true,false) as RaceResults
+ 	check(app.rivalry_result_pending and app.rivalry_section == "race_results" and summary != null,"rivalry opens normal results while verification runs")
+ 	check(summary.saved and absf(summary.previous-total-1.0) < 0.001 and absf(summary.best-total) < 0.001,"rivalry saves the all-time personal best through normal results")
+@@ -101,12 +105,25 @@
+ 	check((summary.find_child("ResultDelta",true,false) as Label).text == "-1.000 s vs personal best","normal results compare the prior all-time personal best")
+ 	var personal: Dictionary = game.ghost_store.load_best(records.key_for(game.native_track,game.handling),records.records[records.key_for(game.native_track,game.handling)])
+ 	check(not personal.get("race",{}).is_empty(),"rivalry PB saves its personal ghost")
++	var immediate_continue: bool = OS.get_environment("BMT_RIVALRY_IMMEDIATE_CONTINUE") == "true"
++	if immediate_continue:
++		# Continue becomes a user action once the normal summary is displayed.
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++		var continue_started: int = Time.get_ticks_msec()
++		summary.next_button.pressed.emit()
++		print("RIVALRY_FEEDBACK_BUILD_MS: %d" % (Time.get_ticks_msec()-continue_started))
++		await process_frame
++		print("RIVALRY_IMMEDIATE_FEEDBACK_MS: %d" % (Time.get_ticks_msec()-continue_started))
++		check(Time.get_ticks_msec()-continue_started < 250,"Continue renders useful feedback within a quarter second on the desktop fixture")
++		check(app.rivalry_section == "result" and app.rivalry_result_pending and app.rivalry.model.last_result.get("provisional",false),"immediate Continue displays projected feedback while replay verification is pending")
++		await capture("provisional-feedback")
++	var verification_started: int = Time.get_ticks_msec()
+ 	for _poll: int in range(200):
+-		await app.cloud.flush_outbox()
+-		await app.rivalry.poll_result()
+ 		if not app.online.client.signed_in(): break
+ 		if app.rivalry.result_state in ["verified","failed","rejected"]: break
+ 		await create_timer(0.2).timeout
++	print("RIVALRY_AUTOMATIC_CONFIRMATION_MS: %d" % (Time.get_ticks_msec()-verification_started))
++	check(Time.get_ticks_msec()-verification_started < 15000,"automatic verification completes during the normal summary without manual polling")
+ 	check(app.rivalry.result_state == "verified","real worker verifies the rivalry upload")
+ 	check(app.online.client.signed_in() and app.online.player_name() == "Weekly Alice","race completion and verification retain the signed-in driver")
+ 	if not app.online.client.signed_in():
+@@ -117,14 +134,19 @@
+ 		quit(1)
+ 		return
+ 	check(not app.rivalry_result_pending and app.rivalry.model.last_result.get("points_delta") == 30,"verified result changes the championship points")
+-	check(is_instance_valid(summary) and summary.is_visible_in_tree() and app.rivalry_section == "race_results","verification never replaces the normal results summary")
+-	summary.select_lap(0)
+-	check(summary.selected_lap == 0,"normal lap analysis remains interactive after verification")
+-	await capture("normal-results")
+-	summary.next_button.pressed.emit()
+-	await process_frame
++	if not immediate_continue:
++		check(is_instance_valid(summary) and summary.is_visible_in_tree() and app.rivalry_section == "race_results","verification never replaces the normal results summary")
++		summary.select_lap(0)
++		check(summary.selected_lap == 0,"normal lap analysis remains interactive after verification")
++		await capture("normal-results")
++		summary.next_button.pressed.emit()
++		await process_frame
++	else:
++		check(app.rivalry.model.last_result.valid and not app.rivalry.model.last_result.has("provisional"),"pending feedback automatically becomes confirmed in the same screen")
+ 	check(app.rivalry_section == "result" and app.root_ui.find_child("WeeklyRivalryPage",true,false) != null,"Continue opens weekly position and points feedback")
+ 	await capture("rivalry-feedback")
++	# Result confirmation deliberately precedes the independent board refresh.
++	while app.rivalry.busy: await process_frame
+ 	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.standing())
+ 	check(own.points == 30 and own.rank == 1,"Overview reflects one best result")
+ 	var recording: Dictionary = await app.rivalry.ghost(0,str(app.online.client.player.id))
+diff --git a/backend/tests/test_rivalry_http.py b/backend/tests/test_rivalry_http.py
+--- a/backend/tests/test_rivalry_http.py
++++ b/backend/tests/test_rivalry_http.py
+@@ -33,6 +33,12 @@
+ 
+ 
+ @pytest.mark.godot
++def test_weekly_rivalry_immediate_continue(tmp_path):
++    run_client(tmp_path, "res://tests/test_weekly_rivalry_http.gd", prepare=seed,
++        extra_env={"BMT_RIVALRY_IMMEDIATE_CONTINUE":"true"})
++
++
++@pytest.mark.godot
+ def test_test_rivalry_expired_session_at_finish(tmp_path):
+     run_client(tmp_path, "res://tests/test_weekly_rivalry_http.gd", prepare=seed,
+         settings_overrides={"test_drivers_enabled":True,"access_ttl_seconds":2},
+diff --git a/game/tests/test_rivalry_feedback.gd b/game/tests/test_rivalry_feedback.gd
+--- /dev/null
++++ b/game/tests/test_rivalry_feedback.gd
+@@ -0,0 +1,171 @@
++extends SceneTree
++## Immediate previews never change verified standings; confirmation is automatic.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++var checks: int = 0
++var failures: int = 0
++var snapshot: Dictionary
++
++class ResultClient extends Node:
++	var player: Dictionary = {"id":"driver_02"}
++	var response: Dictionary = {}
++	var board_response: Dictionary = {}
++	var result_delay: float = 0.0
++	var board_delay: float = 0.0
++	var requests: int = 0
++	func base_url() -> String: return "http://fixture"
++	func signed_in() -> bool: return true
++	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		requests += 1
++		var board: bool = not path.ends_with("/result")
++		var value: Dictionary = (board_response if board else response).duplicate(true)
++		await get_tree().create_timer(board_delay if board else result_delay).timeout
++		return value
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+description)
++
++func fixture() -> Dictionary:
++	var result: Dictionary = {"state":"active","group_id":"fixture","self_id":"driver_02","week":40,
++		"ends_at":604800,"server_now":0,"vehicle_id":"compact","tracks":[],"standings":[],
++		"points_policy":[30,26,23,20,18,16,14,12,10,8,6,4,2,1,1,1,1,1,1,1]}
++	var menu := WeeklyRivalry.new(true)
++	for driver: int in range(20):
++		result.standings.append({"id":"driver_%02d" % driver,"name":"Driver %02d" % driver,
++			"rank":driver+1,"points":int(result.points_policy[driver])*5,"completed":5})
++	for slot: int in range(5):
++		var entries: Array = []
++		for driver: int in range(20):
++			entries.append({"id":"driver_%02d" % driver,"name":"Driver %02d" % driver,
++				"ticks":12000+driver*120,"ms":100000+driver*1000,"rank":driver+1,"points":result.points_policy[driver]})
++		result.tracks.append({"board_id":"board_%d" % slot,"entries":entries,
++			"entry":{"name":menu.tracks[slot].name,"theme":menu.tracks[slot].theme,"creator":"Beat my track",
++			"track_id":"track_%d" % slot,"version_id":"version_%d" % slot,"content_hash":"a".repeat(64),"points":menu.tracks[slot].document.points}})
++	return result
++
++func run() -> void:
++	snapshot = fixture()
++	check(Adapter.valid_snapshot(snapshot),"preview uses a real-shaped twenty-driver server snapshot")
++	var model := WeeklyRivalry.new()
++	model.apply_snapshot(snapshot)
++	var original: String = JSON.stringify([model.tracks,model.server_standings])
++	var started: int = Time.get_ticks_usec()
++	var preview: Dictionary = model.preview_result(0,11940,99.5)
++	var preview_usec: int = Time.get_ticks_usec()-started
++	check(preview.provisional and not preview.valid,"immediate feedback explicitly remains unverified")
++	check(preview.before.rank == 3 and preview.after.rank == 1 and preview.points_delta == 7,"projected PB moves from third to first with seven points")
++	check(preview.overall_after.points == 122 and preview.overall_after.rank == 3,"projection recomputes all drivers' overall points")
++	check(preview.beaten.size() == 2 and preview.beaten[-1].ms == 101000,"preview identifies the nearest newly beaten rival")
++	check(JSON.stringify([model.tracks,model.server_standings]) == original and model.pb_count == 0,"preview never writes verified standings or PBs")
++	check(model.preview_result(0,12600,105.0).points_delta == 0,"a slower retry leaves projected points unchanged")
++	preview = model.preview_result(0,12120,101.0)
++	check(preview.after.rank == 2 and preview.after.points == 26 and preview.points_delta == 3,"equal canonical ticks share rank and points")
++	var unplayed: Dictionary = snapshot.duplicate(true)
++	for track: Dictionary in unplayed.tracks:
++		for row: Dictionary in track.entries:
++			if row.id == unplayed.self_id:
++				row.ticks = null; row.ms = null; row.rank = null; row.points = 0
++	for row: Dictionary in unplayed.standings:
++		if row.id == unplayed.self_id: row.rank = null; row.points = 0; row.completed = 0
++	model.apply_snapshot(unplayed)
++	preview = model.preview_result(0,15000,125.0)
++	check(preview.before.rank == null and preview.after.rank == 20 and preview.points_delta == 1,"first finish and the twentieth scoring position are projected")
++	check(preview.overall_after.completed == 1 and preview.overall_after.rank == 20,"first finish receives a projected overall rank")
++	check(model.preview_result(0,12000,NAN).is_empty(),"a nonfinite time cannot enter the preview")
++	model.apply_snapshot(snapshot)
++	var client := ResultClient.new()
++	root.add_child(client)
++	var adapter := Adapter.new()
++	adapter.client = client
++	root.add_child(adapter)
++	adapter.model = model
++	adapter.snapshot_scope = adapter.scope()
++	adapter.result_ticket = "one"
++	client.result_delay = 0.1
++	client.response = {"ok":true,"data":{"status":"queued"}}
++	adapter.poll_result()
++	adapter.poll_result()
++	check(adapter.result_polling and not adapter.busy and client.requests == 1,"only one poll runs while race actions remain usable")
++	await create_timer(0.15).timeout
++	await adapter.poll_result()
++	check(client.requests == 1,"rapid callers respect the bounded poll interval")
++	adapter.result_ticket = "two"
++	model.preview_result(0,11940,99.5)
++	client.response = {"ok":true,"data":{"status":"rejected"}}
++	await adapter.poll_result()
++	check(not model.last_result.has("provisional") and not model.last_result.has("after"),"a rejected replay discards its projected award")
++	var confirmed: Dictionary = model.preview_result(0,11940,99.5).duplicate(true)
++	confirmed.erase("provisional")
++	client.response = {"ok":true,"data":{"status":"verified","outcome":confirmed,"slot":0}}
++	client.board_response = {"ok":true,"data":snapshot}
++	client.board_delay = 0.3
++	adapter.result_ticket = "three"
++	adapter.poll_result()
++	await create_timer(0.15).timeout
++	check(model.last_result.valid and not model.last_result.has("provisional") and adapter.busy,"confirmation appears before the full standings request completes")
++	await create_timer(0.35).timeout
++	model.preview_result(0,11940,99.5)
++	adapter.result_ticket = "old"
++	adapter.poll_result()
++	adapter.result_ticket = "new"
++	await create_timer(0.15).timeout
++	check(model.last_result.get("provisional",false) and not adapter.result_polling,"a replaced race fences stale verification without stranding polling")
++	client.response = {"ok":false,"retry_after":10}
++	adapter.result_ticket = "offline"
++	await adapter.poll_result()
++	var requests: int = client.requests
++	await adapter.poll_result()
++	check(client.requests == requests and adapter.error.contains("Reconnect"),"connection failure backs off without hiding the immediate result")
++	client.response = {"ok":true,"data":{"status":"rejected"}}
++	adapter.result_ticket = "signout"
++	adapter.poll_result()
++	adapter.reset()
++	await create_timer(0.15).timeout
++	check(adapter.result_state.is_empty() and adapter.model.last_result.is_empty() and not adapter.result_polling,"account reset fences pending confirmation")
++	model.preview_result(0,11940,99.5)
++	await visuals(model)
++	adapter.queue_free()
++	client.queue_free()
++	await process_frame
++	print("RIVALRY_FEEDBACK_TIMING: preview_usec=%d" % preview_usec)
++	print("RIVALRY_FEEDBACK_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func visuals(model: WeeklyRivalry) -> void:
++	if DisplayServer.get_name() == "headless": return
++	var evidence: String = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-feedback-speed-2026-10-04")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	OS.set_environment("BMT_API_URL","")
++	var folder: String = "user://feedback_capture_"+TrackLibrary.unique_id()
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.rivalry.model = model
++	app.rivalry_section = "result"
++	app.rivalry_result_pending = true
++	app._show_screen("rivalry")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		app._rivalry()
++		for _frame: int in range(5): await process_frame
++		var page: Control = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		check(has_text(page,"EXPECTED TRACK POSITION") and not has_text(page,"Checking your race…"),"pending screen displays the projected result immediately")
++		var race: Button = page.find_child("RivalryRaceAgain",true,false)
++		check(race != null and not race.disabled and root.get_visible_rect().encloses(race.get_global_rect()),"Race Again remains available inside the compact screen")
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(evidence.path_join("provisional-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"provisional screenshot saves")
++	app.queue_free()
++	await process_frame
++
++func has_text(node: Node, value: String) -> bool:
++	if node is Label and node.text == value: return true
++	for child: Node in node.get_children():
++		if has_text(child,value): return true
++	return false
+diff --git a/game/tests/test_rivalry_feedback.gd.uid b/game/tests/test_rivalry_feedback.gd.uid
+--- /dev/null
++++ b/game/tests/test_rivalry_feedback.gd.uid
+@@ -0,0 +1 @@
++uid://cbty6cg3n82ef

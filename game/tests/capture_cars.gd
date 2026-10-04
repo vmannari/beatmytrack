@@ -56,7 +56,7 @@ func _run() -> void:
 		await capture(id+"-race")
 		var race_nav: Button = app.root_ui.find_child("Tab_tracks",true,false)
 		check(app.root_ui.get_global_rect().encloses(race_nav.get_global_rect()),id+" Race navigation stays within viewport")
-		app.call("_start_race",app.selected_track,false)
+		await app.call("_start_race",app.selected_track,false)
 		await settle()
 		var game: Node = app.game
 		game.set_physics_process(false)
@@ -99,7 +99,7 @@ func _run() -> void:
 		await settle()
 		if id in ["formula","kart"]: await capture(id+"-tracks")
 		# Result fixture checks record partition, vehicle label and retry identity.
-		app.call("_start_race",app.selected_track,false)
+		await app.call("_start_race",app.selected_track,false)
 		await settle()
 		game = app.game
 		game.set_physics_process(false)
@@ -119,7 +119,7 @@ func _run() -> void:
 		app.call("_leave_race")
 		await settle()
 		# Practice uses same selected vehicle and remains untimed.
-		app.call("_start_race",app.selected_track,true)
+		await app.call("_start_race",app.selected_track,true)
 		await settle()
 		check(app.game.editor_test and app.game.handling.vehicle_id == id,id+" creator practice keeps selected car")
 		app.returning_to_editor = false

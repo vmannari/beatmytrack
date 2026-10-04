@@ -149,6 +149,8 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
 		elif field == "camera_mode":
 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
+		elif field == "ghost_mode":
+			if not preferences[field] is String or preferences[field] not in PersonalGhostRun.MODES: return {}
 		elif field == "track_ratings":
 			if not preferences[field] is Dictionary: return {}
 			for id: Variant in preferences[field]:
@@ -163,7 +165,7 @@ static func _normalize(data: Variant) -> Dictionary:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "control_layout":
 			if not ControlLayout.valid(preferences[field]): return {}
-		elif field in ["left_handed", "camera_speed_zoom", "control_labels"]:
+		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads"]:
 			if not preferences[field] is bool:
 				return {}
 		elif field == "steering_haptics":

@@ -1,0 +1,2696 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -143,3 +143,7 @@
+ 
+ The owner requires normal race results first, including personal-best feedback and lap analysis. Continue opens weekly rivalry position/points feedback. Backend verification must never interrupt the normal summary. See docs/WEEKLY_RIVALRY.md.
+ 
++
++## Artificial test drivers override (2026-10-04)
++
++The owner explicitly authorizes artificial development drivers for Weekly Rivalry. Persistent traits, canonical recorded input generation, verified submissions, focused 14-driver fixtures and larger 150-driver matching populations supersede the no-invented-entrant restriction for explicitly labeled test championships only. Keep the feature configured for development, isolate test boards/membership contracts, exclude artificial identities from public rankings, ratings and community eligibility, and reject their existing sessions when disabled. Normal rivalries still contain real entrants only. See docs/TEST_DRIVERS.md for tools, actual tests, evidence and remaining acceptance.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+ 
+ 2026-10-04 R01/V05/Q01: Pixel_9 Android 17/API37 Google Play/16 KB AVD launched as emulator-5554; reported ARM64 translation permits existing APK. Fresh pinned export passes startup/driving 72/catalog 21/menus 48, installs and cold-launches successfully. ADB reverse tcp:18181 connects to existing ready schema-0011 PC backend; sign-in/gameplay screenshots inspected, no sampled game-process errors. Initial sandbox ADB failure and boot/offline state recorded. No game code, ad integration, backend restart/deployment, full Validate or physical-phone test; DN2103 attached. Rewarded AdMob test integration is the recommended next slice, with verified/idempotent banked grants still required. Commands, files, evidence, scoped checkpoint and acceptance: docs/ANDROID.md (Pixel 9 emulator).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: live menu swipes now reveal the real adjacent page from early finger movement, promoting cached controls with the same fixed header. Initial vertical jitter no longer rejects a later horizontal swipe; 56-unit commitment tolerates later drift, and presses during settling are accepted after hit-testing positions settle. Both edges and carousel ownership preserved. Final gestures 180, app 96, parse 280 and focused export checks pass. Final APK installed/cold-launched on DN2103 after adb resets; native held-drag screenshots inspected and eight measured phone swipes all pass. Typical median 16.6–16.9 ms; measured worst frame 89.4→41.9 ms across two correction iterations after removing a Race rebuild. Probe disabled, Guest Race left open. Existing three driving shutdown warnings; human finger feel, full Validate and sustained/other-device acceptance remain. Files, actual commands, evidence and scoped patch: docs/MENU_PAGE_SWIPES.md (Immediate finger-following slide and phone correction). Unrelated workspace work preserved.
++
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/T01-T04/V03-V05/Q01: owner-approved artificial test drivers implemented as persistent development identities with canonical input recordings and verified PB/points/ghosts. Separate test championships/boards, strict feature/key gates, production population/rating/eligibility exclusions and fixed TEST badges. Tools fill 14 entrants or prepare 150 skill-distributed profiles with three verified history boards, seeded weekly activity, pace calibration and durable bounded scheduling. Migration 0012 required. Final profile/gate/scheduler tests 11, canonical 14-driver HTTP field 61 verified races, menu 419, app 96, parse 280 and native HTTP 25 checks pass; initial ghost-fraction, orphan harness and freed-menu cleanup failures corrected. Doctor finds DN2103 and emulator; no test-driver phone/export/install or existing-service/NAS/production rollout. Full 150-driver canonical seed, PostgreSQL/long-week/player-pace acceptance remain. Actual commands, files, limits, evidence and scoped checkpoint: docs/TEST_DRIVERS.md. Unrelated work preserved.
+ 
+ 2026-10-04 R01/V05/Q01: owner's Pixel_9 emulator deployed with fresh pinned debug APK; Android 17/API37 Google Play/16 KB image supports ARM64 translation. Startup/driving 72/catalog 21/menus 48 pass, install/cold launches succeed. Emulator API loopback forwarded to existing PC port 18181; connected sign-in and five-lap gameplay captures inspected, no sampled game-process errors. Initial sandbox ADB/offline-boot failures recorded. No canonical/game code, ads SDK, service restart/deployment, full Validate or physical-phone test; DN2103 attached. Ad provider/test integration and verified banked rewards remain next steps. Commands, files, screenshots, scoped checkpoint and acceptance: ANDROID.md (Pixel 9 emulator).
+diff --git a/backend/bmt_backend/config.py b/backend/bmt_backend/config.py
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -9,6 +9,7 @@
+     admin_analyst_key: str = ""
+     environment: str = "production"
+     dev_auth_enabled: bool = False
++    test_drivers_enabled: bool = False
+     dev_auth_key: str = ""
+     database_url: str = "postgresql+psycopg://bmt@localhost/bmt"
+     public_base_url: str = "http://localhost:8080"
+@@ -70,6 +71,8 @@
+             raise ValueError(
+                 "Development auth requires development environment and a secret of at least 32 characters"
+             )
++        if self.test_drivers_enabled and (self.environment != "development" or not self.dev_auth_enabled):
++            raise ValueError("Test drivers require explicitly enabled development authentication")
+ 
+     @classmethod
+     def from_env(cls):
+diff --git a/backend/bmt_backend/identity_models.py b/backend/bmt_backend/identity_models.py
+--- a/backend/bmt_backend/identity_models.py
++++ b/backend/bmt_backend/identity_models.py
+@@ -38,6 +38,7 @@
+         Boolean, default=False, server_default=false(), nullable=False
+     )
+     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
++    is_test_driver: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+ 
+ 
+diff --git a/backend/bmt_backend/security.py b/backend/bmt_backend/security.py
+--- a/backend/bmt_backend/security.py
++++ b/backend/bmt_backend/security.py
+@@ -55,6 +55,8 @@
+ 
+ def development_session_disabled(request: Request, session: Session, player: Player) -> bool:
+     settings = request.app.state.settings
++    if player.is_test_driver and not settings.test_drivers_enabled:
++        return True
+     if settings.environment == "development" and settings.dev_auth_enabled:
+         return False
+     return (
+diff --git a/backend/bmt_backend/auth.py b/backend/bmt_backend/auth.py
+--- a/backend/bmt_backend/auth.py
++++ b/backend/bmt_backend/auth.py
+@@ -64,6 +64,7 @@
+         "display_name": player.display_name,
+         "created_at": player.created_at,
+         "needs_username": player.needs_username,
++        "is_test_driver": player.is_test_driver,
+     }
+ 
+ 
+@@ -98,6 +99,8 @@
+     if identity:
+         player = session.get(Player, identity.player_id)
+     else:
++        if body.subject.startswith("bmt-test-"):
++            raise HTTPException(403, "Register test profiles through the operator tool")
+         name = DEVELOPER_NAME if body.subject == "developer" else body.display_name
+         if body.subject != "developer" and username_key(name) == DEVELOPER_NAME_KEY:
+             raise HTTPException(409, "USERNAME_TAKEN")
+@@ -117,6 +120,8 @@
+             player = session.get(Player, identity.player_id)
+     if player.disabled:
+         raise HTTPException(403, "ACCOUNT_DISABLED")
++    if player.is_test_driver and not settings.test_drivers_enabled:
++        raise HTTPException(403, "TEST_DRIVERS_DISABLED")
+     if body.subject == "developer":
+         player.display_name = DEVELOPER_NAME
+     family = SessionFamily(player_id=player.id, expires_at=now() + settings.refresh_ttl_seconds)
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -15,7 +15,7 @@
+ 
+ 
+ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
+-    from . import admin, browser_auth, resumes, rivalry, runs, tracks
++    from . import admin, browser_auth, resumes, rivalry, runs, test_drivers, tracks
+     from .verifier import GodotVerifier
+ 
+     settings = settings or Settings.from_env()
+@@ -35,6 +35,7 @@
+     app.include_router(runs.router, prefix="/v1")
+     app.include_router(resumes.router, prefix="/v1")
+     app.include_router(rivalry.router, prefix="/v1")
++    app.include_router(test_drivers.router, prefix="/v1")
+ 
+     @app.exception_handler(RequestValidationError)
+     async def invalid_request(request: Request, _error):
+@@ -74,6 +75,7 @@
+             "google_configured": bool(settings.google_client_ids),
+             "google_browser_configured": bool(settings.google_web_client_id),
+             "development_auth": settings.dev_auth_enabled,
++            "test_drivers": settings.test_drivers_enabled,
+             "track_schema": "creator-track-v5",
+             "replay_schema": "bmt-replay-v1",
+             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2"],
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -29,6 +29,7 @@
+     replay_response,
+ )
+ from .tracks import DB, Auth, Key, track_payload
++from .test_population import check_scope, contract_scope
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, tags=["weekly rivalry"])
+ TRACK_COUNT = 5
+@@ -40,6 +41,7 @@
+ class Join(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+     vehicle_id: str = Field(min_length=1, max_length=80)
++    test_population: bool = False
+ 
+ 
+ class Race(BaseModel):
+@@ -70,7 +72,9 @@
+     finishers = (select(Board.version_id.label("version"), func.count(func.distinct(PersonalBest.player_id)).label("drivers"))
+                  .join(PersonalBest, PersonalBest.board_id == Board.id)
+                  .join(Player, Player.id == PersonalBest.player_id)
+-                 .where(Player.disabled.is_(False), Board.manifest["purpose"].as_string().is_(None))
++                 .where(Player.disabled.is_(False), Player.is_test_driver.is_(False),
++                        Board.manifest["purpose"].as_string().is_(None),
++                        Board.manifest["test_population"].as_boolean().is_not(True))
+                  .group_by(Board.version_id).subquery())
+     latest = (select(TrackVersion.track_id.label("track"), func.max(TrackVersion.number).label("number"))
+               .where(TrackVersion.state == "published").group_by(TrackVersion.track_id).subquery())
+@@ -86,7 +90,7 @@
+             and version.manifest.get("vehicles", {}).get(vehicle) == active.get("vehicles", {}).get(vehicle)]
+ 
+ 
+-def skill_score(session, player_id, vehicle, active, timestamp):
++def skill_score(session, player_id, vehicle, active, timestamp, test_population=False):
+     """Median percentage beaten on up to 20 recent comparable verified boards."""
+     own = session.execute(select(PersonalBest, Board).join(Board)
+         .where(PersonalBest.player_id == player_id, Board.vehicle_id == vehicle,
+@@ -95,12 +99,16 @@
+     scores = []
+     config = active["vehicles"][vehicle]
+     for best, board in own:
+-        if (board.manifest.get("purpose") or board.manifest.get("rules_key") != active["rules_key"]
++        if (bool(board.manifest.get("test_population")) != test_population
++                or board.manifest.get("purpose") or board.manifest.get("rules_key") != active["rules_key"]
+                 or board.manifest.get("config_hash") != config["config_hash"]
+                 or board.manifest.get("physics_version") != active["physics_version"]):
+             continue
+         times = (select(PersonalBest.time_ticks).join(Player)
+                  .where(PersonalBest.board_id == board.id, Player.disabled.is_(False)).subquery())
++        if not test_population:
++            times = (select(PersonalBest.time_ticks).join(Player).where(PersonalBest.board_id == board.id,
++                     Player.disabled.is_(False), Player.is_test_driver.is_(False)).subquery())
+         total = session.scalar(select(func.count()).select_from(times))
+         if total < 5:
+             continue
+@@ -110,11 +118,13 @@
+     return round(statistics.median(scores)) if len(scores) >= 3 else None
+ 
+ 
+-def require_member(session, group_id, player_id):
++def require_member(session, group_id, player_id, request=None):
+     member = session.get(RivalryMember, (group_id, player_id))
+     group = session.get(RivalryGroup, group_id)
+     if member is None or group is None:
+         raise HTTPException(404, "Rivalry not found")
++    if request is not None:
++        check_scope(request, group.test_population, session.get(Player, player_id))
+     return group, member
+ 
+ 
+@@ -132,16 +142,16 @@
+ 
+ 
+ def standings_data(session, group):
+-    players = session.execute(select(Player.id, Player.display_name).join(RivalryMember)
++    players = session.execute(select(Player.id, Player.display_name, Player.is_test_driver).join(RivalryMember)
+         .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
+     bests = {(best.slot, best.player_id): best for best in session.scalars(select(RivalryBest).where(RivalryBest.group_id == group.id))}
+-    totals = {pid: {"id": pid, "name": name, "points": 0, "completed": 0} for pid, name in players}
++    totals = {pid: {"id": pid, "name": name, "is_test_driver": synthetic, "points": 0, "completed": 0} for pid, name, synthetic in players}
+     tracks = []
+     for slot, entry in enumerate(group.tracks):
+         rows = []
+-        for pid, name in players:
++        for pid, name, synthetic in players:
+             best = bests.get((slot, pid))
+-            rows.append({"id": pid, "name": name, "ticks": best.time_ticks if best else None,
++            rows.append({"id": pid, "name": name, "is_test_driver": synthetic, "ticks": best.time_ticks if best else None,
+                          "ms": round(best.time_ticks * 1000 / entry["tick_rate"]) if best else None,
+                          "run_id": best.run_id if best else None})
+         rankings(rows, "ticks")
+@@ -171,6 +181,7 @@
+     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
+               "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
+               "vehicle_id": group.vehicle_id, "placement": group.skill_band == -1, "driver_count": len(overall),
++              "test_population": group.test_population,
+               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
+               "points_policy": list(POINTS), "pending_runs": pending}
+     for slot, pinned in enumerate(group.tracks):
+@@ -184,8 +195,10 @@
+ 
+ 
+ @router.get("/rivalry/current")
+-def current(request: Request, session: DB, player: Auth, vehicle_id: str = Query(min_length=1, max_length=80)):
++def current(request: Request, session: DB, player: Auth, vehicle_id: str = Query(min_length=1, max_length=80), test_population: bool = False):
++    check_scope(request, test_population, player)
+     active, contract = active_contract(request, vehicle_id)
++    contract = contract_scope(contract, test_population)
+     start, end, year, week = week_window(now())
+     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
+         RivalryMember.week_start == start, RivalryMember.contract_key == contract))
+@@ -193,16 +206,18 @@
+         return snapshot(session, session.get(RivalryGroup, member.group_id), player.id)
+     previous = session.scalar(select(RivalryMember).join(RivalryGroup)
+         .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
++               RivalryGroup.test_population.is_(test_population),
+                RivalryMember.week_start < start, RivalryMember.acknowledged.is_(False))
+         .order_by(RivalryMember.week_start.desc()).limit(1))
+     if previous:
+         return snapshot(session, session.get(RivalryGroup, previous.group_id), player.id)
+-    return {"state": "not_joined", "week": week, "year": year, "ends_at": end, "server_now": now(),
++    return {"state": "not_joined", "test_population": test_population, "week": week, "year": year, "ends_at": end, "server_now": now(),
+             "eligible_track_count": len(eligible_versions(session, active, vehicle_id)), "required_track_count": TRACK_COUNT}
+ 
+ 
+ @router.post("/rivalry/join")
+ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
++    check_scope(request, payload.test_population, player)
+     body = payload.model_dump()
+     old = replay_response(session, player.id, "rivalry_join", key, body)
+     if old is not None:
+@@ -210,6 +225,7 @@
+     if player.needs_username:
+         raise HTTPException(409, "USERNAME_REQUIRED")
+     active, contract = active_contract(request, payload.vehicle_id)
++    contract = contract_scope(contract, payload.test_population)
+     timestamp = now()
+     start, end, _, _ = week_window(timestamp)
+     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
+@@ -223,7 +239,7 @@
+     if member:
+         return commit_response(session, player.id, "rivalry_join", key, body,
+                                snapshot(session, session.get(RivalryGroup, member.group_id), player.id, timestamp))
+-    skill = skill_score(session, player.id, payload.vehicle_id, active, timestamp)
++    skill = skill_score(session, player.id, payload.vehicle_id, active, timestamp, payload.test_population)
+     band = min(9, skill // 100) if skill is not None else -1
+     lock_id = digest({"week": start, "contract": contract, "band": band})
+     if session.get(OperationState, lock_id) is None:
+@@ -256,6 +272,8 @@
+         slots = []
+         for version in random.sample(eligible, TRACK_COUNT):
+             pinned = board_manifest(version, payload.vehicle_id)
++            if payload.test_population:
++                pinned = {**pinned, "test_population": True}
+             board_id = digest({"version_id": version.id, **pinned})
+             if session.get(Board, board_id) is None:
+                 try:
+@@ -270,6 +288,7 @@
+             entry.pop("manifest", None)
+             slots.append({"version_id": version.id, "board_id": board_id, "tick_rate": pinned["tick_rate"], "entry": entry})
+         group = RivalryGroup(week_start=start, ends_at=end, vehicle_id=payload.vehicle_id,
++                             test_population=payload.test_population,
+                              contract_key=contract, skill_band=band, tracks=slots, member_count=1)
+         session.add(group)
+         session.flush()
+@@ -279,8 +298,8 @@
+ 
+ 
+ @router.get("/rivalry/{group_id}")
+-def view(group_id: str, session: DB, player: Auth):
+-    group, _ = require_member(session, group_id, player.id)
++def view(group_id: str, request: Request, session: DB, player: Auth):
++    group, _ = require_member(session, group_id, player.id, request)
+     return snapshot(session, group, player.id)
+ 
+ 
+@@ -290,10 +309,11 @@
+     old = replay_response(session, player.id, scope, key, body)
+     if old is not None:
+         return old
+-    group, _ = require_member(session, group_id, player.id)
++    group, _ = require_member(session, group_id, player.id, request)
+     if now() >= group.ends_at:
+         raise HTTPException(410, "RIVALRY_WEEK_ENDED")
+     _active, contract = active_contract(request, group.vehicle_id)
++    contract = contract_scope(contract, group.test_population)
+     if contract != group.contract_key:
+         raise HTTPException(409, "RIVALRY_BUILD_CHANGED")
+     pinned = group.tracks[payload.slot]
+@@ -340,11 +360,12 @@
+ 
+ 
+ @router.get("/rivalry/tickets/{ticket_id}/result")
+-def result(ticket_id: str, session: DB, player: Auth):
++def result(ticket_id: str, request: Request, session: DB, player: Auth):
+     own = session.get(RunTicket, ticket_id)
+     binding = session.get(RivalryTicket, ticket_id)
+     if own is None or binding is None or own.player_id != player.id:
+         raise HTTPException(404, "Rivalry result not found")
++    require_member(session, binding.group_id, player.id, request)
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "verified" if binding.outcome else "expired" if now() >= own.expires_at else "upload_pending"
+     return {"status": status, "failure_code": run.failure_code if run else None,
+@@ -352,12 +373,12 @@
+ 
+ 
+ @router.post("/rivalry/{group_id}/continue")
+-def acknowledge(group_id: str, session: DB, player: Auth, key: Key):
++def acknowledge(group_id: str, request: Request, session: DB, player: Auth, key: Key):
+     scope = "rivalry_continue:" + group_id
+     old = replay_response(session, player.id, scope, key, {})
+     if old is not None:
+         return old
+-    group, member = require_member(session, group_id, player.id)
++    group, member = require_member(session, group_id, player.id, request)
+     if snapshot(session, group, player.id)["state"] != "complete":
+         raise HTTPException(409, "RIVALRY_NOT_COMPLETE")
+     member.acknowledged = True
+@@ -366,7 +387,7 @@
+ 
+ @router.get("/rivalry/{group_id}/tracks/{slot}/ghosts/{driver_id}")
+ def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: DB, player: Auth):
+-    require_member(session, group_id, player.id)
++    require_member(session, group_id, player.id, request)
+     if session.get(RivalryMember, (group_id, driver_id)) is None or session.get(Player, driver_id).disabled:
+         raise HTTPException(404, "Rival ghost unavailable")
+     best = session.get(RivalryBest, (group_id, driver_id, slot))
+diff --git a/backend/bmt_backend/rivalry_models.py b/backend/bmt_backend/rivalry_models.py
+--- a/backend/bmt_backend/rivalry_models.py
++++ b/backend/bmt_backend/rivalry_models.py
+@@ -1,5 +1,5 @@
+ """Pinned weekly fields; results are written only by canonical verification."""
+-from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
++from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from .db import Base
+@@ -15,6 +15,7 @@
+     vehicle_id: Mapped[str] = mapped_column(String(80))
+     contract_key: Mapped[str] = mapped_column(String(64))
+     skill_band: Mapped[int] = mapped_column(Integer)
++    test_population: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+     member_count: Mapped[int] = mapped_column(Integer, default=0)
+     tracks: Mapped[list] = mapped_column(JSON)
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -30,6 +30,7 @@
+     replay_response,
+ )
+ from .tracks import DB, Auth, Key, published_version
++from .test_population import check_scope
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, tags=["races"])
+ PINNED_FIELDS = (
+@@ -70,6 +71,7 @@
+     version_id: str = Field(min_length=36, max_length=36)
+     vehicle_id: str = Field(min_length=1, max_length=80)
+     purpose: Literal["race", "creator_test"] = "race"
++    test_population: bool = False
+ 
+ 
+ class SubmitRun(BaseModel):
+@@ -128,6 +130,7 @@
+ 
+ @router.post("/run-tickets", status_code=201)
+ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: Auth, key: Key) -> dict:
++    check_scope(request, payload.test_population, player)
+     body = payload.model_dump()
+     old = replay_response(session, player.id, "ticket", key, body)
+     if old is not None:
+@@ -159,6 +162,8 @@
+         )
+     if payload.purpose == "creator_test":
+         pinned = {**pinned, "purpose": "creator_test", "laps": 1}
++    if payload.test_population:
++        pinned = {**pinned, "test_population": True}
+     board_id = digest({"version_id": version.id, **pinned})
+     board = session.get(Board, board_id)
+     if board is None:
+@@ -210,6 +215,7 @@
+     if ticket.expires_at <= now():
+         raise HTTPException(410, "Run ticket expired")
+     board = session.get(Board, ticket.board_id)
++    check_scope(request, bool(board.manifest.get("test_population")), player)
+     if board.manifest.get("purpose") == "creator_test":
+         repeated = session.scalar(select(Run).where(Run.player_id == player.id,
+             Run.board_id == ticket.board_id, Run.replay_hash == body["replay_hash"])
+@@ -246,6 +252,7 @@
+     run = session.scalar(select(Run).where(Run.id == run_id, Run.player_id == player.id).with_for_update())
+     if run is None:
+         raise HTTPException(404, "Run not found")
++    check_scope(request, bool(session.get(Board, run.board_id).manifest.get("test_population")), player)
+     if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch"):
+         board = session.get(Board, run.board_id)
+         try:
+@@ -266,7 +273,7 @@
+ 
+ def public_board(session, board_id: str) -> Board:
+     board = session.get(Board, board_id)
+-    if board is None or board.manifest.get("purpose") == "creator_test":
++    if board is None or board.manifest.get("purpose") == "creator_test" or board.manifest.get("test_population"):
+         raise HTTPException(404, "Leaderboard not found")
+     published_version(session, board.version_id)
+     return board
+@@ -282,7 +289,7 @@
+             PersonalBest.achieved_at,
+         )
+         .join(Player, Player.id == PersonalBest.player_id)
+-        .where(PersonalBest.board_id == board_id, Player.disabled.is_(False))
++        .where(PersonalBest.board_id == board_id, Player.disabled.is_(False), Player.is_test_driver.is_(False))
+     )
+ 
+ 
+diff --git a/backend/bmt_backend/tracks.py b/backend/bmt_backend/tracks.py
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -491,9 +491,10 @@
+ def own_rating(version_id: str, session: DB, player: Auth) -> dict:
+     version = published_version(session, version_id)
+     rating = session.get(Rating, (version_id, player.id))
+-    eligible = session.get(Track, version.track_id).owner_id != player.id and bool(session.scalar(
++    eligible = not player.is_test_driver and session.get(Track, version.track_id).owner_id != player.id and bool(session.scalar(
+         select(PersonalBest.player_id).join(Board).where(
+-            Board.version_id == version_id, PersonalBest.player_id == player.id
++            Board.version_id == version_id, PersonalBest.player_id == player.id,
++            Board.manifest["test_population"].as_boolean().is_not(True)
+         ).limit(1)
+     ))
+     return {"score": rating.score if rating else 0, "eligible": eligible}
+@@ -511,6 +512,8 @@
+ 
+ @router.put("/track-versions/{version_id}/rating")
+ def rate(version_id: str, payload: Vote, session: DB, player: Auth, key: Key) -> dict:
++    if player.is_test_driver:
++        raise HTTPException(403, "Test drivers cannot rate tracks")
+     scope, body = f"rating:{version_id}", payload.model_dump()
+     old = replay_response(session, player.id, scope, key, body)
+     if old is not None:
+@@ -527,7 +530,8 @@
+     if not session.scalar(
+         select(PersonalBest.player_id)
+         .join(Board)
+-        .where(Board.version_id == version_id, PersonalBest.player_id == player.id)
++        .where(Board.version_id == version_id, PersonalBest.player_id == player.id,
++               Board.manifest["test_population"].as_boolean().is_not(True))
+         .limit(1)
+     ):
+         raise HTTPException(403, "Complete a verified race on this version before rating")
+diff --git a/backend/bmt_backend/migrations/env.py b/backend/bmt_backend/migrations/env.py
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -6,6 +6,7 @@
+     identity_models,
+     resume_models,
+     rivalry_models,
++    test_driver_models,
+     track_models,
+ )
+ from bmt_backend.db import Base
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -21,7 +21,7 @@
+         "track_compiler",
+         "track_document",
+     ),
+-    "input": ("drive_frame", "route_driver"),
++    "input": ("drive_frame", "route_driver", "profiled_route_driver"),
+     "persistence": ("track_library",),
+     "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry", "personal_ghost_run"),
+     "track": (
+@@ -63,7 +63,7 @@
+     if destination.exists() and any(destination.iterdir()):
+         raise ValueError("Destination must be absent or empty; existing files are never removed")
+     files = [source / folder / (name + ".gd") for folder, names in SCRIPTS.items() for name in names]
+-    runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd")]
++    runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd", "generate_test_driver.gd")]
+     files.extend(runners)
+     # TrackTheme preloads this resource even in the headless canonical project.
+     files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-04 artificial test drivers require migration `0012_test_drivers` and matching API/worker/verifier artifacts. They are explicitly gated by `BMT_TEST_DRIVERS_ENABLED=true` plus development authentication. Production configuration rejects this flag. The local PC launcher accepts `BackendStart -TestDrivers`; fill/fleet/tick/watch tools run through normal verified race uploads into isolated test boards and groups. No existing service or production rollout was performed. See [setup, actual verification and limits](../../docs/TEST_DRIVERS.md).
++
+ 2026-10-04 Weekly Rivalry requires migration `0011_weekly_rivalry` and matching
+ API/worker images. The standalone verifier now includes derived ghost recording
+ and the pure bridge elevation sampler. Keep the existing rules v18 / physics
+@@ -21,7 +23,7 @@
+ The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying still requires stopped writers and `--offline`. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
+ 
+ The October reliability fixes require migration to the current Alembic head
+-(currently `0011_weekly_rivalry`, including `0008_review_reliability`,
++(currently `0012_test_drivers`, including `0011_weekly_rivalry`, `0008_review_reliability`,
+ `0009_track_lifecycle` and `0010_archive_drafts`) and a matching rules-v18 canonical verifier image. Keep historical boards pinned; an
+ old in-flight contract fails explicitly instead of being rescored with new rules.
+ 
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -8,10 +8,17 @@
+ var snapshot_scope: String = ""
+ var result_ticket: String = ""
+ var result_state: String = ""
++var test_population: bool = false
+ var _generation: int = 0
+ 
+ func scope() -> String:
+-	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected
++	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected+("/test" if test_population else "/real")
++
++func set_test_population(enabled: bool) -> void:
++	if enabled == test_population: return
++	test_population = enabled
++	reset()
++	changed.emit()
+ 
+ func reset() -> void:
+ 	_generation += 1
+@@ -24,12 +31,14 @@
+ 
+ static func valid_snapshot(value: Dictionary) -> bool:
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
++	if value.has("test_population") and not value.test_population is bool: return false
+ 	if value.get("state") == "not_joined": return value.has_all(["week","ends_at","server_now"])
+ 	if not value.has_all(["group_id","self_id","week","tracks","standings"]): return false
+ 	if not value.tracks is Array or value.tracks.size() != 5 or not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
+ 	var self_found: bool = false
+ 	for row: Variant in value.standings:
+ 		if not row is Dictionary or not row.has_all(["id","name","points","rank"]): return false
++		if row.has("is_test_driver") and not row.is_test_driver is bool: return false
+ 		if row.id == value.self_id: self_found = true
+ 	for track: Variant in value.tracks:
+ 		if not track is Dictionary or not track.has_all(["board_id","entry","entries"]) or not track.get("entry") is Dictionary or not track.get("entries") is Array: return false
+@@ -57,11 +66,11 @@
+ 		error = "Sign in to join Weekly Rivalry."
+ 		changed.emit()
+ 		return
+-	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode())
++	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode()+("&test_population=true" if test_population else ""))
+ 
+ func join() -> void:
+ 	if busy: return
+-	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected})
++	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population})
+ 
+ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
+ 	busy = true
+diff --git a/game/race/weekly_rivalry.gd b/game/race/weekly_rivalry.gd
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -14,6 +14,7 @@
+ var last_result: Dictionary = {}
+ var native_cache: Dictionary = {}
+ var sample: bool = false
++var test_population: bool = false
+ var server_standings: Array[Dictionary] = []
+ var group_id: String = ""
+ var status: String = "not_joined"
+@@ -34,6 +35,7 @@
+ 
+ func apply_snapshot(value: Dictionary) -> void:
+ 	sample = false
++	test_population = bool(value.get("test_population",false))
+ 	status = str(value.get("state","not_joined"))
+ 	week = int(value.get("week",0))
+ 	group_id = str(value.get("group_id",""))
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -9,6 +9,7 @@
+ signal refresh_requested
+ signal continue_requested
+ signal retry_requested
++signal test_population_requested(enabled: bool)
+ var model: WeeklyRivalry
+ var section: String = "overview"
+ var selected: int = 0
+@@ -16,6 +17,8 @@
+ var error: String = ""
+ var signed_in: bool = false
+ var pending_result: bool = false
++var test_drivers_available: bool = false
++var test_population: bool = false
+ var ghost_choice: int = 0
+ var clock_label: Label
+ const Badge = preload("res://ui/biome_badge.gd")
+@@ -72,9 +75,20 @@
+ 	elif section == "detail": _detail(body)
+ 	elif section == "standings": _standings(body)
+ 	else: _overview(body)
+-	var foot := MenuStyle.label("CONCEPT PREVIEW · Sample drivers and results" if model.sample else ("Placement group · Building your pace profile" if model.placement else "Matched by verified pace")+"   ·   "+VehicleCatalog.title(model.vehicle_id),14,true)
++	var footer := HBoxContainer.new()
++	main.add_child(footer)
++	var notice: String = "TEST RIVALRY · Artificial drivers · Verified races" if model.test_population else ("Placement group · Building your pace profile" if model.placement else "Matched by verified pace")+"   ·   "+VehicleCatalog.title(model.vehicle_id)
++	var foot := MenuStyle.label("CONCEPT PREVIEW · Sample drivers and results" if model.sample else notice,14,true)
+ 	foot.name = "RivalryDataNotice"
+-	main.add_child(foot)
++	foot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	footer.add_child(foot)
++	if test_drivers_available:
++		var toggle := MenuStyle.button("TEST RIVALS: ON" if test_population else "TEST RIVALS: OFF",func() -> void: test_population_requested.emit(not test_population))
++		toggle.name = "RivalryTestPopulation"
++		toggle.custom_minimum_size = Vector2(188,48)
++		toggle.add_theme_font_size_override("font_size",15)
++		toggle.disabled = busy or pending_result
++		footer.add_child(toggle)
+ 
+ func _card(parent: Control, theme_id: String = "", padding: int = 20) -> VBoxContainer:
+ 	var panel := PanelContainer.new()
+@@ -168,14 +182,17 @@
+ 	driver.autowrap_mode = TextServer.AUTOWRAP_OFF
+ 	driver.clip_text = true
+ 	driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	if row.get("is_test_driver",false): _copy(line,"TEST",12,MenuStyle.MUTED)
+ 	_copy(line,value,18 if not compact else 16,color)
+ 
+ func _gaps(parent: Control) -> void:
+ 	var gap: Dictionary = model.overall_gaps()
++	if gap.own.get("rank") == null:
++		_copy(parent,"Set a time to enter the standings.",18,MenuStyle.MUTED)
++		return
+ 	if not gap.ahead.is_empty(): _copy(parent,"%d pts to #%d" % [int(gap.ahead.points)-int(gap.own.points),int(gap.ahead.rank)],22,MenuStyle.MUTED)
+ 	if not gap.behind.is_empty(): _copy(parent,"%d pts ahead of #%d" % [int(gap.own.points)-int(gap.behind.points),int(gap.behind.rank)],22,MenuStyle.MUTED)
+-	if gap.own.get("rank") == null: _copy(parent,"Set a time to enter the standings.",18,MenuStyle.MUTED)
+-	elif gap.ahead.is_empty(): _copy(parent,"You're leading the rivalry",22,MenuStyle.POSITIVE)
++	if gap.ahead.is_empty(): _copy(parent,"You're leading the rivalry",22,MenuStyle.POSITIVE)
+ 
+ func _empty(parent: Control) -> void:
+ 	var hero: VBoxContainer = _card(parent,"winter",28)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -506,7 +506,8 @@
+ 	if is_instance_valid(menu_body): menu_body.position.x = 0.0
+ 	menu_drag_offset = 0.0
+ 	menu_neighbor_direction = 0
+-	for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
++	for neighbor: Dictionary in menu_neighbors.values():
++		if is_instance_valid(neighbor.body): neighbor.body.hide()
+ 
+ func _drag_menu_edge(distance: float) -> void:
+ 	if not is_instance_valid(menu_body): return
+@@ -729,7 +730,9 @@
+ 	_navigation_generation += 1
+ 	_finish_preview_thread()
+ 	active_profile = scope
+-	if rivalry != null: rivalry.reset()
++	if rivalry != null:
++		rivalry.test_population = false
++		rivalry.reset()
+ 	if scope.is_empty():
+ 		records = guest_records
+ 		library = guest_library
+@@ -921,6 +924,17 @@
+ 	page.error = rivalry.error
+ 	page.signed_in = online.client.signed_in()
+ 	page.pending_result = rivalry_result_pending
++	page.test_drivers_available = OS.is_debug_build() and online.client.signed_in() and bool(online.capabilities.get("test_drivers",false))
++	page.test_population = rivalry.test_population
++	page.test_population_requested.connect(func(enabled: bool) -> void:
++		if is_instance_valid(game):
++			remove_child(game)
++			game.queue_free()
++			game = null
++			rivalry_racing = false
++		rivalry_section = "overview"
++		rivalry.set_test_population(enabled)
++		rivalry.refresh())
+ 	page.section_requested.connect(func(section: String) -> void:
+ 		if is_instance_valid(game):
+ 			remove_child(game)
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -139,10 +139,11 @@
+             session.commit()
+             return True
+         player = session.get(Player, run.player_id)
+-        if player.disabled:
++        test_disabled = (player.is_test_driver or pinned_manifest.get("test_population")) and not settings.test_drivers_enabled
++        if player.disabled or test_disabled:
+             run.status, run.failure_code, run.finished_at, run.lease_token = (
+                 "rejected",
+-                "account_disabled",
++                "test_population_disabled" if test_disabled else "account_disabled",
+                 now(),
+                 None,
+             )
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -16,6 +16,11 @@
+     [switch]$QuickValidation,
+     [switch]$Graphical,
+     [switch]$AI,
++    [switch]$TestDrivers,
++    [switch]$InstantDrivers,
++    [string]$DriverPlan = '',
++    [int]$DriverCount = 0,
++    [int]$DriverSeed = 27,
+     [int]$CaptureTick = 0,
+     [ValidateRange(1, 7200)]
+     [int]$CommandTimeoutSeconds = 300
+@@ -352,8 +357,29 @@
+         }
+         $env:BMT_GODOT_BIN = $script:godot
+         $env:BMT_GAME_PROJECT = $projectRoot
++        if ($Action.StartsWith('BackendDrivers')) {
++            if (-not $DriverPlan) { throw 'Pass -DriverPlan with a persistent JSON state path.' }
++            # Read the existing private operator configuration without printing it.
++            $driverEnvPath = Join-Path $repoRoot '.tools/bmt-pc.env'
++            if (-not $env:BMT_DEV_AUTH_KEY -and (Test-Path -LiteralPath $driverEnvPath)) {
++                foreach ($driverLine in Get-Content -LiteralPath $driverEnvPath) {
++                    if ($driverLine.StartsWith('BMT_DEV_AUTH_KEY=')) { $env:BMT_DEV_AUTH_KEY = $driverLine.Substring(17) }
++                }
++            }
++            $driverCommand = $Action.Substring('BackendDrivers'.Length).ToLowerInvariant()
++            $driverArguments = @('-m','bmt_backend.test_population_tool',$driverCommand,'--state',$DriverPlan,'--seed',[string]$DriverSeed)
++            if ($DriverCount -gt 0) { $driverArguments += @('--count',[string]$DriverCount) }
++            if ($InstantDrivers) { $driverArguments += '--instant' }
++            & $backendPython @driverArguments
++            if ($LASTEXITCODE -ne 0) { throw 'Test-driver tool failed. The saved plan can be resumed.' }
++            return
++        }
+         switch ($Action) {
+-            'BackendStart' { & $backendPython (Join-Path $repoRoot 'backend/deploy/pc_development.py') start }
++            'BackendStart' {
++                $startArguments = @((Join-Path $repoRoot 'backend/deploy/pc_development.py'), 'start')
++                if ($TestDrivers) { $startArguments += '--test-drivers' }
++                & $backendPython @startArguments
++            }
+             'BackendStop' { & $backendPython (Join-Path $repoRoot 'backend/deploy/pc_development.py') stop }
+             'BackendTestLifecycle' { & $backendPython -m pytest (Join-Path $repoRoot 'backend/tests/test_cloud_client.py') -q }
+             'BackendTest' {
+diff --git a/backend/deploy/compose.pc.yaml b/backend/deploy/compose.pc.yaml
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -8,6 +8,7 @@
+   environment: &environment
+     BMT_ENVIRONMENT: development
+     BMT_DEV_AUTH_ENABLED: "true"
++    BMT_TEST_DRIVERS_ENABLED: ${BMT_TEST_DRIVERS_ENABLED:-false}
+     BMT_DEV_AUTH_KEY: ${BMT_DEV_AUTH_KEY:?Run BackendStart to generate local configuration}
+     BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD}@db:5432/bmt
+     BMT_PUBLIC_BASE_URL: http://127.0.0.1:18181
+diff --git a/backend/deploy/pc_development.py b/backend/deploy/pc_development.py
+--- a/backend/deploy/pc_development.py
++++ b/backend/deploy/pc_development.py
+@@ -61,10 +61,14 @@
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("action", choices=("start", "stop"))
++    parser.add_argument("--test-drivers", action="store_true", help="Enable the isolated artificial test population")
+     args = parser.parse_args()
+     if sys.platform != "win32":
+         raise RuntimeError("This launcher configures the Windows PC; use compose.pc.yaml directly on Linux")
+     config = local_configuration()
++    if args.test_drivers:
++        # Scope this opt-in to the isolated PC Compose process, never production.
++        os.environ["BMT_TEST_DRIVERS_ENABLED"] = "true"
+     command = [
+         "wsl",
+         "-d",
+diff --git a/docs/schemas/weekly-rivalry-v1.schema.json b/docs/schemas/weekly-rivalry-v1.schema.json
+--- a/docs/schemas/weekly-rivalry-v1.schema.json
++++ b/docs/schemas/weekly-rivalry-v1.schema.json
+@@ -8,6 +8,7 @@
+       "required": ["state", "week", "year", "ends_at", "server_now", "eligible_track_count", "required_track_count"],
+       "properties": {
+         "state": {"const": "not_joined"},
++        "test_population": {"type": "boolean", "default": false},
+         "week": {"type": "integer", "minimum": 1, "maximum": 53},
+         "year": {"type": "integer"},
+         "ends_at": {"type": "integer"},
+@@ -21,6 +22,7 @@
+       "required": ["state", "group_id", "self_id", "week", "year", "vehicle_id", "ends_at", "server_now", "remaining_seconds", "driver_count", "group_forming", "placement", "points_policy", "pending_runs", "tracks", "standings"],
+       "properties": {
+         "state": {"enum": ["active", "settling", "complete"]},
++        "test_population": {"type": "boolean", "default": false},
+         "group_id": {"type": "string", "minLength": 1, "maxLength": 36},
+         "self_id": {"type": "string", "minLength": 1, "maxLength": 36},
+         "week": {"type": "integer", "minimum": 1, "maximum": 53},
+@@ -74,6 +76,7 @@
+       "properties": {
+         "id": {"type": "string", "minLength": 1, "maxLength": 36},
+         "name": {"type": "string"},
++        "is_test_driver": {"type": "boolean", "default": false},
+         "rank": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+         "points": {"type": "integer", "minimum": 0, "maximum": 150},
+         "completed": {"type": "integer", "minimum": 0, "maximum": 5}
+diff --git a/docs/WEEKLY_RIVALRY.md b/docs/WEEKLY_RIVALRY.md
+--- a/docs/WEEKLY_RIVALRY.md
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -89,4 +89,3 @@
+ ## Explicit development populations ? 2026-10-04
+ 
+ The owner subsequently approved artificial test drivers. Normal rivalry membership still uses real entrants. Separately configured, clearly marked test rivalries can use persistent artificial profiles that drive the canonical simulation and upload genuine recordings through verification. Their boards, memberships, public-population exclusions, scheduler and migration `0012_test_drivers` are described in [TEST_DRIVERS.md](TEST_DRIVERS.md).
+-
+diff --git a/backend/bmt_backend/test_population.py b/backend/bmt_backend/test_population.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_population.py
+@@ -0,0 +1,24 @@
++"""Explicit development scope. Defaults always select the real population."""
++
++from fastapi import HTTPException
++
++from .track_models import digest
++
++
++def require_enabled(request):
++    settings = request.app.state.settings
++    if not (
++        settings.test_drivers_enabled and settings.environment == "development" and settings.dev_auth_enabled
++    ):
++        raise HTTPException(404, "TEST_DRIVERS_DISABLED")
++
++
++def check_scope(request, enabled, player=None):
++    if enabled:
++        require_enabled(request)
++    elif player is not None and player.is_test_driver:
++        raise HTTPException(403, "TEST_DRIVER_REQUIRES_TEST_POPULATION")
++
++
++def contract_scope(contract, enabled):
++    return digest({"contract": contract, "test_population": True}) if enabled else contract
+diff --git a/backend/bmt_backend/test_driver_models.py b/backend/bmt_backend/test_driver_models.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_driver_models.py
+@@ -0,0 +1,17 @@
++"""Persistent, operator-created development profiles; never competitive identities."""
++
++from sqlalchemy import JSON, ForeignKey, Integer, String
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++from .track_models import now
++
++
++class TestDriverProfile(Base):
++    __tablename__ = "test_driver_profiles"
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    fleet: Mapped[str] = mapped_column(String(64), index=True)
++    ordinal: Mapped[int] = mapped_column(Integer)
++    subject: Mapped[str] = mapped_column(String(255), unique=True)
++    traits: Mapped[dict] = mapped_column(JSON)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
+diff --git a/backend/bmt_backend/test_drivers.py b/backend/bmt_backend/test_drivers.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_drivers.py
+@@ -0,0 +1,211 @@
++"""Development operator tools. These routes create identities, never race results."""
++
++from __future__ import annotations
++
++import hashlib
++import random
++import secrets
++import uuid
++from typing import Annotated
++
++from fastapi import APIRouter, Depends, Header, HTTPException, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import select, update
++from sqlalchemy.exc import IntegrityError
++
++from .identity_models import Identity, Player
++from .middleware import ParsedJSONRoute
++from .rivalry import GROUP_CAPACITY, active_contract, eligible_versions, require_member, snapshot
++from .rivalry_models import RivalryGroup, RivalryMember
++from .test_driver_models import TestDriverProfile
++from .test_population import require_enabled
++from .track_models import Track, now
++from .tracks import DB, Auth, track_payload
++
++router = APIRouter(route_class=ParsedJSONRoute, include_in_schema=False)
++PROFILE_VERSION = "test-driver-1"
++THEMES = ("pine", "winter", "desert", "night_city", "storm")
++
++
++def operator(request: Request, x_dev_auth_key: Annotated[str | None, Header()] = None):
++    require_enabled(request)
++    if x_dev_auth_key is None or not secrets.compare_digest(
++        x_dev_auth_key.encode(), request.app.state.settings.dev_auth_key.encode()
++    ):
++        raise HTTPException(401, "INVALID_DEVELOPMENT_KEY")
++
++
++Operator = Annotated[None, Depends(operator)]
++
++
++@router.get("/dev/test-drivers/tracks")
++def tracks(vehicle_id: str, request: Request, session: DB, _operator: Operator):
++    active, _ = active_contract(request, vehicle_id)
++    entries = []
++    for version in eligible_versions(session, active, vehicle_id):
++        track = session.get(Track, version.track_id)
++        entries.append(
++            track_payload(
++                version,
++                track,
++                session.get(Player, track.owner_id).display_name,
++                request.app.state.settings.public_base_url,
++            )
++        )
++    return {"manifest": active, "server_now": now(), "tracks": entries}
++
++
++class Fleet(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++    seed: int = Field(ge=0, le=2147483647)
++    count: int = Field(default=14, ge=1, le=200)
++    skill_min: float = Field(default=0.0, ge=0.0, le=1.0)
++    skill_max: float = Field(default=1.0, ge=0.0, le=1.0)
++
++
++class Fill(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++    group_id: str = Field(min_length=36, max_length=36)
++    total_drivers: int = Field(default=14, ge=2, le=GROUP_CAPACITY)
++
++
++def profile(seed, ordinal, count, minimum, maximum):
++    identity = f"bmt-test-{seed}-{ordinal}"
++    stable_seed = int(hashlib.sha256(identity.encode()).hexdigest()[:8], 16) & 0x7FFFFFFF
++    rng = random.Random(stable_seed)
++    skill = minimum + (maximum - minimum) * ((ordinal + rng.uniform(0.15, 0.85)) / count)
++    first = ("Ari", "Nova", "Kai", "Remi", "Rin", "Eden", "Sol", "Kit", "Ash", "Lumi")
++    last = ("Vale", "Reed", "Stone", "Rowan", "Lane", "Quinn", "Lake", "Hart", "Fox", "Wren")
++    name = f"{rng.choice(first)} {rng.choice(last)} T{seed % 10000:04d}-{ordinal + 1:03d}"
++    traits = {
++        "version": PROFILE_VERSION,
++        "seed": stable_seed,
++        "skill": round(skill, 5),
++        "consistency": round(rng.uniform(0.35, 0.95), 4),
++        "aggression": round(rng.uniform(0.15, 0.85), 4),
++        "activity": round(rng.uniform(0.25, 1.0), 4),
++        "utc_hour": rng.randrange(24),
++        "learning": round(rng.uniform(0.3, 1.0), 4),
++        "strengths": {theme: round(rng.uniform(-0.07, 0.07), 4) for theme in THEMES},
++    }
++    return identity, name, traits
++
++
++def fleet_rows(session, fleet):
++    rows = session.execute(
++        select(TestDriverProfile, Player)
++        .join(Player)
++        .where(TestDriverProfile.fleet == fleet)
++        .order_by(TestDriverProfile.ordinal)
++    ).all()
++    return [
++        {
++            "player_id": p.id,
++            "subject": profile.subject,
++            "display_name": p.display_name,
++            "is_test_driver": True,
++            "traits": profile.traits,
++        }
++        for profile, p in rows
++    ]
++
++
++@router.post("/dev/test-drivers/fleets")
++def create_fleet(payload: Fleet, request: Request, session: DB, _operator: Operator):
++    if payload.skill_min > payload.skill_max:
++        raise HTTPException(422, "Invalid skill range")
++    fleet = f"test-fleet-{payload.seed}"
++    for ordinal in range(payload.count):
++        subject, name, traits = profile(
++            payload.seed, ordinal, payload.count, payload.skill_min, payload.skill_max
++        )
++        existing = session.scalar(select(TestDriverProfile).where(TestDriverProfile.subject == subject))
++        if existing:
++            if existing.traits != traits:
++                raise HTTPException(409, "FLEET_PARAMETERS_CHANGED: use a new seed")
++            continue
++        # A reserved subject cannot silently convert a real account into a bot.
++        if session.scalar(
++            select(Identity.id).where(Identity.provider == "development", Identity.subject == subject)
++        ):
++            raise HTTPException(409, "TEST_IDENTITY_ALREADY_USED")
++        try:
++            with session.begin_nested():
++                p = Player(
++                    id=str(uuid.uuid5(uuid.NAMESPACE_URL, subject)), display_name=name, is_test_driver=True
++                )
++                session.add(p)
++                session.flush()
++                session.add(Identity(player_id=p.id, provider="development", subject=subject))
++                session.add(
++                    TestDriverProfile(
++                        player_id=p.id, fleet=fleet, ordinal=ordinal, subject=subject, traits=traits
++                    )
++                )
++                session.flush()
++        except IntegrityError:
++            existing = session.scalar(select(TestDriverProfile).where(TestDriverProfile.subject == subject))
++            if existing is None or existing.traits != traits:
++                raise HTTPException(409, "TEST_PROFILE_CONFLICT") from None
++    rows = fleet_rows(session, fleet)
++    if len(rows) != payload.count:
++        raise HTTPException(409, "FLEET_PARAMETERS_CHANGED: use a new seed")
++    session.commit()
++    return {"fleet": fleet, "profiles": rows}
++
++
++@router.get("/dev/test-drivers/fleets/{fleet}")
++def get_fleet(fleet: str, session: DB, _operator: Operator):
++    return {"fleet": fleet, "profiles": fleet_rows(session, fleet)}
++
++
++@router.post("/dev/test-drivers/fleets/{fleet}/fill")
++def fill(fleet: str, payload: Fill, request: Request, session: DB, player: Auth, _operator: Operator):
++    group, _ = require_member(session, payload.group_id, player.id, request)
++    if not group.test_population:
++        raise HTTPException(403, "Only test rivalries can be filled")
++    profiles = session.scalars(
++        select(TestDriverProfile)
++        .join(Player)
++        .where(TestDriverProfile.fleet == fleet, Player.disabled.is_(False))
++        .order_by(TestDriverProfile.ordinal)
++    ).all()
++    # Normal joins lock player before group. Keep that same order here so
++    # fixture fills and concurrent matcher joins cannot form a lock cycle.
++    for item in profiles:
++        session.scalar(select(Player).where(Player.id == item.player_id).with_for_update())
++    group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == group.id).with_for_update())
++    if group.ends_at <= now():
++        raise HTTPException(410, "RIVALRY_WEEK_ENDED")
++    for item in profiles:
++        if group.member_count >= payload.total_drivers:
++            break
++        existing = session.scalar(
++            select(RivalryMember).where(
++                RivalryMember.player_id == item.player_id,
++                RivalryMember.week_start == group.week_start,
++                RivalryMember.contract_key == group.contract_key,
++            )
++        )
++        if existing:
++            continue
++        reserved = session.execute(
++            update(RivalryGroup)
++            .where(RivalryGroup.id == group.id, RivalryGroup.member_count < payload.total_drivers)
++            .values(member_count=RivalryGroup.member_count + 1)
++        ).rowcount
++        if reserved:
++            session.add(
++                RivalryMember(
++                    group_id=group.id,
++                    player_id=item.player_id,
++                    week_start=group.week_start,
++                    contract_key=group.contract_key,
++                    skill=None,
++                )
++            )
++            session.flush()
++            session.refresh(group)
++    result = snapshot(session, group, player.id)
++    session.commit()
++    return result
+diff --git a/backend/bmt_backend/test_driver_generator.py b/backend/bmt_backend/test_driver_generator.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_driver_generator.py
+@@ -0,0 +1,72 @@
++"""Bounded offline controller process, separate from the service verifier API."""
++
++import json
++import re
++import subprocess
++import tempfile
++from pathlib import Path
++
++from .verifier import MAX_REQUEST_BYTES, GodotVerifier
++
++
++class DriverDidNotFinish(RuntimeError):
++    pass
++
++
++def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0):
++    verifier = GodotVerifier(settings)
++    verifier._check_engine()
++    with tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
++        directory = Path(folder)
++        source, output = directory / "input.json", directory / "output.json"
++        source.write_text(
++            json.dumps(
++                {
++                    "document": document,
++                    "vehicle_id": vehicle_id,
++                    "traits": traits,
++                    "attempt": attempt,
++                    "pace_scale": pace_scale,
++                },
++                allow_nan=False,
++            ),
++            encoding="utf-8",
++        )
++        with (directory / "engine.log").open("wb") as log:
++            process = subprocess.run(
++                [
++                    verifier.binary,
++                    "--headless",
++                    "--path",
++                    str(verifier.project),
++                    "--script",
++                    "res://backend/generate_test_driver.gd",
++                    "--",
++                    f"--input={source}",
++                    f"--output={output}",
++                ],
++                stdin=subprocess.DEVNULL,
++                stdout=log,
++                stderr=subprocess.STDOUT,
++                timeout=verifier.timeout,
++                check=False,
++            )
++        log_path = directory / "engine.log"
++        if log_path.stat().st_size > 65536 or re.search(
++            r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:",
++            log_path.read_text(encoding="utf-8", errors="replace"),
++            re.IGNORECASE,
++        ):
++            raise RuntimeError("Test controller reported an engine error")
++        if not output.is_file() or output.stat().st_size > MAX_REQUEST_BYTES:
++            raise RuntimeError("Test controller returned no bounded recording")
++        response = json.loads(output.read_text(encoding="utf-8"))
++        if process.returncode == 2 and response.get("ok") is False:
++            raise DriverDidNotFinish(str(response.get("error", "Driver did not finish")))
++        if (
++            process.returncode != 0
++            or response.get("ok") is not True
++            or not isinstance(response.get("result"), dict)
++        ):
++            raise RuntimeError("Test controller failed")
++        return response["result"]
+diff --git a/backend/bmt_backend/test_population_tool.py b/backend/bmt_backend/test_population_tool.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_population_tool.py
+@@ -0,0 +1,531 @@
++"""Fill a development rivalry or seed a verified test field, then schedule attempts.
++
++State files contain profiles, recordings and progress, never authentication keys.
++Every attempt uses HTTP tickets/uploads and the existing verification worker.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import random
++import time
++from pathlib import Path
++from urllib.parse import urlparse
++
++import requests
++
++from .config import Settings
++from .contracts import build_contract
++from .test_driver_generator import DriverDidNotFinish, generate
++from .track_models import digest
++
++SCHEMA = "test-population-plan-v1"
++
++
++def acquire_plan_lock(path):
++    """OS-released advisory lock, so a crash never leaves a stale lock behind."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    stream = path.with_suffix(path.suffix + ".lock").open("a+b")
++    if stream.tell() == 0:
++        stream.write(b"0")
++        stream.flush()
++    stream.seek(0)
++    try:
++        if os.name == "nt":
++            import msvcrt
++
++            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
++        else:
++            import fcntl
++
++            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++    except OSError:
++        stream.close()
++        raise RuntimeError("Another scheduler is using this plan") from None
++    return stream
++
++
++def atomic_save(path, value):
++    path = Path(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(json.dumps(value, indent=2, allow_nan=False), encoding="utf-8")
++    os.replace(temporary, path)
++
++
++class API:
++    def __init__(self, url, key):
++        parsed = urlparse(url)
++        if (
++            parsed.username
++            or parsed.password
++            or parsed.query
++            or parsed.fragment
++            or not (
++                parsed.scheme == "https"
++                or parsed.scheme == "http"
++                and parsed.hostname in ("127.0.0.1", "localhost")
++            )
++        ):
++            raise ValueError("Use HTTPS or an explicit local loopback development service")
++        if not key:
++            raise ValueError("Set BMT_DEV_AUTH_KEY in the process environment")
++        self.url, self.key, self.tokens = url.rstrip("/"), key, {}
++        self.http = requests.Session()
++        bootstrap = self.call("GET", "/bootstrap")
++        if bootstrap.get("test_drivers") is not True or bootstrap.get("development_auth") is not True:
++            raise ValueError("Service must explicitly enable development auth and test drivers")
++
++    def call(self, method, path, body=None, subject=None, idempotency=None, operator=False):
++        headers = {}
++        if operator:
++            headers["X-Dev-Auth-Key"] = self.key
++        if subject:
++            if subject not in self.tokens or self.tokens[subject][1] <= time.time() + 30:
++                login = self.call(
++                    "POST", "/auth/development", {"subject": subject, "display_name": subject}, operator=True
++                )
++                self.tokens[subject] = (login["access_token"], time.time() + login["expires_in"])
++            headers["Authorization"] = "Bearer " + self.tokens[subject][0]
++        if idempotency:
++            headers["Idempotency-Key"] = idempotency
++        response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120)
++        if not response.ok:
++            # Do not print the response request: it contains credentials.
++            try:
++                detail = response.json().get("detail", "Request failed")
++            except ValueError:
++                detail = "Service unavailable"
++            raise RuntimeError(f"HTTP {response.status_code}: {str(detail)[:200]}")
++        return response.json()
++
++
++def schedule(traits, week_start, ends_at, instant=False):
++    """Local UTC activity window, quiet profiles and diminishing attempt budgets."""
++    rng = random.Random(traits["seed"] ^ week_start)
++    activity = traits["activity"]
++    count = 1 + int(activity * 4)
++    result = []
++    for attempt in range(count):
++        if instant and attempt == 0:
++            result.append(week_start)
++            continue
++        day = rng.randrange(7)
++        hour = (traits["utc_hour"] + rng.uniform(-2.0, 2.0)) % 24
++        result.append(min(ends_at - 60, int(week_start + day * 86400 + hour * 3600)))
++    return sorted(set(result))
++
++
++def add_jobs(plan, profile, entries, group=None, history=False, instant=False):
++    rng = random.Random(profile["traits"]["seed"] ^ plan["week_start"])
++    for slot, entry in enumerate(entries):
++        # Low activity drivers occasionally leave a weekly circuit unplayed.
++        if not history and profile["traits"]["activity"] < 0.4 and rng.random() < 0.1:
++            continue
++        times = (
++            [plan["server_now"]]
++            if history
++            else schedule(profile["traits"], plan["week_start"], plan["ends_at"], instant)
++        )
++        # Creating a plan late in the week spreads overdue attempts forward.
++        overdue = 0
++        for attempt, due in enumerate(times):
++            if due < plan["server_now"]:
++                due = plan["server_now"] + (0 if instant and attempt == 0 else overdue * 900)
++                overdue += 1
++            if due >= plan["ends_at"]:
++                continue
++            job_id = digest(
++                {
++                    "subject": profile["subject"],
++                    "version": entry["version_id"],
++                    "week": plan["week_start"],
++                    "group": group,
++                    "history": history,
++                    "attempt": attempt,
++                }
++            )
++            if any(job["id"] == job_id for job in plan["jobs"]):
++                continue
++            plan["jobs"].append(
++                {
++                    "id": job_id,
++                    "subject": profile["subject"],
++                    "slot": slot,
++                    "version_id": entry["version_id"],
++                    "content_hash": entry["content_hash"],
++                    "attempt": attempt,
++                    "due": due,
++                    "group_id": group,
++                    "status": "waiting",
++                    "generation_failures": 0,
++                }
++            )
++
++
++def prepare(api, arguments):
++    if arguments.state.exists():
++        raise ValueError("Plan already exists. Use tick/watch to resume it, or a new state path")
++    count = arguments.count - 1 if arguments.command == "fill" else arguments.count
++    fleet = api.call(
++        "POST",
++        "/dev/test-drivers/fleets",
++        {
++            "seed": arguments.seed,
++            "count": count,
++            "skill_min": 0.42 if arguments.command == "fill" else 0.0,
++            "skill_max": 0.58 if arguments.command == "fill" else 1.0,
++        },
++        operator=True,
++    )
++    catalog = api.call("GET", "/dev/test-drivers/tracks?vehicle_id=" + arguments.vehicle, operator=True)
++    if len(catalog["tracks"]) < 5:
++        raise ValueError("Five eligible original tracks are needed")
++    timestamp = catalog["server_now"]
++    day = timestamp // 86400
++    start = (day - (day + 3) % 7) * 86400
++    plan = {
++        "schema": SCHEMA,
++        "api": api.url,
++        "fleet": fleet["fleet"],
++        "profiles": fleet["profiles"],
++        "vehicle_id": arguments.vehicle,
++        "mode": arguments.command,
++        "week_start": start,
++        "ends_at": start + 604800,
++        "server_now": timestamp,
++        "manifest": catalog["manifest"],
++        "jobs": [],
++        "joined": [],
++        "pace_scales": {},
++        "instant": arguments.instant,
++    }
++    if arguments.pace_reference:
++        references = json.loads(arguments.pace_reference.read_text(encoding="utf-8"))
++        if not isinstance(references, dict) or any(type(v) is not int or v <= 0 for v in references.values()):
++            raise ValueError("Pace reference maps version_id to verified five-lap time_ticks")
++        plan["pace_reference"] = references
++    if arguments.command == "fill":
++        target = arguments.target_subject
++        group = api.call(
++            "POST",
++            "/rivalry/join",
++            {"vehicle_id": arguments.vehicle, "test_population": True},
++            target,
++            digest({"fleet": fleet["fleet"], "join": target, "week": start}),
++        )
++        group = api.call(
++            "POST",
++            f"/dev/test-drivers/fleets/{fleet['fleet']}/fill",
++            {"group_id": group["group_id"], "total_drivers": arguments.count},
++            target,
++            operator=True,
++        )
++        member_ids = {p["id"] for p in group["standings"]}
++        plan["profiles"] = [p for p in plan["profiles"] if p["player_id"] in member_ids]
++        plan["target_subject"], plan["group_id"] = target, group["group_id"]
++        entries = [track["entry"] for track in group["tracks"]]
++        # Existing verified human PBs are the default pace reference. Missing
++        # history stays uncalibrated; the tool never invents a target time.
++        references = plan.setdefault("pace_reference", {})
++        for entry in entries:
++            if entry["version_id"] in references:
++                continue
++            board = api.call(
++                "GET",
++                "/track-versions/" + entry["version_id"] + "/leaderboard?vehicle_id=" + arguments.vehicle,
++            )
++            if board["population"]:
++                around = api.call("GET", "/boards/" + board["board_id"] + "/around-me", subject=target)
++                if around.get("player"):
++                    references[entry["version_id"]] = around["player"]["time_ticks"]
++        for profile in plan["profiles"]:
++            add_jobs(plan, profile, entries, group["group_id"], instant=arguments.instant)
++        print(f"Test rivalry: {group['driver_count']} drivers including {target}")
++    else:
++        # Shared isolated history boards establish real percentile distributions.
++        entries = sorted(catalog["tracks"], key=lambda e: e["version_id"])[:3]
++        for profile in plan["profiles"]:
++            add_jobs(plan, profile, entries, history=True)
++        print(f"Test fleet: {count} profiles, {len(plan['jobs'])} verified history attempts planned")
++    atomic_save(arguments.state, plan)
++    return plan
++
++
++def load_plan(path, api):
++    plan = json.loads(path.read_text(encoding="utf-8"))
++    if plan.get("schema") != SCHEMA or plan.get("api") != api.url:
++        raise ValueError("Plan schema or service differs")
++    return plan
++
++
++def recording(api, plan, job, profile, settings, state_path):
++    cache = state_path.parent / (state_path.stem + "-recordings")
++    cache.mkdir(parents=True, exist_ok=True)
++    path = cache / (job["id"] + ".json")
++    if path.exists():
++        result = json.loads(path.read_text(encoding="utf-8"))
++    else:
++        document = api.call("GET", "/track-versions/" + job["version_id"] + "/document")
++        if digest(document) != job["content_hash"]:
++            raise RuntimeError("Pinned track document hash changed")
++        scale = plan["pace_scales"].get(job["version_id"], 1.0)
++        reference = plan.get("pace_reference", {}).get(job["version_id"])
++        if reference and job["version_id"] not in plan["pace_scales"]:
++            # Calibrate a neutral driver by actually driving; never rewrite a time.
++            neutral = {
++                **profile["traits"],
++                "skill": 0.5,
++                "strengths": {},
++                "consistency": 1.0,
++                "aggression": 0.5,
++            }
++            low, high, closest = 0.6, 2.0, None
++            for _ in range(6):
++                scale = (low + high) / 2
++                try:
++                    sample = generate(settings, document, plan["vehicle_id"], neutral, 0, scale)
++                except DriverDidNotFinish:
++                    high = scale
++                    continue
++                error = abs(sample["time_ticks"] - reference)
++                if closest is None or error < closest[0]:
++                    closest = error, scale
++                if sample["time_ticks"] > reference:
++                    low = scale
++                else:
++                    high = scale
++            if closest is None:
++                raise DriverDidNotFinish("Neutral driver could not finish calibration")
++            scale = closest[1]
++            plan["pace_scales"][job["version_id"]] = scale
++            relative_error = closest[0] / reference
++            plan.setdefault("calibration", {})[job["version_id"]] = {
++                "reference_ticks": reference,
++                "relative_error": relative_error,
++                "pace_scale": scale,
++            }
++            if relative_error > 0.05:
++                print(
++                    f"Circuit {job['slot'] + 1}: closest honest controller pace differs from the PB by {relative_error:.0%}"
++                )
++            atomic_save(state_path, plan)
++        result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], scale)
++        if build_contract(result["manifest"]) != build_contract(plan["manifest"]):
++            raise RuntimeError("Local generator and service have different canonical builds")
++        atomic_save(path, result)
++    return result
++
++
++def tick(api, plan, settings, path, maximum=4):
++    current = api.call("GET", "/dev/test-drivers/tracks?vehicle_id=" + plan["vehicle_id"], operator=True)
++    if build_contract(current["manifest"]) != build_contract(plan["manifest"]):
++        raise RuntimeError("Service build changed. Keep this plan for inspection and create a new one")
++    timestamp = current["server_now"]
++    by_subject = {p["subject"]: p for p in plan["profiles"]}
++    for job in plan["jobs"]:
++        if job["status"] == "submitted":
++            run = api.call("GET", "/runs/" + job["run_id"], subject=job["subject"])
++            if run["status"] in ("verified", "rejected", "failed"):
++                if run["status"] == "failed" and run.get("retryable") and job.get("retries", 0) < 3:
++                    api.call(
++                        "POST",
++                        "/runs/" + job["run_id"] + "/retry",
++                        {},
++                        job["subject"],
++                        job["id"] + "-retry-" + str(job.get("retries", 0)),
++                    )
++                    job["retries"] = job.get("retries", 0) + 1
++                else:
++                    job["status"], job["time_ticks"], job["failure_code"] = (
++                        run["status"],
++                        run["time_ticks"],
++                        run["failure_code"],
++                    )
++                    print(
++                        f"{job['subject']} · circuit {job['slot'] + 1} · {run['status']} · {run['time_ticks']} ticks"
++                    )
++                atomic_save(path, plan)
++    # Join only once the shared history population has actually been verified.
++    history = [job for job in plan["jobs"] if job["group_id"] is None]
++    if (
++        timestamp < plan["ends_at"]
++        and plan["mode"] == "fleet"
++        and history
++        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
++    ):
++        for profile in plan["profiles"]:
++            if profile["subject"] in plan["joined"]:
++                continue
++            group = api.call(
++                "POST",
++                "/rivalry/join",
++                {"vehicle_id": plan["vehicle_id"], "test_population": True},
++                profile["subject"],
++                digest({"join": profile["subject"], "week": plan["week_start"]}),
++            )
++            add_jobs(
++                plan,
++                profile,
++                [t["entry"] for t in group["tracks"]],
++                group["group_id"],
++                instant=plan["instant"],
++            )
++            plan["joined"].append(profile["subject"])
++            atomic_save(path, plan)
++            # Bound expensive scheduler passes, including sign-in traffic.
++            maximum -= 1
++            if maximum <= 0:
++                break
++    started = 0
++    for job in sorted(plan["jobs"], key=lambda j: (j["due"], j["id"])):
++        if started >= maximum:
++            break
++        if job["status"] != "waiting" or job["due"] > timestamp:
++            continue
++        if timestamp >= plan["ends_at"]:
++            job["status"] = "expired"
++            atomic_save(path, plan)
++            continue
++        profile = by_subject[job["subject"]]
++        try:
++            data = recording(api, plan, job, profile, settings, path)
++        except DriverDidNotFinish as error:
++            # A failed drive records an honest noncompletion, never a made-up PB.
++            job["status"], job["failure_code"] = "uncompleted", str(error)
++            atomic_save(path, plan)
++            started += 1
++            continue
++        if "ticket" not in job:
++            if job["group_id"]:
++                ticket = api.call(
++                    "POST",
++                    "/rivalry/" + job["group_id"] + "/tickets",
++                    {"slot": job["slot"]},
++                    job["subject"],
++                    job["id"] + "-ticket-" + str(job.get("ticket_generation", 0)),
++                )
++            else:
++                ticket = api.call(
++                    "POST",
++                    "/run-tickets",
++                    {
++                        "version_id": job["version_id"],
++                        "vehicle_id": plan["vehicle_id"],
++                        "test_population": True,
++                    },
++                    job["subject"],
++                    job["id"] + "-ticket-" + str(job.get("ticket_generation", 0)),
++                )
++            job["ticket"] = ticket
++            atomic_save(path, plan)
++        if job["ticket"]["expires_at"] <= timestamp:
++            # The previous POST may have reached the server before a crash.
++            # Retry its same content/key first to recover a committed run.
++            try:
++                run = api.call(
++                    "POST",
++                    "/runs",
++                    {"ticket_id": job["ticket"]["ticket_id"], "replay": data["replay"]},
++                    job["subject"],
++                    job["id"] + "-upload-" + str(job.get("ticket_generation", 0)),
++                )
++            except RuntimeError as error:
++                if "HTTP 410:" not in str(error):
++                    raise
++                del job["ticket"]
++                job["ticket_generation"] = job.get("ticket_generation", 0) + 1
++                atomic_save(path, plan)
++                continue
++        else:
++            run = api.call(
++                "POST",
++                "/runs",
++                {"ticket_id": job["ticket"]["ticket_id"], "replay": data["replay"]},
++                job["subject"],
++                job["id"] + "-upload-" + str(job.get("ticket_generation", 0)),
++            )
++        job["run_id"], job["status"] = run["run_id"], "submitted"
++        job["generated_ticks"], job["mistakes"] = data["time_ticks"], data["mistakes"]
++        atomic_save(path, plan)
++        started += 1
++    counts = {
++        state: sum(j["status"] == state for j in plan["jobs"])
++        for state in sorted({j["status"] for j in plan["jobs"]})
++    }
++    if (
++        timestamp < plan["ends_at"]
++        and plan["mode"] == "fleet"
++        and history
++        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
++    ):
++        counts["joining"] = len(plan["profiles"]) - len(plan["joined"])
++    print("Plan:", counts)
++    return counts
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("command", choices=("fill", "fleet", "tick", "watch"))
++    parser.add_argument("--api", default=os.environ.get("BMT_API_URL", "http://127.0.0.1:18181"))
++    parser.add_argument("--state", type=Path, required=True)
++    parser.add_argument("--seed", type=int, default=27)
++    parser.add_argument("--count", type=int)
++    parser.add_argument("--vehicle", default="compact")
++    parser.add_argument("--target-subject", default="developer")
++    parser.add_argument(
++        "--instant",
++        action="store_true",
++        help="Make first weekly attempts due immediately; later attempts keep their schedule",
++    )
++    parser.add_argument("--pace-reference", type=Path, help="JSON mapping version_id to verified five-lap time_ticks")
++    parser.add_argument("--max-jobs", type=int, default=4)
++    parser.add_argument("--interval", type=int, default=15)
++    parser.add_argument("--godot", default=os.environ.get("BMT_GODOT_BIN", ""))
++    parser.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[2] / "game")
++    arguments = parser.parse_args()
++    if arguments.count is None:
++        arguments.count = 14 if arguments.command == "fill" else 150
++    if arguments.command == "fill" and not 2 <= arguments.count <= 20:
++        parser.error("A rivalry needs 2–20 total drivers")
++    if arguments.command == "fleet" and not 1 <= arguments.count <= 200:
++        parser.error("A fleet needs 1–200 test drivers")
++    if not 1 <= arguments.max_jobs <= 20 or not 10 <= arguments.interval <= 60:
++        parser.error("Use 1–20 jobs per pass and a 10–60 second watch interval")
++    settings = Settings(
++        godot_bin=arguments.godot, game_project=str(arguments.project), verifier_timeout_seconds=90
++    )
++    if arguments.command in ("tick", "watch") and not settings.godot_bin:
++        parser.error("Set BMT_GODOT_BIN to the exact executable in godot-version.txt")
++    plan_lock = None
++    try:
++        api = API(arguments.api, os.environ.get("BMT_DEV_AUTH_KEY", ""))
++        plan_lock = acquire_plan_lock(arguments.state)
++        plan = (
++            prepare(api, arguments)
++            if arguments.command in ("fill", "fleet")
++            else load_plan(arguments.state, api)
++        )
++        if arguments.command in ("fill", "fleet"):
++            print(f"Saved {arguments.state}. Run tick or watch to drive the planned attempts")
++            return
++        while True:
++            counts = tick(api, plan, settings, arguments.state, arguments.max_jobs)
++            if arguments.command != "watch" or not (
++                counts.get("waiting") or counts.get("submitted") or counts.get("joining")
++            ):
++                return
++            time.sleep(arguments.interval)
++    except KeyboardInterrupt:
++        print("Scheduler stopped. Run watch with the same state path to resume")
++    except (ValueError, RuntimeError, OSError, requests.RequestException) as error:
++        parser.exit(1, f"Test population: {str(error)[:250]}\n")
++    finally:
++        if plan_lock is not None:
++            plan_lock.close()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/bmt_backend/migrations/versions/0012_test_drivers.py b/backend/bmt_backend/migrations/versions/0012_test_drivers.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0012_test_drivers.py
+@@ -0,0 +1,32 @@
++"""Explicit synthetic identity markers and isolated development championships."""
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0012_test_drivers"
++down_revision = "0011_weekly_rivalry"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    with op.batch_alter_table("players") as table:
++        table.add_column(sa.Column("is_test_driver", sa.Boolean(), nullable=False, server_default=sa.false()))
++    # 0011 creates its tables from runtime models on a fresh installation.
++    # An existing 0011 installation still needs this column added explicitly.
++    if "test_population" not in {c["name"] for c in sa.inspect(op.get_bind()).get_columns("rivalry_groups")}:
++        with op.batch_alter_table("rivalry_groups") as table:
++            table.add_column(
++                sa.Column("test_population", sa.Boolean(), nullable=False, server_default=sa.false())
++            )
++    from bmt_backend.test_driver_models import TestDriverProfile
++
++    TestDriverProfile.__table__.create(op.get_bind())
++
++
++def downgrade():
++    op.drop_table("test_driver_profiles")
++    with op.batch_alter_table("rivalry_groups") as table:
++        table.drop_column("test_population")
++    with op.batch_alter_table("players") as table:
++        table.drop_column("is_test_driver")
+diff --git a/backend/tests/test_test_drivers.py b/backend/tests/test_test_drivers.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_test_drivers.py
+@@ -0,0 +1,416 @@
++"""Development identity isolation, canonical submissions and scheduler recovery."""
++
++import dataclasses
++import json
++import uuid
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import select
++from test_domains import FakeVerifier
++from test_rivalry import add_finishes, seed
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import upgrade
++from bmt_backend.rivalry import eligible_versions, skill_score
++from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.test_driver_models import TestDriverProfile as DriverProfile
++from bmt_backend.test_drivers import profile
++from bmt_backend.test_population_tool import acquire_plan_lock, atomic_save, schedule, tick
++from bmt_backend.track_models import Board, PersonalBest, now
++from bmt_backend.worker import process_one
++
++KEY = "artificial-drivers-test-only-" * 3
++
++
++@pytest.fixture
++def drivers(tmp_path):
++    settings = Settings(
++        environment="development",
++        dev_auth_enabled=True,
++        dev_auth_key=KEY,
++        test_drivers_enabled=True,
++        database_url=f"sqlite:///{(tmp_path / 'drivers.sqlite').as_posix()}",
++        object_dir=str(tmp_path / "objects"),
++        auth_limit_per_minute=1000,
++        write_limit_per_minute=1000,
++    )
++    app = create_app(settings, verifier=FakeVerifier())
++    upgrade(app.state.engine)
++    with TestClient(app) as client:
++        login = client.post("/v1/auth/developer", headers={"X-Dev-Auth-Key": KEY}).json()
++        result = SimpleNamespace(
++            app=app,
++            client=client,
++            factory=app.state.session_factory,
++            players={"Creator": login["player"]["id"]},
++            login=login,
++        )
++        seed(result)
++        yield result
++    app.state.engine.dispose()
++
++
++def auth(login, operator=False):
++    return {
++        "Authorization": "Bearer " + login["access_token"],
++        "Idempotency-Key": str(uuid.uuid4()),
++        **({"X-Dev-Auth-Key": KEY} if operator else {}),
++    }
++
++
++def fleet(drivers, count=13, seed_value=27, low=0.42, high=0.58):
++    r = drivers.client.post(
++        "/v1/dev/test-drivers/fleets",
++        json={"seed": seed_value, "count": count, "skill_min": low, "skill_max": high},
++        headers={"X-Dev-Auth-Key": KEY},
++    )
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def bot_login(drivers, p):
++    r = drivers.client.post(
++        "/v1/auth/development",
++        json={"subject": p["subject"], "display_name": p["display_name"]},
++        headers={"X-Dev-Auth-Key": KEY},
++    )
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def group(drivers, test=True, login=None):
++    r = drivers.client.post(
++        "/v1/rivalry/join",
++        json={"vehicle_id": "compact", "test_population": test},
++        headers=auth(login or drivers.login),
++    )
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def test_explicit_gate_and_disabled_existing_sessions(drivers):
++    with pytest.raises(ValueError):
++        Settings(test_drivers_enabled=True)
++    with pytest.raises(ValueError):
++        Settings(environment="development", test_drivers_enabled=True)
++    p = fleet(drivers)["profiles"][0]
++    login = bot_login(drivers, p)
++    assert login["player"]["is_test_driver"] is True
++    assert drivers.client.get("/v1/bootstrap").json()["test_drivers"] is True
++    assert (
++        drivers.client.get(
++            "/v1/dev/test-drivers/fleets/test-fleet-27", headers={"X-Dev-Auth-Key": "wrong"}
++        ).status_code
++        == 401
++    )
++    drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
++    assert drivers.client.get("/v1/me", headers=auth(login)).status_code == 401
++    assert (
++        drivers.client.post("/v1/auth/refresh", json={"refresh_token": login["refresh_token"]}).status_code
++        == 401
++    )
++    assert (
++        drivers.client.get(
++            "/v1/dev/test-drivers/fleets/test-fleet-27", headers={"X-Dev-Auth-Key": KEY}
++        ).status_code
++        == 404
++    )
++    assert (
++        drivers.client.get(
++            "/v1/rivalry/current?vehicle_id=compact&test_population=true", headers=auth(drivers.login)
++        ).status_code
++        == 404
++    )
++    assert drivers.client.get("/v1/me", headers=auth(drivers.login)).status_code == 200
++
++
++def test_persistent_profiles_fleet_bounds_and_identity_reservation(drivers):
++    first = fleet(drivers, 150, 88, 0.0, 1.0)
++    assert first == fleet(drivers, 150, 88, 0.0, 1.0)
++    skills = [p["traits"]["skill"] for p in first["profiles"]]
++    assert skills == sorted(skills) and skills[0] < 0.01 and skills[-1] > 0.99
++    assert len({p["traits"]["seed"] for p in first["profiles"]}) == 150
++    assert len({p["traits"]["utc_hour"] for p in first["profiles"]}) > 20
++    changed = drivers.client.post(
++        "/v1/dev/test-drivers/fleets", json={"seed": 88, "count": 151}, headers={"X-Dev-Auth-Key": KEY}
++    )
++    assert changed.status_code == 409
++    with drivers.factory() as s:
++        assert len(s.scalars(select(DriverProfile)).all()) == 150
++    reserved = drivers.client.post(
++        "/v1/auth/development",
++        json={"subject": "bmt-test-900-1", "display_name": "Pretend"},
++        headers={"X-Dev-Auth-Key": KEY},
++    )
++    assert reserved.status_code == 403
++
++
++def test_test_group_isolated_fill_and_normal_scope_rejected(drivers):
++    f = fleet(drivers)
++    real, test = group(drivers, False), group(drivers)
++    assert real["group_id"] != test["group_id"] and test["test_population"]
++    for _ in range(2):
++        response = drivers.client.post(
++            f"/v1/dev/test-drivers/fleets/{f['fleet']}/fill",
++            json={"group_id": test["group_id"], "total_drivers": 14},
++            headers=auth(drivers.login, True),
++        )
++        assert response.status_code == 200, response.text
++        assert response.json()["driver_count"] == 14
++        assert sum(p["is_test_driver"] for p in response.json()["standings"]) == 13
++    with drivers.factory() as s:
++        assert s.get(RivalryGroup, test["group_id"]).member_count == 14
++        assert (
++            len(s.scalars(select(RivalryMember).where(RivalryMember.group_id == test["group_id"])).all())
++            == 14
++        )
++    denied = drivers.client.post(
++        f"/v1/dev/test-drivers/fleets/{f['fleet']}/fill",
++        json={"group_id": real["group_id"]},
++        headers=auth(drivers.login, True),
++    )
++    assert denied.status_code == 403
++    bot = bot_login(drivers, f["profiles"][0])
++    assert (
++        drivers.client.post("/v1/rivalry/join", json={"vehicle_id": "compact"}, headers=auth(bot)).status_code
++        == 403
++    )
++    version_id = real["tracks"][0]["entry"]["version_id"]
++    assert (
++        drivers.client.post(
++            "/v1/run-tickets", json={"version_id": version_id, "vehicle_id": "compact"}, headers=auth(bot)
++        ).status_code
++        == 403
++    )
++    assert (
++        drivers.client.put(
++            f"/v1/track-versions/{version_id}/rating", json={"score": 5}, headers=auth(bot)
++        ).status_code
++        == 403
++    )
++    assert drivers.client.get(f"/v1/boards/{test['tracks'][0]['board_id']}").status_code == 404
++    current = drivers.client.get("/v1/rivalry/current?vehicle_id=compact", headers=auth(drivers.login)).json()
++    assert current["group_id"] == real["group_id"] and not current["test_population"]
++
++
++def test_weekly_scores_require_verified_upload_and_public_board_stays_empty(drivers):
++    f, test = fleet(drivers), group(drivers)
++    drivers.client.post(
++        f"/v1/dev/test-drivers/fleets/{f['fleet']}/fill",
++        json={"group_id": test["group_id"]},
++        headers=auth(drivers.login, True),
++    )
++    bot = bot_login(drivers, f["profiles"][0])
++    r = drivers.client.post(f"/v1/rivalry/{test['group_id']}/tickets", json={"slot": 0}, headers=auth(bot))
++    assert r.status_code == 201
++    ticket = r.json()
++    assert ticket["manifest"]["test_population"] is True and ticket["manifest"]["laps"] == 5
++    body = {
++        "ticket_id": ticket["ticket_id"],
++        "replay": {"schema": "bmt-replay-v1", "frames": [[0, 166, 0]] * 30},
++    }
++    h = auth(bot)
++    first = drivers.client.post("/v1/runs", json=body, headers=h)
++    assert first.status_code == 202
++    assert first.json() == drivers.client.post("/v1/runs", json=body, headers=h).json()
++    assert (
++        drivers.client.get(f"/v1/rivalry/{test['group_id']}", headers=auth(drivers.login)).json()[
++            "standings"
++        ][0]["points"]
++        == 0
++    )
++    assert process_one(drivers.app)
++    result = drivers.client.get(f"/v1/rivalry/tickets/{ticket['ticket_id']}/result", headers=auth(bot)).json()
++    assert result["status"] == "verified" and result["outcome"]["points_delta"] == 30
++    with drivers.factory() as s:
++        assert len(s.scalars(select(PersonalBest)).all()) == 1
++        assert s.get(Board, ticket["board_id"]).manifest["test_population"] is True
++    public = drivers.client.get(
++        f"/v1/track-versions/{ticket['version_id']}/leaderboard?vehicle_id=compact"
++    ).json()
++    assert public["population"] == 0
++    human_ticket = drivers.client.post(
++        "/v1/run-tickets",
++        json={"version_id": ticket["version_id"], "vehicle_id": "compact", "test_population": True},
++        headers=auth(drivers.login),
++    ).json()
++    drivers.client.post(
++        "/v1/runs", json={**body, "ticket_id": human_ticket["ticket_id"]}, headers=auth(drivers.login)
++    )
++    assert process_one(drivers.app)
++    assert (
++        drivers.client.get(
++            f"/v1/track-versions/{ticket['version_id']}/rating", headers=auth(drivers.login)
++        ).json()["eligible"]
++        is False
++    )
++
++
++def test_artificial_legacy_pbs_do_not_inflate_popularity_or_skill(drivers):
++    versions = seed(drivers, 3, official=False)
++    players = add_finishes(drivers, versions[0], 101)
++    for version in versions[1:]:
++        add_finishes(drivers, version, 101, same_players=players)
++    active = drivers.app.state.verifier.manifest()
++    with drivers.factory() as s:
++        for pid in players:
++            s.get(Player, pid).is_test_driver = True
++        s.commit()
++        assert all(v.id not in versions for v in eligible_versions(s, active, "compact"))
++        assert skill_score(s, players[0], "compact", active, now()) is None
++        board = s.scalar(select(Board).where(Board.version_id == versions[0]))
++    assert drivers.client.get(f"/v1/boards/{board.id}").json()["population"] == 0
++
++
++def test_schedule_is_seeded_varied_bounded_and_immediate_first_attempt():
++    start, end = 1790553600, 1790553600 + 604800
++    schedules = []
++    for i in range(150):
++        traits = profile(88, i, 150, 0.0, 1.0)[2]
++        a = schedule(traits, start, end)
++        assert a == schedule(traits, start, end) and 1 <= len(a) <= 5
++        assert all(start <= stamp < end for stamp in a)
++        assert schedule(traits, start, end, True)[0] == start
++        schedules.append(tuple(a))
++    assert len(set(schedules)) > 140
++
++
++def test_large_test_field_uses_verified_percentiles_for_matching(drivers):
++    profiles = fleet(drivers, 150, 88, 0.0, 1.0)["profiles"]
++    ids = [p["player_id"] for p in profiles]
++    versions = seed(drivers, 3)
++    for version in versions:
++        add_finishes(drivers, version, 150, same_players=ids)
++    active = drivers.app.state.verifier.manifest()
++    with drivers.factory() as s:
++        for board in s.scalars(select(Board).where(Board.version_id.in_(versions))):
++            board.manifest = {**board.manifest, "test_population": True}
++        s.commit()
++        assert skill_score(s, ids[0], "compact", active, now(), True) == 1000
++        assert skill_score(s, ids[149], "compact", active, now(), True) == 0
++        assert skill_score(s, ids[75], "compact", active, now(), True) == 497
++        assert skill_score(s, ids[0], "compact", active, now()) is None
++    fastest = group(drivers, login=bot_login(drivers, profiles[0]))
++    neighbor = group(drivers, login=bot_login(drivers, profiles[1]))
++    middle = group(drivers, login=bot_login(drivers, profiles[75]))
++    assert fastest["group_id"] == neighbor["group_id"] and not fastest["placement"]
++    assert fastest["group_id"] != middle["group_id"]
++
++
++def test_scheduler_recovers_upload_after_crash_and_does_not_duplicate(tmp_path, monkeypatch):
++    import bmt_backend.test_population_tool as tool
++
++    verifier = FakeVerifier()
++    manifest = verifier.manifest()
++    p = {"subject": "bmt-test-1-0", "traits": profile(1, 0, 1, 0.5, 0.5)[2]}
++    job = {
++        "id": "a" * 64,
++        "subject": p["subject"],
++        "slot": 0,
++        "version_id": "v",
++        "content_hash": "x",
++        "attempt": 0,
++        "due": 0,
++        "group_id": "g",
++        "status": "waiting",
++        "ticket": {"ticket_id": "t", "expires_at": 9999},
++    }
++    plan = {
++        "manifest": manifest,
++        "profiles": [p],
++        "jobs": [job],
++        "mode": "fill",
++        "ends_at": 9999,
++        "vehicle_id": "compact",
++        "pace_scales": {},
++    }
++    path = tmp_path / "plan.json"
++    atomic_save(path, plan)
++    monkeypatch.setattr(
++        tool,
++        "recording",
++        lambda *a: {
++            "replay": {"schema": "bmt-replay-v1", "frames": [[0, 166, 0]]},
++            "time_ticks": 5,
++            "mistakes": 0,
++        },
++    )
++
++    class FakeAPI:
++        def __init__(self):
++            self.crash = True
++            self.writes = set()
++
++        def call(self, method, route, body=None, subject=None, idempotency=None, operator=False):
++            if route.startswith("/dev/"):
++                return {"manifest": manifest, "server_now": 100}
++            if route == "/runs":
++                self.writes.add(idempotency)
++                if self.crash:
++                    self.crash = False
++                    raise RuntimeError("Connection lost after committed upload")
++                return {"run_id": "r"}
++            if route == "/runs/r":
++                return {"status": "verified", "time_ticks": 5, "failure_code": None}
++            raise AssertionError(route)
++
++    api = FakeAPI()
++    with pytest.raises(RuntimeError):
++        tick(api, plan, None, path)
++    recovered = json.loads(path.read_text())
++    tick(api, recovered, None, path)
++    tick(api, recovered, None, path)
++    assert len(api.writes) == 1 and recovered["jobs"][0]["status"] == "verified"
++
++
++def test_plan_lock_prevents_concurrent_writers_and_releases_on_close(tmp_path):
++    path = tmp_path / "population.json"
++    first = acquire_plan_lock(path)
++    try:
++        with pytest.raises(RuntimeError, match="Another scheduler"):
++            acquire_plan_lock(path)
++    finally:
++        first.close()
++    acquire_plan_lock(path).close()
++
++
++def test_versioned_profile_golden_fixture():
++    fixture = json.loads((Path(__file__).parent / "fixtures/test_driver_profile_v1.json").read_text())
++    subject, name, traits = profile(**fixture["parameters"])
++    assert (subject, name, traits) == (fixture["subject"], fixture["display_name"], fixture["traits"])
++
++
++def test_pace_calibration_drives_inputs_instead_of_rewriting_result(tmp_path, monkeypatch):
++    import bmt_backend.test_population_tool as tool
++    from bmt_backend.track_models import digest
++
++    manifest = FakeVerifier().manifest()
++    document = {"name": "Test circuit"}
++    p = {"traits": profile(27, 6, 13, 0.42, 0.58)[2]}
++    job = {"id": "b" * 64, "slot": 0, "attempt": 0, "version_id": "v", "content_hash": digest(document)}
++    plan = {"manifest": manifest, "vehicle_id": "compact", "pace_scales": {}, "pace_reference": {"v": 10000}}
++    scales = []
++
++    def drive(settings, doc, vehicle, traits, attempt, scale):
++        scales.append(scale)
++        return {
++            "manifest": manifest,
++            "time_ticks": round(13000 / scale),
++            "replay": {"frames": [[0, 166, 0]], "schema": "bmt-replay-v1"},
++            "mistakes": 0,
++        }
++
++    class ReadAPI:
++        def call(self, *args):
++            return document
++
++    monkeypatch.setattr(tool, "generate", drive)
++    r = tool.recording(ReadAPI(), plan, job, p, None, tmp_path / "plan.json")
++    assert len(scales) == 7 and abs(r["time_ticks"] - 10000) <= 200
++    assert r["time_ticks"] == round(13000 / scales[-1])
++    assert plan["calibration"]["v"]["relative_error"] < 0.02
+diff --git a/backend/tests/test_test_drivers_integration.py b/backend/tests/test_test_drivers_integration.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_test_drivers_integration.py
+@@ -0,0 +1,145 @@
++"""Pinned canonical recordings and an actual 14-driver HTTP championship."""
++
++import json
++import socket
++import threading
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import uvicorn
++from sqlalchemy import select
++from test_rivalry_http import seed
++from test_verifier import real_verifier as _real_verifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.migrate import upgrade
++from bmt_backend.test_driver_generator import generate
++from bmt_backend.test_drivers import profile
++from bmt_backend.test_population_tool import API, prepare, tick
++from bmt_backend.track_models import Run
++from bmt_backend.worker import process_one
++
++real_verifier = _real_verifier
++ROOT = Path(__file__).resolve().parents[2]
++
++
++@pytest.mark.godot
++def test_profiles_generate_repeatable_distinct_verified_five_lap_races(real_verifier):
++    fixture = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())
++    settings = SimpleNamespace(
++        godot_bin=real_verifier.binary, game_project=real_verifier.project, verifier_timeout_seconds=90
++    )
++    times, replays = [], []
++    for skill in (0.1, 0.5, 0.9):
++        traits = profile(27, 6, 13, 0.42, 0.58)[2]
++        traits["skill"] = skill
++        result = generate(settings, fixture["document"], "compact", traits)
++        verified = real_verifier.verify_run(fixture["document"], result["replay"], "compact")
++        assert result["time_ticks"] == verified["time_ticks"]
++        assert len(verified["lap_ticks"]) == 5 and len(verified["ghost"]["poses"]) > 2
++        times.append(result["time_ticks"])
++        replays.append(result["replay"])
++    assert times[0] > times[1] > times[2]
++    traits["skill"] = 0.5
++    assert generate(settings, fixture["document"], "compact", traits)["replay"] == replays[1]
++    assert generate(settings, fixture["document"], "compact", traits, 1)["replay"] != replays[1]
++
++
++@pytest.mark.godot
++def test_fill_tool_drives_and_verifies_an_actual_field(tmp_path, real_verifier):
++    key = "test-driver-http-fixture-only-" * 3
++    settings = Settings(
++        environment="development",
++        dev_auth_enabled=True,
++        dev_auth_key=key,
++        test_drivers_enabled=True,
++        database_url=f"sqlite:///{(tmp_path / 'population.sqlite').as_posix()}",
++        object_dir=str(tmp_path / "objects"),
++        godot_bin=real_verifier.binary,
++        game_project=str(real_verifier.project),
++        rate_limit_per_minute=2000,
++        auth_limit_per_minute=1000,
++        write_limit_per_minute=1000,
++    )
++    app = create_app(settings)
++    upgrade(app.state.engine)
++    seed(app)
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
++    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
++    thread.start()
++    try:
++        for _ in range(100):
++            if server.started:
++                break
++            time.sleep(0.05)
++        api = API(f"http://127.0.0.1:{listener.getsockname()[1]}", key)
++        arguments = SimpleNamespace(
++            command="fill",
++            state=tmp_path / "population.json",
++            count=14,
++            seed=27,
++            vehicle="compact",
++            target_subject="developer",
++            instant=True,
++            pace_reference=None,
++        )
++        plan = prepare(api, arguments)
++        # Keep the slow end-to-end test focused on the first due drive per circuit.
++        plan["jobs"] = [job for job in plan["jobs"] if job["attempt"] == 0]
++        for _ in range(15):
++            counts = tick(api, plan, settings, arguments.state, 10)
++            while process_one(app):
++                pass
++            if not counts.get("waiting") and not counts.get("submitted"):
++                break
++        assert all(job["status"] == "verified" for job in plan["jobs"])
++        assert len(plan["jobs"]) >= 60
++        with app.state.session_factory() as session:
++            assert len(session.scalars(select(Run)).all()) == len(plan["jobs"])
++        view = api.call("GET", "/rivalry/" + plan["group_id"], subject="developer")
++        assert view["driver_count"] == 14 and view["test_population"]
++        assert sum(row["is_test_driver"] for row in view["standings"]) == 13
++        assert sum(row["points"] for row in view["standings"]) > 0
++        for job in plan["jobs"]:
++            assert job["time_ticks"] == job["generated_ticks"]
++        best = next(row for row in view["tracks"][0]["entries"] if row["ticks"] is not None)
++        ghost = api.call(
++            "GET", f"/rivalry/{plan['group_id']}/tracks/0/ghosts/{best['id']}", subject="developer"
++        )
++        # The ghost ends at the fractional line crossing inside its final tick.
++        assert 0 <= best["ticks"] - ghost["recording"]["ticks"] < 1
++        assert len({row["ticks"] for row in view["tracks"][0]["entries"] if row["ticks"]}) >= 10
++        public = api.call(
++            "GET",
++            "/track-versions/" + view["tracks"][0]["entry"]["version_id"] + "/leaderboard?vehicle_id=compact",
++        )
++        assert public["population"] == 0
++        evidence = ROOT / "docs/evidence/test-drivers-2026-10-04"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "verified-field.json").write_text(json.dumps(view, indent=2))
++        (evidence / "verification-summary.json").write_text(
++            json.dumps(
++                {
++                    "driver_count": 14,
++                    "test_drivers": 13,
++                    "verified_races": len(plan["jobs"]),
++                    "public_population": 0,
++                    "verified_ghost_poses": len(ghost["recording"]["poses"]),
++                    "times": [
++                        {"subject": j["subject"], "slot": j["slot"], "ticks": j["time_ticks"]}
++                        for j in plan["jobs"]
++                    ],
++                },
++                indent=2,
++            )
++        )
++    finally:
++        server.should_exit = True
++        thread.join(timeout=10)
++        listener.close()
++        app.state.engine.dispose()
+diff --git a/backend/tests/fixtures/test_driver_profile_v1.json b/backend/tests/fixtures/test_driver_profile_v1.json
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/fixtures/test_driver_profile_v1.json
+@@ -0,0 +1,28 @@
++{
++  "parameters": {
++    "seed": 27,
++    "ordinal": 6,
++    "count": 13,
++    "minimum": 0.42,
++    "maximum": 0.58
++  },
++  "subject": "bmt-test-27-6",
++  "display_name": "Kai Rowan T0027-007",
++  "traits": {
++    "version": "test-driver-1",
++    "seed": 271265243,
++    "skill": 0.49967,
++    "consistency": 0.6913,
++    "aggression": 0.2228,
++    "activity": 0.6236,
++    "utc_hour": 20,
++    "learning": 0.9257,
++    "strengths": {
++      "pine": -0.0082,
++      "winter": 0.0262,
++      "desert": -0.0061,
++      "night_city": -0.0446,
++      "storm": 0.0614
++    }
++  }
++}
+diff --git a/game/input/profiled_route_driver.gd b/game/input/profiled_route_driver.gd
+new file mode 100644
+--- /dev/null
++++ b/game/input/profiled_route_driver.gd
+@@ -0,0 +1,67 @@
++class_name ProfiledRouteDriver
++extends RefCounted
++## Offline development controller. It only emits ordinary quantized inputs.
++## The conservative regression RouteDriver and canonical simulation are unchanged.
++var rng := RandomNumberGenerator.new()
++var skill: float
++var consistency: float
++var aggression: float
++var pace_scale: float
++var tick: int = 0
++var noise: float = 0.0
++var steering_noise: float = 0.0
++var mistake_until: int = 0
++var recovery: bool = false
++var mistakes: int = 0
++
++func _init(traits: Dictionary, theme: String, content: String, attempt: int, scale: float = 1.0) -> void:
++	rng.seed = (str(traits.seed)+"/"+content+"/"+str(attempt)).sha256_text().left(15).hex_to_int()
++	consistency = clampf(float(traits.consistency),0.0,1.0)
++	aggression = clampf(float(traits.aggression),0.0,1.0)
++	var learning: float = float(traits.learning)*0.035*(1.0-exp(-float(attempt)/2.5))
++	skill = clampf(float(traits.skill)+float(traits.strengths.get(theme,0.0))+learning,0.0,1.0)
++	pace_scale = clampf(scale,0.6,2.0)
++	# Session form is correlated across a whole attempt, rather than frame jitter.
++	pace_scale *= 1.0+rng.randf_range(-0.018,0.018)*(1.0-consistency)
++
++func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig, session: TrackSession) -> DriveFrame:
++	tick += 1
++	if tick % 120 == 1:
++		noise = lerpf(noise,rng.randf_range(-0.035,0.035)*(1.0-consistency),0.35)
++		steering_noise = lerpf(steering_noise,rng.randf_range(-0.05,0.05)*(1.0-consistency),0.4)
++		if rng.randf() < 0.008*(1.0-consistency)*(0.5+aggression) and tick > 600:
++			mistake_until = tick+rng.randi_range(35,100)
++			mistakes += 1
++	var index: int = track.nearest_route(state.position,state.route_index)
++	var target: Vector2 = track.route[(index+3)%track.route.size()]
++	# Return behind a missed gate, then cross it in the required direction.
++	# This changes only controller targets; no teleport, gate skipping or time edits.
++	if session.initialized and session.missed_checkpoint >= 0:
++		var center: Vector2 = session.checkpoint_road_center(track)
++		var direction: Vector2 = session.checkpoint_direction(track)
++		if (state.position-center).dot(direction) > -4.0 and not recovery:
++			target = center-direction*8.0
++		else:
++			recovery = true
++			target = center+direction*3.0
++	else: recovery = false
++	var offset: Vector2 = target-state.position
++	var avoidance: Vector2 = track.collision_normal(state.position+state.velocity*0.35,config.collision_radius+0.3,state.track_elevated)
++	if avoidance != Vector2.ZERO: offset += avoidance*3.0
++	var desired: float = atan2(offset.x,offset.y)
++	var error: float = wrapf(desired-state.heading,-PI,PI)
++	var steer: float = clampf(error*2.3-state.yaw_rate*0.15+steering_noise,-1.0,1.0)
++	var future: Vector2 = track.route[(index+12)%track.route.size()]-target
++	var corner: float = absf(wrapf(atan2(future.x,future.y)-desired,-PI,PI))
++	var speed_goal: float = clampf(12.0-corner*10.0-absf(error)*8.0,3.0,12.0)
++	speed_goal *= (0.85+skill*0.95+aggression*0.06+noise)*pace_scale
++	if avoidance != Vector2.ZERO: speed_goal = minf(speed_goal,4.0)
++	if session.missed_checkpoint >= 0: speed_goal = minf(speed_goal,3.5)
++	if tick < mistake_until: speed_goal *= 0.65
++	speed_goal = minf(speed_goal,config.maximum_speed*0.8)
++	var speed: float = state.velocity.length()
++	var frame := DriveFrame.new()
++	frame.steer = clampi(roundi(steer*127),-127,127)
++	frame.throttle = 166 if speed < speed_goal else 0
++	frame.brake = 128 if speed > speed_goal+0.6+aggression*0.7 else 0
++	return frame
+diff --git a/game/backend/generate_test_driver.gd b/game/backend/generate_test_driver.gd
+new file mode 100644
+--- /dev/null
++++ b/game/backend/generate_test_driver.gd
+@@ -0,0 +1,50 @@
++extends "res://backend/runner.gd"
++## Offline operator tool. Not reachable through runner's service operations.
++func run() -> void:
++	var input_path: String = ""
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--input="): input_path = arg.trim_prefix("--input=")
++		if arg.begins_with("--output="): output_path = arg.trim_prefix("--output=")
++	if output_path.is_empty() or input_path.is_empty(): quit(3); return
++	var value: Variant = JSON.parse_string(FileAccess.get_file_as_string(input_path))
++	if not value is Dictionary or not value.get("document") is Dictionary or not value.get("traits") is Dictionary:
++		respond({},"Malformed test driver request"); return
++	var traits: Dictionary = value.traits
++	if not traits.has_all(["version","seed","skill","consistency","aggression","learning","strengths"]) or traits.version != "test-driver-1" or not traits.strengths is Dictionary:
++		respond({},"Unsupported driver profile"); return
++	for key: String in ["seed","skill","consistency","aggression","learning"]:
++		if not number(traits[key]): respond({},"Malformed driver trait"); return
++	for strength: Variant in traits.strengths.values():
++		if not number(strength): respond({},"Malformed track strength"); return
++	var vehicle: String = str(value.get("vehicle_id","compact"))
++	if vehicle not in VehicleCatalog.IDS: respond({},"Unknown vehicle"); return
++	var attempt: int = int(value.get("attempt",0))
++	var pace_scale: float = float(value.get("pace_scale",1.0))
++	if attempt < 0 or attempt > 100 or not is_finite(pace_scale) or pace_scale < 0.6 or pace_scale > 2.0:
++		respond({},"Invalid attempt or calibration"); return
++	var compiled: Dictionary = compile_track(value.document)
++	if compiled.has("error"): respond({},compiled.error); return
++	var track: NativeTrack = compiled.track
++	var sim: VehicleSimulation = initial_simulation(track,vehicle)
++	var driver := ProfiledRouteDriver.new(traits,str(value.document.theme),track.content_hash,attempt,pace_scale)
++	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
++	var frames: Array = []
++	var last_gate: int = -1
++	var last_lap: int = -1
++	var progress_tick: int = 0
++	for tick: int in range(MAX_FRAMES):
++		var frame: DriveFrame = driver.sample(sim.state,track,sim.config,session)
++		frames.append(frame.packed())
++		var before: Vector2 = sim.state.position
++		var layer: int = int(sim.state.track_elevated)
++		sim.step(frame,track)
++		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++		if session.next_checkpoint != last_gate or session.completed_laps != last_lap:
++			last_gate = session.next_checkpoint; last_lap = session.completed_laps; progress_tick = tick
++		if session.finished: break
++		if tick-progress_tick > 3600:
++			respond({},"Driver stalled at gate %d on lap %d" % [session.next_checkpoint,session.completed_laps+1]); return
++	if not session.finished: respond({},"Driver did not finish all five laps"); return
++	respond({"replay":{"schema":REPLAY_SCHEMA,"frames":frames},"vehicle_id":vehicle,
++		"time_ticks":session.elapsed_ticks,"lap_ticks":session.lap_times.map(func(seconds: float) -> int: return roundi(seconds*VehicleSimulation.TICK_RATE)),
++		"mistakes":driver.mistakes,"profile_version":traits.version,"manifest":compiled.manifest})
+diff --git a/game/tests/test_test_driver_menu.gd b/game/tests/test_test_driver_menu.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_test_driver_menu.gd
+@@ -0,0 +1,70 @@
++extends SceneTree
++## Captures the real canonically verified test field produced by the HTTP test.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String
++
++func _initialize() -> void: call_deferred("run")
++
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition: failures += 1; print("FAIL: "+message)
++
++func settle() -> void:
++	for _frame: int in range(6): await process_frame
++
++func inspect(node: Node) -> void:
++	if node is Button and node.is_visible_in_tree():
++		check(root.get_visible_rect().grow(1).encloses(node.get_global_rect()),str(node.name)+" fits")
++		check(node.size.y >= 48,str(node.name)+" has a touch target")
++	for child: Node in node.get_children(): inspect(child)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/test-drivers-2026-10-04")
++	var snapshot: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(evidence.path_join("verified-field.json")))
++	check(snapshot.get("driver_count") == 14,"actual HTTP field contains fourteen drivers")
++	check(snapshot.get("test_population",false),"server identifies the test population")
++	var adapter: Node = load("res://backend/weekly_rivalry_client.gd").new()
++	adapter.client = load("res://backend/backend_client.gd").new()
++	adapter.add_child(adapter.client)
++	var real_scope: String = adapter.scope()
++	adapter.set_test_population(true)
++	check(adapter.scope() != real_scope and adapter.model.tracks.is_empty(),"switching population fences old views")
++	adapter.free()
++	app = load("res://core/app.tscn").instantiate()
++	var folder: String = "user://test_driver_menu_"+TrackLibrary.unique_id()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.online.client._access_token = "isolated-menu-fixture"
++	app.online.client.player = {"id":snapshot.self_id}
++	app.online.capabilities = {"test_drivers":true}
++	app.rivalry.test_population = true
++	app.rivalry.model.apply_snapshot(snapshot)
++	check(app.rivalry.model.test_population and app.rivalry.model.standing().size() == 14,"projection preserves server test markers")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		app._show_screen("rivalry")
++		for section: String in ["overview","tracks","detail","standings"]:
++			app.rivalry_section = section
++			app._rivalry()
++			await settle()
++			check(app.root_ui.find_child("RivalryTestPopulation",true,false) != null,"development menu exposes an explicit selector")
++			var notice: Label = app.root_ui.find_child("RivalryDataNotice",true,false)
++			check(notice.text.begins_with("TEST RIVALRY"),"test championship is clearly marked")
++			inspect(app.root_ui)
++			if DisplayServer.get_name() != "headless":
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(evidence.path_join(section+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save screenshot")
++	app.online.capabilities = {}
++	app._rivalry()
++	await settle()
++	check(app.root_ui.find_child("RivalryTestPopulation",true,false) == null,"ordinary services show no test population selector")
++	app.queue_free()
++	await settle()
++	print("TEST_DRIVER_MENU: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
+diff --git a/docs/TEST_DRIVERS.md b/docs/TEST_DRIVERS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TEST_DRIVERS.md
+@@ -0,0 +1,75 @@
++# Artificial test drivers — 2026-10-04
++
++The owner explicitly approved implementing development test drivers for Weekly Rivalry. They drive the unchanged canonical car simulation, record normal quantized inputs, upload with server-issued tickets and obtain times, PBs, points and ghosts through the normal verification worker. No AI service, fabricated completion time, special physics, teleport or checkpoint bypass is used.
++
++| Requirement | Behavior |
++|---|---|
++| TD01 / B01–B07 | Persistent operator-created identities have a server-owned `is_test_driver` flag. Profiles pin `test-driver-1`, seed, skill, consistency, aggression, activity, preferred UTC hour, learning and five surface strengths. Repeating a fleet request returns the same profiles. Changing its parameters requires a new seed. |
++| TD02 / T01–T04 | The offline controller changes steering, throttle and braking only. It uses correlated form variation, occasional hesitation, different surface pace and diminishing learning across attempts. A missed gate causes a physical return; stalled drives record a noncompletion. All five laps and the ordinary car/build/checkpoint contracts apply. |
++| TD03 / WR03–WR07 | `fill` creates an explicitly marked test rivalry with 14 total drivers by default, including the target human. The other 13 profiles have a narrow skill range. Available verified human PBs calibrate the controller per circuit by actually driving; an optional JSON reference overrides them. Unreachable target pace is reported and retained as calibration error. |
++| TD04 / WR04 | `fleet` creates 150 profiles across skill levels by default. Three shared, isolated history boards receive normal verified uploads first. Then each profile uses the existing percentile matcher with random group assignment and five random eligible tracks. Declared profile skill never substitutes for verified matching history. Insufficient successful history retains the placement pool. |
++| TD05 / Q01 | A durable operator scheduler spreads 1–5 attempts per track through each UTC week around each profile's preferred hour. Quiet drivers can leave tracks unplayed. Later attempts can improve, tie or lose to the PB; points still use best performance only. Atomic plan writes, cached recordings, stable HTTP idempotency keys, bounded retries and an OS file lock support restart and prevent concurrent plan writers. |
++| TD06 / WR05 | Test drivers cannot enter normal rivalries, request normal race tickets or rate tracks. Test boards have separate IDs and are unavailable through public leaderboard routes. Normal public populations, matching and distinct-finisher eligibility exclude test identities and test boards, including human finishes on those boards. Official provenance is unchanged. |
++| TD07 / V03–V05 | The development menu exposes **TEST RIVALS: OFF / ON** only when the server advertises the capability. Test championships show a permanent notice and driver rows have a fixed **TEST** badge that remains visible when names are clipped. Switching population/account fences old snapshots and tickets. An unranked human sees a first-finish prompt instead of a points gap to the last driver. |
++
++## Run on the local PC backend
++
++The feature is off by default. Migration `0012_test_drivers` is required in addition to the existing rivalry migration. `BMT_TEST_DRIVERS_ENABLED=true` is valid only with `BMT_ENVIRONMENT=development` and explicitly enabled development authentication. The operator API also requires the private development key. Disabling the feature rejects existing test-driver login, access and refresh sessions, hides the selector and rejects queued test finalization.
++
++Use the pinned `scripts/dev.ps1` entry point from the repository root:
++
++```powershell
++# Build/migrate/restart the isolated local PC API and worker, enabling test drivers.
++./scripts/dev.ps1 -Action BackendStart -TestDrivers
++
++# Create a 14-driver field for the fixed developer account. First attempts are due now.
++./scripts/dev.ps1 -Action BackendDriversFill -DriverPlan build/rivalry-drivers.json -DriverSeed 27 -InstantDrivers
++
++# Generate/upload due races and poll verification. Stop with Ctrl+C; this plan resumes.
++./scripts/dev.ps1 -Action BackendDriversWatch -DriverPlan build/rivalry-drivers.json
++```
++
++Reopen the game's account menu, choose Development, open the trophy in Race and switch **TEST RIVALS: ON**. The test field and normal weekly membership remain separate. The watch process must run for later scheduled attempts to arrive. `BackendDriversTick` does one bounded pass. The server worker must also be running; pending uploads award no points.
++
++For the larger field, use a different seed and plan:
++
++```powershell
++./scripts/dev.ps1 -Action BackendDriversFleet -DriverPlan build/driver-fleet.json -DriverSeed 88 -DriverCount 150 -InstantDrivers
++./scripts/dev.ps1 -Action BackendDriversWatch -DriverPlan build/driver-fleet.json
++```
++
++The initial 150-driver history requires 450 genuine races and verifications. It is deliberately bounded work spread across scheduler passes, not an instant leaderboard insertion. This fleet exercises matching independently of the focused fill fixture. Fleet-created cohorts do not automatically insert a human; normal test joining uses that human's available verified test history or an honest placement group.
++
++Advanced CLI options are available through `.tools/backend-venv/Scripts/python.exe -m bmt_backend.test_population_tool --help`: HTTPS/loopback API URL, vehicle, target development subject, pinned engine/project, pass size/interval and `--pace-reference`. That reference maps immutable `version_id` to a verified five-lap `time_ticks` value. All five current vehicles use their ordinary server configurations. The compact was the vehicle exercised in this task.
++
++Use a new state path for a new week. Profiles can persist with the same seed and parameters, while attempts and memberships have distinct week keys. Existing ended plans expire unused jobs and continue polling already submitted results. Plans and recording caches contain no authentication keys/tokens. Never publish the private `.tools/bmt-pc.env` file.
++
++The focused `fill` endpoint is an operator fixture: it explicitly inserts chosen profiles into the target test group. The 150-driver flow is the path for exercising automatic skill matching. A controller's absolute skill range is a prototype; calibration reports a mismatch above 5% and cannot guarantee elite human pace on every complex circuit.
++
++## Contracts and changed files
++
++- Backend identity/configuration/gates: `config.py`, `identity_models.py`, `auth.py`, `security.py`, `app.py`, `test_population.py`, `test_driver_models.py`, `test_drivers.py` and `migrations/versions/0012_test_drivers.py`, with the migration environment import.
++- Competition isolation: `rivalry.py`, `rivalry_models.py`, `runs.py`, `tracks.py` and `worker.py`.
++- Offline generation and scheduling: `backend/bmt_backend/test_driver_generator.py`, `test_population_tool.py`, `game/input/profiled_route_driver.gd`, `game/backend/generate_test_driver.gd`, `backend/deploy/stage_verifier.py`, local Compose/PC launcher and `scripts/dev.ps1`.
++- Client presentation: `game/backend/weekly_rivalry_client.gd`, `game/race/weekly_rivalry.gd`, `game/ui/weekly_rivalry_page.gd` and the small integration in `game/core/app.gd`. Native HTTP regression also exposed a stale neighbor page in menu cleanup; a validity check prevents calling `hide()` on a freed page.
++- Tests/contracts: `backend/tests/test_test_drivers.py`, `test_test_drivers_integration.py`, `fixtures/test_driver_profile_v1.json`, `game/tests/test_test_driver_menu.gd`, [profile schema](schemas/test-driver-profile-v1.schema.json) and optional test markers in the [weekly snapshot schema](schemas/weekly-rivalry-v1.schema.json).
++- Documentation/evidence: this file, rivalry/deployment notes, AGENTS/status/plan entries and [scoped Git checkpoint](evidence/test-drivers-2026-10-04/test-drivers.patch). Existing unrelated work is preserved; no mixed-tree commit was made.
++
++The hidden development API supplies fleet registration/listing, eligible tracks and a member-authorized fixture fill. Normal race ticket requests and rivalry joins accept an optional `test_population` flag, default false. Test membership/build hashes and board manifests include that discriminator. Rivalry snapshots/rows carry `test_population` / `is_test_driver`. Profiles are immutable within a versioned fleet.
++
++## Actual verification
++
++Python used `.tools/backend-venv/Scripts/python.exe`; Godot used exact **4.7.2 stable ed1daf0bf** through `scripts/dev.ps1`, or the backend adapter's exact-version check. Actual commands and outcomes:
++
++- `pytest backend/tests/test_test_drivers.py -q --tb=short --show-capture=no`: **11 passed**, including 150 persistent profiles, observed skill-band matching, gates/session disabling, isolation, idempotent fills/uploads, scheduler crash recovery, file locking, calibration and the versioned profile fixture.
++- `pytest backend/tests/test_test_drivers_integration.py -q -s ...`: profile determinism/variation and three distinct skill levels each produced canonically verified five-lap races. The initial full-field assertion incorrectly equated fractional ghost finish with an integer final tick; the corrected field test passed on rerun in 285.68 seconds. It drove and verified **61 races for 13 artificial rivals**, with a 14th human entrant, at least ten distinct times on a circuit, real derived ghosts and **zero public leaderboard population**. Summary/data: [verification summary](evidence/test-drivers-2026-10-04/verification-summary.json), [verified field](evidence/test-drivers-2026-10-04/verified-field.json).
++- `pytest backend/tests/test_test_drivers.py backend/tests/test_domains.py backend/tests/test_auth.py backend/tests/test_maintenance.py backend/tests/test_rivalry.py backend/tests/test_rivalry_concurrency.py -q -k 'not postgres' ...`: **74 passed**, one recorded-practice verifier failed under the filesystem sandbox. That same publishing test passed outside the sandbox. Later profile-lock/calibration/golden additions are covered by the final 11-test run above.
++- `pytest backend/tests/test_rivalry_http.py -q ...`: native rivalry flow passed after fixing the freed-page cleanup; **25 native checks, zero failures**, no script errors. The earlier failed run is retained in the work log description above.
++- `pytest backend/tests/test_verifier.py -q -k standalone ...`: standalone package verification passes with the new offline files included. The HTTP service runner still exposes no generation operation.
++- `TestScript res://tests/test_test_driver_menu.gd -Graphical`: **419 checks, zero failures**; twelve inspected captures across Overview/Tracks/Detail/Standings at 1280×720, 960×540 and 1600×720. A first harness run leaked an orphaned client node; ownership was fixed and the final command exits cleanly. [Compact standings](evidence/test-drivers-2026-10-04/standings-960x540.png), [duel detail](evidence/test-drivers-2026-10-04/detail-1280x720.png).
++- Existing rivalry UI: **791 checks, zero failures**. App regression: **96 checks, zero failures**. Full script parse: **280 scripts, zero failures**. Ruff passes for the new Python tools/tests.
++- Offline probes completed all five laps on eight existing official circuits: Dusty, Ringroad, Over and under, Slippery, Knot, Easy night, Stormy slalom and Ajorata. Those probes used ordinary compact handling and produced varied hesitations; [actual ticks](evidence/test-drivers-2026-10-04/official-circuit-probe.json). They are completion probes, separate from the full HTTP verification fixture.
++
++Godot/ADB needed Windows certificate/user-directory access outside the filesystem sandbox. Initial denied certificate reads and the first ADB-directory error were corrected by running the same authorized checks with normal desktop access. No automatic approval rejection occurred.
++
++Doctor detects the physical **DN2103** and an emulator. **No test-driver phone export, installation or device driving test was performed.** No existing PC/NAS/production service was restarted or migrated by this task; the setup commands above remain necessary for that local instance. PostgreSQL concurrency, NAS rollout, human visual acceptance, long-lived weekly scheduling, throughput for a fully verified 150-driver seed and pace calibration against real player records remain acceptance checks. No canonical physics/rules change was made, so a full physics regression/Android build was not required for this slice.
+diff --git a/docs/schemas/test-driver-profile-v1.schema.json b/docs/schemas/test-driver-profile-v1.schema.json
+new file mode 100644
+--- /dev/null
++++ b/docs/schemas/test-driver-profile-v1.schema.json
+@@ -0,0 +1,29 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "urn:bmt:test-driver-profile-v1",
++  "title": "Development test driver traits v1",
++  "type": "object",
++  "additionalProperties": false,
++  "required": ["version", "seed", "skill", "consistency", "aggression", "activity", "utc_hour", "learning", "strengths"],
++  "properties": {
++    "version": {"const": "test-driver-1"},
++    "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
++    "skill": {"type": "number", "minimum": 0, "maximum": 1},
++    "consistency": {"type": "number", "minimum": 0, "maximum": 1},
++    "aggression": {"type": "number", "minimum": 0, "maximum": 1},
++    "activity": {"type": "number", "minimum": 0, "maximum": 1},
++    "learning": {"type": "number", "minimum": 0, "maximum": 1},
++    "utc_hour": {"type": "integer", "minimum": 0, "maximum": 23},
++    "strengths": {
++      "type": "object", "additionalProperties": false,
++      "required": ["pine", "winter", "desert", "night_city", "storm"],
++      "properties": {
++        "pine": {"type": "number", "minimum": -0.07, "maximum": 0.07},
++        "winter": {"type": "number", "minimum": -0.07, "maximum": 0.07},
++        "desert": {"type": "number", "minimum": -0.07, "maximum": 0.07},
++        "night_city": {"type": "number", "minimum": -0.07, "maximum": 0.07},
++        "storm": {"type": "number", "minimum": -0.07, "maximum": 0.07}
++      }
++    }
++  }
++}
+diff --git a/game/input/profiled_route_driver.gd.uid b/game/input/profiled_route_driver.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/input/profiled_route_driver.gd.uid
+@@ -0,0 +1 @@
++uid://cs66x4jvhut24
+diff --git a/game/backend/generate_test_driver.gd.uid b/game/backend/generate_test_driver.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/backend/generate_test_driver.gd.uid
+@@ -0,0 +1 @@
++uid://b5mantn5h5gj2
+diff --git a/game/tests/test_test_driver_menu.gd.uid b/game/tests/test_test_driver_menu.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_test_driver_menu.gd.uid
+@@ -0,0 +1 @@
++uid://ck6icyuuyxndl

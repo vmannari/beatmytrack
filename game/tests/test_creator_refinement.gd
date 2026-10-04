@@ -137,7 +137,7 @@ func run() -> void:
 	check((app.get("selected_track") as NativeTrack).content_hash==saved_expected.content_hash,"Save refreshes the selected circuit without reselecting it")
 	# Current Race contains backend publications; saved local geometry is tested
 	# through the editor's Practice action before creator proof/publication.
-	app.call("_test_document")
+	await app.call("_test_document")
 	await process_frame
 	var immediate_game: Node = app.get("game")
 	check(immediate_game!=null and immediate_game.editor_test and (immediate_game.get("native_track") as NativeTrack).content_hash==saved_expected.content_hash,"immediate Practice uses the saved geometry")
@@ -156,10 +156,10 @@ func run() -> void:
 	if capture:
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/refinement-library.png"))==OK,"saved circuits screenshot")
-	app.call("_start_race",loaded,false)
+	await app.call("_start_race",loaded,false)
 	await process_frame
 	check(app.get("game")==null,"an unpublished local draft cannot enter ordinary backend Race")
-	app.call("_start_race",tyre_track,true)
+	await app.call("_start_race",tyre_track,true)
 	await process_frame
 	var game: Node = app.get("game")
 	game.set_physics_process(false)

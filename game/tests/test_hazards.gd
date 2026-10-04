@@ -155,7 +155,7 @@ func run() -> void:
 	if capture:
 		for i: int in range(4): await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-editor.png"))==OK,"editor screenshot")
-	app.call("_start_race",TrackCompiler.compile(demo),true)
+	await app.call("_start_race",TrackCompiler.compile(demo),true)
 	await process_frame
 	var game: Node = app.get("game"); game.set_physics_process(false)
 	var actual: VehicleSimulation=game.get("sim"); actual.reset(Vector2(-7,0),PI*0.5); actual.state.jump_height=1.9; actual.state.jump_velocity=2.0; actual.state.velocity=Vector2(14,0)
@@ -177,7 +177,7 @@ func run() -> void:
 	if capture:
 		game.queue_free()
 		await process_frame
-		app.call("_start_race",pond,true)
+		await app.call("_start_race",pond,true)
 		await process_frame
 		game=app.get("game"); game.set_physics_process(false)
 		actual=game.get("sim"); actual.reset(Vector2(18.7,0),0.0)

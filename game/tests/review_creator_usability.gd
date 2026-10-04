@@ -64,7 +64,7 @@ func run() -> void:
 	canvas = app.get("canvas")
 	canvas.choose_piece("straight")
 	var pieces_before: int = canvas.document.pieces.size()
-	app.call("_test_document")
+	await app.call("_test_document")
 	await process_frame
 	var game: Node = app.get("game")
 	var test_started: bool = game != null

@@ -208,7 +208,7 @@ func _check_library() -> void:
 	await process_frame
 	await _capture("track-favorites")
 	(browser.find_child("LibraryRace",true,false) as Button).pressed.emit()
-	await process_frame
+	while app.cloud_starting: await process_frame
 	check((app.get("game").get("native_track") as NativeTrack).identity == chosen.identity,"library Race starts the selected favorite")
 	check((app.get("game").get("track_session") as TrackSession).target_laps == 5,"production menu starts a five-lap race")
 	app.call("_leave_race")
@@ -369,7 +369,9 @@ func _check_test_drive() -> void:
 	var compiled: NativeTrack = TrackCompiler.compile(before)
 	var zoom_before: float = (app.get("canvas") as EditorCanvas).zoom
 	(app.get("test_button") as Button).pressed.emit()
-	await process_frame
+	var deadline: int = Time.get_ticks_msec() + 15000
+	while app.cloud_starting and Time.get_ticks_msec() < deadline: await process_frame
+	check(not app.cloud_starting, "practice finishes track loading within its deadline")
 	var game: Node = app.get("game")
 	check(game != null and bool(game.get("production_mode")) and bool(game.get("editor_test")), "Test launches the real gameplay scene in untimed editor practice")
 	if game == null:
@@ -426,7 +428,7 @@ func _check_clean_result() -> void:
 	# driving is covered above; it does not claim a second driven race.
 	app._restore_cloud_selection("cloud_fixture-track")
 	var track: NativeTrack = app.get("selected_track")
-	app.call("_start_race", track, false)
+	await app.call("_start_race", track, false)
 	var game: Node = app.get("game")
 	game.set_physics_process(false)
 	var completed := TrackSession.new()

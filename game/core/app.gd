@@ -3,10 +3,23 @@ extends Node
 
 const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
 const AccountController = preload("res://backend/account_controller.gd")
+const RaceLoading = preload("res://ui/race_loading.gd")
+var race_loading: RaceLoading
 var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
 var screen: String = "tracks"
 var menu_open_costs: Dictionary = {}
 var root_ui: Control
+var menu_body: Control
+var menu_body_slot: Control
+var menu_body_backgrounds: Array[Control] = []
+var outgoing_menu_page: Control
+var menu_neighbors: Dictionary = {}
+var menu_neighbor_direction: int = 0
+var returning_menu_neighbor: Dictionary = {}
+const MENU_PAGE_GAP: float = 64.0
+var menu_page_motion: Tween
+var menu_edge_motion: Tween
+var menu_drag_offset: float = 0.0
 var content: VBoxContainer
 var menu_layer: CanvasLayer
 var game: Node
@@ -70,6 +83,15 @@ var cloud_publish_version: String = ""
 var cloud_starting: bool = false
 var _navigation_generation: int = 0
 var _profile_draft_recovery: Dictionary = {}
+var rivalry: Node
+var race_area_mode: String = "free"
+var rivalry_section: String = "overview"
+var rivalry_track: int = 0
+var rivalry_ghost_choice: int = 0
+var rivalry_racing: bool = false
+var rivalry_recording: Dictionary = {}
+var rivalry_result_pending: bool = false
+var rivalry_refresh_ticks: int = 0
 
 func _exit_tree() -> void:
 	_finish_preview_thread()
@@ -140,6 +162,22 @@ func _ready() -> void:
 	cloud.root_override = cloud_root_override
 	add_child(cloud)
 	cloud.load_cached()
+	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
+	rivalry.client = online.client
+	add_child(rivalry)
+	rivalry.changed.connect(_rivalry_changed)
+	var rivalry_timer := Timer.new()
+	rivalry_timer.wait_time = 0.5
+	rivalry_timer.autostart = true
+	rivalry_timer.timeout.connect(func() -> void:
+		if rivalry.busy or rivalry.model.sample: return
+		if rivalry_result_pending: rivalry.poll_result()
+		elif screen == "rivalry" and not is_instance_valid(game):
+			rivalry_refresh_ticks += 1
+			if rivalry_refresh_ticks >= 60:
+				rivalry_refresh_ticks = 0
+				rivalry.refresh())
+	add_child(rivalry_timer)
 	lifecycle = TrackLifecycle.new()
 	lifecycle.cloud = cloud
 	lifecycle.library = library
@@ -194,9 +232,25 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	_close_race_loading()
+	if rivalry_racing and rivalry_section in ["race_results", "result"] and next != "rivalry" and is_instance_valid(game):
+		remove_child(game)
+		game.queue_free()
+		game = null
+		rivalry_racing = false
 	_navigation_generation += 1
 	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
 	if next == "play": next = "tracks"
+	var drag_offset: float = menu_body.position.x if is_instance_valid(menu_body) and not is_zero_approx(menu_drag_offset) else 0.0
+	_stop_menu_page_motion()
+	menu_neighbors.clear()
+	menu_neighbor_direction = 0
+	var pages: Array[String] = ["tracks", "biome", "garage"]
+	var previous_page: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
+	var next_page: String = "biome" if next == "drafts" else "tracks" if next == "rivalry" else next
+	var slide: bool = is_instance_valid(root_ui) and root_ui.is_visible_in_tree() and previous_page in pages and next_page in pages and previous_page != next_page
+	var slide_direction: int = 1 if pages.find(next_page) > pages.find(previous_page) else -1
+	if drag_offset * slide_direction > 0.0: drag_offset = 0.0
 	_finish_preview_thread()
 	if is_instance_valid(object_browser):
 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
@@ -208,12 +262,33 @@ func _show_screen(next: String) -> void:
 	test_button = null
 	share_button = null
 	if is_instance_valid(root_ui):
+		if slide:
+			outgoing_menu_page = menu_body
+			outgoing_menu_page.position.x = drag_offset
+			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+			outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
+			_disable_outgoing_menu(outgoing_menu_page)
 		menu_layer.remove_child(root_ui)
 		root_ui.queue_free()
+	menu_body = null
+	menu_body_slot = null
+	menu_body_backgrounds = []
 	root_ui = Control.new()
+	root_ui.clip_contents = true
 	MenuStyle.fill(root_ui)
 	root_ui.theme = MenuStyle.theme()
 	menu_layer.add_child(root_ui)
+	if screen in ["tracks", "rivalry", "biome", "drafts", "garage"]:
+		var swipe := preload("res://ui/menu_page_swipe.gd").new()
+		swipe.name = "MenuPageSwipe"
+		swipe.menu = root_ui
+		swipe.modal_root = self
+		swipe.page_requested.connect(_swipe_menu_page)
+		swipe.gesture_started.connect(_stop_menu_edge_motion)
+		swipe.drag_changed.connect(_drag_menu_edge)
+		swipe.drag_finished.connect(_settle_menu_edge)
+		swipe.settle_requested.connect(_settle_menu_before_touch)
+		root_ui.add_child(swipe)
 	if screen == "restoring":
 		account_button = null
 		var backdrop := ColorRect.new()
@@ -241,15 +316,18 @@ func _show_screen(next: String) -> void:
 	var background := MenuBackdrop.new()
 	MenuStyle.fill(background)
 	root_ui.add_child(background)
+	var scenery: Array[Control] = []
 	if screen == "garage":
 		var stage := MenuStage.new()
 		stage.setting = str(selected_track.metadata.get("theme","pine"))
 		stage.garage = screen == "garage"
 		MenuStyle.fill(stage)
 		root_ui.add_child(stage)
+		scenery.append(stage)
 		var scrim := MenuScrim.new()
 		MenuStyle.fill(scrim)
 		root_ui.add_child(scrim)
+		scenery.append(scrim)
 	var margin := MarginContainer.new()
 	MenuStyle.fill(margin)
 	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 20)
@@ -266,6 +344,7 @@ func _show_screen(next: String) -> void:
 	layout.add_theme_constant_override("separation", 12)
 	margin.add_child(layout)
 	var nav := HBoxContainer.new()
+	nav.name = "MenuHeader"
 	layout.add_child(nav)
 	nav.add_child(MenuBrand.new())
 	var tabs := HBoxContainer.new()
@@ -275,8 +354,9 @@ func _show_screen(next: String) -> void:
 	nav.add_child(tabs)
 	for item: Array in [["tracks","RACE"],["create","CREATE"],["garage","GARAGE"]]:
 		var id: String = item[0]
-		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _show_screen.bind(id), screen == id or (id == "create" and screen in ["biome","drafts"]))
+		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _navigate_menu_page.bind(id), screen == id or (id == "tracks" and screen == "rivalry") or (id == "create" and screen in ["biome","drafts"]))
 		button.name = "Tab_" + id
+		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 		button.custom_minimum_size.y = 64
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tabs.add_child(button)
@@ -324,11 +404,34 @@ func _show_screen(next: String) -> void:
 	layout.add_child(HSeparator.new())
 	content = VBoxContainer.new()
 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	layout.add_child(content)
+	if screen in ["tracks", "rivalry", "biome", "drafts", "garage"]:
+		menu_body_slot = Control.new()
+		menu_body_slot.name = "MenuContentViewport"
+		menu_body_slot.clip_contents = true
+		menu_body_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		layout.add_child(menu_body_slot)
+		if is_instance_valid(outgoing_menu_page): menu_body_slot.add_child(outgoing_menu_page)
+		menu_body = Control.new()
+		menu_body.name = "MenuContentPage"
+		menu_body.clip_contents = true
+		MenuStyle.fill(menu_body)
+		menu_body_slot.add_child(menu_body)
+		var body_background := MenuBackdrop.new()
+		menu_body.add_child(body_background)
+		menu_body_backgrounds.append(body_background)
+		for item: Control in scenery:
+			item.reparent(menu_body, false)
+			menu_body_backgrounds.append(item)
+		MenuStyle.fill(content)
+		menu_body.add_child(content)
+		menu_body_slot.resized.connect(_layout_menu_body)
+		_layout_menu_body()
+	else: layout.add_child(content)
 	match screen:
 		"drafts": _drafts()
 		"biome": _choose_biome()
 		"tracks": _tracks()
+		"rivalry": _rivalry()
 		"create": _editor()
 		"garage": _garage()
 		"settings": _settings()
@@ -340,6 +443,309 @@ func _show_screen(next: String) -> void:
 			if online.client.signed_in(): content.add_child(MenuStyle.button("Race uploads",cloud.show_uploads.bind(root_ui)))
 		"account": _account()
 		_: _tracks()
+	var page_swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+	# _input visits children in reverse order: settle before the carousel hit-tests.
+	if page_swipe != null: root_ui.move_child(page_swipe, root_ui.get_child_count() - 1)
+	if slide: _slide_menu_page(slide_direction, drag_offset)
+	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
+
+func _layout_menu_body() -> void:
+	if not is_instance_valid(menu_body_slot): return
+	# Keep the established full-screen scenic framing, clipped below the header.
+	var inset: Vector2 = menu_body_slot.get_global_position() - root_ui.get_global_position()
+	var backgrounds: Array[Control] = menu_body_backgrounds.duplicate()
+	for neighbor: Dictionary in menu_neighbors.values(): backgrounds.append_array(neighbor.backgrounds)
+	for background: Control in backgrounds:
+		background.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		background.position = -inset
+		background.size = root_ui.size
+
+func _disable_outgoing_menu(node: Node) -> void:
+	if node is Control:
+		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		node.focus_mode = Control.FOCUS_NONE
+	if node is CanvasLayer: node.hide()
+	for child: Node in node.get_children(): _disable_outgoing_menu(child)
+
+func _stop_menu_page_motion() -> void:
+	_stop_menu_edge_motion()
+	if menu_page_motion != null:
+		menu_page_motion.kill()
+		menu_page_motion = null
+	if is_instance_valid(outgoing_menu_page):
+		if not returning_menu_neighbor.is_empty():
+			outgoing_menu_page.hide()
+			menu_neighbors[int(returning_menu_neighbor.direction)] = returning_menu_neighbor
+		else:
+			if outgoing_menu_page.get_parent() != null:
+				outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+			outgoing_menu_page.queue_free()
+		outgoing_menu_page = null
+	returning_menu_neighbor = {}
+	if is_instance_valid(root_ui):
+		if is_instance_valid(menu_body): menu_body.position.x = 0.0
+		var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+		if swipe != null: swipe.set_process_input(true)
+
+func _slide_menu_page(direction: int, drag_offset: float = 0.0) -> void:
+	# A freshly built shell has not had its first container layout yet.
+	var width: float = menu_body_slot.size.x
+	if width <= 0.0:
+		var margin: MarginContainer = menu_body_slot.get_parent().get_parent()
+		width = get_viewport().get_visible_rect().size.x - margin.get_theme_constant("margin_left") - margin.get_theme_constant("margin_right")
+	var gap: float = _menu_page_gap(drag_offset) if not is_zero_approx(drag_offset) else MENU_PAGE_GAP
+	var distance: float = (width + gap) * direction
+	menu_body.position.x = distance + drag_offset
+	# A new press settles this tween before any content hit-test, so rapid swipes
+	# remain responsive and the track carousel still owns its final rectangle.
+	menu_page_motion = create_tween().set_parallel(true)
+	menu_page_motion.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	var duration: float = clampf(0.32 * (1.0 - absf(drag_offset) / absf(distance)), 0.18, 0.32)
+	menu_page_motion.tween_property(menu_body, "position:x", 0.0, duration)
+	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, duration)
+	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
+
+func _stop_menu_edge_motion() -> void:
+	if menu_edge_motion != null:
+		menu_edge_motion.kill()
+		menu_edge_motion = null
+	if is_instance_valid(menu_body):
+		menu_body.position.x = 0.0
+		_set_menu_preview_input(menu_body, false)
+	menu_drag_offset = 0.0
+	menu_neighbor_direction = 0
+	for neighbor: Dictionary in menu_neighbors.values():
+		if is_instance_valid(neighbor.body): neighbor.body.hide()
+
+func _drag_menu_edge(distance: float) -> void:
+	if not is_instance_valid(menu_body): return
+	# The page owns this horizontal gesture until it settles. No button on its
+	# moving content may accept a parallel platform input and rebuild the page.
+	_set_menu_preview_input(menu_body, true)
+	var direction: int = 1 if distance < 0.0 else -1
+	menu_neighbor_direction = direction
+	for neighbor_direction: int in menu_neighbors:
+		menu_neighbors[neighbor_direction].body.visible = neighbor_direction == direction
+	if (screen in ["tracks", "rivalry"] and distance > 0.0) or (screen == "garage" and distance < 0.0):
+		# Match the track carousel's bounded resistance, followed by its spring return.
+		menu_body.position.x = signf(distance) * 64.0 * (1.0 - exp(-absf(distance) / 160.0))
+		menu_drag_offset = 0.0
+	else:
+		var width: float = menu_body_slot.size.x
+		menu_drag_offset = clampf(distance, -width, width)
+		menu_body.position.x = menu_drag_offset
+		if menu_neighbors.has(direction):
+			menu_neighbors[direction].body.position.x = (width + _menu_page_gap(menu_drag_offset)) * direction + menu_drag_offset
+
+func _menu_page_gap(distance: float) -> float:
+	# A growing gutter leaves the next page visible even on the first small pull.
+	return minf(MENU_PAGE_GAP, absf(distance) * 0.5)
+
+func _settle_menu_edge() -> void:
+	if not is_instance_valid(menu_body): return
+	if is_zero_approx(menu_body.position.x):
+		_set_menu_preview_input(menu_body, false)
+		return
+	if menu_edge_motion != null: menu_edge_motion.kill()
+	menu_edge_motion = create_tween().set_parallel(true)
+	var edge: bool = is_zero_approx(menu_drag_offset)
+	if edge:
+		menu_edge_motion.tween_property(menu_body, "position:x", 0.0, 0.38).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	else:
+		# One progress value keeps both pages and their gutter together. Smootherstep
+		# has zero velocity and acceleration at each end, avoiding a release kick.
+		var duration: float = 0.42 + 0.10 * minf(1.0, absf(menu_drag_offset) / menu_body_slot.size.x)
+		var neighbor: Control = menu_neighbors[menu_neighbor_direction].body if menu_neighbors.has(menu_neighbor_direction) else null
+		var neighbor_start: float = neighbor.position.x if is_instance_valid(neighbor) else 0.0
+		menu_edge_motion.tween_method(_return_menu_drag.bind(menu_body.position.x, neighbor, neighbor_start, menu_body_slot.size.x * menu_neighbor_direction), 0.0, 1.0, duration)
+	menu_edge_motion.chain().tween_callback(func() -> void:
+		menu_edge_motion = null
+		_set_menu_preview_input(menu_body, false)
+		menu_drag_offset = 0.0
+		menu_neighbor_direction = 0
+		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide())
+
+func _return_menu_drag(progress: float, start: float, neighbor: Control, neighbor_start: float, neighbor_end: float) -> void:
+	var blend: float = progress * progress * progress * (progress * (progress * 6.0 - 15.0) + 10.0)
+	if is_instance_valid(menu_body): menu_body.position.x = lerpf(start, 0.0, blend)
+	if is_instance_valid(neighbor): neighbor.position.x = lerpf(neighbor_start, neighbor_end, blend)
+
+func _prepare_menu_neighbors(generation: int) -> void:
+	# Warm actual page controls between gestures, after the viewport has laid out.
+	await get_tree().process_frame
+	if generation != _navigation_generation or not is_instance_valid(menu_body_slot): return
+	if menu_page_motion != null: return
+	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+	if swipe == null: return
+	if swipe.pointer != -1:
+		_prepare_menu_neighbors.call_deferred(generation)
+		return
+	var pages: Array[String] = ["tracks", "biome", "garage"]
+	var current: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
+	var index: int = pages.find(current)
+	if index < 0: return
+	# Keep the third primary page warm too, for another swipe immediately after
+	# commitment. These are shared textures and inactive controls, not extra apps.
+	for destination: int in range(pages.size()):
+		var direction: int = destination - index
+		if direction == 0: continue
+		if menu_neighbors.has(direction): continue
+		var next: String = pages[destination]
+		if next == "tracks" and race_area_mode == "rivalry": next = "rivalry"
+		var body := Control.new()
+		body.name = "AdjacentMenuPage"
+		MenuStyle.fill(body)
+		body.clip_contents = true
+		body.process_mode = Node.PROCESS_MODE_DISABLED
+		menu_body_slot.add_child(body)
+		body.position.x = menu_body_slot.size.x * direction
+		var backgrounds: Array[Control] = []
+		var background := MenuBackdrop.new()
+		body.add_child(background)
+		backgrounds.append(background)
+		if next == "garage":
+			var stage := MenuStage.new()
+			stage.setting = str(selected_track.metadata.get("theme","pine"))
+			stage.garage = true
+			body.add_child(stage)
+			backgrounds.append(stage)
+			var scrim := MenuScrim.new()
+			body.add_child(scrim)
+			backgrounds.append(scrim)
+		var column := VBoxContainer.new()
+		MenuStyle.fill(column)
+		body.add_child(column)
+		match next:
+			"tracks": _tracks(column, true)
+			"rivalry": _rivalry(column)
+			"biome": _choose_biome(column, true)
+			"garage": _garage(column)
+		_set_menu_preview_input(body, true)
+		menu_neighbors[direction] = {"body":body,"content":column,"backgrounds":backgrounds,"screen":next}
+		body.position.x = menu_body_slot.size.x * direction
+		_layout_menu_body()
+	_hide_warmed_menu_neighbors.call_deferred(generation)
+
+func _hide_warmed_menu_neighbors(generation: int) -> void:
+	# Let CanvasItems prepare draw commands and font glyphs once, offscreen and
+	# clipped, so revealing them does not defer that work to the finger's first move.
+	await get_tree().process_frame
+	if generation != _navigation_generation: return
+	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+	if swipe != null and swipe.pointer != -1: return
+	for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
+
+func _set_menu_preview_input(node: Node, disabled: bool) -> void:
+	var control := node as Control
+	if control == null: return
+	# The pinned engine propagates these overrides natively. Keep descendant
+	# mouse/focus preferences intact instead of rewriting hundreds of controls.
+	control.mouse_behavior_recursive = Control.MOUSE_BEHAVIOR_DISABLED if disabled else Control.MOUSE_BEHAVIOR_INHERITED
+	control.focus_behavior_recursive = Control.FOCUS_BEHAVIOR_DISABLED if disabled else Control.FOCUS_BEHAVIOR_INHERITED
+	if disabled and not control.has_meta("page_mouse_filter"):
+		control.set_meta("page_mouse_filter",control.mouse_filter)
+		control.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	elif not disabled and control.has_meta("page_mouse_filter"):
+		control.mouse_filter = control.get_meta("page_mouse_filter")
+		control.remove_meta("page_mouse_filter")
+
+func _commit_menu_neighbor(direction: int) -> void:
+	var neighbor: Dictionary = menu_neighbors[direction]
+	_refresh_cached_menu_page(neighbor.screen, neighbor.content)
+	var offset: float = menu_body.position.x
+	_stop_menu_page_motion()
+	menu_neighbors.erase(direction)
+	# Keep the prepared page and the header alive. Commitment only changes ownership
+	# and animates the remaining distance; no page construction runs under the finger.
+	outgoing_menu_page = menu_body
+	outgoing_menu_page.position.x = offset
+	outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
+	_set_menu_preview_input(outgoing_menu_page, true)
+	returning_menu_neighbor = {"body":menu_body,"content":content,"backgrounds":menu_body_backgrounds,"screen":screen,"direction":-direction}
+	var outgoing_browser: TrackBrowser = outgoing_menu_page.find_child("TrackBrowser", true, false)
+	if outgoing_browser != null: outgoing_browser.page_preview = true
+	menu_body = neighbor.body
+	menu_body.show()
+	menu_body.process_mode = Node.PROCESS_MODE_INHERIT
+	_set_menu_preview_input(menu_body, false)
+	content = neighbor.content
+	menu_body_backgrounds = neighbor.backgrounds
+	var remaining: Dictionary = {}
+	for old_direction: int in menu_neighbors:
+		remaining[old_direction - direction] = menu_neighbors[old_direction]
+	menu_neighbors = remaining
+	_navigation_generation += 1
+	if rivalry_racing and rivalry_section in ["race_results", "result"] and neighbor.screen != "rivalry" and is_instance_valid(game):
+		remove_child(game)
+		game.queue_free()
+		game = null
+		rivalry_racing = false
+	screen = neighbor.screen
+	if screen == "biome" and document.is_empty():
+		document = TrackDocument.create_blank()
+		document.id = TrackLibrary.unique_id()
+		_stamp_creator()
+		history.clear()
+		redo_history.clear()
+	for id: String in ["tracks", "create", "garage"]:
+		var tab: Button = root_ui.find_child("Tab_" + id, true, false)
+		var selected: bool = (id == "tracks" and screen in ["tracks", "rivalry"]) or (id == "create" and screen == "biome") or id == screen
+		tab.add_theme_stylebox_override("normal", MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
+		tab.add_theme_color_override("font_color", MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
+	if browser != null:
+		browser_state = browser.state
+	_slide_menu_page(signi(direction), offset)
+
+func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> void:
+	if destination == "garage":
+		var circuit: MenuFeature = column.find_child("GarageCircuit",true,false)
+		if circuit != null:
+			var title: String = track_title(selected_track).to_upper()+" · 5 LAPS"
+			if circuit.heading != title:
+				circuit.heading = title
+				circuit.tooltip_text = title+". "+circuit.description
+				circuit.queue_redraw()
+	elif destination == "biome" and str(column.get_meta("biome_theme","")) != str(document.get("theme",TrackDocument.THEMES[0])):
+		for child: Node in column.get_children():
+			column.remove_child(child)
+			child.queue_free()
+		_choose_biome(column,true)
+
+func _navigate_menu_page(next: String) -> void:
+	# Explicit refreshes still use _show_screen. User navigation promotes the same
+	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
+	if menu_page_motion != null: _finish_menu_page_slide()
+	if next == screen and is_instance_valid(menu_body):
+		_refresh_cached_menu_page(next,content)
+		_set_menu_preview_input(menu_body,false)
+		return
+	for direction: int in menu_neighbors:
+		if menu_neighbors[direction].screen == next:
+			_commit_menu_neighbor(direction)
+			return
+	_show_screen(next)
+
+func _finish_menu_page_slide() -> void:
+	_stop_menu_page_motion()
+	_activate_menu_page.call_deferred(_navigation_generation)
+	_prepare_menu_neighbors.call_deferred(_navigation_generation)
+
+func _settle_menu_before_touch() -> void:
+	if menu_page_motion != null: _finish_menu_page_slide()
+	if menu_edge_motion != null: _stop_menu_edge_motion()
+
+func _activate_menu_page(generation: int) -> void:
+	if generation != _navigation_generation or not is_instance_valid(menu_body): return
+	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+	if menu_page_motion != null or (swipe != null and swipe.pointer != -1):
+		await get_tree().process_frame
+		if is_inside_tree(): _activate_menu_page.call_deferred(generation)
+		return
+	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
+	if browser != null and browser.page_preview:
+		browser.activate_page()
+	if screen == "rivalry" and not rivalry.model.sample: rivalry.refresh()
 
 func _account_changed() -> void:
 	var previous_profile: String = active_profile
@@ -381,6 +787,10 @@ func _select_player_storage() -> void:
 	_navigation_generation += 1
 	_finish_preview_thread()
 	active_profile = scope
+	if rivalry != null:
+		rivalry.test_population = false
+		rivalry.reset()
+		rivalry_result_pending = false
 	if scope.is_empty():
 		records = guest_records
 		library = guest_library
@@ -511,7 +921,8 @@ func _ensure_track_catalog() -> void:
 				if profile == active_profile: continue
 				track_catalog.shared_directories.append(profile_root.path_join("players").path_join(profile).path_join("tracks/.published"))
 
-func _tracks() -> void:
+func _tracks(parent: VBoxContainer = null, preview: bool = false) -> void:
+	if parent == null: parent = content
 	var began: int = Time.get_ticks_usec()
 	var browser := TrackBrowser.new()
 	var created: int = Time.get_ticks_usec()
@@ -524,27 +935,184 @@ func _tracks() -> void:
 	browser.records = records
 	browser.builtin_ids = BUILTIN_IDS
 	browser.selected_track = selected_track
-	browser.state = browser_state
+	browser.page_preview = preview
+	browser.state = browser_state.duplicate(true) if preview else browser_state
 	browser.race_requested.connect(func(track: NativeTrack) -> void: _start_race(track,false))
-	browser.track_selected.connect(func(track: NativeTrack) -> void: selected_track = track)
+	browser.track_selected.connect(_menu_track_selected)
 	browser.home_requested.connect(func() -> void: _show_screen("tracks"))
 	browser.import_requested.connect(_import_dialog)
 	browser.delete_requested.connect(_confirm_delete_track)
 	browser.notice.connect(_notice)
+	browser.rivalry_requested.connect(_open_rivalry)
 	browser.edit_requested.connect(func(doc: Dictionary) -> void:
 		document = doc.duplicate(true)
 		editor_view.clear()
 		history.clear()
 		redo_history.clear()
 		_show_screen("create"))
-	content.add_child(browser)
-	menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
+	parent.add_child(browser)
+	if not preview: menu_open_costs = {"browser_new_ms":(created-began)/1000.0,"browser_ready_ms":(Time.get_ticks_usec()-created)/1000.0}
 
-func _garage() -> void:
+func _menu_track_selected(track: NativeTrack) -> void:
+	selected_track = track
+	if screen == "garage" and is_instance_valid(content): _refresh_cached_menu_page("garage",content)
+	for neighbor: Dictionary in menu_neighbors.values():
+		if neighbor.screen == "garage": _refresh_cached_menu_page("garage",neighbor.content)
+
+func _open_race_area() -> void:
+	if race_area_mode == "rivalry": _open_rivalry()
+	else: _navigate_menu_page("tracks")
+
+func _open_rivalry() -> void:
+	race_area_mode = "rivalry"
+	if rivalry.snapshot_scope != rivalry.scope() and not rivalry.model.sample: rivalry.reset()
+	_navigate_menu_page("rivalry")
+	if not rivalry.model.sample: rivalry.refresh()
+
+func _rivalry_changed() -> void:
+	if rivalry.result_ticket.is_empty() or rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
+	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
+		_rivalry()
+
+func _rivalry(parent: VBoxContainer = null) -> void:
+	if parent == null: parent = content
+	for child: Node in parent.get_children():
+		parent.remove_child(child)
+		child.queue_free()
+	var page := WeeklyRivalryPage.new()
+	page.model = rivalry.model
+	page.section = rivalry_section
+	page.selected = rivalry_track
+	page.ghost_choice = rivalry_ghost_choice
+	page.busy = rivalry.busy or cloud_starting
+	page.error = rivalry.error
+	page.signed_in = online.client.signed_in()
+	page.pending_result = rivalry_result_pending
+	page.test_drivers_available = OS.is_debug_build() and online.client.signed_in() and bool(online.capabilities.get("test_drivers",false))
+	page.test_population = rivalry.test_population
+	page.test_population_requested.connect(func(enabled: bool) -> void:
+		if is_instance_valid(game):
+			remove_child(game)
+			game.queue_free()
+			game = null
+			rivalry_racing = false
+		rivalry_section = "overview"
+		rivalry.set_test_population(enabled)
+		rivalry.refresh())
+	page.section_requested.connect(func(section: String) -> void:
+		if is_instance_valid(game):
+			remove_child(game)
+			game.queue_free()
+			game = null
+			rivalry_racing = false
+		rivalry_section = section
+		_rivalry()
+		if not rivalry.model.sample: rivalry.refresh())
+	page.track_requested.connect(func(index: int) -> void:
+		rivalry_track = index
+		rivalry_section = "detail"
+		_rivalry())
+	page.race_requested.connect(_start_rivalry_race)
+	page.free_race_requested.connect(func() -> void:
+		if is_instance_valid(game):
+			remove_child(game)
+			game.queue_free()
+			game = null
+			rivalry_racing = false
+		race_area_mode = "free"
+		_show_screen("tracks"))
+	page.join_requested.connect(func() -> void:
+		if online.client.signed_in(): rivalry.join()
+		else: _open_account())
+	page.refresh_requested.connect(func() -> void: rivalry.refresh())
+	page.continue_requested.connect(func() -> void:
+		if rivalry.model.sample:
+			rivalry.model.next_week()
+			_rivalry()
+		else: rivalry.continue_week())
+	page.retry_requested.connect(_retry_race)
+	parent.add_child(page)
+
+func _rivalry_ghost(index: int, choice: int) -> Dictionary:
+	if choice == 3: return {}
+	var gap: Dictionary = rivalry.model.gaps(index)
+	var target: Dictionary = gap.ahead if choice == 0 else gap.leader if choice == 1 else gap.own
+	return await rivalry.ghost(index,str(target.get("driver_id","")))
+
+func _start_rivalry_race(index: int, choice: int) -> void:
+	if cloud_starting or rivalry.busy or not online.client.signed_in() or rivalry.model.sample: return
+	var navigation: int = _navigation_generation
+	var original_scope: String = rivalry.scope()
+	cloud_starting = true
+	_rivalry()
+	var loading: RaceLoading = _open_race_loading()
+	var loading_id: int = loading.get_instance_id()
+	var metadata: Dictionary = rivalry.model.tracks[index].entry
+	var points := PackedVector2Array()
+	for point: Array in metadata.get("points", []): points.append(Vector2(point[0], point[1]))
+	loading.configure(str(metadata.get("name", "Weekly Rivalry")), str(metadata.get("theme", "pine")), points)
+	loading.stage("Connecting race…")
+	await _present_race_loading()
+	if navigation != _navigation_generation or original_scope != rivalry.scope():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
+	var issued: Dictionary = await rivalry.ticket(index)
+	if navigation != _navigation_generation or original_scope != rivalry.scope():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
+	if issued.is_empty():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		_rivalry()
+		return
+	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
+	loading.stage("Downloading track…")
+	var downloaded: bool = await cloud.download(entry)
+	if navigation != _navigation_generation or original_scope != rivalry.scope():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
+	if not downloaded:
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		rivalry.error = cloud.last_error
+		_rivalry()
+		return
+	loading.stage("Preparing track…")
+	await _present_race_loading()
+	if navigation != _navigation_generation or original_scope != rivalry.scope():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
+	var track: NativeTrack = cloud.compile_entry(entry)
+	if track == null:
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		rivalry.error = "Track could not be prepared. Try again."
+		_rivalry()
+		return
+	loading.stage("Loading ghost…")
+	var recording: Dictionary = await _rivalry_ghost(index,choice)
+	cloud_starting = false
+	_close_race_loading(loading_id)
+	if navigation != _navigation_generation or original_scope != rivalry.scope(): return
+	rivalry_track = index
+	rivalry_ghost_choice = choice
+	rivalry_recording = recording
+	rivalry_result_pending = false
+	rivalry.result_ticket = ""
+	rivalry.result_state = ""
+	selected_track = track
+	await _start_race(track,false,false,issued)
+
+func _garage(parent: VBoxContainer = null) -> void:
+	if parent == null: parent = content
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",24)
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(row)
+	parent.add_child(row)
 	var scene_copy := VBoxContainer.new()
 	scene_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(scene_copy)
@@ -559,6 +1127,7 @@ func _garage() -> void:
 	var footer := HBoxContainer.new()
 	scene_copy.add_child(footer)
 	_feature(footer,track_title(selected_track).to_upper()+" · 5 LAPS","Return to your selected circuit",_show_screen.bind("tracks"))
+	footer.get_child(footer.get_child_count()-1).name = "GarageCircuit"
 	_feature(footer,"DRIVING CONTROLS","Find your preferred layout",_show_screen.bind("settings"))
 	var info: VBoxContainer = _menu_card(row)
 	info.add_theme_constant_override("separation",6)
@@ -595,7 +1164,7 @@ func _garage() -> void:
 	var space := Control.new()
 	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.add_child(space)
-	var race := MenuStyle.button("RACE  →",_start_race.bind(selected_track,false),true)
+	var race := MenuStyle.button("RACE  →",func() -> void: _start_race(selected_track,false),true)
 	race.custom_minimum_size.y = 64
 	info.add_child(race)
 	info.add_child(MenuStyle.button("Choose circuit",_open_library.bind("all")))
@@ -621,6 +1190,21 @@ func _save_settings() -> void:
 	records.settings.left_handed = ui_left_handed
 	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
 
+func _swipe_menu_page(direction: int) -> void:
+	var pages: Array[String] = ["tracks", "biome", "garage"]
+	var current: String = "biome" if screen == "drafts" else "tracks" if screen == "rivalry" else screen
+	var index: int = pages.find(current)
+	if index < 0: return
+	var destination: int = index + direction
+	if destination < 0 or destination >= pages.size(): return
+	if menu_neighbors.has(direction):
+		_commit_menu_neighbor(direction)
+		return
+	# Revisit the current creation choices without replacing an in-progress draft.
+	if pages[destination] == "biome" and document.is_empty(): _new_document()
+	elif pages[destination] == "tracks": _open_race_area()
+	else: _show_screen(pages[destination])
+
 func _new_document() -> void:
 	if screen == "create" and _editor_has_unsaved_changes():
 		_confirm_editor_departure(_start_new_document)
@@ -638,7 +1222,7 @@ func _start_new_document() -> void:
 	_stamp_creator()
 	history.clear()
 	redo_history.clear()
-	_show_screen("biome")
+	_navigate_menu_page("biome")
 	object_browser = null
 	object_browser_state.clear()
 
@@ -1296,7 +1880,7 @@ func _test_document() -> void:
 	if track != null and not test_button.disabled:
 		track.spawn = _practice_start(track)
 		track.spawn_heading = _practice_heading(track)
-		_start_race(track, true)
+		await _start_race(track, true)
 
 func _publish_current_document() -> void:
 	if not canvas.paint_points.is_empty() or not canvas.ghost.is_empty():
@@ -1406,28 +1990,65 @@ func _own_dialog(dialog: AcceptDialog) -> void:
 var test_return_to_drafts: bool = false
 var test_document_snapshot: Dictionary = {}
 
-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false) -> void:
-	if cloud_starting: return
+func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
+	_stop_menu_page_motion()
+	race_loading = RaceLoading.new()
+	add_child(race_loading)
+	if track != null:
+		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice)
+	return race_loading
+
+func _present_race_loading() -> void:
+	# Layout and actually draw the overlay before synchronous scene construction.
+	await get_tree().process_frame
+	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+
+func _close_race_loading(expected_id: int = 0) -> void:
+	if not is_instance_valid(race_loading): return
+	if expected_id != 0 and race_loading.get_instance_id() != expected_id: return
+	remove_child(race_loading)
+	race_loading.queue_free()
+	race_loading = null
+
+func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}) -> void:
+	if cloud_starting or is_instance_valid(race_loading): return
 	if not from_editor and not track.metadata.has("cloud_version") and cloud != null:
 		_notice("Choose a published backend track from Race.")
+		return
+	var original_scope: String = lifecycle.scope()
+	var navigation_generation: int = _navigation_generation
+	var starting_screen: String = screen
+	var selected_vehicle: String = VehicleCatalog.selected
+	var starting_selection: NativeTrack = selected_track
+	var loading: RaceLoading = _open_race_loading(track, from_editor)
+	var loading_id: int = loading.get_instance_id()
+	cloud_starting = true
+	await _present_race_loading()
+	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
+		cloud_starting = false
+		_close_race_loading(loading_id)
 		return
 	cloud_ticket = {}
 	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
-		var original_scope: String = lifecycle.scope()
-		var navigation_generation: int = _navigation_generation
-		var starting_screen: String = screen
-		var selected_vehicle: String = VehicleCatalog.selected
-		var starting_selection: NativeTrack = selected_track
-		cloud_starting = true
-		var issued: Dictionary = await cloud.ticket(track)
-		cloud_starting = false
-		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection: return
+		loading.stage("Connecting race…")
+		var issued: Dictionary = await cloud.ticket(track,false,VehicleCatalog.selected,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
+		if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
+			cloud_starting = false
+			_close_race_loading(loading_id)
+			return
 		cloud_ticket = issued
 		if not cloud_ticket.is_empty():
 			cloud_ticket._owner_id = str(online.client.player.id)
 			cloud_ticket._origin = str(online.client.base_url())
+			if not rivalry_issued.is_empty(): rivalry.result_ticket = str(cloud_ticket.ticket_id)
 		if cloud_ticket.is_empty():
+			cloud_starting = false
+			_close_race_loading(loading_id)
+			if not rivalry_issued.is_empty():
+				rivalry.error = cloud.last_error
+				_rivalry()
+				return
 			var offline_dialog := ConfirmationDialog.new()
 			offline_dialog.title = "Online race unavailable"
 			offline_dialog.dialog_text = cloud.last_error+"\nRace offline with a local time? This attempt will not enter the online leaderboard."
@@ -1438,7 +2059,14 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 					_start_race(track,from_editor,true))
 			offline_dialog.popup_centered()
 			return
+	loading.stage("Loading track…")
+	await _present_race_loading()
+	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation or screen != starting_screen or VehicleCatalog.selected != selected_vehicle or selected_track != starting_selection:
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
 	returning_to_editor = from_editor
+	rivalry_racing = not rivalry_issued.is_empty()
 	test_return_to_drafts = from_editor and screen == "drafts"
 	test_document_snapshot = document.duplicate(true) if from_editor else {}
 	if from_editor:
@@ -1452,8 +2080,10 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
 		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+	_stop_menu_page_motion()
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
+	game.process_mode = Node.PROCESS_MODE_DISABLED
 	game.set("initial_track", track)
 	game.set("production_mode", true)
 	game.set("resume_client",online.client)
@@ -1467,12 +2097,32 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.connect("practice_lap_completed", _complete_draft_test,CONNECT_DEFERRED)
 	game.connect("retry_requested", _retry_race)
 	add_child(game)
+	var prepared_game: Node = game
+	if rivalry_racing:
+		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
+		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
 	var hud: PlaygroundHUD = game.get("hud")
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
 	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
 	hud.touch.layout = ControlLayout.from_settings(records.settings)
 	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
+	# Render the prepared world once with the countdown/input still frozen.
+	game.call("_process", 0.0)
+	loading.stage("Preparing start…")
+	await _present_race_loading()
+	if not is_instance_valid(prepared_game) or game != prepared_game:
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
+	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation:
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		_leave_race()
+		return
+	game.process_mode = Node.PROCESS_MODE_INHERIT
+	cloud_starting = false
+	_close_race_loading(loading_id)
 
 func _edit_here(position: Vector2) -> void:
 	_leave_race()
@@ -1488,7 +2138,11 @@ func _leave_race() -> void:
 		remove_child(game)
 		game.queue_free()
 	game = null
-	_show_screen("drafts" if test_return_to_drafts else "create" if returning_to_editor else "tracks")
+	if rivalry_racing:
+		rivalry_racing = false
+		rivalry_section = "overview"
+		_show_screen("rivalry")
+	else: _show_screen("drafts" if test_return_to_drafts else "create" if returning_to_editor else "tracks")
 	test_return_to_drafts = false
 	if not pending_menu_notice.is_empty():
 		_notice(pending_menu_notice)
@@ -1514,10 +2168,20 @@ func _results() -> void:
 		cloud_ticket = {}
 		cloud_publish_version = ""
 		cloud.flush_outbox()
+	if rivalry_racing:
+		rivalry_result_pending = online_queued
+		# Verification runs behind the normal PB/lap summary until Continue.
+		rivalry_section = "race_results"
+		if online_queued: rivalry.model.preview_result(rivalry_track,session.elapsed_ticks,total)
+		else: rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+		if online_queued: rivalry.poll_result()
 	var previous: float = result_records.best_for(track, game.get("handling"))
 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
 	var saved: bool = not clean
 	if clean: saved = result_records.record(track, game.get("handling"), total, session.lap_times) == OK
+	if clean and saved:
+		var ghost_error: Error = game.save_personal_ghost()
+		if ghost_error != OK: pending_menu_notice = "Best time saved. Could not save its local ghost."
 	(game.get("hud") as PlaygroundHUD).hide()
 	root_ui.visible = true
 	for child: Node in root_ui.get_children():
@@ -1575,6 +2239,11 @@ func _results() -> void:
 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 
 func _results_continue(results: RaceResults, parent: Control) -> void:
+	if rivalry_racing:
+		rivalry_section = "result"
+		_show_screen("rivalry")
+		if rivalry_result_pending: rivalry.poll_result()
+		return
 	results.hide()
 	var page := RaceComplete.new()
 	page.results = results
@@ -1637,13 +2306,24 @@ func _retry_race() -> void:
 	var replacement: Dictionary = {}
 	if track.metadata.has("cloud_version") and online.client.signed_in():
 		cloud_starting = true
-		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"))
+		var issued: Dictionary = await rivalry.ticket(rivalry_track) if rivalry_racing else {}
+		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"),issued) if not rivalry_racing or not issued.is_empty() else {}
 		cloud_starting = false
 		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
 		if replacement.is_empty():
 			_notice("Could not start verified retry: "+cloud.last_error)
 			return
+	if rivalry_racing:
+		cloud_starting = true
+		var refreshed_recording: Dictionary = await _rivalry_ghost(rivalry_track,rivalry_ghost_choice)
+		cloud_starting = false
+		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+		rivalry_recording = refreshed_recording
 	cloud_ticket = replacement
+	if rivalry_racing:
+		rivalry.result_ticket = str(replacement.get("ticket_id",""))
+		rivalry.result_state = ""
+		rivalry_result_pending = false
 	if not cloud_ticket.is_empty():
 		cloud_ticket._owner_id = account_id
 		cloud_ticket._origin = origin
@@ -1654,6 +2334,9 @@ func _retry_race() -> void:
 	game.set("preference_records",records) # A confirmed restart begins a new attempt.
 	game.set("rating_records",null if track.metadata.has("cloud_version") else records)
 	game.call("restart")
+	if rivalry_racing:
+		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
+		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
 
 static func track_title(track: NativeTrack) -> String:
 	return str(track.metadata.get("title", track.metadata.get("name", track.identity.replace("_"," ").to_upper())))
@@ -1998,7 +2681,7 @@ func _test_saved_draft(id: String) -> void:
 	redo_history.clear()
 	track.spawn = _practice_start(track)
 	track.spawn_heading = _practice_heading(track)
-	_start_race(track,true)
+	await _start_race(track,true)
 
 func _complete_draft_test() -> void:
 	if not is_instance_valid(game) or test_document_snapshot.is_empty(): return
@@ -2200,15 +2883,17 @@ func _choose_hazard(kind: String) -> void:
 	editor_status.text=CreatorObjects.description(kind)+" / tap to place; Objects > Select to adjust"
 
 
-func _choose_biome() -> void:
-	if screen != "biome": return
-	if document.is_empty():
+func _choose_biome(parent: VBoxContainer = null, preview: bool = false) -> void:
+	if parent == null: parent = content
+	parent.set_meta("biome_theme",str(document.get("theme",TrackDocument.THEMES[0])))
+	if not preview and screen != "biome": return
+	if document.is_empty() and not preview:
 		document = TrackDocument.create_blank()
 		document.id = TrackLibrary.unique_id()
 		_stamp_creator()
 	var heading_row := HBoxContainer.new()
 	heading_row.add_theme_constant_override("separation",20)
-	content.add_child(heading_row)
+	parent.add_child(heading_row)
 	var heading_copy := VBoxContainer.new()
 	heading_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	heading_copy.add_theme_constant_override("separation",2)
@@ -2227,7 +2912,7 @@ func _choose_biome() -> void:
 	cards.name = "BiomePicker"
 	cards.add_theme_constant_override("separation",16)
 	cards.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	content.add_child(cards)
+	parent.add_child(cards)
 	for biome: String in TrackDocument.THEMES:
 		var card := Button.new()
 		card.name = "Biome_"+biome
@@ -2290,7 +2975,7 @@ func _choose_biome() -> void:
 	summary_panel.name = "BiomeSummary"
 	summary_panel.custom_minimum_size.y = 118
 	summary_panel.add_theme_stylebox_override("panel",MenuStyle.card(16))
-	content.add_child(summary_panel)
+	parent.add_child(summary_panel)
 	var summary_row := HBoxContainer.new()
 	summary_row.add_theme_constant_override("separation",20)
 	summary_panel.add_child(summary_row)

@@ -9,7 +9,7 @@ func run() -> void:
 	game.set_physics_process(false)
 	root.size = Vector2i(1280,720)
 	root.content_scale_size = root.size
-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/launch-start-2026-10-03")
+	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/launch-start-success-2026-10-03")
 	DirAccess.make_dir_recursive_absolute(output)
 	for reaction: int in [-1,12,26,42,60]:
 		game.restart()

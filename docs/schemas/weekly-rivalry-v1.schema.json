@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bmt:weekly-rivalry-v1",
+  "title": "Weekly Rivalry snapshot v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["state", "week", "year", "ends_at", "server_now", "eligible_track_count", "required_track_count"],
+      "properties": {
+        "state": {"const": "not_joined"},
+        "test_population": {"type": "boolean", "default": false},
+        "week": {"type": "integer", "minimum": 1, "maximum": 53},
+        "year": {"type": "integer"},
+        "ends_at": {"type": "integer"},
+        "server_now": {"type": "integer"},
+        "eligible_track_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "required_track_count": {"const": 5}
+      }
+    },
+    {
+      "type": "object",
+      "required": ["state", "group_id", "self_id", "week", "year", "vehicle_id", "ends_at", "server_now", "remaining_seconds", "driver_count", "group_forming", "placement", "points_policy", "pending_runs", "tracks", "standings"],
+      "properties": {
+        "state": {"enum": ["active", "settling", "complete"]},
+        "test_population": {"type": "boolean", "default": false},
+        "group_id": {"type": "string", "minLength": 1, "maxLength": 36},
+        "self_id": {"type": "string", "minLength": 1, "maxLength": 36},
+        "week": {"type": "integer", "minimum": 1, "maximum": 53},
+        "year": {"type": "integer"},
+        "vehicle_id": {"type": "string", "minLength": 1, "maxLength": 80},
+        "ends_at": {"type": "integer"},
+        "server_now": {"type": "integer"},
+        "remaining_seconds": {"type": "integer", "minimum": 0, "maximum": 604800},
+        "driver_count": {"type": "integer", "minimum": 1, "maximum": 20},
+        "group_forming": {"type": "boolean"},
+        "placement": {"type": "boolean"},
+        "pending_runs": {"type": "integer", "minimum": 0},
+        "points_policy": {"type": "array", "minItems": 20, "maxItems": 20, "items": {"type": "integer", "minimum": 0}},
+        "standings": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"$ref": "#/$defs/driver"}},
+        "tracks": {
+          "type": "array", "minItems": 5, "maxItems": 5,
+          "items": {
+            "type": "object", "required": ["slot", "board_id", "available", "entry", "entries"],
+            "properties": {
+              "slot": {"type": "integer", "minimum": 0, "maximum": 4},
+              "board_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "available": {"type": "boolean"},
+              "entry": {
+                "type": "object", "required": ["track_id", "version_id", "content_hash", "name", "creator"],
+                "properties": {
+                  "track_id": {"type": "string"},
+                  "version_id": {"type": "string"},
+                  "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                  "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                  "creator": {"type": "string"},
+                  "points": {"type": "array", "maxItems": 96, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}}
+                }
+              },
+              "entries": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {"allOf": [{"$ref": "#/$defs/driver"}, {"required": ["ticks", "ms", "run_id"], "properties": {
+                  "ticks": {"type": ["integer", "null"], "minimum": 1, "maximum": 216000},
+                  "ms": {"type": ["integer", "null"], "minimum": 1, "maximum": 1800000},
+                  "run_id": {"type": ["string", "null"]}
+                }}]}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "driver": {
+      "type": "object", "required": ["id", "name", "rank", "points"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 36},
+        "name": {"type": "string"},
+        "is_test_driver": {"type": "boolean", "default": false},
+        "rank": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+        "points": {"type": "integer", "minimum": 0, "maximum": 150},
+        "completed": {"type": "integer", "minimum": 0, "maximum": 5}
+      }
+    }
+  }
+}

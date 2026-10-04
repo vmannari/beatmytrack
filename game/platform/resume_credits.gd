@@ -12,6 +12,13 @@ var owner_id: String = ""
 var pending: Dictionary = {}
 var busy: bool = false
 var used: int = 0
+var show_ads: bool = false
+var ad_adapter: Node
+var _completed_ad: Dictionary = {}
+
+func _ready() -> void:
+	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
+	add_child(ad_adapter)
 
 func begin(ticket: String = "") -> void:
 	race_id = ""
@@ -21,6 +28,7 @@ func begin(ticket: String = "") -> void:
 	pending = {}
 	used = 0
 	wallet = {}
+	_completed_ad = {}
 
 func _guest_data() -> Dictionary:
 	if not FileAccess.file_exists(guest_path): return {"day":-1}
@@ -44,12 +52,34 @@ func consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
 	if used >= 3 or from_tick-to_tick < 1 or from_tick-to_tick > RewindHistory.WINDOW_TICKS: return {"ok":false,"error":"Resume limit reached."}
 	if client != null and str(client.player.get("id","")) != owner_id: return {"ok":false,"error":"Account changed. Start a new race."}
 	busy = true
+	var ad_selection: Dictionary = {"race":race_key,"ordinal":used+1,"from_tick":from_tick,"to_tick":to_tick,"input_offset":input_offset}
+	# Test SDK completion gates only the existing temporary resume path. It is
+	# never provider proof for a banked grant, and cannot bypass bank/daily order.
+	if OS.is_debug_build() and show_ads and pending.is_empty() and _completed_ad != ad_selection:
+		var race_generation: String = race_key
+		var checked: Dictionary = await refresh()
+		if not checked.ok:
+			busy = false
+			return checked
+		if int(wallet.get("balance",0)) == 0 and int(wallet.get("free",0)) == 0:
+			if not bool(wallet.get("ad_preview_available", false)):
+				busy = false
+				return {"ok":false,"error":"Test-ad resumes are not enabled on this backend."}
+			var ad_result: Dictionary = await ad_adapter.show_rewarded()
+			if not ad_result.ok:
+				busy = false
+				return ad_result
+			_completed_ad = ad_selection
+		if race_key != race_generation or (client != null and str(client.player.get("id","")) != owner_id):
+			busy = false
+			return {"ok":false,"error":"Race or account changed. Start a new race."}
 	var response: Dictionary = await _consume(from_tick,to_tick,input_offset)
 	busy = false
 	if response.ok:
 		used += 1
 		wallet = response.data.wallet
 		pending = {}
+		_completed_ad = {}
 	return response
 
 func _consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:

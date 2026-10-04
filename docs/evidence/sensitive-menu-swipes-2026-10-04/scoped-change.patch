@@ -1,0 +1,251 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -165,14 +165,14 @@
+ 	add_child(rivalry)
+ 	rivalry.changed.connect(_rivalry_changed)
+ 	var rivalry_timer := Timer.new()
+-	rivalry_timer.wait_time = 5.0
++	rivalry_timer.wait_time = 0.5
+ 	rivalry_timer.autostart = true
+ 	rivalry_timer.timeout.connect(func() -> void:
+-		if screen != "rivalry" or rivalry.busy or rivalry.model.sample: return
++		if rivalry.busy or rivalry.model.sample: return
+ 		if rivalry_result_pending: rivalry.poll_result()
+-		elif not is_instance_valid(game):
++		elif screen == "rivalry" and not is_instance_valid(game):
+ 			rivalry_refresh_ticks += 1
+-			if rivalry_refresh_ticks >= 6:
++			if rivalry_refresh_ticks >= 60:
+ 				rivalry_refresh_ticks = 0
+ 				rivalry.refresh())
+ 	add_child(rivalry_timer)
+@@ -537,18 +537,25 @@
+ 	if menu_edge_motion != null: menu_edge_motion.kill()
+ 	menu_edge_motion = create_tween().set_parallel(true)
+ 	var edge: bool = is_zero_approx(menu_drag_offset)
+-	var duration: float = 0.38 if edge else 0.28 + 0.10 * minf(1.0, absf(menu_drag_offset) / menu_body_slot.size.x)
+-	var transition: Tween.TransitionType = Tween.TRANS_BACK if edge else Tween.TRANS_SINE
+-	var easing: Tween.EaseType = Tween.EASE_OUT if edge else Tween.EASE_IN_OUT
+-	menu_edge_motion.tween_property(menu_body, "position:x", 0.0, duration).set_trans(transition).set_ease(easing)
+-	if menu_neighbors.has(menu_neighbor_direction):
+-		var neighbor: Control = menu_neighbors[menu_neighbor_direction].body
+-		menu_edge_motion.tween_property(neighbor, "position:x", menu_body_slot.size.x * menu_neighbor_direction, duration).set_trans(transition).set_ease(easing)
++	if edge:
++		menu_edge_motion.tween_property(menu_body, "position:x", 0.0, 0.38).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
++	else:
++		# One progress value keeps both pages and their gutter together. Smootherstep
++		# has zero velocity and acceleration at each end, avoiding a release kick.
++		var duration: float = 0.42 + 0.10 * minf(1.0, absf(menu_drag_offset) / menu_body_slot.size.x)
++		var neighbor: Control = menu_neighbors[menu_neighbor_direction].body if menu_neighbors.has(menu_neighbor_direction) else null
++		var neighbor_start: float = neighbor.position.x if is_instance_valid(neighbor) else 0.0
++		menu_edge_motion.tween_method(_return_menu_drag.bind(menu_body.position.x, neighbor, neighbor_start, menu_body_slot.size.x * menu_neighbor_direction), 0.0, 1.0, duration)
+ 	menu_edge_motion.chain().tween_callback(func() -> void:
+ 		menu_edge_motion = null
+ 		menu_drag_offset = 0.0
+ 		menu_neighbor_direction = 0
+ 		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide())
++
++func _return_menu_drag(progress: float, start: float, neighbor: Control, neighbor_start: float, neighbor_end: float) -> void:
++	var blend: float = progress * progress * progress * (progress * (progress * 6.0 - 15.0) + 10.0)
++	if is_instance_valid(menu_body): menu_body.position.x = lerpf(start, 0.0, blend)
++	if is_instance_valid(neighbor): neighbor.position.x = lerpf(neighbor_start, neighbor_end, blend)
+ 
+ func _prepare_menu_neighbors(generation: int) -> void:
+ 	# Warm actual page controls between gestures, after the viewport has laid out.
+@@ -2032,7 +2039,8 @@
+ 		rivalry_result_pending = online_queued
+ 		# Verification runs behind the normal PB/lap summary until Continue.
+ 		rivalry_section = "race_results"
+-		rivalry.model.last_result = {"ms":roundi(total*1000.0)}
++		if online_queued: rivalry.model.preview_result(rivalry_track,session.elapsed_ticks,total)
++		else: rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+ 		if online_queued: rivalry.poll_result()
+ 	var previous: float = result_records.best_for(track, game.get("handling"))
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -16,8 +16,8 @@
+ var last_drag_distance: float = 0.0
+ var commit_direction: int = 0
+ const CLAIM_DISTANCE: float = 6.0
+-const PAGE_DISTANCE: float = 32.0
+-const CANCEL_DISTANCE: float = 12.0
++const PAGE_DISTANCE: float = 20.0
++const CANCEL_DISTANCE: float = 6.0
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+@@ -50,7 +50,7 @@
+ 			# Backward lift jitter still cannot disarm an already completed stroke.
+ 			if not rejected and not event.canceled and not _modal_open(modal_root):
+ 				var forward_release: bool = absf(distance.x) > absf(last_drag_distance) and (is_zero_approx(last_drag_distance) or distance.x * last_drag_distance > 0.0)
+-				var horizontal_release: bool = dragging or absf(distance.x) > absf(distance.y) * 1.15
++				var horizontal_release: bool = dragging or absf(distance.x) > absf(distance.y) * 1.05
+ 				if forward_release and horizontal_release and absf(distance.x) >= PAGE_DISTANCE:
+ 					dragging = true
+ 					commit_direction = 1 if distance.x < 0.0 else -1
+@@ -74,7 +74,7 @@
+ 		if not dragging and not rejected and absf(distance.x) >= CLAIM_DISTANCE:
+ 			# Scrollable controls already own their touches. Allow a static-content
+ 			# gesture to establish horizontal intent after initial vertical jitter.
+-			if absf(distance.x) > absf(distance.y) * 1.15: dragging = true
++			if absf(distance.x) > absf(distance.y) * 1.05: dragging = true
+ 		if dragging and not rejected:
+ 			last_drag_distance = distance.x
+ 			# Hysteresis lets a short completed swipe survive finger relaxation,
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -62,7 +62,7 @@
+ 		var point := Vector2(dimensions.x * 0.6, 180)
+ 		await check_live_slide(point, dimensions)
+ 		# Android can deliver the end of a forward stroke only in its UP event.
+-		for last_move: float in [0.0, 4.0, 24.0]:
++		for last_move: float in [0.0, 4.0, 14.0]:
+ 			touch(point, true)
+ 			if last_move > 0.0: drag(point + Vector2(-last_move, 0))
+ 			var displayed_offset: float = app.menu_body.position.x
+@@ -72,6 +72,10 @@
+ 				check(is_equal_approx(app.outgoing_menu_page.position.x, displayed_offset), "forward release animates from last displayed position")
+ 			await settle()
+ 			await show("tracks")
++		await swipe(point, Vector2(-20,18))
++		check(app.screen == "biome", "short mostly horizontal diagonal swipe commits")
++		await swipe(point, Vector2(20,18))
++		check(app.screen == "tracks", "short diagonal reverse commits too")
+ 		touch(point, true)
+ 		touch(point + Vector2(-100, 160), false)
+ 		await settle()
+@@ -98,7 +102,7 @@
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "tracks", "first tab has no wrap")
+ 		await check_edge("tracks", point, 1, dimensions)
+-		await swipe(point, Vector2(-24, 0))
++		await swipe(point, Vector2(-14, 0))
+ 		check(app.screen == "tracks", "short drag does not navigate")
+ 		await swipe(point, Vector2(-100, 160))
+ 		check(app.screen == "tracks", "vertical gesture does not navigate")
+@@ -173,9 +177,9 @@
+ 	check(is_zero_approx(app.menu_body.position.x), "tiny touch jitter does not start a slide")
+ 	drag(point + Vector2(-10,0))
+ 	check(is_equal_approx(app.menu_body.position.x,-10.0) and app.screen == "tracks", "small horizontal movement starts live slide before release")
+-	drag(point + Vector2(-24,0))
+-	check(is_equal_approx(app.menu_body.position.x,-24.0), "content tracks finger distance immediately")
+-	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width+12.0-24.0), "next page is visible early with a growing empty gutter")
++	drag(point + Vector2(-14,0))
++	check(is_equal_approx(app.menu_body.position.x,-14.0), "content tracks finger distance immediately")
++	check(neighbor.visible and is_equal_approx(neighbor.position.x,page_width+7.0-14.0), "next page is visible early with a growing empty gutter")
+ 	check(neighbor.find_child("BiomePicker",true,false) != null and not neighbor.can_process() and neighbor.mouse_filter == Control.MOUSE_FILTER_IGNORE, "neighbor has real page content with its input disabled")
+ 	check(app.document == draft, "preparing and revealing Create leaves the draft unchanged")
+ 	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header), "navigation remains fixed during live drag")
+@@ -187,15 +191,24 @@
+ 	# scheduling cannot change the sampled time or conceal a fast release jump.
+ 	app.menu_edge_motion.pause()
+ 	app.menu_edge_motion.custom_step(1.0 / 60.0)
+-	check(absf(app.menu_body.position.x) > absf(held_position) * 0.97 and absf(app.menu_body.position.x) < absf(held_position), "return starts gently instead of jumping toward the origin")
++	check(absf(app.menu_body.position.x) > absf(held_position) * 0.999 and absf(app.menu_body.position.x) < absf(held_position), "failed swipe has a softer first frame with less than 0.1 percent movement")
++	var return_start: float = app.menu_body.position.x
++	app.menu_edge_motion.custom_step(0.10)
++	check(absf(app.menu_body.position.x) > absf(held_position) * 0.85 and absf(app.menu_body.position.x) < absf(return_start), "failed swipe gathers speed gently over its first 0.12 seconds")
++	var return_blend: float = app.menu_body.position.x / held_position
++	check(is_equal_approx(neighbor.position.x - page_width, (neighbor_position - page_width) * return_blend), "failed swipe moves both pages together with the gutter closing smoothly")
++	await capture("failed-return-early", dimensions)
++	app.menu_edge_motion.custom_step(0.28)
++	check(absf(app.menu_body.position.x) > 0.0 and absf(app.menu_body.position.x) < absf(held_position) * 0.01, "failed return slows gently near the original page")
++	await capture("failed-return-near-end", dimensions)
+ 	app.menu_edge_motion.play()
+ 	await settle()
+ 	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "insufficient live drag returns to original page")
+ 	check(not neighbor.visible and app.document == draft, "canceling returns both pages and preserves the draft")
+ 	touch(point,true)
+-	drag(point + Vector2(-24,0))
++	drag(point + Vector2(-14,0))
+ 	await capture("live-race", dimensions)
+-	touch(point + Vector2(-24,0),false)
++	touch(point + Vector2(-14,0),false)
+ 	await settle()
+ 	touch(point,true)
+ 	drag(point + Vector2(-75,0))
+@@ -227,19 +240,19 @@
+ 	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "canceled substantial live drag returns instead of committing")
+ 	touch(point,true)
+ 	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-4,0))
++	check(is_equal_approx(app.menu_body.position.x,-4.0), "reversing finger movement reverses content movement")
++	touch(point + Vector2(-4,0),false)
++	await settle()
++	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "deliberately dragging back near the starting point cancels commitment")
++	touch(point,true)
++	drag(point + Vector2(-20,0))
+ 	drag(point + Vector2(-8,0))
+-	check(is_equal_approx(app.menu_body.position.x,-8.0), "reversing finger movement reverses content movement")
+-	touch(point + Vector2(-8,0),false)
+-	await settle()
+-	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "deliberately dragging back near the starting point cancels commitment")
+-	touch(point,true)
+-	drag(point + Vector2(-40,0))
+-	drag(point + Vector2(-20,0))
+ 	touch(point,false)
+-	check(app.screen == "biome" and app.outgoing_menu_page.position.x == -20.0, "short swipe survives finger relaxation and release-coordinate jitter")
+-	check(is_equal_approx(app.menu_body.position.x,page_width+10.0-20.0), "short relaxed commitment preserves incoming position without a release jump")
+-	await settle()
+-	await swipe(point, Vector2(34,0))
++	check(app.screen == "biome" and app.outgoing_menu_page.position.x == -8.0, "20-unit swipe survives relaxation to eight units and release-coordinate jitter")
++	check(is_equal_approx(app.menu_body.position.x,page_width+4.0-8.0), "short relaxed commitment preserves incoming position without a release jump")
++	await settle()
++	await swipe(point, Vector2(20,0))
+ 	check(app.screen == "tracks", "small reverse swipe is sufficient to return to Race")
+ 	touch(point,true)
+ 	drag(point + Vector2(-150,0))
+@@ -357,6 +370,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/short-menu-swipes-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/sensitive-menu-swipes-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -143,3 +143,26 @@
+ The current shared build entry unconditionally prepares unfinished AdMob Gradle packaging and lacks matching `android_source.zip`. Isolated export copies current game sources, uses the saved `scripts/dev.ps1` from immediately before that concurrent integration (`build/checkpoints/admob-development-2026-10-04/scripts__dev.ps1.before`), disables Gradle and clears its min-SDK override in the copied preset only. Shared source/settings remain untouched. The native AdMob bridge is excluded from this UI test APK. First staged attempt passed driving assertions but crashed at engine shutdown (`ExportAndroid-35924`, exit -1073741819). Second passed focused checks but export rejected the Gradle-only min-SDK override (`ExportAndroid-1872`). The final corrected staged attempt succeeded; no failed check was weakened.
+ 
+ Physical device **DN2103** was attached for install and launch. Inspected [launch](evidence/forward-menu-release-2026-10-04/phone-launch.png) and [first native attempt](evidence/forward-menu-release-2026-10-04/phone-sparse-forward.png). After choosing Guest, attempted DOWN (1500,220), MOVE (1464,222), UP (1410,225); the capture still shows Race. This attempt immediately followed Guest startup and does **not** establish successful native sparse-release verification or its failure cause. Retry failed with device not found; `adb devices -l` then listed only the emulator. The phone has the new APK installed, last observed on Guest Race. Temporary remote screenshot could not be removed after disconnection. Native sparse-release behavior and human finger feel remain acceptance checks. No fresh performance/video/full Validate/replay/ad verification.
++
++## More accepting swipes and softer failed returns (2026-10-04)
++
++Requirements **R01/V03/V04/V05/Q01**. The owner requests greater acceptance sensitivity and a smoother transition when the page returns to its original position. Commitment now requires **20 logical units**, down from 32 (37.5% less travel). A committed stroke survives relaxation until an actual MOVE returns within **six units** instead of twelve. Horizontal intent requires only a 1.05 ratio of horizontal to vertical travel rather than 1.15; mostly vertical gestures still do not claim the page. Six-unit initial claim and release-accounting safeguards remain.
++
++Failed interior page swipes now animate over **0.42-0.52 seconds**, replacing the 0.28-0.38-second sine return. One smootherstep progress value moves both current and neighboring content and closes the gutter; its velocity and acceleration are zero at both ends. It preserves the held positions exactly on release and does not overshoot. The fixed header, full adjacent page preview, 64-unit growing gutter, successful-arrival easing and outer-edge carousel-style spring retain their existing behavior. No physics, replay, backend, account or ad behavior change.
++
++Changed files: `game/ui/menu_page_swipe.gd` (threshold/intent), `game/core/app.gd` (`_settle_menu_edge`, `_return_menu_drag`), `game/tests/test_menu_page_swipe.gd` (new acceptance/relaxation and return sampling), this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the scoped evidence directory. Tests move the below-threshold fixture from 24 to 14 and deliberate-cancel fixture from eight to four to match the newly requested thresholds; they continue verifying those invariants. The relaxation fixture is stricter: a 20-unit peak relaxing to eight must commit. Sparse final-release fixtures remain below the new threshold (0/4/14 MOVE followed by 60-unit UP).
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned Godot **4.7.2.stable.official.ed1daf0bf**:
++
++| Action | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical` | Initial **214 checks, zero failures** (`TestScript-34436`). Expanded final **224 checks, zero failures** (`TestScript-18664`), including 20-unit diagonal forward/reverse, relaxed short commitment, sparse release, cancellation and full carousel/modal/editor/header coverage. Twenty-four desktop screenshots across 1280x720 and 960x540. |
++| Real return tween stepped at 1/60, another 0.10 and another 0.28 seconds | First frame moves less than **0.1%** of held distance; after approximately 0.12 seconds retains over **85%**; near completion retains under **1%** with gentle slowdown. Current and adjacent page progress match. Previous return fails the stronger start/early-speed bounds. |
++| `ExportAndroid -QuickValidation -CommandTimeoutSeconds 600` | **Passed**, `ExportAndroid-37712`: import/startup, driving **72**, catalog **21**, menus **48**. Signed/verified normal pinned Gradle APK; completed concurrent Android packaging is now available, so no isolated preset/export fallback. Existing three driving shutdown ObjectDB warnings remain. |
++| `InstallAndroid -DeviceSerial PRQKU4U4PREQNRWG -AdbPath <SDK adb>` | Initial device-not-online failure (`InstallAndroid-17880`); device reappeared on enumeration; retry **Success** (`InstallAndroid-36004`). |
++| `LaunchAndroid` with same serial/adb | **Status ok / COLD / 857 ms**, `LaunchAndroid-27720`. |
++| `git diff --check` / scoped patch reverse check | Passed; reverse check uses `--ignore-space-change` for mixed CRLF/LF context. No mixed-workspace commit. |
++
++Installed APK `build/android/circuit01-debug.apk`, SHA-256 **8C2AFFE8D56852DFA74BFD9419235453B01B213539528F87725584B7C280B911**. Evidence includes source checkpoint, actual test/export/install/launch logs and phone commands. Concurrent backend/session/ad changes were retained in the normal current-tree build; this task did not independently test those features.
++
++Actual physical **DN2103** verification after choosing Guest and waiting for startup: Android `input swipe 1500 220 1464 222 450` (36 physical pixels) committed Race to Create; `input swipe 1500 220 1536 222 450` returned to Race. Both strokes are below the previous 48-physical-pixel commitment distance at this device scaling. A 20-physical-pixel stroke (`1500,220` to `1480,220`) returned to the original Race page; a track-list swipe (`1350,840` to `950,840`) kept Race and changed the carousel edge presentation. Inspected [short commitment](evidence/sensitive-menu-swipes-2026-10-04/phone-short-forward.png), [short reverse](evidence/sensitive-menu-swipes-2026-10-04/phone-short-reverse.png), [settled failed swipe](evidence/sensitive-menu-swipes-2026-10-04/phone-return-settled.png), [carousel](evidence/sensitive-menu-swipes-2026-10-04/phone-carousel.png), and desktop [early return](evidence/sensitive-menu-swipes-2026-10-04/failed-return-early-1280x720.png). Phone left on Guest Race; temporary remote screenshot removed. Native checks confirm behavior, not human-finger subjective smoothness. No fresh video/frame-time/GPU/thermal measurements, full Validate/replay suite, real Google/ad tests or other-device acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner requests more accepting page swipes and smoother failed transitions. Commit distance reduced 32 to 20 logical units, backward cancel boundary 12 to 6, horizontal dominance 1.15 to 1.05. Failed page return uses shared smootherstep progress over 0.42-0.52 seconds with zero endpoint velocity/acceleration; fixed header, adjacent content, gutter and carousel/edge behavior preserved. Final graphical gesture 224 and focused export driving 72/catalog 21/menus 48 checks pass. Normal pinned Gradle APK installed/cold-launched on DN2103; native 36-pixel forward/reverse commits, 20-pixel insufficient return and carousel ownership verified with inspected screenshots. Initial install found device offline; retry succeeded. Existing three driving shutdown warnings; human feel/full Validate/performance acceptance remain. Changed files, commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (More accepting swipes and softer failed returns). Unrelated work preserved.
++
+ 2026-10-04 WR08/TD07/B01/B19/R01/Q01: PC Development rivalry logout reproduced when another client restores the same saved session during race completion. Client now reloads the latest matching credential under a shared process lease through refresh/save/request retry; explicit sign-out and replacement-account fences preserved. Final canonical HTTP suites 7 pass (normal/expired/same-client/separate-process rivalry, account, ordinary cloud race, track lifecycle), auth/test-driver 45 pass; session rotation 12, ownership follow-ups 86 and reliability 17 checks pass. Graphical separate-process race 32 checks/four inspected captures pass; initial obsolete-refresh reproduction, cleanup callback and stale fixture failures corrected. Restart PC game and Development sign-in once to replace revoked session. Backend rules/lifetimes unchanged; no restart/migration/deployment. Doctor lists DN2103/emulator; no repair device driving/export/install, full physics regression or real Google test. Owner incident's other client unidentified; human acceptance and longer stress pending. Files, actual commands, evidence and scoped source checkpoint: docs/RIVALRY_SESSION_FIX.md. Unrelated work preserved.
+ 
+ 2026-10-04 AD01-AD06/RW05-RW07/RW17/V03/V05/Q01: owner-approved AdMob development integration and saved Settings Development/Show ads switch. Off keeps temporary free resumes; On gates the existing ad_preview path after bank/daily priority. Original debug-only native bridge/SDK 25.5.0, pinned Gradle template/bootstrap and preview action added. Ad lifecycle 44, Settings 263, records 54, rewind 57, app 96, parse 284 and focused export 72/21/48 pass. Final APK installed/cold-launched on Pixel_9; On persistence, Off default and native load-failure path verified. Approved app-local Avast public CA removes sampled WebView trust errors, but SDK code 0/Unable to obtain a JavascriptEngine persists in independent 25.5/25.4 native probes and after reboot; actual fullscreen completion/dismissal/in-race ads unverified. Release dependency graph has no ads SDK. Initial export/manifest/parse/trust failures corrected and documented. Probe removed, ads Off; DN2103 attached but no physical-phone ad install/test, full Validate, banked grant, backend/production deployment or live IDs. Files, exact commands, evidence, limitations and scoped patch: docs/ADMOB_DEVELOPMENT.md. Unrelated work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner requests more accepting page swipes and smoother failed transitions. Commit distance reduced 32 to 20 logical units, backward cancel boundary 12 to 6, horizontal dominance 1.15 to 1.05. Failed page return uses shared smootherstep progress over 0.42-0.52 seconds with zero endpoint velocity/acceleration; fixed header, adjacent content, gutter and carousel/edge behavior preserved. Final graphical gesture 224 and focused export driving 72/catalog 21/menus 48 checks pass. Normal pinned Gradle APK installed/cold-launched on DN2103; native 36-pixel forward/reverse commits, 20-pixel insufficient return and carousel ownership verified with inspected screenshots. Initial install found device offline; retry succeeded. Existing three driving shutdown warnings; human feel/full Validate/performance acceptance remain. Changed files, commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (More accepting swipes and softer failed returns). Unrelated work preserved.
++
+ 2026-10-04 WR08/TD07/B01/B19/R01/Q01: PC Development rivalry logout reproduced when another client restores the same saved session during race completion. Client now reloads the latest matching credential under a shared process lease through refresh/save/request retry; explicit sign-out and replacement-account fences preserved. Final canonical HTTP suites 7 pass (normal/expired/same-client/separate-process rivalry, account, ordinary cloud race, track lifecycle), auth/test-driver 45 pass; session rotation 12, ownership follow-ups 86 and reliability 17 checks pass. Graphical separate-process race 32 checks/four inspected captures pass; initial obsolete-refresh reproduction, cleanup callback and stale fixture failures corrected. Restart PC game and Development sign-in once to replace revoked session. Backend rules/lifetimes unchanged; no restart/migration/deployment. Doctor lists DN2103/emulator; no repair device driving/export/install, full physics regression or real Google test. Owner incident's other client unidentified; human acceptance and longer stress pending. Files, actual commands, evidence and scoped source checkpoint: docs/RIVALRY_SESSION_FIX.md. Unrelated work preserved.
+ 
+ 2026-10-04 AD01-AD06/RW05-RW07/RW17/V03/V05/Q01: owner-approved AdMob development integration and saved Settings Development/Show ads switch. Off keeps temporary free resumes; On gates the existing ad_preview path after bank/daily priority. Original debug-only native bridge/SDK 25.5.0, pinned Gradle template/bootstrap and preview action added. Ad lifecycle 44, Settings 263, records 54, rewind 57, app 96, parse 284 and focused export 72/21/48 pass. Final APK installed/cold-launched on Pixel_9; On persistence, Off default and native load-failure path verified. Approved app-local Avast public CA removes sampled WebView trust errors, but SDK code 0/Unable to obtain a JavascriptEngine persists in independent 25.5/25.4 native probes and after reboot; actual fullscreen completion/dismissal/in-race ads unverified. Release dependency graph has no ads SDK. Initial export/manifest/parse/trust failures corrected and documented. Probe removed, ads Off; DN2103 attached but no physical-phone ad install/test, full Validate, banked grant, backend/production deployment or live IDs. Files, exact commands, evidence, limitations and scoped patch: docs/ADMOB_DEVELOPMENT.md. Unrelated work preserved.

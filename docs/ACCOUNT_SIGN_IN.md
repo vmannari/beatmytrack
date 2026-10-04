@@ -1,5 +1,7 @@
 # Google and Development sign-in
 
+2026-10-04 PC rivalry logout repair: remembered-session renewal now uses the latest saved credential under a shared process lease. Race upload and result polling retain the authenticated account after another PC client restores that same session. Explicit sign-out and replacement-account fencing remain enforced. See [cause, tests and restart instructions](RIVALRY_SESSION_FIX.md).
+
 Review repair follow-up (2026-10-03): Sign out clears local identity immediately, fences late credential completions and writes a restart fence; server revocation is separate and bounded. Session expiry selects Guest storage immediately while active results remain pinned to their original owner. See [R2/R10 repair and actual acceptance](CODE_REVIEW_REPAIRS_2_3_2026_10_03.md).
 
 Racing names are now unique (case/whitespace/Unicode-normalized), with the UUID remaining the permanent identity. See [unique names](UNIQUE_USERNAMES.md).

@@ -119,6 +119,11 @@ func run() -> void:
 	game._physics_process(1.0/120.0)
 	check(game.online_frames.is_empty(),"pause excluded from replay")
 	game.paused = false
+	# This retained replay predates launch markers. Replay its exact standing
+	# start after the countdown/pause checks; current launch behavior has its
+	# own canonical tests. Countdown sampling must not consume a fixture frame.
+	game.launch_countdown_seen = false
+	input.cursor = 0
 	for tick: int in range(3600): game._physics_process(1.0/120.0)
 	await game.open_rewind()
 	check(game.rewind_panel != null and game.rewind_panel.confirm.disabled,"current-position entry cannot spend a signed-in resume")
@@ -244,6 +249,7 @@ func run() -> void:
 	input.frames = fixture.replay.frames
 	game.driver = input
 	game.countdown_ticks = 0
+	game.launch_countdown_seen = false
 	for tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
 	app._results()
 	await settle(app.cloud)

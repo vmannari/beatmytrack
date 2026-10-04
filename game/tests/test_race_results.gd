@@ -327,7 +327,7 @@ func run() -> void:
 	(page.find_child("ChooseTrack",true,false) as Button).pressed.emit()
 	await settle()
 	check(app.get("game") == null and app.get("screen") == "tracks","placeholder track action returns to selection")
-	app.call("_start_race",track,false)
+	await app.call("_start_race",track,false)
 	(app.get("game") as Node).set_physics_process(false)
 	app.call("_results")
 	await settle()

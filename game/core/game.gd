@@ -41,6 +41,11 @@ var rewind_selected: int = 0
 var rewind_was_paused: bool = false
 var rewind_return := RewindReturn.new()
 var rewind_ghosts: Node3D
+var personal_ghost: PersonalGhost
+var ghost_mode: String = "lap"
+var ghost_run := PersonalGhostRun.new()
+var ghost_store: LocalGhosts
+var ghost_bests: Dictionary = {}
 var finish_rating_pending: bool = false
 const FINISH_TICKS: int = 216
 
@@ -153,6 +158,10 @@ func _ready() -> void:
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	world.add_child(car)
+	if production_mode and not editor_test and native_track != null and preference_records != null:
+		personal_ghost = PersonalGhost.new()
+		world.add_child(personal_ghost)
+		personal_ghost.configure(car)
 	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
 	trails = SkidTrails.new()
@@ -209,16 +218,21 @@ func _ready() -> void:
 	countdown_label.offset_bottom = -70
 	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	countdown_label.add_theme_font_override("font", RaceHUDStyle.DISPLAY)
-	countdown_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
-	countdown_label.add_theme_font_size_override("font_size",72)
+	countdown_label.add_theme_color_override("font_color", RaceHUDStyle.TEXT)
+	countdown_label.add_theme_font_size_override("font_size",26)
 	countdown_label.add_theme_color_override("font_outline_color",Color("172129"))
-	countdown_label.add_theme_constant_override("outline_size",12)
+	countdown_label.add_theme_constant_override("outline_size",0)
 	countdown_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	debug_layer.add_child(countdown_label)
+	countdown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var launch_notice: Control = preload("res://ui/launch_notice.gd").new()
+	debug_layer.add_child(launch_notice)
+	launch_notice.add_child(countdown_label)
+	launch_notice.label = countdown_label
 	race_cues = preload("res://ui/race_cues.gd").new()
 	debug_layer.add_child(race_cues)
 	resume_credits = preload("res://platform/resume_credits.gd").new()
 	resume_credits.client = resume_client
+	resume_credits.show_ads = OS.is_debug_build() and preference_records != null and bool(preference_records.settings.get("development_show_ads", false))
 	add_child(resume_credits)
 	restart()
 	_refresh_resume_hud()
@@ -272,7 +286,7 @@ func _physics_process(_delta: float) -> void:
 	if production_mode and (not editor_test or not practice_validation.finished) and online_frames.size() < 216000: online_frames.append(frame.packed())
 	sim.step(frame, yard)
 	if production_mode and not editor_test and sim.state.tick < 180:
-		countdown_label.text = sim.state.launch_result
+		countdown_label.text = sim.state.launch_result.to_upper()
 		countdown_label.modulate.a = 1.0 - smoothstep(120.0,180.0,float(sim.state.tick))
 	elif not countdown_label.text.is_empty(): countdown_label.text = ""
 	if sim.state.collision_count > collisions_before_step:
@@ -298,6 +312,7 @@ func _physics_process(_delta: float) -> void:
 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
 		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry,impact_cracks.side_damage)
+		if ghost_store != null: ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling)
 		if production_mode and track_session.finished:
 			_begin_finish()
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
@@ -377,6 +392,7 @@ func _process(delta: float) -> void:
 	if not paused and finish_sim == null: weight = rewind_return.interpolation(weight)
 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
+	_present_personal_ghost(weight)
 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
 	car.present(point, heading, presented.state, frame)
 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
@@ -495,6 +511,16 @@ func restart() -> void:
 	if production_mode and not editor_test and native_track != null:
 		track_session._configure(native_track)
 		rewind_history.capture(sim.state,track_session,true,lap_telemetry)
+	ghost_run = PersonalGhostRun.new()
+	ghost_store = null
+	ghost_bests = {}
+	if personal_ghost != null and preference_records != null:
+		ghost_mode = str(preference_records.settings.get("ghost_mode", "lap"))
+		ghost_store = LocalGhosts.new(preference_records.path)
+		var ghost_key: String = preference_records.key_for(native_track,handling)
+		ghost_bests = ghost_store.load_best(ghost_key,preference_records.records.get(ghost_key,{}))
+		ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
+		personal_ghost.hide()
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	trails.clear()
@@ -609,6 +635,41 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_F9:
 				ai_enabled = not ai_enabled
 				restart()
+
+
+func set_ghost_mode(value: String) -> Error:
+	if value not in PersonalGhostRun.MODES: return ERR_INVALID_PARAMETER
+	ghost_mode = value
+	if preference_records == null: return OK
+	preference_records.settings.ghost_mode = value
+	return preference_records.save_records()
+
+
+func ghost_description() -> String:
+	var index: int = PersonalGhostRun.MODES.find(ghost_mode)
+	var description: String = PersonalGhostRun.DESCRIPTIONS[index]
+	if ghost_mode != "off" and not ghost_bests.has(ghost_mode):
+		description += " No recording yet. Match or improve your best in a completed race."
+	return description
+
+
+func _present_personal_ghost(weight: float) -> void:
+	if personal_ghost == null: return
+	if countdown_ticks > 0 or finish_sim != null or is_instance_valid(rewind_panel) or ghost_mode == "off":
+		personal_ghost.hide()
+		return
+	var tick: float = float(track_session.elapsed_ticks)
+	if not paused: tick = maxf(0.0,tick - 1.0 + weight)
+	if ghost_mode == "lap":
+		# Boundary ticks reset exactly at the player's accepted finish crossing.
+		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
+	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
+
+
+func save_personal_ghost() -> Error:
+	if ghost_store == null or not track_session.finished or attempt_practice or editor_test: return OK
+	var key: String = preference_records.key_for(native_track,handling)
+	return ghost_store.save_run(key,preference_records.records.get(key,{}),ghost_run)
 
 
 func set_camera_mode(value: String) -> Error:
@@ -830,6 +891,8 @@ func confirm_rewind() -> void:
 	RewindHistory.restore(track_session,target.session)
 	RewindHistory.restore(lap_telemetry,target.telemetry)
 	rewind_history.branch(int(target.tick))
+	ghost_run.branch(int(target.tick))
+	if ghost_store != null: ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
 	trails.clear()
 	sand_dust.clear()
 	impact_cracks.restore_damage(target.glass_damage)

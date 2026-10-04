@@ -11,6 +11,7 @@ const BORDER := Color("344e5d")
 const POSITIVE := Color("66dfbb")
 const DISPLAY: Font = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
 const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
+static var _theme: Theme
 
 static func box(color: Color, padding: int = 12) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
@@ -20,6 +21,7 @@ static func box(color: Color, padding: int = 12) -> StyleBoxFlat:
 	return style
 
 static func theme() -> Theme:
+	if _theme != null: return _theme
 	var value := Theme.new()
 	value.default_font_size = 18
 	value.default_font = BODY
@@ -58,6 +60,7 @@ static func theme() -> Theme:
 	value.set_stylebox("fill", "ProgressBar", box(ACCENT,0))
 	value.set_constant("separation", "HBoxContainer", 12)
 	value.set_constant("separation", "VBoxContainer", 12)
+	_theme = value
 	return value
 
 static func card(padding: int = 20) -> StyleBoxFlat:

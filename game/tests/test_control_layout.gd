@@ -227,7 +227,7 @@ func run() -> void:
 	# This is a UI integration fixture, never a real backend publication.
 	var race_fixture: NativeTrack = app.get("selected_track")
 	race_fixture.metadata.cloud_version = "control-layout-fixture"
-	app.call("_start_race",race_fixture,false,true)
+	await app.call("_start_race",race_fixture,false,true)
 	await process_frame
 	var race_hud: PlaygroundHUD = app.get("game").get("hud")
 	check(same_layout(race_hud.touch.layout,saved_layout),"new race receives persisted editor layout")

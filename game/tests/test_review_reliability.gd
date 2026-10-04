@@ -19,7 +19,7 @@ class ReviewApp extends "res://core/app.gd":
 
 class FailingCloud extends Node:
 	var last_error: String = "NETWORK_ERROR"
-	func ticket(_track: NativeTrack, _test: bool = false, _vehicle: String = "", _handling: HandlingConfig = null) -> Dictionary: return {}
+	func ticket(_track: NativeTrack, _test: bool = false, _vehicle: String = "", _handling: HandlingConfig = null, _issued: Dictionary = {}) -> Dictionary: return {}
 
 class ReviewOnline extends "res://backend/account_controller.gd":
 	func _ready() -> void: pass

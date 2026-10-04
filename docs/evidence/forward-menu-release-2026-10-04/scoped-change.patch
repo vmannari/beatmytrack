@@ -1,0 +1,90 @@
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -45,8 +45,15 @@
+ 		elif event.index == pointer:
+ 			var distance: Vector2 = event.position - origin
+ 			# Once horizontal intent is established, vertical finger drift cannot revoke it.
+-			# Keep the last displayed drag and its armed direction. Lift coordinates
+-			# can jitter toward the press; only a deliberate drag back cancels intent.
++			# UP may contain forward movement absent from the last MOVE. Count that
++			# distance for commitment, but never jump the displayed page to it.
++			# Backward lift jitter still cannot disarm an already completed stroke.
++			if not rejected and not event.canceled and not _modal_open(modal_root):
++				var forward_release: bool = absf(distance.x) > absf(last_drag_distance) and (is_zero_approx(last_drag_distance) or distance.x * last_drag_distance > 0.0)
++				var horizontal_release: bool = dragging or absf(distance.x) > absf(distance.y) * 1.15
++				if forward_release and horizontal_release and absf(distance.x) >= PAGE_DISTANCE:
++					dragging = true
++					commit_direction = 1 if distance.x < 0.0 else -1
+ 			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and commit_direction != 0
+ 			var direction: int = commit_direction
+ 			var tap: BaseButton = target
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -61,6 +61,26 @@
+ 		await show("tracks")
+ 		var point := Vector2(dimensions.x * 0.6, 180)
+ 		await check_live_slide(point, dimensions)
++		# Android can deliver the end of a forward stroke only in its UP event.
++		for last_move: float in [0.0, 4.0, 24.0]:
++			touch(point, true)
++			if last_move > 0.0: drag(point + Vector2(-last_move, 0))
++			var displayed_offset: float = app.menu_body.position.x
++			touch(point + Vector2(-60, 3), false)
++			check(app.screen == "biome", "forward release completes sparse swipe after %.0f move" % last_move)
++			if is_instance_valid(app.outgoing_menu_page):
++				check(is_equal_approx(app.outgoing_menu_page.position.x, displayed_offset), "forward release animates from last displayed position")
++			await settle()
++			await show("tracks")
++		touch(point, true)
++		touch(point + Vector2(-100, 160), false)
++		await settle()
++		check(app.screen == "tracks", "vertical release without moves does not navigate")
++		touch(point, true)
++		drag(point + Vector2(-24, 0))
++		touch(point + Vector2(-60, 0), false, true)
++		await settle()
++		check(app.screen == "tracks", "canceled forward release cannot complete sparse swipe")
+ 		await swipe(point, Vector2(-150, 0))
+ 		check(app.screen == "biome", "left swipe Race to Create")
+ 		var retained: Dictionary = app.document.duplicate(true)
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -124,3 +124,22 @@
+ Actual phone verification on **DN2103**, after choosing Guest: a native Android drag moved **60 physical pixels**, relaxed halfway to **30 pixels**, then released at the original press coordinate. It still completed Race → Create; a separate **60-pixel reverse swipe** returned to Race. The physical centimetre threshold depends on device scaling; a gesture of a few centimetres comfortably exceeds this tested small movement. Inspected [short committed swipe](evidence/short-menu-swipes-2026-10-04/phone-short-committed.png), [wide gutter while held](evidence/short-menu-swipes-2026-10-04/phone-gutter-held.png), [canceled return](evidence/short-menu-swipes-2026-10-04/phone-canceled-return.png) and desktop [Create/Garage gutter](evidence/short-menu-swipes-2026-10-04/live-create-garage-1280x720.png). A native track-list gesture keeps Race. First gutter capture attempt encountered an adb daemon reset; the complete held/cancel sequence was repeated successfully. Guest Race is left open, and the temporary remote screenshot was removed.
+ 
+ Evidence retains scoped source patch, focused test/install/launch logs and phone/build commands. Staged `app.gd` and `menu_page_swipe.gd` SHA-256 hashes match the tested workspace source. Existing three driving shutdown instance warnings and build-tools fallback to 35.0.1 remain. Full Validate/replay, new frame-time/GPU/thermal/large-catalog benchmarks, other-device testing and human-finger release/spacing feel remain acceptance checks. No mixed-workspace commit.
++
++## Forward-only release accounting (2026-10-04)
++
++Requirements **R01/V03/V04/V05/Q01**. The owner still reported missed page changes without backward movement. A deterministic viewport reproduction exposed a separate cause: the previous implementation ignored all UP coordinates. If the last MOVE covered 0, 4 or 24 logical units and a forward UP reached 60, the page reverted. These six cases (three at each tested viewport size) failed before the fix.
++
++`game/ui/menu_page_swipe.gd` now permits a farther UP in the same direction to complete the existing 32-unit threshold. Without an earlier horizontal claim, the release must have horizontal intent. It does not move the rendered content to the UP position: the settling animation starts at the last displayed offset. Earlier committed direction still survives backward UP jitter; actual backward MOVE, cancellation, multitouch, modals, carousel ownership and vertical gestures retain their existing behavior. No threshold, gap, easing, header, physics or backend change.
++
++Changed files: the gesture handler, `game/tests/test_menu_page_swipe.gd`, this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and `docs/evidence/forward-menu-release-2026-10-04/`. Scoped before/after patch provided instead of a mixed-workspace commit.
++
++Actual commands and results:
++
++- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_menu_page_swipe.gd`: **184 checks, six reproduced failures** before implementation (`TestScript-28096`).
++- Same command with `-Graphical`: **210 checks, zero failures** (`TestScript-33148`); sparse UP commitment, exact outgoing-position continuity, vertical/canceled releases and existing full gesture suite. Desktop screenshots saved to the existing short-menu-swipes evidence folder.
++- Staged `scripts/dev.ps1 ExportAndroid -QuickValidation`: **passed** (`ExportAndroid-34592`), import/startup, driving **72**, catalog **21**, menus **48**, signed/verified APK. Workspace and staged handler SHA-256 match.
++- Staged `InstallAndroid` / `LaunchAndroid -DeviceSerial PRQKU4U4PREQNRWG -AdbPath <SDK adb>`: **Success**, **COLD / ok / 780 ms** (`InstallAndroid-31444`, `LaunchAndroid-22136`).
++
++The current shared build entry unconditionally prepares unfinished AdMob Gradle packaging and lacks matching `android_source.zip`. Isolated export copies current game sources, uses the saved `scripts/dev.ps1` from immediately before that concurrent integration (`build/checkpoints/admob-development-2026-10-04/scripts__dev.ps1.before`), disables Gradle and clears its min-SDK override in the copied preset only. Shared source/settings remain untouched. The native AdMob bridge is excluded from this UI test APK. First staged attempt passed driving assertions but crashed at engine shutdown (`ExportAndroid-35924`, exit -1073741819). Second passed focused checks but export rejected the Gradle-only min-SDK override (`ExportAndroid-1872`). The final corrected staged attempt succeeded; no failed check was weakened.
++
++Physical device **DN2103** was attached for install and launch. Inspected [launch](evidence/forward-menu-release-2026-10-04/phone-launch.png) and [first native attempt](evidence/forward-menu-release-2026-10-04/phone-sparse-forward.png). After choosing Guest, attempted DOWN (1500,220), MOVE (1464,222), UP (1410,225); the capture still shows Race. This attempt immediately followed Guest startup and does **not** establish successful native sparse-release verification or its failure cause. Retry failed with device not found; `adb devices -l` then listed only the emulator. The phone has the new APK installed, last observed on Guest Race. Temporary remote screenshot could not be removed after disconnection. Native sparse-release behavior and human finger feel remain acceptance checks. No fresh performance/video/full Validate/replay/ad verification.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: reproduced forward-only missed page swipes when the final distance exists only in UP. Release can now complete commitment without jumping the displayed content or revoking earlier intent. Sparse/no-MOVE regressions reproduced six failures before the fix; final graphical menu suite passes 210 checks. Focused staged export passes driving 72/catalog 21/menus 48; installed and cold-launched on DN2103. Phone verification remained on Race on the first native gesture attempt, then the physical device disconnected; native sparse-release behavior and human feel are NOT accepted. Shared unfinished AdMob build configuration preserved through isolated APK-template export. See docs/MENU_PAGE_SWIPES.md (Forward-only release accounting) for files, actual commands, failed attempts, evidence and scoped checkpoint.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner follow-up makes short page swipes easier and release gentler. Commitment arms at 32 logical units and survives relaxation until dragged back within 12; lift-coordinate jitter cannot undo intent or jump content. Gutter grows to 64 units while revealing the neighbor early. Completion/ordinary return now use sine ease-in/out; fixed header, cached pages, carousel ownership and outer-edge spring retained. Final gesture 194, app 96, parse 284 and focused staged export checks pass. UI test APK installed/cold-launched on DN2103: 60-pixel swipe with halfway relaxation and noisy release commits; short reverse, held gutter, cancellation and carousel verified. Shared export initially blocked by unfinished Gradle/plugin setup; isolated pinned-template build preserves it and excludes unfinished native AdMob packaging. Existing driving warnings; human finger feel/full Validate/performance acceptance remain. Actual commands, files, screenshots and scoped patch: docs/MENU_PAGE_SWIPES.md (Short swipes, wider gutter and gentle release).
+ 
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: reproduced forward-only missed page swipes when the final distance exists only in UP. Release can now complete commitment without jumping the displayed content or revoking earlier intent. Sparse/no-MOVE regressions reproduced six failures before the fix; final graphical menu suite passes 210 checks. Focused staged export passes driving 72/catalog 21/menus 48; installed and cold-launched on DN2103. Phone verification remained on Race on the first native gesture attempt, then the physical device disconnected; native sparse-release behavior and human feel are NOT accepted. Shared unfinished AdMob build configuration preserved through isolated APK-template export. See docs/MENU_PAGE_SWIPES.md (Forward-only release accounting) for files, actual commands, failed attempts, evidence and scoped checkpoint.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner follow-up makes short page swipes easier and release gentler. Commitment arms at 32 logical units and survives relaxation until dragged back within 12; lift-coordinate jitter cannot undo intent or jump content. Gutter grows to 64 units while revealing the neighbor early. Completion/ordinary return now use sine ease-in/out; fixed header, cached pages, carousel ownership and outer-edge spring retained. Final gesture 194, app 96, parse 284 and focused staged export checks pass. UI test APK installed/cold-launched on DN2103: 60-pixel swipe with halfway relaxation and noisy release commits; short reverse, held gutter, cancellation and carousel verified. Shared export initially blocked by unfinished Gradle/plugin setup; isolated pinned-template build preserves it and excludes unfinished native AdMob packaging. Existing driving warnings; human finger feel/full Validate/performance acceptance remain. Actual commands, files, screenshots and scoped patch: docs/MENU_PAGE_SWIPES.md (Short swipes, wider gutter and gentle release).
+ 
+ 2026-10-04 TD01-TD07/WR03-WR07/B01-B07/V03-V05/Q01: authorized local PC rollout now active. Launcher persists and forwards the WSL test-driver flag, backs up quiesced data and migrates/restarts API/worker together. Live schema 0012, healthy matching verifier artifacts, original 2 ordinary players/27 tracks retained. Developer compact Week 40 field: 13 marked test rivals, five eligible tracks, 61 verified initial races and 86 later attempts; hidden resumable watcher running. Zero bot PBs on public boards, ratings or normal memberships. Backend tests 14 and live native client 26 checks pass; eight inspected captures. Calibration remains 53-69% slower than real PBs on two complex circuits. Doctor lists DN2103/emulator; no rollout device driving/export/install, NAS/production deployment or full 150-driver seed. Source files, commands, evidence, backup/stop/resume instructions and scoped checkpoint: docs/TEST_DRIVERS.md (Local PC rollout). Unrelated work preserved.

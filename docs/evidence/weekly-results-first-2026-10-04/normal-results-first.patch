@@ -1,0 +1,174 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -225,7 +225,7 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
+-	if rivalry_racing and rivalry_section == "result" and next != "rivalry" and is_instance_valid(game):
++	if rivalry_racing and rivalry_section in ["race_results", "result"] and next != "rivalry" and is_instance_valid(game):
+ 		remove_child(game)
+ 		game.queue_free()
+ 		game = null
+@@ -1805,14 +1805,11 @@
+ 		cloud_publish_version = ""
+ 		cloud.flush_outbox()
+ 	if rivalry_racing:
+-		(game.get("hud") as PlaygroundHUD).hide()
+ 		rivalry_result_pending = online_queued
+-		rivalry_section = "result"
++		# Verification runs behind the normal PB/lap summary until Continue.
++		rivalry_section = "race_results"
+ 		rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+-		root_ui.visible = true
+-		_show_screen("rivalry")
+ 		if online_queued: rivalry.poll_result()
+-		return
+ 	var previous: float = result_records.best_for(track, game.get("handling"))
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+ 	var saved: bool = not clean
+@@ -1877,6 +1874,11 @@
+ 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+ 
+ func _results_continue(results: RaceResults, parent: Control) -> void:
++	if rivalry_racing:
++		rivalry_section = "result"
++		_show_screen("rivalry")
++		if rivalry_result_pending: rivalry.poll_result()
++		return
+ 	results.hide()
+ 	var page := RaceComplete.new()
+ 	page.results = results
+diff --git a/game/tests/test_weekly_rivalry_http.gd b/game/tests/test_weekly_rivalry_http.gd
+--- a/game/tests/test_weekly_rivalry_http.gd
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -64,8 +64,19 @@
+ 	for _tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+ 	check(game.track_session.finished,"actual pinned replay finishes five legal laps")
+ 	check(game.online_frames.size() == fixture.replay.frames.size(),"rivalry records all canonical inputs")
++	var records: LocalRecords = game.preference_records
++	var total: float = game.track_session.race_time_seconds()
++	var old_laps: Array[float] = game.track_session.lap_times.duplicate()
++	for i: int in range(old_laps.size()): old_laps[i] += 0.2
++	check(records.record(game.native_track,game.handling,total+1.0,old_laps) == OK,"isolated prior PB fixture saves")
+ 	app._results()
+-	check(app.rivalry_result_pending and app.rivalry_section == "result","results wait for backend verification")
++	var summary: RaceResults = app.root_ui.find_child("RaceResults",true,false) as RaceResults
++	check(app.rivalry_result_pending and app.rivalry_section == "race_results" and summary != null,"rivalry opens normal results while verification runs")
++	check(summary.saved and absf(summary.previous-total-1.0) < 0.001 and absf(summary.best-total) < 0.001,"rivalry saves the all-time personal best through normal results")
++	check((summary.find_child("RaceAchievement",true,false) as Label).text == "NEW PERSONAL BEST","normal results celebrate the personal best")
++	check((summary.find_child("ResultDelta",true,false) as Label).text == "-1.000 s vs personal best","normal results compare the prior all-time personal best")
++	var personal: Dictionary = game.ghost_store.load_best(records.key_for(game.native_track,game.handling),records.records[records.key_for(game.native_track,game.handling)])
++	check(not personal.get("race",{}).is_empty(),"rivalry PB saves its personal ghost")
+ 	for _poll: int in range(200):
+ 		await app.cloud.flush_outbox()
+ 		await app.rivalry.poll_result()
+@@ -73,6 +84,14 @@
+ 		await create_timer(0.2).timeout
+ 	check(app.rivalry.result_state == "verified","real worker verifies the rivalry upload")
+ 	check(not app.rivalry_result_pending and app.rivalry.model.last_result.get("points_delta") == 30,"verified result changes the championship points")
++	check(is_instance_valid(summary) and summary.is_visible_in_tree() and app.rivalry_section == "race_results","verification never replaces the normal results summary")
++	summary.select_lap(0)
++	check(summary.selected_lap == 0,"normal lap analysis remains interactive after verification")
++	await capture("normal-results")
++	summary.next_button.pressed.emit()
++	await process_frame
++	check(app.rivalry_section == "result" and app.root_ui.find_child("WeeklyRivalryPage",true,false) != null,"Continue opens weekly position and points feedback")
++	await capture("rivalry-feedback")
+ 	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.standing())
+ 	check(own.points == 30 and own.rank == 1,"Overview reflects one best result")
+ 	var recording: Dictionary = await app.rivalry.ghost(0,str(app.online.client.player.id))
+@@ -90,3 +109,15 @@
+ 	await process_frame
+ 	print("WEEKLY_RIVALRY_HTTP_TESTS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
++
++func capture(state: String) -> void:
++	var folder: String = OS.get_environment("BMT_CAPTURE_CLOUD")
++	if folder.is_empty(): return
++	DirAccess.make_dir_recursive_absolute(folder)
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		await create_timer(0.5).timeout
++		await RenderingServer.frame_post_draw
++		var path: String = folder.path_join("%s-%dx%d.png" % [state,dimensions.x,dimensions.y])
++		check(root.get_texture().get_image().save_png(path) == OK,"result flow screenshot saves")
++		print("CAPTURE_SAVED: "+path)
+diff --git a/docs/WEEKLY_RIVALRY.md b/docs/WEEKLY_RIVALRY.md
+--- a/docs/WEEKLY_RIVALRY.md
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -11,7 +11,7 @@
+ | WR05 | Community eligibility requires rating **strictly above 4.0 AND strictly more than 100 distinct verified finishers** on the selected version. Multiple boards/attempts do not duplicate a driver. Official Beat my track tracks bypass popularity thresholds, with server-owned provenance. Published, visible, compatible tracks and active creators are required in either case. Latest published versions are selected; revisions stay pinned for the week. |
+ | WR06 / T01–T04 | Only a completed, canonically verified, weekly ticket-bound race changes the weekly PB. Scores use each track's best result; unlimited retries and slower results award no extra points. Equal ticks share rank and points. Overall points sum five track scores. |
+ | WR07 / GH01 / RW03 | Detail targets the rival ahead, weekly leader, own weekly PB or no ghost. Race Again refreshes the selected target's latest verified recording. Ghost poses come from server replay verification, not client uploads; no raw opponent inputs are exposed. Recorded positions include bridge/jump/kerb height, rewind branches and fractional endpoints, with bounded interpolation and no extrapolation. |
+-| WR08 / Q01 | Results show verified before/after position, beaten rival, exact gap and points change. Pending verification remains visibly pending. Ended weeks settle queued races before the Overview finale; Continue acknowledges the completed week. Account/server/car changes fence old requests and snapshots. |
++| WR08 / Q01 | Every rivalry race first opens the normal results summary with all-time PB feedback and lap analysis. Continue opens verified weekly position/gap/points feedback; verification cannot interrupt the summary. Pending verification remains visibly pending. Ended weeks settle queued races before the Overview finale; Continue acknowledges the completed week. Account/server/car changes fence old requests and snapshots. |
+ 
+ New groups form from actual entrants. Below ten drivers the UI says the group is forming; it never invents rivals or their times. Five eligible tracks are mandatory: otherwise join returns `NOT_ENOUGH_ELIGIBLE_TRACKS`. A new entrant starts without weekly times even if an all-time PB exists. Matches are per vehicle and pinned build, avoiding a car change becoming an advantage on a shared board.
+ 
+@@ -64,3 +64,23 @@
+ Owner visual/gesture approval, real population balancing, PostgreSQL concurrency, real-Google/NAS acceptance and physical-device rivalry checks remain. Full Validate/physics regression, service rebuild/restart, deployed DB migration, production deployment and live player-data seeding were not performed. The additive migration and matching API/worker image are required before an existing service can serve this mode. A scoped Git patch is retained for review; unrelated workspace changes are preserved rather than committed together.
+ 
+ Review checkpoint: [weekly-rivalry.patch](evidence/weekly-rivalry-2026-10-04/weekly-rivalry.patch). `git apply --reverse --check --ignore-space-change` and targeted `git diff --check` pass. The app/ghost/status baselines preserve concurrent work. Raw Godot test logs accompany the screenshots; Python outcomes above come from actual disposable-service test runs.
++
++## Normal results first — 2026-10-04
++
++WR08 / R01 / T01–T04 / GH01 / V03 / Q01: the owner's follow-up requires the ordinary result before rivalry feedback. `game/core/app.gd` now routes completed rivalry races through the existing `RaceResults`, including local all-time race/lap PB recording and qualifying personal ghosts. A dedicated summary state prevents asynchronous verification from replacing that screen. Continue opens the weekly result, using the existing pending/verified feedback. Race Again retains the rivalry context and fresh-ticket flow; Free Race still continues to `RaceComplete`.
++
++Changed files: app flow, `game/tests/test_weekly_rivalry_http.gd`, this document, `docs/PREMIUM_RESULTS.md`, `AGENTS.md`, both status documents and the dated evidence below. No backend contract or canonical simulation changes.
++
++Actual verification with pinned Godot 4.7.2 stable ed1daf0bf:
++
++| Actual command | Outcome |
++|---|---|
++| `$env:BMT_CAPTURE_CLOUD = Join-Path (Get-Location) 'docs/evidence/weekly-results-first-2026-10-04'; .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_http.py -q -s --tb=short --log-level=WARNING` | One passed; **29 native checks, zero failures**. Real five-lap replay/upload/verifier, prior-PB fixture comparison, saved PB/ghost, summary retained after verification, interactive lap selection, Continue, points and fresh-ticket retry. Four screenshots. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_cloud_client.py::test_cloud_library_against_http -q --tb=short --log-level=WARNING` | One passed, including actual normal Free Race results/Continue/upload and rewind. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp` | **96 checks, zero failures**. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | **277 scripts, zero failures**. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Doctor` | Pinned engine/templates and DN2103 found. Initial sandbox adb configuration access failed; authorized rerun passed. Device driving/installation was not performed. |
++
++[Normal results](evidence/weekly-results-first-2026-10-04/normal-results-1280x720.png), [compact summary](evidence/weekly-results-first-2026-10-04/normal-results-960x540.png) and [weekly feedback after Continue](evidence/weekly-results-first-2026-10-04/rivalry-feedback-960x540.png) inspected. Captures use an isolated actual HTTP test account and pinned replay; the deliberately slower prior personal record is a test fixture. All actual points come from backend verification. Existing httpx/Starlette deprecation warning remains. No phone test, Android export/install, full physics regression, existing-service restart or deployment. Owner/device flow acceptance remains.
++
++Follow-up checkpoint: [normal-results-first.patch](evidence/weekly-results-first-2026-10-04/normal-results-first.patch), based on the completed rivalry implementation with unrelated workspace changes retained. Reverse applicability and targeted whitespace checks pass.
+diff --git a/docs/PREMIUM_RESULTS.md b/docs/PREMIUM_RESULTS.md
+--- a/docs/PREMIUM_RESULTS.md
++++ b/docs/PREMIUM_RESULTS.md
+@@ -64,3 +64,9 @@
+ Actual commands: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureResults`; `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Doctor`; `git diff --check -- game/ui/race_results.gd`. CaptureResults saved all nine analysis-mode captures across 1280x720, 1920x1080 and 2400x1080 and emitted no selection/layout failures. The broader suite FAILED later on its existing local-recommendation expectation (`Race Complete recommends real local tracks`) and an out-of-bounds card index at test_race_results.gd:313; a full pass is not claimed. The recommendation path is outside this visual change. Doctor passed with pinned Godot 4.7.2/templates and DN2103 attached. Scoped whitespace check passed.
+ 
+ [Inspected selected-lap desktop screenshot](evidence/selected-lap-2026-10-03/speed-1920x1080.png). Other sizes/modes and a reviewable UI-only patch are retained in the same directory. Changed files: results UI, this document, DEVELOPMENT_STATUS.md, docs/PHASE_0_PLAN.md and dated evidence. Existing capture files were restored after copying this run into its own evidence directory. No Android export/install or physical-device test was performed. Owner visual/readability and phone touch acceptance remain; no mixed-workspace commit.
++
++## Rivalry uses normal results first — 2026-10-04
++
++WR08 / R01 / T01–T04 / GH01 / V03 / Q01: completed Weekly Rivalry races now use this same results screen, including all-time PB comparison, lap analysis and personal-ghost saving. Continue opens weekly verified position/points feedback; asynchronous verification leaves the summary open. Free Race continues to the existing RaceComplete screen. No results presentation changes were needed.
++
++Actual integration: 29 native checks, zero failures, four desktop/compact captures; normal Free Race HTTP, app 96 and parser 277 pass. DN2103 attached; no device test or Android export/install. Files, exact commands, evidence and remaining acceptance: [Weekly Rivalry follow-up](WEEKLY_RIVALRY.md#normal-results-first--2026-10-04).
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 WR08/R01/T01-T04/GH01/V03/Q01: rivalry races now open normal results first, including all-time PB feedback, lap analysis and saved personal ghosts. Verification cannot replace the summary; Continue opens weekly feedback. Real HTTP/native integration passes 29 checks with four inspected desktop/compact screenshots; normal Free Race HTTP, app 96 and parse 277 pass. Doctor finds DN2103 attached; no phone test, export/install or deployment. Files, actual commands, evidence, scoped patch and acceptance: docs/WEEKLY_RIVALRY.md (Normal results first). Unrelated work preserved.
++
+ 2026-10-04 WR01-WR08/R01/V03-V05/B01-B07/T01-T04/Q01: Weekly Rivalry added inside Race with Overview, Tracks, focused detail, Standings, verified result feedback and Overview finale. Confirmed five random eligible tracks, Monday-Sunday UTC and similar-pace real entrants (20 cap; honest forming/placement groups). Community eligibility is rating >4.0 AND >100 distinct verified drivers, or trusted official provenance. Server-pinned tickets and verified weekly PBs determine points; slower attempts add none. Migration 0011, derived ghosts and client/account fencing implemented. Final menu 791, app 96, menus 48, bridges 16, ghosts 38, gestures 100 and parser 277 checks pass; 27 desktop screenshots. Weekly/official 13 backend tests, verifier/HTTP 58 and affected-domain 58 pass; normal cloud and lifecycle pass after historical-start fixture repair. PostgreSQL concurrency setup timed out; three existing ghost shutdown warnings. DN2103 attached, no rivalry phone/export/install/full Validate or service deployment/migration/restart by this task. Files, schema, actual commands, screenshots, scoped checkpoint and acceptance: [docs/WEEKLY_RIVALRY.md](docs/WEEKLY_RIVALRY.md). Unrelated workspace edits preserved.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 WR08/R01/T01-T04/GH01/V03/Q01: rivalry races now open normal results first, including all-time PB feedback, lap analysis and saved personal ghosts. Verification cannot replace the summary; Continue opens weekly feedback. Real HTTP/native integration passes 29 checks with four inspected desktop/compact screenshots; normal Free Race HTTP, app 96 and parse 277 pass. Doctor finds DN2103 attached; no phone test, export/install or deployment. Files, actual commands, evidence, scoped patch and acceptance: docs/WEEKLY_RIVALRY.md (Normal results first). Unrelated work preserved.
++
+ 2026-10-04 WR01-WR08/R01/V03-V05/B01-B07/T01-T04/Q01: owner-authorized Weekly Rivalry inside Race implemented through real backend membership/matching, five pinned random eligible tracks, UTC weeks and verified best-only scores. Overview/Tracks/Standings, duel detail, verified feedback and Overview finale reuse established art/nav. Strict >4.0/>100 distinct-driver community thresholds and trusted official exception; honest placement/forming fields, 20-driver cap and derived recorded ghosts. Migration 0011 and API/worker packaging ready. Final UI 791, parser 277, app 96, menus 48, bridge 16, ghosts 38 and gestures 100 checks pass; backend weekly/official 13, canonical/HTTP 58 and affected domains 58 pass. Cloud/lifecycle pass after legacy-start fixture repair. 27 screenshots; PostgreSQL concurrency setup timed out, existing three ghost shutdown warnings. DN2103 attached; no rivalry phone/export/install/full Validate or existing-service restart/deployed migration/production rollout. Contracts, actual commands, evidence, scoped checkpoint and remaining acceptance: docs/WEEKLY_RIVALRY.md. Unrelated changes preserved.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: Race/Garage page ends now resist outward drags and spring back like the track list (64-unit cap, 160-unit resistance scale, 380 ms return). Fixed header, no wrapping and independent carousel input retained; cancellation, multitouch and navigation interrupt safely. Final gestures/edges 114, app 96, parse 275 and focused deployment checks pass. Updated APK installed/cold-launched on DN2103; adb-generated end swipes/screenshots verified, Guest Race left open. Initial capture-frame timing failures corrected without weakening movement checks; three existing driving shutdown leaks remain. Full Validate, driving/thermal and human finger feel untested. Files, actual commands, evidence and end-effect-only patch: docs/MENU_PAGE_SWIPES.md (Page end effects).
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -138,3 +138,7 @@
+ ## Weekly Rivalry override (2026-10-04)
+ 
+ The owner authorizes Weekly Rivalry inside Race, selected from the left trophy rail, with Overview/Tracks/Standings, rival-focused detail, verified race feedback and an Overview finale state. Five randomly chosen tracks, roughly 10–20 actual similar-skill drivers and Monday–Sunday UTC weeks are confirmed defaults. This supersedes the rivalry placeholder and authorizes the associated backend membership, matching, weekly verified PB scoring and ghost APIs. Community tracks require rating >4.0 and >100 distinct verified finishers; trusted official Beat my track authorship is an alternative. Preserve shared menu art/style and the canonical racer. Division/progression balance remains provisional; do not invent entrants, scores or rewards. Production deployment still requires authorization. See docs/WEEKLY_RIVALRY.md for actual tests, evidence and acceptance limits.
++
++## Weekly Rivalry results correction (2026-10-04)
++
++The owner requires normal race results first, including personal-best feedback and lap analysis. Continue opens weekly rivalry position/points feedback. Backend verification must never interrupt the normal summary. See docs/WEEKLY_RIVALRY.md.

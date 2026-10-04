@@ -13,6 +13,12 @@ var draft_haptics: float = 0.2
 var draft_camera: String = "overhead"
 var draft_speed_zoom: bool = true
 var draft_labels: bool = true
+var draft_ghost: String = "lap"
+var draft_show_ads: bool = false
+var development_available: bool = OS.is_debug_build()
+var ad_test_busy: bool = false
+var ad_test_button: Button
+var ad_adapter: Node
 var body: VBoxContainer
 var heading: Label
 var subtitle: Label
@@ -23,8 +29,10 @@ var reset_button: Button
 const TITLES: Dictionary = {
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
 	"camera": ["Camera", "Choose the view you prefer while driving."],
+	"ghosts": ["Ghosts", "Race against your own locally saved best."],
 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
 	"account": ["Account", "Manage the profile you race with."],
+	"development": ["Development", "Choose how ads behave while testing."],
 }
 
 func _ready() -> void:
@@ -37,6 +45,10 @@ func _ready() -> void:
 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
 	draft_labels = bool(records.settings.get("control_labels", true))
+	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
+	draft_show_ads = bool(records.settings.get("development_show_ads", false))
+	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
+	add_child(ad_adapter)
 	_build_sidebar()
 	_build_panel()
 	_show_section(section)
@@ -59,18 +71,31 @@ func _build_sidebar() -> void:
 	var space := Control.new()
 	space.custom_minimum_size.y = 12
 	column.add_child(space)
+	var category_scroll := ScrollContainer.new()
+	category_scroll.name = "SettingsCategoryScroll"
+	category_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	category_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(category_scroll)
+	var category_list := VBoxContainer.new()
+	category_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	category_list.add_theme_constant_override("separation", 10)
+	category_scroll.add_child(category_list)
 	for item: Array in [
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
+		["ghosts", "Ghosts", "Your personal best", "garage"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
 		["account", "Account", "Profile and sign-in", "person"],
+		["development", "Development", "Ads and testing", "gear"],
 	]:
 		var id: String = item[0]
+		if id == "development" and not development_available: continue
 		var button: Button = MenuStyle.button("", _show_section.bind(id))
 		button.name = "SettingsCategory_" + id
+		button.mouse_filter = Control.MOUSE_FILTER_PASS
 		button.tooltip_text = item[1]
-		button.custom_minimum_size.y = 82
-		column.add_child(button)
+		button.custom_minimum_size.y = 66
+		category_list.add_child(button)
 		var margin := MarginContainer.new()
 		margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		MenuStyle.fill(margin)
@@ -95,9 +120,6 @@ func _build_sidebar() -> void:
 		var arrow: TextureRect = _icon("arrow", 18)
 		row.add_child(arrow)
 		categories[id] = {"button": button, "caption": caption, "glyph": glyph, "arrow": arrow}
-	var air := Control.new()
-	air.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(air)
 	reset_button = MenuStyle.button("Reset controls", _reset)
 	reset_button.name = "ResetSettings"
 	reset_button.icon = MenuIcon.texture("restart")
@@ -145,6 +167,7 @@ func _build_panel() -> void:
 	footer.add_child(apply)
 
 func _show_section(id: String) -> void:
+	if id == "development" and not development_available: return
 	section = id
 	heading.text = TITLES[id][0]
 	subtitle.text = TITLES[id][1]
@@ -158,15 +181,63 @@ func _show_section(id: String) -> void:
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
 	reset_button.visible = id != "account"
-	reset_button.text = "Reset camera" if id == "camera" else "Reset controls"
+	reset_button.text = "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
 	match id:
 		"controls": _controls()
 		"camera": _camera()
+		"ghosts": _ghosts()
 		"haptics": _haptics()
 		"account": _account()
+		"development": _development()
+	_keep_category_visible(id)
+
+func _keep_category_visible(id: String) -> void:
+	await get_tree().process_frame
+	if section != id or not is_inside_tree(): return
+	var scroll: ScrollContainer = find_child("SettingsCategoryScroll", true, false)
+	scroll.ensure_control_visible(categories[id].button)
+
+func _development() -> void:
+	var row: HBoxContainer = _row("DevelopmentAds", 18)
+	row.add_child(_copy("Show ads", "Show AdMob test ads for ad-backed resumes. Off keeps development resumes free."))
+	var toggle := CheckButton.new()
+	toggle.name = "DevelopmentShowAds"
+	toggle.text = "On" if draft_show_ads else "Off"
+	toggle.button_pressed = draft_show_ads
+	toggle.custom_minimum_size = Vector2(150, 52)
+	toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	toggle.toggled.connect(func(on: bool) -> void:
+		draft_show_ads = on
+		if not on: ad_adapter.cancel()
+		toggle.text = "On" if on else "Off"
+		if is_instance_valid(ad_test_button): ad_test_button.disabled = not on or ad_test_busy or not preload("res://platform/admob_test_ads.gd").supported()
+		_changed())
+	row.add_child(toggle)
+	var test_row: HBoxContainer = _row("DevelopmentAdTest", 18)
+	test_row.add_child(_copy("Rewarded ad test", "Preview a test ad here. This does not spend or add resumes."))
+	ad_test_button = MenuStyle.button("Test rewarded ad", _test_rewarded_ad)
+	ad_test_button.name = "TestRewardedAd"
+	ad_test_button.custom_minimum_size = Vector2(226, 52)
+	ad_test_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ad_test_button.disabled = not draft_show_ads or ad_test_busy or not preload("res://platform/admob_test_ads.gd").supported()
+	test_row.add_child(ad_test_button)
+	body.add_child(_label("Google test ads only. Banked and daily free resumes are used first. These options are available in development builds.", 16, true))
+	if not preload("res://platform/admob_test_ads.gd").supported():
+		body.add_child(_label("Ad previews are available on Android with the AdMob development build.", 16, true))
+
+func _test_rewarded_ad() -> void:
+	if ad_test_busy or not draft_show_ads or not _apply(): return
+	ad_test_busy = true
+	ad_test_button.disabled = true
+	status.text = "Loading test ad…"
+	var result: Dictionary = await ad_adapter.show_rewarded()
+	ad_test_busy = false
+	if is_instance_valid(ad_test_button): ad_test_button.disabled = not draft_show_ads
+	status.text = "Test ad completed. No resumes added." if result.ok else str(result.get("error", "Ad unavailable. Please retry."))
+	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if result.ok else MenuStyle.ACCENT)
 
 func _controls() -> void:
 	var steering: HBoxContainer = _row("SteeringSettings", 16)
@@ -267,6 +338,21 @@ func _camera() -> void:
 	zoom_row.add_child(zoom)
 	body.add_child(_label("You can also change the view in Pause > Settings, or press C while driving.", 16, true))
 
+func _ghosts() -> void:
+	for index: int in range(PersonalGhostRun.MODES.size()):
+		var mode: String = PersonalGhostRun.MODES[index]
+		var row: HBoxContainer = _row("GhostRow_" + mode, 14)
+		row.add_child(_copy(PersonalGhostRun.TITLES[index], PersonalGhostRun.DESCRIPTIONS[index]))
+		var choice: Button = _choice("Selected" if draft_ghost == mode else "Select", draft_ghost == mode, func() -> void:
+			draft_ghost = mode
+			_changed()
+			_show_section("ghosts"))
+		choice.name = "Ghost_" + mode
+		choice.custom_minimum_size.x = 150
+		choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(choice)
+	body.add_child(_label("Ghosts are saved after completed races, separately for each track, car and handling setup. Existing times need a matching or better run to create a ghost. You can change this in Pause > Settings.", 16, true))
+
 func _haptics() -> void:
 	var row: HBoxContainer = _row("HapticSettings", 18)
 	var column := VBoxContainer.new()
@@ -306,7 +392,12 @@ func _changed() -> void:
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
 
 func _reset() -> void:
-	if section == "camera":
+	if section == "development":
+		draft_show_ads = false
+		ad_adapter.cancel()
+	elif section == "ghosts":
+		draft_ghost = "lap"
+	elif section == "camera":
 		draft_camera = "overhead"
 		draft_speed_zoom = true
 	else:
@@ -322,6 +413,8 @@ func _apply() -> bool:
 	records.settings.camera_mode = draft_camera
 	records.settings.camera_speed_zoom = draft_speed_zoom
 	records.settings.control_labels = draft_labels
+	records.settings.ghost_mode = draft_ghost
+	if development_available: records.settings.development_show_ads = draft_show_ads
 	var error: Error = records.save_records()
 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)

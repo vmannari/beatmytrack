@@ -223,7 +223,7 @@ func _interaction() -> void:
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/construction-editor.png")) == OK,"editor overpass screenshot")
-	app.call("_test_document")
+	await app.call("_test_document")
 	await process_frame
 	var game: Node = app.get("game")
 	check(game != null,"overpass can be tested in actual practice")

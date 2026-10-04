@@ -6,6 +6,7 @@ const MAX_RESPONSE_BYTES: int = 8388608
 var _base_url: String = ""
 var _access_token: String = ""
 var _refresh_token: String = ""
+var _login_id: String = ""
 var _busy: bool = false
 var _session_generation: int = 0
 var player: Dictionary = {}
@@ -13,6 +14,11 @@ var player: Dictionary = {}
 var session_path: String = ""
 var persistence_error: bool = false
 var _public_reads: Array[HTTPRequest] = []
+var _rotation_locks: Array[RefCounted] = []
+
+func _exit_tree() -> void:
+	for lock: RefCounted in _rotation_locks: lock.release()
+	_rotation_locks.clear()
 
 func cancel_public_reads(owner_id: int) -> void:
 	for request: HTTPRequest in _public_reads.duplicate():
@@ -48,10 +54,10 @@ func configure(base_url: String) -> Error:
 	_base_url = url
 	return OK
 
-func clear_session() -> void:
+func clear_session(preserve_saved: bool = false) -> void:
 	_session_generation += 1
 	persistence_error = false
-	if not session_path.is_empty() and (not _access_token.is_empty() or FileAccess.file_exists(session_path)):
+	if not preserve_saved and not session_path.is_empty() and (not _access_token.is_empty() or FileAccess.file_exists(session_path)):
 		# A durable sign-out fence also protects restarts if an open file cannot
 		# be removed on this platform. Only a later successful sign-in removes it.
 		var fence := FileAccess.open(session_path+".signed_out",FileAccess.WRITE)
@@ -61,9 +67,10 @@ func clear_session() -> void:
 			fence.flush()
 			persistence_error = fence.get_error() != OK
 			fence.close()
-	_forget_saved_session()
+	if not preserve_saved: _forget_saved_session()
 	_access_token = ""
 	_refresh_token = ""
+	_login_id = ""
 	player = {}
 	identity_changed.emit()
 
@@ -75,9 +82,12 @@ func _forget_saved_session() -> void:
 
 func _save_session() -> void:
 	if session_path.is_empty(): return
+	if _login_id.is_empty(): _login_id = new_idempotency_key()
 	var config := ConfigFile.new()
 	config.set_value("session", "url", _base_url)
 	config.set_value("session", "refresh_token", _refresh_token)
+	config.set_value("session", "login_id", _login_id)
+	config.set_value("session", "player_id", str(player.get("id","")))
 	var temporary: String = session_path + ".tmp"
 	persistence_error = config.save(temporary) != OK
 	if not persistence_error:
@@ -109,9 +119,79 @@ func restore_session() -> Dictionary:
 	_busy = true
 	# Retain credentials only when transport proves the request was never delivered.
 	var generation: int = _session_generation
-	var response: Dictionary = _remember(await _send("/auth/refresh", HTTPClient.METHOD_POST, {"refresh_token":token}, false),generation)
+	_refresh_token = token
+	_login_id = _stored_login_id(config)
+	var response: Dictionary = await _renew_session(generation)
+	if generation != _session_generation:
+		_busy = false
+		return _failure("ACCOUNT_CHANGED")
 	if not response.ok and not refresh_retry_safe(response): clear_session()
 	_busy = false
+	return response
+
+static func _stored_login_id(config: ConfigFile) -> String:
+	# Existing saves gain this metadata after their first successful rotation.
+	return str(config.get_value("session","login_id","legacy-"+str(config.get_value("session","refresh_token","")).sha256_text()))
+
+func _renew_session(generation: int, path: String = "", method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, key: String = "", used_access: String = "") -> Dictionary:
+	var lock := preload("res://backend/session_rotation_lock.gd").new(session_path)
+	_rotation_locks.append(lock)
+	var acquired: Error = await lock.acquire(get_tree())
+	if acquired != OK:
+		_rotation_locks.erase(lock)
+		var failed: Dictionary = _failure("SESSION_ROTATION_BUSY")
+		failed.not_delivered = true
+		return failed
+	var response: Dictionary = await _renew_locked(generation,path,method,payload,key,used_access)
+	lock.release()
+	_rotation_locks.erase(lock)
+	return response
+
+func _renew_locked(generation: int, path: String, method: HTTPClient.Method, payload: Dictionary, key: String, used_access: String) -> Dictionary:
+	if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+	if not path.is_empty() and _access_token != used_access:
+		# An earlier request in this client already renewed while we waited.
+		var retried: Dictionary = await _send(path,method,payload,true,key)
+		if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+		if int(retried.status) != 401: return retried
+	var expected_player: String = str(player.get("id",""))
+	if not session_path.is_empty():
+		var config := ConfigFile.new()
+		if not has_saved_session() or config.load(session_path) != OK:
+			if FileAccess.file_exists(session_path+".signed_out"):
+				clear_session(true)
+				return _failure("ACCOUNT_CHANGED")
+			var failed: Dictionary = _failure("SESSION_STORAGE_ERROR")
+			failed.not_delivered = true
+			return failed
+		var saved_player: String = str(config.get_value("session","player_id",""))
+		if str(config.get_value("session","url","")) != _base_url or _stored_login_id(config) != _login_id or (not expected_player.is_empty() and not saved_player.is_empty() and expected_player != saved_player):
+			# Another explicit sign-in is a different session, even for the same
+			# player. Leave that saved session intact; never silently adopt it.
+			clear_session(true)
+			return _failure("ACCOUNT_CHANGED")
+		_refresh_token = str(config.get_value("session","refresh_token",""))
+		if expected_player.is_empty(): expected_player = saved_player
+	var refresh: Dictionary = await _send("/auth/refresh",HTTPClient.METHOD_POST,{"refresh_token":_refresh_token},false)
+	if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+	if not session_path.is_empty():
+		var current := ConfigFile.new()
+		if not has_saved_session() or current.load(session_path) != OK or _stored_login_id(current) != _login_id:
+			clear_session(true)
+			return _failure("ACCOUNT_CHANGED")
+	var returned_player: Variant = refresh.data.get("player",{})
+	if refresh.ok and returned_player is Dictionary and not expected_player.is_empty() and str(returned_player.get("id","")) != expected_player:
+		clear_session(true)
+		return _failure("ACCOUNT_CHANGED")
+	refresh = _remember(refresh,generation)
+	if not refresh.ok:
+		refresh.refresh_failed = true
+		return refresh
+	if path.is_empty(): return refresh
+	# Keep the shared lock through this retry: another process cannot consume
+	# the new access credential before the server accepts the original request.
+	var response: Dictionary = await _send(path,method,payload,true,key)
+	if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
 	return response
 
 func signed_in() -> bool:
@@ -244,25 +324,17 @@ func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET
 	while _busy: await get_tree().process_frame
 	if authenticated and (str(player.get("id","")) != identity or generation != _session_generation): return _failure("ACCOUNT_CHANGED")
 	_busy = true
+	var used_access: String = _access_token
 	var response: Dictionary = await _send(path,method,payload,authenticated,idempotency_key)
 	if authenticated and (str(player.get("id","")) != identity or generation != _session_generation):
 		_busy = false
 		return _failure("ACCOUNT_CHANGED")
 	if authenticated and response.status == 401 and not _refresh_token.is_empty():
-		var refresh: Dictionary = _remember(await _send("/auth/refresh",HTTPClient.METHOD_POST,{"refresh_token":_refresh_token},false),generation)
+		response = await _renew_session(generation,path,method,payload,idempotency_key,used_access)
 		if generation != _session_generation:
 			_busy = false
 			return _failure("ACCOUNT_CHANGED")
-		if refresh.ok:
-			response = await _send(path,method,payload,true,idempotency_key)
-			if generation != _session_generation:
-				_busy = false
-				return _failure("ACCOUNT_CHANGED")
-			if response.status == 401: clear_session()
-		else:
-			# Refresh rotation is single use; ambiguous failures require sign-in.
-			if not refresh_retry_safe(refresh): clear_session()
-			response = refresh
+		if response.status == 401 or (response.get("refresh_failed",false) and not refresh_retry_safe(response)): clear_session()
 	elif authenticated and response.status == 401:
 		clear_session()
 	_busy = false
@@ -271,27 +343,20 @@ func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET
 func _authenticated_read(path: String) -> Dictionary:
 	var identity: String = str(player.get("id",""))
 	var generation: int = _session_generation
-	var refresh_token: String = _refresh_token
+	var used_access: String = _access_token
 	var response: Dictionary = await _send(path,HTTPClient.METHOD_GET,{},true)
 	if str(player.get("id","")) != identity or generation != _session_generation: return _failure("ACCOUNT_CHANGED")
 	if int(response.status) != 401: return response
-	if refresh_token.is_empty():
+	if _refresh_token.is_empty():
 		clear_session()
 		return response
 	while _busy: await get_tree().process_frame
 	if str(player.get("id","")) != identity or generation != _session_generation: return _failure("ACCOUNT_CHANGED")
-	# Only the first failed reader rotates; others reuse the newly issued session.
-	if _refresh_token == refresh_token:
-		_busy = true
-		var refresh: Dictionary = _remember(await _send("/auth/refresh",HTTPClient.METHOD_POST,{"refresh_token":refresh_token},false),generation)
-		_busy = false
-		if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
-		if not refresh.ok:
-			if not refresh_retry_safe(refresh): clear_session()
-			return refresh
-	response = await _send(path,HTTPClient.METHOD_GET,{},true)
+	_busy = true
+	response = await _renew_session(generation,path,HTTPClient.METHOD_GET,{},"",used_access)
+	_busy = false
 	if str(player.get("id","")) != identity or generation != _session_generation: return _failure("ACCOUNT_CHANGED")
-	if response.status == 401: clear_session()
+	if response.status == 401 or (response.get("refresh_failed",false) and not refresh_retry_safe(response)): clear_session()
 	return response
 
 func logout() -> Dictionary:

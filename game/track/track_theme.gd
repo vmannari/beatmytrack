@@ -5,7 +5,7 @@ extends RefCounted
 
 const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
 const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
-const DESERT: Array[Color] = [Color("8e795a"), Color("b59a70"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT: Array[Color] = [Color("9b815d"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 
 
 static func normalized(theme: String) -> String:
@@ -61,6 +61,11 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 	if theme == "pine":
 		light.light_energy = 1.32
 		light.light_color = Color("ffedce")
+	if theme == "desert":
+		# Sun-baked daylight, with warm open shade rather than a sunset/haze pass.
+		environment.ambient_light_color = Color("c5b9a4")
+		environment.ambient_light_energy = 0.38
+		light.light_energy = 1.06
 	if theme == "storm":
 		environment.sky = preload("res://track/storm_sky.tres")
 		environment.background_mode = Environment.BG_SKY

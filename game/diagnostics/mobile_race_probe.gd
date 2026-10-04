@@ -84,10 +84,16 @@ func _start() -> void:
 		shadows = [true,true,true]
 		particle_modes = [true,false,true]
 	alternate_controls = config is Dictionary and config.get("alternate_controls",false)
-	# Build the actual racing HUD too: the editor practice UI hides its cards.
-	app.call("_start_race", track, not record_samples)
+	# Local diagnostic tracks use the authorized practice launch path. Ordinary
+	# Race now requires a published track; a probe must never request a ticket
+	# or write last-track preferences/competitive records just to benchmark it.
+	await app.call("_start_race", track, true, true)
 	probe_track = track
 	game = app.get("game")
+	if not is_instance_valid(game):
+		push_error("Device probe could not start its local practice scene")
+		queue_free()
+		return
 	game.set("ai_enabled", true)
 	tyre_impact = config is Dictionary and config.get("tyre_impact",false)
 	if tyre_impact:
@@ -109,6 +115,8 @@ func _start() -> void:
 		game.set("profile_enabled",true)
 		# Exercise the real timed-route validator without saving an AI personal best.
 		game.set("editor_test",false)
+		(game.get("hud") as PlaygroundHUD).editor_test = false
+		(game.get("hud") as PlaygroundHUD).title.text = "Race"
 		game.set("attempt_practice",true)
 		(game.get("track_session") as TrackSession).target_laps = 10000
 	original_scale = get_viewport().scaling_3d_scale

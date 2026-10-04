@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-9"
+const PRESENTATION_VERSION: String = "desert-dust-10"
 const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
@@ -52,6 +52,7 @@ func _ready() -> void:
 		tyre_process.angular_velocity_curve = _rotation_from_growth(tyre_process.scale_curve)
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("billowing",true)
 		(tyre.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("intersection_fade",0.18)
+		tyre.draw_pass_1 = _cloud_mesh(Vector2(1.4,1.4),tyre.draw_pass_1.surface_get_material(0))
 		tyre_emitters.append(tyre)
 		add_child(tyre)
 		var clipping := _emitter("Clippings%d" % wheel,96,0.72,Vector2(0.045,0.24),Color("71834b"),MODE_CLIPPING)
@@ -87,7 +88,14 @@ func _set_desert_profile(enabled: bool) -> void:
 	for emitter: GPUParticles3D in dust_emitters:
 		emitter.lifetime = 9.0 if enabled else 5.2
 		emitter.amount = 64 if enabled else 360
-		(emitter.draw_pass_1 as QuadMesh).size = Vector2.ONE * (4.0 if enabled else 2.05)
+		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
+		if enabled:
+			emitter.draw_pass_1 = _cloud_mesh(Vector2(4.0,4.0),cloud_material)
+		else:
+			var quad := QuadMesh.new()
+			quad.size = Vector2(2.05,2.05)
+			quad.material = cloud_material
+			emitter.draw_pass_1 = quad
 		var material: ParticleProcessMaterial = emitter.process_material
 		material.color = Color("d3c19f") if enabled else Color(0.82,0.70,0.50)
 		material.color_ramp = _desert_alpha() if enabled else _alpha_ramp(0.48,MODE_DUST)
@@ -97,7 +105,6 @@ func _set_desert_profile(enabled: bool) -> void:
 		material.damping_min = 0.30 if enabled else 0.75
 		material.damping_max = 0.65 if enabled else 1.25
 		material.gravity = Vector3(0,0.24 if enabled else 0.06,0)
-		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
 		cloud_material.set_shader_parameter("billowing",enabled)
 		if enabled:
 			material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
@@ -352,6 +359,35 @@ func _clipping_mesh(size: Vector2) -> ArrayMesh:
 	return tool.commit()
 
 
+func _cloud_mesh(size: Vector2, material: Material) -> ArrayMesh:
+	# The billowing shader has zero alpha outside the unit UV circle. This
+	# circumscribed octagon keeps every visible pixel while avoiding 17.16% of
+	# the square's rasterized area, especially valuable for overlapping clouds.
+	var corner: float = (sqrt(2.0)-1.0)*0.5
+	var outline := PackedVector2Array([
+		Vector2(-corner,-0.5),Vector2(corner,-0.5),
+		Vector2(0.5,-corner),Vector2(0.5,corner),
+		Vector2(corner,0.5),Vector2(-corner,0.5),
+		Vector2(-0.5,corner),Vector2(-0.5,-corner)])
+	var vertices := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for point: Vector2 in outline:
+		vertices.append(Vector3(point.x*size.x,-point.y*size.y,0.0))
+		uvs.append(point+Vector2(0.5,0.5))
+	for i: int in range(1,outline.size()-1):
+		indices.append_array(PackedInt32Array([0,i,i+1]))
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	mesh.surface_set_material(0,material)
+	return mesh
+
+
 func _alpha_ramp(maximum: float, mode: int) -> GradientTexture1D:
 	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
 	var gradient := Gradient.new()
@@ -413,27 +449,29 @@ void fragment() {
 		shader.code = """
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
-uniform sampler2D dust_texture : source_color, filter_linear_mipmap_anisotropic;
+uniform sampler2D dust_texture : source_color, filter_linear_mipmap;
 uniform float alpha_softness = 0.42;
 uniform bool billowing = false;
 uniform float intersection_fade = 0.45;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
-varying float puff_angle;
+varying vec2 cloud_uv;
 void vertex() {
 	// Each particle gets a stable engine-random speed magnitude at spawn.
 	// Separate direction from magnitude so none receive near-zero spin.
 	float turn_direction = (INSTANCE_ID % 2 == 0) ? -1.0 : 1.0;
-	puff_angle = INSTANCE_CUSTOM.x * turn_direction;
-	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
-	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
-}
-void fragment() {
-	vec2 cloud_uv = UV;
+	float puff_angle = INSTANCE_CUSTOM.x * turn_direction;
+	cloud_uv = UV;
 	if (billowing) {
+		// Rotation is affine across the card. Evaluate trig per vertex instead
+		// of repeating it for every transparent pixel in every overlapping puff.
 		float c = cos(puff_angle);
 		float s = sin(puff_angle);
 		cloud_uv = mat2(vec2(c,-s),vec2(s,c)) * (UV-0.5) + 0.5;
 	}
+	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
+}
+void fragment() {
 	vec4 puff = texture(dust_texture,clamp(cloud_uv,vec2(0.0),vec2(1.0)));
 	float alpha = smoothstep(0.02,alpha_softness,puff.a);
 	float value = dot(puff.rgb,vec3(0.299,0.587,0.114));

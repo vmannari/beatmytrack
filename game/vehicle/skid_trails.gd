@@ -22,6 +22,7 @@ var previous_right_strength: float = 0.0
 var previous_front_left_strength: float = 0.0
 var previous_front_right_strength: float = 0.0
 var active: bool = false
+var desert_sand: bool = false
 
 
 func _ready() -> void:
@@ -122,6 +123,7 @@ func clear() -> void:
 
 
 func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null, track: NativeTrack = null) -> void:
+	desert_sand = track != null and track.metadata.get("theme","pine") == "desert"
 	if state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 1.0:
 		active = false
 		return
@@ -235,7 +237,7 @@ static func physics_intensity(state: VehicleState, frame: DriveFrame, surface_ki
 
 
 func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength: float = 1.0) -> void:
-	var style: Vector4 = _surface_style(surface_kind, dirt, strength)
+	var style: Vector4 = _surface_style(surface_kind, dirt, strength, desert_sand)
 	var tint := Color(style.x, style.y, style.z, style.w)
 	var width: float = _surface_width(surface_kind, strength)
 	var relief: float = _surface_relief(surface_kind, strength)
@@ -253,7 +255,7 @@ func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength
 	cursor = (cursor + 1) % CAPACITY
 
 
-func _surface_style(kind: int, dirt: float, strength: float = 1.0) -> Vector4:
+func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool = false) -> Vector4:
 	# Colors describe the material displaced by a tyre, rather than painting the
 	# same black stripe everywhere. Dirt carried onto a hard surface fades with
 	# the canonical tire-cleaning state.
@@ -272,6 +274,8 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0) -> Vector4:
 			result = Vector4(0.43, 0.29, 0.15, 0.62) if dirt > 0.025 else Vector4(0.12, 0.115, 0.105, 0.46)
 		_:
 			result = Vector4(0.49, 0.34, 0.18, 0.78) if dirt > 0.025 else Vector4(0.10, 0.11, 0.105, 0.70)
+	if kind == 2 and desert:
+		result = Vector4(0.61,0.48,0.30,0.50) # Soft dusty-brown pressed sand.
 	if kind in [0,5,8,9]: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
 	else: result.w *= lerpf(0.12, 1.0, clampf(strength, 0.0, 1.0))
 	return result

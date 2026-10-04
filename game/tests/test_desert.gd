@@ -12,6 +12,44 @@ func check(ok: bool, label: String) -> void:
 func _initialize() -> void:
 	run.call_deferred()
 
+func resume_capture(race: Node) -> void:
+	# Desktop focus changes must not freeze particles or cover VFX evidence
+	# with the automatic pause drawer. Physics is disabled in this fixture.
+	if race.get("paused"): race.call("toggle_pause")
+
+func check_cloud_footprint(mesh: Mesh) -> void:
+	# Check the shipping geometry against the visible radial shader support,
+	# rather than simply asserting a particular vertex/triangle count.
+	check(mesh is ArrayMesh,"billowing cloud uses a trimmed footprint")
+	if not mesh is ArrayMesh: return
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var bounds: AABB = mesh.get_aabb()
+	var mapping_ok: bool = vertices.size() == uvs.size()
+	for i: int in range(vertices.size()):
+		var expected := Vector2(vertices[i].x/bounds.size.x+0.5,0.5-vertices[i].y/bounds.size.y)
+		mapping_ok = mapping_ok and expected.is_equal_approx(uvs[i])
+	check(mapping_ok,"trimmed cloud preserves the full card's affine UV mapping")
+	var area: float = 0.0
+	for i: int in range(0,indices.size(),3):
+		area += absf((uvs[indices[i+1]]-uvs[indices[i]]).cross(uvs[indices[i+2]]-uvs[indices[i]]))*0.5
+	check(area > PI*0.25 and area <= 0.83,"cloud raster area falls at least 17 percent without shrinking visible support")
+	var contains_circle: bool = true
+	for angle: int in range(360):
+		var point: Vector2 = Vector2(0.5,0.5)+Vector2.from_angle(deg_to_rad(float(angle)))*0.5
+		var covered: bool = false
+		for i: int in range(0,indices.size(),3):
+			covered = covered or Geometry2D.point_is_inside_triangle(point,uvs[indices[i]],uvs[indices[i+1]],uvs[indices[i+2]])
+		# Exact tangencies may round just outside; retry a subpixel inset.
+		if not covered:
+			point = point.lerp(Vector2(0.5,0.5),0.00001)
+			for i: int in range(0,indices.size(),3):
+				covered = covered or Geometry2D.point_is_inside_triangle(point,uvs[indices[i]],uvs[indices[i+1]],uvs[indices[i+2]])
+		contains_circle = contains_circle and covered
+	check(contains_circle,"every visible cloud rim remains inside the trimmed triangles")
+
 func run() -> void:
 	root.size = Vector2i(1280,720)
 	var doc: Dictionary = TrackDocument.create_default()
@@ -65,6 +103,9 @@ func run() -> void:
 	dust.sample(state,DriveFrame.new(),track)
 	check(dust.dust_emitters[0].emitting and dust.last_strengths[0] > 0.9,"straight driving produces dense dust without sliding")
 	check(dust.dust_emitters[0].lifetime == 9.0,"dust persists nine seconds")
+	for emitter: GPUParticles3D in dust.dust_emitters + dust.tyre_emitters:
+		check_cloud_footprint(emitter.draw_pass_1)
+	check(dust.dust_emitters[0].amount == 64 and dust.tyre_emitters[0].amount == 48,"render optimization retains lingering and contact particle capacity")
 	var cloud: ParticleProcessMaterial = dust.dust_emitters[0].process_material
 	var growth: Curve = (cloud.scale_curve as CurveTexture).curve
 	check(growth.sample(0.42) >= 1.5 and growth.sample(1.0) <= 2.5,"desert clouds expand within bounded overdraw budget")
@@ -93,6 +134,7 @@ func run() -> void:
 	bed.metadata.theme = "pine"
 	dust.sample(offroad,DriveFrame.new(),bed)
 	check(SkidTrails.surface_at(bed,Vector3.ZERO,false) == 1 and dust.clipping_emitters[0].emitting and not dust.dust_emitters[0].emitting,"leaving desert restores meadow effects")
+	check(dust.dust_emitters[0].draw_pass_1 is QuadMesh and dust.dust_emitters[0].amount == 360 and dust.dust_emitters[0].lifetime == 5.2,"leaving desert restores the original irregular sand sprite profile")
 	dust._stop()
 	check(not dust.dust_emitters[0].emitting,"stopping ends emission without restarting existing clouds")
 	dust.queue_free()
@@ -189,6 +231,7 @@ func run() -> void:
 		state.velocity = state.forward()*12.0
 		var start_index: int = track.nearest_route(state.position)
 		for i: int in range(240):
+			resume_capture(race)
 			var index: int = (start_index + i/4) % track.route.size()
 			state.position = track.route[index].lerp(track.route[(index+1)%track.route.size()],float(i%4)/4.0)
 			var direction: Vector2 = (track.route[(index+1)%track.route.size()]-track.route[index]).normalized()
@@ -199,10 +242,14 @@ func run() -> void:
 			effect.sample(state,DriveFrame.new(),track)
 			if i == 239: check(effect.last_strengths[0] > 0.0,"captured moving plume is emitting")
 			await create_timer(1.0/60.0).timeout
+		resume_capture(race)
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/dense-dust.png") == OK,"dust obstruction evidence")
 		effect._stop()
-		await create_timer(3.0).timeout
+		var linger_deadline: int = Time.get_ticks_usec()+3000000
+		while Time.get_ticks_usec() < linger_deadline:
+			resume_capture(race)
+			await process_frame
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(folder+"/lingering-dust.png") == OK,"lingering dust evidence")
 		effect.clear()
@@ -216,6 +263,7 @@ func run() -> void:
 		var trails := SkidTrails.new()
 		race.add_child(trails)
 		for i: int in range(150):
+			resume_capture(race)
 			state.position = offtrack_origin + Vector2(0,float(i)*0.12)
 			state.heading = 0.0
 			state.velocity = Vector2(0,12)

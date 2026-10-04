@@ -20,14 +20,20 @@ uniform sampler2D dune_factors : filter_linear_mipmap_anisotropic, repeat_enable
 uniform sampler2D dune_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 
 vec3 dune_sand(vec2 p) {
-	// Original irregular dune art carries readable crests and swept gaps.
-	// Natural ochre pigment under the shared daylight rig.
-	return texture(dune_albedo,p/24.0).rgb*vec3(0.56,0.60,0.65);
+	// Broad crests and wind ripples stay in the original artwork. Multi-metre
+	// mineral patches vary independently of the dune tile, without runtime noise.
+	vec3 sand = texture(dune_albedo,p/28.0).rgb;
+	vec2 mineral = texture(surface_factors,p/96.0+vec2(0.17,0.43)).gb;
+	vec3 pigment = mix(vec3(0.64,0.63,0.59),vec3(0.68,0.67,0.64),smoothstep(0.35,0.65,mineral.x));
+	// Preserve pale crest highlights and deepen the warmer sheltered faces.
+	float face = dot(sand,vec3(0.2126,0.7152,0.0722));
+	sand *= 0.84+smoothstep(0.16,0.64,face)*0.28;
+	return sand*pigment*(0.92+mineral.y*0.17);
 }
 
 vec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) {
 	if (!desert_dunes || weight <= 0.001) return original;
-	vec2 slope = (texture(dune_factors,p/32.0).gb-0.5)*0.38;
+	vec2 slope = (texture(dune_factors,p/32.0).gb-0.5)*0.48;
 	vec3 relief = normalize(vec3(-slope.x,1.0,-slope.y));
 	return normalize(mix(original,(view*vec4(relief,0.0)).xyz,clamp(weight,0.0,1.0)));
 }
@@ -79,7 +85,9 @@ vec3 sand_detail(vec3 base, vec2 p) {
 
 // Coarse desert roadside gravel, distinct from both compacted road and dunes.
 vec3 desert_shoulder(vec3 base, vec2 p) {
- return texture(desert_apron,p/6.0).rgb*vec3(0.59,0.64,0.71);
+	vec3 grit = texture(desert_apron,p/6.0).rgb;
+	float deposits = texture(surface_factors,p/38.0+vec2(0.29,0.61)).g;
+	return grit*vec3(0.62,0.64,0.67)*(0.93+deposits*0.12);
 }
 
 // Shared world-space baked asphalt. Random repair/crack shapes are removed;

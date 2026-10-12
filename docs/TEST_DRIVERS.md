@@ -1,3 +1,5 @@
+2026-10-07 follow-up: automatic development membership/backend driving and the five-track Overview supersede the manual test-rival switch and older Overview guidance below. See [current behavior and actual verification](RIVALRY_HUB.md).
+
 # Artificial test drivers — 2026-10-04
 
 PC Development logout follow-up: session renewal could reuse an obsolete credential after another client restored the same saved session. The client now coordinates renewal and uses the latest saved credential. Canonical rivalry races with Test Rivals ON pass expiry, same-process and separate-process restoration regressions while retaining identity. See [repair, actual verification and restart instructions](RIVALRY_SESSION_FIX.md). No test-driver population or server authentication rule changed in this repair.
@@ -118,3 +120,18 @@ Pace remains a controller prototype. Real developer PB calibration on two select
 Changed source files in this rollout: `backend/deploy/pc_development.py`, `backend/tests/test_pc_test_driver_rollout.py`, `game/tests/test_test_driver_live.gd` and its Godot UID. Documentation/status and [rollout-only Git patch](evidence/test-driver-rollout-2026-10-04/test-driver-rollout.patch) record this follow-up separately from the earlier feature implementation. No mixed-workspace commit was made. The initial sandbox CIM query was denied; the same narrowly scoped process check succeeded with normal desktop access. No automatic approval rejection occurred.
 
 Doctor currently lists **DN2103 and emulator-5554**. **No phone/emulator driving test, APK export or installation was performed for this rollout.** NAS/production deployment, a restored-service rehearsal, multi-week unattended scheduling, 150-driver throughput, PostgreSQL concurrency stress and human visual/pace acceptance remain unperformed. The live migration and aggregate isolation checks above were performed on PostgreSQL.
+
+
+## Google Cloud faster population (2026-10-06)
+
+The owner-requested retained-cloud rollout, faster controller, compact 200-driver/all-27-track history plan and labeled private histograms are recorded in [Cloud test drivers](CLOUD_TEST_DRIVERS_2026_10_06.md). The 5,400-finish population is still running; consult its authoritative progress report. Earlier local pace limitations above are historical, not proof that the final controller is human-calibrated on every track.
+
+
+## Predictive follow-up ? 2026-10-07
+
+New local generation now uses cached constrained trajectories and bounded Frenet LTV MPC. The final corpus finishes 27/27 verified five-lap races, with median 21.1% improvement; four circuits remain slower. Old committed uploads can recover after a controller upgrade without regenerating their inputs. Actual architecture, tests, telemetry, cache timings and limitations are in [Predictive test drivers](PREDICTIVE_TEST_DRIVERS.md). This task has not rolled the new controller into the active cloud worker.
+
+
+## Further pace improvement - 2026-10-08
+
+The owner-requested follow-up improves the v4 neutral-profile benchmark by 10.1% on average, with all 27 circuits faster and independently verified. Controller5/trajectory3/MPC2 use time-aware geometry, exact steering/shared traction and standing/flying qualification. Recorded contacts rise slightly from5 to8. See [Trajectory pace follow-up](TRAJECTORY_PACE_2026_10_08.md) for actual tests, evidence, scoped changes and rollout/device limits.

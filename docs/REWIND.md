@@ -189,3 +189,24 @@ Actual verification (pinned `scripts/dev.ps1` entry point):
 - `-Action Doctor`: matching engine/templates found; **no attached phone**. No Android export or device test performed. No backend deployment required for this presentation-only state.
 
 Remaining acceptance: owner visual review and physical-phone icon/touch checks. Crack changes follow the same discrete 0.1-second selected snapshots as rewind itself.
+
+## Rewind resource badge correction, 2026-10-09
+
+Requirements RW05-RW07 / V03-V05 / Q01 and the owner's 2026-10-09 correction: ordinary accounts show the actual banked count when positive, otherwise the ad icon. Ad-free accounts retain the rewind/play action with no resource badge, even with banked credits. Apply the same presentation to the race HUD and rewind confirmation toolbar; race-use indicators remain separate.
+
+Changed files: `game/ui/rewind_hud_button.gd`, `game/ui/rewind_panel.gd`, `game/core/game.gd`, `game/tests/test_rewind.gd`, this document, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. Both entitlement fields (`ad_free` and `free_rewinds`) suppress the resource badge. Every restart now refreshes the server wallet, rather than refreshing only at initial scene creation and rewind close.
+
+Actual command: with disposable workspace APPDATA `build/rewind-resource-user`, `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureRewind`: **70 checks, zero failures** on pinned Godot 4.7.2. Initial restricted runs failed on log access and Windows certificate-store access; the local-access rerun succeeded. Captured and inspected `build/rewind-hud-banked.png`, `build/rewind-hud-ad.png`, `build/rewind-hud-ad-free.png` showing 3, AD and no badge respectively. Existing rewind/replay/damage checks passed. No phone attachment check or physical-device test, Android export/install, live-account verification, full Validate or backend deployment performed. Remaining acceptance: owner live-account/restart and Android visual checks. Concurrent workspace changes preserved.
+
+
+## Disabled rewind presentation correction, 2026-10-09
+
+Requirements RW15-RW18 / RW05-RW07 / V03-V05 / Q01 and the owner's supplied screenshot: the disabled Resume action is a neutral grey circle/play glyph with no square background or resource badge. The toolbar overrides disabled and focus style boxes as well as its existing normal/hover/pressed empty styles. The race HUD also uses a grey rewind glyph, no disabled background and no resource badge. Enabled actions retain actual banked counts, the existing ad icon and ad-free suppression. No resource consumption, quota, simulation or replay contracts changed.
+
+Changed files: `game/ui/rewind_panel.gd`, `game/ui/rewind_hud_button.gd`, `game/tests/test_rewind.gd` (existing capture setup now includes the disabled HUD and opens the current-position capture with an empty wallet), this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`. No new test suite added for this styling change.
+
+Actual command, with disposable workspace APPDATA `build/rewind-disabled-user`: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureRewind`. Initial sandboxed attempt emitted Windows root-certificate-store access errors and exited 1 without a completion summary; it saved only the first disabled-HUD capture. Reran the same command with approved local access: pinned Godot 4.7.2, **71 checks, zero failures, exit 0**. The parent shell emitted an unrelated PowerShell profile-policy warning; the child explicitly used NoProfile and Bypass and completed. Inspected final current-position disabled toolbar, enabled ad toolbar and disabled race HUD; desktop banked and compact captures also retained. Existing quota/current-position guards, exact restoration, damage preservation and return-pacing checks passed.
+
+Evidence and task-only review checkpoint: `docs/evidence/rewind-disabled-2026-10-09/` contains captures, restricted/final logs, exact pre-change copies and `change.patch`, preserving the existing dirty workspace. `git diff --check -- game/ui/rewind_panel.gd game/ui/rewind_hud_button.gd game/tests/test_rewind.gd docs/REWIND.md DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md` passed (exit 0; existing CRLF normalization warnings only).
+
+No phone attachment check or physical-device test, Android export/install, full Validate, live-account/resource operation or backend deployment performed. Remaining acceptance: owner visual review and physical-device touch/safe-area appearance. This correction adds no player-facing labels or assets.

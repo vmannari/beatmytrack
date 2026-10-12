@@ -1,5 +1,34 @@
 # Project agent instructions
 
+## Garage Free Race layout override (2026-10-11)
+The owner rejects the first Garage carousel presentation and supplies the Free Race menu reference. Garage uses a central actual showroom, a carousel of the actual 3D car models and a bottom Select car action. Car cards preview; Select car confirms and opens the left-side Customise/Care/Tuning icon rail. Customise selects liveries and colours, Care contains optional local washing, and Tuning remains a placeholder. This supersedes illustrated Garage cards, the right-hand Garage panel, immediate confirmation on card tap and Garage race/circuit actions. Preserve local per-car paint/condition, free racing and canonical handling/scoring. See `docs/GARAGE_FREE_RACE_LAYOUT.md` for actual files, tests, captures and remaining owner/phone acceptance.
+
+## Persistent local car dirt and washing override (2026-10-11)
+The owner requests that accumulated dirt remain after races, retries and track changes. Snow melts away and smears dirt already on the car. Garage must provide manual washing. The owner explicitly requires cosmetic condition to be stored only locally, with no backend interaction. Preserve per-car persistence, optional/free racing, paint separation and canonical scoring. This supersedes race-owned clean-on-retry/biome-change weathering. See `docs/CAR_WASH.md` for implementation, actual tests/captures and remaining owner/device acceptance.
+
+## Trajectory-only verification override (2026-10-09)
+The owner requires verification to be as simple as possible: a proper timestamped trajectory is sufficient; do not reproduce the whole game to accept races. The server checks start/finish, finite bounded positions, monotonic time, broad speed/continuity and every ordered gate/lap using prepared geometry. Ordinary races, creator laps and authorized rewind races use the same small checker. Remove automatic full replay fallback and control/traction/collision/hazard simulation from acceptance; keep canonical replay tools only as explicit offline diagnostics. Ghosts are optional presentation and cannot determine score eligibility. Preserve pinned contracts, five ordinary laps, exact completed-ticket results, normal results first, best-only scoring, authorized resume receipts, durable/idempotent uploads and public/artificial isolation. Deployments still require explicit authorization. See `docs/TRAJECTORY_VERIFICATION.md` for measured computation, files, commands and remaining acceptance. This supersedes the full-replay fallback in the lightweight override below.
+
+## Lightweight verification override (2026-10-09)
+The owner explicitly prioritizes computationally light and fast race verification over catching every manipulation. Ordinary races may use bounded 20 Hz movement evidence, broad car/movement plausibility, all ordered road gates and input-count timing instead of exact replay physics. Keep pinned track/car contracts, actual five laps, best-only scoring, normal results first, durable/idempotent uploads and public/artificial isolation. Missing/uncertain evidence, creator validation and rewind races retain full replay fallback. Give actual player jobs priority and let background artificial generation yield. This supersedes full canonical replay as the sole competitive verification method; do not claim lightweight proofs reproduce exact tire/collision forces or provide complete anti-cheat. Production deployment still requires explicit authorization. See `docs/VERIFICATION_SPEED.md` for contracts, measurements, commands and remaining acceptance.
+
+## Rivalry two-card track view override (2026-10-09)
+The owner supplies a two-card track-detail reference, removes the third rival/challenger/ghost column, and moves Back to Tracks and Race to an equal-width bottom action row outside both cards. Keep the original scenic route/start-direction preview and the full eight-row scrolling standings with signed gaps and highlighted/sticky player. Retain existing ghost targets internally with a no-recording fallback, detail-only race start, overview return, completed/busy/unavailable gates, actual five laps and normal results first. This supersedes the earlier third-column and card-contained actions. See `docs/RIVALRY_TWO_COLUMN.md` for actual files, commands, captures and remaining device acceptance.
+
+## Rivalry compact hub correction (2026-10-09)
+The owner removes the separate track arrows: each full-width track row opens detail. Explicit Rivalry entry must always open the overview with its five tracks and standings, including repeat activation and returns from primary menus; background refresh preserves the current detail/results. Compact the podium positions, remove their car pictures and expand the standings vertically while retaining the slightly taller gold winner, real rank/points, player highlight, remembered scrolling and aligned panels. This supersedes the arrows, remembered entry section and podium vehicle art in earlier overrides. Preserve populated first load, vertical Race transitions, detail-based race start, five laps, normal results first, best-only verified scoring and public isolation. See `docs/RIVALRY_HUB_COMPACT.md` for actual changes, checks and screenshots.
+
+## Rivalry track-entry override (2026-10-09)
+The owner requests overview track rows/arrows to open the existing track detail, with races started from its Race action and Back to Rivalry returning to the overview. Remove redundant Tracks/Standings tabs, the single Overview tab and overview race starts; keep the podium, five immediately visible tracks and scrollable standings in the hub. Completed-week details remain inspectable with racing disabled. This supersedes the separate rivalry sections and direct overview races in earlier overrides. Preserve five-lap racing, ghost choice, normal results first, best-only verified scoring and internal development/public-population isolation. See `docs/RIVALRY_NAVIGATION.md` for actual files, commands, screenshots and remaining acceptance.
+
+## Rivalry track result reference override (2026-10-08)
+The owner requests competition-first rivalry feedback after the normal race summary: roughly 37% race details and 63% full track standings, eight visible scrollable rows, a yellow player row, signed time gaps, brighter original preview/actual route outline, personal PB improvement/previous time and actual lap/distance/weather/surface facts. Compact track rank/weekly points and overall movement replace the large expected-position display. Use a small provisional status and horizontal bottom-right Race Again/Back to Rivalry actions. Preserve normal PB/lap/histogram results first, best-only competitive scoring, actual five-lap races, internal development gates and public-population isolation. Reference example identities, times, three laps and sunset are not live values. See `docs/RIVALRY_TRACK_RESULTS.md` for files, commands, evidence and remaining acceptance.
+
+## Unified histograms and restrained UI override (2026-10-08)
+The owner requires one histogram view containing every available comparable real and artificial driver, with the player's time marked in that same view. Do not offer Player data/Test data views, source selectors, TEST badges, simulated-driver descriptions or sample-count captions in discovery or results. Deduplicate each driver across the compatible public/development boards; keep artificial identities out of public competitive rankings, ratings and eligibility, and retain development configuration/session gates internally.
+
+Never add redundant player-facing UI text. Add a label only when it identifies a necessary action/value or communicates an actionable state that is not already clear from the layout, icon or another label. Do not surface implementation details, test/source classifications, diagnostic counts or repeated explanations in ordinary game screens. Keep such information in logs, documentation or explicitly requested diagnostic tools. Review new UI for redundant text before capturing evidence. This overrides earlier histogram source switches and visible test-data labeling requirements.
+
 ## Illustrated menu art override (2026-09-14)
 The owner rejected the procedural menu graphics and supplied a detailed inked/cel-shaded vehicle reference. Home and Garage now use an original generated fictional compact-car illustration with retained editable UI. This supersedes procedural menu scenery; it does not replace the gameplay vehicle mesh or camera. The source reference is not a shipping asset. See `docs/ILLUSTRATED_MENUS.md` and the saved generation prompt for actual assets, evidence and remaining acceptance.
 
@@ -151,3 +180,53 @@ The owner selects AdMob and requests Settings → Development → Show ads. Off 
 ## Artificial test drivers override (2026-10-04)
 
 The owner explicitly authorizes artificial development drivers for Weekly Rivalry. Persistent traits, canonical recorded input generation, verified submissions, focused 14-driver fixtures and larger 150-driver matching populations supersede the no-invented-entrant restriction for explicitly labeled test championships only. Keep the feature configured for development, isolate test boards/membership contracts, exclude artificial identities from public rankings, ratings and community eligibility, and reject their existing sessions when disabled. Normal rivalries still contain real entrants only. See docs/TEST_DRIVERS.md for tools, actual tests, evidence and remaining acceptance.
+
+## Automatic rivalry drivers and race hub override (2026-10-07)
+
+The owner requests test drivers without a separate enable step, running canonical races against the backend and returning verified results to the app. Development clients automatically enter the configured test population; the idle backend worker manages persistent test fields and their ordinary ticket/upload/verification flow. Keep test labels, development gates and public-population isolation. Overview must expose all five tracks immediately with direct race choices, using the supplied results screen as presentation guidance. This supersedes the manual Test Rivals selector and single-opportunity Overview. Normal results remain first. See docs/RIVALRY_HUB.md for actual commands, staging evidence and remaining acceptance.
+
+## Weekly Rivalry reference presentation override (2026-10-07)
+
+The owner supplies the corrected podium/standings reference and explicitly removes visible TEST badges, the TEST RIVALRY/debug footer and browsing lap-count labels. This supersedes earlier visible test-label requirements for this presentation; retain development-only configuration, raw server identity markers and public-population isolation. Pair Week/time beneath the title, float the tabs, emphasize the taller gold winner with fictional car art, show the player in the clean four-column standings and align the five-track panel/action. Actual rank/points/time/biome values remain data-driven; do not insert the reference examples into live scores. Actual races still use five laps. See docs/RIVALRY_REFERENCE.md for files, generated-asset provenance, commands, screenshots and remaining device/visual acceptance.
+
+## Stronger configurable speed zoom override (2026-10-08)
+
+The owner requests a stronger speed-dependent pullback and configurable effect strength. This supersedes the former 12% enabled-zoom bound: the local default is 30% extra linear world coverage, selectable from 0–50% in Camera Settings and the race pause menu. Keep the 1.15x low-speed/disabled baseline, whole-scene scaling, overhead/no-horizon view, HUD/physical scale and canonical simulation separation. See docs/CAMERA_OPTIONS.md for actual tests, screenshots and remaining owner/device acceptance.
+
+## Race challenges override (2026-10-08)
+
+The owner accepted the challenge plan and authorized Beat my time and Group challenges within the Race target rail, including creation from the menu/results, racing first to set a verified target, code/link invitations, ghosts, best-only standings, normal results first and explicit rematches. Defaults are five pinned laps, the same car/setup/rules/track version, 24-hour/3-day/7-day durations (seven default), two-person duels and groups up to twenty actual drivers. Guests may preview/try; authenticated canonical races determine competitive results. Artificial identities remain excluded, development authentication gates remain internal, and no test/source classifications or redundant text belong in game screens. Native sharing and optional link/preview infrastructure are authorized; production deployment still requires authorization. Push/friend directories, automatic rematches, lifetime statistics and share media are later work. See docs/CHALLENGES.md for contracts, files, commands, evidence and remaining deployment/device acceptance.
+
+## Admin support and data population override (2026-10-08)
+
+The owner authorizes the player support workspace, audited development purchase/access controls and date/missing-value corrections. Keep artificial drivers included as ordinary players in administrative data for now; do not add population/source filters or classifications to this slice. Internal development authentication, simulation gates and public competitive/rating/eligibility isolation remain. Broader analytics and new telemetry follow separately. See docs/BACKEND_UI.md.
+
+## Post-race challenge correction (2026-10-09)
+
+The owner requires Create challenge after a race to use that exact completed result, including a slower-than-PB finish, with its track and car fixed. Pending verification or service failure must never substitute a personal best or ask the player to drive again. Use a compact custom menu-styled sheet with challenge type/duration, actual finish and original route preview; track/search/car selection remains for general menu creation only. The owner explicitly removes the unrequested Compare tab from race results: retain Track/Sectors/Speed and the original separate histogram page. See docs/CHALLENGES.md for exact-ticket contract, development rollout, evidence and remaining acceptance.
+
+## Vertical Race modes and populated Rivalry entry (2026-10-09)
+
+The owner requests a vertical carousel effect when changing Race mode pages and removes the empty Rivalry flash on first load. Follow the left rail's Weekly Rivalry/Free Race/Challenges order; keep the rail/top navigation stationary and primary menu/track carousel gestures horizontal. Preload authenticated membership and retain the current page until initial rivalry data or an actionable failure is ready; never fabricate entries or show an empty rivalry before the first response. Preserve five laps, normal results first, best-only scores, development gates and public isolation. See docs/RACE_MODE_CAROUSEL.md for implementation, actual checks, screenshots and device/latency acceptance.
+
+
+## Challenge creation page and tries override (2026-10-09)
+
+The owner supplies a full menu Create challenge reference, replacing the centered creation sheet, and authorizes optional1/3/5/unlimited tries per driver (unlimited default). Keep two settings/preview columns below existing top navigation, original scenery/actual route, fixed exact post-race track/car/result, and outside Back/Cancel/Create & share actions. Server-issued starts reserve tries, including restarts/abandoned races; idempotent retries never consume another. Preserve five laps, normal results first, best-only scoring, free unlimited ordinary racing, internal development gates and public isolation. See docs/CHALLENGE_PAGE.md for migration0021, files, commands, evidence and remaining owner/device/deployment acceptance. Production deployment still requires explicit authorization.
+
+## Backend Studio population and commerce policy override (2026-10-11)
+
+The owner requires every Studio total to include all players, including artificial
+drivers, and authorizes an admin-only per-player Real/Artificial flag from the
+existing server-authoritative `Player.is_test_driver`. Development authentication
+alone does not identify an artificial player. This supersedes the 2026-10-08
+no-classification restriction for the diagnostic console; it adds no population
+filter or ordinary game badge and preserves public competitive/rating/eligibility
+isolation. Keep one INITIAL free publishing slot per account. Monthly rewards are
+only a possible future idea and are not authorized for implementation. One month
+means a UTC calendar month on the matching day (September 12 → October 12),
+retaining same-time expiry, short-month clamping and extension from active expiry.
+Existing prices, purchased capacity, consumed publications, permanent ad-free
+access and resume promises remain. See docs/BACKEND_STUDIO_POLICIES_2026_10_11.md
+and the resolved overrides in docs/BACKEND_STUDIO_REQUIREMENTS_2026_10_11.md.
+No migration, provider integration, gameplay change or deployment is implied.

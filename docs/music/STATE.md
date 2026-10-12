@@ -1,64 +1,44 @@
-# Beat my track — Music State
+# Beat My Track - Music State
 
-_Last updated: 2026-09-28_
+_Last updated: 2026-10-11_
 
-## Status
-Tooling: local RT2 studio supports prompting, audition, saved-track deletion, configurable states and soundtrack packages. Owner confirmed one compatible subset per package: select package first, then one track per pool, fixed per drive. Browser/service checks pass; no new music approval. See `../MUSIC_PACKAGES.md` and `../MUSIC_STUDIO.md`.
+## Current runtime direction
 
-Mode: explore
-Current baseline: production v6 remains installed. Owner rejected the initial Magenta auditions as unsuitable and R2's separate state mixes as disconnected; no replacement composition is accepted.
-Owner explicitly rejected the R3/R4 acoustic motif: too high, too brief and disturbing. R5 replaces it; approval remains pending.
-Approved release assets: no new approval
+On 2026-10-11 the owner selects `Exploration 3_take-3.mp3` as menu background
+music and requests a loop. The source is preserved unchanged; the prepared
+110.8524-second stereo PCM loop replaces only menu/results background playback.
+It trims the recorded fade-out and blends the ending into the opening. Existing
+music settings, focus suspension and race silence remain. Source selection and
+loop preparation are authorized; subjective edited-loop/device listening and
+original distribution licensing remain unverified. Actual checks, source/export
+hashes and playable transition evidence: `../MENU_EXPLORATION.md`.
 
-## Source hierarchy
-Latest owner feedback, current code/docs, this state, skill guidance, then historical experiments.
+On2026-10-10 the owner requests removing background music from all biomes.
+All race/practice biome scores and race-only musical breaths are now disabled;
+menu/results music and interface sounds remain. No race score decoders load.
+The older composition/research notes below are historical, not approval to
+restore biome playback. Current checks and files: `../BIOME_MUSIC_OFF.md`.
 
-## Active preferences
-- Primary function: unobtrusive background music during racing.
-- Do not reuse high, short, plucked acoustic opening figures like R3/R4. Latest response uses low, long-held tones with softened attacks; tone and instrument choice remain subject to listening review.
-- Every stage must offer multiple options so drives can differ. Select once per drive; do not reshuffle merely because intensity changes. R3 offers three alternatives per instrument at all six stages.
-- Latest alternative: one simpler tune starts, then distinct instruments join cumulatively. All options must share musical timing and harmony. Preserve R2 for comparison.
-- Additional mode requested: the same music evolves and BPM rises with each state. R4 re-renders the R3 score at 90/102/114/126/138/150 BPM, maintaining original pitch and per-drive choices. Fixed-tempo R3 remains available.
-- New conceptual arc: Low Roar intimacy/atmosphere → CCR groove → Green Day urgency → the triumphant melodic payoff of The Final Countdown.
-- Additional reference palette: Peer Gunt, Lynyrd Skynyrd, ZZ Top, Muse, Audioslave, Blondie and Molly Hatchet.
-- These are conceptual references, not literal artist-by-artist sections. Proposed interpretation: one identifiable theme develops from reflective to grounded, propulsive and finally anthemic.
-- Instrumental remains the working assumption; reference vocals are not an instruction to add singing.
-- Avoid: disturbing mechanically repetitive openings.
-- Earlier rejection of a distorted finale remains a rejection of those recordings, not a blanket ban on rock energy, distortion or melodic synths. New references reopen those arrangement choices for audition.
-- Desired: a recognizable musical identity and meaningful development without crowding vehicle audio.
-- Adaptive climax/intensity: still subject to listening approval; do not assume “more rock” or “more instruments” is better.
+## Earlier composition direction
 
-Latest source: `rounds/2026-09-28-low-opening-r5.md`; older rounds and `docs/MUSIC_MODULAR_BANK.md` are historical evidence.
+"This is like someone learning to play piano, so it is again a no. You need to look into music theory, inspect working patterns for game soundtracks especially what works on the background and in racing games."
 
-## Runtime behaviour
-Preserve current implementation unless explicitly redesigning it.
-Collision/reset/recovery contract: VERIFY IN PROJECT DOCS/CODE BEFORE CHANGING.
+The clear-theme study is rejected, in addition to performed-flow and earlier mellow/sports-rock candidates. At that stage no completed musical asset had owner approval. Preserve all music, sources, failures and working loop/controller code. Research preceded further composition; the new owner-selected menu recording above supersedes the earlier menu choice.
 
-## Keep
-- honest listening claims
-- scoped approvals
-- immutable sources
-- bounded experiments
-- comparable audition loudness
-- distinction between mix / stem / additive layer
-- free local generation
+## Research and revised basis
 
-## Change / investigate
-- Establish a musical identity the user actually likes before scaling the bank.
-- Determine how much development/intensity remains background enough in gameplay.
-- Determine which MRT2 controls can preserve musical identity reliably.
+Completed14-source research compares first-person Ori/Trackmania/Forza accounts, published theory and original groove/driving-game studies. Report: `research/2026-10-08-background-racing.md`; source/access register alongside it; delivery: `../MUSIC_THEORY_RESEARCH.md`. Only the restricted driving-study abstract was available. No acoustic reference listening, copyrighted audio download or reference conditioning is claimed/used.
 
-## Avoid
-- independent random layers assumed compatible
-- seed chasing after repeated rejection
-- using mastering to hide weak composition
-- treating old assistant proposals as approvals
+The basis is rhythmic rock underscore with atmospheric depth:160 BPM remains a working target, coordinated bass/kit/guitar groove, controlled syncopation, purposeful gaps, short thematic gestures, four/eight-bar phrase variations, harmony with continuous inner voices, restrained foreground events. Piano becomes occasional colour/response. Warm electric-guitar articulations, played-kit/bass character and credible phrase dynamics are essential. Atmospheric string/analog texture widens the known material; exceptional flow earns a broader melodic focus near60s.
 
-## Next experiment
-R5 replaces the rejected acoustic opening with low sustained cello across all tempos. Backing remains at 0.85 gain. Tests pass; no subjective listening claimed. Review before musical expansion. See `rounds/2026-09-28-low-opening-r5.md`.
+Trackmania's documented process establishes racing feel before deriving menu identity and reduces melodic/harmonic activity for editor background. Ori's accounts support softened continuous movement pulses and sound-effect space. Forza accounts show intense sections can be less busy and that ensemble tone/real performance matter. Theory describes motif/phrase development, syncopation, harmonic rhythm and voice leading; it does not guarantee a desirable cue.
 
-## Approvals
-Preserve scoped approvals; unresolved history stays unverified.
+## Audit and keep
 
-## Reconciled project evidence
-`docs/MUSIC_MODULAR_BANK.md` and recorded rounds retain earlier rejections/approvals. The rock driving trial and later tooling requests do not approve replacement release music. Runtime replacement remains outside the current authoring slice.
+The spectral opening removed much of the intended theme; AI MIDI adherence was never established. The direct sketch overcorrected toward piano: target-role energy places it11.285dB over kit/9.702dB over lower guitar, with fixed nominal note gains and doubling. Numerical correctness, tempo and extra layers did not establish sporting energy, background fit or artistry. These are code findings/diagnostic hypotheses, not new ear judgments.
+
+Keep short races/concentration/rivalry/tiny improvements; confidence/PB/rival/sector/setback/rewind/breath behaviour; meaningful low states; earned one-minute peak; exact loops; per-profile levels; cleared sources; vehicle/menu SFX and silent hover. Preserve the validated native PCM cyclic guard. No physics/camera/backend/player-file changes.
+
+Next composition process: establish a complete racing groove/tone first, then phrase development/atmosphere in real gameplay, then actual musical-role parts and menu/biome arrangements. A piano exercise is not the production target. Source/loop/headroom tests remain necessary technical checks; ear/context/artist/device acceptance remains open. No repeated blind generation or inferred approval from silence.
+
+This pass records rejection and research only. Audio and music-code hashes remain unchanged; concurrent impact-volume wiring is preserved/excluded. No new generation, Godot test, phone attachment/device test, export/install, full Validate, purchase, backend action or deployment. The overarching soundtrack goal is unfinished; this requested research phase is complete.

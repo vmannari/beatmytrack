@@ -1,0 +1,22 @@
+# Profile-private saved tracks and drafts
+
+Requirement IDs: B01-B07 (identity/private track access), R01/T01-T04 (local authoring), Q01 (verification). Owner request: each profile sees only its own drafts; only published tracks are visible to others.
+
+The profile storage boundary already used backend origin plus player ID. The draft browser nevertheless merged Guest originals/WIPs into every signed-in profile and offered adoption. Removed that merge and adoption action. Guest keeps its work when returning to Guest. Removed Guest fallback when restoring a signed-in player's last selected local track. Offline discovery now shares only Guest `.published` snapshots, matching the existing published-only sharing of other player profiles. Normal publication recovery now inspects only the active profile, preventing another profile's matching local documents from being cleaned up. Explicit maintenance tools retain their separately configured recovery directories.
+
+Changed files: `game/core/app.gd`, `game/ui/draft_browser.gd`, `game/tests/test_track_lifecycle.gd`, new `game/tests/test_draft_privacy.gd`, this document, `DEVELOPMENT_STATUS.md`, and `docs/PHASE_0_PLAN.md`. No player files are migrated or deleted. Existing copies previously adopted into an account cannot be retrospectively attributed; they remain that account's drafts.
+
+Actual verification on pinned Godot 4.7.2:
+
+- `$env:APPDATA = Join-Path (Get-Location) 'build/draft-privacy-userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_draft_privacy.gd -Graphical -CommandTimeoutSeconds 60`: exit 0, 21 checks, zero failures. Alice/Bob/Guest switching, originals/WIPs, outgoing editor retention, returning-owner recovery, stale Guest selection, active-profile recovery directories, published-only sharing, publication compilation, and three actual browser captures. All three screenshots inspected.
+- Same isolated APPDATA with `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCatalog -CommandTimeoutSeconds 60`: exit 0, 21 checks, zero failures; existing 5,000-track catalog/carousel regression. Initial host PowerShell profile warnings did not prevent the final engine test.
+- `.\.tools\backend-venv\Scripts\python.exe -m pytest backend/tests/test_domains.py -k 'private_drafts and sqlite' -q`: exit 0, one passed, 49 deselected. Existing backend test rejects other-player private metadata/document/run access and accepts publication after verified creator testing.
+- `git diff --check -- game/core/app.gd game/ui/draft_browser.gd game/tests/test_track_lifecycle.gd`: exit 0, CRLF normalization warning only.
+
+Initial attempts: direct PowerShell script launch blocked by host execution policy; default Python lacked pytest. Sandbox Godot attempts were blocked by log/certificate-store access and the wrapper reported failure. Isolated APPDATA plus approved certificate-store access resolved startup. The first new fixture used incorrect dictionary assignment for the added creator key and a nonexistent NativeTrack.id property; both corrected. Initial screenshot output used an unsupported resource parent path; corrected to a globalized absolute path. Final tests above supersede those failed attempts without weakening requirements. First backend run passed SQLite but errored on unavailable PostgreSQL localhost:55439; final focused SQLite repeat passed.
+
+Screenshots: [Alice](evidence/draft-privacy-2026-10-06/alice.png), [Bob](evidence/draft-privacy-2026-10-06/bob.png), [Guest](evidence/draft-privacy-2026-10-06/guest.png). These exercise the actual draft browser using isolated fixture identities, without accessing real saved sessions or modifying live services.
+
+Limitations/acceptance: no phone attachment check, phone test, Android export/install, live Google account switch, cloud deployment, full replay suite, or full networked lifecycle suite performed. The lifecycle adoption assertion was updated to the new privacy contract but that networked suite was not rerun. Owner should confirm the profile-switch flow on the installed updated build. Development sign-in deliberately uses one fixed developer identity; two users selecting Development are the same profile. Signed-out Guest is likewise one device-local profile.
+
+Review checkpoint: focused source changes and new regression/evidence are in the working tree. Existing concurrent modifications remain intact; no mixed-workspace commit was made.

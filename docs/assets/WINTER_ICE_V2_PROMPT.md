@@ -1,0 +1,13 @@
+# Winter ice v2 — original material artwork
+
+Created 2026-10-11 with the built-in imagegen tool. This is material artwork, not a generated gameplay screenshot. No reference-image pixels, vehicle identities or third-party texture packs are used.
+
+Selected image: `01a12a9c-4ffb-7c10-ac36-b01f8eb98e14/exec-4aa6dd9e-4b98-41e2-bd87-5dba80ba850b.png`, copied into `game/assets/textures/winter_ice_v2.png`. The source is 1254×1254; Godot imports a mipmapped 1024×1024 texture. Source SHA-256: `7d6957ab1015b21d726d6ae96e8bb501939eb11c5506f116f024b18fecd2238f`.
+
+`game/tests/bake_winter_ice_finish.gd` computes the original 512×512 packed shader data `game/assets/textures/winter_ice_finish_v2.png`: R/G are finite-difference slopes, B is frost coverage, A is roughness. This is an offline numerical bake; there is no runtime image processing or generation service. Data SHA-256: `148f6aff9364691751958692ef9525d84564a8ba002162600442fba0e78ae720`.
+
+Exact generation prompt:
+
+> Create a single square seamless tileable albedo texture for a premium 3D mobile winter racing game's road. Asset type: game material texture, orthographic straight-down macro view of a 6 by 6 metre patch of compacted frozen snow and grey-blue opaque road ice, occupying the entire image edge to edge. This is a TEXTURE ONLY, not a rendered scene or mockup. Physically recognizable scuffed ice: medium cool blue-grey translucent-looking compacted icy base, dense very fine off-white frost scratches and fragmented crystalline abrasion, irregular soft-edged thin pressed snow patches with natural granularity and long fine directional scraped wear. Most of the surface remains visible blue-grey ice, around 20 percent patchy pale compacted snow, no uniform dark asphalt. Subtle multi-scale natural variation, worn winter racetrack ice, believable realistic surface. Even neutral diffuse illumination, no baked shadows, no sunny highlights, no reflections of trees or sky, no perspective, no car, no tire-shaped objects, no lane markings, no border, no lettering, no vegetation, no stones, no dry asphalt aggregate, no geometric noise blocks, no parallel stripe pattern. All four edges must seamlessly repeat, no dominant feature or focal point, no vignette. Fine structure should remain readable from an oblique overhead game camera. Output only one square texture image.
+
+The old `winter_ice_v1.png` remains available. Visual approval and actual phone performance are still outstanding. Repetition/seams at other camera scales remain a device/art review item; a prompt requesting seamless output is not a guarantee of exact boundary continuity.

@@ -1,0 +1,106 @@
+# Next backend scalability step — plan, 2026-10-10
+
+Implementation update: the owner approved step 1 and PB-only dirtying. [Durable flying-lap PBs](LAP_PERSONAL_BESTS_2026_10_10.md) records the completed local slice, measured checks, exact-parent candidate and remaining rollout acceptance. No reset-scope answer was received; implementation preserves the existing all-car clearing behavior and aligns lap cutoffs across the same physical tracks/older versions. The selected-car proposal below remains historical planning, not owner approval. No deployment was authorized or performed for this new candidate.
+
+Requirements: SC05 (prioritized next-step design), SC01-SC04/B05/B07/R01/Q01/TD06/TD08. This turn is analysis/planning only: no runtime edits, schema operations, race generation, pruning or deployment.
+
+## Recommendation and ordering
+
+Implement **durable flying-lap PBs** as the next slice. It addresses a demonstrated data-retention gap and makes scheduled histogram refresh cost depend on comparable drivers rather than their complete attempt history. Then prepare shared popularity data; follow with revision-based Rivalry standings caching. A smaller trajectory upload belongs last because it changes the client/server recording contract.
+
+| Order | Improvement | Reason / boundary |
+| ---: | --- | --- |
+| 1 | Durable flying-lap PB ledger | Both correctness and cost: current refresh reads attempts; retention can select a faster-lap attempt when it is not the overall race PB. |
+| 2 | Recent distinct-driver popularity projection | Different discovery filters repeat the same seven-day attempt aggregation despite the existing shared twenty-second query cache. |
+| 3 | Shared Rivalry standings by group revision | Identical group fields are rebuilt before returning 304; however current client code already refreshes ordinary views about every thirty seconds, and groups are bounded. |
+| 4 | Versioned trajectory-focused upload | Can save serialization, transport and object I/O, but requires compatible client rollout, exact duration/resume evidence and optional recording handling. |
+
+Recheck actual endpoint frequency and costs before committing to the order after step 1; optimize `request frequency × work per request`. Do not expand this slice into matching balance, verification physics, reward rules or a UI redesign.
+
+The current status/deployment log records development image `d16a4a17` and schema 0023, including the stored-histogram/scalability changes. This is the **recorded baseline**, not a fresh live inspection performed in this planning turn. Implementation must inspect the actual current image/head/configuration before packaging or rollout; do not reuse older “not deployed” assumptions.
+
+## Step 1 data contract
+
+Add `LapPersonalBest`, keyed by `(board_id, player_id)`. A board already pins immutable track version, car/setup and rules. Store:
+
+- `time_ticks`: the smallest accepted flying-lap duration;
+- `run_id`: a foreign key to the accepted source run, indexed for retention protection;
+- `lap_index`: which flying lap supplied the time;
+- `achieved_at`: server completion time, not a client clock.
+
+Ordinary races and authorized rewind races qualify through the existing trajectory checker. Creator proofs/untimed practice do not. Exclude the first standing-start lap; compare indexes 1–4 of five-lap results. Use only accepted server result data. Never simulate controls, traction, hazards or collisions to populate this table.
+
+Keep the row independent of the overall race PB: a slower total race can produce a faster flying lap. Equal/slower laps leave the existing source intact. Public/artificial visibility and compatible-board driver deduplication remain read-time rules. Continue requiring the existing eligible race-PB membership when assembling comparisons so an administrative record removal cannot create a new comparison entrant.
+
+## Write and invalidation design
+
+Prefer a database-maintained projection, consistent with the existing race frequency projections. It covers normal worker finalization, imports and explicit diagnostic fixtures without relying on every caller remembering a helper:
+
+1. A run becomes a verified, eligible five-lap result inside the existing fenced transaction.
+2. Evaluate four accepted lap integers and perform one indexed conditional upsert.
+3. Advance the board's lap revision/dirty flag only if a lap row appears, disappears or changes time. New slower attempts no longer mark the lap field dirty merely because another attempt exists.
+4. Commit this with the verified result and race PB. A failed commit leaves both projections unchanged; duplicate completed tickets create no new contribution.
+
+Do not add shared whole-track locks to ordinary acceptance. Preserve the existing race PB, membership/points, receipt and idempotency paths. Measure the extra finalization write; the trajectory checker's computation itself is unchanged.
+
+Rare correction of a winning source result needs a targeted repair for that driver/board, using an indexed subset of retained verified history. Removing/correcting a non-winning attempt must not scan history or invalidate unrelated snapshots. Keep normal accepted results immutable; a deliberate source retirement must remove/replace its ledger reference in the same controlled transaction. A source-run FK and retention exclusion prevent accidental deletion. Do not add a history scan to ordinary verification or histogram GETs.
+
+## Reset semantics: resolve before implementation
+
+The inspected code has a concrete mismatch:
+
+- `test_population_batch.record_rows` currently collects development/test records across cars on selected physical tracks; reset also fences queued test-board runs across those cars.
+- The historical best-lap cutoff and the newer reset invalidation hooks are keyed to the request's vehicle and named versions.
+
+A question about selected-car versus all-car resets has been sent to the owner; it is **pending**, not an approval or a confirmed policy. The proposed default is **selected car only**, matching the request parameter and scoped invalidation, but this changes part of the current clearing behavior and must not be assumed confirmed. If the owner selects every car, define that affected set consistently in clearing, queue fencing, lap epochs and histogram invalidation instead.
+
+Before writing the migration, establish fixtures for both artificial and real drivers on public/private boards, multiple cars and historical versions. Keep the protected real/public digest unchanged. Match the existing treatment of real drivers' historical private-board laps unless explicitly changed. Fence old queued/verifying jobs as today. Retained audit runs must not resurrect a cleared artificial lap PB.
+
+Use a small separate board/projection state record for the applicable reset cutoff and a monotonic reset generation. A generation protects backfill against a reset racing the job; timestamp equality alone is insufficient as a publication fence. It also avoids scanning every historical OperationState batch on normal writes. Do not add unconditional new columns to existing ORM board loads before a compatible schema is available.
+
+## Implementation milestones
+
+**A — contract and fixtures.** Confirm reset scope, inspect live row counts/current head, and lock the existing lap-selection oracle and public isolation. Verify malformed/legacy split handling explicitly; report invalid records rather than inventing missing laps. Reproduce the retained-lap case as a test that the new ledger must protect.
+
+**B — additive storage and shadow backfill.** Prepare the next available migration after the actual head (provisionally 0024), its projection/state tables, source-run retention protection and capture of new verified results. Backfill in resumable board/player batches with suitable indexed access. Yield under player-job pressure; do not put the entire historical scan into an unbounded migration transaction or request. Conditional minimum upserts cannot overwrite a better result verified during backfill. Check the reset generation again before publishing a batch, so an old batch cannot restore cleared records.
+
+**C — parity, read switch and lean invalidation.** Compare the new ledger with the legacy query on the same database snapshot. Change `best_lap_times` to read ledger rows, then keep existing public/test deduplication and histogram preparation. Switch lap revision maintenance from all verified attempt mutations to actual lap-PB changes. Preserve stored histogram cadence and UI selection/results initialization. Protect a lap source during `maintenance.retain`; retire redundant attempts without changing the driver's best time.
+
+**D — measured release candidate and rollout.** Run the checks below, build an exact-parent candidate preserving unrelated backend/canonical files and write a rollback/backup recipe. Deployment still requires explicit authorization. Stop after producing a reviewable local candidate until rollout is authorized.
+
+## Readiness and deployment constraint
+
+`readiness._dependencies` currently requires an exact `SCHEMA_HEAD`. A naive “migrate first, backfill later” rollout would make the old API unready when the head advances. Plan this explicitly:
+
+- Prefer an expand/backfill/switch rollout when data size makes an outage long. It requires a narrowly tested compatibility release accepting only the specifically supported old/new schemas while ledger reads remain off. Unknown heads and missing required structures must still fail readiness. New projection/state tables stay separate so old-schema ORM board queries keep working. Restore a strict final schema requirement after cutover.
+- For a small measured dataset, a bounded authorized maintenance window may be simpler. Drain writers, take a fresh backup, migrate/backfill, warm snapshots, deploy matching API/worker builds and verify readiness before resuming traffic.
+
+Choose from measured backfill duration; do not promise zero downtime, silently loosen readiness, or deploy an empty ledger as authoritative. Keep the legacy read path available until reconciliation and backfill readiness pass. Rollback should preserve the additive ledger and its retention protection, not drop source records or restore retired artificial history.
+
+## Acceptance gates (planned, not run)
+
+- Faster flying lap in a slower race updates only the lap PB; equal/slower laps and duplicate uploads preserve both best sources.
+- Standing starts, creator/practice runs, malformed splits and incompatible pinned boards cannot become flying PBs.
+- Authorized rewind results remain eligible; completed-ticket values, five laps, best-only scoring and normal results first are unchanged.
+- Concurrent improvements choose the minimum; lease loss/crash/rollback cannot publish half a result.
+- A reset during backfill, repeated reset metadata, and old audit/queued runs cannot restore cleared artificial records. Protected public data and unrelated cars/tracks remain unchanged under the chosen reset contract.
+- Retention dry-run excludes the race-PB and flying-PB source runs. Applying retention in an **owned disposable fixture** must leave the displayed lap best unchanged.
+- Cold process restart reads durable facts. Histogram generation executes zero attempt-history queries after cutover; GETs continue serving stored snapshots.
+- Benchmark the same 1,000-driver field at 1, 50 and 500 attempts per driver. Refresh cost should stop growing with attempts. Add a 100,000-driver case to measure the remaining driver-scale grouping, memory and cold payload cost. Record finalization overhead and player-job queue delay separately.
+- Test SQLite/PostgreSQL migration/backfill/rollback and readiness compatibility, plus existing scoring, reset, rivalry/challenge and capacity-lab regressions. Preserve known failures rather than relaxing them.
+
+These are design gates, not claims of passed tests or fixed live data. Backfill cannot recover already-pruned provenance from raw history. Reconcile unexplained regressions against available server snapshots/backups and report gaps; never manufacture accepted results from client times.
+
+## Follow-on designs
+
+Popularity: maintain a last accepted public finish per `(track_id, player_id)`, preserving distinct-driver semantics across cars/versions and excluding creator proofs/artificial identities. Prepare a shared score/order from that small projection periodically; decay the seven-day window even with no new arrivals. Apply personal filters and recheck visibility on page reads. Current displayed ratings/finish counts and competitive eligibility remain independent.
+
+Rivalry: add an actual group revision covering memberships, best results, profile/visibility changes, pending-result changes, track availability and archival. Cache only the shared field; authorize each request and overlay the current player/clock separately. A cheap revision check should permit 304 without reconstructing standings. Ending/settling/complete transitions must work even when no new PB is written.
+
+Uploads: profile actual request sizes, serialization and object I/O first. A future versioned trajectory-first payload must retain pinned contracts, exact accepted duration, resume receipts and idempotent durable retries; recordings/controls for ghosts or explicit offline diagnostics remain separately available. No automatic full replay fallback.
+
+The rollout log reports a roughly 30 ms comparison handler versus much larger external HTTP latency. Durable laps improve background work and correctness, not that whole-communication delay. Network/platform queueing and client builds require separate measurement; no universal five-millisecond HTTP target is implied.
+
+## Inspection record
+
+Read DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md; inspected `runs.best_lap_times`, worker finalization, snapshot generation, retention selection, test population clearing/fencing, discovery popularity ordering, Rivalry snapshot/conditional response, current client refresh cadence and exact-schema readiness. Read the existing retention dry-run and logged schema-0023 rollout evidence. Commands were local `Get-Content`, `rg` and `rg --files`; no new performance/canonical/device tests ran, and no live readiness call was made. No phone attachment check, device test or UI changes. This planning document and status/roadmap notes are the only changes in this turn.

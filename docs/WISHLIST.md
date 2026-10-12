@@ -2,6 +2,20 @@
 
 Ideas recorded for later consideration. Inclusion does not authorize implementation. Keep each item here with its status and scope.
 
+## Wet-asphalt tire sound
+
+Recorded 2026-10-09 at the owner's explicit request. **Deferred; do not implement yet.**
+
+Revisit realistic tire rolling on wet asphalt that responds to speed. The owner
+rejected the current sound after listening; its storm rolling layer is disabled
+for now. Find a better recording or sound design and audition it in the full
+engine mix from the overhead driving view before reintroducing it. Keep the
+quiet distant rain background and make the tire texture distinct from rain,
+with appropriate speed/contact, stop, airborne, pause and retry behavior.
+
+Requirements to revisit: SND04/SND05/SND21/SND24, G01/R01/Q01/V06.
+Current implementation and evidence: [storm audio](WET_ROAD_AUDIO.md).
+
 ## Graphics options
 
 Recorded 2026-09-16 at the owner's explicit request. **Deferred; do not implement yet.**

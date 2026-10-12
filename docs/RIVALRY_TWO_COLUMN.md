@@ -1,0 +1,26 @@
+# Rivalry track view: two cards and bottom actions — 2026-10-09
+
+Requirements: WR02, WR07–WR10, R01, V03–V05, Q01. The owner's latest track-view reference explicitly removes the third column and moves Back/Race below both cards. It supersedes the separate next-rival/challenger/ghost panel and card-contained actions in earlier detail references.
+
+The left card contains the existing scenic track preview, biome, track name, original route outline, verified start/direction markers and car. The slightly wider right card contains actual position and the complete scrolling track standings. Eight complete rows, the yellow player row, signed millisecond gaps, sticky offscreen player, touch/wheel scrolling and continuation action are retained. Both cards align at the bottom. A separate full-width footer contains equal-width Back to Tracks and yellow Race actions with 64-logical-pixel touch targets. Back returns to the overview; Race starts the selected track. Busy, unavailable, inactive and completed-week race gates remain.
+
+The removed third column includes its ghost selector. The existing ghost choice stays internal: the same next-faster-rival/closest-challenger, leader or own-PB target is used when available, with no ghost when no recording exists. Race Again keeps its existing target refresh. No ghost API, canonical simulation, scoring, timing, track data, camera, asset or backend contract changes are made. Unavailable/error states remain actionable inside the preview card. No replacement explanatory text or diagnostic labels are added.
+
+Changed runtime: `game/ui/weekly_rivalry_page.gd`. Updated checks: `game/tests/test_rivalry_track_detail.gd`, `test_weekly_rivalry.gd` and `test_weekly_rivalry_http.gd`. Documentation: this report, current-guide notes, `AGENTS.md`, status and phase plan. The app controller, standings widget and canonical racer remain unchanged by this slice.
+
+Commands use pinned Godot `4.7.2.stable.official.ed1daf0bf` via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with isolated storage under `build/rivalry-two-column-2026-10-09/`. Approved execution allows existing Windows certificate-store reads; no certificate configuration or saved player session is changed.
+
+| Actual command | Actual outcome |
+| --- | --- |
+| `TestScript -ScriptPath res://tests/test_rivalry_track_detail.gd -Graphical` | **345 checks, zero failures**, repeated after correcting footer label encoding. 24 native captures at 1280×720, 960×540 and 1600×720. Covers exactly two cards, footer ancestry/placement/equal widths/bounds/touch height, eight complete rows, all 14/20 entrants, scrolling, sticky player, signed gaps, unchanged competitive data, route/start/direction geometry and preserved ghost targets. |
+| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd` | **1,109 checks, zero failures**, headless. All five track entries, Race/Back, absent selector and no-recording fallback, overview reentry, result cleanup, refresh, touch/layout bounds and completed/unavailable/busy gates. |
+| `TestApp` | **99 checks, zero failures**. |
+| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_http.py::test_weekly_rivalry_through_native_app -q -s --basetemp=build/rivalry-two-column-2026-10-09/pytest` | **One passed**, native graphical **40 checks, zero failures**, 26.99 seconds. Disposable API/SQLite/worker, real footer-button ticket, **five legal laps / 12,757 canonical ticks**, upload/server verification, personal PB/lap summary first, weekly feedback, bounded derived ghost, Race Again and sign-out fencing. Eight HTTP captures. One existing Starlette/httpx deprecation warning. `PYTHONPATH=backend`, isolated `APPDATA`, `BMT_CAPTURE_CLOUD=docs/evidence/rivalry-two-column-2026-10-09/http`. |
+
+Screenshot review caught shell-pipe encoding replacing the two new footer arrow characters with question marks. The source was corrected with a direct UTF-8 patch; the full graphical detail check was repeated successfully and all 24 final detail captures were refreshed. The backend flow captures precede that label-only correction and remain flow evidence, not the final visual reference. No functional assertion or competitive invariant was relaxed.
+
+Reviewed final [desktop detail](evidence/rivalry-two-column-2026-10-09/detail/leader-1280x720.png) and [compact detail](evidence/rivalry-two-column-2026-10-09/detail/leader-960x540.png). Ranked, unranked, tied, scrolled and 20-driver states are retained alongside them. These are isolated layout fixtures; reference example names/times are not inserted into a live championship. HTTP evidence uses one actual disposable entrant and the normal five-lap contract.
+
+The task-only review patch, before-source copies, actual native logs and verification record are retained under `docs/evidence/rivalry-two-column-2026-10-09/`. Reverse applicability, whitespace and exact source hashes are checked while preserving unrelated work.
+
+Remaining acceptance: owner visual/interaction review and physical-device touch, legibility and performance. No phone attachment check or physical-device test, Android export/install, full Validate, physics regression/merge, retained staging or production action was performed. Restart the app to load the revised scripts.

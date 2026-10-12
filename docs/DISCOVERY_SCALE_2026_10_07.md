@@ -1,0 +1,68 @@
+# Free Race discovery at community scale — 2026-10-07
+
+Requirements **B01–B07 / R01 / Q01**. Owner-requested analysis of present list behavior with thousands of players and a practical next approach. This is a diagnosis and proposal; shipping runtime, backend schema, ranking balance and deployment were not changed.
+
+Player registrations, published track count and concurrent requests are separate sizes. A thousand registered players need not produce a large catalog. A thousand creators publishing ten tracks each produces 10,000 logical tracks. Discovery is primarily a track/query/payload problem; hosting capacity additionally depends on how many people browse at once and how frequently they request pages.
+
+## What the current code does
+
+| Area | Current behavior | Community-scale consequence |
+| --- | --- | --- |
+| Initial discovery | Client requests 20 previews. Backend orders newest publication first, with a stable version-ID tie break and timestamp cursor. Only one latest published revision per visible logical track is returned. | A bounded first request is good; the client need not download every track. |
+| Carousel | Creates at most 12 active cards; retains overlapping card instances. Selected full track is downloaded/validated/compiled on demand. Compiled menu cache has four slots. | Card rendering is already bounded; more tracks do not create thousands of UI nodes. |
+| Ordering | Recommended currently means the loaded matching catalog, normally sorted by name locally. Most filtering/sorting operates on this partial set. | Server pages arrive by publication time, then client name sorting can move existing cards as each page arrives. There is no complete global alphabetical/top-rating list. |
+| Base preview cache | `entries` and the refresh snapshot cap at 1,000, removing entries from the front. | As older pages arrive, the newest pages are evicted. A complete scan of 5,000 retains the oldest 1,000, not the newest. Explicit retained favorites can be added separately. |
+| Refresh | Normal refresh has a 60-second throttle and continues a nonempty existing cursor. Publication resets that cursor and fences stale reads. | Other players' new publications can remain outside the in-progress timestamp snapshot until a fresh first-page request begins. There is no continuous publication push. |
+| Search/filter paging | Server can filter name/creator, biome and minimum rating globally, and returns `next_cursor`. Client search merges page results but never assigns the response cursor to `_search_cursor`. | A cold broad query receives the first 20 server matches; `load_more()` cannot request the rest. Previously cached matches can also appear. |
+| Search drawer | Typing searches cached metadata locally. Only Apply/selection starts server search. Its More button expands already loaded results. | A track outside the local cache can look absent while typing, and the drawer's More does not imply another backend page. |
+| Other filters | Creation age and local race history are checked locally. Race-count data is unavailable. Score sort is local. | Locally filtered pages can be sparse/empty even when suitable tracks exist later in the global catalog. Missing counts must remain explicitly unavailable. |
+| Feeds/random | All cloud metadata gets a `new` flag. Recommended is not a personalized ranker. Random chooses among loaded matching entries. | New does not currently enforce a recent-age window, and Random does not sample the whole eligible community catalog. |
+| Query/cache state | Search results, ordinary pages and remembered publications share one preview array. Secondary discovery stats are not removed when preview records are evicted. | Queries can affect one another's cache contents; page eviction should not be the public eligibility rule, and secondary caches need bounds/pruning. |
+
+Sources: `game/backend/cloud_tracks.gd` (`refresh`, `search`, `load_more`, `add_to_catalog`), `game/ui/track_browser.gd` (`_refresh`, `_render_tiles`, `_random`), `game/ui/track_catalog.gd`, `game/ui/track_discovery_provider.gd`, `game/ui/track_search_drawer.gd`; backend `bmt_backend/tracks.py`, `track_models.py` and migration 0013.
+
+## Actual diagnostic results
+
+New opt-in `game/tests/analyse_discovery_scale.gd` invokes the production cloud adapter and discovery provider against 5,000 synthetic public preview records, 96 route-preview points each, twenty per page. It uses a mock server and a memory-only cache writer. There is no real HTTP, disk-cache throughput or database capacity measurement in this probe. Diagnostic assertions deliberately establish the current defects; they do not label those defects as acceptable invariants.
+
+Pinned `4.7.2.stable.official.ed1daf0bf`:
+
+- **6 diagnostic checks completed, zero probe failures**.
+- **250 mock pages**, final cache **1,000 records**, IDs **1–1,000** retained; newest ID **5,000** absent. This confirms removal of the newest 4,000 after a complete browse.
+- First alphabetical card changes from **Circuit 4981** to **Circuit 4961** after page two. The original first card moves to index **20**. This is list movement rather than stable append.
+- A server search with **5,000** matching records loads **20**; `load_more()` leaves the request count at **one**, with an empty saved search cursor.
+- In-memory pagination elapsed **11,258.577 ms** on this desktop with this fixture. It excludes network and cache-file writes, and is not a phone or production response-time claim.
+
+Existing public desktop cache sample: twenty real preview records contain **84–96** points each. Compact JSON is **81,619 bytes**; offline Python gzip level 6 produces **35,793 bytes**. At this sample average, 1,000 records serialize to roughly **4.1 MB** and 5,000 to **20.4 MB**, before the higher memory overhead of decoded arrays/dictionaries and duplicate working snapshots. These are extrapolations from an existing public cache, not measured wire transfers or process RAM. The present server already samples previews to at most 96 points and excludes the full manifest; full geometry belongs to selection/download, not listing.
+
+Existing earlier backend load evidence is distinct: `docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md` reports 10,000 registered synthetic players / 1,000 versions at roughly 80 completed requests/s and 172 ms largest endpoint p95, with eight concurrent loopback clients. It also reports 100,000 registered players / 1,000 versions at roughly 78 requests/s and 188 ms largest endpoint p95. Those datasets do not establish 100,000 concurrent players, tens of thousands of tracks, public cloud capacity, or phone browsing behavior. The same lab's 200 offered requests/s overload failed its gate.
+
+## Practical next design (proposed)
+
+Keep the established carousel and 12-card rendering. Give it a stable, server-ordered result stream for the active query; bound the device cache independently from which tracks are discoverable.
+
+1. **Correct paging and ordering first.** Store/consume the search cursor. Give each feed/search its own query identity, ordered logical IDs, cursor and generation. Changing search/filter/sort starts a new result set. The server applies supported public filters and the selected order before paging. Preserve that order when appending; no global local re-sort of accumulated pages. Refresh means a fresh first page; Load more means continuation. Preserve the selected logical ID and visible anchor when page contents change.
+2. **Use small pages and a reloadable page cache.** Keep 20-card pages initially and prefetch one next page near the end. A provisional 100–300 preview records near the viewport is enough to investigate; evict distant cached payloads while retaining page positions/cursors so scrolling back can reload them. Do not drain the entire catalog. A count should describe loaded results or explicitly estimated totals, not claim the loaded window is the whole community.
+3. **Offer clear entry points.** New is genuine latest publications; Popular uses recent distinct verified finishers; Top rated accounts for rating sample size; My tracks and Favorites fetch their exact logical tracks independently of community-page residency. Continue to expose global name/creator search. An initial Recommended feed can use trusted official tracks plus qualified popular tracks and a rotating allocation for unrated/new community tracks. These are proposed product/ranking rules, not accepted numerical balance. Weekly Rivalry's >4.0/>100 gate must not become a blanket Free Race gate.
+4. **Give publication explicit freshness.** The publisher immediately sees the acknowledged public card, as implemented. Other players discover it in New on their next refresh or through its direct link. While somebody browses an existing page sequence, keep that snapshot stable; show a New tracks available action if desired rather than silently moving their cards. A broadcast/websocket connection to every player is unnecessary for this discovery flow.
+5. **Keep Random global and filters accurate.** A server request chooses from eligible tracks under the active filters, with a stated sampling policy, rather than the current downloaded pool. Use an indexed bounded candidate strategy if query plans justify it. Do not invent race counts or rating confidence. Decide whether a future global Raced/Not raced filter means verified account history; retain the explicit local/device label for offline history unless that contract is changed.
+6. **Build on the existing PostgreSQL/backend.** Current discovery already has publication/latest-revision indexes, cursor ordering and stored preview/rating projections. Add indexes for actual public query orders and measured bottlenecks; a maintained one-row-per-logical-track public discovery projection is an option if the latest-version exclusion query becomes costly. Name/creator substring search can use PostgreSQL trigram indexing rather than introducing another search service at this scale. PostgreSQL documents trigram support for `LIKE`/`ILIKE` and warns that patterns without usable trigrams may still scan the index. [Official pg_trgm documentation](https://www.postgresql.org/docs/18/pgtrgm.html#PGTRGM-INDEX).
+7. **Share common reads, measure active load.** A short cache for public first pages (provisionally 10–30 seconds) can reuse Popular/New results across clients. Key it by normalized query/feed/revision, coalesce concurrent misses and invalidate publication/hide/rating changes as appropriate. Keep private collections separate; injected acknowledged publication bypasses stale public caching. Continue cursor pagination: PostgreSQL notes that skipped OFFSET rows still must be computed. [Official LIMIT/OFFSET documentation](https://www.postgresql.org/docs/18/queries-limit.html). Browse demand can be estimated as active browsers × page requests per minute ÷ 60; e.g. 1,000 active browsers requesting two pages/minute produce about 33 page requests/s, plus selection/race-related requests.
+
+First implementation slice should fix complete global search and stable page order, preserve the publication return and make Refresh distinct from Load more. Separate feeds/personal collection fetches follow. Ranking balance, extra infrastructure and exact cache sizes should follow evidence rather than being silently adopted here.
+
+## Verification before accepting community scale
+
+Use isolated PostgreSQL fixtures with 10,000–50,000 logical tracks, multiple revisions/authors, real-size previews and diverse search/selectivity. Exercise first/deep pages, broad/rare/short/missing queries, rating/theme combinations, hides during browsing, concurrent publications, warm/cold cache and multiple API processes. Verify exact coverage/no duplicate logical tracks, no movement of the visible anchor, global random eligibility, and discoverability of unrated publications. Record query plans, transferred bytes, page p50/p95/p99, process memory and error rates under steady arrivals and bursts. Propose a 200 ms API page-p95 target for the first pass, then separate phone/network time; it is not an achieved acceptance claim.
+
+On the actual phone, measure frame time and memory while crossing many pages, changing queries and revisiting evicted pages. A large registered-player count by itself is insufficient verification. Race replay verification capacity is a separate load that can contend with discovery on the same host and needs its own budget.
+
+Actual command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/analyse_discovery_scale.gd
+```
+
+Offline Python read only the existing public cloud index, serialized twenty previews and compressed the sample; it wrote the measurements under the workspace evidence directory. Official PostgreSQL 18 documentation was consulted for indexing/pagination recommendations. Evidence: [observations](evidence/discovery-scale-2026-10-07/observations.json), [payload sample](evidence/discovery-scale-2026-10-07/payload-sample.json), retained command log and scoped checkpoint. Changes are the opt-in diagnostic, this report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and evidence.
+
+No shipping UI/runtime/backend changes, deployed load generation, player-data writes, Android export/install, phone attachment check/device test, full Validate or production deployment occurred. The identified defects remain outstanding; this owner request asked for analysis, not their implementation. No new screenshot is needed because presentation was not changed; the immediately preceding live desktop/compact Star captures remain in `docs/PUBLISHED_TRACK_DISCOVERY.md`.

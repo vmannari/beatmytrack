@@ -1,0 +1,39 @@
+# One histogram for every available driver — 2026-10-08
+
+Requirements: R01/V03/V05/RR06/B05/TD06/TD08/Q01. The owner requires one histogram containing comparable real and artificial drivers, the player's time in that same view, no source selector and no test/sample captions. This supersedes the population selection and diagnostic labeling in the preceding histogram documents.
+
+The earlier work missed the **discovery** histogram shown in the latest screenshot. `game/ui/track_browser.gd` now removes its Player data/Test data button, `TEST DATA · … simulated drivers` caption and duplicate comparison-rank row. Discovery and Results both request `/results-comparison` with **no population selector**. The backend chooses every available compatible source, groups by driver ID and uses each driver's best time across those sources. A real driver with both public and development records appears once. The lap histogram uses one best verified flying lap per driver across comparable verified attempts. The player marker remains in the same chart. Unified charts render every bin, including sparse real-player/outlier bins; they do not crop the small real-driver cohort out of the larger field. Pending/failed requests retain the complete combined snapshot; old split-source cache fields are removed before hydration. Track/vehicle selection guards prevent late reads changing another selection.
+
+Both charts and their exact positions/percentiles still arrive in one database snapshot. Public/development display distinctions have been removed; the internal packet scope is always `all`. The server retains development configuration/session gates, reset protection and pinned vehicle/rules/version boundaries. When artificial drivers are disabled, the same endpoint returns available real-driver records. Public competitive rankings, ratings and community eligibility continue to exclude artificial identities. No migration or canonical physics/replay change was needed.
+
+The requested persistent rule is at the top of [AGENTS.md](../AGENTS.md): never add redundant player-facing text, source/test classifications, diagnostic counts or repeated explanations to ordinary game screens. Labels must identify a necessary action/value or communicate a distinct actionable state. Diagnostic details belong in logs/documentation or explicitly requested diagnostic tools. The rule explicitly supersedes the former source-switch/test-caption instructions.
+
+Changed files: `AGENTS.md`; `game/ui/track_browser.gd`, `race_complete.gd`, `track_distribution.gd`; `backend/bmt_backend/runs.py`; `game/tests/test_unified_histograms.gd`, `test_results_histograms.gd`, `test_race_results.gd`, `test_test_driver_live.gd`; `backend/tests/test_domains.py`, `test_test_drivers.py`; response schema, preceding/current documentation, status/plan and dated evidence. [Task-only patch](evidence/unified-driver-histograms-2026-10-08/unified-driver-histograms.patch) preserves the unrelated work already in the tree; no mixed-workspace commit was made.
+
+## Actual checks
+
+Commands use pinned Godot **4.7.2 stable ed1daf0bf** through `scripts/dev.ps1`, with `APPDATA=build/unified-results-user`. Graphical checks set `BMT_RESULTS_EVIDENCE` to this task's dated directory. Runtime checks received Windows certificate access; all saves/fixtures remain isolated.
+
+| Actual command | Actual result |
+| --- | --- |
+| `TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical` | **46 checks, zero failures**, covering combined discovery data/player marker, every histogram bin, forbidden UI captions/source selector, delayed/identical read stability, one comparison source, usable chart height and three captures. |
+| `TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical` | **49 checks, zero failures**, including the current Results field and five captures. |
+| `TestApp` | **99 checks, zero failures**. |
+| `TestScript -ScriptPath res://tests/test_discovery_pages.gd` | **269 checks, zero failures**, existing 5,000-track paging/search/selection/cache suite. |
+| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **362 scripts, zero failures**. |
+| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py -q -k 'histogram or results_comparison' --tb=short --show-capture=no --junitxml=docs/evidence/unified-driver-histograms-2026-10-08/backend-tests.xml` | **11 passed, 1 skipped, 59 deselected**, SQLite and owned PostgreSQL 17. The skip is the SQLite parameter of the PostgreSQL-only snapshot check. [Actual XML](evidence/unified-driver-histograms-2026-10-08/backend-tests.xml). |
+| `ruff check` for changed backend source/tests; scoped `git diff --check` | Passed. |
+
+The merged-field fixture explicitly verifies **102 distinct drivers: 100 artificial and two real**, with one real driver on both boards; the better race/lap is selected and public ranking population remains two. Disabling artificial drivers keeps the same response scope, removes their records and retains the two public real drivers. Existing standing-start exclusion and retired-history protection remain exercised.
+
+Initial discovery capture failures were fixture defects: a missing cloud capability method and a missing retained catalog entry made the selected track unavailable. Both fixture inputs were corrected; the chart-height assertion was retained. The final guard/internal-rank metadata adjustment was followed by a targeted graphical rerun. Prior broad-results/replay-rules failures remain documented in earlier reports; no full-green claim or weakened invariant. Full `Validate`/physics regression was not run for this UI/read-only-query change.
+
+## Evidence and deployment
+
+Discovery: [1280×720](evidence/unified-driver-histograms-2026-10-08/discovery-1280x720.png), [960×540](evidence/unified-driver-histograms-2026-10-08/discovery-960x540.png), [1600×720](evidence/unified-driver-histograms-2026-10-08/discovery-1600x720.png). Results: [1280×720](evidence/unified-driver-histograms-2026-10-08/comparison-1280x720.png), [960×540](evidence/unified-driver-histograms-2026-10-08/comparison-960x540.png), [percentile](evidence/unified-driver-histograms-2026-10-08/percentile-1280x720.png). Captures were inspected: no source button, test caption or sample label; one chart with the player's marker. All 100 comparison-driver times/laps are retained canonical verified reseed records. The extra player is an isolated UI fixture matching the owner's supplied times; it is not a new verified/uploaded record. [Fixture provenance/counts](evidence/unified-driver-histograms-2026-10-08/verified-silmukka-histograms.json).
+
+The labeled loopback PostgreSQL fixture on port 55448 (one CPU/512 MiB) was removed after testing. Existing services/databases and player files were preserved. The local, unbuilt two-module development overlay was refreshed to include the unified aggregation helper; no cloud upload/deployment was retried.
+
+**Backend activation still awaits the explicit development upload/deployment approval already requested.** Automatic approval review previously rejected sending repository code to the existing development registry without that authorization. This UI correction does not bypass that rejection. No cloud image/service/record/schema changed. The client-side selector/caption removal is ready locally; the merged live field requires the matching `/results-comparison` backend rollout. Until then it shows an honest unavailable comparison rather than presenting an old split field as combined.
+
+Remaining acceptance: approve/build/prove/backup/deploy/smoke the prepared update and verify the live combined data; owner visual review. Phone attachment was not checked; no physical-device test or Android export/install was performed.

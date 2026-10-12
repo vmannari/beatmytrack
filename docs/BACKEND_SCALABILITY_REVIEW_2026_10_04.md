@@ -1,3 +1,5 @@
+Implementation follow-up: [P1/P2 repairs, measured load and remaining acceptance](BACKEND_SCALABILITY_FIXES_2026_10_05.md). The findings below describe the reviewed starting state.
+
 # Backend/API scalability review — 2026-10-04
 
 The backend has useful reliability boundaries, but the current deployment and request patterns are not ready for a large player population. The main constraints are verification CPU, work performed under shared database locks, global queries in rivalry matching, repeated metadata traffic, and indefinitely retained competition evidence. Small response limits alone do not bound the work required to produce those responses.

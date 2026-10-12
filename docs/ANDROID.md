@@ -1,5 +1,13 @@
 # Android debug build and physical-phone gate
 
+## OnePlus phone offline guest racing (2026-10-11)
+
+The accepted tablet APK is now installed on the OnePlus DN2103 phone. USB deployment added 27 hash-validated published tracks to its normal offline Guest Free Race catalog; actual five-lap Dust Cloud startup and touch driving passed with no active network. Mali-G77 retains Compatibility and 2× MSAA, with zero dust changes inside the controlled car-roof mask. The short moving sample measured about 59 FPS median. See [commands, hashes, screenshots and remaining device acceptance](PHONE_OFFLINE_TRACKS_2026_10_11.md).
+
+## OnePlus Pad 2 deployment and cloud sign-in (2026-10-08)
+
+The current pinned debug APK is installed and running on the owner's OnePlus Pad 2 / Android 15 / ARM64. Focused startup/driving/catalog/menu checks passed again. The new tablet's default loopback server configuration caused sign-in failure; applying the existing PC cloud URL to its app-private configuration restored connectivity. A saved cloud session and live gameplay were verified, with screenshots retained. See [actual commands, APK hashes, evidence and remaining device acceptance](TABLET_DEPLOYMENT_2026_10_08.md).
+
 ## Pixel 9 loading performance (2026-10-04)
 
 Debug exports now include ARM64 and native x86_64 Godot/music libraries. Pixel 9 selects x86_64 instead of translating the ARM64 game. The owner's local AVD now uses host graphics, 4096 MB RAM and cold boot; its prior configuration is backed up under ignored `.tools/emulator-performance/`. Track-selection and visible race-load measurements, commands and remaining acceptance are in [EMULATOR_PERFORMANCE.md](EMULATOR_PERFORMANCE.md). Game data is retained; no physical phone was installed or tested for this change.

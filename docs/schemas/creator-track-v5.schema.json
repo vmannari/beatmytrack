@@ -144,6 +144,7 @@
               "barrel",
               "pallet",
               "parked_car",
+              "car_wreck",
               "van",
               "container",
               "shed",
@@ -166,6 +167,12 @@
             "minimum": 0,
             "exclusiveMaximum": 360
           },
+          "length": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 18.0,
+            "description": "Physical section length in metres; only solid fences, guardrails and concrete barriers. Scale still controls thickness and height."
+          },
           "scale": {
             "type": "number",
             "minimum": 0.5,
@@ -174,6 +181,12 @@
           }
         },
         "allOf": [
+          {
+            "if": {"required": ["length"]},
+            "then": {
+              "properties": {"kind": {"enum": ["barrier", "fence", "guardrail", "wire_fence"]}}
+            }
+          },
           {
             "if": {
               "properties": {
@@ -418,7 +431,8 @@
               "curve",
               "s_bend",
               "hairpin",
-              "bridge"
+              "bridge",
+              "spline"
             ]
           },
           "position": {
@@ -478,6 +492,41 @@
             "minimum": 2,
             "maximum": 60,
             "description": "S-bend lateral span in metres; omitted uses 2 * radius * (1 - cos(45 degrees)). Independent of lead-in length."
+          },
+          "spline_points": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "description": "Spline-only local interpolation points. First point is [0,0]; neighbouring points must be at least 2 m apart. World samples must stay inside the map.",
+            "prefixItems": [
+              {
+                "const": [
+                  0,
+                  0
+                ]
+              }
+            ],
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": -240,
+                "maximum": 240
+              }
+            }
+          },
+          "point_widths": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+              "type": "number",
+              "minimum": 6,
+              "maximum": 20
+            },
+            "description": "Spline-only widths at the five interpolation points; linear interpolation by distance within each fitted span. width equals the maximum point width. Connected endpoint mouths match neighbouring roads."
           }
         },
         "allOf": [
@@ -552,6 +601,44 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "spline"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "spline_points",
+                "point_widths"
+              ]
+            }
+          },
+          {
+            "if": {
+              "anyOf": [
+                {
+                  "required": [
+                    "spline_points"
+                  ]
+                },
+                {
+                  "required": [
+                    "point_widths"
+                  ]
+                }
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "spline"
+                }
+              }
+            }
           }
         ]
       },
@@ -589,6 +676,11 @@
           "exclusiveMaximum": 360
         }
       }
+    },
+    "automatic_scenery": {
+      "type": "boolean",
+      "default": true,
+      "description": "Populate saves explicit placements and sets this false to prevent an additional implicit scenery population."
     },
     "hidden_scenery": {
       "type": "array",

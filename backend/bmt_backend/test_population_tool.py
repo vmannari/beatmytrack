@@ -56,7 +56,7 @@ def atomic_save(path, value):
 
 
 class API:
-    def __init__(self, url, key):
+    def __init__(self, url, key, *, internal=False):
         parsed = urlparse(url)
         if (
             parsed.username
@@ -66,7 +66,7 @@ class API:
             or not (
                 parsed.scheme == "https"
                 or parsed.scheme == "http"
-                and parsed.hostname in ("127.0.0.1", "localhost")
+                and (parsed.hostname in ("127.0.0.1", "localhost") or internal and parsed.hostname == "api" and parsed.port == 8080)
             )
         ):
             raise ValueError("Use HTTPS or an explicit local loopback development service")
@@ -77,6 +77,7 @@ class API:
         bootstrap = self.call("GET", "/bootstrap")
         if bootstrap.get("test_drivers") is not True or bootstrap.get("development_auth") is not True:
             raise ValueError("Service must explicitly enable development auth and test drivers")
+        self.upload_recovery = bootstrap.get("test_driver_upload_recovery") is True
 
     def call(self, method, path, body=None, subject=None, idempotency=None, operator=False):
         headers = {}
@@ -91,7 +92,7 @@ class API:
             headers["Authorization"] = "Bearer " + self.tokens[subject][0]
         if idempotency:
             headers["Idempotency-Key"] = idempotency
-        response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120)
+        response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120, allow_redirects=False)
         if not response.ok:
             # Do not print the response request: it contains credentials.
             try:
@@ -201,6 +202,7 @@ def prepare(api, arguments):
         "joined": [],
         "pace_scales": {},
         "instant": arguments.instant,
+        "require_history_completion": bool(getattr(arguments, "all_tracks", False)),
     }
     if arguments.pace_reference:
         references = json.loads(arguments.pace_reference.read_text(encoding="utf-8"))
@@ -246,7 +248,9 @@ def prepare(api, arguments):
         print(f"Test rivalry: {group['driver_count']} drivers including {target}")
     else:
         # Shared isolated history boards establish real percentile distributions.
-        entries = sorted(catalog["tracks"], key=lambda e: e["version_id"])[:3]
+        entries = sorted(catalog["tracks"], key=lambda e: e["version_id"])
+        if not getattr(arguments, "all_tracks", False):
+            entries = entries[:3]
         for profile in plan["profiles"]:
             add_jobs(plan, profile, entries, history=True)
         print(f"Test fleet: {count} profiles, {len(plan['jobs'])} verified history attempts planned")
@@ -261,12 +265,14 @@ def load_plan(path, api):
     return plan
 
 
-def recording(api, plan, job, profile, settings, state_path):
+def recording(api, plan, job, profile, settings, state_path, *, generator=None):
+    generator = generator or generate
     cache = state_path.parent / (state_path.stem + "-recordings")
     cache.mkdir(parents=True, exist_ok=True)
     path = cache / (job["id"] + ".json")
-    if path.exists():
-        result = json.loads(path.read_text(encoding="utf-8"))
+    cached = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    if cached is not None and cached.get("replay",{}).get("schema") == "bmt-trajectory-v1":
+        result = cached
     else:
         document = api.call("GET", "/track-versions/" + job["version_id"] + "/document")
         if digest(document) != job["content_hash"]:
@@ -286,7 +292,7 @@ def recording(api, plan, job, profile, settings, state_path):
             for _ in range(6):
                 scale = (low + high) / 2
                 try:
-                    sample = generate(settings, document, plan["vehicle_id"], neutral, 0, scale)
+                    sample = generator(settings, document, plan["vehicle_id"], neutral, 0, scale)
                 except DriverDidNotFinish:
                     high = scale
                     continue
@@ -312,14 +318,34 @@ def recording(api, plan, job, profile, settings, state_path):
                     f"Circuit {job['slot'] + 1}: closest honest controller pace differs from the PB by {relative_error:.0%}"
                 )
             atomic_save(state_path, plan)
-        result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], scale)
+        last_error = None
+        for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
+            try:
+                result = generator(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate)
+                job["driven_pace_scale"] = candidate
+                break
+            except DriverDidNotFinish as error:
+                last_error = error
+        else:
+            # Dense tyre walls may need an ordinary reverse-and-detour drive.
+            # Keep the faster route follower first; never waive collisions/gates.
+            for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
+                try:
+                    result = generator(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate, obstacle_detours=True)
+                    job["driven_pace_scale"] = candidate
+                    break
+                except DriverDidNotFinish as error:
+                    last_error = error
+            else:
+                raise last_error
+        job["driven_controller"] = result.get("controller_version", "unversioned")
         if build_contract(result["manifest"]) != build_contract(plan["manifest"]):
             raise RuntimeError("Local generator and service have different canonical builds")
         atomic_save(path, result)
     return result
 
 
-def tick(api, plan, settings, path, maximum=4):
+def tick(api, plan, settings, path, maximum=4, *, generator=None):
     current = api.call("GET", "/dev/test-drivers/tracks?vehicle_id=" + plan["vehicle_id"], operator=True)
     if build_contract(current["manifest"]) != build_contract(plan["manifest"]):
         raise RuntimeError("Service build changed. Keep this plan for inspection and create a new one")
@@ -350,11 +376,16 @@ def tick(api, plan, settings, path, maximum=4):
                 atomic_save(path, plan)
     # Join only once the shared history population has actually been verified.
     history = [job for job in plan["jobs"] if job["group_id"] is None]
+    history_ready = bool(history) and all(
+        job["status"] == "verified" if plan.get("require_history_completion") else
+        job["status"] in ("verified", "rejected", "failed", "uncompleted", "expired")
+        for job in history
+    )
     if (
         timestamp < plan["ends_at"]
         and plan["mode"] == "fleet"
         and history
-        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
+        and history_ready
     ):
         for profile in plan["profiles"]:
             if profile["subject"] in plan["joined"]:
@@ -390,11 +421,31 @@ def tick(api, plan, settings, path, maximum=4):
             atomic_save(path, plan)
             continue
         profile = by_subject[job["subject"]]
+        if getattr(api, "upload_recovery", False):
+            upload_key = job["id"] + "-upload-" + str(job.get("ticket_generation", 0))
+            recovered = api.call("GET", "/dev/test-drivers/uploads/" + upload_key,
+                                 subject=job["subject"], operator=True)
+            if recovered.get("run"):
+                job["run_id"] = recovered["run"]["run_id"]
+                job["status"] = "submitted"
+                job["recovered_committed_upload"] = True
+                atomic_save(path, plan)
+                started += 1
+                continue
+            if recovered.get("retired"):
+                job["status"], job["failure_code"] = "expired", "Original upload history expired"
+                atomic_save(path, plan)
+                started += 1
+                continue
         try:
-            data = recording(api, plan, job, profile, settings, path)
+            data = recording(api, plan, job, profile, settings, path, **({"generator": generator} if generator else {}))
         except DriverDidNotFinish as error:
             # A failed drive records an honest noncompletion, never a made-up PB.
             job["status"], job["failure_code"] = "uncompleted", str(error)
+            if plan.get("require_history_completion") and job.get("generation_failures", 0) < 4:
+                job["generation_failures"] = job.get("generation_failures", 0) + 1
+                job["attempt"] += 1
+                job["status"], job["due"] = "waiting", timestamp + 30
             atomic_save(path, plan)
             started += 1
             continue
@@ -459,7 +510,7 @@ def tick(api, plan, settings, path, maximum=4):
         timestamp < plan["ends_at"]
         and plan["mode"] == "fleet"
         and history
-        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
+        and history_ready
     ):
         counts["joining"] = len(plan["profiles"]) - len(plan["joined"])
     print("Plan:", counts)
@@ -473,6 +524,7 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=27)
     parser.add_argument("--count", type=int)
+    parser.add_argument("--all-tracks", action="store_true", help="Seed one verified PB per driver on every eligible current track (use --count 200 for histogram population)")
     parser.add_argument("--vehicle", default="compact")
     parser.add_argument("--target-subject", default="developer")
     parser.add_argument(
@@ -512,7 +564,19 @@ def main():
             print(f"Saved {arguments.state}. Run tick or watch to drive the planned attempts")
             return
         while True:
-            counts = tick(api, plan, settings, arguments.state, arguments.max_jobs)
+            try:
+                counts = tick(api, plan, settings, arguments.state, arguments.max_jobs)
+            except (requests.RequestException, RuntimeError) as error:
+                # Durable progress/idempotency survives temporary cloud outages.
+                # Build/contract errors require operator review, not endless retries.
+                retryable = isinstance(error, requests.RequestException) or any(
+                    code in str(error) for code in ("HTTP 429:", "HTTP 502:", "HTTP 503:", "HTTP 504:")
+                )
+                if arguments.command != "watch" or not retryable:
+                    raise
+                print("Cloud temporarily unavailable; retrying the same durable plan", flush=True)
+                time.sleep(arguments.interval)
+                continue
             if arguments.command != "watch" or not (
                 counts.get("waiting") or counts.get("submitted") or counts.get("joining")
             ):

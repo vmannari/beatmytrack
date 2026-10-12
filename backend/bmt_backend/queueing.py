@@ -1,29 +1,29 @@
-"""Shared admission and owner fairness for expensive canonical jobs."""
-from fastapi import HTTPException
-from sqlalchemy import func, select
+"""Short, constant-cost admission and independent owner fairness."""
+import time
 
-from .track_models import OperationState, QueuePlayer, Run, Track, TrackValidation, TrackVersion
+from fastapi import HTTPException
+from sqlalchemy import select
+
+from .track_models import QueueCapacity, QueuePlayer
+
+
+def check_capacity(session, player_id: str, capacity: int) -> None:
+    queue = session.get(QueueCapacity, 1)
+    owner = session.get(QueuePlayer, player_id)
+    if queue.pending >= capacity or (owner is not None and owner.pending >= 8):
+        raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
 
 
 def admit(session, player_id: str, capacity: int) -> None:
-    """Hold the shared row lock until the caller commits its new/retried job."""
-    session.scalar(select(OperationState).where(OperationState.id == "queue").with_for_update())
-    runs = select(func.count()).select_from(Run).where(Run.status.in_(("queued", "verifying")))
-    validations = (select(func.count()).select_from(TrackValidation).join(TrackVersion)
-                   .join(Track).where(TrackValidation.status.in_(("queued", "validating"))))
-    if session.scalar(runs) + session.scalar(validations) >= capacity:
+    """Counters are transactional; blob publication must precede this short lock."""
+    queue = session.scalar(select(QueueCapacity).where(QueueCapacity.id == 1).with_for_update().execution_options(populate_existing=True))
+    if queue.pending >= capacity:
         raise HTTPException(429, "Verification capacity reached; retry this saved attempt later")
-    if session.scalar(runs.where(Run.player_id == player_id)) + session.scalar(validations.where(Track.owner_id == player_id)) >= 8:
+    owner = session.get(QueuePlayer, player_id)
+    if owner is not None and owner.pending >= 8:
         raise HTTPException(429, "Verification queue is full for this player; retry after a pending result completes")
-    if session.get(QueuePlayer, player_id) is None:
-        session.add(QueuePlayer(player_id=player_id, last_claim_at=0))
 
 
 def record_claim(session, queue, player_id: str) -> None:
-    claim_number = int(queue.details.get("claims", 0)) + 1
-    queue.details = {"claims": claim_number}
     owner = session.get(QueuePlayer, player_id)
-    if owner is None:
-        session.add(QueuePlayer(player_id=player_id, last_claim_at=claim_number))
-    else:
-        owner.last_claim_at = claim_number
+    owner.last_claim_at = max(owner.last_claim_at + 1, time.time_ns() // 1000)

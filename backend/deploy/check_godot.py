@@ -33,7 +33,7 @@ def check(project: Path, binary: str = "godot", fixture: Path | None = None) -> 
         verifier = GodotVerifier(
             SimpleNamespace(godot_bin=binary, game_project=project, verifier_timeout_seconds=90)
         )
-        result = verifier.verify_run(saved["document"], saved["replay"], saved["vehicle_id"])
+        result = verifier.verify_canonical_diagnostic(saved["document"], saved["replay"], saved["vehicle_id"])
         if result["manifest"] != saved["expected_manifest"]:
             raise SystemExit("Canonical manifest differs from the pinned Windows regression fixture")
         if result["time_ticks"] != saved["time_ticks"] or result["lap_ticks"] != [
@@ -56,7 +56,7 @@ def check(project: Path, binary: str = "godot", fixture: Path | None = None) -> 
                 "input_offset": 3600, "from_tick": 3600, "to_tick": 2400,
             }],
         }
-        if verifier.verify_run(saved["document"], rewind, saved["vehicle_id"]) != result:
+        if verifier.verify_canonical_diagnostic(saved["document"], rewind, saved["vehicle_id"]) != result:
             raise SystemExit("Canonical rewind differs from the original race result")
         print("Canonical ten-second rewind regression passed")
 

@@ -47,6 +47,28 @@ def test_nonce_required_single_use_and_expires(auth_app, auth_client):
     assert auth_client.post("/v1/auth/google", json=body).status_code == 401
 
 
+def test_native_google_onboarding_and_returning_name(auth_app, auth_client):
+    def login():
+        challenge = auth_client.post("/v1/auth/google/challenge").json()
+        assert challenge["client_id"] == auth_app.state.settings.google_web_client_id
+        token = secrets.token_urlsafe(32)
+        auth_app.state.identity_verifier.claims[token] = {"sub": "native-player", "nonce": challenge["nonce"]}
+        response = auth_client.post("/v1/auth/google", json={
+            "id_token": token, "challenge_id": challenge["challenge_id"],
+        })
+        assert response.status_code == 200
+        return response.json()
+
+    first = login()
+    assert first["player"]["needs_username"] is True
+    saved = auth_client.patch("/v1/me", headers=headers(first), json={"display_name": "Native racer"})
+    assert saved.status_code == 200
+    second = login()
+    assert second["player"]["id"] == first["player"]["id"]
+    assert second["player"]["display_name"] == "Native racer"
+    assert second["player"]["needs_username"] is False
+
+
 def test_refresh_rotation_reuse_revokes_family(auth_client, sign_in):
     original = sign_in()
     response = auth_client.post("/v1/auth/refresh", json={"refresh_token": original["refresh_token"]})
@@ -181,7 +203,7 @@ def test_large_or_compressed_requests(auth_client):
     assert auth_client.post("/v1/auth/google", content="x" * 32769).status_code == 413
     assert (
         auth_client.post("/v1/auth/google", content="{}", headers={"Content-Encoding": "gzip"}).status_code
-        == 415
+        == 400
     )
 
 

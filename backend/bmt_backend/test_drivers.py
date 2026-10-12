@@ -6,20 +6,22 @@ import hashlib
 import random
 import secrets
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
+from .countries import test_country
 from .identity_models import Identity, Player
 from .middleware import ParsedJSONRoute
 from .rivalry import GROUP_CAPACITY, active_contract, eligible_versions, require_member, snapshot
 from .rivalry_models import RivalryGroup, RivalryMember
+from .runs import BoardDB
 from .test_driver_models import TestDriverProfile
 from .test_population import require_enabled
-from .track_models import Track, now
+from .track_models import IdempotencyRecord, Run, Track, digest, now
 from .tracks import DB, Auth, track_payload
 
 router = APIRouter(route_class=ParsedJSONRoute, include_in_schema=False)
@@ -36,6 +38,38 @@ def operator(request: Request, x_dev_auth_key: Annotated[str | None, Header()] =
 
 
 Operator = Annotated[None, Depends(operator)]
+
+
+@router.get("/dev/test-drivers/uploads/{upload_key}")
+def committed_upload(upload_key: str, request: Request, session: DB, player: Auth, _operator: Operator):
+    """Recover the player's committed result across controller/cache changes."""
+    from .runs import run_payload
+    if not player.is_test_driver or len(upload_key) > 160:
+        raise HTTPException(404, "Test upload not found")
+    record = session.get(IdempotencyRecord, (player.id, "submit_run", upload_key))
+    if record is None:
+        return {"run": None, "retired": False}
+    if record.response.get("retired"):
+        return {"run": None, "retired": True}
+    run = session.scalar(select(Run).where(Run.id == record.response.get("run_id"), Run.player_id == player.id))
+    return {"run": run_payload(run) if run else None, "retired": run is None}
+
+
+@router.get("/dev/test-drivers/track-versions/{version_id}/histogram")
+def test_histogram(version_id: str, vehicle_id: str, request: Request, session: BoardDB,
+                   player: Auth, bins: int = Query(24, ge=1, le=100),
+                   metric: Literal["race", "best_lap"] = "race"):
+    from .runs import board_manifest, histogram_query
+    from .tracks import published_version
+    require_enabled(request)
+    version = published_version(session, version_id)
+    pinned = {**board_manifest(version, vehicle_id), "test_population": True}
+    board_id = digest({"version_id": version.id, **pinned})
+    result = histogram_query(board_id, session, bins, test_population=True, metric=metric)
+    result["test_population"] = True
+    result["label"] = "Simulated test drivers / verified personal bests"
+    result["vehicle_id"] = vehicle_id
+    return result
 
 
 @router.get("/dev/test-drivers/tracks")
@@ -103,6 +137,7 @@ def fleet_rows(session, fleet):
             "player_id": p.id,
             "subject": profile.subject,
             "display_name": p.display_name,
+            "country_code": p.country_code,
             "is_test_driver": True,
             "traits": profile.traits,
         }
@@ -134,6 +169,7 @@ def create_fleet(payload: Fleet, request: Request, session: DB, _operator: Opera
                 p = Player(
                     id=str(uuid.uuid5(uuid.NAMESPACE_URL, subject)), display_name=name, is_test_driver=True
                 )
+                p.country_code = test_country(p.id)
                 session.add(p)
                 session.flush()
                 session.add(Identity(player_id=p.id, provider="development", subject=subject))

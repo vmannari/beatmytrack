@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 
 from fastapi import HTTPException
 from sqlalchemy import (
     JSON,
-    Boolean,
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -72,6 +73,7 @@ class TrackVersion(Base):
     creator_test_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     rating_sum: Mapped[int] = mapped_column(Integer, default=0)
     rating_count: Mapped[int] = mapped_column(Integer, default=0)
+    verified_finishers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class TrackValidation(Base):
@@ -95,6 +97,29 @@ class Board(Base):
     manifest: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     stats_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lap_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    public_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    all_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class HistogramSnapshot(Base):
+    """Durable comparison field, rebuilt by the idle worker, never a GET."""
+    __tablename__ = "histogram_snapshots"
+    __table_args__ = (Index("ix_histogram_snapshots_dirty_due", "dirty", "next_refresh_at", "lease_until"),)
+    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    include_artificial: Mapped[bool] = mapped_column(Boolean, primary_key=True)
+    generation: Mapped[str] = mapped_column(String(36), default="", server_default="")
+    source_revision: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
+    source_fingerprint: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    population: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    updated_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_refresh_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0", index=True)
+    lease_until: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    invalidated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    dirty: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class RunTicket(Base):
@@ -108,7 +133,10 @@ class RunTicket(Base):
 
 class Run(Base):
     __tablename__ = "runs"
-    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),)
+    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),
+                      Index("ix_run_created_at", "created_at"),
+                      Index("ix_run_board_player_id", "board_id", "player_id", "id"),
+                      Index("ix_run_board_id", "board_id", "id"))
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     ticket_id: Mapped[str] = mapped_column(ForeignKey("run_tickets.id"), unique=True)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
@@ -135,6 +163,30 @@ class PersonalBest(Base):
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
     time_ticks: Mapped[int] = mapped_column(Integer)
     achieved_at: Mapped[int] = mapped_column(Integer, default=now)
+
+
+class LapPersonalBest(Base):
+    """Independent accepted flying-lap minimum; its source survives retention."""
+    __tablename__ = "lap_personal_bests"
+    __table_args__ = (CheckConstraint("time_ticks > 0"), CheckConstraint("lap_index BETWEEN 1 AND 4"),)
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    time_ticks: Mapped[int] = mapped_column(Integer)
+    lap_index: Mapped[int] = mapped_column(Integer)
+    achieved_at: Mapped[int] = mapped_column(Integer)
+    source_created_at: Mapped[int] = mapped_column(Integer)
+
+
+class LapBestState(Base):
+    """Bounded backfill cursor and irreversible artificial-record reset fence."""
+    __tablename__ = "lap_best_state"
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
+    cutoff: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    epoch: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cursor: Mapped[str] = mapped_column(String(36), default="", server_default="")
+    complete: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    invalid_records: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Rating(Base):
@@ -188,7 +240,7 @@ class VersionFinisher(Base):
 class OperationState(Base):
     __tablename__ = "operation_state"
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
-    updated_at: Mapped[int] = mapped_column(Integer, default=now)
+    updated_at: Mapped[int] = mapped_column(Integer, default=now, index=True)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -197,6 +249,15 @@ def replay_response(session: Session, player_id: str, scope: str, key: str, body
         raise HTTPException(
             422, "Idempotency-Key must contain 8..128 printable ASCII characters without spaces"
         )
+    if key.startswith("v2."):
+        match = re.fullmatch(r"v2\.([0-9]{10})\.[0-9a-f]{48}", key)
+        if not match:
+            raise HTTPException(422, "INVALID_IDEMPOTENCY_KEY")
+        issued = int(match[1])
+        if issued < now() - 90*86400:
+            raise HTTPException(410, "Idempotency key expired; this request will not be repeated")
+        if issued > now() + 86400:
+            raise HTTPException(422, "IDEMPOTENCY_CLOCK_AHEAD")
     record = session.get(IdempotencyRecord, (player_id, scope, key))
     if record is None:
         return None

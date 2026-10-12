@@ -20,8 +20,10 @@ def current_manifest(manifest: dict) -> dict:
         "standing-5-road-gates-v15",
         "standing-5-road-gates-v16",
         "standing-5-road-gates-v17",
+        "standing-5-road-gates-v18",
+        "standing-5-road-gates-v19",
     ):
-        result["rules_key"] = "standing-5-road-gates-v18"
-    if result.get("physics_version") in {f"arcade-planar-0.{n}" for n in range(39, 50)}:
-        result["physics_version"] = "arcade-planar-0.50"
+        result["rules_key"] = "standing-5-road-gates-v20"
+    if result.get("physics_version") in {f"arcade-planar-0.{n}" for n in range(39, 53)}:
+        result["physics_version"] = "arcade-planar-0.53"
     return result

@@ -98,6 +98,23 @@ def test_queries_are_bounded_and_redacted(console):
     assert client.get("/v1/admin/overview", headers=headers()).json()["players"] == 1
 
 
+@pytest.mark.parametrize("artificial,provider", [(False, "development"), (True, "google")])
+def test_admin_player_type_uses_server_flag_and_keeps_all_players(console, artificial, provider):
+    client, app, ids = console
+    with app.state.session_factory() as session:
+        session.get(Player, ids[0]).is_test_driver = artificial
+        session.scalar(select(Identity).where(Identity.player_id == ids[0])).provider = provider
+        session.commit()
+    listing = client.get("/v1/admin/entities/players", headers=headers("analyst")).json()
+    assert listing["total"] == 1 and listing["items"][0]["is_test_driver"] is artificial
+    detail = client.get("/v1/admin/entities/players/" + ids[0], headers=headers("analyst")).json()
+    support = client.get("/v1/admin/players/" + ids[0] + "/support", headers=headers("analyst")).json()
+    assert detail["is_test_driver"] is support["player"]["is_test_driver"] is artificial
+    assert detail["providers"] == [provider]
+    assert client.get("/v1/admin/overview", headers=headers("analyst")).json()["players"] == 1
+    assert "private-provider-subject" not in str(detail) + str(support)
+
+
 def test_analyst_cannot_mutate(console):
     client, app, ids = console
     assert (

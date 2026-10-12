@@ -64,6 +64,19 @@ def test_signed_google_token(keys):
     assert verifier.verify(token)["sub"] == "google-subject"
 
 
+def test_android_presenter_requires_explicit_client_configuration(keys):
+    token, verifier = token_and_verifier(keys, azp="our-android-client")
+    with pytest.raises(HTTPException) as error:
+        verifier.verify(token)
+    assert error.value.status_code == 401
+    verifier.client_ids = ("our-client", "our-android-client")
+    assert verifier.verify(token)["aud"] == "our-client"
+    wrong_token, _ = token_and_verifier(keys, azp="unrelated-android-client")
+    with pytest.raises(HTTPException) as error:
+        verifier.verify(wrong_token)
+    assert error.value.status_code == 401
+
+
 @pytest.mark.parametrize(
     "claims",
     [

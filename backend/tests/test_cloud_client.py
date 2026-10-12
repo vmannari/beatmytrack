@@ -19,12 +19,23 @@ from bmt_backend.worker import process_one
 
 @pytest.mark.godot
 def test_cloud_library_against_http(tmp_path):
-    run_client(tmp_path, "res://tests/test_cloud_tracks.gd")
+    methods = []
+    def observe(app):
+        original = app.state.verifier.verify_run
+        def verify(*args, **kwargs):
+            result = original(*args, **kwargs)
+            methods.append(result.get("verification_method", "canonical-replay"))
+            if args[1].get("race_proof"):
+                print("NATIVE_PROOF_RECEIVED", len(args[1]["race_proof"]["samples"]))
+            return result
+        app.state.verifier.verify_run = verify
+    run_client(tmp_path, "res://tests/test_cloud_tracks.gd", prepare=observe)
+    assert "trajectory-v1" in methods, "The actual completed app race must use trajectory-only acceptance"
 
 
 @pytest.mark.godot
 def test_durable_track_lifecycle_against_http(tmp_path):
-    run_client(tmp_path, "res://tests/test_track_lifecycle.gd")
+    run_client(tmp_path, "res://tests/test_track_lifecycle.gd", settings_overrides={"purchase_simulation_enabled": True})
 
 
 def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_env=None):
@@ -36,9 +47,10 @@ def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_en
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     app = create_app(Settings(
-        environment="development", dev_auth_enabled=True, dev_auth_key=key,
+        environment="development", allow_sync_track_validation=True, dev_auth_enabled=True, dev_auth_key=key,
         database_url=f"sqlite:///{(tmp_path / 'cloud.sqlite').as_posix()}",
         object_dir=str(tmp_path / "objects"), godot_bin=binary,
+        public_base_url=f"http://127.0.0.1:{listener.getsockname()[1]}",
         game_project=str(root / "game"), write_limit_per_minute=1000,
         **(settings_overrides or {}),
     ))
@@ -67,6 +79,14 @@ def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_en
                 break
             time.sleep(0.05)
         fixture = json.loads((root / "backend/tests/fixtures/verified_oval.json").read_text())
+        # Offline fixture preparation only; the live worker never replays controls.
+        proof_path = tmp_path / "trajectory.json"
+        prepared = subprocess.run([binary,"--headless","--path",str(root / "game"),"--script",
+            "res://tests/test_lightweight_verifier.gd","--",f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
+            f"--proof-output={proof_path}"],capture_output=True,text=True,timeout=90,check=False)
+        assert prepared.returncode == 0, prepared.stdout+prepared.stderr
+        fixture["race_proof"] = json.loads(proof_path.read_text())
+        fixture["ghost"] = app.state.verifier.verify_canonical_diagnostic(fixture["document"],fixture["replay"],"compact")["ghost"]
         fixture_path = tmp_path / "fixture.json"
         fixture_path.write_text(json.dumps(fixture))
         env = {**os.environ, "BMT_API_URL": f"http://127.0.0.1:{listener.getsockname()[1]}",
@@ -88,4 +108,5 @@ def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_en
         server.should_exit = True
         thread.join(timeout=10)
         listener.close()
+        app.state.verifier.close()
         app.state.engine.dispose()

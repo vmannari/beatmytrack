@@ -1,0 +1,1554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-product-events-v1",
+  "title": "Authenticated product-observation batch",
+  "description": "Valid client batches for POST /v1/telemetry/batches. Bearer authentication supplies player identity and artificial classification; client observations cannot authorize game results, purchases or grants. This strict authoring schema validates every event. Runtime ingress intentionally validates event rows separately and returns accepted/duplicate/rejected acknowledgements instead of rejecting all valid siblings.",
+  "$comment": "The server enforces at most 50 events and a 65536-byte compact UTF-8 serialization of the normalized batch model, including defaults; JSON Schema cannot express that encoded-size limit. Wire integer values must be integer JSON tokens: the Python event parser rejects booleans and floating-point values, including 1.0. The relative timestamp window and persisted event-ID conflicts require server context and are not JSON Schema checks. UUID patterns specify canonical representations; the parser normalizes UUIDs. No authentication key or identity subject belongs in this payload. Quality events require quality_schema_version=1 and BMT_CLIENT_QUALITY_ENABLED. Runtime also enforces histogram sum=samples, slow=b5+b6+b7 and segment slow<=samples. Process exits describe prior process, not current player attribution.",
+  "x-max-canonical-bytes": 65536,
+  "x-max-event-age-seconds": 604800,
+  "x-future-allowance-seconds": 300,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "purpose_policy",
+    "build_id",
+    "platform",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": "bmt-product-events-v1"
+    },
+    "purpose_policy": {
+      "const": "bmt-product-telemetry-v1"
+    },
+    "build_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9._:\\-]+$"
+    },
+    "platform": {
+      "enum": [
+        "android",
+        "windows",
+        "linux",
+        "ios"
+      ]
+    },
+    "clock_quality": {
+      "enum": [
+        "client_clock",
+        "server_estimate"
+      ],
+      "default": "client_clock"
+    },
+    "batch_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/uuid4"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "install_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/uuid4"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "uuid4": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "occurred_at",
+        "session_id",
+        "seq",
+        "monotonic_ms",
+        "properties"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid4"
+        },
+        "name": {
+          "enum": [
+            "app_first_open",
+            "session_started",
+            "session_foregrounded",
+            "session_backgrounded",
+            "session_heartbeat",
+            "menu_ready",
+            "track_exposed",
+            "track_selected",
+            "car_exposed",
+            "car_selected",
+            "race_attempt",
+            "race_started",
+            "race_finished",
+            "race_abandoned",
+            "race_retried",
+            "editor_opened",
+            "draft_saved",
+            "publish_requested",
+            "challenge_opened",
+            "challenge_joined",
+            "challenge_created",
+            "share_clicked",
+            "collection_summary",
+            "store_opened",
+            "offer_exposed",
+            "purchase_requested",
+            "quality_summary",
+            "segment_summary",
+            "process_exit"
+          ]
+        },
+        "occurred_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4102444800,
+          "description": "UTC Unix seconds; server accepts at most seven days of age and 300 seconds of future skew."
+        },
+        "session_id": {
+          "$ref": "#/$defs/uuid4"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "monotonic_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "properties": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "app_first_open"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "session_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "session_foregrounded"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "session_backgrounded"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "foreground_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 86400000
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "session_heartbeat"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "foreground_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 86400000
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "menu_ready"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "track_exposed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "track_selected"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "car_exposed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "car_id"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "car_selected"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "car_id"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_attempt"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_finished"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_abandoned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_retried"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "car_id": {
+                    "enum": [
+                      "classic",
+                      "compact",
+                      "formula",
+                      "kart",
+                      "pickup"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "free",
+                      "rivalry",
+                      "challenge",
+                      "creator"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "editor_opened"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "draft_saved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "publish_requested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "biome": {
+                    "enum": [
+                      "desert",
+                      "night_city",
+                      "pine",
+                      "storm",
+                      "winter"
+                    ]
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "challenge_opened"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "challenge_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "challenge_joined"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "challenge_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "challenge_created"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "challenge_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "share_clicked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "challenge_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "reason": {
+                    "enum": [
+                      "background",
+                      "create",
+                      "edit",
+                      "exit",
+                      "finished",
+                      "inactivity",
+                      "join",
+                      "launch",
+                      "open",
+                      "publish",
+                      "restart",
+                      "resume",
+                      "save",
+                      "share",
+                      "test",
+                      "unknown"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "collection_summary"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "dropped_events": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "persistence_failures": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "rejected_events": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "store_opened"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "offer_exposed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "product_id": {
+                    "enum": [
+                      "ad_free_forever",
+                      "ad_free_month",
+                      "creator_slot_1",
+                      "creator_slots_10",
+                      "creator_slots_5"
+                    ]
+                  }
+                },
+                "required": [
+                  "product_id"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "purchase_requested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "product_id": {
+                    "enum": [
+                      "ad_free_forever",
+                      "ad_free_month",
+                      "creator_slot_1",
+                      "creator_slots_10",
+                      "creator_slots_5"
+                    ]
+                  }
+                },
+                "required": [
+                  "product_id"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "quality_summary"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "device_class",
+                  "scene",
+                  "samples",
+                  "slow",
+                  "b0",
+                  "b1",
+                  "b2",
+                  "b3",
+                  "b4",
+                  "b5",
+                  "b6",
+                  "b7"
+                ],
+                "properties": {
+                  "device_class": {
+                    "enum": [
+                      "android_arm64",
+                      "android_other",
+                      "desktop",
+                      "other"
+                    ]
+                  },
+                  "scene": {
+                    "enum": [
+                      "race",
+                      "menu",
+                      "editor"
+                    ]
+                  },
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "slow": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b0": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b1": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b2": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b3": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b4": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b5": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b6": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "b7": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "segment_summary"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "track_version_id",
+                  "segment",
+                  "cell_x",
+                  "cell_y",
+                  "samples",
+                  "slow"
+                ],
+                "properties": {
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid"
+                  },
+                  "segment": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 31
+                  },
+                  "cell_x": {
+                    "type": "integer",
+                    "minimum": -5000,
+                    "maximum": 5000
+                  },
+                  "cell_y": {
+                    "type": "integer",
+                    "minimum": -5000,
+                    "maximum": 5000
+                  },
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  },
+                  "slow": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "process_exit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "device_class",
+                  "exit_reason"
+                ],
+                "properties": {
+                  "device_class": {
+                    "enum": [
+                      "android_arm64",
+                      "android_other",
+                      "desktop",
+                      "other"
+                    ]
+                  },
+                  "exit_reason": {
+                    "enum": [
+                      4,
+                      5,
+                      6
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "acknowledgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "id",
+        "status"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 49
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "duplicate",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "INVALID_EVENT",
+            "CLOCK_OUTSIDE_WINDOW",
+            "ID_CONFLICT"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "rejected"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ackBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "events"
+      ],
+      "properties": {
+        "schema": {
+          "const": "bmt-product-acks-v1"
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/acknowledgement"
+          }
+        }
+      }
+    }
+  }
+}

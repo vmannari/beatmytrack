@@ -1,6 +1,6 @@
 """Resume balances and immutable race-bound consumption receipts."""
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint, false, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -23,6 +23,7 @@ class ResumeRace(Base):
     ticket_id: Mapped[str | None] = mapped_column(ForeignKey("run_tickets.id"), unique=True)
     used: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[int] = mapped_column(Integer)
+    abandoned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class ResumeReceipt(Base):
@@ -36,6 +37,8 @@ class ResumeReceipt(Base):
     from_tick: Mapped[int] = mapped_column(Integer)
     to_tick: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
+    settled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    refunded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class ResumeGrant(Base):

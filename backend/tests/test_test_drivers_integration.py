@@ -43,6 +43,9 @@ def test_profiles_generate_repeatable_distinct_verified_five_lap_races(real_veri
         times.append(result["time_ticks"])
         replays.append(result["replay"])
     assert times[0] > times[1] > times[2]
+    # Recorded same-profile prechange oval: 9872 ticks. Keep the controller
+    # improvement material without changing the simulation or reported time.
+    assert times[1] < 9872 * 0.8
     traits["skill"] = 0.5
     assert generate(settings, fixture["document"], "compact", traits)["replay"] == replays[1]
     assert generate(settings, fixture["document"], "compact", traits, 1)["replay"] != replays[1]
@@ -52,7 +55,7 @@ def test_profiles_generate_repeatable_distinct_verified_five_lap_races(real_veri
 def test_fill_tool_drives_and_verifies_an_actual_field(tmp_path, real_verifier):
     key = "test-driver-http-fixture-only-" * 3
     settings = Settings(
-        environment="development",
+        environment="development", allow_sync_track_validation=True,
         dev_auth_enabled=True,
         dev_auth_key=key,
         test_drivers_enabled=True,

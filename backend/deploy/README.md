@@ -1,3 +1,11 @@
+2026-10-05 native GCS and GCP staging: the Google adapter uses existing google-auth/HTTP dependencies, runtime ADC and immutable generation preconditions. Provider archives accept GCS. The [staging runbook](gcp/README.md) targets the owner-supplied `beat-my-track` project with explicit application/migration identities, pinned image digests, bounded replicas/DB pools, expiry and owned cleanup. Local image/contract/SQL tests are verified; Google CLI/ADC are not configured, so live bucket/deployment acceptance and pricing review remain. No credits or existing services were used/changed. [Evidence and limits](../../docs/BACKEND_GCS_STAGING_2026_10_05.md).
+
+2026-10-05 readiness/replica failures: `/healthz` performs no dependency IO; `/readyz` coalesces requests with a two-second HTTP deadline, two-second success cache and 30-second on-demand deep-storage interval. API storage errors invalidate caches immediately. `BMT_READINESS_CACHE_SECONDS`, `BMT_READINESS_STORAGE_CACHE_SECONDS` and `BMT_READINESS_TIMEOUT_SECONDS` configure these bounded defaults. Keep external probe timeouts above the application's deadline. Synthetic separate-process tests cover shared sessions, concurrent retries/resource consumption, storage faults, killed/stale workers and SQL finalization recovery. No existing services were restarted/migrated. [Actual checks and limits](../../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
+
+2026-10-05 worker lifecycle: SIGTERM/SIGINT stop claims and mark draining, with a configurable five-second canonical finish grace, cooperative cancellation and verifier/pool cleanup including `--once`. Set `BMT_WORKER_SHUTDOWN_GRACE_SECONDS` below the platform termination allowance, reserving time for existing bounded database/object IO and cleanup. PC Compose grants 30 seconds; the NAS template retains 210 seconds. An unavailable heartbeat DB or SIGKILL relies on stale-heartbeat/lease expiry. This source change did not restart existing services. [Actual checks and acceptance](../../docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
+
+2026-10-05 scalability repairs: current head is `0014_storage_lifecycle`. Online retention uses publication/read pins; the default backup pauses only GC and streams immutable objects while writers continue. Explicit `BMT_BACKUP_MODE=offline` retains the stopped-writer path. Role pool budgets and optional S3 configuration are documented in [the repair report](../../docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md) and [load tooling](../LOAD_TESTING.md). No existing service was migrated or deployed.
+
 2026-10-04 artificial test drivers require migration `0012_test_drivers` and matching API/worker/verifier artifacts. They are explicitly gated by `BMT_TEST_DRIVERS_ENABLED=true` plus development authentication. Production configuration rejects this flag. The local PC launcher accepts `BackendStart -TestDrivers`; fill/fleet/tick/watch tools run through normal verified race uploads into isolated test boards and groups. No existing service or production rollout was performed. See [setup, actual verification and limits](../../docs/TEST_DRIVERS.md).
 
 2026-10-04 Weekly Rivalry requires migration `0011_weekly_rivalry` and matching
@@ -20,10 +28,10 @@ See [launch start](../../docs/LAUNCH_START.md) for actual tests and limits.
 
 # DS925+ deployment and cloud migration
 
-The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying still requires stopped writers and `--offline`. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
+The [second/third review repairs](../../docs/CODE_REVIEW_REPAIRS_2_3_2026_10_03.md) require the archive/head endpoints and complete worker heartbeat contract alongside migration `0010_archive_drafts`. Competition health checks Python compatibility against the raw verifier and every pinned build/vehicle field; an old heartbeat cannot establish readiness. Retention inspects at most 1,000 entries per batch and returns `next_object_cursor`; pass its JSON through `--object-cursor` for the next batch. Applying uses `--online` with the pinned adapter; `--offline` remains available with stopped writers. Directory cursors are best-effort; begin another cycle after directory-changing cleanup. Actual SQLite/engine/client results and unavailable PostgreSQL/device/NAS acceptance are recorded in that repair document. This repair task did not restart or deploy services.
 
 The October reliability fixes require migration to the current Alembic head
-(currently `0012_test_drivers`, including `0011_weekly_rivalry`, `0008_review_reliability`,
+(currently `0014_storage_lifecycle`, including `0013_scalability`, `0012_test_drivers`, including `0011_weekly_rivalry`, `0008_review_reliability`,
 `0009_track_lifecycle` and `0010_archive_drafts`) and a matching rules-v18 canonical verifier image. Keep historical boards pinned; an
 old in-flight contract fails explicitly instead of being rescored with new rules.
 
@@ -65,13 +73,14 @@ can still scan metadata; verify actual plans after backfill.
 
 Reference-aware race retention is opt-in. `python -m bmt_backend.maintenance
 --retention` reports candidates without changing records or files. After a backup,
-stop API and every worker, review the counts, and run the same command with
-`--apply-retention --offline`. Repeat bounded batches during the maintenance window,
-then restart writers. Retention protects every immutable track version, current PB
+review the counts and run the same command with `--apply-retention --online` to
+coordinate with shared publication/read pins while writers continue. Repeat bounded
+batches and pass the returned cursor. The explicit `--offline` alternative requires
+stopping API and every worker, then restarting writers after maintenance. Retention protects every immutable track version, current PB
 replay, creator publication proof and permanent resume grant/wallet. It retires old
 terminal non-PB attempts and expired expendable tickets/races/receipts, retains
-idempotency tombstones, and removes only aged unreferenced SHA256 JSON objects
-inside the resolved object root. Never run destructive GC while writers are active.
+legacy idempotency tombstones, and removes only aged unreferenced SHA256 JSON objects
+inside the resolved object root. Only coordinated `--online` GC may run with active writers.
 No player data or deployed objects were pruned during this repair.
 
 Local PC development: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendStart` builds the shared API/worker image before starting services. Python is bind-mounted, but canonical Godot validation code is baked into the image. The build checks the pinned engine and exact golden replay before replacing services; a failed build leaves the running backend intact. Accounts and tracks remain in existing volumes. See [bridge validation follow-up](../../docs/BACKEND_BRIDGE_VALIDATION.md).
@@ -178,18 +187,19 @@ see [the backend README](../README.md); never share its database with production
 ## Backup and restore
 
 The supplied scripts use Docker Compose, POSIX `sh`, `sha256sum`, `sed` and standard
-host utilities. API/worker stop briefly while PostgreSQL's custom-format dump and an
-object archive are captured. This gives one consistent recovery point for database
-references and immutable files. The script restarts only previously running writers,
-including after failure. Reads through the API are unavailable during this window.
+host utilities. The default online mode pauses only object GC before PostgreSQL's
+custom-format snapshot dump, then streams the immutable objects needed by that dump.
+API reads, writes and workers continue. A crash before cleanup leaves GC paused until the
+matching private recovery token releases it. Explicit `BMT_BACKUP_MODE=offline`
+stops API/workers and restarts only previously running writers, including after failure.
 
 ```sh
 sh backend/deploy/backup.sh /volume1/backup/bmt/2026-09-28T220000Z
 ```
 
 The destination must be new. A completed backup has `database.dump`, `objects.tar`,
-`backup.info`, `SHA256SUMS` and `COMPLETE`. A missing completion marker is a failed
-backup. No secrets or live PostgreSQL data-directory files are copied. Keep release
+`backup.info`, `SHA256SUMS` and `COMPLETE`. The completion marker is written only after guard cleanup (or offline writer
+restart) succeeds. A missing completion marker is an unaccepted backup. No secrets or live PostgreSQL data-directory files are copied. Keep release
 image digests, canonical game sources, the verified Godot binary and encrypted
 deployment credentials separately so the matching version can be recovered.
 
@@ -285,3 +295,24 @@ The plain Python image and one process per container follow
 [FastAPI container guidance](https://fastapi.tiangolo.com/deployment/docker/).
 Custom PostgreSQL dumps are portable logical backups suitable for restore into
 another PostgreSQL host; see [PostgreSQL 17 pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html).
+
+
+## Scalability configuration and backups
+
+API pools default to four connections with zero overflow; worker pools use two. Connection/pool waits are three seconds; PostgreSQL statements are bounded. Budget all API/worker/migration/backup/admin pools against the configured 40 database connections before scaling. A worker caches only immutable tracks; its pinned engine is recycled and its process remains separate from HTTP. Measure verification service time and queue age on the NAS before selecting worker count. Increasing replicas without enough CPU or memory reduces capacity.
+
+Public track validation always queues. `BMT_ALLOW_SYNC_TRACK_VALIDATION=true` is only for explicitly configured non-production tests/development. New clients negotiate compact inputs/gzip/batched status from bootstrap; unadvertised servers receive legacy canonical frames and individual polling. Update API/worker together, then verify the client contract; no deployment is included in this task.
+
+`python -m bmt_backend.maintenance --retention --apply-retention --online` uses shared publication pins and bounded resumable batches. Closed weeks archive after the retention interval, keeping scores and membership while releasing optional evidence; public PBs, creator proofs and immutable track versions stay protected. `--offline` remains an alternative with all writers stopped. Dry-run remains the default. Run another complete object scan after a changing-directory cleanup. Timestamped v2 retry keys expire; legacy keys and permanent fulfillment/grant identities remain protected.
+
+`backup.sh` defaults to `BMT_BACKUP_MODE=online`. It acquires the shared GC guard before `pg_dump`, streams immutable objects, writes checksums/completion, then releases the guard. A crash leaves GC paused, while API and workers continue. Recover using the private `GC_RECOVERY_TOKEN` with `python -m bmt_backend.backup_guard end --token <saved-token>`; the token must match the active guard. The completion marker is written after successful cleanup; guard-release or writer-restart failures keep it absent. Rehearse restore into a different empty project with the matching image/schema before switching traffic. The task tested pg_dump/archive/restore with live synthetic writes; the complete Compose wrapper needs target-host acceptance.
+
+The optional `compose.cloud.yaml` selects an explicitly configured private HTTPS S3-compatible endpoint, bucket/prefix and credentials. Use it only after provider integration, access controls and backup/restore have been tested. `BMT_COMPOSE_CLOUD=1` adds that override to backup/restore helper commands. Provider backups stream bounded verified objects into the same portable archive; restore to a fresh **local** object volume (`BMT_COMPOSE_CLOUD=0`) first, verify hashes/PBs, then rehearse a separate verified transfer to the chosen provider before enabling its runtime configuration. Credentials are supplied privately and never included in artifacts. Default NAS configuration retains the local adapter and isolated worker network.
+
+## Exception recovery rollout
+
+Migrate a backed-up database through `0015_exception_recovery` before matching API/worker/client rollout. See [repair policies and actual tests](../../docs/BACKEND_EXCEPTION_FIXES_2026_10_05.md). This task did not deploy/restart existing services.
+
+`BMT_TRANSPORT_PROFILE=legacy` advertises a common legacy transport/recovery floor while old API targets drain. `compact` enables lossless compact inputs/gzip and modern recovery. Retain compatible original worker cohorts until their accepted jobs drain; claims now filter actual pinned build/config. `BMT_WORKER_CONTRACT_WAIT_SECONDS=7200` bounds absent-compatible-capacity waiting without spending verification attempts; evidence stays retryable with its original contract. `BMT_REFRESH_RECOVERY_SECONDS=120` (maximum 300) bounds private same-operation refresh retransmission; distinct-operation/legacy reuse still revokes. Trusted proxy configuration, readiness/worker health and synthetic verification remain necessary.
+
+Resume recovery never replays an abandoned charge. It permanently closes an unsubmitted attempt before refunding its requested unsettled banked/same-day resource. Submitted attempts cannot refund; daily allowance never rolls over and ad_preview never mints banked rewards. Bounded old-unsettled retention returns eligible banked resources before pruning. No ad/store fulfillment configuration was added.

@@ -5,6 +5,10 @@ BMT_DEPLOY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BMT_ENV_FILE=${BMT_ENV_FILE:-$BMT_DEPLOY_DIR/.env}
 test -f "$BMT_ENV_FILE" || { echo "Missing deployment env file" >&2; exit 1; }
 compose() {
+    if [ "${BMT_COMPOSE_CLOUD:-0}" = 1 ]; then
+        docker compose --env-file "$BMT_ENV_FILE" -f "$BMT_DEPLOY_DIR/compose.yaml" -f "$BMT_DEPLOY_DIR/compose.cloud.yaml" -p "${BMT_COMPOSE_PROJECT:-bmt}" "$@"
+        return
+    fi
     if [ -n "${BMT_COMPOSE_PROJECT:-}" ]; then
         docker compose --env-file "$BMT_ENV_FILE" -f "$BMT_DEPLOY_DIR/compose.yaml" -p "$BMT_COMPOSE_PROJECT" "$@"
     else

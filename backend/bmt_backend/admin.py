@@ -12,6 +12,9 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .admin_models import AdminAudit
+from .admin_ranges import calendar_range, during, time_range
+from .commerce import entitlement_payload
+from .commerce_models import Entitlements
 from .identity_models import Identity, Player, SessionFamily
 from .middleware import ParsedJSONRoute
 from .migrate import SCHEMA_HEAD
@@ -33,6 +36,7 @@ def access(request: Request):
 
 
 Access = Annotated[str, Depends(access)]
+Window = Annotated[tuple[int, int] | None, Depends(time_range)]
 
 
 @router.get("/v1/admin/competition-health")
@@ -54,14 +58,14 @@ def console():
 
 @router.get("/admin/assets/{name}", include_in_schema=False)
 def asset(name: str):
-    if name not in ("app.js", "style.css"):
+    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
 
 # Explicit projections exclude provider subjects, session secrets and worker lease tokens.
 FIELDS = {
-    "players": (Player, "id display_name disabled needs_username created_at"),
+    "players": (Player, "id display_name disabled needs_username is_test_driver created_at"),
     "tracks": (
         TrackVersion,
         "id track_id number name content_hash state created_at published_at rating_sum rating_count",
@@ -71,7 +75,7 @@ FIELDS = {
         "id player_id board_id status created_at finished_at attempts time_ticks lap_ticks failure_code replay_hash",
     ),
     "jobs": (Run, "id player_id status attempts created_at finished_at failure_code"),
-    "audit": (AdminAudit, "id actor action entity_id reason before after request_id created_at"),
+    "audit": (AdminAudit, "id command_id actor action entity_id reason before after request_id created_at"),
     "grants": (ResumeGrant, "id player_id source quantity created_at"),
 }
 
@@ -81,29 +85,31 @@ def record(kind, row):
 
 
 @router.get("/v1/admin/overview")
-def overview(request: Request, role: Access, days: int = Query(7, ge=1, le=90)):
-    since = now() - days * 86400
+def overview(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
+    window = window or calendar_range(days)
     with request.app.state.session_factory() as db:
         count = lambda model, *where: db.scalar(select(func.count()).select_from(model).where(*where))
         states = dict(
             db.execute(
-                select(Run.status, func.count()).where(Run.created_at >= since).group_by(Run.status)
+                select(Run.status, func.count()).where(*during(Run.created_at, window)).group_by(Run.status)
             ).all()
         )
         utc_day = func.floor(Run.created_at / 86400)
         daily = db.execute(
-            select(utc_day, func.count()).where(Run.created_at >= since).group_by(utc_day)
+            select(utc_day, func.count()).where(*during(Run.created_at, window)).group_by(utc_day)
         ).all()
         return {
             "role": role,
             "environment": request.app.state.settings.environment,
             "as_of": now(),
             "days": days,
+            "since": window[0],
+            "until": window[1],
             "players": count(Player),
             "tracks": count(Track),
             "versions": count(TrackVersion),
             "racers": db.scalar(
-                select(func.count(func.distinct(Run.player_id))).where(Run.created_at >= since)
+                select(func.count(func.distinct(Run.player_id))).where(*during(Run.created_at, window))
             ),
             "states": states,
             "daily": [{"day": int(day), "count": n} for day, n in daily],
@@ -119,6 +125,7 @@ def entities(
     kind: str,
     request: Request,
     role: Access,
+    window: Window,
     q: str = Query("", max_length=100),
     state: str = Query("", max_length=32),
     offset: int = Query(0, ge=0, le=1000000),
@@ -127,12 +134,12 @@ def entities(
     if kind not in FIELDS:
         raise HTTPException(404)
     model, fields = FIELDS[kind]
-    conditions = []
+    conditions = during(model.created_at, window)
     if q:
         search_fields = [
             getattr(model, key)
             for key in fields.split()
-            if key in ("id", "display_name", "name", "player_id", "entity_id")
+            if key in ("id", "display_name", "name", "player_id", "entity_id", "command_id", "request_id")
         ]
         conditions.append(or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
     if state:
@@ -177,6 +184,13 @@ def detail(kind: str, entity_id: str, request: Request, role: Access):
             )
             wallet = db.get(ResumeWallet, row.id)
             result["permanent_resume_balance"] = wallet.balance if wallet else 0
+            owned = db.get(Entitlements, row.id)
+            result["entitlements"] = ({"initialized":True, "real_slots":owned.slots,
+                "simulated_slots":owned.simulated_slots, "real_ad_free_until":owned.ad_free_until,
+                "simulated_ad_free_until":owned.simulated_ad_free_until, "real_forever":owned.forever,
+                "simulated_forever":owned.simulated_forever,
+                "effective":entitlement_payload(db, request.app.state.settings, owned)}
+                if owned else {"initialized":False,"initial_publishing_allowance":1})
             result["recent_races"] = [
                 record("races", r)
                 for r in db.scalars(

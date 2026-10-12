@@ -19,6 +19,7 @@ from bmt_backend.identity_models import Player
 from bmt_backend.migrate import upgrade
 from bmt_backend.security import current_player
 from bmt_backend.track_models import PersonalBest, Run, RunTicket, TrackVersion, now
+from bmt_backend.verifier import VerificationError
 from bmt_backend.worker import process_one
 
 
@@ -40,7 +41,7 @@ class FakeVerifier:
 
     def validate_track(self, document):
         if document.get("invalid"):
-            raise ValueError("Invalid test track")
+            raise VerificationError("Invalid test track")
         return {
             **self.manifest(),
             "track_content_hash": str(document.get("shape", "oval")),
@@ -49,7 +50,7 @@ class FakeVerifier:
 
     def verify_run(self, document, replay, vehicle_id, *, creator_test=False):
         if replay["frames"][0][0] == -127:
-            raise ValueError("Incomplete race")
+            raise VerificationError("Incomplete race")
         if replay["frames"][0][0] == -126:
             raise RuntimeError("Verifier unavailable")
         return {
@@ -84,6 +85,7 @@ def domain(tmp_path, request):
             },
         )
     settings = Settings(
+        environment="test", allow_sync_track_validation=True,
         database_url=database_url,
         object_dir=str(tmp_path / "objects"),
         rate_limit_per_minute=10000,
@@ -294,6 +296,109 @@ def test_ratings_require_completion_disallow_self_and_replace_vote(domain):
     assert domain.client.put(path, json={"score": True}, headers=headers(domain, "Bob")).status_code == 422
 
 
+def test_best_lap_histogram_counts_each_driver_once_across_verified_attempts(domain):
+    version, board = public_course(domain)
+    alice = race(domain, version, "Alice", frames=20)
+    slower = race(domain, version, "Alice", frames=25)
+    race(domain, version, "Bob", frames=30)
+    with domain.factory() as session:
+        # Deliberately fast standing starts must never become flying-lap PBs.
+        session.get(Run, alice["run_id"]).lap_ticks = [1, 24, 25, 25, 25]
+        session.get(Run, slower["run_id"]).lap_ticks = [1, 19, 35, 35, 35]
+        session.commit()
+    path = f"/v1/boards/{board}/histogram"
+    result = fresh_comparison(domain, path, params={"metric": "best_lap", "bins": 8})
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["metric"] == "best_lap" and data["population"] == 3
+    assert data["minimum_ticks"] == 19 and data["maximum_ticks"] == 60
+    assert sum(b["count"] for b in data["bins"]) == 3
+    with domain.factory() as session:
+        session.get(Run, slower["run_id"]).lap_ticks = [1, 18, 36, 35, 35]
+        session.commit()
+    assert fresh_comparison(domain, path, params={"metric": "best_lap"}).json()["minimum_ticks"] == 18
+    assert fresh_comparison(domain, path, params={"metric": "unknown"}).status_code == 422
+    with domain.factory() as session:
+        session.get(Run, slower["run_id"]).status = "failed"
+        session.get(Player, domain.players["Bob"]).disabled = True
+        session.commit()
+    data = fresh_comparison(domain, path, params={"metric": "best_lap"}).json()
+    assert data["population"] == 2 and data["minimum_ticks"] == 24
+
+
+def fresh_comparison(domain, *args, **kwargs):
+    """Existing correctness fixtures explicitly refresh their offline snapshot."""
+    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
+    refresh_all_for_diagnostics(domain.app)
+    return domain.client.get(*args, **kwargs)
+
+
+def test_results_comparison_uses_one_population_and_replaces_own_result(domain):
+    version, _ = public_course(domain)
+    path = f"/v1/track-versions/{version['version_id']}/results-comparison"
+    params = {"vehicle_id":"compact", "race_ticks":350, "lap_ticks":70}
+    assert fresh_comparison(domain, path, params=params).status_code == 401
+    solo = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+    assert solo["race"]["comparison"] is None and solo["best_lap"]["comparison"] is None
+    race(domain, version, "Alice", frames=20)
+    race(domain, version, "Bob", frames=30)
+    response = fresh_comparison(domain, path, params=params, headers=headers(domain))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["population_scope"] == "all"
+    for metric in ("race", "best_lap"):
+        assert data[metric]["board_id"] == data["board_id"]
+        assert sum(b["count"] for b in data[metric]["bins"]) == data[metric]["population"] == 3
+        assert data[metric]["comparison"]["position"] == 3  # Existing faster self-PB excluded.
+        assert data[metric]["comparison"]["population"] == 3
+    assert data["race"]["own_best_ticks"] == 300
+    assert data["best_lap"]["own_best_ticks"] == 60
+    assert fresh_comparison(domain, path, params={**params,"race_ticks":0}, headers=headers(domain)).status_code == 422
+
+
+def test_results_histogram_grid_survives_pending_pb_verification(domain):
+    version, _ = public_course(domain)
+    race(domain, version, "Alice", frames=20)
+    path = f"/v1/track-versions/{version['version_id']}/results-comparison"
+    params = {"vehicle_id": "compact", "bins": 16, "race_ticks": 50, "lap_ticks": 10}
+    before = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+    for metric, prefix in (("race", "race"), ("best_lap", "lap")):
+        bins = before[metric]["bins"]
+        params[prefix + "_from_ticks"] = bins[0]["from_ticks"]
+        params[prefix + "_to_ticks"] = bins[-1]["to_ticks_exclusive"]
+        assert len(bins) > 8
+        assert sum(b["count"] for b in bins) == 2  # Candidate never adds a sample.
+    race(domain, version, frames=10)
+    after = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+    for metric in ("race", "best_lap"):
+        old_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in before[metric]["bins"]]
+        new_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in after[metric]["bins"]]
+        assert old_edges == new_edges
+        assert after[metric]["population"] == sum(b["count"] for b in after[metric]["bins"]) == 2
+        assert before[metric]["bins"] != after[metric]["bins"]  # Actual verified counts still update.
+    invalid = {**params, "race_to_ticks": params["race_from_ticks"]}
+    assert fresh_comparison(domain, path, params=invalid, headers=headers(domain)).status_code == 422
+    invalid = {**params}
+    invalid.pop("race_to_ticks")
+    assert fresh_comparison(domain, path, params=invalid, headers=headers(domain)).status_code == 422
+
+
+def test_results_comparison_has_exact_top_percentile_with_ties(domain):
+    from bmt_backend.runs import comparison_position
+    from bmt_backend.track_models import BoardTimeCount
+    _version, board = public_course(domain)
+    with domain.factory() as session:
+        session.add(BoardTimeCount(board_id=board,time_ticks=100,public_count=10,all_count=10))
+        session.add(BoardTimeCount(board_id=board,time_ticks=200,public_count=989,all_count=989))
+        session.commit()
+        entries = select(BoardTimeCount.time_ticks,BoardTimeCount.public_count.label("count")).where(
+            BoardTimeCount.board_id == board).subquery()
+        compare = comparison_position(entries,session,200,300)
+        assert compare == {"position":11,"population":1000,"top_percent":2,"candidate_ticks":200}
+        compare = comparison_position(entries,session,100,None)
+        assert compare["position"] == 1 and compare["population"] == 1001 and compare["top_percent"] == 1
+
+
 def test_pb_ties_histogram_neighbours_and_ghost_share_population(domain):
     version, board = public_course(domain)
     alice = race(domain, version, "Alice", frames=20)
@@ -307,7 +412,7 @@ def test_pb_ties_histogram_neighbours_and_ghost_share_population(domain):
         next(item for item in top["items"] if item["player_id"] == domain.players["Alice"])["run_id"]
         == alice["run_id"]
     )
-    histogram = domain.client.get(f"/v1/boards/{board}/histogram", params={"bins": 3}).json()
+    histogram = fresh_comparison(domain, f"/v1/boards/{board}/histogram", params={"bins": 3}).json()
     assert sum(item["count"] for item in histogram["bins"]) == histogram["population"] == 3
     assert [item["count"] for item in histogram["bins"]] == [2, 0, 1]
     around = domain.client.get(f"/v1/boards/{board}/around-me", headers=headers(domain, "Alice")).json()
@@ -447,7 +552,7 @@ def test_disabled_players_removed_from_every_board_projection(domain):
     top = domain.client.get(f"/v1/boards/{board}").json()
     assert top["population"] == 2
     assert [item["rank"] for item in top["items"]] == [1, 2]
-    assert domain.client.get(f"/v1/boards/{board}/histogram").json()["population"] == 2
+    assert fresh_comparison(domain, f"/v1/boards/{board}/histogram").json()["population"] == 2
     assert (
         domain.client.get(f"/v1/boards/{board}/around-me", headers=headers(domain, "Bob")).json()[
             "population"
@@ -493,7 +598,6 @@ def test_checkpoint_rules_upgrade_keeps_track_and_historical_board(domain, monke
     # Establish the historical state using the previous ticket policy.
     with monkeypatch.context() as old_policy:
         old_policy.setattr(runs, "current_manifest", lambda value: value)
-        old_policy.setattr("bmt_backend.worker.current_manifest", lambda value: value)
         version, old_board_id = public_course(domain)
     with domain.factory() as session:
         original = dict(session.get(TrackVersion, version["version_id"]).manifest)
@@ -581,13 +685,16 @@ def test_postgres_histogram_uses_one_snapshot_during_new_verified_result(domain)
     version, board = public_course(domain)
     race(domain, version, "Alice", frames=20)
     submit(domain, ticket(domain, version, "Bob"), "Bob", frames=40)
+    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
+    refresh_all_for_diagnostics(domain.app)
     fired = False
 
     def finish_race_after_count(connection, cursor, statement, parameters, context, executemany):
         nonlocal fired
-        if not fired and "min(" in statement.lower() and "personal_bests" in statement:
+        if not fired and "histogram_snapshots.generation" in statement.lower():
             fired = True
             assert process_one(domain.app)
+            refresh_all_for_diagnostics(domain.app)
 
     event.listen(domain.app.state.engine, "after_cursor_execute", finish_race_after_count)
     try:
@@ -607,14 +714,15 @@ def test_concurrent_postgres_submissions_cannot_exceed_player_queue_budget(domai
     tickets = [ticket(domain, version, "Alice") for _ in range(9)]
 
     def attempt(issued):
-        return domain.client.post(
-            "/v1/runs",
-            json={
-                "ticket_id": issued["ticket_id"],
-                "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20},
-            },
-            headers=headers(domain, "Alice"),
-        )
+        import time
+        auth = headers(domain, "Alice")
+        for retry in range(10):
+            response = domain.client.post("/v1/runs", json={"ticket_id": issued["ticket_id"],
+                "replay": {"schema": "bmt-replay-v1", "frames": [[0,255,0]]*20}}, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY":
+                return response
+            time.sleep(.1)
+        return response
 
     with ThreadPoolExecutor(max_workers=9) as pool:
         responses = list(pool.map(attempt, tickets))

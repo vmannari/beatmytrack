@@ -72,6 +72,9 @@ def current_player(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_session),
 ) -> Player:
+    cached = getattr(request.state,"authenticated_player",None)
+    if cached is not None:
+        return cached
     if credentials is None or credentials.scheme.lower() != "bearer" or len(credentials.credentials) > 256:
         raise HTTPException(401, "AUTH_REQUIRED", headers={"WWW-Authenticate": "Bearer"})
     row = session.execute(
@@ -93,11 +96,15 @@ def current_player(
     ):
         raise HTTPException(401, "INVALID_SESSION")
     request.state.session_family_id = family.id
+    # Release authentication's connection before reserving a rate lease.
+    # Saturated replicas must never require a nested second connection.
+    session.commit()
     if not getattr(request.state, "player_budget_checked", False):
-        read = request.method in ("GET", "HEAD")
+        read = request.method in ("GET", "HEAD") or request.url.path in ("/v1/discovery/tracks", "/v1/discovery/random")
         limit = request.app.state.settings.rate_limit_per_minute if read else request.app.state.settings.write_limit_per_minute
         cost = 4 if request.url.path == "/v1/runs" else 2 if request.url.path == "/v1/tracks" else 1
-        if not request.app.state.identity_budgets.allow(player.id, "player_read" if read else "player_write", limit, 1 if read else cost):
+        if not request.app.state.identity_budgets.allow(player.id, "player_read" if read else "player_write", limit, 1 if read else cost, session=session):
             raise HTTPException(429, "RATE_LIMITED")
         request.state.player_budget_checked = True
+    request.state.authenticated_player = player
     return player

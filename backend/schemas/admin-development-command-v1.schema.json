@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-admin-development-command-v1",
+  "title": "Audited development purchase/access command",
+  "description": "Owner-only, configured development identities. Preview binds the exact action, amount, player, timestamp and before/after state. Stable command IDs prevent duplicate fulfillment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command_id", "action", "preview_at", "expected_hash", "reason", "acknowledged"],
+  "properties": {
+    "command_id": {"type": "string", "format": "uuid"},
+    "action": {"enum": ["simulate_purchase", "resolve_purchase", "adjust_slots", "expire_month", "reset_ad_free"]},
+    "product_id": {"enum": ["creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever", null]},
+    "outcome": {"enum": ["approved", "pending", "declined", "cancelled", null]},
+    "purchase_id": {"type": ["string", "null"], "maxLength": 96},
+    "slots_delta": {"type": ["integer", "null"], "minimum": -1000, "maximum": 1000},
+    "preview_at": {"type": "integer", "minimum": 0},
+    "expected_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reason": {"type": "string", "minLength": 8, "maxLength": 500},
+    "acknowledged": {"const": true}
+  },
+  "allOf": [
+    {"if": {"properties": {"action": {"const": "simulate_purchase"}}}, "then": {"required": ["product_id", "outcome"], "properties": {"product_id": {"type": "string"}, "outcome": {"type": "string"}, "purchase_id": {"type": "null"}, "slots_delta": {"type": "null"}}}},
+    {"if": {"properties": {"action": {"const": "resolve_purchase"}}}, "then": {"required": ["purchase_id", "outcome"], "properties": {"purchase_id": {"type": "string", "minLength": 1}, "outcome": {"enum": ["approved", "declined", "cancelled"]}, "product_id": {"type": "null"}, "slots_delta": {"type": "null"}}}},
+    {"if": {"properties": {"action": {"const": "adjust_slots"}}}, "then": {"required": ["slots_delta"], "properties": {"slots_delta": {"type": "integer", "not": {"const": 0}}, "product_id": {"type": "null"}, "outcome": {"type": "null"}, "purchase_id": {"type": "null"}}}},
+    {"if": {"properties": {"action": {"enum": ["expire_month", "reset_ad_free"]}}}, "then": {"properties": {"product_id": {"type": "null"}, "outcome": {"type": "null"}, "purchase_id": {"type": "null"}, "slots_delta": {"type": "null"}}}}
+  ]
+}

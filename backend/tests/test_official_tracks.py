@@ -51,6 +51,8 @@ def test_official_seed_requires_fixed_account(auth_app):
 
 
 def test_official_restore_renames_legacy_owner_and_keeps_track_uid(auth_app):
+    original = {"id": "track_restored", "name": "Knot", "creator": "Beat My Track"}
+    old_hash = auth_app.state.blobs.put_json(original)
     with auth_app.state.session_factory() as session:
         owner = Player(display_name="Beat My Track")
         session.add(owner)
@@ -60,7 +62,6 @@ def test_official_restore_renames_legacy_owner_and_keeps_track_uid(auth_app):
         session.add(track)
         session.flush()
         original = {"id": "track_restored", "name": "Knot", "creator": "Beat My Track"}
-        old_hash = auth_app.state.blobs.put_json(original)
         version = TrackVersion(
             track_id=track.id, number=1, name="Knot", content_hash=old_hash,
             manifest={}, revision_key="old", discovery={}, state="published",

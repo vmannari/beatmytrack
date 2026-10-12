@@ -26,16 +26,20 @@ def test_broad_json_tree_is_rejected_without_accepting_nonfinite_values():
 
 @pytest.mark.parametrize("physics", ["arcade-planar-0.39", "arcade-planar-0.48"])
 @pytest.mark.parametrize("purpose", ["race", "creator_test"])
-@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16"])
+@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16", "standing-5-road-gates-v18", "standing-5-road-gates-v19"])
 def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
     base = domain.app.state.verifier.manifest()
-    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.49", "rules_key": "standing-5-road-gates-v17"}
+    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.53", "rules_key": "standing-5-road-gates-v20"}
     version = upload(domain)
     with domain.factory() as session:
         row = session.get(TrackVersion, version["version_id"])
         row.manifest = {**row.manifest, "physics_version": physics, "rules_key": rules}
         original = dict(row.manifest)
         session.commit()
+    metadata = domain.client.get("/v1/me/tracks", headers=headers(domain))
+    assert metadata.status_code == 200
+    visible = next(item for item in metadata.json()["items"] if item["version_id"] == version["version_id"])
+    assert visible["manifest"]["rules_key"] == "standing-5-road-gates-v20"
     response = domain.client.post("/v1/run-tickets", json={"version_id": version["version_id"], "vehicle_id": "compact", "purpose": purpose}, headers=headers(domain))
     assert response.status_code == 201, response.text
     run = submit(domain, response.json())
@@ -43,8 +47,8 @@ def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
     with domain.factory() as session:
         assert session.get(Run, run["run_id"]).status == "verified"
         assert session.get(TrackVersion, version["version_id"]).manifest == original
-    assert current_manifest(original)["physics_version"] == "arcade-planar-0.49"
-    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v17"
+    assert current_manifest(original)["physics_version"] == "arcade-planar-0.53"
+    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v20"
 
 
 def test_global_admission_and_fair_claims(domain):
@@ -208,20 +212,24 @@ def test_board_cache_tracks_pbs_and_restrictions_across_sessions(domain):
     path = f"/v1/boards/{board}"
     # Populate both caches, then change their inputs through separate DB sessions.
     assert domain.client.get(path).json()["population"] == 2
-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 300
+    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
+    def fresh_histogram():
+        refresh_all_for_diagnostics(domain.app)
+        return domain.client.get(path+"/histogram").json()
+    assert fresh_histogram()["maximum_ticks"] == 300
     second = submit(domain, ticket(domain, version, "Bob"), "Bob", frames=80)
     assert process_one(domain.app)
     assert domain.client.get(path).json()["population"] == 3
-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 400
+    assert fresh_histogram()["maximum_ticks"] == 400
     with domain.factory() as session:
         session.get(Player, domain.players["Bob"]).disabled = True
         session.commit()
     assert domain.client.get(path).json()["population"] == 2
-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 300
+    assert fresh_histogram()["maximum_ticks"] == 300
     with domain.factory() as session:
         session.execute(update(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == domain.players["Creator"]).values(time_ticks=90))
         session.commit()
-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 150
+    assert fresh_histogram()["maximum_ticks"] == 150
     assert second["run_id"] != first["run_id"]
 
 
@@ -240,7 +248,7 @@ def test_board_cursor_preserves_competition_ties(domain):
     assert second["next_cursor"] is None
 
 
-def test_historical_contract_is_terminal_and_never_rescored(domain, monkeypatch):
+def test_historical_contract_waits_for_compatible_worker_and_never_rescored(domain, monkeypatch):
     version, _ = public_course(domain)
     issued = ticket(domain, version)
     submitted = submit(domain, issued)
@@ -251,8 +259,8 @@ def test_historical_contract_is_terminal_and_never_rescored(domain, monkeypatch)
         board.manifest = original
         session.commit()
     monkeypatch.setattr(domain.app.state.verifier, "verify_run", lambda *args, **kwargs: pytest.fail("historical replay was rescored"))
-    assert process_one(domain.app)
+    assert not process_one(domain.app)
     with domain.factory() as session:
         job = session.get(Run, submitted["run_id"])
-        assert job.status == "failed" and job.failure_code == "build_mismatch"
+        assert job.status == "queued" and job.attempts == 0
         assert session.get(Board, issued["board_id"]).manifest == original

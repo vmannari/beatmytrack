@@ -1,0 +1,15 @@
+# Optional object-provider override. Configure and test before authorized deployment.
+services:
+  api:
+    environment: &objects
+      BMT_OBJECT_BACKEND: s3
+      BMT_S3_ENDPOINT: ${BMT_S3_ENDPOINT:?Set the HTTPS object endpoint}
+      BMT_S3_BUCKET: ${BMT_S3_BUCKET:?Set a private bucket}
+      BMT_S3_REGION: ${BMT_S3_REGION:-us-east-1}
+      BMT_S3_PREFIX: ${BMT_S3_PREFIX:-bmt/v1}
+      BMT_S3_ACCESS_KEY: ${BMT_S3_ACCESS_KEY:?Configure private object credentials}
+      BMT_S3_SECRET_KEY: ${BMT_S3_SECRET_KEY:?Configure private object credentials}
+      BMT_S3_SESSION_TOKEN: ${BMT_S3_SESSION_TOKEN:-}
+  worker:
+    networks: [backend, edge]
+    environment: *objects

@@ -20,19 +20,21 @@ rivalry_domain = _domain_fixture
 
 def seed(rivalry_domain, count=6, official=True):
     versions = []
-    with rivalry_domain.factory() as session:
-        for index in range(count):
+    for index in range(count):
+        document = {"shape": "oval", "id": f"weekly_{index}", "name": f"Circuit {index}", "points": [[0, 0], [10, 0], [10, 10], [0, 10]]}
+        content_hash = rivalry_domain.app.state.blobs.put_json(document)
+        with rivalry_domain.factory() as session:
             track = Track(owner_id=rivalry_domain.players["Creator"], official=official)
             session.add(track)
             session.flush()
             document = {"shape": "oval", "id": f"weekly_{index}", "name": f"Circuit {index}", "points": [[0, 0], [10, 0], [10, 10], [0, 10]]}
             version = TrackVersion(track_id=track.id, number=1, name=document["name"], state="published",
-                content_hash=rivalry_domain.app.state.blobs.put_json(document), manifest=rivalry_domain.app.state.verifier.validate_track(document),
+                content_hash=content_hash, manifest=rivalry_domain.app.state.verifier.validate_track(document),
                 discovery={"theme": "pine", "points": document["points"]}, rating_sum=41, rating_count=10)
             session.add(version)
             session.flush()
             versions.append(version.id)
-        session.commit()
+            session.commit()
     return versions
 
 

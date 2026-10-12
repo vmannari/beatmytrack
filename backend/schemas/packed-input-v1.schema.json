@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-packed-input-v1",
+  "title": "Lossless canonical input transport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "replay_schema", "frame_count", "controls"],
+  "properties": {
+    "schema": {"const": "bmt-packed-input-v1"},
+    "replay_schema": {"enum": ["bmt-replay-v1", "bmt-replay-v2"]},
+    "frame_count": {"type": "integer", "minimum": 1, "maximum": 216000},
+    "controls": {"type": "string", "contentEncoding": "base64", "minLength": 8, "maxLength": 1728000},
+    "rewinds": {"$ref": "replay-v2.schema.json#/properties/rewinds"},
+    "race_proof": {"$ref": "race-proof-v1.schema.json"}
+  },
+  "$comment": "Decoded length must be frame_count*6. Each tick: width (3/4/5), steer+127 (0..254), throttle, brake, handbrake, launch. Omitted channels are zero. Launch 1/2 is allowed in tick zero only. Unpacked canonical schema and rewind timeline checks always run. Transport never resamples inputs."
+}

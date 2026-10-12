@@ -34,6 +34,7 @@ class Player(Base):
     username_key: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     display_name: Mapped[str] = mapped_column(String(40), default="Racer")
+    country_code: Mapped[str] = mapped_column(String(2), default="", server_default="", nullable=False)
     needs_username: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
@@ -93,6 +94,10 @@ class SessionToken(Base):
     refresh_hash: Mapped[str] = mapped_column(String(64), unique=True)
     access_expires_at: Mapped[int] = mapped_column(Integer)
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    recovery_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recovery_nonce: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    replacement_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    rotated_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RateBucket(Base):

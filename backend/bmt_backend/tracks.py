@@ -10,13 +10,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
+from .contracts import current_manifest
 from .cursors import decode_cursor, encode_cursor
 from .db import get_session
 from .identity_models import Identity, Player
 from .middleware import ParsedJSONRoute
-from .queueing import admit
+from .queueing import admit, check_capacity
 from .security import current_player
 from .storage import canonical_json
 from .track_models import (
@@ -82,7 +83,7 @@ def track_payload(version: TrackVersion, track: Track, creator: str, base_url: s
         if version.rating_count
         else None,
         "share_url": f"{base_url.rstrip('/')}/v1/track-versions/{version.id}",
-        "manifest": version.manifest,
+        "manifest": current_manifest(version.manifest),
     }
 
 
@@ -95,9 +96,8 @@ def _payload(request: Request, session: Session, version: TrackVersion) -> dict:
 def discovery_payload(request: Request, version: TrackVersion, track: Track, creator: str) -> dict:
     result = track_payload(version, track, creator, request.app.state.settings.public_base_url)
     result.pop("manifest")
-    if version.discovery is None:
-        version.discovery = discovery_projection(request.app.state.blobs.get_json(version.content_hash))
-    result.update(version.discovery)
+    # Legacy projections are repaired by maintenance, never by catalog reads.
+    result.update(version.discovery or {"theme": "pine", "points": []})
     return result
 
 
@@ -135,7 +135,12 @@ def _validate_revision(request: Request, payload: UploadTrack, player: Player) -
         or not manifest.get("track_content_hash")
     ):
         raise HTTPException(503, "Track validator returned an unsupported manifest")
-    return digest(payload.document), manifest
+    document_hash = digest(payload.document)
+    from .verifier import GodotVerifier
+    if isinstance(request.app.state.verifier,GodotVerifier):
+        from .trajectory_verifier import prepared_geometry
+        prepared_geometry(request.app,document_hash,payload.document)
+    return document_hash, manifest
 
 
 @router.post("/tracks", status_code=201)
@@ -150,12 +155,28 @@ def create_track(payload: UploadTrack, request: Request, session: DB, player: Au
     if source_id is not None and (not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", source_id)):
         raise HTTPException(422, "INVALID_AUTHORING_ID")
     content_hash, manifest = _prepare_revision(request, payload, player)
+    prepared_track = _recover_track(request, session, player.id, source_id) if source_id else None
+    with session.no_autoflush:
+        if prepared_track is not None:
+            existing_revision = _check_revision(session, prepared_track, payload)
+            if existing_revision is not None:
+                return commit_response(session, player.id, "create_track", key, body, _payload(request, session, existing_revision))
+        if payload.defer_validation:
+            check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+    prepared_id = prepared_track.id if prepared_track is not None else None
+    owner_id = player.id
     session.rollback()
-    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
+    if request.app.state.blobs.put_json(payload.document) != content_hash:
+        raise HTTPException(503, "Track storage hash mismatch")
+    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
     old = replay_response(session, player.id, "create_track", key, body)
     if old is not None:
         return old
-    track = _recover_track(request, session, player.id, source_id) if source_id else None
+    track = session.get(Track, prepared_id) if prepared_id else None
+    if track is not None and source_id and track.authoring_id is None:
+        track.authoring_id = source_id
+    if track is None and source_id:
+        track = session.scalar(select(Track).where(Track.owner_id == owner_id, Track.authoring_id == source_id))
     if track is None:
         track = Track(owner_id=player.id, authoring_id=source_id)
         session.add(track)
@@ -168,6 +189,8 @@ def create_track(payload: UploadTrack, request: Request, session: DB, player: Au
 
 
 def _prepare_revision(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
+    if not request.app.state.settings.allow_sync_track_validation:
+        payload.defer_validation = True
     if not payload.defer_validation:
         return _validate_revision(request, payload, player)
     if player.needs_username:
@@ -190,11 +213,22 @@ def _recover_track(request: Request, session: Session, owner_id: str, source_id:
         return track
     # Adopt the stable ID embedded in legacy owned documents, never a display name.
     # Immutable versions, links, ratings and boards remain on their existing IDs.
-    rows = session.execute(select(Track, TrackVersion).join(TrackVersion)
-        .where(Track.owner_id == owner_id, Track.authoring_id.is_(None))
-        .order_by(Track.created_at, Track.id, TrackVersion.number)).all()
-    for candidate, version in rows:
-        if request.app.state.blobs.get_json(version.content_hash).get("id") == source_id:
+    candidate = session.scalar(select(Track).join(TrackVersion).where(Track.owner_id == owner_id,
+        Track.authoring_id.is_(None), TrackVersion.discovery["authoring_id"].as_string() == source_id).limit(1))
+    if candidate is not None:
+        candidate.authoring_id = source_id
+        return candidate
+    rows = session.execute(select(Track.id, TrackVersion.content_hash).join(TrackVersion)
+        .where(Track.owner_id == owner_id, Track.authoring_id.is_(None),
+            or_(TrackVersion.discovery.is_(None), TrackVersion.discovery["authoring_id"].as_string().is_(None)))
+        .order_by(Track.created_at, Track.id, TrackVersion.number).limit(101)).all()
+    if len(rows) > 100:
+        raise HTTPException(503, "LEGACY_DRAFT_BACKFILL_REQUIRED")
+    session.rollback()
+    for candidate_id, content_hash in rows:
+        document = request.app.state.blobs.get_json(content_hash)
+        if document.get("id") == source_id:
+            candidate = session.get(Track, candidate_id)
             candidate.authoring_id = source_id
             return candidate
     return None
@@ -220,12 +254,9 @@ def _save_revision(session: Session, track: Track, payload: UploadTrack, content
         if pending >= 32:
             raise HTTPException(429, "Track validation capacity reached; your local draft can safely retry")
     if payload.defer_validation:
+        check_capacity(session, track.owner_id, capacity)
+    if payload.defer_validation:
         admit(session, track.owner_id, capacity)
-    # Only admitted revisions may publish an object. Rejected IDs, conflicts and
-    # full queues never consume storage. A crash after publication is handled by
-    # reference-aware retention; do not delete a potentially shared digest here.
-    if blobs.put_json(payload.document) != content_hash:
-        raise RuntimeError("Object store returned an inconsistent digest")
     projection = discovery_projection(payload.document)
     version = TrackVersion(track_id=track.id, number=head.number + 1 if head else 1,
         name=payload.name, content_hash=content_hash, revision_key=digest({"name": payload.name, "hash": content_hash}), manifest=manifest,
@@ -235,6 +266,24 @@ def _save_revision(session: Session, track: Track, payload: UploadTrack, content
     if payload.defer_validation:
         session.add(TrackValidation(version_id=version.id))
     return version
+
+
+def _check_revision(session, track, payload):
+    if track.archived:
+        raise HTTPException(409, "DRAFT_ARCHIVED: save as a new track to continue")
+    # A retry of the identical immutable revision is harmless even if its old
+    # expected head has since advanced; the final transaction rechecks identity.
+    existing = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id,
+        TrackVersion.content_hash == digest(payload.document), TrackVersion.name == payload.name)
+        .order_by(TrackVersion.number.desc()).limit(1))
+    if existing is not None:
+        return existing
+    head = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id)
+        .order_by(TrackVersion.number.desc()).limit(1))
+    expected = payload.expected_head_revision_id
+    conflict = head is not None if expected == "new" else head is None or head.id != expected
+    if expected and conflict:
+        raise HTTPException(409, "REVISION_CONFLICT: the remote draft changed; both snapshots are preserved")
 
 
 @router.post("/tracks/{track_id}/versions", status_code=201)
@@ -251,8 +300,16 @@ def create_version(
     if track is None:
         raise HTTPException(404, "Track not found")
     content_hash, manifest = _prepare_revision(request, payload, player)
+    existing_revision = _check_revision(session, track, payload)
+    if existing_revision is not None:
+        return commit_response(session, player.id, scope, key, body, _payload(request, session, existing_revision))
+    if payload.defer_validation:
+        check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+    owner_id = player.id
     session.rollback()
-    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
+    if request.app.state.blobs.put_json(payload.document) != content_hash:
+        raise HTTPException(503, "Track storage hash mismatch")
+    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
     track = session.scalar(select(Track).where(Track.id == track_id, Track.owner_id == player.id).with_for_update())
     if track is None: raise HTTPException(404, "Track not found")
     old = replay_response(session, player.id, scope, key, body)
@@ -297,6 +354,8 @@ def retry_validation(version_id: str, request: Request, session: DB, player: Aut
 
 @router.post("/track-versions/{version_id}/publish")
 def publish(version_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    from .commerce import consume_publication_slot, lock_entitlements
+    entitlement = lock_entitlements(session, player.id)
     scope = f"publish:{version_id}"
     old = replay_response(session, player.id, scope, key, {})
     if old is not None:
@@ -315,8 +374,20 @@ def publish(version_id: str, request: Request, session: DB, player: Auth, key: K
         raise HTTPException(409, "Hidden track cannot be published")
     if session.get(Track, version.track_id).archived and version.state != "published":
         raise HTTPException(409, "DRAFT_ARCHIVED")
+    consume_publication_slot(session, request.app.state.settings, entitlement, version,
+        official=session.get(Track, version.track_id).official)
+    first_publication = version.state != "published"
     version.state = "published"
     version.published_at = version.published_at or now()
+    if first_publication and getattr(request.app.state.settings, "telemetry_enabled", False):
+        from .telemetry import append_server_event
+        dimensions = {"track_version": version.id}
+        discovery = version.discovery or {}
+        biome = discovery.get("theme", discovery.get("biome"))
+        if biome:
+            dimensions["biome"] = biome
+        append_server_event(session, "track_published", version.id, player.id, dimensions,
+                            occurred_at=version.published_at, is_test_driver=player.is_test_driver)
     session.flush()
     return commit_response(session, player.id, scope, key, {}, _payload(request, session, version))
 
@@ -421,19 +492,16 @@ def discover(
     if type(position.get("snapshot")) is not int or position["snapshot"] < 0:
         raise HTTPException(422, "INVALID_CURSOR")
     # Only newest published version of each logical track enters discovery; older share links remain usable.
-    newest = (
-        select(TrackVersion.track_id, func.max(TrackVersion.number).label("number"))
-        .where(TrackVersion.state == "published", TrackVersion.published_at <= position["snapshot"])
-        .group_by(TrackVersion.track_id)
-        .subquery()
-    )
+    newer = aliased(TrackVersion)
     statement = (
         select(TrackVersion, Track, Player.display_name)
         .select_from(TrackVersion)
         .join(Track, Track.id == TrackVersion.track_id)
         .join(Player, Player.id == Track.owner_id)
-        .join(newest, (newest.c.track_id == Track.id) & (newest.c.number == TrackVersion.number))
-        .where(Track.hidden.is_(False), Player.disabled.is_(False))
+        .where(TrackVersion.state == "published", TrackVersion.published_at <= position["snapshot"],
+            ~select(newer.id).where(newer.track_id == Track.id, newer.state == "published",
+                newer.published_at <= position["snapshot"], newer.number > TrackVersion.number).exists(),
+            Track.hidden.is_(False), Player.disabled.is_(False))
     )
     if q.strip():
         statement = statement.where(TrackVersion.name.icontains(q.strip(), autoescape=True))
@@ -483,7 +551,9 @@ def public_document(version_id: str, request: Request, session: DB) -> Response:
     headers = {"ETag": etag, "Cache-Control": "public, max-age=0, must-revalidate"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
-    document = request.app.state.blobs.get_json(version.content_hash)
+    content_hash = version.content_hash
+    session.commit()
+    document = request.app.state.blobs.get_json(content_hash)
     return Response(canonical_json(document), media_type="application/json", headers=headers)
 
 
@@ -507,7 +577,9 @@ def private_document(version_id: str, request: Request, session: DB, player: Aut
     )
     if version is None:
         raise HTTPException(404, "Track version not found")
-    return Response(canonical_json(request.app.state.blobs.get_json(version.content_hash)), media_type="application/json")
+    content_hash = version.content_hash
+    session.commit()
+    return Response(canonical_json(request.app.state.blobs.get_json(content_hash)), media_type="application/json")
 
 
 @router.put("/track-versions/{version_id}/rating")

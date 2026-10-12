@@ -3,9 +3,16 @@ from sqlalchemy import text
 
 from bmt_backend import (  # noqa: F401
     admin_models,
+    challenge_models,
+    commerce_models,
+    discovery,
     identity_models,
+    object_models,
+    quality_models,
     resume_models,
     rivalry_models,
+    studio_case_models,
+    telemetry_models,
     test_driver_models,
     track_models,
 )

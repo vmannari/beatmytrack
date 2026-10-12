@@ -9,6 +9,7 @@ from test_domains import domain as domain_fixture
 from test_domains import headers, submit
 
 from bmt_backend.track_models import Run, Track, TrackValidation, TrackVersion
+from bmt_backend.verifier import VerificationError
 from bmt_backend.worker import process_one
 
 domain = domain_fixture
@@ -19,7 +20,12 @@ def save(domain, source="track_lifecycle", **changes):
                 "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
     body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
     body.update(changes)
-    response = domain.client.post("/v1/tracks", json=body, headers=headers(domain))
+    import time
+    auth = headers(domain)
+    for retry in range(10):
+        response = domain.client.post("/v1/tracks", json=body, headers=auth)
+        if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+        time.sleep(.1)
     assert response.status_code == 201, response.text
     return response.json(), body
 
@@ -110,7 +116,7 @@ def test_owner_heads_exclude_older_revisions_and_other_accounts(domain):
 def test_invalid_document_stays_private_and_cannot_publish(domain, monkeypatch):
     version, _ = save(domain, document={"schema": "creator-track-v5", "id": "track_lifecycle", "points": "invalid"})
     def invalid(document):
-        raise ValueError("Disconnected roads")
+        raise VerificationError("Disconnected roads")
     monkeypatch.setattr(domain.app.state.verifier, "validate_track", invalid)
     assert process_one(domain.app)
     assert status(domain, version)["state"] == "invalid"

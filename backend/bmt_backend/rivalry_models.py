@@ -19,6 +19,7 @@ class RivalryGroup(Base):
     member_count: Mapped[int] = mapped_column(Integer, default=0)
     tracks: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class RivalryMember(Base):
@@ -49,3 +50,12 @@ class RivalryTicket(Base):
     group_id: Mapped[str] = mapped_column(ForeignKey("rivalry_groups.id"), index=True)
     slot: Mapped[int] = mapped_column(Integer)
     outcome: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class RivalryArchivedBest(Base):
+    __tablename__ = "rivalry_archived_bests"
+    group_id: Mapped[str] = mapped_column(ForeignKey("rivalry_groups.id"), primary_key=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    time_ticks: Mapped[int] = mapped_column(Integer)
+    achieved_at: Mapped[int] = mapped_column(Integer)

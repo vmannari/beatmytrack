@@ -57,7 +57,7 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
         pytest.skip("Exact Godot binary not configured")
     app = create_app(
         Settings(
-            environment="development",
+            environment="development", allow_sync_track_validation=True,
             dev_auth_enabled=True,
             dev_auth_key="test-key-" * 8,
             database_url=f"sqlite:///{(tmp_path / 'integration.sqlite').as_posix()}",

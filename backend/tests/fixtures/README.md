@@ -59,3 +59,12 @@ all-vehicle exit-lane checks live in `game/tests/test_bridge_exit_checkpoints.gd
 The rebuilt Linux verifier accepts the golden and both owner-track five-lap
 compact recordings unchanged. Commands, screenshots and limits are in
 `docs/BRIDGE_EXIT_CHECKPOINTS.md`.
+
+2026-10-07: shallow-contact physics advances the oval's expected manifest to
+`arcade-planar-0.51`; every original input, document field, lap tick and finish
+time remains byte-for-byte/numerically unchanged. Historical Over and under
+inputs depend on the .50 collision response. Their exact .50 runtime sources
+are retained as `physics_050/*.gd.txt`, restored only into disposable test
+projects. The .50 test still verifies all five original laps and rejects
+missing/trailing finish input. The current verifier separately rejects that
+recording when it does not finish under .51; no historical score is relabeled.

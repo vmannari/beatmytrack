@@ -17,7 +17,7 @@ from sqlalchemy import select
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .identity_models import Identity, Player
-from .storage import LocalBlobStore
+from .storage import make_blob_store
 from .track_models import Track, TrackVersion, digest, now
 from .tracks import discovery_projection
 from .usernames import DEVELOPER_NAME, DEVELOPER_NAME_KEY, username_key
@@ -46,21 +46,25 @@ def prepare_document(verifier, source: dict) -> tuple[dict, dict]:
 def seed_documents(session_factory, blobs, verifier, documents: Iterable[dict]) -> list[dict]:
     """Validate and publish documents under the fixed development identity."""
     with session_factory() as session:
-        owner = session.scalar(
-            select(Player)
-            .join(Identity, Identity.player_id == Player.id)
-            .where(Identity.provider == "development", Identity.subject == "developer")
-        )
+        owner = session.scalar(select(Player).join(Identity, Identity.player_id == Player.id)
+            .where(Identity.provider == "development", Identity.subject == "developer"))
         if owner is None or username_key(owner.display_name) != DEVELOPER_NAME_KEY or owner.disabled:
             raise RuntimeError(f"Active {OFFICIAL_NAME} development account not found")
-        session.scalar(select(Player).where(Player.id == owner.id).with_for_update())
-        owner.display_name = OFFICIAL_NAME
-
-        results = []
-        for source in documents:
-            document, manifest = prepare_document(verifier, source)
-            name = document["name"].strip()
-            content_hash = blobs.put_json(document)
+        owner_id = owner.id
+        legacy_rows = session.execute(select(Track.id, TrackVersion.content_hash).join(TrackVersion)
+            .where(Track.owner_id == owner_id, Track.authoring_id.is_(None))).all()
+    # Operator-only recovery and all canonical/storage work hold no DB locks.
+    legacy = {blobs.get_json(content_hash).get("id"): track_id for track_id,content_hash in legacy_rows}
+    results = []
+    for source in documents:
+        document, manifest = prepare_document(verifier, source)
+        name = document["name"].strip()
+        content_hash = blobs.put_json(document)
+        with session_factory() as session:
+            owner = session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
+            if owner is None or owner.disabled:
+                raise RuntimeError(f"Active {OFFICIAL_NAME} development account not found")
+            owner.display_name = OFFICIAL_NAME
             existing = session.scalar(
                 select(TrackVersion)
                 .join(Track)
@@ -76,15 +80,15 @@ def seed_documents(session_factory, blobs, verifier, documents: Iterable[dict]) 
                     existing.state = "published"
                     existing.published_at = existing.published_at or now()
                 results.append({"name": existing.name, "version_id": existing.id, "status": "existing"})
+                session.commit()
                 continue
             track = session.scalar(select(Track).where(Track.owner_id == owner.id, Track.authoring_id == document.get("id")))
             if track is None:
-                # Recover legacy identity from immutable content, without renaming it.
-                for candidate, previous in session.execute(select(Track, TrackVersion).join(TrackVersion).where(Track.owner_id == owner.id, Track.authoring_id.is_(None))):
-                    if blobs.get_json(previous.content_hash).get("id") == document.get("id"):
-                        track = candidate
-                        track.authoring_id = document.get("id")
-                        break
+                candidate_id = legacy.get(document.get("id"))
+                candidate = session.get(Track, candidate_id) if candidate_id else None
+                if candidate is not None and candidate.owner_id == owner_id and candidate.authoring_id is None:
+                    track = candidate
+                    track.authoring_id = document.get("id")
             if track is None:
                 track = Track(owner_id=owner.id, authoring_id=document.get("id"))
                 session.add(track)
@@ -105,8 +109,8 @@ def seed_documents(session_factory, blobs, verifier, documents: Iterable[dict]) 
             session.add(version)
             session.flush()
             results.append({"name": name, "version_id": version.id, "status": "published"})
-        session.commit()
-        return results
+            session.commit()
+    return results
 
 
 def main() -> None:
@@ -141,11 +145,11 @@ def main() -> None:
         if rejected:
             sys.exit(1)
         return
-    engine = make_engine(settings.database_url)
+    engine = make_engine(settings.database_url, settings)
     try:
         results = seed_documents(
             make_session_factory(engine),
-            LocalBlobStore(settings.object_dir),
+            make_blob_store(settings, make_session_factory(engine)),
             verifier,
             documents,
         )

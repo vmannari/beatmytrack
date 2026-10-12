@@ -1,0 +1,1446 @@
+diff --git a/game/input/profiled_route_driver.gd b/game/input/profiled_route_driver.gd
+--- a/game/input/profiled_route_driver.gd
++++ b/game/input/profiled_route_driver.gd
+@@ -1,6 +1,6 @@
+ class_name ProfiledRouteDriver
+ extends RefCounted
+-const VERSION: String = "profiled-route-3"
++const VERSION: String = "profiled-trajectory-4"
+ ## Offline development controller. It only emits ordinary quantized inputs.
+ ## The conservative regression RouteDriver and canonical simulation are unchanged.
+ var rng := RandomNumberGenerator.new()
+@@ -20,6 +20,13 @@
+ var gate_seen: int = -1
+ var gate_tick: int = 0
+ var obstacle_detours: bool = false
++var trajectory: RacingTrajectory
++var mpc := TrajectoryMPC.new()
++var held_frame := DriveFrame.new()
++var lateral_error_sum: float = 0.0
++var tracking_samples: int = 0
++var max_lateral_error: float = 0.0
++var fallback_ticks: int = 0
+ 
+ func _init(traits: Dictionary, theme: String, content: String, attempt: int, scale: float = 1.0) -> void:
+ 	rng.seed = (str(traits.seed)+"/"+content+"/"+str(attempt)).sha256_text().left(15).hex_to_int()
+@@ -43,6 +50,21 @@
+ 		if rng.randf() < 0.008*(1.0-consistency)*(0.5+aggression) and tick > 600:
+ 			mistake_until = tick+rng.randi_range(35,100)
+ 			mistakes += 1
++	if trajectory == null:
++		trajectory = TrajectoryPlanner.prepare(track,config)
++	if session.missed_checkpoint < 0 and not obstacle_detours:
++		if tick % TrajectoryMPC.UPDATE_TICKS == 1:
++			var progress: float = trajectory.project(state.position,track.route_progress(state.position,state.route_index))
++			var ref: Dictionary = trajectory.at(progress)
++			var lateral_error: float = state.position.distance_to(ref.point)
++			lateral_error_sum += lateral_error*lateral_error
++			max_lateral_error = maxf(max_lateral_error,lateral_error)
++			tracking_samples += 1
++			var pace: float = clampf((0.82+skill*0.18+aggression*0.025+noise)*pace_scale,0.5,1.06)
++			if tick < mistake_until: pace *= 0.78
++			held_frame = mpc.control(state,trajectory,progress,config,pace,skill,steering_noise*0.15)
++		return held_frame
++	fallback_ticks += 1
+ 	var index: int = track.nearest_route(state.position,state.route_index)
+ 	var speed: float = state.velocity.length()
+ 	var lookahead: int = clampi(2+floori(speed/8.0),3,6)
+diff --git a/backend/bmt_backend/test_driver_generator.py b/backend/bmt_backend/test_driver_generator.py
+--- a/backend/bmt_backend/test_driver_generator.py
++++ b/backend/bmt_backend/test_driver_generator.py
+@@ -1,6 +1,8 @@
+ """Bounded offline controller process, separate from the service verifier API."""
+ 
++import hashlib
+ import json
++import os
+ import re
+ import subprocess
+ import tempfile
+@@ -8,6 +10,25 @@
+ from pathlib import Path
+ 
+ from .verifier import MAX_REQUEST_BYTES, GodotVerifier
++
++CONTROLLER_VERSION = "profiled-trajectory-4"
++MAX_TRAJECTORY_CACHE_FILES = 128
++
++
++def _reject_nonfinite_cache(token):
++    raise ValueError("Nonfinite derived trajectory cache")
++
++
++def _trim_trajectory_cache(directory):
++    candidates = []
++    for entry in directory.glob("*.json"):
++        try:
++            candidates.append((entry.stat().st_mtime_ns, entry.name, entry))
++        except OSError:
++            continue  # Another generator may already have evicted this entry.
++    for _, _, entry in sorted(candidates)[:-MAX_TRAJECTORY_CACHE_FILES]:
++        if entry.resolve().parent == directory.resolve():
++            entry.unlink(missing_ok=True)  # Only replaceable derived cache files.
+ 
+ 
+ class DriverDidNotFinish(RuntimeError):
+@@ -20,6 +41,23 @@
+     with tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
+         directory = Path(folder)
+         source, output = directory / "input.json", directory / "output.json"
++        trajectory_output = directory / "trajectory.json"
++        cache_path = None
++        cached = None
++        if getattr(settings, "object_dir", None):
++            cache_dir = Path(settings.object_dir).parent / "driver-trajectories"
++            cache_dir.mkdir(parents=True, exist_ok=True)
++            key = hashlib.sha256(json.dumps([document, vehicle_id], sort_keys=True,
++                                             separators=(",", ":"), allow_nan=False).encode()).hexdigest()
++            cache_path = cache_dir / (key + ".json")
++            if cache_path.is_file() and cache_path.stat().st_size <= 2_000_000:
++                try:
++                    candidate = json.loads(cache_path.read_text(encoding="utf-8"),
++                                           parse_constant=_reject_nonfinite_cache)
++                    if isinstance(candidate, dict):
++                        cached = candidate
++                except (ValueError, OSError):
++                    pass  # Derived cache corruption regenerates; player files are untouched.
+         source.write_text(
+             json.dumps(
+                 {
+@@ -29,6 +67,8 @@
+                     "attempt": attempt,
+                     "pace_scale": pace_scale,
+                     "obstacle_detours": obstacle_detours,
++                    "trajectory": cached,
++                    "trajectory_output": str(trajectory_output),
+                 },
+                 allow_nan=False,
+             ),
+@@ -52,8 +92,17 @@
+                 stderr=subprocess.STDOUT,
+             )
+             deadline = time.monotonic() + verifier.timeout
++            observed_bytes = 0
+             try:
+                 while process.poll() is None:
++                    size = (directory / "engine.log").stat().st_size
++                    if size > 65536:
++                        raise RuntimeError("Test controller exceeded diagnostic output limit")
++                    if size != observed_bytes:
++                        observed_bytes = size
++                        diagnostics = (directory / "engine.log").read_text(encoding="utf-8", errors="replace")
++                        if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
++                            raise RuntimeError("Test controller reported an engine error")
+                     if stop_event is not None and stop_event.is_set():
+                         raise RuntimeError("Test controller stopped by worker shutdown")
+                     if time.monotonic() >= deadline:
+@@ -61,7 +110,13 @@
+                     time.sleep(0.05)
+             finally:
+                 if process.poll() is None:
+-                    process.kill()
++                    if os.name == "nt":
++                        # The Windows console launcher can own a native child.
++                        # Stop only this spawned tree, so its log closes too.
++                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++                    if process.poll() is None:
++                        process.kill()
+                 process.wait()
+         log_path = directory / "engine.log"
+         if log_path.stat().st_size > 65536 or re.search(
+@@ -73,6 +128,18 @@
+         if not output.is_file() or output.stat().st_size > MAX_REQUEST_BYTES:
+             raise RuntimeError("Test controller returned no bounded recording")
+         response = json.loads(output.read_text(encoding="utf-8"))
++        # The native loader validates content/physics/rules/handling identity.
++        # Publish even after an honest noncompletion, so slower retry profiles
++        # share the same planning work. Concurrent writers replace atomically.
++        if cache_path is not None and trajectory_output.is_file() and trajectory_output.stat().st_size <= 2_000_000:
++            with tempfile.NamedTemporaryFile(dir=cache_path.parent, suffix=".tmp", delete=False) as cache_file:
++                temporary = Path(cache_file.name)
++                cache_file.write(trajectory_output.read_bytes())
++            try:
++                os.replace(temporary, cache_path)
++            finally:
++                temporary.unlink(missing_ok=True)
++            _trim_trajectory_cache(cache_path.parent)
+         if process.returncode == 2 and response.get("ok") is False:
+             raise DriverDidNotFinish(str(response.get("error", "Driver did not finish")))
+         if (
+diff --git a/game/backend/generate_test_driver.gd b/game/backend/generate_test_driver.gd
+--- a/game/backend/generate_test_driver.gd
++++ b/game/backend/generate_test_driver.gd
+@@ -28,13 +28,33 @@
+ 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
+ 	var driver := ProfiledRouteDriver.new(traits,str(value.document.theme),track.content_hash,attempt,pace_scale)
+ 	driver.obstacle_detours = bool(value.get("obstacle_detours",false))
++	var trajectory_started: int = Time.get_ticks_usec()
++	driver.trajectory = RacingTrajectory.new()
++	var cache_hit: bool = value.get("trajectory") is Dictionary and driver.trajectory.restore(value.trajectory,track,sim.config)
++	if not cache_hit: driver.trajectory = TrajectoryPlanner.prepare(track,sim.config)
++	var trajectory_ms: float = (Time.get_ticks_usec()-trajectory_started)/1000.0
++	if value.get("trajectory_output") is String:
++		var trajectory_file := FileAccess.open(value.trajectory_output,FileAccess.WRITE)
++		if trajectory_file == null: respond({},"Cannot save derived trajectory"); return
++		trajectory_file.store_string(JSON.stringify(driver.trajectory.serialize()))
++		trajectory_file.close()
+ 	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
+ 	var frames: Array = []
+ 	var last_gate: int = -1
+ 	var last_lap: int = -1
+ 	var progress_tick: int = 0
++	var control_usec: int = 0
++	var control_max_usec: int = 0
++	var telemetry: Array = []
+ 	for tick: int in range(MAX_FRAMES):
++		var control_started: int = Time.get_ticks_usec() if (driver.tick+1)%TrajectoryMPC.UPDATE_TICKS == 1 else 0
+ 		var frame: DriveFrame = driver.sample(sim.state,track,sim.config,session)
++		if control_started > 0:
++			var duration: int = Time.get_ticks_usec()-control_started
++			control_usec += duration; control_max_usec = maxi(control_max_usec,duration)
++			var progress: float = driver.trajectory.project(sim.state.position,track.route_progress(sim.state.position,sim.state.route_index))
++			var reference: Dictionary = driver.trajectory.at(progress)
++			telemetry.append([tick,progress,sim.state.position.x,sim.state.position.y,sim.state.velocity.length(),reference.speed,sim.state.position.distance_to(reference.point),frame.steer,frame.throttle,frame.brake,session.completed_laps])
+ 		frames.append(frame.packed())
+ 		var before: Vector2 = sim.state.position
+ 		var layer: int = int(sim.state.track_elevated)
+@@ -48,4 +68,6 @@
+ 	if not session.finished: respond({},"Driver did not finish all five laps"); return
+ 	respond({"replay":{"schema":REPLAY_SCHEMA,"frames":frames},"vehicle_id":vehicle,
+ 		"time_ticks":session.elapsed_ticks,"lap_ticks":session.lap_times.map(func(seconds: float) -> int: return roundi(seconds*VehicleSimulation.TICK_RATE)),
+-		"mistakes":driver.mistakes,"profile_version":traits.version,"controller_version":ProfiledRouteDriver.VERSION+("" if driver.obstacle_detours else "/simple"),"manifest":compiled.manifest})
++		"mistakes":driver.mistakes,"profile_version":traits.version,"controller_version":ProfiledRouteDriver.VERSION+("/detour" if driver.obstacle_detours else ""),"manifest":compiled.manifest,
++		"telemetry":{"columns":["tick","s_m","x_m","y_m","actual_v_mps","reference_v_mps","line_error_m","steer","throttle","brake","lap"],"samples":telemetry},
++		"diagnostics":{"trajectory_version":RacingTrajectory.VERSION,"mpc_version":TrajectoryMPC.VERSION,"cache_hit":cache_hit,"planning_ms":trajectory_ms,"reference_lap_seconds":driver.trajectory.reference_seconds,"blocked_samples":driver.trajectory.blocked_samples,"tracking_rms_m":sqrt(driver.lateral_error_sum/maxi(1,driver.tracking_samples)),"tracking_max_m":driver.max_lateral_error,"mpc_updates":driver.mpc.updates,"mean_update_ms":control_usec/1000.0/maxi(1,driver.mpc.updates),"max_update_ms":control_max_usec/1000.0,"fallback_ticks":driver.fallback_ticks,"collisions":sim.state.collision_count}})
+diff --git a/backend/bmt_backend/test_drivers.py b/backend/bmt_backend/test_drivers.py
+--- a/backend/bmt_backend/test_drivers.py
++++ b/backend/bmt_backend/test_drivers.py
+@@ -20,7 +20,7 @@
+ from .rivalry_models import RivalryGroup, RivalryMember
+ from .test_driver_models import TestDriverProfile
+ from .test_population import require_enabled
+-from .track_models import Track, digest, now
++from .track_models import IdempotencyRecord, Run, Track, digest, now
+ from .tracks import DB, Auth, track_payload
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, include_in_schema=False)
+@@ -37,6 +37,21 @@
+ 
+ 
+ Operator = Annotated[None, Depends(operator)]
++
++
++@router.get("/dev/test-drivers/uploads/{upload_key}")
++def committed_upload(upload_key: str, request: Request, session: DB, player: Auth, _operator: Operator):
++    """Recover the player's committed result across controller/cache changes."""
++    from .runs import run_payload
++    if not player.is_test_driver or len(upload_key) > 160:
++        raise HTTPException(404, "Test upload not found")
++    record = session.get(IdempotencyRecord, (player.id, "submit_run", upload_key))
++    if record is None:
++        return {"run": None, "retired": False}
++    if record.response.get("retired"):
++        return {"run": None, "retired": True}
++    run = session.scalar(select(Run).where(Run.id == record.response.get("run_id"), Run.player_id == player.id))
++    return {"run": run_payload(run) if run else None, "retired": run is None}
+ 
+ 
+ @router.get("/dev/test-drivers/track-versions/{version_id}/histogram")
+diff --git a/backend/bmt_backend/test_population_tool.py b/backend/bmt_backend/test_population_tool.py
+--- a/backend/bmt_backend/test_population_tool.py
++++ b/backend/bmt_backend/test_population_tool.py
+@@ -77,6 +77,7 @@
+         bootstrap = self.call("GET", "/bootstrap")
+         if bootstrap.get("test_drivers") is not True or bootstrap.get("development_auth") is not True:
+             raise ValueError("Service must explicitly enable development auth and test drivers")
++        self.upload_recovery = bootstrap.get("test_driver_upload_recovery") is True
+ 
+     def call(self, method, path, body=None, subject=None, idempotency=None, operator=False):
+         headers = {}
+@@ -419,6 +420,22 @@
+             atomic_save(path, plan)
+             continue
+         profile = by_subject[job["subject"]]
++        if getattr(api, "upload_recovery", False):
++            upload_key = job["id"] + "-upload-" + str(job.get("ticket_generation", 0))
++            recovered = api.call("GET", "/dev/test-drivers/uploads/" + upload_key,
++                                 subject=job["subject"], operator=True)
++            if recovered.get("run"):
++                job["run_id"] = recovered["run"]["run_id"]
++                job["status"] = "submitted"
++                job["recovered_committed_upload"] = True
++                atomic_save(path, plan)
++                started += 1
++                continue
++            if recovered.get("retired"):
++                job["status"], job["failure_code"] = "expired", "Original upload history expired"
++                atomic_save(path, plan)
++                started += 1
++                continue
+         try:
+             data = recording(api, plan, job, profile, settings, path, **({"generator": generator} if generator else {}))
+         except DriverDidNotFinish as error:
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -106,6 +106,7 @@
+             "google_browser_configured": bool(settings.google_web_client_id),
+             "development_auth": settings.dev_auth_enabled,
+             "test_drivers": settings.test_drivers_enabled,
++            "test_driver_upload_recovery": settings.test_drivers_enabled,
+             "purchase_simulation": settings.purchase_simulation_enabled,
+             "entitlements_version": 1,
+             "store_catalog_version": 1,
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -15,7 +15,9 @@
+         "creator_catalog",
+         "creator_objects",
+         "creator_scenery",
++        "object_runs",
+         "road_pieces",
++        "roadside_boundary",
+         "spline_road",
+         "spline_borders",
+         "start_line",
+@@ -23,7 +25,7 @@
+         "track_compiler",
+         "track_document",
+     ),
+-    "input": ("drive_frame", "route_driver", "profiled_route_driver"),
++    "input": ("drive_frame", "route_driver", "profiled_route_driver", "racing_trajectory", "trajectory_mpc", "trajectory_planner"),
+     "persistence": ("track_library",),
+     "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry", "personal_ghost_run"),
+     "track": (
+diff --git a/backend/tests/test_automatic_test_drivers.py b/backend/tests/test_automatic_test_drivers.py
+--- a/backend/tests/test_automatic_test_drivers.py
++++ b/backend/tests/test_automatic_test_drivers.py
+@@ -59,7 +59,7 @@
+ 
+ 
+ @pytest.mark.godot
+-def test_idle_backend_drives_verifies_and_recovers_without_operator_plan(tmp_path, real_verifier):
++def test_idle_backend_drives_verifies_and_recovers_without_operator_plan(tmp_path, real_verifier, monkeypatch):
+     listener = socket.socket()
+     listener.bind(("127.0.0.1", 0))
+     url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+@@ -106,6 +106,9 @@
+         import shutil
+         folder = tmp_path / "automatic-test-drivers"
+         shutil.rmtree(folder)
++        def changed_controller(*args, **kwargs):
++            raise AssertionError("A committed old-controller replay must recover without regeneration")
++        monkeypatch.setattr("bmt_backend.test_driver_generator.generate", changed_controller)
+         app.state.next_automatic_drive = 0
+         assert drive_idle(app)
+         with app.state.session_factory() as session:
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-07 MUS20-MUS27/G01/R01/Q01/V06: owner-directed "music locks in" band world and higher tempo integrated: signature D-E-A-F#, recorded guitar/bass/acoustic kit, five related six-layer palettes, race144/menu112BPM; confidence uses clean gates/line/streak and recorded personal/rival pace, no raw-speed normalization. Reserved soar at recorded59.982s, musical setbacks/rebuild, once-per-lap two-beat PB breath and real-results motif/PB sting. Final soundtrack1158/graphical1163/flow29, App99/ghost38/rewind57/vehicle1434 checks pass; ghost fixture27 warnings retained. 37 assets/160 combinations/18 real captures unclipped; exact loops/breath/pause/hover, browser9 previews validated. Earlier tempo/renders preserved; targeted tremolo-seam/sparse-backtrack/decoder fixes retain failing evidence. Canonical concurrent work excluded, no phone test/export/install/full Validate/backend action; artist/AAA approval pending. Commands/files/source licences/scoped checkpoint: docs/LOCKED_IN_SOUNDTRACK.md.
++
++2026-10-07 TD02-TD03/TD05-TD06/TD08-TD09/T01-T04/Q01: owner-proposed precomputed trajectories and predictive artificial drivers implemented locally as profiled-trajectory-4. Half-metre connected corridors/bridge hints, geometric curvature and cyclic speed envelopes, canonical pilot qualification, bounded Frenet LTV MPC10Hz/1.6s and persistent derived cache; ordinary physics120Hz/five ordered laps unchanged. Final27/27 independently verified vs26/27, median21.1% faster and recorded contacts8346-to5 on identical physics0.53/compiler22/rules20; four circuits remain slower. Native1382/parse347/App99 and affected backend49 pass/4 skip/15 deselected, lint pass; five-car disturbed recovery and sharp Star/spline proofs pass. Bridge cache planning4082.5-to1.3ms, mean update0.78ms and exact cold/warm controls. Development-only committed-upload recovery preserves older controller results after cache loss; errors stop only owned processes. Inspected comparison chart, source hashes/scoped patch and normalized records retained. No cloud/backend rollout, migration, phone attachment check/device test, Android export/install/full Validate or new population. Commands/files/corrected failures/limitations: docs/PREDICTIVE_TEST_DRIVERS.md.
+ 
+ 2026-10-07 CTRY01-CTRY04/B01/B07/WR01/WR09/R01/V03-V05/Q01: owner-requested player countries and standings flags implemented. Authenticated profile/onboarding picker, shared 249-country offline allowlist, non-destructive migration0018, live profile/board fields and fictional development-driver countries; neutral legacy fallback preserves real identities. Rivalry tables/podium/nearby/result rows, discovery high scores/full/around-me and account settings show flags. MIT SVG provenance/imports/export catalog/license retained; actual texture data4,078,620 bytes. Final graphical656/rivalry1070/App99/parser347 and affected backend86/native HTTP2/practice1 pass; broader104 passes retains unrelated rules-upgrade409 reproduced using task-start runs.py. Failed sandbox/fixture/layout attempts recorded; inspected desktop/compact screenshots and scoped review checkpoint. No phone attachment check/device test/export/install/full Validate/live account write/backend rollout/production deployment. Matching migration/API/worker and owner/device acceptance remain. Files, commands, results and limits: docs/PLAYER_COUNTRIES.md.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-07 TD02-TD03/TD05-TD06/TD08-TD09/T01-T04/Q01: owner-proposed precomputed trajectories and predictive artificial drivers implemented locally as profiled-trajectory-4. Half-metre connected corridors/bridge hints, geometric curvature and cyclic speed envelopes, canonical pilot qualification, bounded Frenet LTV MPC10Hz/1.6s and persistent derived cache; ordinary physics120Hz/five ordered laps unchanged. Final27/27 independently verified vs26/27, median21.1% faster and recorded contacts8346-to5 on identical physics0.53/compiler22/rules20; four circuits remain slower. Native1382/parse347/App99 and affected backend49 pass/4 skip/15 deselected, lint pass; five-car disturbed recovery and sharp Star/spline proofs pass. Bridge cache planning4082.5-to1.3ms, mean update0.78ms and exact cold/warm controls. Development-only committed-upload recovery preserves older controller results after cache loss; errors stop only owned processes. Inspected comparison chart, source hashes/scoped patch and normalized records retained. No cloud/backend rollout, migration, phone attachment check/device test, Android export/install/full Validate or new population. Commands/files/corrected failures/limitations: docs/PREDICTIVE_TEST_DRIVERS.md.
++
+ 2026-10-07 CTRY01-CTRY04/B01/B07/WR01/WR09/R01/V03-V05/Q01: owner-requested player countries and standings flags implemented. Authenticated profile/onboarding picker, shared 249-country offline allowlist, non-destructive migration0018, live profile/board fields and fictional development-driver countries; neutral legacy fallback preserves real identities. Rivalry tables/podium/nearby/result rows, discovery high scores/full/around-me and account settings show flags. MIT SVG provenance/imports/export catalog/license retained; actual texture data4,078,620 bytes. Final graphical656/rivalry1070/App99/parser347 and affected backend86/native HTTP2/practice1 pass; broader104 passes retains unrelated rules-upgrade409 reproduced using task-start runs.py. Failed sandbox/fixture/layout attempts recorded; inspected desktop/compact screenshots and scoped review checkpoint. No phone attachment check/device test/export/install/full Validate/live account write/backend rollout/production deployment. Matching migration/API/worker and owner/device acceptance remain. Files, commands, results and limits: docs/PLAYER_COUNTRIES.md.
+ 
+ 2026-10-07 T01-T04/R01/V03/V05/Q01: owner screenshot's tight-spline crossing fence reproduced (62/55 sections,1/2 crossings) and corrected with exposed clearance sweep perimeter (46/47,zero crossings/on-road samples). Retained knots/widths, inner islands, reverse/joined chains and coincident taps; bounded4-geometry/8-margin cache. Final graphical6656/old barriers7715/pieces377/workflow252/parser346 pass, original compiler22 golden/five-lap drives preserved. Cold25.644-33.465ms/warm1.741-2.911ms desktop; actual before/after inspected. Intermediate offset and diagnostic-hole failures corrected without weakened footprint checks. No player-file rewrite/phone/device/attachment check/export/install/full Validate/backend deployment; re-place old crossed runs, actual-map/mobile acceptance remains. Files/commands/logs/scoped checkpoint: docs/SPLINE_BARRIERS.md.
+diff --git a/docs/TEST_DRIVERS.md b/docs/TEST_DRIVERS.md
+--- a/docs/TEST_DRIVERS.md
++++ b/docs/TEST_DRIVERS.md
+@@ -126,3 +126,7 @@
+ 
+ The owner-requested retained-cloud rollout, faster controller, compact 200-driver/all-27-track history plan and labeled private histograms are recorded in [Cloud test drivers](CLOUD_TEST_DRIVERS_2026_10_06.md). The 5,400-finish population is still running; consult its authoritative progress report. Earlier local pace limitations above are historical, not proof that the final controller is human-calibrated on every track.
+ 
++
++## Predictive follow-up ? 2026-10-07
++
++New local generation now uses cached constrained trajectories and bounded Frenet LTV MPC. The final corpus finishes 27/27 verified five-lap races, with median 21.1% improvement; four circuits remain slower. Old committed uploads can recover after a controller upgrade without regenerating their inputs. Actual architecture, tests, telemetry, cache timings and limitations are in [Predictive test drivers](PREDICTIVE_TEST_DRIVERS.md). This task has not rolled the new controller into the active cloud worker.
+diff --git a/game/input/racing_trajectory.gd b/game/input/racing_trajectory.gd
+new file mode 100644
+--- /dev/null
++++ b/game/input/racing_trajectory.gd
+@@ -0,0 +1,240 @@
++class_name RacingTrajectory
++extends RefCounted
++## Derived development data only. Never changes track, rules or handling hashes.
++const VERSION: String = "racing-trajectory-2"
++const SPACING: float = 0.5
++const MAX_SAMPLES: int = 8192
++var points := PackedVector2Array()
++var centers := PackedVector2Array()
++var normals := PackedVector2Array()
++var offsets := PackedFloat32Array()
++var lower := PackedFloat32Array()
++var upper := PackedFloat32Array()
++var headings := PackedFloat32Array()
++var curvature := PackedFloat32Array()
++var speeds := PackedFloat32Array()
++var grips := PackedFloat32Array()
++var resistance := PackedFloat32Array()
++var layers := PackedByteArray()
++var route_indices := PackedInt32Array()
++var length: float
++var spacing: float
++var reference_seconds: float = 0.0
++var curvature_before: float = 0.0
++var curvature_after: float = 0.0
++var blocked_samples: int = 0
++var cache_key: String = ""
++var strategy: String = "minimum_curvature"
++var pilot_ticks: int = 0
++var pilot_candidates: Array = []
++
++static func identity(track: NativeTrack, config: HandlingConfig) -> String:
++	return JSON.stringify([VERSION,track.content_hash,TrackCompiler.VERSION,VehicleSimulation.PHYSICS_VERSION,RaceRules.KEY,config.snapshot()],"",true).sha256_text()
++
++func build(track: NativeTrack, config: HandlingConfig, method: String = "minimum_curvature") -> void:
++	cache_key = identity(track,config)
++	strategy = method
++	length = track.route_length
++	var count: int = clampi(ceili(length/SPACING),16,MAX_SAMPLES)
++	spacing = length/count
++	points.resize(count); centers.resize(count); normals.resize(count); offsets.resize(count)
++	lower.resize(count); upper.resize(count); headings.resize(count); curvature.resize(count)
++	speeds.resize(count); grips.resize(count); resistance.resize(count); layers.resize(count); route_indices.resize(count)
++	var probe := VehicleState.new()
++	var route_index: int = 0
++	var previous_offset: float = 0.0
++	for i: int in range(count):
++		var s: float = i*spacing
++		while route_index+1 < track.route.size() and track.route_cumulative[route_index+1] <= s: route_index += 1
++		route_indices[i] = route_index
++		centers[i] = track._race_route_point(s)
++		var tangent: Vector2 = (track._race_route_point(s+2.0)-track._race_route_point(s-2.0)).normalized()
++		normals[i] = Vector2(tangent.y,-tangent.x)
++		layers[i] = int(track.elevated_at(centers[i],route_index))
++		var width: float = track.route_widths[route_index] if track.route_widths.size() == track.route.size() else 9.0
++		var margin: float = config.collision_radius+0.3
++		var limits := Vector2.ZERO
++		for side: int in [-1,1]:
++			var reach: float = 0.0
++			while reach+0.25 <= minf(width*0.5,10.0):
++				var candidate: Vector2 = centers[i]+normals[i]*side*(reach+0.25)
++				if track.cell_at(candidate,bool(layers[i])) not in [0,2,5]: break
++				reach += 0.25
++			if side < 0: limits.x = -maxf(0.0,reach-margin)
++			else: limits.y = maxf(0.0,reach-margin)
++		# Contiguous intervals prevent a smoothed line jumping through a solid prop.
++		var best := Vector2.ZERO
++		var best_score: float = INF
++		var start: float = INF
++		var samples: int = maxi(1,ceili((limits.y-limits.x)/0.25))
++		for j: int in range(samples+2):
++			var d: float = lerpf(limits.x,limits.y,minf(1.0,float(j)/samples))
++			var valid: bool = j <= samples and not track.overlaps_obstacle(centers[i]+normals[i]*d,margin,bool(layers[i]))
++			if valid and is_inf(start): start = d
++			if not valid and not is_inf(start):
++				var finish: float = lerpf(limits.x,limits.y,float(j-1)/samples)
++				var nearest: float = clampf(previous_offset,start,finish)
++				var score: float = absf(nearest-previous_offset)+absf(clampf(0.0,start,finish))*0.15
++				if score < best_score: best_score = score; best = Vector2(start,finish)
++				start = INF
++		if is_inf(best_score): blocked_samples += 1
++		lower[i] = best.x; upper[i] = best.y
++		offsets[i] = clampf(previous_offset,best.x,best.y)
++		previous_offset = offsets[i]
++		points[i] = centers[i]+normals[i]*offsets[i]
++		probe.position = points[i]; probe.track_elevated = bool(layers[i])
++		probe.velocity = tangent*20.0
++		var factors: Vector2 = track.surface_factors(probe)
++		var dirt: float = config.dirty_tire_grip_loss if track.tire_pickup(probe) > 0.0 else 0.0
++		grips[i] = factors.x*(1.0-dirt)
++		resistance[i] = factors.y
++	curvature_before = _energy()
++	var best_energy: float = curvature_before
++	var best_points: PackedVector2Array = points.duplicate()
++	var best_offsets: PackedFloat32Array = offsets.duplicate()
++	# Bounded coordinate Newton descent on integral squared geometric curvature.
++	# Variable chord lengths matter: the second-difference surrogate alone
++	# incorrectly favours the smaller radius of an inside circular line.
++	if method == "smoothing":
++		for radius: int in [12,6,3,1]:
++			for sweep: int in range(180):
++				for i: int in range(count):
++					var bend: Vector2 = points[posmod(i-2*radius,count)]-points[posmod(i-radius,count)]*4.0+points[i]*6.0-points[(i+radius)%count]*4.0+points[(i+2*radius)%count]
++					offsets[i] = clampf(offsets[i]-0.15*bend.dot(normals[i]),lower[i],upper[i])
++					points[i] = centers[i]+normals[i]*offsets[i]
++		best_points = points.duplicate(); best_offsets = offsets.duplicate()
++	for radius: int in ([8,4,2,1] if method == "minimum_curvature" else []):
++		for sweep: int in range(45):
++			for i: int in range(count):
++				if upper[i]-lower[i] < 0.00001: continue
++				var old: float = offsets[i]
++				var cost: float = _local_energy(i,radius)
++				points[i] = centers[i]+normals[i]*(old+0.05)
++				var plus: float = _local_energy(i,radius)
++				points[i] = centers[i]+normals[i]*(old-0.05)
++				var minus: float = _local_energy(i,radius)
++				var gradient: float = (plus-minus)/0.1
++				var hessian: float = (plus+minus-2.0*cost)/0.0025
++				var delta: float = clampf(-gradient/maxf(hessian,0.00001),-0.25,0.25)
++				var accepted: bool = false
++				for search: int in range(3):
++					var next: float = clampf(old+delta,lower[i],upper[i])
++					points[i] = centers[i]+normals[i]*next
++					if _local_energy(i,radius) < cost:
++						offsets[i] = next; accepted = true; break
++					delta *= 0.4
++				if not accepted: points[i] = centers[i]+normals[i]*old
++		var energy: float = _energy()
++		if energy < best_energy:
++			best_energy = energy; best_points = points.duplicate(); best_offsets = offsets.duplicate()
++	points = best_points; offsets = best_offsets
++	curvature_after = _energy()
++	for i: int in range(count):
++		# The finite vehicle follows a spatially filtered tangent, avoiding a
++		# single raster/chord kink dictating braking for the entire corner.
++		var reach: int = maxi(1,roundi(2.0/spacing))
++		var a: Vector2 = points[posmod(i-reach,count)]
++		var b: Vector2 = points[(i+reach)%count]
++		headings[i] = atan2(b.x-a.x,b.y-a.y)
++		var incoming: Vector2 = points[i]-a
++		var outgoing: Vector2 = b-points[i]
++		curvature[i] = -2.0*incoming.cross(outgoing)/maxf(incoming.length()*outgoing.length()*a.distance_to(b),0.00001)
++		var k: float = absf(curvature[i])
++		var grip: float = config.lateral_grip*minf(config.front_grip,config.rear_grip)*grips[i]*0.68
++		var bound: float = minf(config.maximum_speed*0.97,sqrt(grip/maxf(k,0.0001)))
++		bound = minf(bound,config.maximum_yaw_rate*0.88/maxf(k,0.0001))
++		# Steering reduction can make a radius infeasible even below the grip limit.
++		for reduction: int in range(30):
++			var angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(bound/24.0,0.0,1.0))
++			if k <= tan(angle)*config.front_grip/config.rear_grip/config.wheelbase*0.92: break
++			bound *= 0.9
++		speeds[i] = maxf(1.0,bound)
++	# Multiple cyclic passes propagate seam braking and acceleration constraints.
++	for sweep: int in range(8):
++		for i: int in range(count):
++			var j: int = (i+1)%count
++			var a: float = drive_acceleration(config,speeds[i],grips[i],resistance[i])*0.8
++			speeds[j] = minf(speeds[j],sqrt(maxf(1.0,speeds[i]*speeds[i]+2.0*a*points[i].distance_to(points[j]))))
++		for i: int in range(count-1,-1,-1):
++			var j: int = (i+1)%count
++			var brake: float = minf(config.braking_force/config.mass,config.longitudinal_grip*grips[i])*0.72
++			speeds[i] = minf(speeds[i],sqrt(speeds[j]*speeds[j]+2.0*brake*points[i].distance_to(points[j])))
++	reference_seconds = 0.0
++	for i: int in range(count): reference_seconds += 2.0*points[i].distance_to(points[(i+1)%count])/maxf(0.1,speeds[i]+speeds[(i+1)%count])
++	# Normalize the corridor to the final line before any cold/warm control.
++	# Both routes then consume identical float32 control data after JSON restore.
++	for i: int in range(count): lower[i] -= offsets[i]; upper[i] -= offsets[i]
++	offsets.fill(0.0)
++
++static func drive_acceleration(config: HandlingConfig, speed: float, grip: float, drag_rate: float) -> float:
++	var force: float = config.engine_force/config.mass*(1.0-0.45*clampf(speed/config.maximum_speed,0.0,1.0))
++	var drag: float = (config.drag*speed*speed+config.rolling_resistance)/config.mass+drag_rate
++	return maxf(0.1,minf(force,config.longitudinal_grip*grip)-drag)
++
++func _energy() -> float:
++	var value: float = 0.0
++	for i: int in range(points.size()): value += _curvature_cost(i,1)
++	return value
++
++func _curvature_cost(i: int, radius: int) -> float:
++	var a: Vector2 = points[posmod(i-radius,points.size())]
++	var b: Vector2 = points[(i+radius)%points.size()]
++	var incoming: Vector2 = points[i]-a
++	var outgoing: Vector2 = b-points[i]
++	var k: float = 2.0*incoming.cross(outgoing)/maxf(incoming.length()*outgoing.length()*a.distance_to(b),0.00001)
++	return k*k*(incoming.length()+outgoing.length())*0.5
++
++func _local_energy(i: int, radius: int) -> float:
++	return _curvature_cost(posmod(i-radius,points.size()),radius)+_curvature_cost(i,radius)+_curvature_cost((i+radius)%points.size(),radius)
++
++func at(s: float) -> Dictionary:
++	var location: float = fposmod(s,length)/spacing
++	var i: int = floori(location)%points.size()
++	var j: int = (i+1)%points.size()
++	var t: float = location-floorf(location)
++	return {"point":points[i].lerp(points[j],t),"heading":lerp_angle(headings[i],headings[j],t),"curvature":lerpf(curvature[i],curvature[j],t),"speed":lerpf(speeds[i],speeds[j],t),"grip":grips[i],"drag":resistance[i],"lower":lower[i]-offsets[i],"upper":upper[i]-offsets[i],"layer":layers[i]}
++
++func project(point: Vector2, s_hint: float) -> float:
++	var index: int = floori(fposmod(s_hint,length)/spacing)
++	var best: float = INF
++	var result: float = s_hint
++	var reach: int = ceili(12.0/spacing)
++	for offset: int in range(-reach,reach+1):
++		var i: int = posmod(index+offset,points.size())
++		var edge: Vector2 = points[(i+1)%points.size()]-points[i]
++		var t: float = clampf((point-points[i]).dot(edge)/maxf(edge.length_squared(),0.00001),0.0,1.0)
++		var distance: float = point.distance_squared_to(points[i]+edge*t)
++		if distance < best: best = distance; result = (i+t)*spacing
++	return result
++
++func serialize() -> Dictionary:
++	var rows: Array = []
++	for i: int in range(points.size()):
++		rows.append([points[i].x,points[i].y,headings[i],curvature[i],speeds[i],grips[i],resistance[i],lower[i]-offsets[i],upper[i]-offsets[i],layers[i]])
++	return {"version":VERSION,"key":cache_key,"length":length,"spacing":spacing,"reference_seconds":reference_seconds,"curvature_before":curvature_before,"curvature_after":curvature_after,"blocked_samples":blocked_samples,"strategy":strategy,"pilot_ticks":pilot_ticks,"pilot_candidates":pilot_candidates,"rows":rows}
++
++func restore(data: Dictionary, track: NativeTrack, config: HandlingConfig) -> bool:
++	if data.get("version") != VERSION or data.get("key") != identity(track,config) or not data.get("rows") is Array: return false
++	if data.get("strategy") not in ["minimum_curvature","smoothing","center"] or not data.get("pilot_candidates") is Array: return false
++	if data.pilot_candidates.size() > 3 or (not data.get("pilot_ticks") is int and not data.get("pilot_ticks") is float): return false
++	if not is_finite(float(data.pilot_ticks)) or float(data.pilot_ticks) < 0.0 or float(data.pilot_ticks) > 15000.0: return false
++	var rows: Array = data.rows
++	if rows.size() < 16 or rows.size() > MAX_SAMPLES: return false
++	for key: String in ["length","spacing","reference_seconds","curvature_before","curvature_after","blocked_samples"]:
++		if not data.get(key) is float and not data.get(key) is int: return false
++		if not is_finite(float(data[key])) or float(data[key]) < 0.0: return false
++	if absf(float(data.length)-track.route_length) > 0.00001 or absf(float(data.spacing)*rows.size()-track.route_length) > 0.00001: return false
++	for row: Variant in rows:
++		if not row is Array or row.size() != 10: return false
++		for value: Variant in row:
++			if (not value is float and not value is int) or not is_finite(float(value)): return false
++		if float(row[4]) <= 0.0 or float(row[5]) <= 0.0 or float(row[7]) > 0.0 or float(row[8]) < 0.0 or (float(row[9]) != 0.0 and float(row[9]) != 1.0): return false
++	cache_key = data.key; length = data.length; spacing = data.spacing
++	strategy = str(data.get("strategy","unknown")); pilot_ticks = int(data.get("pilot_ticks",0)); pilot_candidates = data.get("pilot_candidates",[])
++	reference_seconds = data.reference_seconds; curvature_before = data.curvature_before; curvature_after = data.curvature_after; blocked_samples = int(data.blocked_samples)
++	points.resize(rows.size()); headings.resize(rows.size()); curvature.resize(rows.size()); speeds.resize(rows.size()); grips.resize(rows.size()); resistance.resize(rows.size()); lower.resize(rows.size()); upper.resize(rows.size()); offsets.resize(rows.size()); layers.resize(rows.size())
++	offsets.fill(0.0)
++	for i: int in range(rows.size()):
++		var row: Array = rows[i]
++		points[i] = Vector2(row[0],row[1]); headings[i] = row[2]; curvature[i] = row[3]; speeds[i] = row[4]; grips[i] = row[5]; resistance[i] = row[6]; lower[i] = row[7]; upper[i] = row[8]; layers[i] = int(row[9])
++	return true
+diff --git a/game/input/trajectory_planner.gd b/game/input/trajectory_planner.gd
+new file mode 100644
+--- /dev/null
++++ b/game/input/trajectory_planner.gd
+@@ -0,0 +1,50 @@
++class_name TrajectoryPlanner
++extends RefCounted
++## Offline qualification prevents a minimum-curvature heuristic selecting a
++## slower/impossible line. Pilot laps are diagnostics, never scores or uploads.
++static func prepare(track: NativeTrack, config: HandlingConfig) -> RacingTrajectory:
++	var winner: RacingTrajectory
++	var score: float = INF
++	var candidates: Array = []
++	for method: String in ["minimum_curvature","smoothing","center"]:
++		var trajectory := RacingTrajectory.new()
++		trajectory.build(track,config,method)
++		var result: Dictionary = _pilot(track,config,trajectory)
++		candidates.append({"strategy":method,"finished":result.finished,"ticks":result.ticks,"contacts":result.contacts,"missed_gate":result.missed_gate})
++		# Contact is an explicit planner cost, never added to competitive timing.
++		var candidate_score: float = result.ticks+result.contacts*12.0 if result.finished else INF
++		if winner == null or candidate_score < score:
++			winner = trajectory; score = candidate_score; winner.pilot_ticks = result.ticks if result.finished else 0
++	winner.pilot_candidates = candidates
++	# Canonicalize the derived data through the exact persisted representation.
++	# JSON rounds float64 spacing/corridors: cold and warm control must see the
++	# same numbers, otherwise a later quantization boundary can differ by a bit.
++	var normalized := RacingTrajectory.new()
++	var loaded: bool = normalized.restore(JSON.parse_string(JSON.stringify(winner.serialize())),track,config)
++	assert(loaded,"Planner must emit a valid reusable trajectory")
++	return normalized
++
++static func _pilot(track: NativeTrack, config: HandlingConfig, trajectory: RacingTrajectory) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	sim.reset(track.spawn,track.spawn_heading)
++	var distance: float = (sim.state.position-track.finish_center).dot(track.finish_forward)
++	sim.state.position -= track.finish_forward*maxf(0.0,distance+3.0)
++	sim.state.route_index = track.nearest_route(sim.state.position)
++	sim.state.track_elevated = track.elevated_at(sim.state.position,sim.state.route_index)
++	if CreatorBridges.at_any(track.creator_bridges,sim.state.position): sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
++	var session := TrackSession.new(VehicleSimulation.TICK_RATE,1)
++	var mpc := TrajectoryMPC.new()
++	var held := DriveFrame.new()
++	var gate: int = -1
++	var progressed: int = 0
++	for tick: int in range(15000):
++		if tick%TrajectoryMPC.UPDATE_TICKS == 0:
++			var s: float = trajectory.project(sim.state.position,track.route_progress(sim.state.position,sim.state.route_index))
++			held = mpc.control(sim.state,trajectory,s,config,0.9225,0.5)
++		var before: Vector2 = sim.state.position
++		var layer: int = int(sim.state.track_elevated)
++		sim.step(held,track)
++		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++		if session.next_checkpoint != gate: gate = session.next_checkpoint; progressed = tick
++		if session.finished or session.missed_checkpoint >= 0 or tick-progressed > 1800: break
++	return {"finished":session.finished,"ticks":session.elapsed_ticks,"contacts":sim.state.collision_count,"missed_gate":session.missed_checkpoint}
+diff --git a/game/input/trajectory_mpc.gd b/game/input/trajectory_mpc.gd
+new file mode 100644
+--- /dev/null
++++ b/game/input/trajectory_mpc.gd
+@@ -0,0 +1,176 @@
++class_name TrajectoryMPC
++extends RefCounted
++## Bounded LTV Frenet MPC. Five states: lateral/heading/yaw/lateral-velocity/
++## speed error. Steering and acceleration controls; canonical physics is external.
++const VERSION: String = "frenet-ltv-mpc-1"
++const HORIZON: int = 16
++const DT: float = 0.1
++const UPDATE_TICKS: int = 12 # 10 Hz against canonical 120 Hz.
++const ITERATIONS: int = 14
++var steering := PackedFloat64Array()
++var acceleration := PackedFloat64Array()
++var references: Array[Dictionary] = []
++var predicted: Array[PackedFloat64Array] = []
++var initial := PackedFloat64Array()
++var config: HandlingConfig
++var yaw_decay: float
++var side_decay: float
++var smoothness: float = 0.6
++var previous_steering: float = 0.0
++var previous_acceleration: float = 0.0
++var updates: int = 0
++var last_cost: float = 0.0
++var guidance_steering: float = 0.0
++var guidance_acceleration: float = 0.0
++
++func control(state: VehicleState, trajectory: RacingTrajectory, progress: float, handling: HandlingConfig, pace: float, skill: float, disturbance: float = 0.0) -> DriveFrame:
++	config = handling
++	yaw_decay = exp(-config.mass/config.rotational_inertia*7.0*DT)
++	side_decay = exp(-config.lateral_response*DT)
++	smoothness = lerpf(1.8,0.35,skill)
++	var reference: Dictionary = trajectory.at(progress)
++	var speed: float = state.velocity.length()
++	var aim: Dictionary = trajectory.at(progress+4.0+speed*0.25)
++	var offset: Vector2 = aim.point-state.position
++	var angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(speed/24.0,0.0,1.0))
++	var pursuit: float = 2.0*offset.dot(state.right())/maxf(offset.length_squared(),1.0)
++	guidance_steering = clampf(atan(config.wheelbase*pursuit)/angle-state.yaw_rate*0.025,-1.0,1.0)
++	var braking_preview: Dictionary = trajectory.at(progress+speed*lerpf(0.20,0.02,skill))
++	var speed_goal: float = minf(reference.speed,braking_preview.speed)*pace
++	guidance_acceleration = clampf((speed_goal-speed)*lerpf(2.1,3.5,skill),-config.braking_force/config.mass,RacingTrajectory.drive_acceleration(config,speed,reference.grip,reference.drag))
++	var normal := Vector2(cos(reference.heading),-sin(reference.heading))
++	initial = PackedFloat64Array([(state.position-reference.point).dot(normal),wrapf(state.heading-reference.heading,-PI,PI),state.yaw_rate,state.velocity.dot(state.right()),state.velocity.length()-maxf(2.0,state.velocity.length())])
++	references.clear()
++	var s: float = progress
++	var travel_speed: float = maxf(2.0,state.velocity.length())
++	for i: int in range(HORIZON):
++		var ref: Dictionary = trajectory.at(s)
++		ref.speed *= pace
++		var margin: float = lerpf(0.45,0.10,skill)
++		ref.lower = minf(0.0,float(ref.lower)+margin)
++		ref.upper = maxf(0.0,float(ref.upper)-margin)
++		ref.nominal = travel_speed
++		var next_speed: float = move_toward(travel_speed,ref.speed,8.0*DT)
++		var next: Dictionary = trajectory.at(s+travel_speed*DT)
++		ref.turn = wrapf(next.heading-ref.heading,-PI,PI)
++		ref.dv = next_speed-travel_speed
++		var steer_angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(travel_speed/24.0,0.0,1.0))
++		var ratio: float = config.front_grip/config.rear_grip
++		var feed_angle: float = atan(config.wheelbase*ref.curvature/ratio)
++		var yaw: float = travel_speed*ref.curvature
++		var derivative: float = maxf(2.0,travel_speed)/config.wheelbase*steer_angle*ratio/pow(cos(feed_angle),2)
++		if config.progressive_handling:
++			var demand: float = absf(yaw)/maxf(0.1,config.lateral_grip*config.front_grip*ref.grip/maxf(travel_speed,1.0))
++			var saturation: float = pow(1.0+pow(demand,6),-1.0/6.0)
++			yaw *= saturation
++			derivative *= pow(saturation,7)
++		ref.gain = derivative
++		ref.bias = yaw-derivative*feed_angle/steer_angle
++		ref.drive = RacingTrajectory.drive_acceleration(config,travel_speed,ref.grip,ref.drag)
++		ref.brake = minf(config.braking_force/config.mass,config.longitudinal_grip*ref.grip)*0.85
++		ref.side = travel_speed*(1.0-side_decay)/config.lateral_response
++		ref.yaw = travel_speed*ref.curvature
++		ref.heading_goal = atan(ref.yaw/config.lateral_response)
++		ref.side_goal = -travel_speed*ref.yaw/config.lateral_response
++		ref.limit = minf(1.0,minf(config.maximum_yaw_rate,config.lateral_grip*ref.grip/maxf(travel_speed,2.0))*0.92/ref.gain)
++		references.append(ref)
++		s += travel_speed*DT
++		travel_speed = next_speed
++	if steering.size() != HORIZON:
++		steering.resize(HORIZON); acceleration.resize(HORIZON)
++		for i: int in range(HORIZON):
++			steering[i] = clampf(references[i].yaw/references[i].gain,-references[i].limit,references[i].limit)
++			acceleration[i] = clampf(references[i].dv/DT+2.0*(references[i].speed-state.velocity.length()),-references[i].brake,references[i].drive)
++	else:
++		for i: int in range(HORIZON-1): steering[i] = steering[i+1]; acceleration[i] = acceleration[i+1]
++	var cost: float = _rollout(steering,acceleration,true)
++	for iteration: int in range(ITERATIONS):
++		var gradients: Array[PackedFloat64Array] = _gradient()
++		var accepted: bool = false
++		var step: float = 0.03/(1.0+state.velocity.length_squared()/400.0)
++		for search: int in range(5):
++			var trial_steer: PackedFloat64Array = steering.duplicate()
++			var trial_accel: PackedFloat64Array = acceleration.duplicate()
++			var last: float = previous_steering
++			for i: int in range(HORIZON):
++				var limit: float = references[i].limit
++				var low: float = maxf(-limit,last-config.steering_rate*DT)
++				var high: float = minf(limit,last+config.steering_rate*DT)
++				var alow: float = -references[i].brake
++				var ahigh: float = references[i].drive
++				if i == 0:
++					# Keep the linearization local during sharp corners/recovery.
++					low = maxf(low,guidance_steering-0.12); high = minf(high,guidance_steering+0.12)
++					alow = maxf(alow,guidance_acceleration-1.5); ahigh = minf(ahigh,guidance_acceleration+1.5)
++				if low > high: low = clampf(guidance_steering,-limit,limit); high = low
++				if alow > ahigh: alow = clampf(guidance_acceleration,-references[i].brake,references[i].drive); ahigh = alow
++				trial_steer[i] = clampf(trial_steer[i]-step*gradients[0][i],low,high)
++				trial_accel[i] = clampf(trial_accel[i]-step*gradients[1][i]*12.0,alow,ahigh)
++				last = trial_steer[i]
++			var candidate: float = _rollout(trial_steer,trial_accel,false)
++			if is_finite(candidate) and candidate < cost:
++				steering = trial_steer; acceleration = trial_accel; cost = _rollout(steering,acceleration,true); accepted = true; break
++			step *= 0.35
++		if not accepted: break
++	last_cost = cost
++	updates += 1
++	previous_steering = clampf(clampf(steering[0],guidance_steering-0.12,guidance_steering+0.12),-references[0].limit,references[0].limit)
++	previous_acceleration = clampf(clampf(acceleration[0],guidance_acceleration-1.5,guidance_acceleration+1.5),-references[0].brake,references[0].drive)
++	var frame := DriveFrame.new()
++	frame.steer = clampi(roundi((previous_steering+disturbance)*127.0),-127,127)
++	var force: float = config.engine_force/config.mass*(1.0-0.45*clampf(state.velocity.length()/config.maximum_speed,0.0,1.0))
++	var drag: float = (config.drag*state.velocity.length_squared()+config.rolling_resistance)/config.mass+reference.drag
++	var pedal: float = previous_acceleration+drag
++	if pedal >= 0.0: frame.throttle = clampi(roundi(pedal/maxf(0.1,force)*255.0),0,255)
++	else: frame.brake = clampi(roundi(-pedal/(config.braking_force/config.mass)*255.0),0,255)
++	return frame
++
++func _rollout(u: PackedFloat64Array, a: PackedFloat64Array, save: bool) -> float:
++	var z: PackedFloat64Array = initial.duplicate()
++	var total: float = 0.0
++	var last_u: float = previous_steering
++	var last_a: float = previous_acceleration
++	if save: predicted.clear()
++	for i: int in range(HORIZON):
++		var ref: Dictionary = references[i]
++		var r: float = yaw_decay*z[2]+(1.0-yaw_decay)*(ref.gain*u[i]+ref.bias)
++		var h: float = z[1]+DT*r-ref.turn-DT*ref.curvature*z[4]
++		var b: float = side_decay*z[3]-ref.side*r
++		var y: float = z[0]+DT*(ref.nominal*h+b)
++		var v: float = z[4]+DT*a[i]-ref.dv
++		z = PackedFloat64Array([y,h,r,b,v])
++		var weight: float = 3.0 if i == HORIZON-1 else 1.0
++		var outside: float = y-clampf(y,ref.lower,ref.upper)
++		var speed_error: float = v+ref.nominal+ref.dv-ref.speed
++		total += weight*(y*y+8.0*pow(h-ref.heading_goal,2)+0.12*speed_error*speed_error+0.10*pow(r-ref.yaw,2)+0.025*pow(b-ref.side_goal,2)+30.0*outside*outside-0.025*speed_error)
++		total += smoothness*pow(u[i]-last_u,2)+0.008*pow(a[i]-last_a,2)
++		last_u = u[i]; last_a = a[i]
++		if save: predicted.append(z)
++	return total
++
++func _gradient() -> Array[PackedFloat64Array]:
++	var gu := PackedFloat64Array(); gu.resize(HORIZON)
++	var ga := PackedFloat64Array(); ga.resize(HORIZON)
++	var ly: float = 0.0; var lh: float = 0.0; var lr: float = 0.0; var lb: float = 0.0; var lv: float = 0.0
++	for i: int in range(HORIZON-1,-1,-1):
++		var ref: Dictionary = references[i]
++		var z: PackedFloat64Array = predicted[i]
++		var weight: float = 3.0 if i == HORIZON-1 else 1.0
++		ly += weight*(2.0*z[0]+60.0*(z[0]-clampf(z[0],ref.lower,ref.upper)))
++		lh += weight*16.0*(z[1]-ref.heading_goal)
++		lr += weight*0.2*(z[2]-ref.yaw)
++		lb += weight*0.05*(z[3]-ref.side_goal)
++		lv += weight*(0.24*(z[4]+ref.nominal+ref.dv-ref.speed)-0.025)
++		lh += DT*ref.nominal*ly
++		lb += DT*ly
++		lr += DT*lh-ref.side*lb
++		gu[i] += (1.0-yaw_decay)*ref.gain*lr
++		ga[i] += DT*lv
++		var du: float = 2.0*smoothness*(steering[i]-(previous_steering if i == 0 else steering[i-1]))
++		var da: float = 0.016*(acceleration[i]-(previous_acceleration if i == 0 else acceleration[i-1]))
++		gu[i] += du; ga[i] += da
++		if i > 0: gu[i-1] -= du; ga[i-1] -= da
++		lv -= DT*ref.curvature*lh
++		lr *= yaw_decay
++		lb *= side_decay
++	return [gu,ga]
+diff --git a/game/tests/test_predictive_driver.gd b/game/tests/test_predictive_driver.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_predictive_driver.gd
+@@ -0,0 +1,92 @@
++extends "res://backend/runner.gd"
++var checks: int = 0
++var failures: int = 0
++func check(condition: bool, label: String) -> void:
++	checks += 1
++	if not condition: failures += 1; print("FAIL: "+label)
++
++func run() -> void:
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	var compiled: Dictionary = compile_track(fixture.document)
++	if compiled.has("error"): push_error(compiled.error); quit(1); return
++	var track: NativeTrack = compiled.track
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var trajectory := RacingTrajectory.new()
++	trajectory.build(track,config)
++	check(trajectory.spacing <= 0.501,"half-metre trajectory sampling")
++	check(trajectory.curvature_after < trajectory.curvature_before,"curvature surrogate reduced")
++	check(trajectory.blocked_samples == 0,"oval has a feasible clearance corridor")
++	for i: int in range(trajectory.points.size()):
++		check(not track.overlaps_obstacle(trajectory.points[i],config.collision_radius,false),"reference footprint clears obstacles")
++		check(is_finite(trajectory.speeds[i]) and trajectory.speeds[i] <= config.maximum_speed,"finite bounded reference speed")
++		var j: int = (i+1)%trajectory.points.size()
++		var ds: float = trajectory.points[i].distance_to(trajectory.points[j])
++		var braking: float = minf(config.braking_force/config.mass,config.longitudinal_grip*trajectory.grips[i])*0.72
++		check(trajectory.speeds[i]*trajectory.speeds[i] <= trajectory.speeds[j]*trajectory.speeds[j]+2.0*braking*ds+0.001,"cyclic braking including seam")
++	var cached: Dictionary = JSON.parse_string(JSON.stringify(trajectory.serialize()))
++	var restored := RacingTrajectory.new()
++	check(restored.restore(cached,track,config),"round-trip cache loads")
++	check(restored.points == trajectory.points and restored.speeds == trajectory.speeds and restored.curvature == trajectory.curvature,"cached control data is exact")
++	if restored.curvature != trajectory.curvature:
++		for i: int in range(trajectory.curvature.size()):
++			if restored.curvature[i] != trajectory.curvature[i]: print("CACHE DIFFERENCE ",i," original=",trajectory.curvature[i]," cached=",restored.curvature[i]); break
++	var changed: HandlingConfig = config.duplicate()
++	changed.braking_force *= 0.9
++	check(not restored.restore(cached,track,changed),"handling change invalidates cache")
++	cached.key = "previous physics/rules"
++	check(not restored.restore(cached,track,config),"stale canonical contract invalidates cache")
++	cached = trajectory.serialize()
++	cached.rows[0][4] = NAN
++	check(not restored.restore(cached,track,config),"nonfinite derived data regenerates")
++	_test_gradient(track,trajectory,config)
++	for vehicle: String in VehicleCatalog.IDS: _drive_with_disturbance(track,vehicle)
++	print("PREDICTIVE DRIVER: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _test_gradient(track: NativeTrack, trajectory: RacingTrajectory, config: HandlingConfig) -> void:
++	var sim: VehicleSimulation = initial_simulation(track,"compact")
++	var progress: float = track.route_progress(sim.state.position,sim.state.route_index)
++	var ref: Dictionary = trajectory.at(progress)
++	sim.state.velocity = sim.state.forward()*12.0
++	var mpc := TrajectoryMPC.new()
++	mpc.control(sim.state,trajectory,progress,config,0.9,0.5)
++	mpc._rollout(mpc.steering,mpc.acceleration,true)
++	var gradient: Array[PackedFloat64Array] = mpc._gradient()
++	for control: int in range(2):
++		for i: int in [0,3,8,15]:
++			var plus_u: PackedFloat64Array = mpc.steering.duplicate()
++			var plus_a: PackedFloat64Array = mpc.acceleration.duplicate()
++			var minus_u: PackedFloat64Array = mpc.steering.duplicate()
++			var minus_a: PackedFloat64Array = mpc.acceleration.duplicate()
++			var epsilon: float = 0.000001
++			if control == 0: plus_u[i] += epsilon; minus_u[i] -= epsilon
++			else: plus_a[i] += epsilon; minus_a[i] -= epsilon
++			var numerical: float = (mpc._rollout(plus_u,plus_a,false)-mpc._rollout(minus_u,minus_a,false))/(2.0*epsilon)
++			check(absf(numerical-gradient[control][i]) < 0.001*maxf(1.0,absf(numerical)),"MPC adjoint matches numerical derivative")
++	check(ref.speed > 0.0,"positive reference speed")
++
++func _drive_with_disturbance(track: NativeTrack, vehicle: String) -> void:
++	var sim: VehicleSimulation = initial_simulation(track,vehicle)
++	var traits: Dictionary = {"seed":7,"skill":0.7,"consistency":1.0,"aggression":0.5,"learning":0.5,"strengths":{}}
++	var driver := ProfiledRouteDriver.new(traits,"pine",track.content_hash,0)
++	var session := TrackSession.new(VehicleSimulation.TICK_RATE,5)
++	var disturbed: bool = false
++	var returned: bool = false
++	for tick: int in range(30000):
++		if tick == 1200:
++			sim.state.position += sim.state.right()*1.1
++			sim.state.heading = wrapf(sim.state.heading+0.12,-PI,PI)
++			disturbed = true
++		var frame: DriveFrame = driver.sample(sim.state,track,sim.config,session)
++		if tick > 1250 and tick < 1700:
++			var s: float = driver.trajectory.project(sim.state.position,track.route_progress(sim.state.position,sim.state.route_index))
++			if sim.state.position.distance_to(driver.trajectory.at(s).point) < 0.5: returned = true
++		var before: Vector2 = sim.state.position
++		var layer: int = int(sim.state.track_elevated)
++		sim.step(frame,track)
++		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++		if session.finished: break
++	check(disturbed and returned,vehicle+" physically recovers a lateral/heading disturbance within four seconds")
++	check(session.finished and session.completed_laps == 5,vehicle+" completes all ordered five laps")
++	check(sim.state.collision_count == 0,vehicle+" recovery avoids contacts")
++	print("RECOVERY %s finished=%s ticks=%d contacts=%d" % [vehicle,session.finished,session.elapsed_ticks,sim.state.collision_count])
+diff --git a/game/tests/benchmark_test_drivers.gd b/game/tests/benchmark_test_drivers.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/benchmark_test_drivers.gd
+@@ -0,0 +1,53 @@
++extends "res://backend/runner.gd"
++## Headless, canonical five-lap corpus benchmark; never writes player data.
++func run() -> void:
++	var destination: String = "res://../build/driver-benchmark.json"
++	var selected: String = OS.get_environment("BMT_DRIVER_NAMES")
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--report="): destination = arg.trim_prefix("--report=")
++		if arg.begins_with("--names="): selected = arg.trim_prefix("--names=")
++	var corpus: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/bmt_backend/lab_tracks.json"))
++	var results: Array = []
++	for document: Dictionary in corpus.documents:
++		if not selected.is_empty() and document.name not in selected.split(","): continue
++		var compiled: Dictionary = compile_track(document)
++		if compiled.has("error"):
++			results.append({"name":document.name,"error":compiled.error}); continue
++		var track: NativeTrack = compiled.track
++		var sim: VehicleSimulation = initial_simulation(track,"compact")
++		var traits: Dictionary = {"version":"test-driver-1","seed":27,"skill":0.5,"consistency":1.0,"aggression":0.5,"learning":0.5,"strengths":{}}
++		var driver := ProfiledRouteDriver.new(traits,str(document.theme),track.content_hash,0)
++		var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
++		var gate: int = -1
++		var progressed: int = 0
++		var began: int = Time.get_ticks_usec()
++		var trace: Array = []
++		var frames: Array = []
++		for tick: int in range(MAX_FRAMES):
++			var frame: DriveFrame = driver.sample(sim.state,track,sim.config,session)
++			if OS.get_environment("BMT_DRIVER_REPLAYS") == "1": frames.append(frame.packed())
++			var before: Vector2 = sim.state.position
++			var layer: int = int(sim.state.track_elevated)
++			sim.step(frame,track)
++			session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++			var current: int = session.next_checkpoint+session.completed_laps*10000
++			if gate != current: gate = current; progressed = tick
++			if tick % 12 == 0:
++				var progress: float = driver.trajectory.project(sim.state.position,track.route_progress(sim.state.position,sim.state.route_index))
++				trace.append([tick,sim.state.position.x,sim.state.position.y,sim.state.velocity.length(),session.completed_laps,session.missed_checkpoint,progress,driver.trajectory.at(progress).speed,frame.steer,frame.throttle,frame.brake])
++			if session.finished or tick-progressed > 3600: break
++		var row: Dictionary = {"name":document.name,"finished":session.finished,"ticks":session.elapsed_ticks,"laps":session.completed_laps,"lap_seconds":session.lap_times,"collisions":sim.state.collision_count,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"controller":driver.VERSION,"manifest":compiled.manifest,"trace":trace}
++		row.tracking = {"rms_m":sqrt(driver.lateral_error_sum/maxi(1,driver.tracking_samples)),"max_m":driver.max_lateral_error,"fallback_ticks":driver.fallback_ticks,"updates":driver.mpc.updates}
++		if driver.trajectory != null:
++			row.reference = {"lap_seconds":driver.trajectory.reference_seconds,"blocked":driver.trajectory.blocked_samples,"curvature_before":driver.trajectory.curvature_before,"curvature_after":driver.trajectory.curvature_after,"points":[]}
++			for i: int in range(driver.trajectory.points.size()): row.reference.points.append([i*driver.trajectory.spacing,driver.trajectory.points[i].x,driver.trajectory.points[i].y,driver.trajectory.speeds[i],driver.trajectory.curvature[i],driver.trajectory.layers[i]])
++		results.append(row)
++		if not frames.is_empty():
++			row.document = document
++			row.replay = {"schema":REPLAY_SCHEMA,"frames":frames}
++		print("DRIVER %s finished=%s ticks=%d laps=%d collisions=%d wall_ms=%.1f" % [row.name,row.finished,row.ticks,row.laps,row.collisions,row.wall_ms])
++	var file := FileAccess.open(destination,FileAccess.WRITE)
++	if file == null: push_error("Cannot write benchmark"); quit(1); return
++	file.store_string(JSON.stringify({"results":results},"\t"))
++	file.close()
++	quit(0)
+diff --git a/backend/tests/test_predictive_drivers.py b/backend/tests/test_predictive_drivers.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_predictive_drivers.py
+@@ -0,0 +1,143 @@
++"""Native recordings, derived-cache reuse and independent canonical proof."""
++import dataclasses
++import importlib.util
++import json
++import subprocess
++import sys
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from test_test_drivers import auth, bot_login, fleet, group
++from test_test_drivers import drivers as _drivers
++from test_verifier import real_verifier as _real_verifier
++
++from bmt_backend.test_driver_generator import CONTROLLER_VERSION, generate
++from bmt_backend.test_drivers import profile
++from bmt_backend.verifier import GodotVerifier
++
++real_verifier = _real_verifier
++drivers = _drivers
++ROOT = Path(__file__).resolve().parents[2]
++
++
++@pytest.mark.godot
++@pytest.mark.parametrize("track_name", ["oval", "Over and under"])
++def test_cached_and_regenerated_trajectories_emit_exact_verified_inputs(tmp_path, real_verifier, track_name):
++    if track_name == "oval":
++        document = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())["document"]
++    else:
++        document = next(d for d in json.loads((ROOT / "backend/bmt_backend/lab_tracks.json").read_text())["documents"]
++                        if d["name"] == track_name)
++    settings = SimpleNamespace(godot_bin=real_verifier.binary, game_project=real_verifier.project,
++                               verifier_timeout_seconds=90, object_dir=str(tmp_path / "objects"))
++    traits = profile(27, 6, 13, 0.42, 0.58)[2]
++    cold = generate(settings, document, "compact", traits)
++    warm = generate(settings, document, "compact", traits)
++    assert not cold["diagnostics"]["cache_hit"] and warm["diagnostics"]["cache_hit"]
++    assert cold["replay"] == warm["replay"]
++    assert cold["time_ticks"] == warm["time_ticks"]
++    assert warm["diagnostics"]["planning_ms"] < cold["diagnostics"]["planning_ms"]
++    assert cold["diagnostics"]["mean_update_ms"] < 100  # 10 Hz update interval.
++    assert cold["telemetry"]["samples"] and "reference_v_mps" in cold["telemetry"]["columns"]
++    verified = real_verifier.verify_run(document, cold["replay"], "compact")
++    assert verified["time_ticks"] == cold["time_ticks"] and len(verified["lap_ticks"]) == 5
++    cache = next((tmp_path / "driver-trajectories").glob("*.json"))
++    stale = json.loads(cache.read_text())
++    stale["key"] = "old-physics-rules-or-handling"
++    cache.write_text(json.dumps(stale))
++    rebuilt = generate(settings, document, "compact", traits)
++    assert not rebuilt["diagnostics"]["cache_hit"] and rebuilt["replay"] == cold["replay"]
++    cache.write_text("broken derived cache")
++    repaired = generate(settings, document, "compact", traits)
++    assert not repaired["diagnostics"]["cache_hit"] and repaired["replay"] == cold["replay"]
++    assert not list(cache.parent.glob("*.tmp"))
++
++
++@pytest.mark.godot
++def test_packaged_worker_contains_predictive_driver_and_current_dependencies(tmp_path, real_verifier):
++    spec = importlib.util.spec_from_file_location("stage_predictive_worker", ROOT / "backend/deploy/stage_verifier.py")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    project = tmp_path / "game"
++    module.stage(ROOT, project)
++    imported = subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--editor", "--import"],
++                              capture_output=True, text=True, timeout=90, check=False)
++    assert imported.returncode == 0 and "SCRIPT ERROR" not in imported.stdout + imported.stderr
++    settings = SimpleNamespace(godot_bin=real_verifier.binary, game_project=project,
++                               verifier_timeout_seconds=90, object_dir=str(tmp_path / "objects"))
++    document = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())["document"]
++    recording = generate(settings, document, "compact", profile(27, 6, 13, 0.42, 0.58)[2])
++    assert recording["controller_version"] == CONTROLLER_VERSION
++    verifier = GodotVerifier(settings)
++    try:
++        verified = verifier.verify_run(document, recording["replay"], "compact")
++        assert verified["time_ticks"] == recording["time_ticks"] and len(verified["lap_ticks"]) == 5
++    finally:
++        verifier.close()
++
++
++def test_committed_upload_recovery_is_private_and_development_gated(drivers):
++    population = fleet(drivers, count=2)["profiles"]
++    first, second = [bot_login(drivers, p) for p in population]
++    field = group(drivers, login=first)
++    ticket = drivers.client.post("/v1/run-tickets", json={
++        "version_id": field["tracks"][0]["entry"]["version_id"],
++        "vehicle_id": "compact", "test_population": True,
++    }, headers=auth(first)).json()
++    key = "a" * 64 + "-upload-0"
++    headers = {**auth(first), "Idempotency-Key": key}
++    uploaded = drivers.client.post("/v1/runs", json={"ticket_id": ticket["ticket_id"],
++        "replay": {"schema": "bmt-replay-v1", "frames": [[0, 166, 0]]}}, headers=headers)
++    assert uploaded.status_code == 202, uploaded.text
++    route = "/v1/dev/test-drivers/uploads/" + key
++    recovered = drivers.client.get(route, headers=auth(first, operator=True))
++    assert recovered.status_code == 200
++    assert recovered.json()["run"]["run_id"] == uploaded.json()["run_id"]
++    assert recovered.json()["run"]["time_ticks"] is None and "replay" not in recovered.json()
++    assert drivers.client.get(route, headers=auth(second, operator=True)).json()["run"] is None
++    assert drivers.client.get(route, headers=auth(first)).status_code == 401
++    assert drivers.client.get(route, headers=auth(drivers.login, operator=True)).status_code == 404
++    drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
++    assert drivers.client.get(route, headers=auth(first, operator=True)).status_code in (401, 404)
++
++
++def test_controller_parse_errors_fail_promptly_and_stop_owned_process(monkeypatch):
++    import bmt_backend.test_driver_generator as controller
++    spawned = []
++    original = subprocess.Popen
++    class FixtureVerifier:
++        binary = sys.executable
++        project = ROOT / "game"
++        timeout = 5
++        def __init__(self, settings):
++            pass
++        def _check_engine(self):
++            pass
++    def fail_process(command, **kwargs):
++        if command[0] != sys.executable:
++            return original(command, **kwargs)
++        process = original([sys.executable, "-c",
++            "import time;print('SCRIPT ERROR: fixture parse error',flush=True);time.sleep(30)"], **kwargs)
++        spawned.append(process)
++        return process
++    monkeypatch.setattr(controller, "GodotVerifier", FixtureVerifier)
++    monkeypatch.setattr(controller.subprocess, "Popen", fail_process)
++    started = time.monotonic()
++    with pytest.raises(RuntimeError, match="engine error"):
++        controller.generate(SimpleNamespace(), {}, "compact", {})
++    assert time.monotonic()-started < 3 and all(p.poll() is not None for p in spawned)
++
++
++@pytest.mark.godot
++@pytest.mark.parametrize("name", ["star_spline_lap", "spline_circuit"])
++def test_arbitrary_creator_splines_generate_ordered_verified_five_laps(tmp_path, real_verifier, name):
++    document = json.loads((ROOT / "game/tests/fixtures" / (name + ".json")).read_text())
++    settings = SimpleNamespace(godot_bin=real_verifier.binary, game_project=real_verifier.project,
++                               verifier_timeout_seconds=90, object_dir=str(tmp_path / "objects"))
++    traits = profile(27, 6, 13, 0.42, 0.58)[2]
++    result = generate(settings, document, "compact", traits)
++    verified = real_verifier.verify_run(document, result["replay"], "compact")
++    assert result["time_ticks"] == verified["time_ticks"] and len(verified["lap_ticks"]) == 5
++    assert result["diagnostics"]["fallback_ticks"] == 0
+diff --git a/backend/tools/report_predictive_drivers.py b/backend/tools/report_predictive_drivers.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tools/report_predictive_drivers.py
+@@ -0,0 +1,87 @@
++"""Independently verify the recorded corpus and export a reproducible report."""
++import argparse
++import csv
++import gzip
++import html
++import json
++import statistics
++from pathlib import Path
++from types import SimpleNamespace
++
++from bmt_backend.verifier import GodotVerifier
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--report", type=Path, required=True)
++    parser.add_argument("--evidence", type=Path, required=True)
++    parser.add_argument("--godot", required=True)
++    parser.add_argument("--project", type=Path, required=True)
++    args = parser.parse_args()
++    source = json.loads(args.report.read_text(encoding="utf-8"))
++    baseline = json.loads((args.evidence / "baseline.json").read_text(encoding="utf-8"))
++    old = {row["name"]: row for row in baseline["results"]}
++    verifier = GodotVerifier(SimpleNamespace(godot_bin=args.godot, game_project=args.project,
++                                            verifier_timeout_seconds=90))
++    compared = []
++    try:
++        for row in source["results"]:
++            assert row["finished"] and row["laps"] == 5, row["name"]
++            proof = verifier.verify_run(row["document"], row["replay"], "compact")
++            assert proof["time_ticks"] == row["ticks"] and len(proof["lap_ticks"]) == 5, row["name"]
++            assert proof["manifest"] == row["manifest"] == old[row["name"]]["manifest"], row["name"]
++            previous = old[row["name"]]
++            compared.append({"name": row["name"], "old_finished": previous["finished"],
++                             "old_ticks": previous["ticks"], "new_ticks": row["ticks"],
++                             "old_contacts": previous["collisions"], "new_contacts": row["collisions"],
++                             "gain_percent": 100*(previous["ticks"]-row["ticks"])/previous["ticks"]
++                                             if previous["finished"] else None,
++                             "verified_lap_ticks": proof["lap_ticks"], "tracking": row["tracking"]})
++            print("VERIFIED", row["name"], row["ticks"], flush=True)
++    finally:
++        verifier.close()
++    summary = {"baseline_finished": sum(r["finished"] for r in baseline["results"]),
++               "final_finished": len(compared), "independently_verified": len(compared),
++               "median_improvement_percent": statistics.median(r["gain_percent"] for r in compared
++                                                               if r["gain_percent"] is not None),
++               "old_contacts": sum(r["old_contacts"] for r in compared),
++               "new_contacts": sum(r["new_contacts"] for r in compared), "results": compared}
++    (args.evidence / "verified-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
++    with gzip.open(args.evidence / "verified-recordings.json.gz", "wt", encoding="utf-8") as saved:
++        json.dump(source, saved, separators=(",", ":"))
++    with (args.evidence / "comparison.csv").open("w", newline="", encoding="utf-8") as saved:
++        writer = csv.writer(saved)
++        writer.writerow(["track", "old_finished", "old_seconds", "new_seconds", "gain_percent",
++                         "old_contacts", "new_contacts", "line_rms_m"])
++        for row in compared:
++            writer.writerow([row["name"], row["old_finished"], row["old_ticks"]/120,
++                             row["new_ticks"]/120, row["gain_percent"], row["old_contacts"],
++                             row["new_contacts"], row["tracking"]["rms_m"]])
++    svg = ['<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1040" viewBox="0 0 1000 1040">',
++           '<rect width="1000" height="1040" fill="#fafafa"/>',
++           '<g font-family="Arial,sans-serif" fill="#172238">',
++           '<text x="28" y="35" font-size="22">Five-lap artificial-driver benchmark — 27 tracks</text>',
++           '<text x="28" y="61" font-size="14">Same canonical manifests; final inputs independently verified. Gray: old, gold: predictive.</text>']
++    maximum = max(r["old_ticks"] for r in compared)
++    for i, row in enumerate(compared):
++        y = 88+i*33
++        svg.append(f'<text x="28" y="{y+15}" font-size="14">{html.escape(row["name"])}</text>')
++        if row["old_finished"]:
++            svg.append(f'<rect x="205" y="{y}" width="{row["old_ticks"]/maximum*590:.2f}" height="10" fill="#86909f"/>')
++        else:
++            svg.append(f'<text x="205" y="{y+9}" font-size="11">Old driver did not finish</text>')
++        svg.append(f'<rect x="205" y="{y+13}" width="{row["new_ticks"]/maximum*590:.2f}" height="10" fill="#dba92b"/>')
++        label = f'{row["new_ticks"]/120:.2f}s'
++        if row["gain_percent"] is not None:
++            label += f' ({abs(row["gain_percent"]):.1f}% {"faster" if row["gain_percent"]>=0 else "slower"})'
++        svg.append(f'<text x="805" y="{y+20}" font-size="12">{label}</text>')
++    svg.extend([f'<text x="28" y="1015" font-size="14">Median {summary["median_improvement_percent"]:.1f}% faster; recorded contacts {summary["old_contacts"]} → {summary["new_contacts"]}. Desktop only.</text>', '</g></svg>'])
++    (args.evidence / "comparison.svg").write_text("\n".join(svg), encoding="utf-8")
++    slim = {"results": [{k: v for k, v in row.items() if k not in ("document", "replay")}
++                        for row in source["results"]]}
++    (args.evidence / "final-telemetry.json").write_text(json.dumps(slim, separators=(",", ":")), encoding="utf-8")
++    print(json.dumps({k: v for k, v in summary.items() if k != "results"}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/tools/render_driver_comparison.ps1 b/backend/tools/render_driver_comparison.ps1
+new file mode 100644
+--- /dev/null
++++ b/backend/tools/render_driver_comparison.ps1
+@@ -0,0 +1,39 @@
++param([string]$Evidence = 'docs/evidence/predictive-drivers-2026-10-07')
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++$bmtRows = Import-Csv -LiteralPath (Join-Path $Evidence 'comparison.csv')
++$bmtMaximum = ($bmtRows | ForEach-Object { [double]$_.old_seconds } | Measure-Object -Maximum).Maximum
++$bmtBitmap = New-Object System.Drawing.Bitmap(1000,1040)
++$bmtGraphics = [System.Drawing.Graphics]::FromImage($bmtBitmap)
++$bmtGraphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
++$bmtGraphics.Clear([System.Drawing.Color]::WhiteSmoke)
++$bmtInk = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(23,34,56))
++$bmtOld = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(134,144,159))
++$bmtNew = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(219,169,43))
++$bmtTitle = New-Object System.Drawing.Font('Arial',16)
++$bmtFont = New-Object System.Drawing.Font('Arial',10)
++$bmtSmall = New-Object System.Drawing.Font('Arial',8)
++try {
++    $bmtGraphics.DrawString('Five-lap artificial-driver benchmark - 27 tracks',$bmtTitle,$bmtInk,28,18)
++    $bmtGraphics.DrawString('Identical canonical manifests; final recordings independently verified. Gray: old, gold: predictive.',$bmtFont,$bmtInk,28,48)
++    for ($bmtIndex=0; $bmtIndex -lt $bmtRows.Count; $bmtIndex++) {
++        $bmtRow = $bmtRows[$bmtIndex]
++        $bmtY = 88+$bmtIndex*33
++        $bmtGraphics.DrawString($bmtRow.track,$bmtFont,$bmtInk,28,$bmtY+3)
++        if ($bmtRow.old_finished -eq 'True') {
++            $bmtGraphics.FillRectangle($bmtOld,205,$bmtY,[single]([double]$bmtRow.old_seconds/$bmtMaximum*590),10)
++        } else { $bmtGraphics.DrawString('Old driver did not finish',$bmtSmall,$bmtInk,205,$bmtY-2) }
++        $bmtGraphics.FillRectangle($bmtNew,205,$bmtY+13,[single]([double]$bmtRow.new_seconds/$bmtMaximum*590),10)
++        $bmtLabel = '{0:F2}s' -f [double]$bmtRow.new_seconds
++        if ($bmtRow.gain_percent) {
++            $bmtDirection = if ([double]$bmtRow.gain_percent -ge 0) { 'faster' } else { 'slower' }
++            $bmtLabel += ' ({0:F1}% {1})' -f ([math]::Abs([double]$bmtRow.gain_percent)),$bmtDirection
++        }
++        $bmtGraphics.DrawString($bmtLabel,$bmtSmall,$bmtInk,805,$bmtY+10)
++    }
++    $bmtGraphics.DrawString('Reference/actual telemetry and exact inputs accompany the report. Desktop measurement; four tracks remain slower.',$bmtFont,$bmtInk,28,1010)
++    $bmtBitmap.Save((Join-Path (Resolve-Path -LiteralPath $Evidence) 'comparison.png'),[System.Drawing.Imaging.ImageFormat]::Png)
++} finally {
++    $bmtGraphics.Dispose(); $bmtBitmap.Dispose()
++    foreach ($bmtDisposable in @($bmtInk,$bmtOld,$bmtNew,$bmtTitle,$bmtFont,$bmtSmall)) { $bmtDisposable.Dispose() }
++}
+diff --git a/backend/schemas/racing-trajectory-v2.schema.json b/backend/schemas/racing-trajectory-v2.schema.json
+new file mode 100644
+--- /dev/null
++++ b/backend/schemas/racing-trajectory-v2.schema.json
+@@ -0,0 +1,35 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Private derived racing trajectory cache v2",
++  "description": "Computed from immutable geometry and a canonical vehicle contract. Not a track document, race result or public API payload. SI units; reference time is an estimate.",
++  "type": "object",
++  "required": ["version", "key", "length", "spacing", "reference_seconds", "curvature_before", "curvature_after", "blocked_samples", "strategy", "pilot_ticks", "pilot_candidates", "rows"],
++  "additionalProperties": false,
++  "properties": {
++    "version": {"const": "racing-trajectory-2"},
++    "key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
++    "length": {"type": "number", "exclusiveMinimum": 0},
++    "spacing": {"type": "number", "exclusiveMinimum": 0},
++    "reference_seconds": {"type": "number", "minimum": 0},
++    "curvature_before": {"type": "number", "minimum": 0},
++    "curvature_after": {"type": "number", "minimum": 0},
++    "blocked_samples": {"type": "integer", "minimum": 0, "maximum": 8192},
++    "strategy": {"enum": ["minimum_curvature", "smoothing", "center"]},
++    "pilot_ticks": {"type": "integer", "minimum": 0, "maximum": 15000},
++    "pilot_candidates": {
++      "type": "array", "maxItems": 3,
++      "items": {
++        "type": "object", "required": ["strategy", "finished", "ticks", "contacts", "missed_gate"], "additionalProperties": false,
++        "properties": {"strategy": {"enum": ["minimum_curvature", "smoothing", "center"]}, "finished": {"type": "boolean"}, "ticks": {"type": "integer", "minimum": 0, "maximum": 15000}, "contacts": {"type": "integer", "minimum": 0}, "missed_gate": {"type": "integer", "minimum": -1}}
++      }
++    },
++    "rows": {
++      "description": "x,y,heading,filtered curvature,target v,grip,resistance,left corridor,right corridor,elevated layer; s=index*spacing",
++      "type": "array", "minItems": 16, "maxItems": 8192,
++      "items": {
++        "type": "array", "minItems": 10, "maxItems": 10, "items": false,
++        "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}, {"type": "number"}, {"type": "number", "maximum": 0}, {"type": "number", "minimum": 0}, {"enum": [0, 1]}]
++      }
++    }
++  }
++}
+diff --git a/docs/PREDICTIVE_TEST_DRIVERS.md b/docs/PREDICTIVE_TEST_DRIVERS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PREDICTIVE_TEST_DRIVERS.md
+@@ -0,0 +1,83 @@
++# Precomputed trajectories and predictive test drivers â€” 2026-10-07
++
++The owner's trajectory/MPC proposal authorizes this local artificial-driver improvement. `profiled-trajectory-4` replaces the reactive controller for newly generated development races. It still emits ordinary quantized steering/throttle/brake and finishes five ordered laps through the existing canonical simulation and verifier.
++
++Requirements: **TD02 / TD03 / TD05 / TD06 / TD08 / T01â€“T04 / Q01**, plus task-local **TD09** (precomputed constrained trajectories, predictive following and measurable driving errors). Public population isolation, persistent profile traits, verification, ticket/upload idempotency and ordinary racing remain intact. This task changes no physics, handling resource, map geometry, camera, menu or player files.
++
++## Implemented architecture
++
++```mermaid
++flowchart TD
++    D[Immutable creator track + vehicle contract] --> P[Offline line candidates]
++    P --> V[Curvature and cyclic acceleration/braking profile]
++    V --> Q[Canonical pilot lap qualification]
++    Q --> C[Derived trajectory cache]
++    C --> M[Frenet LTV MPC at 10 Hz]
++    S[Actual vehicle state + persistent driver traits] --> M
++    M --> I[Quantized steering, throttle and brake]
++    I --> R[Canonical physics at 120 Hz: five laps]
++    R --> U[Ordinary ticket, replay upload and independent verification]
++```
++
++- The offline planner samples at 0.5 m, with a maximum of 8,192 samples and adaptive spacing for longer routes. It measures connected road corridors, subtracts the vehicle footprint/margin, excludes solid cells and starting tyre obstacles, and preserves local road/bridge branch hints. It does not take width from another crossing branch.
++- A bounded coordinate solver reduces integral squared geometric curvature. Variable chord length matters: minimizing second differences alone can favour a smaller circular radius. The planner also considers a smoothed line and a center-line candidate. Real canonical diagnostic pilot laps choose the fastest qualifying candidate with an explicit contact cost. These pilot laps create no PB, points, ticket or upload; ordinary generated races remain five laps.
++- A cyclic forward/backward speed envelope considers grip/surface/coating, acceleration, braking, steering reduction, maximum yaw and speed. Braking propagates across the lap seam. The reference lap estimate is **not a guaranteed lower bound or a globally optimal lap time**. Its filtered tangent/curvature reflects a finite vehicle rather than isolated raster/chord kinks.
++- The online controller uses a 1.6-second horizon, 16 prediction steps and a fixed maximum of 14 projected-gradient iterations with bounded line search. Five Frenet states include lateral and heading error, yaw response, lateral velocity and speed error; steering and acceleration are controls. The LTV model includes the game's speed-dependent steering, yaw/lateral response and progressive grip saturation derivative. Numerical adjoint derivatives are checked independently.
++- Input/steering slew bounds are hard; the lateral corridor is a soft objective. A bounded correction around geometric guidance keeps the linearization local in sharp bends. Large missed-gate recovery and explicit reverse/detour fallback remain physical driving. No gates, speed, vehicle state or reported time are bypassed.
++- Skill changes braking preview, corridor margin, steering smoothness, acceleration response and reference utilization. Existing seeded form, surface strengths, learning and hesitation remain. The vehicle's actual maximum speed/configuration does not change between profiles.
++
++The planner runs **before a recorded race**, lazily on first use of a published revision/vehicle. Subsequent drivers share the cache. This slice does not put extra fields in immutable public track documents or add a publishing-time worker. The derived cache is beside backend object storage, uses atomic replacement and is bounded to 128 files of at most 2 MB each. Identity pins trajectory version, content hash, compiler version, physics version, rules key and complete vehicle configuration. Malformed/stale data regenerates. Fresh planning is normalized through the exact persisted numeric representation so JSON rounding cannot change later quantized controls.
++
++The approach follows the separation of line planning and forward/backward speed profiles described in [TUM's minimum-curvature racing work](https://portal.fis.tum.de/de/publications/minimum-curvature-trajectory-planning-and-control-for-an-autonomo/), and receding-horizon progress/track-error control described by [ETH's autonomous racing research](https://control.ee.ethz.ch/research/team-projects/autonomous-rc-car-racing/research.html). The implementation is original, tailored to the game's canonical arcade model and uses no new solver dependency.
++
++## Safe controller upgrades
++
++New controller versions can produce different recordings for the same profile. The private, development-gated `GET /dev/test-drivers/uploads/{upload_key}` requires both the operator key and that artificial player's authenticated session. It looks up only the player's committed upload and returns its existing run status; it exposes no raw replay and creates no result. Another player cannot retrieve that run.
++
++The scheduler probes this capability before regenerating a waiting job. A previously committed upload survives complete loss of the local plan/recording cache and a changed controller. Retired uploads are not recreated. Existing recordings/results remain untouched. Older servers without the advertised recovery capability keep the prior flow. No database migration is needed.
++
++Controller errors are detected while the native process is running. Failure/shutdown stops only the spawned process tree, including the Windows console child, before closing its temporary log. This avoids a parse failure occupying the entire controller timeout or masking the error with a locked-log cleanup failure.
++
++## Actual evidence and validation
++
++The benchmark uses seed 27, skill 0.5, consistency 1.0, aggression 0.5 and pace scale 1.0 across the 27 original local corpus documents. The before controller is retained verbatim as [profiled-route-3.gd.txt](evidence/predictive-drivers-2026-10-07/profiled-route-3.gd.txt). Both sides use identical per-track canonical manifests: physics **0.53**, compiler **22**, rules **v20** and the same compact configuration. No old time is rescaled or renamed into a new contract.
++
++Final comparison and per-track limits are in [verified-summary.json](evidence/predictive-drivers-2026-10-07/verified-summary.json), [comparison.csv](evidence/predictive-drivers-2026-10-07/comparison.csv) and [comparison.svg](evidence/predictive-drivers-2026-10-07/comparison.svg) / [inspected PNG](evidence/predictive-drivers-2026-10-07/comparison.png). The full actual documents/inputs are retained in [verified-recordings.json.gz](evidence/predictive-drivers-2026-10-07/verified-recordings.json.gz); [final-telemetry.json](evidence/predictive-drivers-2026-10-07/final-telemetry.json) contains reference geometry/speed, actual trajectory/speed and controls. These are test evidence, outside the shipping export.
++
++The final corpus completes **27/27**, versus **26/27** before. Every final five-lap input recording is independently accepted by the ordinary verifier, with identical recorded/verified ticks and manifests. Median race time improves about **21.1%** over the 26 previously completed circuits. Recorded contacts fall from **8,346 to 5**; the old total includes the incomplete Ellipse run's repeated contacts, so it is not a count of distinct crashes or physics ticks. The final five contacts are on Over and under, Ellipse and Ajorata.
++
++Four circuits remain slower: **Dust cloud, Narrow night, Knit and Saw**. Their exact regressions are retained in the comparison; this is not universal human-level or near-optimal pace acceptance. The owner-supplied sharp **Star** and the independent **five-point spline** additionally generate five verified ordered laps without missed-gate fallback.
++
++On the desktop bridge-circuit cache measurement, cold planning takes **4,082.5 ms**, cached loading **1.3 ms**; total generation falls from **7.61 s to 3.21 s**. Predictive updates average about **0.78 ms**, with an observed maximum **6.37 ms**, against a 100 ms update interval. Cold/warm quantized recordings are exactly equal. See [cache-performance.json](evidence/predictive-drivers-2026-10-07/cache-performance.json). This is a Windows host measurement with concurrent work, not a phone or cloud CPU benchmark.
++
++Actual commands (the pinned build is always `4.7.2.stable.official.ed1daf0bf`):
++
++| Command | Actual final outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import` | New script classes registered. |
++| `... -Action TestScript -ScriptPath res://tests/test_predictive_driver.gd` | 1,382 checks, zero failures: geometric-curvature improvement, obstacle clearance, cyclic braking, cache round trip/invalidation, MPC gradients and five-car physical recovery. |
++| `$env:BMT_DRIVER_REPLAYS='1'; ... -Action TestScript -ScriptPath res://tests/benchmark_test_drivers.gd -CommandTimeoutSeconds 900` | Actual final 27-track, five-lap input/telemetry capture. |
++| `.tools/backend-venv/Scripts/python.exe backend/tools/report_predictive_drivers.py --report build/driver-benchmark.json --evidence docs/evidence/predictive-drivers-2026-10-07 --godot 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --project game` | All 27 independently verified; no reported-vs-recorded time/manifest differences. |
++| `...python.exe -m pytest backend/tests/test_predictive_drivers.py backend/tests/test_test_drivers.py backend/tests/test_automatic_test_drivers.py backend/tests/test_worker_lifecycle.py backend/tests/test_rivalry.py backend/tests/test_test_drivers_integration.py::test_profiles_generate_repeatable_distinct_verified_five_lap_races -k 'not postgres' -q --tb=short --show-capture=no` | 49 passed, four skipped, 15 deselected. Includes exact oval/bridge cold/warm recordings, corrupt/stale-cache regeneration, packaged native execution, skill ordering, real idle upload/verification, private upgrade recovery and creator splines. Existing Starlette deprecation warning remains. |
++| `... -Action TestApp` | 99 checks, zero failures. |
++| `... -Action TestScript -ScriptPath res://tests/test_script_parse.gd` | Project-wide parse checks pass; 347 scripts, zero failures. |
++| Ruff over the affected Python controller/API/scheduler/packager/tests/report utility | Passed. |
++
++Initial failures were retained rather than treated as passes: PowerShell execution policy and sandbox log access; unregistered new classes; a concurrently added compiler helper missing from the standalone package; low-speed nominal-state prediction; the wrong circle-curvature surrogate; a cleanup fixture that accidentally intercepted `taskkill`; float/int layer membership after JSON restore; and float64 persistence rounding causing a one-bit bridge control difference. Each received a concrete correction, with final targeted/broad checks rerun. The minimum-curvature solution can retain an already good seed, rather than claiming an improvement that was not measured.
++
++## Changed source and review checkpoint
++
++- `game/input/racing_trajectory.gd`, `trajectory_planner.gd`, `trajectory_mpc.gd`, and the existing `profiled_route_driver.gd`.
++- `game/backend/generate_test_driver.gd` and new native benchmark/recovery/constraint scripts in `game/tests/`.
++- `backend/bmt_backend/test_driver_generator.py`, `test_drivers.py`, `test_population_tool.py`, and the additive bootstrap recovery capability in `app.py`.
++- `backend/deploy/stage_verifier.py` includes the new driver modules and the current compiler's already-existing `object_runs`/`roadside_boundary` dependencies. This task does not edit those editor helpers.
++- `backend/tests/test_predictive_drivers.py`, the strengthened loss-of-cache automatic-worker test, `backend/tools/report_predictive_drivers.py`, and `backend/schemas/racing-trajectory-v2.schema.json`.
++- This document, current status/plan entries and the linked evidence. The recorded profile/replay/track contracts themselves remain unchanged.
++
++The workspace contains substantial concurrent/uncommitted work. The [scoped Git patch](evidence/predictive-drivers-2026-10-07/task.patch), [checkpoint description](evidence/predictive-drivers-2026-10-07/checkpoint.json) and [source hashes](evidence/predictive-drivers-2026-10-07/source-hashes.json) describe this task without resetting, staging or committing unrelated work. Reverse snapshots are reconstructed for this task's edits on top of preserved surrounding work; the original route-3 controller is retained verbatim. `git apply --reverse --check --ignore-space-change .../task.patch` passes; the flag handles the Windows working files' CRLF endings.
++
++## Remaining acceptance
++
++No cloud/NAS/backend rollout or database migration was performed by this task. The active cloud worker continues using its deployed controller until this update is rolled out; its existing results are preserved. The newly generated development flow is implemented and verified locally. No production deployment, purchase or external message was sent.
++
++Phone attachment was not checked; **no phone/emulator driving, Android export/install or mobile performance test was performed**. There is no visible app UI change requiring new menu captures. Full `Validate`, PostgreSQL-specific checks, a new 150/200-driver population, long-running worker throughput and cross-platform deterministic equality were not run. The four slower circuits, extreme/unfinishable creator geometry, moving-obstacle recovery and final skill calibration against real human PBs remain acceptance work. Cache planning currently adds cold worker latency; publishing-time precomputation and a true minimum-lap-time optimizer are future extensions, not completed features.
+diff --git a/game/input/racing_trajectory.gd.uid b/game/input/racing_trajectory.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/input/racing_trajectory.gd.uid
+@@ -0,0 +1 @@
++uid://jjr7o17lgfh1
+diff --git a/game/input/trajectory_planner.gd.uid b/game/input/trajectory_planner.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/input/trajectory_planner.gd.uid
+@@ -0,0 +1 @@
++uid://clrqti8c58cyg
+diff --git a/game/input/trajectory_mpc.gd.uid b/game/input/trajectory_mpc.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/input/trajectory_mpc.gd.uid
+@@ -0,0 +1 @@
++uid://d30a3of2y8o8c
+diff --git a/game/tests/test_predictive_driver.gd.uid b/game/tests/test_predictive_driver.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_predictive_driver.gd.uid
+@@ -0,0 +1 @@
++uid://dqwwxcn7fds3k
+diff --git a/game/tests/benchmark_test_drivers.gd.uid b/game/tests/benchmark_test_drivers.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/benchmark_test_drivers.gd.uid
+@@ -0,0 +1 @@
++uid://c5spkwbq4r5aa

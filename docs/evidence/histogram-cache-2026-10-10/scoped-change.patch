@@ -1,0 +1,1063 @@
+--- a/backend/bmt_backend/board_cache.py
++++ b/backend/bmt_backend/board_cache.py
+@@ -8,15 +8,15 @@
+ _flights = WeakKeyDictionary()
+ 
+ 
+-def cached(session, key, compute):
++def cached(session, key, compute, *, namespace="default", max_entries=2048, max_weight=None, weight=None):
+     bind = session.get_bind()
+     engine = getattr(bind, "engine", bind)
+     with _lock:
+-        cache = _caches.setdefault(engine, OrderedDict())
++        cache = _caches.setdefault(engine, {}).setdefault(namespace, OrderedDict())
+         if key in cache:
+             cache.move_to_end(key)
+             return cache[key]
+-        flights = _flights.setdefault(engine, {})
++        flights = _flights.setdefault(engine, {}).setdefault(namespace, {})
+         flight = flights.setdefault(key, Lock())
+     with flight:
+         with _lock:
+@@ -27,7 +27,8 @@
+             with _lock:
+                 cache[key] = value
+                 cache.move_to_end(key)
+-                while len(cache) > 2048: cache.popitem(last=False)
++                while len(cache) > max_entries or (max_weight is not None and sum(weight(item) for item in cache.values()) > max_weight):
++                    cache.popitem(last=False)
+             return value
+         finally:
+             with _lock:
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -40,6 +40,7 @@
+     readiness_cache_seconds: int = 2
+     readiness_storage_cache_seconds: int = 30
+     readiness_timeout_seconds: int = 2
++    histogram_refresh_seconds: int = 900
+     retention_days: int = 90
+     backup_marker_path: str = ""
+     database_pool_size: int = 4
+@@ -73,6 +74,7 @@
+         if self.google_web_client_id and self.google_web_client_id not in self.google_client_ids:
+             raise ValueError("Google web client ID must also be in BMT_GOOGLE_CLIENT_IDS")
+         for name in (
++            "histogram_refresh_seconds",
+             "verifier_timeout_seconds",
+             "job_lease_seconds",
+             "max_job_attempts",
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -16,6 +16,7 @@
+ from .cursors import decode_cursor, encode_cursor
+ from .db import get_session
+ from .identity_models import Player
++from .histogram_population import HistogramPopulation
+ from .middleware import ParsedJSONRoute
+ from .queueing import admit, check_capacity
+ from .security import bearer, current_player
+@@ -445,10 +446,15 @@
+ def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100),
+               metric: Literal["race", "best_lap"] = "race") -> dict:
+     board = public_board(session, board_id)
+-    # A slower race can improve a lap without changing the race-PB revision.
+-    if metric == "best_lap":
+-        return histogram_query(board_id, session, bins, metric=metric)
+-    return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
++    from .histogram_snapshots import load_snapshot
++    snapshot = load_snapshot(session, board.version_id, board.vehicle_id, False)
++    if snapshot is None:
++        raise HTTPException(503, "Comparison snapshot is being prepared")
++    generation, _, populations = snapshot
++    result = population_comparison(session, ("public-histogram", board_id, generation),
++        populations[0 if metric == "race" else 1], board_id, metric, bins, "", None, None, None)
++    return {**{name: result[name] for name in ("population", "minimum_ticks", "maximum_ticks", "bins", "metric")},
++            "board_id": board_id}
+ 
+ 
+ def histogram_query(board_id, session, bins, *, test_population=False, metric="race"):
+@@ -578,12 +584,28 @@
+     include_artificial = request.app.state.settings.test_drivers_enabled
+     test_id = digest({"version_id": version.id, **pinned, "test_population": True})
+     board_ids = [public_id, test_id] if include_artificial else [public_id]
++    from .histogram_snapshots import load_snapshot
++    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial)
++    if snapshot is None:
++        raise HTTPException(503, "Comparison snapshot is being prepared")
++    generation, revision, (races, laps) = snapshot
++    population_key = ("comparison-population", public_id, test_id if include_artificial else None, generation)
++    board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
++    race = population_comparison(session, population_key, races, board_id, "race", bins, player.id,
++                                 race_ticks, race_from_ticks, race_to_ticks)
++    lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
++                                lap_ticks, lap_from_ticks, lap_to_ticks)
++    return {"board_id": board_id, "population_scope": "all",
++            "stats_revision": revision, "race": race, "best_lap": lap}
++
++
++def comparison_populations(session, board_ids, public_id, test_id, include_artificial):
++    """Reconstruct the deduplicated field only on a database revision change."""
+     race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
+         Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
+     if not include_artificial:
+         race_statement = race_statement.where(Player.is_test_driver.is_(False))
+     races = race_statement.group_by(PersonalBest.player_id).subquery()
+-    race_entries = select(races.c.time_ticks, func.count().label("count")).group_by(races.c.time_ticks).subquery()
+     public_laps = best_lap_times(public_id, session)
+     laps = public_laps
+     if include_artificial:
+@@ -591,22 +613,26 @@
+         combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
+             select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
+         laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
+-    lap_entries = select(laps.c.time_ticks, func.count().label("count")).group_by(laps.c.time_ticks).subquery()
+-    race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
+-    lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
+-    board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
+-    race = histogram_from_entries(board_id, session, bins, "race", race_entries,
+-                                  candidate=race_ticks, frame_from=race_from_ticks, frame_to=race_to_ticks)
+-    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries,
+-                                 candidate=lap_ticks, frame_from=lap_from_ticks, frame_to=lap_to_ticks)
+-    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
+-    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
+-    race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own
+-    race["opponent_count"] = race["population"] - int(race_own is not None)
+-    lap["opponent_count"] = lap["population"] - int(lap_own is not None)
+-    revisions = session.scalars(select(Board.stats_revision).where(Board.id.in_(board_ids))).all()
+-    return {"board_id": board_id, "population_scope": "all",
+-            "stats_revision": sum(revisions), "race": race, "best_lap": lap}
++    return (HistogramPopulation.from_rows(session.execute(select(races)).all()),
++            HistogramPopulation.from_rows(session.execute(select(laps)).all()))
++
++
++def population_comparison(session, key, population, board_id, metric, bins, player_id, candidate, start, end):
++    start, end = population.frame(candidate, start, end)
++    stored = population.stored_grid
++    stored_bins = stored["bins"] if stored else []
++    compatible = bins == 16 and (not stored_bins or
++        start == stored_bins[0]["from_ticks"] and end in (population.ticks[-1]+1, stored_bins[-1]["to_ticks_exclusive"]))
++    grid = stored if stored is not None and compatible else cached(
++        session, ("comparison-grid", key, metric, bins, start, end),
++        lambda: population.histogram(board_id, metric, bins, start, end))
++    # Never put a player's markers/placement in the shared cached grid.
++    result = {**grid, "bins": [dict(item) for item in grid["bins"]]}
++    own = population.own.get(player_id)
++    result["own_best_ticks"] = own
++    result["opponent_count"] = result["population"] - int(own is not None)
++    result["comparison"] = population.position(candidate or own, own)
++    return result
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -97,8 +97,29 @@
+     manifest: Mapped[dict] = mapped_column(JSON)
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+     stats_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    lap_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+     public_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+     all_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++
++
++class HistogramSnapshot(Base):
++    """Durable comparison field, rebuilt by the idle worker, never a GET."""
++    __tablename__ = "histogram_snapshots"
++    __table_args__ = (Index("ix_histogram_snapshots_dirty_due", "dirty", "next_refresh_at", "lease_until"),)
++    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
++    vehicle_id: Mapped[str] = mapped_column(String(80), primary_key=True)
++    include_artificial: Mapped[bool] = mapped_column(Boolean, primary_key=True)
++    generation: Mapped[str] = mapped_column(String(36), default="", server_default="")
++    source_revision: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
++    source_fingerprint: Mapped[str] = mapped_column(String(64), default="", server_default="")
++    population: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    updated_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    next_refresh_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0", index=True)
++    lease_until: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    invalidated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
++    dirty: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
++    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+ 
+ 
+ class RunTicket(Base):
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -36,7 +36,7 @@
+     """An existing ticket belongs to another verifier/rules build."""
+ 
+ 
+-def process_one(app) -> bool:
++def process_one(app, *, refresh_histograms=False) -> bool:
+     """Claim at most one job; keep the expensive verifier outside DB transactions."""
+     if stopping(app):
+         return False
+@@ -88,6 +88,10 @@
+                 return True
+             if validate_one(app):
+                 return True
++            if refresh_histograms:
++                from .histogram_snapshots import refresh_one as refresh_histogram
++                if refresh_histogram(app):
++                    return True
+             from .test_population_batch import drive_idle as drive_batch
+             if drive_batch(app):
+                 return True
+@@ -300,6 +304,12 @@
+     return True
+ 
+ 
++def process_worker_job(app) -> bool:
++    # The long-running service performs background presentation work. Explicit
++    # single-race diagnostic calls retain their verification-only behavior.
++    return process_one(app, refresh_histograms=True)
++
++
+ def main() -> None:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--once", action="store_true", help="Process at most one currently eligible job")
+@@ -307,7 +317,7 @@
+     from .app import create_app
+ 
+     app = create_app()
+-    run_worker(app, process_one, once=args.once)
++    run_worker(app, process_worker_job, once=args.once)
+ 
+ 
+ if __name__ == "__main__":
+--- /dev/null
++++ b/backend/bmt_backend/histogram_population.py
+@@ -0,0 +1,58 @@
++"""Shared immutable driver frequencies, with cheap per-result overlays."""
++from bisect import bisect_left
++from collections import Counter
++from dataclasses import dataclass
++from types import MappingProxyType
++
++
++@dataclass(frozen=True)
++class HistogramPopulation:
++    own: object
++    ticks: tuple
++    counts: tuple
++    cumulative: tuple
++    stored_grid: object = None
++
++    @classmethod
++    def from_rows(cls, rows, stored_grid=None):
++        own = dict(rows)
++        frequencies = sorted(Counter(own.values()).items())
++        cumulative = [0]
++        for _, count in frequencies:
++            cumulative.append(cumulative[-1] + count)
++        return cls(MappingProxyType(own), tuple(t for t, _ in frequencies),
++                   tuple(c for _, c in frequencies), tuple(cumulative), stored_grid)
++
++    def frame(self, candidate, start, end):
++        if not self.ticks:
++            return None, None
++        return (min(self.ticks[0], candidate or self.ticks[0], start or self.ticks[0]),
++                max(self.ticks[-1] + 1, candidate + 1 if candidate else 0, end or 0))
++
++    def histogram(self, board_id, metric, bins, start, end):
++        result = {"board_id": board_id, "metric": metric,
++                  "population": self.cumulative[-1],
++                  "minimum_ticks": self.ticks[0] if self.ticks else None,
++                  "maximum_ticks": self.ticks[-1] if self.ticks else None, "bins": []}
++        if not self.ticks:
++            return result
++        width = max(1, (end - start + bins - 1) // bins)
++        counts = [self.cumulative[bisect_left(self.ticks, start+(i+1)*width)] -
++                  self.cumulative[bisect_left(self.ticks, start+i*width)]
++                  for i in range((end-start-1)//width+1)]
++        result["bins"] = [{"from_ticks": start + i * width,
++                           "to_ticks_exclusive": start + (i + 1) * width, "count": count}
++                          for i, count in enumerate(counts)]
++        return result
++
++    def position(self, ticks, own_ticks):
++        if ticks is None:
++            return None
++        opponents = self.cumulative[-1] - int(own_ticks is not None)
++        if opponents <= 0:
++            return None
++        faster = self.cumulative[bisect_left(self.ticks, ticks)] - int(own_ticks is not None and own_ticks < ticks)
++        position, population = faster + 1, opponents + 1
++        return {"position": position, "population": population,
++                "top_percent": max(1, (position * 100 + population - 1) // population),
++                "candidate_ticks": ticks}
+--- /dev/null
++++ b/backend/bmt_backend/histogram_snapshots.py
+@@ -0,0 +1,129 @@
++"""Throttled durable histogram refreshes, performed by the idle worker."""
++import logging
++import math
++from types import MappingProxyType
++
++from sqlalchemy import or_, select, update
++
++from .board_cache import cached
++from .histogram_population import HistogramPopulation
++from .track_models import Board, HistogramSnapshot, TrackVersion, digest, new_id, now
++
++logger = logging.getLogger("bmt.histograms")
++
++
++def refresh_interval(population, base=900):
++    # 1,000 drivers: 15 minutes by default. Smaller fields refresh sooner;
++    # large fields reach an hour. Never rebuild in response to a GET.
++    return max(60, min(3600, math.ceil(base * math.sqrt(max(1, population) / 1000))))
++
++
++def snapshot_key(version_id, vehicle_id, include_artificial):
++    return {"version_id": version_id, "vehicle_id": vehicle_id, "include_artificial": include_artificial}
++
++
++def load_snapshot(session, version_id, vehicle_id, include_artificial):
++    key = snapshot_key(version_id, vehicle_id, include_artificial)
++    metadata = session.execute(select(HistogramSnapshot.generation, HistogramSnapshot.source_revision,
++                                     HistogramSnapshot.invalidated).filter_by(**key)).first()
++    if metadata is None or not metadata.generation or metadata.invalidated:
++        return None
++    def load():
++        payload = session.scalar(select(HistogramSnapshot.payload).filter_by(**key))
++        return tuple(HistogramPopulation(MappingProxyType(payload[metric]["own"]),
++            tuple(payload[metric]["ticks"]), tuple(payload[metric]["counts"]), tuple(payload[metric]["cumulative"]),
++            payload[metric]["histogram"]) for metric in ("race", "best_lap"))
++    populations = cached(session, ("durable", version_id, vehicle_id, include_artificial, metadata.generation), load,
++                         namespace="histogram-snapshots", max_entries=4, max_weight=128*1024*1024,
++                         weight=lambda fields: sum(len(field.own)*180+len(field.ticks)*96 for field in fields))
++    return metadata.generation, metadata.source_revision, populations
++
++
++def refresh_one(app, *, clock=None):
++    from .runs import board_manifest, comparison_populations
++    clock = now() if clock is None else clock
++    token = new_id()
++    with app.state.session_factory() as session:
++        query = select(HistogramSnapshot).join(TrackVersion, TrackVersion.id == HistogramSnapshot.version_id).where(
++            TrackVersion.state == "published", HistogramSnapshot.next_refresh_at <= clock,
++            HistogramSnapshot.lease_until <= clock, or_(HistogramSnapshot.dirty.is_(True), HistogramSnapshot.invalidated.is_(True)))
++        if not app.state.settings.test_drivers_enabled:
++            query = query.where(HistogramSnapshot.include_artificial.is_(False))
++        row = session.scalar(query.order_by(HistogramSnapshot.next_refresh_at, HistogramSnapshot.version_id,
++            HistogramSnapshot.vehicle_id, HistogramSnapshot.include_artificial).with_for_update(skip_locked=True, of=HistogramSnapshot).limit(1))
++        if row is None:
++            return False
++        key = snapshot_key(row.version_id, row.vehicle_id, row.include_artificial)
++        # A lease survives worker death; conditional finalization fences old workers.
++        claimed = session.execute(update(HistogramSnapshot).filter_by(**key).where(
++            HistogramSnapshot.lease_until <= clock).values(lease_token=token, lease_until=clock+240))
++        if claimed.rowcount != 1:
++            session.rollback()
++            return False
++        source, previous_generation, invalidated, population = row.source_fingerprint, row.generation, row.invalidated, row.population
++        session.commit()
++    try:
++        with app.state.session_factory() as session:
++            if app.state.engine.dialect.name == "postgresql":
++                session.connection(execution_options={"isolation_level":"REPEATABLE READ"})
++            version = session.get(TrackVersion, key["version_id"])
++            version_digest = digest(version.manifest)
++            pinned = board_manifest(version, key["vehicle_id"])
++            public_id = digest({"version_id": version.id, **pinned})
++            test_id = digest({"version_id": version.id, **pinned, "test_population": True})
++            board_ids = [public_id, test_id] if key["include_artificial"] else [public_id]
++            revisions = session.execute(select(Board.id, Board.stats_revision, Board.lap_revision).where(
++                Board.id.in_(board_ids)).order_by(Board.id)).all()
++            revision = sum(stats + laps for _, stats, laps in revisions)
++            fingerprint = digest([list(row) for row in revisions])
++            payload = None
++            if not previous_generation or invalidated or source != fingerprint:
++                races, laps = comparison_populations(session, board_ids, public_id, test_id, key["include_artificial"])
++                board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
++                payload = {}
++                for metric, field in (("race", races), ("best_lap", laps)):
++                    start, end = field.frame(None, None, None)
++                    payload[metric] = {"own": dict(field.own), "ticks": field.ticks, "counts":field.counts,
++                        "cumulative":field.cumulative, "histogram": field.histogram(board_id, metric, 16, start, end)}
++                population = races.cumulative[-1]
++        with app.state.session_factory() as session:
++            values = {"lease_token":None, "lease_until":0,
++                      "next_refresh_at":clock+refresh_interval(population, app.state.settings.histogram_refresh_seconds)}
++            if payload is not None:
++                values.update(payload=payload, generation=new_id(), source_revision=revision,
++                              source_fingerprint=fingerprint, population=population, updated_at=clock, invalidated=False)
++            # Hold the snapshot row while checking invalidation in a fresh READ
++            # COMMITTED statement. Administrative invalidation during generation
++            # causes a retry rather than clearing its safety flag with old data.
++            current = session.scalar(select(HistogramSnapshot).filter_by(**key).with_for_update())
++            if current.lease_token == token:
++                latest = session.execute(select(Board.id, Board.stats_revision, Board.lap_revision).where(
++                    Board.id.in_(board_ids)).order_by(Board.id)).all()
++                changed = digest([list(row) for row in latest]) != fingerprint
++                manifest_changed = digest(session.scalar(select(TrackVersion.manifest).where(TrackVersion.id == key["version_id"]))) != version_digest
++                values["dirty"] = changed or manifest_changed
++                if (current.invalidated and changed) or manifest_changed:
++                    values = {"lease_token":None,"lease_until":0,"next_refresh_at":clock,"dirty":True}
++                session.execute(update(HistogramSnapshot).filter_by(**key).where(
++                    HistogramSnapshot.lease_token == token).values(**values))
++                session.commit()
++        return True
++    except Exception:
++        with app.state.session_factory() as session:
++            session.execute(update(HistogramSnapshot).filter_by(**key).where(HistogramSnapshot.lease_token == token).values(
++                lease_token=None, lease_until=0, next_refresh_at=clock+30))
++            session.commit()
++        logger.exception("histogram_refresh_failed", extra={"version_id":key["version_id"], "vehicle_id":key["vehicle_id"]})
++        return False
++
++
++def refresh_all_for_diagnostics(app, *, clock=None):
++    """Explicit offline/test refresh; never called from a request or normal race."""
++    clock = now() if clock is None else clock
++    with app.state.session_factory() as session:
++        session.execute(update(HistogramSnapshot).values(next_refresh_at=clock, dirty=True))
++        session.commit()
++    count = 0
++    while refresh_one(app, clock=clock):
++        count += 1
++    return count
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0022_histogram_cache.py
+@@ -0,0 +1,187 @@
++"""Invalidate shared comparisons for verified lap changes and test resets."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0022_histogram_cache"
++down_revision = "0021_challenge_attempts"
++branch_labels = None
++depends_on = None
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def upgrade():
++    op.add_column("boards", sa.Column("lap_revision", sa.Integer(), nullable=False, server_default="0"))
++    op.create_table("histogram_snapshots",
++        sa.Column("version_id", sa.String(36), sa.ForeignKey("track_versions.id"), primary_key=True),
++        sa.Column("vehicle_id", sa.String(80), primary_key=True),
++        sa.Column("include_artificial", sa.Boolean(), primary_key=True),
++        sa.Column("generation", sa.String(36), nullable=False, server_default=""),
++        sa.Column("source_revision", sa.Integer(), nullable=False, server_default="-1"),
++        sa.Column("source_fingerprint", sa.String(64), nullable=False, server_default=""),
++        sa.Column("population", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("updated_at", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("next_refresh_at", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("lease_until", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("lease_token", sa.String(36)),
++        sa.Column("invalidated", sa.Boolean(), nullable=False, server_default=sa.false()),
++        sa.Column("dirty", sa.Boolean(), nullable=False, server_default=sa.true()),
++        sa.Column("payload", sa.JSON(), nullable=False, server_default=sa.text("'{}'")))
++    op.create_index("ix_histogram_snapshots_next_refresh_at", "histogram_snapshots", ["next_refresh_at"])
++    op.create_index("ix_histogram_snapshots_dirty_due", "histogram_snapshots", ["dirty", "next_refresh_at", "lease_until"])
++    for scope in ("false", "true"):
++        sql(f"""INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++            SELECT DISTINCT version_id,vehicle_id,{scope} FROM boards""")
++    if op.get_bind().dialect.name == "sqlite":
++        sql("""CREATE TRIGGER histogram_board_dirty AFTER UPDATE OF stats_revision,lap_revision ON boards
++            WHEN OLD.stats_revision IS NOT NEW.stats_revision OR OLD.lap_revision IS NOT NEW.lap_revision BEGIN
++            UPDATE histogram_snapshots SET dirty=true WHERE version_id=NEW.version_id AND vehicle_id=NEW.vehicle_id; END""")
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER lap_revision_{event.lower()} AFTER {event} ON runs
++                WHEN {ref}.status='verified' BEGIN
++                UPDATE boards SET lap_revision=lap_revision+1 WHERE id={ref}.board_id; END""")
++        sql("""CREATE TRIGGER lap_revision_update AFTER UPDATE ON runs
++            WHEN (OLD.status='verified' OR NEW.status='verified') AND
++            (OLD.status IS NOT NEW.status OR OLD.lap_ticks IS NOT NEW.lap_ticks OR
++             OLD.board_id IS NOT NEW.board_id OR OLD.player_id IS NOT NEW.player_id OR OLD.created_at IS NOT NEW.created_at)
++            BEGIN UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN (OLD.board_id,NEW.board_id); END""")
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER lap_reset_{event.lower()} AFTER {event} ON operation_state
++                WHEN {ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1
++                BEGIN UPDATE boards SET lap_revision=lap_revision+1; END""")
++        changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                              for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++        sql(f"""CREATE TRIGGER lap_reset_update AFTER UPDATE ON operation_state
++            WHEN (OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND
++            (json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1)
++            AND (OLD.id IS NOT NEW.id OR {changed})
++            BEGIN UPDATE boards SET lap_revision=lap_revision+1; END""")
++    else:
++        sql("""CREATE FUNCTION bmt_histogram_dirty() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            UPDATE histogram_snapshots SET dirty=true WHERE version_id=NEW.version_id AND vehicle_id=NEW.vehicle_id;
++            RETURN NULL; END $$""")
++        sql("""CREATE TRIGGER histogram_board_dirty AFTER UPDATE OF stats_revision,lap_revision ON boards FOR EACH ROW
++            WHEN (OLD.stats_revision IS DISTINCT FROM NEW.stats_revision OR OLD.lap_revision IS DISTINCT FROM NEW.lap_revision)
++            EXECUTE FUNCTION bmt_histogram_dirty()""")
++        sql("""CREATE FUNCTION bmt_lap_revision() RETURNS trigger LANGUAGE plpgsql AS $$
++            BEGIN
++            IF TG_OP='INSERT' THEN
++              IF NEW.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id; END IF;
++            ELSIF TG_OP='DELETE' THEN
++              IF OLD.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=OLD.board_id; END IF;
++            ELSIF (OLD.status='verified' OR NEW.status='verified') AND
++              (OLD.status IS DISTINCT FROM NEW.status OR OLD.lap_ticks::text IS DISTINCT FROM NEW.lap_ticks::text OR
++               OLD.board_id IS DISTINCT FROM NEW.board_id OR OLD.player_id IS DISTINCT FROM NEW.player_id OR
++               OLD.created_at IS DISTINCT FROM NEW.created_at) THEN
++              UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN (OLD.board_id,NEW.board_id);
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_revision AFTER INSERT OR UPDATE OR DELETE ON runs FOR EACH ROW EXECUTE FUNCTION bmt_lap_revision()")
++        sql("""CREATE FUNCTION bmt_lap_reset() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE previous jsonb; current_data jsonb; previous_id text; current_id text;
++            BEGIN
++              IF TG_OP<>'INSERT' THEN previous=OLD.details::jsonb; previous_id=OLD.id; END IF;
++              IF TG_OP<>'DELETE' THEN current_data=NEW.details::jsonb; current_id=NEW.id; END IF;
++              IF (previous_id LIKE 'test-pop-batch:%' OR current_id LIKE 'test-pop-batch:%') AND
++                (previous#>>'{request,clear_test_records}'='true' OR current_data#>>'{request,clear_test_records}'='true') AND
++                (previous_id IS DISTINCT FROM current_id OR previous#>'{request,clear_test_records}' IS DISTINCT FROM current_data#>'{request,clear_test_records}' OR
++                 previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                 previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN
++                UPDATE boards SET lap_revision=lap_revision+1;
++              END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_reset AFTER INSERT OR UPDATE OR DELETE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_lap_reset()")
++    snapshot_triggers()
++
++
++def snapshot_triggers():
++    invalidate = "UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0;"
++    if op.get_bind().dialect.name == "sqlite":
++        for scope in ("false", "true"):
++            sql(f"""INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT v.id,j.key,{scope} FROM track_versions v,json_each(v.manifest,'$.vehicles') j WHERE v.state='published'""")
++        for event in ("INSERT", "UPDATE OF state,manifest"):
++            name = "insert" if event == "INSERT" else "update"
++            sql(f"""CREATE TRIGGER histogram_version_{name} AFTER {event} ON track_versions WHEN NEW.state='published' BEGIN
++                INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,key,false FROM json_each(NEW.manifest,'$.vehicles');
++                INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,key,true FROM json_each(NEW.manifest,'$.vehicles');
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE version_id=NEW.id; END""")
++        sql("""CREATE TRIGGER histogram_board_insert AFTER INSERT ON boards BEGIN
++            INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES(NEW.version_id,NEW.vehicle_id,false);
++            INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES(NEW.version_id,NEW.vehicle_id,true); END""")
++        conditions = [("player", "UPDATE OF disabled,is_test_driver ON players", "OLD.disabled IS NOT NEW.disabled OR OLD.is_test_driver IS NOT NEW.is_test_driver"),
++                      ("pb", "DELETE ON personal_bests", "1"),
++                      ("run_delete", "DELETE ON runs", "OLD.status='verified'"),
++                      ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'")]
++        for name, event, condition in conditions:
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} WHEN {condition} BEGIN {invalidate} END")
++        # Reset rows can change eligibility even when the retained PB did not.
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER histogram_reset_{event.lower()} AFTER {event} ON operation_state
++                WHEN {ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1
++                BEGIN {invalidate} END""")
++        changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                              for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++        sql(f"""CREATE TRIGGER histogram_reset_update AFTER UPDATE ON operation_state
++            WHEN (OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND
++            (json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1)
++            AND ({changed} OR OLD.id IS NOT NEW.id) BEGIN {invalidate} END""")
++    else:
++        for scope in ("false", "true"):
++            sql(f"""INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT v.id,j.key,{scope} FROM track_versions v CROSS JOIN LATERAL json_each(v.manifest->'vehicles') j
++                WHERE v.state='published' ON CONFLICT DO NOTHING""")
++        sql("""CREATE FUNCTION bmt_histogram_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF NEW.state='published' THEN
++                INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,j.key,s.scope FROM json_each(NEW.manifest->'vehicles') j CROSS JOIN (VALUES(false),(true)) s(scope)
++                ON CONFLICT DO NOTHING;
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE version_id=NEW.id;
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_version AFTER INSERT OR UPDATE OF state,manifest ON track_versions FOR EACH ROW EXECUTE FUNCTION bmt_histogram_version()")
++        sql("""CREATE FUNCTION bmt_histogram_board() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES
++                (NEW.version_id,NEW.vehicle_id,false),(NEW.version_id,NEW.vehicle_id,true) ON CONFLICT DO NOTHING;
++            RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_board_insert AFTER INSERT ON boards FOR EACH ROW EXECUTE FUNCTION bmt_histogram_board()")
++        sql(f"CREATE FUNCTION bmt_histogram_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {invalidate} RETURN NULL; END $$")
++        for name, event, condition in [
++            ("player", "UPDATE OF disabled,is_test_driver ON players", "OLD.disabled IS DISTINCT FROM NEW.disabled OR OLD.is_test_driver IS DISTINCT FROM NEW.is_test_driver"),
++            ("pb", "DELETE ON personal_bests", "true"),
++            ("run_delete", "DELETE ON runs", "OLD.status='verified'"),
++            ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'")]:
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} FOR EACH ROW WHEN ({condition}) EXECUTE FUNCTION bmt_histogram_invalidate()")
++        # The reset revision trigger already distinguishes reset metadata from progress.
++        sql(f"""CREATE FUNCTION bmt_histogram_reset() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE previous jsonb; current_data jsonb;
++            BEGIN
++              IF TG_OP<>'INSERT' AND OLD.id LIKE 'test-pop-batch:%' THEN previous=OLD.details::jsonb; END IF;
++              IF TG_OP<>'DELETE' AND NEW.id LIKE 'test-pop-batch:%' THEN current_data=NEW.details::jsonb; END IF;
++              IF (previous#>>'{{request,clear_test_records}}'='true' OR current_data#>>'{{request,clear_test_records}}'='true') AND
++                (previous#>'{{request,clear_test_records}}' IS DISTINCT FROM current_data#>'{{request,clear_test_records}}' OR
++                 previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                 previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN {invalidate} END IF;
++              RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_reset AFTER INSERT OR UPDATE OR DELETE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_histogram_reset()")
++
++
++def downgrade():
++    if op.get_bind().dialect.name == "sqlite":
++        for name in ("board_insert", "board_dirty", "version_insert", "version_update", "player", "pb", "run_delete", "run_retire", "reset_insert", "reset_update", "reset_delete"):
++            sql(f"DROP TRIGGER histogram_{name}")
++        for prefix in ("lap_revision", "lap_reset"):
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER {prefix}_{event}")
++    else:
++        for name, table in (("board_insert", "boards"), ("board_dirty", "boards"), ("version", "track_versions"), ("player", "players"), ("pb", "personal_bests"), ("run_delete", "runs"), ("run_retire", "runs"), ("reset", "operation_state")):
++            sql(f"DROP TRIGGER histogram_{name} ON {table}")
++        for name in ("board", "dirty", "version", "invalidate", "reset"):
++            sql(f"DROP FUNCTION bmt_histogram_{name}()")
++        sql("DROP TRIGGER lap_revision ON runs")
++        sql("DROP TRIGGER lap_reset ON operation_state")
++        sql("DROP FUNCTION bmt_lap_revision()")
++        sql("DROP FUNCTION bmt_lap_reset()")
++    op.drop_column("boards", "lap_revision")
++    op.drop_table("histogram_snapshots")
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -307,7 +307,7 @@
+         session.get(Run, slower["run_id"]).lap_ticks = [1, 19, 35, 35, 35]
+         session.commit()
+     path = f"/v1/boards/{board}/histogram"
+-    result = domain.client.get(path, params={"metric": "best_lap", "bins": 8})
++    result = fresh_comparison(domain, path, params={"metric": "best_lap", "bins": 8})
+     assert result.status_code == 200, result.text
+     data = result.json()
+     assert data["metric"] == "best_lap" and data["population"] == 3
+@@ -316,26 +316,33 @@
+     with domain.factory() as session:
+         session.get(Run, slower["run_id"]).lap_ticks = [1, 18, 36, 35, 35]
+         session.commit()
+-    assert domain.client.get(path, params={"metric": "best_lap"}).json()["minimum_ticks"] == 18
+-    assert domain.client.get(path, params={"metric": "unknown"}).status_code == 422
++    assert fresh_comparison(domain, path, params={"metric": "best_lap"}).json()["minimum_ticks"] == 18
++    assert fresh_comparison(domain, path, params={"metric": "unknown"}).status_code == 422
+     with domain.factory() as session:
+         session.get(Run, slower["run_id"]).status = "failed"
+         session.get(Player, domain.players["Bob"]).disabled = True
+         session.commit()
+-    data = domain.client.get(path, params={"metric": "best_lap"}).json()
++    data = fresh_comparison(domain, path, params={"metric": "best_lap"}).json()
+     assert data["population"] == 2 and data["minimum_ticks"] == 24
++
++
++def fresh_comparison(domain, *args, **kwargs):
++    """Existing correctness fixtures explicitly refresh their offline snapshot."""
++    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++    refresh_all_for_diagnostics(domain.app)
++    return domain.client.get(*args, **kwargs)
+ 
+ 
+ def test_results_comparison_uses_one_population_and_replaces_own_result(domain):
+     version, _ = public_course(domain)
+     path = f"/v1/track-versions/{version['version_id']}/results-comparison"
+     params = {"vehicle_id":"compact", "race_ticks":350, "lap_ticks":70}
+-    assert domain.client.get(path, params=params).status_code == 401
+-    solo = domain.client.get(path, params=params, headers=headers(domain)).json()
++    assert fresh_comparison(domain, path, params=params).status_code == 401
++    solo = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+     assert solo["race"]["comparison"] is None and solo["best_lap"]["comparison"] is None
+     race(domain, version, "Alice", frames=20)
+     race(domain, version, "Bob", frames=30)
+-    response = domain.client.get(path, params=params, headers=headers(domain))
++    response = fresh_comparison(domain, path, params=params, headers=headers(domain))
+     assert response.status_code == 200, response.text
+     data = response.json()
+     assert data["population_scope"] == "all"
+@@ -346,7 +353,7 @@
+         assert data[metric]["comparison"]["population"] == 3
+     assert data["race"]["own_best_ticks"] == 300
+     assert data["best_lap"]["own_best_ticks"] == 60
+-    assert domain.client.get(path, params={**params,"race_ticks":0}, headers=headers(domain)).status_code == 422
++    assert fresh_comparison(domain, path, params={**params,"race_ticks":0}, headers=headers(domain)).status_code == 422
+ 
+ 
+ def test_results_histogram_grid_survives_pending_pb_verification(domain):
+@@ -354,7 +361,7 @@
+     race(domain, version, "Alice", frames=20)
+     path = f"/v1/track-versions/{version['version_id']}/results-comparison"
+     params = {"vehicle_id": "compact", "bins": 16, "race_ticks": 50, "lap_ticks": 10}
+-    before = domain.client.get(path, params=params, headers=headers(domain)).json()
++    before = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+     for metric, prefix in (("race", "race"), ("best_lap", "lap")):
+         bins = before[metric]["bins"]
+         params[prefix + "_from_ticks"] = bins[0]["from_ticks"]
+@@ -362,7 +369,7 @@
+         assert len(bins) > 8
+         assert sum(b["count"] for b in bins) == 2  # Candidate never adds a sample.
+     race(domain, version, frames=10)
+-    after = domain.client.get(path, params=params, headers=headers(domain)).json()
++    after = fresh_comparison(domain, path, params=params, headers=headers(domain)).json()
+     for metric in ("race", "best_lap"):
+         old_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in before[metric]["bins"]]
+         new_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in after[metric]["bins"]]
+@@ -370,10 +377,10 @@
+         assert after[metric]["population"] == sum(b["count"] for b in after[metric]["bins"]) == 2
+         assert before[metric]["bins"] != after[metric]["bins"]  # Actual verified counts still update.
+     invalid = {**params, "race_to_ticks": params["race_from_ticks"]}
+-    assert domain.client.get(path, params=invalid, headers=headers(domain)).status_code == 422
++    assert fresh_comparison(domain, path, params=invalid, headers=headers(domain)).status_code == 422
+     invalid = {**params}
+     invalid.pop("race_to_ticks")
+-    assert domain.client.get(path, params=invalid, headers=headers(domain)).status_code == 422
++    assert fresh_comparison(domain, path, params=invalid, headers=headers(domain)).status_code == 422
+ 
+ 
+ def test_results_comparison_has_exact_top_percentile_with_ties(domain):
+@@ -405,7 +412,7 @@
+         next(item for item in top["items"] if item["player_id"] == domain.players["Alice"])["run_id"]
+         == alice["run_id"]
+     )
+-    histogram = domain.client.get(f"/v1/boards/{board}/histogram", params={"bins": 3}).json()
++    histogram = fresh_comparison(domain, f"/v1/boards/{board}/histogram", params={"bins": 3}).json()
+     assert sum(item["count"] for item in histogram["bins"]) == histogram["population"] == 3
+     assert [item["count"] for item in histogram["bins"]] == [2, 0, 1]
+     around = domain.client.get(f"/v1/boards/{board}/around-me", headers=headers(domain, "Alice")).json()
+@@ -545,7 +552,7 @@
+     top = domain.client.get(f"/v1/boards/{board}").json()
+     assert top["population"] == 2
+     assert [item["rank"] for item in top["items"]] == [1, 2]
+-    assert domain.client.get(f"/v1/boards/{board}/histogram").json()["population"] == 2
++    assert fresh_comparison(domain, f"/v1/boards/{board}/histogram").json()["population"] == 2
+     assert (
+         domain.client.get(f"/v1/boards/{board}/around-me", headers=headers(domain, "Bob")).json()[
+             "population"
+@@ -678,13 +685,16 @@
+     version, board = public_course(domain)
+     race(domain, version, "Alice", frames=20)
+     submit(domain, ticket(domain, version, "Bob"), "Bob", frames=40)
++    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++    refresh_all_for_diagnostics(domain.app)
+     fired = False
+ 
+     def finish_race_after_count(connection, cursor, statement, parameters, context, executemany):
+         nonlocal fired
+-        if not fired and "min(" in statement.lower() and "board_time_counts" in statement:
++        if not fired and "histogram_snapshots.generation" in statement.lower():
+             fired = True
+             assert process_one(domain.app)
++            refresh_all_for_diagnostics(domain.app)
+ 
+     event.listen(domain.app.state.engine, "after_cursor_execute", finish_race_after_count)
+     try:
+--- a/backend/tests/test_test_drivers.py
++++ b/backend/tests/test_test_drivers.py
+@@ -476,6 +476,8 @@
+         add_record(human,board_id,9900,[2100,1800,2000,2000,2000])
+         add_record(other.id,public_id,10400,[2300,1950,2050,2050,2050])
+         session.commit()
++    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++    refresh_all_for_diagnostics(drivers.app)
+     comparison_route = f"/v1/track-versions/{version_id}/results-comparison?vehicle_id=compact&race_ticks=9500&lap_ticks=1900"
+     assert drivers.client.get(comparison_route).status_code == 401
+     response = drivers.client.get(comparison_route,headers=auth(drivers.login))
+@@ -493,6 +495,7 @@
+     assert drivers.client.get(f"/v1/boards/{public_id}").json()["population"] == 2
+     drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
+     assert drivers.client.get(route, headers=auth(drivers.login)).status_code == 404
++    refresh_all_for_diagnostics(drivers.app)
+     remaining = drivers.client.get(comparison_route,headers=auth(drivers.login)).json()
+     assert remaining["population_scope"] == "all" and remaining["race"]["population"] == remaining["best_lap"]["population"] == 2
+ 
+--- /dev/null
++++ b/backend/tests/test_histogram_snapshots.py
+@@ -0,0 +1,203 @@
++"""Durability, throttling and safety of background comparison snapshots."""
++from sqlalchemy import event, select
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, race, submit, ticket
++
++from bmt_backend import board_cache, runs
++from bmt_backend.histogram_population import HistogramPopulation
++from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics, refresh_interval, refresh_one
++from bmt_backend.identity_models import Player
++from bmt_backend.track_models import Board, HistogramSnapshot, OperationState, PersonalBest, Run
++
++domain = domain_fixture
++
++
++def route(version):
++    return f"/v1/track-versions/{version['version_id']}/results-comparison?vehicle_id=compact"
++
++
++def snapshot(domain, version):
++    with domain.factory() as session:
++        return session.get(HistogramSnapshot, (version["version_id"], "compact", False))
++
++
++def test_population_controls_refresh_interval():
++    assert refresh_interval(10) == 90
++    assert refresh_interval(1000) == 900
++    assert refresh_interval(100000) == 3600
++    assert refresh_interval(0) == 60
++
++
++def test_gets_serve_durable_grid_without_generation(domain, monkeypatch):
++    version, _ = public_course(domain)
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
++    race(domain, version, "Alice", frames=20)
++    refresh_all_for_diagnostics(domain.app)
++    def forbidden(*args, **kwargs):
++        raise AssertionError("GET attempted histogram generation")
++    monkeypatch.setattr(runs, "comparison_populations", forbidden)
++    monkeypatch.setattr(HistogramPopulation, "histogram", forbidden)
++    creator = domain.client.get(route(version), headers=headers(domain)).json()
++    assert creator["race"]["own_best_ticks"] == 300
++    for _ in range(3):
++        assert domain.client.get(route(version), headers=headers(domain)).json() == creator
++    alice = domain.client.get(route(version), headers=headers(domain, "Alice")).json()
++    assert alice["race"]["own_best_ticks"] == 100
++    assert alice["race"]["comparison"]["position"] == 1
++    assert creator["race"]["comparison"]["position"] == 2
++    assert creator["race"]["bins"] == alice["race"]["bins"]
++    # Simulate a cold API process: durable data still serves without rebuilding.
++    with board_cache._lock:
++        board_cache._caches.pop(domain.app.state.engine, None)
++    statements = []
++    def record(_conn, _cursor, sql, *_):
++        statements.append(sql)
++    event.listen(domain.app.state.engine, "before_cursor_execute", record)
++    try:
++        assert domain.client.get(route(version), headers=headers(domain)).json() == creator
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", record)
++    assert not any("FROM runs" in sql or "FROM personal_bests" in sql for sql in statements)
++
++
++def test_new_times_wait_for_due_refresh(domain):
++    version, _ = public_course(domain)
++    refresh_all_for_diagnostics(domain.app)
++    before = domain.client.get(route(version), headers=headers(domain)).json()
++    due = snapshot(domain, version).next_refresh_at
++    race(domain, version, "Alice", frames=20)
++    for _ in range(3):
++        assert domain.client.get(route(version), headers=headers(domain)).json() == before
++    assert not refresh_one(domain.app, clock=due-1)
++    assert refresh_one(domain.app, clock=due)
++    after = domain.client.get(route(version), headers=headers(domain)).json()
++    assert after["race"]["population"] == after["best_lap"]["population"] == 2
++    assert after["stats_revision"] > before["stats_revision"]
++    assert snapshot(domain, version).next_refresh_at > due
++
++
++def test_unchanged_due_snapshot_never_rebuilds(domain, monkeypatch):
++    version, _ = public_course(domain)
++    refresh_all_for_diagnostics(domain.app)
++    before = snapshot(domain, version)
++    def forbidden(*args, **kwargs):
++        raise AssertionError("Unchanged population rebuilt")
++    monkeypatch.setattr(runs, "comparison_populations", forbidden)
++    assert not refresh_one(domain.app, clock=before.next_refresh_at)
++    after = snapshot(domain, version)
++    assert after.generation == before.generation and after.updated_at == before.updated_at
++    assert after.next_refresh_at == before.next_refresh_at and not after.dirty
++
++
++def test_lap_only_improvement_is_dirty_without_race_pb_change(domain):
++    version, board = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    slower = race(domain, version, "Alice", frames=25)
++    refresh_all_for_diagnostics(domain.app)
++    before = domain.client.get(route(version), headers=headers(domain, "Alice")).json()
++    due = snapshot(domain, version).next_refresh_at
++    with domain.factory() as session:
++        revision = session.get(Board, board).stats_revision
++        session.get(Run, slower["run_id"]).lap_ticks = [1, 5, 30, 30, 30]
++        session.commit()
++        assert session.get(Board, board).stats_revision == revision
++    assert domain.client.get(route(version), headers=headers(domain, "Alice")).json() == before
++    assert refresh_one(domain.app, clock=due)
++    after = domain.client.get(route(version), headers=headers(domain, "Alice")).json()
++    assert after["race"]["own_best_ticks"] == before["race"]["own_best_ticks"]
++    assert after["best_lap"]["own_best_ticks"] == 5
++
++
++def test_visibility_and_reset_changes_invalidate_without_waiting(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    refresh_all_for_diagnostics(domain.app)
++    with domain.factory() as session:
++        session.get(Player, domain.players["Alice"]).disabled = True
++        session.commit()
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
++    refresh_all_for_diagnostics(domain.app)
++    assert domain.client.get(route(version), headers=headers(domain)).json()["race"]["population"] == 1
++    with domain.factory() as session:
++        session.add(OperationState(id="test-pop-batch:snapshot-reset", details={"vehicle_id":"compact",
++            "request":{"clear_test_records":True}, "created_at":100, "tracks":[{"version_id":version["version_id"]}]}))
++        session.commit()
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
++    refresh_all_for_diagnostics(domain.app)
++    generation = snapshot(domain, version).generation
++    with domain.factory() as session:
++        row = session.get(OperationState, "test-pop-batch:snapshot-reset")
++        row.details = {**row.details, "progress":50}
++        session.commit()
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 200
++    assert snapshot(domain, version).generation == generation
++
++
++def test_active_refresh_lease_prevents_another_builder(domain):
++    version, _ = public_course(domain)
++    with domain.factory() as session:
++        row = session.get(HistogramSnapshot, (version["version_id"], "compact", False))
++        row.lease_until = 2000
++        session.commit()
++    assert not refresh_one(domain.app, clock=1999)
++    assert refresh_one(domain.app, clock=2000)
++
++
++def test_snapshot_overlay_does_not_mutate_shared_counts(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    refresh_all_for_diagnostics(domain.app)
++    baseline = domain.client.get(route(version), headers=headers(domain)).json()
++    candidate = domain.client.get(route(version)+"&race_ticks=50&lap_ticks=5", headers=headers(domain)).json()
++    assert candidate["race"]["population"] == candidate["best_lap"]["population"] == 2
++    assert candidate["race"]["comparison"]["position"] == 1
++    assert domain.client.get(route(version), headers=headers(domain)).json() == baseline
++
++
++def test_migration_backfills_snapshots_without_rewriting_results(domain):
++    from alembic import command
++
++    from bmt_backend.migrate import configuration, upgrade
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    with domain.factory() as session:
++        records = session.execute(select(Run.id, Run.status, Run.lap_ticks)).all()
++        pbs = session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)).all()
++    command.downgrade(configuration(domain.app.state.engine), "0021_challenge_attempts")
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        assert session.execute(select(Run.id, Run.status, Run.lap_ticks)).all() == records
++        assert session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)).all() == pbs
++    assert snapshot(domain, version).generation == ""
++    refresh_all_for_diagnostics(domain.app)
++    assert domain.client.get(route(version), headers=headers(domain)).json()["race"]["population"] == 2
++
++
++def test_visibility_change_during_refresh_never_publishes_old_population(domain, monkeypatch):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    original = runs.comparison_populations
++    def invalidate_after_read(*args, **kwargs):
++        value = original(*args, **kwargs)
++        with domain.factory() as session:
++            session.get(Player, domain.players["Alice"]).disabled = True
++            session.commit()
++        return value
++    monkeypatch.setattr(runs, "comparison_populations", invalidate_after_read)
++    assert refresh_one(domain.app)
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
++    monkeypatch.setattr(runs, "comparison_populations", original)
++    assert refresh_one(domain.app)
++    assert domain.client.get(route(version), headers=headers(domain)).json()["race"]["population"] == 1
++
++
++def test_service_worker_verifies_player_before_idle_histogram(domain):
++    from bmt_backend.worker import process_worker_job
++    version, _ = public_course(domain)
++    queued = submit(domain, ticket(domain, version, "Alice"), "Alice", frames=20)
++    assert process_worker_job(domain.app)
++    with domain.factory() as session:
++        assert session.get(Run, queued["run_id"]).status == "verified"
++    assert snapshot(domain, version).generation == ""
++    assert process_worker_job(domain.app)
++    assert snapshot(domain, version).generation != ""
+--- /dev/null
++++ b/docs/STORED_HISTOGRAMS_2026_10_10.md
+@@ -0,0 +1,81 @@
++# Stored, throttled histograms — 2026-10-10
++
++Requirements: HOPT03 (durable histograms), HOPT04 (dirty-only timed refresh), HOPT05 (population-dependent interval), HOPT02/RR06 (selection/results initialization and unified charts), TD06/TD08 (deduplication/public isolation), B05/B07/R01/Q01 (durable jobs, migration and measured acceptance).
++
++The owner requests stored histograms rather than rebuilding them on every request, with throttling for busy tracks and longer intervals for larger populations. This supersedes immediate histogram freshness in older fixtures. Competitive PB writes and leaderboard scoring remain immediate; histograms and their comparison positions describe the stored snapshot. UI behavior remains selection-driven discovery and one load when results open.
++
++## Behavior
++
++`histogram_snapshots` stores the race and flying-lap field for each immutable track version/car/comparison population. It contains the prepared sixteen-bin grids, exact frequencies/cumulative counts and per-driver best times. Publication registers every allowed car, including empty tracks. Migration backfills registrations for existing versions/boards without rewriting races or PBs.
++
++Verified results advance a database-maintained revision and mark the relevant snapshots dirty with constant-size metadata writes. They do not rebuild a histogram. The service worker checks due dirty snapshots after player verification/track validation and before artificial generation. It claims one refresh with an expiring lease and conditionally publishes its generation. Requests never claim or build a snapshot.
++
++The default interval is `clamp(ceil(900 * sqrt(max(1, drivers) / 1000)), 60, 3600)` seconds. `BMT_HISTOGRAM_REFRESH_SECONDS` configures the 900-second reference value and must be positive. These are initial local defaults:
++
++| Comparable drivers | Minimum refresh interval |
++| ---: | ---: |
++| 10 | 90 seconds |
++| 100 | 285 seconds |
++| 1,000 | 15 minutes |
++| 100,000 | 1 hour |
++
++Dirty tracks rebuild at the next idle worker opportunity after their interval expires. More attempts inside that interval do not schedule more rebuilds. Clean tracks do not generate periodic work. An unchanged source fingerprint skips reconstruction if a redundant dirty notification arrives. A newly published/empty track gets an initial snapshot; the first verified result after that obeys its existing interval. Actual queue load can delay an eligible refresh beyond its minimum interval.
++
++A slower race can improve a flying lap without changing the race PB. The new `boards.lap_revision` tracks verified lap/status/ownership/time changes separately; a fingerprint includes the actual pinned board IDs and both revisions. Test reset progress does not invalidate histograms, but changes to reset eligibility metadata do. Retired runs, removed records and player visibility changes invalidate affected stored data immediately instead of waiting for the normal interval. Publication/manifest changes also invalidate their version's snapshot. Administrative invalidation is conservatively broad; this is rare and prioritizes correctness.
++
++Until the worker prepares a first or invalidated snapshot, the endpoint returns an unavailable response. It never fabricates an empty population or synchronously scans race history to fill the gap. Ordinary newly arriving times continue to serve the previous valid snapshot until due. Lease expiry recovers a dead worker; errors retain prior valid data and delay retry by thirty seconds. Finalization checks the source and manifest again so an administrative change during generation cannot clear its invalidation with old data.
++
++## Request computation
++
++Both the public histogram and unified results-comparison routes use stored snapshots. The default sixteen-bin grid comes from storage. A caller's different bin count or retained frame is a cheap viewport adjustment over stored cumulative frequencies: sixteen boundary searches, not a scan of players or attempts. Results use exact tie-aware position against that same stored field, replace the player's previous contribution and keep current-result markers separate from population counts.
++
++The API loads a snapshot payload once per process/generation and keeps immutable frequency/own-time structures. The cache has at most four snapshots and a conservative estimated 128 MiB weight budget. Cached grids use the existing bounded aggregate cache in a separate namespace. Returned bins are copied before individual overlays; one player cannot alter another player's shared response. A cold process reloads the durable snapshot rather than reconstructing it from runs. Cold large-payload decode time and actual process RSS are not covered by a five-millisecond guarantee.
++
++The builder still reads verified lap history when it refreshes a dirty snapshot, once per scheduled generation rather than repeatedly per request. A durable best-lap projection remains a possible later improvement for very large attempt histories. This task adds no replay physics, dependencies, UI labels or push refreshes.
++
++## Measured computation
++
++Owned local PostgreSQL 17, analyzed synthetic tables, five calculation calls per case, including the first payload load. Timings exclude authentication, HTTP transport and live-host load. Initial implementation measurements:
++
++| Drivers | Attempts | Median request | Background diagnostic refresh of both populations |
++| ---: | ---: | ---: | ---: |
++| 100 | 100 | 2.52 ms | 160.14 ms |
++| 100 | 5,000 | 2.40 ms | 183.52 ms |
++| 1,000 | 1,000 | 2.76 ms | 94.82 ms |
++| 1,000 | 50,000 | 2.35 ms | 246.32 ms |
++
++The final source recheck at 1,000 drivers/1,000 attempts measured **4.659 ms median**, reflecting local timing variation. Every case used three SQL statements on the first read and two thereafter, with **zero lap-history reads** in requests. The previous implementation used eleven statements/four lap-history reads and measured 291.26 ms at 1,000 drivers/50,000 attempts. [Initial samples](evidence/histogram-cache-2026-10-10/postgres-report.json), [final recheck](evidence/histogram-cache-2026-10-10/postgres-final-report.json).
++
++An independent 100,000-driver in-memory stored-frequency viewport/position probe ran 1,000 calls: median **0.0132 ms**, p95 **0.0165 ms**. This covers the small view adjustment only, not database generation, payload decoding or HTTP. [Receipt](evidence/histogram-cache-2026-10-10/large-population-view.json).
++
++## Changed files
++
++- `backend/bmt_backend/histogram_snapshots.py`: durable refresh, lease, adaptive interval, safety checks, stored reads and explicit diagnostic refresh.
++- `backend/bmt_backend/histogram_population.py`: immutable driver field and cumulative-frequency view/position calculations.
++- `backend/bmt_backend/migrations/versions/0022_histogram_cache.py`, `track_models.py`: snapshot storage, backfill, dirty/invalidation triggers and lap revision.
++- `backend/bmt_backend/runs.py`: reads stored public/unified histograms and adds individual overlays.
++- `backend/bmt_backend/board_cache.py`: bounded cache namespaces/weights; `config.py`: reference interval; `worker.py`: idle service refresh. Explicit single-race diagnostic `process_one` calls retain their prior behavior; the long-running service uses `process_worker_job`.
++- `backend/tests/test_histogram_snapshots.py`: storage, cold-process reads, cadence, lap-only dirty changes, visibility/reset invalidation, leases, source-change races, migration preservation and player-job priority.
++- `backend/tests/test_domains.py`, `test_test_drivers.py`: existing histogram correctness fixtures explicitly refresh offline snapshots before checking fresh counts. No count/tie/frame/isolation assertions were removed. The PostgreSQL consistency hook now commits a new stored generation between snapshot metadata and payload reads and still proves one consistent response.
++- This report/evidence, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md record actual outcomes.
++
++## Actual commands and outcomes
++
++Python is the existing `.tools/backend-venv/Scripts/python.exe`, with PYTHONPATH=backend and PYTHONUTF8=1. No dependencies were installed.
++
++- `-m pytest backend/tests/test_histogram_snapshots.py backend/tests/test_domains.py -k 'not postgres and (histogram or results_comparison)' -q --tb=short --junitxml=build/histogram-cache-2026-10-10/sqlite-final.xml`: **15 passed**, before the final added service-worker priority test. [Receipt](evidence/histogram-cache-2026-10-10/sqlite-final.xml).
++- `-m pytest backend/tests/test_scalability.py backend/tests/test_worker_lifecycle.py backend/tests/test_histogram_snapshots.py -k 'not postgres' -q --tb=short --junitxml=build/histogram-cache-2026-10-10/worker-cache-final.xml`: final **40 passed, 6 skipped, 27 deselected**. Windows signal/POSIX and explicitly PostgreSQL-only cases are skipped by those fixtures. [Receipt](evidence/histogram-cache-2026-10-10/worker-cache-final.xml).
++- `-m pytest backend/tests/test_test_drivers.py -k histogram -q --tb=short --junitxml=build/histogram-cache-2026-10-10/drivers-final.xml`: final **2 passed**, deduplicated all-driver comparisons, reset cutoffs and private-board isolation. [Receipt](evidence/histogram-cache-2026-10-10/drivers-final.xml).
++- `build/histogram-cache-2026-10-10/owned_pg_final.py`: owned PostgreSQL **15 passed, 1 skipped**, then final request benchmark exit zero; generated container removed. The skip is the SQLite parameter of the PostgreSQL-only consistency test, not a missing PostgreSQL run. [Tests](evidence/histogram-cache-2026-10-10/postgres-final-tests.log), [benchmark](evidence/histogram-cache-2026-10-10/postgres-final-probe.log).
++- `build/histogram-cache-2026-10-10/owned_pg_priority.py`: final PostgreSQL service-worker priority test **1 passed**, generated container removed. [Receipt](evidence/histogram-cache-2026-10-10/postgres-priority-tests.log).
++- `-m ruff check backend/bmt_backend/histogram_population.py backend/bmt_backend/histogram_snapshots.py backend/bmt_backend/migrations/versions/0022_histogram_cache.py backend/tests/test_histogram_snapshots.py`: passed after correcting test imports.
++
++The disposable runners use an already installed local postgres:17 image, unique owned containers, loopback connections and generated isolated schemas. They check ownership before cleanup; no remote service or real player records were changed. Probe source receipts retain their original execution directory under `build/histogram-cache-2026-10-10`.
++
++Earlier broad SQLite domain coverage produced **30 passed and two failures**: the existing historical checkpoint-rule transition returns 409, and the native practice fixture cannot obtain its track validator in this launch environment. Both reproduce unchanged with the exact pre-task runtime modules in an isolated baseline package. [Current broad receipt](evidence/histogram-cache-2026-10-10/sqlite-broad.xml), [baseline](evidence/histogram-cache-2026-10-10/baseline-failures.log). They were not relaxed or fixed in this slice. An initial worker test run exposed the new background work changing single-race diagnostic return values; the service integration was separated and all unchanged assertions now pass. An initial selector accidentally included stale local PostgreSQL configuration; final PostgreSQL tests used the owned loopback database.
++
++## Limits and remaining acceptance
++
++This is a **local backend implementation**, not a deployment. Migration 0022 depends on the already existing local 0021 challenge migration; an authorized rollout must review that chain, back up existing records, migrate and deploy matching API/worker builds. First snapshots can be populated by the worker before client acceptance. No migration was run against the running backend.
++
++No phone attachment check or device test, Android export/install, full Validate or production action was performed. No visible UI changes require new screenshots. Remaining acceptance: real-host load/memory and initial population, owner review of the proposed adaptive intervals, very large history refresh cost, and the two pre-existing broad domain failures. The source-only checkpoint excludes unrelated dirty workspace changes.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 HOPT03-HOPT05/HOPT02/RR06/TD06/TD08/B05/B07/R01/Q01: owner requests stored histograms with throttled/adaptive refresh. Durable per-version/car/population grids/frequencies/own times; verified data marks dirty, idle service worker refreshes due fields only, new default10drivers90s/1000drivers15min/100000drivers1h (configurable900s reference). Separate lap revision handles slower-race lap PBs; reset/visibility/retired data invalidates immediately, leases/fenced publication/backfill preserve records. Requests2warm SQL/zero history scans; local PGinitial medians2.35-2.76ms up to50000attempts/final4.659ms;100000-driver view-only median0.0132ms. Final worker/cacheSQLite40(6skip)/focused15/driver2/PG15(1SQLite skip)+service priority1/Ruff pass. Broad domain two failures reproduce pre-task baseline; assertions retained. Explicit race diagnostics keep prior behavior. Schema0022 depends existing0021; no running migration/deploy, player-record or UI changes, phone attachment/device test/export/full Validate. Source/files/commands/receipts/task-only checkpoint/remaining host-load-interval acceptance: docs/STORED_HISTOGRAMS_2026_10_10.md.
++
+ 2026-10-10 V04/V05/Q01/R01: owner bridge-dust fix installed; Vulkan appearance rejected and Compatibility restored. Ground/deck particle banks preserve lingering emission layer; creator-span volume/actual sandstone soffit clipping plus opaque-roof protection prevents ground dust crossing deck, keeps on-deck dust visible. MSAA2x,1.5MP/nativeHUD/camera/colour/canonical unchanged, dust presentation12. GPU89/desert87/nine roof-reference pixels+state/material witness/export72/21/48 pass. Native final ground/deck images inspected, deck4banks, paused0; ordinary drive19.987ms/p9524.43 (~50FPS). APK246963167/SHA25694FF619583F4E27F6417438643A1CA4B62101A699E56897CAE55F838EDF4001D installSuccess; marker absent/normal play restored/playerdata retained. Initial locked attempt/argument-array capture issue corrected without weakened checks. No fullValidate/replay/thermal/other-device/backend or production action. Validated16 creator spans/junctions covered; legacy export-excluded deck fixtures unchanged; owner prolonged/shadow acceptance remains. Files/commands/evidence/scoped checkpoint: docs/BRIDGE_DUST_2026_10_10.md.
+ 
+ 2026-10-10 SND28-SND29/SND24-SND27/SND05/G01/R01/Q01/V06: owner asks another equal rain reduction and thunder sound. Rain0.45-to0.36818182 (-18.18%/-1.743dB); recorded CC0 BigSoundBank3114 clap/rolling-tail replaces quiet synthetic placeholder,7.5s/661544bytes/7ad33f2e/Vehicle gain0.65. Existing lightning delay1.2-2.8s/spacing/pitch/pause-focus retained; no wet tires reintroduced and47 vehicle/rain WAV hashes exact. Import/offline rebuild/focused40/native19/review pass; audible transient/one delayed cue/paused zero/mute-only music/headroom. Storm94 retains two pre-existing visual spray failures. No phone attachment/device listening/export-install/full Validate/camera/physics/backend/deploy. Source/licence/files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (thunder).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 HOPT03-HOPT05/HOPT02/RR06/TD06/TD08/B05/B07/R01/Q01: owner requests stored histograms with throttled/adaptive refresh. Durable per-version/car/population grids/frequencies/own times; verified data marks dirty, idle service worker refreshes due fields only, new default10drivers90s/1000drivers15min/100000drivers1h (configurable900s reference). Separate lap revision handles slower-race lap PBs; reset/visibility/retired data invalidates immediately, leases/fenced publication/backfill preserve records. Requests2warm SQL/zero history scans; local PGinitial medians2.35-2.76ms up to50000attempts/final4.659ms;100000-driver view-only median0.0132ms. Final worker/cacheSQLite40(6skip)/focused15/driver2/PG15(1SQLite skip)+service priority1/Ruff pass. Broad domain two failures reproduce pre-task baseline; assertions retained. Explicit race diagnostics keep prior behavior. Schema0022 depends existing0021; no running migration/deploy, player-record or UI changes, phone attachment/device test/export/full Validate. Source/files/commands/receipts/task-only checkpoint/remaining host-load-interval acceptance: docs/STORED_HISTOGRAMS_2026_10_10.md.
++
+ 2026-10-10 V04/V05/Q01/R01: owner bridge-dust fix installed; Vulkan appearance rejected and Compatibility restored. Ground/deck particle banks preserve lingering emission layer; creator-span volume/actual sandstone soffit clipping plus opaque-roof protection prevents ground dust crossing deck, keeps on-deck dust visible. MSAA2x,1.5MP/nativeHUD/camera/colour/canonical unchanged, dust presentation12. GPU89/desert87/nine roof-reference pixels+state/material witness/export72/21/48 pass. Native final ground/deck images inspected, deck4banks, paused0; ordinary drive19.987ms/p9524.43 (~50FPS). APK246963167/SHA25694FF619583F4E27F6417438643A1CA4B62101A699E56897CAE55F838EDF4001D installSuccess; marker absent/normal play restored/playerdata retained. Initial locked attempt/argument-array capture issue corrected without weakened checks. No fullValidate/replay/thermal/other-device/backend or production action. Validated16 creator spans/junctions covered; legacy export-excluded deck fixtures unchanged; owner prolonged/shadow acceptance remains. Files/commands/evidence/scoped checkpoint: docs/BRIDGE_DUST_2026_10_10.md.
+ 
+ 2026-10-10 HOPT01-HOPT02/RR06/TD06/TD08/R01/Q01: histogram review removes results outbox-driven timer/requeue and same-selected-track discovery refresh; initial selection hydrates once, results initialize once per opened view. Real empty-outbox probe6idle/3hidden GETs becomes0/0, both snapshots fixed even with changed offered packets/pending events. Native graphical148/results37/App99 and backendSQLite5(1skip)/driver2 pass; owned analyzed PG17 endpoint11queries/4lap-history reads, 1000drivers median44.22ms at1000attempts vs291.26ms at50000. Lap-only improvement leaves existing board revision unchanged; naive revision cache unsafe, durable lap projection recommended. Owned DB removed/no server runtime-schema-deploy/player-record changes. Captures inspected; no phone attachment/device test/export-install/full Validate. Owner confirms results load once when opened. Files, commands, receipts, scoped checkpoint and acceptance: docs/HISTOGRAM_OPTIMIZATION_2026_10_10.md.

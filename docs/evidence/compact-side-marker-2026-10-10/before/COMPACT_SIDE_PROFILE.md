@@ -1,0 +1,29 @@
+# Compact side windows and door proportions - 2026-10-10
+
+Requirements: CG09 (owner-marked side windows must fit together and door must have believable proportions), CG01-CG08, GL01-GL06/V06/R01/Q01. The owner supplies the side-profile screenshot; this updates the actual shared fictional Compact model in Garage and driving.
+
+The previous rear side opening had a rising lower edge, a lower rear upper corner and a silver surround, while the front opening had a horizontal sill and dark seal. Its window coordinates were independent of the newer cabin skin. Both openings now derive their lateral position and sloping outer edges from that cabin profile. They share y=1.08m sill and y=1.422m top rails, consistent small rounded corners and the same dark gasket. A 70mm vertical painted pillar separates them. The front pane extends to z=0.59m; the quarter pane begins at z=0.66m. The quarter pane's outer edge follows the hatch pillar.
+
+The metal door's top span increases from1.18m to1.535m (about30%); its height increases from0.45m to0.58m (about29%). Its bottom moves fromy=0.56m to0.43m, closer to the rocker. The leading edge slopes back to clear the front arch, and the lower corners remain rounded. The door outline continues around the painted window frame to the roof rail. Its rear edge is centered under the same window pillar atz=0.625m; the handle moves rearward with the door and follows the actual side skin.
+
+Changed files: `game/vehicle/compact_coachwork.gd` (shared side-window/door profiles), `car_visual.gd` (consistent pane placement/trim), `compact_glazing.gd` (semantic mesh names for native inspection), `compact_detail.gd` (full door outline/frame and relocated handle); new `game/tests/test_compact_side_profile.gd` and UID; this document, the v3 original-asset provenance follow-up and scoped status/plan/license entries. [Task-only Git checkpoint](evidence/compact-side-profile-2026-10-10/scoped-change.patch) preserves preceding and unrelated workspace work.
+
+All **50 existing v3 native resources remain SHA-256 exact**, with the same711101bytes; no rebake or new external asset/service is needed. Original sources, fictional identity, prior front/rear joins, mirror proportions, roof/windshield shapes, saved paints, wheel transforms and canonical handling/collision are retained. Source/bake array parity remains exact. The shipping Garage/driving cameras and user-data contracts are unchanged. New window/door geometry is original native code; no supplied screenshot pixels are embedded.
+
+Actual commands use pinned Godot **4.7.2.stable.official.ed1daf0bf** through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with normal Windows engine log/certificate access. Actual-app captures disable API requests and redirect records/library/cloud paths to isolated storage. The painted capture uses Garage's preview/reset handlers and synchronized swatches; no real player data is written.
+
+| Actual command | Actual outcome |
+| --- | --- |
+| `-Action TestScript -ScriptPath res://tests/test_compact_side_profile.gd -Graphical` | **252 checks, zero failures**: actual emitted glass/seal bounds, shared trim, pillar/door alignment, full door depth/frame, every metal seam's wheel-opening clearance, six actual-app views |
+| `-Action TestScript -ScriptPath res://tests/test_garage_studio.gd -Graphical` | **75 checks, zero failures**: all50 source/bake arrays exact, finite UV geometry, paints, studio/driving glass isolation, wheels and batching |
+| `-Action TestVehicleBatch` | **35 checks, zero failures**: all five vehicles preserve exact source/batched geometry and bounds; Compact985parts ->48meshes/97136triangles |
+| `-Action TestScript -ScriptPath res://tests/test_compact_front_join.gd -Graphical` | **116 checks, zero failures**: earlier shared front edges/normals/tangents and38 exact retained mirror/rear/cabin/roof/glass arrays |
+| `-Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical` | **115 checks, zero failures**: persisted colors, preview/reset/save-failure handling and driving application |
+| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **481 scripts, zero failures** in the current shared workspace |
+| Python SHA-256 comparison to captured v3 manifest | All50 existing native files exact |
+| `C:/Users/ville/AppData/Local/Android/Sdk/platform-tools/adb.exe devices -l` | OPD2403 OnePlus Pad2/f0ba474a attached; **no phone attached** |
+| Scoped whitespace/reverse-apply checkpoint checks | Pass |
+
+Actual glass bounds match on both sides: y=1.090664744m minimum and1.414538741m maximum for both panes. The emitted metal door bounds reach y=0.427m and span1.54212m including seam thickness. Inspectable evidence: [left profile](evidence/compact-side-profile-2026-10-10/side-left-1280.png), [right profile](evidence/compact-side-profile-2026-10-10/side-right-1280.png), [front angle](evidence/compact-side-profile-2026-10-10/front-quarter-1280.png), [rear angle](evidence/compact-side-profile-2026-10-10/rear-quarter-1280.png), [recolored profile](evidence/compact-side-profile-2026-10-10/painted-side-1280.png), [960px profile](evidence/compact-side-profile-2026-10-10/side-right-960.png). Native fixtures use the existing manual orbit controls; no shipping projection or framing change was made.
+
+Final Compact:97136triangles/48batched meshes/68548UVvertices. One desktop studio build observation322.31ms; RTX3090 Compatibility SubViewport CPUmedian0.761ms/GPUmedian0.179ms during concurrent graphical checks. These are individual desktop observations, not phone/whole-app performance or AAA acceptance. No physical-device test, Android export/install, full Validate, physics regression, backend deployment or production action was performed. Remaining acceptance: owner profile/proportion review and tablet/phone visual/performance checks. Restart/rebuild the client to load the revised native code.

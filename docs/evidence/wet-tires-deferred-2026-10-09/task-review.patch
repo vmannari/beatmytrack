@@ -1,0 +1,202 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -253,17 +253,8 @@
+ 	# Desert replaces all tire/rolling beds immediately, including transition tails.
+ 	var tires_silent: bool = not grounded or desert
+ 	_layer("tire",asphalt*0.62,0.88+clampf(speed/46.0,0,1)*0.24,dt,tires_silent or surface_model.pavement==0.0 or surface_model.water>=1.0)
+-	# Wet asphalt is rolling contact, not a constant weather/spray bed.
+-	# Reuse the road voice so wet driving does not increase the mixer budget.
+-	var wet_road: bool = theme=="storm"
+-	var road_player: AudioStreamPlayer = layers.road
+-	var road_stream: AudioStreamWAV = _stream("wet_road" if wet_road else "road",true)
+-	if road_player.stream != road_stream:
+-		road_player.stream = road_stream
+-		road_player.play()
+-	var road_gain: float = movement*(0.30+smoothstep(0.4,42.0,speed)*0.72) if wet_road else rolling*0.13
+-	var road_pitch: float = 0.84+clampf(speed/46.0,0.0,1.0)*0.30 if wet_road else 0.78+clampf(speed/46.0,0.0,1.0)*0.46
+-	_layer("road",road_gain*surface_model.pavement,road_pitch,dt,tires_silent or surface_model.pavement==0.0 or speed<=0.4)
++	# Owner deferred wet-asphalt rolling; no wet loop or dry-road replacement.
++	_layer("road",rolling*0.13*surface_model.pavement,0.78+clampf(speed/46.0,0.0,1.0)*0.46,dt,tires_silent or theme=="storm" or surface_model.pavement==0.0 or speed<=0.4)
+ 	_layer("loose",movement*(0.10+rolling*0.25+scrub*0.15)*surface_model.gravel,0.82+clampf(speed/46.0,0,1)*0.28,dt,tires_silent or surface_model.gravel==0.0 or movement==0.0)
+ 	_layer("grass",movement*(0.12+rolling*0.30+scrub*0.14+surface_model.drive*0.08)*surface_model.grass,0.85+clampf(speed/46.0,0,1)*0.25,dt,tires_silent or surface_model.grass==0.0 or movement==0.0)
+ 	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain if desert else 1.0),sand_frequency*0.90 if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
+diff --git a/game/tests/test_vehicle_audio.gd b/game/tests/test_vehicle_audio.gd
+--- a/game/tests/test_vehicle_audio.gd
++++ b/game/tests/test_vehicle_audio.gd
+@@ -97,7 +97,7 @@
+ 	check(float(audio.levels.sand)>0 and float(audio.levels.loose)==0 and float(audio.levels.tire)==0,"desert replaces tire/rolling noise with sand particles")
+ 	track.metadata.theme = "storm"
+ 	audio.present(state,control,track,0.1,false)
+-	check(float(audio.levels.road)>0 and float(audio.levels.water)==0,"wet asphalt rolls without blanket weather spray")
++	check(float(audio.levels.road)==0 and float(audio.levels.water)==0 and not audio.streams.has("wet_road"),"deferred wet rolling stays silent with no blanket spray or wet loop loaded")
+ 	var original_cells: PackedInt32Array = track.cells.duplicate()
+ 	track.cells.fill(6)
+ 	track.metadata.theme = "pine"
+diff --git a/game/tests/test_wet_road_audio.gd b/game/tests/test_wet_road_audio.gd
+--- a/game/tests/test_wet_road_audio.gd
++++ b/game/tests/test_wet_road_audio.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+-## Wet rolling follows speed/material, with lifecycle guards and optional native PCM.
+-const OUT: String = "res://../docs/evidence/wet-road-audio-2026-10-09"
++## Owner-deferred wet rolling stays silent; quiet rain and other surfaces remain.
++const OUT: String = "res://../docs/evidence/wet-tires-deferred-2026-10-09"
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -25,26 +25,22 @@
+ 	state.position = track.spawn
+ 	var pedal := DriveFrame.sample(0,1,0)
+ 	var road: AudioStreamPlayer = audio.layers.road
+-	var previous_gain: float = 0.0
+-	var previous_pitch: float = 0.0
+ 	for speed: float in [4.0,12.0,24.0,40.0]:
+ 		audio.reset()
+ 		state.velocity = Vector2(0,speed)
+ 		var snapshot: Array = state.snapshot()
+ 		for tick: int in range(30): audio.present(state,pedal,track,0.05,false)
+ 		check(state.snapshot()==snapshot,"presentation preserves canonical state at "+str(speed))
+-		check(float(audio.levels.road)>previous_gain,"rolling gain increases at "+str(speed))
+-		check(road.pitch_scale>previous_pitch and road.pitch_scale<=1.14,"bounded speed texture at "+str(speed))
+-		check(road.stream==audio.streams.wet_road,"wet derivative uses existing road voice")
++		check(float(audio.levels.road)==0 and road.volume_linear==0,"deferred wet rolling silent at "+str(speed))
++		check(not audio.streams.has("wet_road"),"rejected wet derivative is not loaded")
++		check(road.stream==audio.streams.road,"muted road voice retains ordinary dry stream")
+ 		check(float(audio.levels.water)==0.0,"no weather-wide spray")
+-		previous_gain = float(audio.levels.road)
+-		previous_pitch = road.pitch_scale
+ 	state.velocity = Vector2.ZERO
+ 	audio.present(state,pedal,track,0.05,false)
+ 	check(float(audio.levels.road)==0 and road.volume_linear==0,"stationary asphalt immediately silent despite throttle")
+ 	state.velocity = Vector2(0,-24)
+ 	audio.present(state,pedal,track,0.1,false)
+-	check(float(audio.levels.road)>0,"reverse rolls on wet asphalt")
++	check(float(audio.levels.road)==0,"deferred wet rolling silent in reverse")
+ 	state.jump_height = 1
+ 	audio.present(state,pedal,track,0.05,false)
+ 	check(float(audio.levels.road)==0 and float(audio.levels.water)==0,"airborne tire contact immediately silent")
+@@ -70,9 +66,10 @@
+ 	check(float(audio.levels.road)==0 and not road.stream_paused,"retry clears levels and unpauses")
+ 	track.metadata.theme = "pine"
+ 	audio.present(state,pedal,track,0.1,false)
+-	check(road.stream==audio.streams.road,"dry asphalt restores dry recording")
++	check(road.stream==audio.streams.road and float(audio.levels.road)>0,"ordinary dry asphalt rolling still plays")
+ 	track.metadata.theme = "storm"
+ 	audio.present(state,pedal,track,0.1,false)
++	check(float(audio.levels.road)==0 and road.volume_linear==0,"return to storm immediately suppresses dry rolling tail")
+ 	check(audio.get_child_count()==22,"wet rolling adds no playback voices")
+ 	var weather := StormWeather.new()
+ 	root.add_child(weather)
+@@ -124,6 +121,10 @@
+ 		record.set_recording_active(false)
+ 		var sample: AudioStreamWAV = record.get_recording()
+ 		check(sample.save_to_wav(OUT.path_join(scene+".wav"))==OK,"native rolling PCM: "+scene)
++		var pcm: PackedByteArray = sample.data
++		var peak: int = 0
++		for offset: int in range(0,pcm.size(),2): peak = maxi(peak,absi(pcm.decode_s16(offset)))
++		check(peak==0,"actual deferred wet rolling PCM is silent: "+scene)
+ 		rows.append({"scene":scene,"speed_mps":state.velocity.length(),"gain":audio.levels.road,"pitch":(audio.layers.road as AudioStreamPlayer).pitch_scale,"rate":sample.mix_rate})
+ 	var report := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
+ 	report.store_string(JSON.stringify(rows,"\t")+"\n")
+diff --git a/docs/WISHLIST.md b/docs/WISHLIST.md
+--- a/docs/WISHLIST.md
++++ b/docs/WISHLIST.md
+@@ -1,6 +1,20 @@
+ # Wishlist
+ 
+ Ideas recorded for later consideration. Inclusion does not authorize implementation. Keep each item here with its status and scope.
++
++## Wet-asphalt tire sound
++
++Recorded 2026-10-09 at the owner's explicit request. **Deferred; do not implement yet.**
++
++Revisit realistic tire rolling on wet asphalt that responds to speed. The owner
++rejected the current sound after listening; its storm rolling layer is disabled
++for now. Find a better recording or sound design and audition it in the full
++engine mix from the overhead driving view before reintroducing it. Keep the
++quiet distant rain background and make the tire texture distinct from rain,
++with appropriate speed/contact, stop, airborne, pause and retry behavior.
++
++Requirements to revisit: SND04/SND05/SND21/SND24, G01/R01/Q01/V06.
++Current implementation and evidence: [storm audio](WET_ROAD_AUDIO.md).
+ 
+ ## Graphics options
+ 
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -1,4 +1,8 @@
+ # Storm wet-asphalt tire rolling, 2026-10-09
++
++Current state: the owner rejected wet rolling and moved it to the wishlist.
++Storm asphalt rolling is disabled; the quiet distant rain remains. The
++implementation history below is superseded by the final deferral section.
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+ at the owner's request. It supersedes this first revision's rain removal and mix.
+@@ -234,3 +238,43 @@
+ so audio captures replace screenshot evidence. Owner distant-perspective/mix
+ approval and device listening remain; the two earlier storm visual-test
+ failures remain outside this audio-only change.
++
++## Wet tire rolling deferred at the owner's request
++
++The owner rejects the wet tire sound and explicitly requests removing it for
++now and adding it to the wishlist. SND24 supersedes the wet-rolling part of
++SND19/SND21; SND22/SND23 distant rain remains. [Wishlist entry](WISHLIST.md)
++records better realistic speed-dependent wet asphalt audio as deferred, with
++audition in the full engine mix and overhead perspective before reintroduction.
++
++`VehicleAudio.present` no longer loads/selects `wet_road.wav`. Its existing road
++voice is immediately silent on Storm, including an incoming dry-road tail;
++there is no dry-rolling replacement there. Ordinary dry road, slip/collision,
++off-track feedback and actual puddle contact keep their established behavior.
++The rejected WAV/source/builder and historical evidence are retained for this
++temporary removal. All 47 vehicle WAVs and the quiet distant rain WAV are
++byte-identical; no camera, physics/rules, UI or backend change.
++
++Changed files: `game/vehicle/vehicle_audio.gd`,
++`game/tests/test_vehicle_audio.gd`, `game/tests/test_wet_road_audio.gd`,
++`docs/WISHLIST.md`, this page, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++Existing assertions follow the owner's changed contract: storm rolling must be
++silent without loading the wet derivative, while ordinary dry rolling and rain
++lifecycle checks remain. This is an explicit requirement change, not a weakened
++guard to conceal a failure.
++
++Actual pinned `scripts/dev.ps1 TestScript` runs:
++
++- `-ScriptPath res://tests/test_wet_road_audio.gd`: 39 checks, zero failures.
++- `-ScriptPath res://tests/test_vehicle_audio.gd`: 1,446 checks, zero failures,
++  including exact 960-tick canonical equivalence and bank hashes.
++- `-ScriptPath res://tests/test_wet_road_audio.gd -Graphical` with `--capture`:
++  52 checks, zero failures; all six native road-bus PCM recordings have peak
++  exactly zero (slow/medium/fast/stopped/airborne/paused). Independent Python
++  PCM review confirms silence; rain/weather source hash remains identical.
++
++Task source snapshots, test logs and review patch:
++`docs/evidence/wet-tires-deferred-2026-10-09/`. No phone attachment check,
++physical-device listening, Android export/install, full Validate, backend or
++deployment. No visible UI change. Owner confirmation in normal play remains;
++the two earlier storm visual-test failures are outside this change.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 SND24/SND19/SND21-SND23/SND05/G01/R01/Q01/V06: owner rejects wet tire rolling; dedicated wet loop no longer loaded/selected and Storm road voice immediately silent without dry-road substitution. Better wet-asphalt audio added to docs/WISHLIST.md as deferred; distant rain, ordinary dry/other surfaces and actual puddles retained. Focused39/native52/vehicle1446 checks pass, exact960-tick equivalence;47 vehicle WAVs/rain WAV/weather source hashes exact. No phone attachment/device listening/export-install/full Validate/backend/deploy. Actual files/commands/evidence/scoped checkpoint/remaining owner acceptance: docs/WET_ROAD_AUDIO.md (deferral).
++
+ 2026-10-09 SND23/SND21-SND22/SND05/G01/R01/Q01/V06: owner-requested distant storm rain replaces close concrete drops with cleared CC0 jmbphilmes rural rainfall. Four recorded regions/100Hz-2.2kHz softening/transient control yield24s/2116844bytes/45333e5c loop,3.255dB quieter and less sharp; original source/encoded-decoded hashes/old asset retained. Native rain -42.92dBFS/19.58-24.56dB below wet,26s wrap/no dropout/paused zero; focused38/capture30/distance and native review checks pass,47 vehicle WAVs exact. Initial21s wrap fixture extended to actual loop+2s;55 focused shutdown references retained. No runtime/camera/simulation change, phone attachment/device listening/export-install/full Validate/backend/deploy. Commands/files/licence/listening/task-only checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (distant rain).
+ 
+ 2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: owner-reported Free Race histogram loading flash reproduced with five failures. Complete compatible cache shows immediately; cold target retains prior hero/charts until both metrics arrive, first entry uses existing loading area. Confirmed empty responses alone show No times yet; failures/guest access remain distinct, optional race availability/local PBs retained. Final graphical141/App99/paging269/menu38 checks pass; 11 native captures retained, waiting/ready pair inspected. Additive test-double capability repair; initial offline PB fixture regression corrected. No phone attachment/device test/Android export-install/full Validate/backend or production deployment. Files, actual commands, scoped Git checkpoint and remaining latency/device acceptance: docs/FREE_RACE_HISTOGRAMS.md (Loading-state correction).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1415,3 +1415,8 @@
+ ## Distant storm rain perspective, 2026-10-09
+ 
+ 2026-10-09 SND23/SND21-SND22/SND05/G01/R01/Q01/V06: owner-requested distant storm rain replaces close concrete drops with cleared CC0 jmbphilmes rural rainfall. Four recorded regions/100Hz-2.2kHz softening/transient control yield24s/2116844bytes/45333e5c loop,3.255dB quieter and less sharp; original source/encoded-decoded hashes/old asset retained. Native rain -42.92dBFS/19.58-24.56dB below wet,26s wrap/no dropout/paused zero; focused38/capture30/distance and native review checks pass,47 vehicle WAVs exact. Initial21s wrap fixture extended to actual loop+2s;55 focused shutdown references retained. No runtime/camera/simulation change, phone attachment/device listening/export-install/full Validate/backend/deploy. Commands/files/licence/listening/task-only checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (distant rain).
++
++
++## Wet tire audio deferral, 2026-10-09
++
++2026-10-09 SND24/SND19/SND21-SND23/SND05/G01/R01/Q01/V06: owner rejects wet tire rolling; dedicated wet loop no longer loaded/selected and Storm road voice immediately silent without dry-road substitution. Better wet-asphalt audio added to docs/WISHLIST.md as deferred; distant rain, ordinary dry/other surfaces and actual puddles retained. Focused39/native52/vehicle1446 checks pass, exact960-tick equivalence;47 vehicle WAVs/rain WAV/weather source hashes exact. No phone attachment/device listening/export-install/full Validate/backend/deploy. Actual files/commands/evidence/scoped checkpoint/remaining owner acceptance: docs/WET_ROAD_AUDIO.md (deferral).

@@ -1,0 +1,682 @@
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -28,6 +28,7 @@
+         rivalry,
+         runs,
+         test_drivers,
++        test_population_batch,
+         tracks,
+     )
+     from .verifier import GodotVerifier
+@@ -73,6 +74,7 @@
+     app.include_router(commerce.router, prefix="/v1")
+     app.include_router(rivalry.router, prefix="/v1")
+     app.include_router(test_drivers.router, prefix="/v1")
++    app.include_router(test_population_batch.router, prefix="/v1")
+ 
+     @app.exception_handler(RequestValidationError)
+     async def invalid_request(request: Request, _error):
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -86,6 +86,9 @@
+             if expire_unserviceable(app):
+                 return True
+             if validate_one(app):
++                return True
++            from .test_population_batch import drive_idle as drive_batch
++            if drive_batch(app):
+                 return True
+             from .automatic_test_drivers import drive_idle
+             return drive_idle(app)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
++
+ 2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
+ 
+ 2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
++
+ 2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
+ 
+ 2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
+diff --git a/backend/bmt_backend/test_population_batch.py b/backend/bmt_backend/test_population_batch.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/test_population_batch.py
+@@ -0,0 +1,274 @@
++"""Durable development-only test-record reset and all-track canonical reseeding."""
++from __future__ import annotations
++
++import logging
++import uuid
++from collections import Counter
++from pathlib import Path
++
++from fastapi import APIRouter, HTTPException, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import delete, select, update
++from sqlalchemy.orm import aliased
++
++from .contracts import build_contract, current_manifest
++from .identity_models import Player
++from .rivalry_models import RivalryBest
++from .test_driver_models import TestDriverProfile
++from .test_drivers import Fleet, Operator, create_fleet
++from .test_population import require_enabled
++from .track_models import Board, OperationState, PersonalBest, Run, Track, TrackVersion, digest, now
++from .tracks import DB, track_payload
++
++router = APIRouter(include_in_schema=False)
++logger = logging.getLogger("bmt.test_population_batch")
++ACTIVE = "test-population-active"
++
++
++def catalog(app, session, vehicle):
++    active = app.state.verifier.manifest()
++    if vehicle not in active["vehicles"]:
++        raise HTTPException(422, "Unknown vehicle")
++    newer = aliased(TrackVersion)
++    versions = session.execute(select(TrackVersion, Track, Player.display_name).select_from(TrackVersion)
++        .join(Track, Track.id == TrackVersion.track_id).join(Player, Player.id == Track.owner_id)
++        .where(TrackVersion.state == "published", Track.hidden.is_(False), Track.archived.is_(False),
++               Player.disabled.is_(False), ~select(newer.id).where(newer.track_id == Track.id,
++               newer.state == "published", newer.number > TrackVersion.number).exists())
++        .order_by(TrackVersion.id).limit(1000)).all()
++    entries = []
++    for version, track, name in versions:
++        if build_contract(current_manifest(version.manifest)) != build_contract(active):
++            continue
++        entries.append(track_payload(version, track, name, app.state.settings.public_base_url))
++    return active, entries
++
++
++def record_rows(session, track_ids, *, test):
++    rows = session.execute(select(PersonalBest, Board, Player.is_test_driver).select_from(PersonalBest).join(Board).join(
++        TrackVersion, TrackVersion.id == Board.version_id).join(Player, Player.id == PersonalBest.player_id)
++        .where(TrackVersion.track_id.in_(track_ids))).all()
++    return [pb for pb, board, synthetic in rows
++            if (bool(board.manifest.get("test_population")) or synthetic) == test]
++
++
++def preview(app, session, vehicle):
++    active, entries = catalog(app, session, vehicle)
++    tracks = sorted({e["track_id"] for e in entries})
++    tests = record_rows(session, tracks, test=True)
++    real = record_rows(session, tracks, test=False)
++    ids = sorted((p.board_id, p.player_id, p.run_id, p.time_ticks) for p in tests)
++    protected = digest(sorted((p.board_id, p.player_id, p.run_id, p.time_ticks) for p in real))
++    return {"vehicle_id": vehicle, "manifest": active, "tracks": entries,
++            "test_records": len(tests), "protected_real_records": len(real),
++            "protected_real_digest": protected,
++            "inventory_digest": digest({"versions": [e["version_id"] for e in entries],
++                                        "test_records": ids, "build": build_contract(active)})}
++
++
++@router.get("/dev/test-drivers/batches/preview")
++def preview_route(request: Request, session: DB, _operator: Operator, vehicle_id: str = "compact"):
++    return preview(request.app, session, vehicle_id)
++
++
++class BatchRequest(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++    seed: int = Field(ge=0, le=2147483647)
++    count: int = Field(default=100, ge=1, le=200)
++    vehicle_id: str = "compact"
++    clear_test_records: bool = True
++    inventory_digest: str = Field(min_length=64, max_length=64)
++
++
++@router.post("/dev/test-drivers/batches")
++def create_batch(payload: BatchRequest, request: Request, session: DB, _operator: Operator):
++    require_enabled(request)
++    batch_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"bmt-test-batch/{payload.seed}/{payload.vehicle_id}"))
++    key = "test-pop-batch:" + batch_id
++    old = session.get(OperationState, key)
++    body = payload.model_dump()
++    if old:
++        if old.details["request"] != body:
++            raise HTTPException(409, "BATCH_PARAMETERS_CHANGED")
++        return batch_view(session, batch_id)
++    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
++    if guard and guard.details.get("status") == "running":
++        raise HTTPException(409, "A test population batch is already running")
++    inventory = preview(request.app, session, payload.vehicle_id)
++    if inventory["inventory_digest"] != payload.inventory_digest:
++        raise HTTPException(409, "RECORD_INVENTORY_CHANGED")
++    if not inventory["tracks"]:
++        raise HTTPException(409, "No compatible published tracks")
++    # Existing identity creation is idempotent; never converts a real player.
++    fleet = create_fleet(Fleet(seed=payload.seed, count=payload.count), request, session, None)
++    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
++    if guard and guard.details.get("status") == "running":
++        raise HTTPException(409, "A test population batch is already running")
++    inventory_after = preview(request.app, session, payload.vehicle_id)
++    if inventory_after["inventory_digest"] != payload.inventory_digest:
++        raise HTTPException(409, "RECORD_INVENTORY_CHANGED")
++    track_ids = sorted({e["track_id"] for e in inventory["tracks"]})
++    cleared = 0
++    if payload.clear_test_records:
++        affected = record_rows(session, track_ids, test=True)
++        run_ids = [p.run_id for p in affected]
++        for p in affected:
++            session.delete(p)
++        if run_ids:
++            session.execute(delete(RivalryBest).where(RivalryBest.run_id.in_(run_ids)))
++        # Fence old queued test submissions so they cannot restore reset PBs.
++        boards = session.scalars(select(Board).join(TrackVersion).where(
++            TrackVersion.track_id.in_(track_ids))).all()
++        test_ids = [b.id for b in boards if b.manifest.get("test_population")]
++        if test_ids:
++            session.execute(update(Run).where(Run.board_id.in_(test_ids),
++                Run.status.in_(("queued", "verifying"))).values(status="failed", failure_code="test_records_reset",
++                finished_at=now(), lease_token=None, lease_until=0))
++        cleared = len(affected)
++        session.flush()
++        if preview(request.app, session, payload.vehicle_id)["protected_real_digest"] != inventory["protected_real_digest"]:
++            session.rollback()
++            raise HTTPException(409, "REAL_RECORD_PROTECTION_FAILED")
++    details = {"batch_id": batch_id, "request": body, "status": "running", "fleet": fleet["fleet"],
++               "vehicle_id": payload.vehicle_id, "manifest": inventory["manifest"],
++               "tracks": inventory["tracks"], "player_ids": [p["player_id"] for p in fleet["profiles"]],
++               "count": payload.count, "jobs": payload.count*len(inventory["tracks"]),
++               "cleared_test_records": cleared, "protected_real_records": inventory["protected_real_records"],
++               "protected_real_digest": inventory["protected_real_digest"], "created_at": now()}
++    session.add(OperationState(id=key, updated_at=now(), details=details))
++    for ordinal, profile in enumerate(fleet["profiles"]):
++        for slot, entry in enumerate(inventory["tracks"]):
++            job_id = digest({"batch": batch_id, "player": profile["player_id"], "version": entry["version_id"]})
++            job = {"id": job_id, "batch_id": batch_id, "player_id": profile["player_id"],
++                   "subject": profile["subject"], "slot": slot, "ordinal": ordinal,
++                   "version_id": entry["version_id"], "content_hash": entry["content_hash"],
++                   "attempt": 0, "status": "waiting", "due": now(), "lease_until": 0}
++            session.add(OperationState(id="test-pop-job:"+job_id, updated_at=now(), details=job))
++    if guard is None:
++        guard = OperationState(id=ACTIVE, updated_at=now(), details={})
++        session.add(guard)
++    guard.details = {"batch_id": batch_id, "status": "running"}
++    session.commit()
++    return batch_view(session, batch_id)
++
++
++def batch_jobs(session, batch_id):
++    return session.scalars(select(OperationState).where(OperationState.id.startswith("test-pop-job:"),
++        OperationState.details["batch_id"].as_string() == batch_id)).all()
++
++
++def batch_view(session, batch_id):
++    batch = session.get(OperationState, "test-pop-batch:"+batch_id)
++    if batch is None:
++        raise HTTPException(404, "Test population batch not found")
++    data = batch.details
++    jobs = batch_jobs(session, batch_id)
++    counts = Counter(j.details["status"] for j in jobs)
++    per_track = []
++    for slot, entry in enumerate(data["tracks"]):
++        verified = {j.details["player_id"] for j in jobs if j.details["slot"] == slot and j.details["status"] == "verified"}
++        per_track.append({"name": entry["name"], "version_id": entry["version_id"],
++                          "verified_players": len(verified), "target": data["count"]})
++    return {"batch_id": batch_id, "status": data["status"], "test_population": True,
++            "vehicle_id": data["vehicle_id"], "driver_count": data["count"], "track_count": len(per_track),
++            "jobs": dict(counts), "expected_jobs": data["jobs"], "tracks": per_track,
++            "cleared_test_records": data["cleared_test_records"],
++            "protected_real_records": data["protected_real_records"],
++            "complete": bool(jobs) and counts.get("verified", 0) == data["jobs"]}
++
++
++@router.get("/dev/test-drivers/batches/{batch_id}")
++def get_batch(batch_id: str, session: DB, _operator: Operator):
++    return batch_view(session, batch_id)
++
++
++def drive_idle(app):
++    """One genuine drive from a durable batch; ordinary proofs remain first."""
++    settings = app.state.settings
++    if not (settings.environment == "development" and settings.test_drivers_enabled and settings.dev_auth_enabled):
++        return False
++    from .test_driver_generator import DriverDidNotFinish, generate
++    from .test_population_tool import API, recording
++    from .worker_lifecycle import stopping
++    if not settings.godot_bin or stopping(app):
++        return False
++    with app.state.session_factory() as session:
++        guard = session.get(OperationState, ACTIVE)
++        if not guard or guard.details.get("status") != "running":
++            return False
++        batch = session.get(OperationState, "test-pop-batch:"+guard.details["batch_id"])
++        data = batch.details
++        if build_contract(data["manifest"]) != build_contract(app.state.verifier.manifest()):
++            return False
++        jobs = batch_jobs(session, data["batch_id"])
++        changed = False
++        for row in jobs:
++            job = dict(row.details)
++            if job["status"] == "submitted":
++                run = session.get(Run, job["run_id"])
++                if run and run.status in ("verified", "rejected", "failed"):
++                    job.update(status=run.status, time_ticks=run.time_ticks, failure_code=run.failure_code)
++                    if run.status != "verified" and job["attempt"] < 4:
++                        job.update(status="waiting", attempt=job["attempt"]+1, due=now()+10)
++                    row.details = job; row.updated_at = now(); changed = True
++        if changed:
++            session.commit()
++        if all(j.details["status"] == "verified" for j in jobs):
++            batch.details = {**data, "status": "complete", "completed_at": now()}
++            guard.details = {**guard.details, "status": "complete"}
++            session.commit()
++            return True
++        row = session.scalar(select(OperationState).where(OperationState.id.startswith("test-pop-job:"),
++            OperationState.details["batch_id"].as_string() == data["batch_id"],
++            OperationState.details["status"].as_string().in_(("waiting", "generating")),
++            OperationState.details["due"].as_integer() <= now(),
++            OperationState.details["lease_until"].as_integer() <= now())
++            .order_by(OperationState.details["ordinal"].as_integer(), OperationState.details["slot"].as_integer())
++            .with_for_update(skip_locked=True).limit(1))
++        if row is None:
++            return changed
++        job = dict(row.details)
++        token = str(uuid.uuid4())
++        row.details = {**job, "status": "generating", "lease_token": token, "lease_until": now()+600}
++        profile = session.get(TestDriverProfile, job["player_id"])
++        traits = dict(profile.traits)
++        row_id = row.id
++        session.commit()
++    api = getattr(app.state, "batch_driver_api", None)
++    if api is None:
++        api = app.state.batch_driver_api = API(settings.test_driver_api_url or settings.public_base_url,
++                                             settings.dev_auth_key, internal=True)
++    folder = Path(settings.object_dir).parent / "test-population-batches" / data["batch_id"]
++    folder.mkdir(parents=True, exist_ok=True)
++    path = folder / "plan.json"
++    plan = {"vehicle_id": data["vehicle_id"], "manifest": data["manifest"], "pace_scales": {}}
++    job["id"] = digest({"job": job["id"], "attempt": job["attempt"]})
++    try:
++        recovered = api.call("GET", "/dev/test-drivers/uploads/"+job["id"]+"-upload",
++                             subject=job["subject"], operator=True)
++        if recovered.get("run"):
++            result = recovered["run"]
++        else:
++            control = getattr(app.state, "worker_control", None)
++            def generator(*args, **kwargs):
++                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++            replay = recording(api, plan, job, {"traits": traits}, settings, path, generator=generator)
++            ticket = api.call("POST", "/run-tickets", {"version_id": job["version_id"],
++                "vehicle_id": data["vehicle_id"], "test_population": True}, job["subject"], job["id"]+"-ticket")
++            result = api.call("POST", "/runs", {"ticket_id": ticket["ticket_id"], "replay": replay["replay"]},
++                              job["subject"], job["id"]+"-upload")
++        outcome = {"status": "submitted", "run_id": result["run_id"], "lease_until": 0}
++    except DriverDidNotFinish as error:
++        outcome = {"status": "waiting" if job["attempt"] < 4 else "uncompleted",
++                   "attempt": job["attempt"]+1, "due": now()+10, "lease_until": 0,
++                   "failure_code": str(error)[:500]}
++    except (RuntimeError, OSError):
++        logger.exception("test_population_batch_attempt_failed", extra={"batch_id": data["batch_id"]})
++        outcome = {"status": "waiting", "due": now()+30, "lease_until": 0}
++    with app.state.session_factory() as session:
++        row = session.scalar(select(OperationState).where(OperationState.id == row_id).with_for_update())
++        if row.details.get("lease_token") != token:
++            return False
++        row.details = {**row.details, **outcome}; row.updated_at = now()
++        session.commit()
++    return True
+diff --git a/backend/tests/test_population_batch.py b/backend/tests/test_population_batch.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_population_batch.py
+@@ -0,0 +1,142 @@
++"""Development-only resets preserve real PBs and persist exactly one job per pair."""
++import dataclasses
++import socket
++import threading
++import time
++
++import pytest
++import uvicorn
++from backend.tools.audit_test_population_batch import audit
++from sqlalchemy import select
++from test_rivalry_http import seed
++from test_test_drivers import KEY, auth, bot_login, fleet
++from test_test_drivers import drivers as _drivers
++from test_verifier import real_verifier as _real_verifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.migrate import upgrade
++from bmt_backend.test_population_batch import ACTIVE, batch_jobs, drive_idle
++from bmt_backend.test_population_tool import API
++from bmt_backend.track_models import OperationState, PersonalBest, Run, Track
++from bmt_backend.worker import process_one
++
++drivers = _drivers
++real_verifier = _real_verifier
++
++
++def submit(drivers, login, version, *, test, verify=True):
++    ticket = drivers.client.post("/v1/run-tickets", json={"version_id": version,
++        "vehicle_id": "compact", "test_population": test}, headers=auth(login)).json()
++    response = drivers.client.post("/v1/runs", json={"ticket_id": ticket["ticket_id"],
++        "replay": {"schema": "bmt-replay-v1", "frames": [[0, 166, 0]]*30}}, headers=auth(login))
++    assert response.status_code == 202, response.text
++    if verify:
++        assert process_one(drivers.app)
++    return response.json()["run_id"]
++
++
++def preview(drivers):
++    result = drivers.client.get("/v1/dev/test-drivers/batches/preview?vehicle_id=compact",
++                               headers={"X-Dev-Auth-Key": KEY})
++    assert result.status_code == 200, result.text
++    return result.json()
++
++
++def test_reset_is_test_only_idempotent_and_all_current_tracks_included(drivers):
++    first = preview(drivers)
++    version = first["tracks"][0]["version_id"]
++    # A current community circuit is deliberately not rivalry-eligible.
++    with drivers.factory() as session:
++        last = session.get(Track, first["tracks"][-1]["track_id"])
++        last.official = False
++        session.commit()
++    population = fleet(drivers, count=2)
++    bot = bot_login(drivers, population["profiles"][0])
++    real_run = submit(drivers, drivers.login, version, test=False)
++    test_run = submit(drivers, bot, version, test=True)
++    pending_test = submit(drivers, bot, version, test=True, verify=False)
++    pending_real = submit(drivers, drivers.login, version, test=False, verify=False)
++    before = preview(drivers)
++    assert before["test_records"] == 1 and before["protected_real_records"] == 1
++    body = {"seed":20261008,"count":100,"vehicle_id":"compact","clear_test_records":True,
++            "inventory_digest":before["inventory_digest"]}
++    response = drivers.client.post("/v1/dev/test-drivers/batches", json=body, headers={"X-Dev-Auth-Key": KEY})
++    assert response.status_code == 200, response.text
++    result = response.json()
++    assert result["driver_count"] == 100 and result["track_count"] == len(before["tracks"])
++    assert result["expected_jobs"] == 100*len(before["tracks"]) and result["cleared_test_records"] == 1
++    after = preview(drivers)
++    assert after["test_records"] == 0 and after["protected_real_digest"] == before["protected_real_digest"]
++    with drivers.factory() as session:
++        assert session.scalar(select(PersonalBest).where(PersonalBest.run_id == real_run))
++        assert session.scalar(select(PersonalBest).where(PersonalBest.run_id == test_run)) is None
++        assert session.get(Run, test_run) is not None  # Raw audited history is retained.
++        fenced = session.get(Run, pending_test)
++        assert fenced.status == "failed" and fenced.failure_code == "test_records_reset"
++        assert session.get(Run, pending_real).status == "queued"
++        jobs = batch_jobs(session, result["batch_id"])
++        assert len(jobs) == result["expected_jobs"]
++        assert len({(j.details["player_id"], j.details["version_id"]) for j in jobs}) == len(jobs)
++        assert len({j.details["player_id"] for j in jobs}) == 100
++    again = drivers.client.post("/v1/dev/test-drivers/batches", json=body, headers={"X-Dev-Auth-Key": KEY})
++    assert again.json() == result
++    assert drivers.client.get("/v1/dev/test-drivers/batches/"+result["batch_id"]).status_code == 401
++    assert not drive_idle(drivers.app)  # No native engine cannot invent a result.
++
++
++def test_stale_inventory_and_disabled_gate_never_reset_data(drivers):
++    before = preview(drivers)
++    bad = drivers.client.post("/v1/dev/test-drivers/batches", json={"seed":99,"count":100,
++        "inventory_digest":"0"*64}, headers={"X-Dev-Auth-Key": KEY})
++    assert bad.status_code == 409
++    drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
++    denied = drivers.client.post("/v1/dev/test-drivers/batches", json={"seed":99,"count":100,
++        "inventory_digest":before["inventory_digest"]}, headers={"X-Dev-Auth-Key": KEY})
++    assert denied.status_code == 404
++    with drivers.factory() as session:
++        assert session.get(OperationState, ACTIVE) is None
++    assert not drive_idle(drivers.app)
++
++
++@pytest.mark.godot
++def test_batch_generates_real_five_lap_proofs_and_survives_app_restart(tmp_path, real_verifier):
++    listener = socket.socket(); listener.bind(("127.0.0.1",0))
++    url = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    settings = Settings(environment="development", dev_auth_enabled=True, test_drivers_enabled=True,
++        allow_sync_track_validation=True, dev_auth_key=KEY, public_base_url=url,
++        database_url=f"sqlite:///{(tmp_path/'batch.sqlite').as_posix()}", object_dir=str(tmp_path/'objects'),
++        godot_bin=real_verifier.binary, game_project=str(real_verifier.project),
++        auth_limit_per_minute=1000, write_limit_per_minute=1000)
++    app = create_app(settings); upgrade(app.state.engine); seed(app)
++    server = uvicorn.Server(uvicorn.Config(app,log_level="error",access_log=False))
++    thread = threading.Thread(target=server.run,kwargs={"sockets":[listener]},daemon=True);thread.start()
++    try:
++        for _ in range(100):
++            if server.started:break
++            time.sleep(.05)
++        api = API(url,KEY)
++        inventory = api.call("GET","/dev/test-drivers/batches/preview?vehicle_id=compact",operator=True)
++        created = api.call("POST","/dev/test-drivers/batches",{"seed":991,"count":2,
++            "inventory_digest":inventory["inventory_digest"]},operator=True)
++        assert created["expected_jobs"]==10
++        for _ in range(40):
++            process_one(app)
++            view=api.call("GET","/dev/test-drivers/batches/"+created["batch_id"],operator=True)
++            if view["complete"]:break
++        assert view["complete"] and all(t["verified_players"]==2 for t in view["tracks"])
++        report = audit(app, created["batch_id"])
++        assert report["verified_runs"] == report["verified_personal_bests"] == 10
++        assert all(t["personal_bests"] == 2 for t in report["tracks"])
++        with app.state.session_factory() as session:
++            runs=session.scalars(select(Run)).all()
++            assert len(runs)==10 and all(r.status=="verified" and len(r.lap_ticks)==5 for r in runs)
++        # A new app/worker instance loads authoritative progress, never repeats uploads.
++        restarted=create_app(settings)
++        assert not drive_idle(restarted)
++        with restarted.state.session_factory() as session:
++            assert len(session.scalars(select(Run)).all())==10
++        restarted.state.verifier.close();restarted.state.engine.dispose()
++    finally:
++        server.should_exit=True;thread.join(timeout=10);listener.close()
++        app.state.verifier.close();app.state.engine.dispose()
+diff --git a/backend/tools/audit_test_population_batch.py b/backend/tools/audit_test_population_batch.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tools/audit_test_population_batch.py
+@@ -0,0 +1,90 @@
++"""Read-only proof/PB audit for an explicitly authorized development batch."""
++from __future__ import annotations
++
++import argparse
++import json
++import statistics
++
++from sqlalchemy import select
++
++from bmt_backend.app import create_app
++from bmt_backend.identity_models import Player
++from bmt_backend.runs import PINNED_FIELDS
++from bmt_backend.test_population_batch import batch_jobs, batch_view
++from bmt_backend.track_models import Board, OperationState, PersonalBest, Run
++
++PREFIX = "BMT_RESEED_AUDIT "
++
++
++def audit(app, batch_id):
++    settings = app.state.settings
++    assert settings.environment == "development" and settings.test_drivers_enabled
++    with app.state.session_factory() as session:
++        view = batch_view(session, batch_id)
++        assert view["complete"], "Audit requires every requested pair to be verified"
++        data = session.get(OperationState, "test-pop-batch:"+batch_id).details
++        jobs = batch_jobs(session, batch_id)
++        player_ids = set(data["player_ids"])
++        assert len(player_ids) == data["count"]
++        players = {p.id: p for p in session.scalars(select(Player).where(Player.id.in_(player_ids)))}
++        assert set(players) == player_ids and all(p.is_test_driver for p in players.values())
++        runs = {r.id: r for r in session.scalars(select(Run).where(
++            Run.id.in_([j.details["run_id"] for j in jobs])))}
++        assert len(runs) == data["jobs"]
++        boards = {b.id: b for b in session.scalars(select(Board).where(
++            Board.id.in_({r.board_id for r in runs.values()})))}
++        bests = {(p.board_id, p.player_id): p for p in session.scalars(select(PersonalBest).where(
++            PersonalBest.board_id.in_(boards), PersonalBest.player_id.in_(player_ids)))}
++        records = []
++        for slot, entry in enumerate(data["tracks"]):
++            rows = []
++            selected = [j.details for j in jobs if j.details["slot"] == slot]
++            assert len(selected) == data["count"]
++            assert {j["player_id"] for j in selected} == player_ids
++            for job in selected:
++                run = runs[job["run_id"]]
++                board = boards[run.board_id]
++                assert run.status == "verified" and run.player_id == job["player_id"]
++                assert len(run.lap_ticks) == 5 and sum(run.lap_ticks) == run.time_ticks
++                assert run.time_ticks == job["time_ticks"]
++                assert board.version_id == entry["version_id"] and board.vehicle_id == data["vehicle_id"]
++                assert board.manifest.get("test_population") is True
++                assert all(board.manifest.get(field) == data["manifest"][field] for field in PINNED_FIELDS)
++                vehicle = data["manifest"]["vehicles"][data["vehicle_id"]]
++                assert all(board.manifest.get(field) == vehicle[field]
++                           for field in ("handling_version", "config_hash"))
++                best = bests[(board.id, run.player_id)]
++                assert best.time_ticks <= run.time_ticks
++                rows.append({"player_id": run.player_id, "name": players[run.player_id].display_name,
++                             "run_id": run.id, "time_ticks": run.time_ticks,
++                             "lap_ticks": run.lap_ticks, "pb_time_ticks": best.time_ticks})
++            values = [r["time_ticks"] for r in rows]
++            records.append({"name": entry["name"], "version_id": entry["version_id"],
++                            "verified_players": len(rows), "personal_bests": len(rows),
++                            "minimum_ticks": min(values), "median_ticks": statistics.median(values),
++                            "maximum_ticks": max(values), "distinct_times": len(set(values)),
++                            "records": sorted(rows, key=lambda r: (r["time_ticks"], r["player_id"]))})
++        return {"batch_id": batch_id, "test_population": True, "vehicle_id": data["vehicle_id"],
++                "driver_count": len(player_ids), "track_count": len(records),
++                "verified_runs": len(runs), "verified_personal_bests": sum(t["personal_bests"] for t in records),
++                "laps_per_run": 5, "ticks_per_second": data["manifest"]["tick_rate"], "tracks": records}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("batch_id")
++    args = parser.parse_args()
++    app = create_app()
++    try:
++        report = audit(app, args.batch_id)
++        # One bounded log entry per circuit avoids cloud-log entry truncation.
++        for track in report.pop("tracks"):
++            print(PREFIX+json.dumps({"kind": "track", **track}), flush=True)
++        print(PREFIX+json.dumps({"kind": "summary", **report}), flush=True)
++    finally:
++        app.state.verifier.close()
++        app.state.engine.dispose()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/schemas/test-population-batch-request-v1.schema.json b/docs/schemas/test-population-batch-request-v1.schema.json
+new file mode 100644
+--- /dev/null
++++ b/docs/schemas/test-population-batch-request-v1.schema.json
+@@ -0,0 +1,41 @@
++{
++  "additionalProperties": false,
++  "properties": {
++    "seed": {
++      "maximum": 2147483647,
++      "minimum": 0,
++      "title": "Seed",
++      "type": "integer"
++    },
++    "count": {
++      "default": 100,
++      "maximum": 200,
++      "minimum": 1,
++      "title": "Count",
++      "type": "integer"
++    },
++    "vehicle_id": {
++      "default": "compact",
++      "title": "Vehicle Id",
++      "type": "string"
++    },
++    "clear_test_records": {
++      "default": true,
++      "title": "Clear Test Records",
++      "type": "boolean"
++    },
++    "inventory_digest": {
++      "maxLength": 64,
++      "minLength": 64,
++      "title": "Inventory Digest",
++      "type": "string"
++    }
++  },
++  "required": [
++    "seed",
++    "inventory_digest"
++  ],
++  "title": "Development artificial-driver batch request v1",
++  "type": "object",
++  "$schema": "https://json-schema.org/draft/2020-12/schema"
++}
+diff --git a/docs/TEST_RECORD_RESEED_2026_10_08.md b/docs/TEST_RECORD_RESEED_2026_10_08.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TEST_RECORD_RESEED_2026_10_08.md
+@@ -0,0 +1,60 @@
++# Artificial record reset and 100-player reseed — 2026-10-08
++
++The owner requested clearing current track records and generating new times from 100 different artificial players on every current track. The owner explicitly limited the reset to **artificial/test records**. This operation targets the retained development backend, not production.
++
++**Complete:** all **2,800 genuine five-lap races** are verified, and a read-only database audit confirms **2,800 saved personal bests**: the same **100 distinct artificial players on each of all 28 current tracks**. All five public real-player PBs still have the original exact digest. The catalog snapshot remains current. [Verified times CSV](evidence/record-reseed-2026-10-08/verified-times.csv), [final status](evidence/record-reseed-2026-10-08/final-status.json), [full run/PB audit](evidence/record-reseed-2026-10-08/final-audit.json), [final protection check](evidence/record-reseed-2026-10-08/final-protection.json).
++
++## Requirements and scope
++
++| Requirement | Implemented behavior |
++|---|---|
++| TD01 / B01–B07 | Create 100 persistent artificial identities with different seeded skill, consistency, aggression, surface strengths and other traits. Existing real identities remain unchanged. |
++| TD02–TD03 / T01–T04 | Generate genuine compact-car, five-lap input recordings with `profiled-trajectory-5`; use ordinary tickets, uploads and canonical verification. No generated score is inserted directly. |
++| TD05 / TD08–TD09 / Q01 | Persist one leased job per player and immutable track version in existing operation-state rows. Recover committed uploads before generating again; retry failures without duplicating verified results. |
++| TD06 / B01–B07 | Reset only test-board or artificial-player PBs on the current logical tracks, including their older board versions. Preserve public real-player PBs exactly; retain accounts, raw run history, recordings, maps, ratings and player files. |
++| WR03–WR07 | Remove corresponding test rivalry bests. Artificial boards/results remain excluded from public standings, ratings and community eligibility. Existing weekly membership is retained. |
++| Q01 | Complete a fresh SQL backup before resetting; guard the owned deployment image and the exact record inventory. Temporary generation workers stop at batch completion and are removed afterward. |
++
++The frozen catalog has **28 current published tracks**, including the community track **Star**. Unlike weekly selection, this batch includes compatible community tracks without applying rating/finisher eligibility thresholds. It pins their current published versions. Tracks published after the snapshot require a separate batch.
++
++The compact is the existing artificial population vehicle. This is 100 players across all 28 tracks, not a separate 100-player population for each of the five vehicles.
++
++## Reset and deployment evidence
++
++Fresh Cloud SQL backup **1791437948170** completed successfully before the reset. The reset cleared **1,253 artificial/test PBs** and preserved **five public real-player PBs** with an identical digest. Old pending test uploads were fenced so they cannot restore the removed records; pending normal-player verification remains available.
++
++The deployment is a minimal overlay over the already deployed physics **0.53**, compiler **22**, rules **v20**, controller **5** image. It adds the Python batch module and two integration hooks. There is no migration in this operation; a read-only parent/overlay comparison proved **all 113 packaged game files byte-identical**. API, worker, migration/smoke and catalog jobs use the same pinned image. Permanent API/worker sizing remains unchanged. [Packaged-game proof](evidence/record-reseed-2026-10-08/packaged-game-proof.json), [frozen module proof](evidence/record-reseed-2026-10-08/frozen-source-proof.json).
++
++Sixteen temporary tasks, in four four-task executions, use the existing runtime identity and ordinary generation/verification path. Each uses one CPU and one database connection, with a three-hour maximum and no automatic task retries. Leased jobs survive task failure; helpers exit when the verified target is reached.
++
++All four generation executions completed successfully, with **16 succeeded tasks, zero failed and zero still running**. The subsequent one-task read-only audit also succeeded. The owned temporary job was then removed; the ordinary retained backend worker remains available. [Execution completion evidence](evidence/record-reseed-2026-10-08/temporary-worker-completion.json).
++
++Evidence: [inventory](evidence/record-reseed-2026-10-08/initial-inventory.json), [successful backup](evidence/record-reseed-2026-10-08/backup.json), [deployment](evidence/record-reseed-2026-10-08/deployment.json), [reset preview](evidence/record-reseed-2026-10-08/reset-preview.json), [reset receipt](evidence/record-reseed-2026-10-08/reset-and-start.json), [real-record protection](evidence/record-reseed-2026-10-08/real-record-protection.json), [bounded temporary workers](evidence/record-reseed-2026-10-08/temporary-workers.json).
++
++## Development API and durable state
++
++The hidden endpoints require the existing private operator key and enabled development authentication/test-driver configuration:
++
++- `GET /v1/dev/test-drivers/batches/preview?vehicle_id=compact` returns the current compatible track snapshot, test-record count, protected public-record count/digest and inventory digest.
++- `POST /v1/dev/test-drivers/batches` accepts the [strict request schema](schemas/test-population-batch-request-v1.schema.json). Its inventory digest must match the preview. A changed catalog/record inventory fails with `RECORD_INVENTORY_CHANGED`; a running batch blocks another reset. Repeating the exact completed request returns its existing batch rather than resetting again.
++- `GET /v1/dev/test-drivers/batches/{batch_id}` returns verified job counts and distinct verified players per track. Submitted, failed or merely generated recordings do not count as verified results.
++
++This operation uses seed **2026100800**, count **100**, vehicle **compact**, `clear_test_records=true`, and batch **f5d06ae7-deb6-5b71-b750-d2382ad15fe2**. Durable state uses the existing `OperationState` table; each job pins its player, document hash, immutable version, retry attempt, upload key and lease. Local caches are replaceable. Ordinary race/track verification queues retain priority over bulk generation.
++
++## Changed files and actual verification
++
++- `backend/bmt_backend/test_population_batch.py`: guarded reset, persistent batch, leased canonical generation and authoritative progress.
++- `backend/bmt_backend/app.py` and `worker.py`: hidden router and idle-worker dispatch.
++- `backend/tests/test_population_batch.py`: real-record protection, pending-test fencing, stale inventory/disabled gates, idempotency, exact player/track cardinality, genuine native verification and restart recovery.
++- `backend/tools/audit_test_population_batch.py`: read-only comparison of every completed pair against its actual verified five-lap run, pinned test board and personal best, with bounded report entries.
++- Request schema, this document, development status/plan and retained evidence describe the new contract and actual operation.
++
++Actual commands used `.tools/backend-venv/Scripts/python.exe` and the backend adapter's pinned Godot **4.7.2 stable ed1daf0bf**. The new batch suite passed **three tests**, including ten real five-lap recordings for two players on five tracks and a new app instance recovering completion without additional uploads. The affected backend suite passed **44 tests**, with **four skipped and 15 deselected**; that total includes the batch tests and must not be added to them.
++
++After strengthening the pending-upload protection assertions, the actual command `-m pytest backend/tests/test_population_batch.py -q -k 'not godot' --tb=short --show-capture=no` passed **two tests**, one deselected. After adding the read-only PB audit, the full `-m pytest backend/tests/test_population_batch.py -q --tb=short --show-capture=no` passed **three tests in 65.42 seconds**, including ten genuinely verified/audited races. Ruff passed for the batch module, tests, audit tool and worker. [Recorded outcomes](evidence/record-reseed-2026-10-08/test-outcomes.json), [final test log](evidence/record-reseed-2026-10-08/final-batch-tests.log).
++
++Operator commands executed the private repository-local `record_reseed.py` actions `inspect`, `backup`, `deploy`, `begin` and `progress`, the frozen overlay builder, and bounded temporary job execution. `reseed_audit.py start` / `collect` audited the live PostgreSQL records and exported all times; `reseed_accelerate.py cleanup` removed the temporary job after every task had succeeded. Credentials stayed in Secret Manager/in memory and private local configuration; evidence contains no credentials. An initial absent-job CLI response was handled correctly before starting helpers; a verification command first looked for Docker on Windows PATH and was corrected to the configured WSL command. No rejected approval was bypassed.
++
++The CSV contains total five-lap race seconds and all five lap splits, derived from the canonical 120 Hz ticks. These are test-population times for the compact; public standings remain real-player-only. Refresh the app's test-data view to fetch the new distribution. [Scoped source checkpoint](evidence/record-reseed-2026-10-08/record-reseed.patch) preserves unrelated working-tree changes.
++
++No visible UI change, Android export/install, phone attachment check, device driving test or full `Validate` was performed. This operation changes development records and scheduling, not vehicle physics. Physical-device presentation, restored-backup exercises and pacing against elite human players remain separate acceptance checks.

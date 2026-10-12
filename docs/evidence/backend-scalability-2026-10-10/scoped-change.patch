@@ -1,0 +1,607 @@
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -62,6 +62,8 @@
+     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
+     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
+     app.state.readiness = ReadinessProbe(app)
++    app.state.worker_heartbeat_memory = __import__("collections").OrderedDict()
++    app.state.worker_heartbeat_lock = __import__("threading").RLock()
+     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3)
+     app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory)
+     app.include_router(admin.router)
+--- a/backend/bmt_backend/operations.py
++++ b/backend/bmt_backend/operations.py
+@@ -1,8 +1,11 @@
+ """Credential-free competition health separate from API readiness."""
++import copy
+ import shutil
++import time
++from contextlib import nullcontext
+ from pathlib import Path
+ 
+-from sqlalchemy import func, select
++from sqlalchemy import case, func, select
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
+@@ -10,7 +13,43 @@
+ from .track_models import OperationState, Run, TrackValidation, now
+ 
+ 
+-def heartbeat(app, worker_id: str, **details):
++def heartbeat(app, worker_id: str, *, coalesce=False, **details):
++    # Routine job phases may arrive hundreds of times a second. Merge their
++    # latest diagnostics locally; explicit lifecycle/build changes write now.
++    with app.state.worker_heartbeat_lock:
++        memory = app.state.worker_heartbeat_memory
++        entry = memory.get(worker_id)
++        pending = {**(entry["pending"] if entry else {}), **copy.deepcopy(details)}
++        control = getattr(app.state, "worker_control", None)
++        stopping = control and (control.requested_at is not None or control.stop.is_set())
++        interval = min(1.0, app.state.settings.worker_stale_seconds / 4)
++        force = (not coalesce or entry is None or "lifecycle" in pending or stopping
++                 or "build" in details and details["build"] != entry["build"])
++        if not force and time.monotonic() - entry["written"] < interval:
++            entry["pending"] = pending
++            memory.move_to_end(worker_id)
++            return
++        if entry is None:
++            entry = memory[worker_id] = {"pending": {}, "written":float("-inf"), "build":None}
++        entry["pending"] = dict(pending)  # Retain diagnostics if the database write fails.
++    # PostgreSQL serializes a worker's row itself. Never hold an application
++    # lock through pool/database waits: a shutdown heartbeat must get its own
++    # chance to persist. SQLite tests share one connection and need serialization.
++    write_lock = app.state.worker_heartbeat_lock if app.state.engine.dialect.name == "sqlite" else nullcontext()
++    with write_lock:
++        stored_build = _write_heartbeat(app, worker_id, pending)
++    with app.state.worker_heartbeat_lock:
++        entry = memory.setdefault(worker_id, {"pending": {}, "written":float("-inf"), "build":None})
++        for key, value in pending.items():
++            if entry["pending"].get(key) == value:
++                entry["pending"].pop(key, None)
++        entry.update(written=time.monotonic(), build=stored_build)
++        memory.move_to_end(worker_id)
++        while len(memory) > 64:
++            memory.popitem(last=False)
++
++
++def _write_heartbeat(app, worker_id, details):
+     with app.state.session_factory() as session:
+         insert = pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
+         session.execute(insert(OperationState).values(id="worker:" + worker_id, updated_at=now(), details={})
+@@ -26,6 +65,7 @@
+             lifecycle = "draining"
+         state.updated_at, state.details = now(), {**previous, **details, "lifecycle": lifecycle}
+         session.commit()
++        return copy.deepcopy(state.details.get("build"))
+ 
+ 
+ def competition_health(app) -> dict:
+@@ -34,15 +74,16 @@
+         depth, oldest = session.execute(select(func.count(), func.min(Run.created_at)).where(Run.status.in_(("queued", "verifying")))).one()
+         recent_workers = session.scalars(select(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at >= current - app.state.settings.worker_stale_seconds)).all()
+         workers = [w for w in recent_workers if w.details.get("lifecycle", "running") == "running"]
+-        completions = session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "verified"))
++        verified = Run.status == "verified"
++        completions, failed, rejected, latency_avg, latency_max = session.execute(select(
++            func.coalesce(func.sum(case((verified, 1), else_=0)), 0),
++            func.coalesce(func.sum(case((Run.status == "failed", 1), else_=0)), 0),
++            func.coalesce(func.sum(case((Run.status == "rejected", 1), else_=0)), 0),
++            func.avg(case((verified, Run.finished_at - Run.created_at))),
++            func.max(case((verified, Run.finished_at - Run.created_at)))
++        ).where(Run.finished_at >= current - 300)).one()
+         failures = dict(session.execute(select(Run.failure_code, func.count()).where(Run.finished_at >= current - 300, Run.failure_code.is_not(None)).group_by(Run.failure_code)).all())
+         arrivals = session.scalar(select(func.count()).select_from(Run).where(Run.created_at >= current - 300))
+-        failed, rejected, latency_avg, latency_max = (
+-            session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "failed")),
+-            session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "rejected")),
+-            *session.execute(select(func.avg(Run.finished_at - Run.created_at), func.max(Run.finished_at - Run.created_at))
+-                .where(Run.finished_at >= current - 300, Run.status == "verified")).one(),
+-        )
+         validations, validation_oldest = session.execute(select(func.count(), func.min(TrackValidation.created_at)).where(TrackValidation.status.in_(("queued", "validating")))).one()
+         total_depth = depth + validations
+         guard = session.get(OperationState,"object-maintenance")
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -56,7 +56,7 @@
+         return False
+     if stopping(app):
+         return False
+-    heartbeat(app, worker_id, phase="claiming", build=build)
++    heartbeat(app, worker_id, phase="claiming", build=build, coalesce=True)
+     from .track_validation import process_one as validate_one
+     # Alternate queues, keeping creator saves and race proofs from starving each other.
+     app.state.prefer_track_validation = not getattr(app.state, "prefer_track_validation", False)
+@@ -124,7 +124,7 @@
+             return False
+         session.commit()
+     queue_wait = max(0, now() - run.created_at)
+-    heartbeat(app, worker_id, phase="verifying", last_queue_wait_seconds=queue_wait)
++    heartbeat(app, worker_id, phase="verifying", last_queue_wait_seconds=queue_wait, coalesce=True)
+ 
+     result, failure, rejected, permanent, ghost_hash = None, None, False, False, None
+     started = time.monotonic()
+@@ -299,7 +299,7 @@
+             "verification_method":result.get("verification_method","canonical-replay"),
+             "verification_compute_ms":result.get("verification_compute_ms"),
+             "verification_seconds":round(time.monotonic()-started,4)})
+-    heartbeat(app,worker_id,phase="idle",last_verification_seconds=round(time.monotonic()-started,4))
++    heartbeat(app,worker_id,phase="idle",last_verification_seconds=round(time.monotonic()-started,4),coalesce=True)
+     app.state.pending_finalization = None
+     return True
+ 
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -133,7 +133,8 @@
+ 
+ class Run(Base):
+     __tablename__ = "runs"
+-    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),)
++    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),
++                      Index("ix_run_created_at", "created_at"))
+     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+     ticket_id: Mapped[str] = mapped_column(ForeignKey("run_tickets.id"), unique=True)
+     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
+@@ -213,7 +214,7 @@
+ class OperationState(Base):
+     __tablename__ = "operation_state"
+     id: Mapped[str] = mapped_column(String(80), primary_key=True)
+-    updated_at: Mapped[int] = mapped_column(Integer, default=now)
++    updated_at: Mapped[int] = mapped_column(Integer, default=now, index=True)
+     details: Mapped[dict] = mapped_column(JSON, default=dict)
+ 
+ 
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0023_operational_read_indexes.py
+@@ -0,0 +1,99 @@
++"""Bound operational reads and restrict histogram invalidation to affected tracks."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0023_operational_read_indexes"
++down_revision = "0022_histogram_cache"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_index("ix_run_created_at", "runs", ["created_at"])
++    op.create_index("ix_operation_state_updated_at", "operation_state", ["updated_at"])
++    invalidate_triggers(scoped=True)
++
++
++def downgrade():
++    invalidate_triggers(scoped=False)
++    op.drop_index("ix_operation_state_updated_at", table_name="operation_state")
++    op.drop_index("ix_run_created_at", table_name="runs")
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def invalidate_triggers(*, scoped):
++    if op.get_bind().dialect.name == "sqlite":
++        for name, event, guard, target in (
++            ("player", "UPDATE OF disabled,is_test_driver ON players",
++             "OLD.disabled IS NOT NEW.disabled OR OLD.is_test_driver IS NOT NEW.is_test_driver",
++             "(version_id,vehicle_id) IN (SELECT b.version_id,b.vehicle_id FROM personal_bests p JOIN boards b ON b.id=p.board_id WHERE p.player_id=NEW.id)"),
++            ("pb", "DELETE ON personal_bests", "1", board_region("OLD")),
++            ("run_delete", "DELETE ON runs", "OLD.status='verified'", board_region("OLD")),
++            ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'", board_region("OLD")),
++        ):
++            sql(f"DROP TRIGGER histogram_{name}")
++            where = " WHERE " + target if scoped else ""
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} WHEN {guard} BEGIN "
++                f"UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0{where}; END")
++        for prefix in ("lap_reset", "histogram_reset"):
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER {prefix}_{event}")
++            table, values = ("boards", "lap_revision=lap_revision+1") if prefix == "lap_reset" else (
++                "histogram_snapshots", "invalidated=true,next_refresh_at=0")
++            flag = "json_extract(manifest,'$.test_population')=1" if table == "boards" else "include_artificial=true"
++            for event, refs in (("INSERT", ["NEW"]), ("DELETE", ["OLD"]), ("UPDATE", ["OLD", "NEW"])):
++                if event == "UPDATE":
++                    changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                        for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++                    guard = f"(OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND " \
++                        f"(json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1) AND (OLD.id IS NOT NEW.id OR {changed})"
++                else:
++                    ref = refs[0]
++                    guard = f"{ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1"
++                regions = " OR ".join(reset_region(ref + ".details", sqlite=True) for ref in refs)
++                where = f" WHERE {flag} AND ({regions})" if scoped else ""
++                sql(f"CREATE TRIGGER {prefix}_{event.lower()} AFTER {event} ON operation_state WHEN {guard} "
++                    f"BEGIN UPDATE {table} SET {values}{where}; END")
++    else:
++        if scoped:
++            body = """IF TG_TABLE_NAME='players' THEN
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE (version_id,vehicle_id) IN
++                  (SELECT b.version_id,b.vehicle_id FROM personal_bests p JOIN boards b ON b.id=p.board_id WHERE p.player_id=NEW.id);
++              ELSE UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE (version_id,vehicle_id) IN
++                  (SELECT version_id,vehicle_id FROM boards WHERE id=OLD.board_id); END IF;"""
++        else:
++            body = "UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0;"
++        sql(f"CREATE OR REPLACE FUNCTION bmt_histogram_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NULL; END $$")
++        for name, table, values, flag in (
++            ("bmt_lap_reset", "boards", "lap_revision=lap_revision+1", "manifest->>'test_population'='true'"),
++            ("bmt_histogram_reset", "histogram_snapshots", "invalidated=true,next_refresh_at=0", "include_artificial=true"),
++        ):
++            regions = " OR ".join(reset_region(ref, sqlite=False) for ref in ("previous", "current_data"))
++            where = f" WHERE {flag} AND ({regions})" if scoped else ""
++            sql(f"""CREATE OR REPLACE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$
++                DECLARE previous jsonb; current_data jsonb; previous_id text; current_id text;
++                BEGIN
++                IF TG_OP<>'INSERT' THEN previous=OLD.details::jsonb; previous_id=OLD.id; END IF;
++                IF TG_OP<>'DELETE' THEN current_data=NEW.details::jsonb; current_id=NEW.id; END IF;
++                IF (previous_id LIKE 'test-pop-batch:%' OR current_id LIKE 'test-pop-batch:%') AND
++                  (previous#>>'{{request,clear_test_records}}'='true' OR current_data#>>'{{request,clear_test_records}}'='true') AND
++                  (previous_id IS DISTINCT FROM current_id OR previous#>'{{request,clear_test_records}}' IS DISTINCT FROM current_data#>'{{request,clear_test_records}}' OR
++                   previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                   previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN
++                    UPDATE {table} SET {values}{where};
++                END IF; RETURN NULL; END $$""")
++
++
++def board_region(ref):
++    return f"(version_id,vehicle_id) IN (SELECT version_id,vehicle_id FROM boards WHERE id={ref}.board_id)"
++
++
++def reset_region(ref, *, sqlite):
++    if sqlite:
++        return f"(vehicle_id=json_extract({ref},'$.vehicle_id') AND version_id IN " \
++            f"(SELECT json_extract(value,'$.version_id') FROM json_each({ref},'$.tracks')))"
++    return f"(vehicle_id={ref}->>'vehicle_id' AND version_id IN " \
++        f"(SELECT item->>'version_id' FROM jsonb_array_elements(COALESCE({ref}->'tracks','[]'::jsonb)) item))"
+--- a/backend/bmt_backend/loadtest.py
++++ b/backend/bmt_backend/loadtest.py
+@@ -154,7 +154,7 @@
+ 
+ 
+ def worker_process(config, stop, log_file, metrics_file):
+-    from .worker import process_one
++    from .worker import process_worker_job
+     with open(log_file,"w",encoding="utf8",buffering=1) as output:
+         import sys
+         sys.stdout,sys.stderr = output,output
+@@ -171,7 +171,7 @@
+         try:
+             while not stop.is_set():
+                 try:
+-                    if not process_one(app):
++                    if not process_worker_job(app):
+                         stop.wait(.05)
+                 except Exception as error:  # noqa: BLE001 - exercise fenced worker recovery
+                     print("load_worker_failure",type(error).__name__,flush=True)
+@@ -388,6 +388,10 @@
+             upgrade(app.state.engine)
+             print(f"Seeding {args.players} synthetic players / {args.tracks} versions in disposable {'PostgreSQL schema' if url else 'SQLite file'}",flush=True)
+             data=seed(app,players=args.players,tracks=args.tracks,actors=args.actors,tie_every=args.tie_every,memberships=args.scenario!="joins")
++            # Seed preparation is outside request timing, like PB construction.
++            # Real requests must exercise stored histograms, never build them.
++            from .histogram_snapshots import refresh_all_for_diagnostics
++            refresh_all_for_diagnostics(app)
+             plans=explain(app,data)
+             ports=[free_port() for _ in range(args.replicas)]
+             token=secrets.token_hex(24)
+--- /dev/null
++++ b/backend/tests/test_scalability_followup.py
+@@ -0,0 +1,183 @@
++"""Operational cost controls without changing scoring or liveness contracts."""
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++
++import pytest
++from sqlalchemy import event, select
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, race, upload
++
++from bmt_backend import operations
++from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.runs import board_manifest
++from bmt_backend.track_models import Board, HistogramSnapshot, OperationState, Run, TrackVersion, digest
++from bmt_backend.worker_lifecycle import WorkerControl
++
++domain = domain_fixture
++
++
++def second_course(domain):
++    version = upload(domain, "Bob", document={"shape":"second"})
++    race(domain, version, "Bob", frames=60)
++    response = domain.client.post(f"/v1/track-versions/{version['version_id']}/publish", headers=headers(domain,"Bob"))
++    assert response.status_code == 200, response.text
++    return version
++
++
++def watch(engine):
++    statements = []
++    def record(_conn, _cursor, statement, *_):
++        statements.append(statement)
++    event.listen(engine, "before_cursor_execute", record)
++    return statements, record
++
++
++def test_routine_heartbeats_coalesce_but_keep_latest_diagnostics(auth_app, monkeypatch):
++    clock = [0.0]
++    monkeypatch.setattr(operations.time, "monotonic", lambda: clock[0])
++    statements, callback = watch(auth_app.state.engine)
++    try:
++        operations.heartbeat(auth_app, "probe", phase="claiming", build={"version":1}, coalesce=True)
++        initial = len(statements)
++        for job in range(100):
++            operations.heartbeat(auth_app, "probe", phase="verifying", last_queue_wait_seconds=job, coalesce=True)
++            operations.heartbeat(auth_app, "probe", phase="idle", last_verification_seconds=0.002, coalesce=True)
++        assert len(statements) == initial
++        clock[0] = 1.1
++        operations.heartbeat(auth_app, "probe", phase="claiming", build={"version":1}, coalesce=True)
++        assert len(statements) == initial*2
++        with auth_app.state.session_factory() as session:
++            saved = session.get(OperationState, "worker:probe")
++            assert saved.details["last_queue_wait_seconds"] == 99
++            assert saved.details["last_verification_seconds"] == 0.002
++        # A build change cannot wait for the normal heartbeat interval.
++        operations.heartbeat(auth_app, "probe", build={"version":2}, coalesce=True)
++        with auth_app.state.session_factory() as session:
++            assert session.get(OperationState, "worker:probe").details["build"] == {"version":2}
++    finally:
++        event.remove(auth_app.state.engine, "before_cursor_execute", callback)
++
++
++def test_stop_and_drain_flush_pending_data_immediately(auth_app, monkeypatch):
++    monkeypatch.setattr(operations.time, "monotonic", lambda: 0.0)
++    operations.heartbeat(auth_app, "probe", build={"version":1}, coalesce=True)
++    operations.heartbeat(auth_app, "probe", last_queue_wait_seconds=10, coalesce=True)
++    auth_app.state.worker_control = WorkerControl()
++    auth_app.state.worker_control.request_stop()
++    operations.heartbeat(auth_app, "probe", phase="idle", coalesce=True)
++    with auth_app.state.session_factory() as session:
++        row = session.get(OperationState, "worker:probe")
++        assert row.details["lifecycle"] == "draining" and row.details["last_queue_wait_seconds"] == 10
++    operations.heartbeat(auth_app, "probe", lifecycle="stopped")
++    operations.heartbeat(auth_app, "probe", lifecycle="running", coalesce=True)
++    with auth_app.state.session_factory() as session:
++        assert session.get(OperationState, "worker:probe").details["lifecycle"] == "stopped"
++
++
++def test_failed_heartbeat_flush_retains_pending_diagnostics(auth_app, monkeypatch):
++    clock = [0.0]
++    monkeypatch.setattr(operations.time, "monotonic", lambda: clock[0])
++    operations.heartbeat(auth_app, "probe", build={"version":1}, coalesce=True)
++    operations.heartbeat(auth_app, "probe", last_queue_wait_seconds=42, coalesce=True)
++    original = operations._write_heartbeat
++    def fail(*args, **kwargs):
++        raise RuntimeError("injected database outage")
++    monkeypatch.setattr(operations, "_write_heartbeat", fail)
++    clock[0] = 2
++    with pytest.raises(RuntimeError):
++        operations.heartbeat(auth_app, "probe", phase="claiming", coalesce=True)
++    monkeypatch.setattr(operations, "_write_heartbeat", original)
++    operations.heartbeat(auth_app, "probe", phase="claiming", coalesce=True)
++    with auth_app.state.session_factory() as session:
++        assert session.get(OperationState, "worker:probe").details["last_queue_wait_seconds"] == 42
++
++
++def test_postgres_shutdown_heartbeat_does_not_wait_for_application_write_lock(domain, monkeypatch):
++    if not domain.postgres:
++        pytest.skip("Independent PostgreSQL connections required")
++    clock = [0.0]
++    monkeypatch.setattr(operations.time, "monotonic", lambda: clock[0])
++    operations.heartbeat(domain.app, "probe", build={"version":1}, coalesce=True)
++    clock[0] = 2
++    blocked, release = threading.Event(), threading.Event()
++    original = operations._write_heartbeat
++    def delayed(app, worker, details):
++        if details.get("phase") == "idle" and "lifecycle" not in details:
++            blocked.set()
++            assert release.wait(timeout=5)
++        return original(app, worker, details)
++    monkeypatch.setattr(operations, "_write_heartbeat", delayed)
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        routine = pool.submit(operations.heartbeat, domain.app, "probe", phase="idle", coalesce=True)
++        try:
++            assert blocked.wait(timeout=2)
++            stopped = pool.submit(operations.heartbeat, domain.app, "probe", lifecycle="stopped")
++            stopped.result(timeout=2)
++            with domain.factory() as session:
++                assert session.get(OperationState, "worker:probe").details["lifecycle"] == "stopped"
++        finally:
++            release.set()
++            routine.result(timeout=5)
++    with domain.factory() as session:
++        assert session.get(OperationState, "worker:probe").details["lifecycle"] == "stopped"
++
++
++def test_record_and_visibility_invalidations_do_not_touch_other_tracks(domain):
++    first, _ = public_course(domain)
++    second = second_course(domain)
++    race(domain, first, "Alice", frames=20)
++    slower = race(domain, first, "Alice", frames=25)
++    refresh_all_for_diagnostics(domain.app)
++    with domain.factory() as session:
++        other = session.get(HistogramSnapshot, (second["version_id"],"compact",False))
++        generation = other.generation
++        session.get(Run, slower["run_id"]).status = "failed"
++        session.commit()
++        assert session.get(HistogramSnapshot, (first["version_id"],"compact",False)).invalidated
++        assert not session.get(HistogramSnapshot, (second["version_id"],"compact",False)).invalidated
++        assert other.generation == generation
++    refresh_all_for_diagnostics(domain.app)
++    with domain.factory() as session:
++        session.get(Player, domain.players["Alice"]).disabled = True
++        session.commit()
++        assert session.get(HistogramSnapshot, (first["version_id"],"compact",False)).invalidated
++        assert not session.get(HistogramSnapshot, (second["version_id"],"compact",False)).invalidated
++
++
++def test_artificial_reset_only_affects_named_tracks_car_and_population(domain):
++    domain.app.state.settings = replace(domain.app.state.settings, environment="development", dev_auth_enabled=True,
++        dev_auth_key="isolated-scalability-test-key"*2, test_drivers_enabled=True)
++    first, _ = public_course(domain)
++    second = second_course(domain)
++    with domain.factory() as session:
++        version = session.get(TrackVersion, first["version_id"])
++        manifest = {**board_manifest(version,"compact"),"test_population":True}
++        bid = digest({"version_id":version.id,**manifest})
++        session.add(Board(id=bid, version_id=version.id, vehicle_id="compact",manifest=manifest))
++        session.commit()
++    refresh_all_for_diagnostics(domain.app)
++    with domain.factory() as session:
++        before = session.get(Board,bid).lap_revision
++        session.add(OperationState(id="test-pop-batch:scoped-reset", details={"vehicle_id":"compact",
++            "request":{"clear_test_records":True},"created_at":100,"tracks":[{"version_id":first["version_id"]}]}))
++        session.commit()
++        assert session.get(Board,bid).lap_revision == before+1
++        for vid in (first["version_id"],second["version_id"]):
++            assert not session.get(HistogramSnapshot,(vid,"compact",False)).invalidated
++        assert session.get(HistogramSnapshot,(first["version_id"],"compact",True)).invalidated
++        assert not session.get(HistogramSnapshot,(second["version_id"],"compact",True)).invalidated
++
++
++def test_index_and_scope_migration_round_trip_preserves_records(domain):
++    from alembic import command
++    first, _ = public_course(domain)
++    with domain.factory() as session:
++        records = session.execute(select(Run.id,Run.status,Run.time_ticks)).all()
++    command.downgrade(configuration(domain.app.state.engine), "0022_histogram_cache")
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        assert session.execute(select(Run.id,Run.status,Run.time_ticks)).all() == records
++        assert session.get(HistogramSnapshot,(first["version_id"],"compact",False)) is not None
+--- a/backend/tests/test_histogram_snapshots.py
++++ b/backend/tests/test_histogram_snapshots.py
+@@ -108,7 +108,7 @@
+     assert after["best_lap"]["own_best_ticks"] == 5
+ 
+ 
+-def test_visibility_and_reset_changes_invalidate_without_waiting(domain):
++def test_visibility_invalidates_but_artificial_reset_leaves_public_unchanged(domain):
+     version, _ = public_course(domain)
+     race(domain, version, "Alice", frames=20)
+     refresh_all_for_diagnostics(domain.app)
+@@ -118,13 +118,14 @@
+     assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
+     refresh_all_for_diagnostics(domain.app)
+     assert domain.client.get(route(version), headers=headers(domain)).json()["race"]["population"] == 1
++    generation = snapshot(domain, version).generation
+     with domain.factory() as session:
+         session.add(OperationState(id="test-pop-batch:snapshot-reset", details={"vehicle_id":"compact",
+             "request":{"clear_test_records":True}, "created_at":100, "tracks":[{"version_id":version["version_id"]}]}))
+         session.commit()
+-    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
+-    refresh_all_for_diagnostics(domain.app)
+-    generation = snapshot(domain, version).generation
++    assert domain.client.get(route(version), headers=headers(domain)).status_code == 200
++    refresh_all_for_diagnostics(domain.app)
++    assert snapshot(domain, version).generation == generation
+     with domain.factory() as session:
+         row = session.get(OperationState, "test-pop-batch:snapshot-reset")
+         row.details = {**row.details, "progress":50}
+--- a/backend/tests/test_review_reliability.py
++++ b/backend/tests/test_review_reliability.py
+@@ -212,20 +212,24 @@
+     path = f"/v1/boards/{board}"
+     # Populate both caches, then change their inputs through separate DB sessions.
+     assert domain.client.get(path).json()["population"] == 2
+-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 300
++    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++    def fresh_histogram():
++        refresh_all_for_diagnostics(domain.app)
++        return domain.client.get(path+"/histogram").json()
++    assert fresh_histogram()["maximum_ticks"] == 300
+     second = submit(domain, ticket(domain, version, "Bob"), "Bob", frames=80)
+     assert process_one(domain.app)
+     assert domain.client.get(path).json()["population"] == 3
+-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 400
++    assert fresh_histogram()["maximum_ticks"] == 400
+     with domain.factory() as session:
+         session.get(Player, domain.players["Bob"]).disabled = True
+         session.commit()
+     assert domain.client.get(path).json()["population"] == 2
+-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 300
++    assert fresh_histogram()["maximum_ticks"] == 300
+     with domain.factory() as session:
+         session.execute(update(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == domain.players["Creator"]).values(time_ticks=90))
+         session.commit()
+-    assert domain.client.get(path+"/histogram").json()["maximum_ticks"] == 150
++    assert fresh_histogram()["maximum_ticks"] == 150
+     assert second["run_id"] != first["run_id"]
+ 
+ 
+--- /dev/null
++++ b/docs/BACKEND_SCALABILITY_2026_10_10.md
+@@ -0,0 +1,56 @@
++# Backend scalability follow-up, 2026-10-10
++
++Requirements: SC01 (review growing backend work), SC02 (bounded operational reads), SC03 (heartbeat write coalescing), SC04 (targeted invalidation), B05/B07/R01/Q01/TD06/TD08. This is a local implementation and capacity review; no backend was deployed.
++
++## Implemented
++
++**Health reads:** `operations.competition_health` previously queried recent verified, failed and rejected counts and verified latency independently. Those metrics now share one filtered aggregate. Dedicated indexes on `runs.created_at` and `operation_state.updated_at` let recent arrivals and active workers avoid reading large historical ranges. Returned health values are unchanged; this adds no stale-response cache.
++
++**Routine heartbeats:** claiming/verifying/idle diagnostics are merged per worker and persisted at most once per second (sooner if the configured stale threshold is very short). Build changes, unavailable builds, explicit lifecycle changes and a requested shutdown persist immediately. Pending metrics survive a failed flush; draining/stopped states remain sticky. Cache memory is bounded to 64 worker IDs. PostgreSQL writes never hold an application lock through pool/database waits; a shutdown writer can proceed independently and database row locks retain serialization. SQLite's shared test connection still serializes writes. This changes diagnostic sampling, not race verification, scoring, receipts or queue admission.
++
++**Histogram invalidation:** retiring one run or removing a PB previously invalidated every stored snapshot. Player visibility changes now affect only boards on which that player has PBs. Record changes affect only the related immutable version/car. Artificial-record resets advance lap revisions and invalidate only the named tracks/car and artificial-inclusive population; public-only snapshots stay intact. Both old and new reset regions are covered when metadata changes. Progress-only updates do not invalidate data. This prevents routine work on one busy track from creating refresh work on unrelated tracks.
++
++**Capacity lab:** the existing CLI now prepares stored histogram fixtures before request timing and uses the actual service worker's background path. Its older seed-only setup would otherwise measure unavailable histogram responses after the stored-snapshot change. The seed is still explicitly synthetic and isolated, not canonical verification evidence. Existing fresh-count tests explicitly prepare offline snapshots; no numeric, restriction or tie assertions were removed. Snapshot tests now require artificial resets to leave public-only data untouched, with a separate private-scope test proving required invalidation.
++
++## Measurements
++
++Owned local PostgreSQL 17, 100,000 retained attempts (100 recent), 10,000 retired worker entries, one active worker and 400 histogram registrations. Identical returned health values were checked before/after, apart from filesystem free space. Ten health calls per implementation, including the first:
++
++| Work | Before | After |
++| --- | ---: | ---: |
++| Health median | 14.94 ms | 11.37 ms |
++| SQL statements per health call | 10 | 7 |
++| Snapshots invalidated by one retired run | 400 | 2 |
++| Heartbeat SQL for 100 simulated jobs within one interval | 900 | 3 |
++
++The heartbeat-only burst measured 1,804.84 ms before and 9.18 ms after. Its coalesced clock deliberately stays inside one interval; this is not an overall race-throughput claim. Actual verification, scoring and upload work are excluded.
++
++EXPLAIN ANALYZE BUFFERS shows the worker lookup changing from a sequential scan discarding 10,002 entries to an indexed lookup returning the one active entry. Arrival counting used the broader claim index before (92 shared buffer hits), then its dedicated timestamp index (7). Worker lookup buffer hits fell from 104 to 3. These are local analyzed fixtures, not NAS/cloud/HTTP latency or sustained deployment-capacity results. [Samples and plans](evidence/backend-scalability-2026-10-10/postgres-report.json), [probe log](evidence/backend-scalability-2026-10-10/postgres-final-probe.log).
++
++## Larger next opportunities
++
++1. **Persist flying-lap PBs per driver/pinned board.** Scheduled histogram generation still reads attempt history. A durable lap projection would make refresh cost depend on drivers, not attempts, and protect lap PBs during retention. A disposable dry-run reproduced the retention gap: a slower overall attempt contained the driver's 19-tick flying PB, while their race PB had 20-tick laps; retention selected the slower attempt because only the race-PB run was referenced. No pruning was applied. Add the projection and its source-run reference before relying on generic superseded-run pruning for lap history. [Dry-run receipt](evidence/backend-scalability-2026-10-10/retention-audit.json). This task does not implement that projection or change retention policy.
++2. **Share a recent-distinct-driver popularity projection.** Discovery's popular/trending order aggregates verified runs over seven days for each new filtered snapshot. Its existing twenty-second query cache helps identical searches, but different filters repeat the same history work. A per-track/driver last-finish projection plus a periodically prepared popularity order would avoid that growth. Preserve public-only drivers, creator-proof exclusion, rolling cutoff and page-time visibility checks.
++3. **Cache Rivalry's shared standings by a real group revision.** Groups are already bounded to twenty drivers/five tracks, but every conditional GET builds the same standings before deciding to return 304. Share the static field across members and calculate clock/self information separately. A valid revision must include memberships, best results, profile/visibility changes, pending results, track availability and archival; week transitions must remain timely. Existing board revisions alone are insufficient for this.
++4. **Reduce mandatory recording I/O with an explicit trajectory upload contract.** Acceptance is trajectory-only, but canonical controls/recordings are still retained and transported. A versioned smaller upload could separate trajectory acceptance from optional presentation/offline diagnostics. Keep exact ticket duration, resume receipts, replay pinning and durable/idempotent uploads; do not remove fields silently from the current contract.
++
++Current bounded paths do not need blanket rewrites: queue admission uses transactional counters, job polling batches at most thirty-two IDs, adjacent rankings use indexed windows, skill matching examines at most twenty boards, track candidates are bounded, and groups/challenges have small caps. Identity/body budgets, object publication pins and short DB connection pools already supply necessary pressure limits. More caching on reward or entitlement writes would weaken correctness and is outside this review.
++
++## Files and validation
++
++Runtime changes: `backend/bmt_backend/operations.py`, `worker.py`, `app.py`, `track_models.py`; migration `migrations/versions/0023_operational_read_indexes.py`. Lab: `loadtest.py`. Tests: new `backend/tests/test_scalability_followup.py`, plus existing `test_histogram_snapshots.py` and `test_review_reliability.py`. This report/evidence, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md record the slice.
++
++Commands use `.tools/backend-venv/Scripts/python.exe`, PYTHONPATH=backend and PYTHONUTF8=1:
++
++- `-m pytest backend/tests/test_loadtest.py backend/tests/test_scalability.py backend/tests/test_worker_lifecycle.py backend/tests/test_review_reliability.py backend/tests/test_review_followups.py backend/tests/test_scalability_followup.py backend/tests/test_histogram_snapshots.py -k 'not postgres and not real_signals and not recorded_practice and not checkpoint_rules_upgrade' -q --tb=short --junitxml=build/backend-scalability-2026-10-10/sqlite-final.xml`: final **105 passed, 2 skipped, 90 deselected**. The two skips require PostgreSQL locking. [Receipt](evidence/backend-scalability-2026-10-10/sqlite-final.xml).
++- `build/backend-scalability-2026-10-10/owned_postgres.py`: initial PostgreSQL selection **72 passed, 1 failed**. The failure was an older histogram fixture expecting an immediate request-time rebuild; fresh-count checks now explicitly run the offline snapshot builder. [Original receipt](evidence/backend-scalability-2026-10-10/postgres-first-tests.log).
++- `build/backend-scalability-2026-10-10/owned_postgres_final.py`: corrected PostgreSQL fixture **1 passed**, then before/after benchmark exit zero. Its generated container/schema were removed. [Receipt](evidence/backend-scalability-2026-10-10/postgres-final-tests.log).
++- `build/backend-scalability-2026-10-10/owned_postgres_shutdown.py`: final PostgreSQL shutdown/application-lock, draining, stop and health checks **4 passed**. An artificially blocked routine write does not prevent a stopped heartbeat using another available connection, and its later completion cannot revive the worker. Generated container removed. [Receipt](evidence/backend-scalability-2026-10-10/postgres-heartbeat-final-tests.log).
++- `-m pytest backend/tests/test_loadtest.py backend/tests/test_review_reliability.py -k 'not postgres and (load or board_cache_tracks)' -q --tb=short`: **4 passed**, including actual loopback HTTP and both passing/strict-failing latency-gate contracts. [Receipt](evidence/backend-scalability-2026-10-10/fixture-load-final.xml).
++- `-m ruff check backend/bmt_backend/operations.py backend/bmt_backend/migrations/versions/0023_operational_read_indexes.py backend/tests/test_scalability_followup.py`: passed.
++
++The PostgreSQL runners use an existing local image, owned nonce-labelled containers and generated isolated schemas; cleanup verifies ownership. They never use a deployed database or reset another service. Source receipts are saved alongside evidence; their original execution directory is `build/backend-scalability-2026-10-10`.
++
++Initial fixture errors used an unsupported helper argument and then exceeded one owner's publishing slots; the second circuit now uses another fixture owner without changing the quota. A local heartbeat cleanup alias error was corrected with an independent pending dictionary. Its obsolete hung pytest helper was stopped only after checking exact command lines/IDs; the corrected tests passed. PowerShell Stop-Process failed, so the verified owned child was terminated with taskkill. The two pre-existing broad checkpoint/practice failures recorded in the histogram report were excluded from this focused suite, not weakened or claimed fixed.
++
++No running backend migration/deployment, external player-record writes, canonical simulation or UI changes, Android export/install, phone attachment check or device test. Migration 0023 depends on the pending 0021/0022 chain. Building indexes on a large live database requires a reviewed rollout/window; no deployment-capacity guarantee is inferred from this lab. Remaining acceptance: real-host concurrency/memory, the larger projections above and the pre-existing full-domain failures. [Task-only review patch](evidence/backend-scalability-2026-10-10/scoped-change.patch) preserves unrelated workspace work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.
++
+ 2026-10-10 MLOAD04/HOPT03-HOPT05/B05/B07/R01/Q01/TD06/TD08: owner explicitly approves backend deployment. Fresh backup1791631372709; exact tested d16a4a17 image/API-worker-migrate-smoke-catalog updated; additive schema0021-0023/config hashes/114 canonical files preserved. Migration job correctly left980 artificial fields pending; matching gated worker warmed all fields before API switch, no bypass/assertion change. Live27-track counts/retained frames/private404 and native44 pass; smoke12757 canonical+trajectory ticks/1.988ms/zero acceptance engine calls/2 diagnostic objects/zero player writes, servicesReady. Server comparison handler median30.32ms; external standalone292-358ms/health335ms remains variable, no established whole-HTTP speedup or instant-response claim. No PB reset/reseed/resource resize/production/device/phone check/APK/fullValidate; app-side fixes still require a client build. Actual commands/receipts/deployment-only checkpoint and remaining network/device acceptance: docs/MENU_LOADING_SPEED_2026_10_10.md (Approved development rollout).
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner reports continued bridge dust leak, reopening presentation12 acceptance. Reproduced upper-bank roof12pixels; native center-height-only check still exposes aging/ramp/edge gap. Final presentation14 records immutable GPU birth height and analytically masks projected deck/smooth ramps, retaining Compatibility/MSAA2x/shadows/1.5MP/nativeHUD/camera/physics. GPU121 (loft+emitter-motion birth witness/native uniform equality)/roof241 without opaque-depth protection/desert87/export72-21-48 pass. Final Pad2 ground/ramp/deck captures inspected, upper4banks/birth process true; moving12s20.042ms/p9525.036 and two-span32s19.995/p9525.303 (~50FPS), paused0; no completed lap or thermal60FPS claim. APK247591864/SHA256C658F00DB20A37E449A881608A303DE885167E8A72A932E8478B6CFB14778FE7 installedSuccess, marker absent/normalPID28414/playerdata retained. Initial inspection API attempts corrected, intermediate APK superseded. Owner exact-case/prolonged/ramp-cutoff/shadow acceptance remains; no fullValidate/backend/production. Actual files/commands/screenshots/scoped checkpoint: docs/BRIDGE_DUST_FOLLOWUP_2026_10_10.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.
++
+ 2026-10-10 MLOAD04/HOPT03-HOPT05/B05/B07/R01/Q01/TD06/TD08: owner explicitly approves backend deployment. Fresh backup1791631372709; exact tested d16a4a17 image/API-worker-migrate-smoke-catalog updated; additive schema0021-0023/config hashes/114 canonical files preserved. Migration job correctly left980 artificial fields pending; matching gated worker warmed all fields before API switch, no bypass/assertion change. Live27-track counts/retained frames/private404 and native44 pass; smoke12757 canonical+trajectory ticks/1.988ms/zero acceptance engine calls/2 diagnostic objects/zero player writes, servicesReady. Server comparison handler median30.32ms; external standalone292-358ms/health335ms remains variable, no established whole-HTTP speedup or instant-response claim. No PB reset/reseed/resource resize/production/device/phone check/APK/fullValidate; app-side fixes still require a client build. Actual commands/receipts/deployment-only checkpoint and remaining network/device acceptance: docs/MENU_LOADING_SPEED_2026_10_10.md (Approved development rollout).
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner reports continued bridge dust leak, reopening presentation12 acceptance. Reproduced upper-bank roof12pixels; native center-height-only check still exposes aging/ramp/edge gap. Final presentation14 records immutable GPU birth height and analytically masks projected deck/smooth ramps, retaining Compatibility/MSAA2x/shadows/1.5MP/nativeHUD/camera/physics. GPU121 (loft+emitter-motion birth witness/native uniform equality)/roof241 without opaque-depth protection/desert87/export72-21-48 pass. Final Pad2 ground/ramp/deck captures inspected, upper4banks/birth process true; moving12s20.042ms/p9525.036 and two-span32s19.995/p9525.303 (~50FPS), paused0; no completed lap or thermal60FPS claim. APK247591864/SHA256C658F00DB20A37E449A881608A303DE885167E8A72A932E8478B6CFB14778FE7 installedSuccess, marker absent/normalPID28414/playerdata retained. Initial inspection API attempts corrected, intermediate APK superseded. Owner exact-case/prolonged/ramp-cutoff/shadow acceptance remains; no fullValidate/backend/production. Actual files/commands/screenshots/scoped checkpoint: docs/BRIDGE_DUST_FOLLOWUP_2026_10_10.md.

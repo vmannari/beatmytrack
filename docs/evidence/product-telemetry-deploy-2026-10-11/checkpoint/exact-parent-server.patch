@@ -1,0 +1,2111 @@
+diff --git a/backend/bmt_backend/admin.py b/backend/bmt_backend/admin.py
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -58,7 +58,7 @@
+ 
+ @router.get("/admin/assets/{name}", include_in_schema=False)
+ def asset(name: str):
+-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "style.css"):
++    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "style.css"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+diff --git a/backend/bmt_backend/admin_ui/app.js b/backend/bmt_backend/admin_ui/app.js
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -2,7 +2,7 @@
+ const $=s=>document.querySelector(s), esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
+ let dialogGeneration=0, dialogOpener=null;
+-const sections=[['overview','Studio pulse','◫','LEARN'],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
++const sections=[['overview','Studio pulse','◫','LEARN'],['product','Product analytics','↗',''],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
+ const titles=Object.fromEntries(sections.map(x=>[x[0],x[1]]));
+ const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
+ const status=v=>`<span class="console-state ${['failed','rejected','queued','disabled','hidden'].includes(String(v))?'warn':''}">${esc(v)}</span>`;
+@@ -47,7 +47,7 @@
+  $('#reporting-dates').onsubmit=event=>{event.preventDefault();const since=Date.parse($('#report-from').value+'T00:00:00Z')/1000,until=Date.parse($('#report-through').value+'T00:00:00Z')/1000+86400;if(!Number.isFinite(since)||!Number.isFinite(until)||since<0||until<=since||until-since>90*86400){$('#dates-error').hidden=false;$('#dates-error').textContent='Choose a range of 1–90 calendar days.';return;}const [path,qs]=location.hash.slice(1).split('?'),params=new URLSearchParams(qs);for(const name of ['all','offset','cursor'])params.delete(name);params.set('since',since);params.set('until',until);$('#days').value='custom';$('#dialog').close();location.hash=path+'?'+params;};
+ }
+ 
+-async function overview(d){return intro('The game, at a glance.','A clear view of accounts, immutable tracks and verification workload.')+`<div class="health-strip"><b>Service pulse</b><span class="console-success">● API responding</span><span class="console-success">● Database reachable</span><span>Verification: ${d.pending} pending</span><a href="#system">Inspect health →</a></div><div class="metrics">${metric('Registered players',d.players,'players?all=1','All accounts · lifetime')}${metric('Submitting racers',d.racers,periodTarget('races',d),`Unique players · selected dates`)}${metric('Track identities',d.tracks,'tracks?all=1','All publication states · lifetime')}${metric('Track versions',d.versions,'tracks?all=1','Immutable documents · lifetime')}${metric('Verified submissions',d.states.verified||0,periodTarget('races?state=verified',d),`Selected dates`)}${metric('Awaiting verification',d.pending,'system/jobs?all=1','Current queue · all time')}</div><div class="console-grid">${card('Race submissions',chart(d))}${card('Needs attention',`<div class="console-kv"><dt>Queued / verifying</dt><dd>${link('system','jobs',`${d.pending} pending submissions`)}</dd></div><div class="console-kv"><dt>Rejected / failed</dt><dd><a href="#${periodTarget('races?state=rejected',d)}">${d.states.rejected||0} rejected</a> · <a href="#${periodTarget('races?state=failed',d)}">${d.states.failed||0} failed</a> in selected window</dd></div><div class="console-kv"><dt>Restricted accounts</dt><dd><a href="#players?state=disabled">${d.disabled} accounts</a></dd></div><p class="console-note">Verification outcomes are evidence, not allegations. Worker freshness, queue age and storage capacity are available under System. Purchase records and catalog controls are available under Economy; crash telemetry has no configured data source.</p>`)}</div><div class="console-grid">${card('Investigate a record','<p class="console-note">Follow stable player, track-version and race identities into their evidence. Published geometry and competition manifests remain immutable.</p><div class="console-actions"><a class="btn" href="#players">Players →</a><a class="btn" href="#tracks">Track library →</a><a class="btn" href="#races">Race submissions →</a></div>')}${card('Reporting coverage','<p class="console-note">These counts come from operational database records. Session activity, retention, revenue and device performance have no configured data source. No sample values are shown as live metrics.</p>')}</div>`;}
++async function overview(d){return intro('The game, at a glance.','A clear view of accounts, immutable tracks and verification workload.')+`<div class="health-strip"><b>Service pulse</b><span class="console-success">● API responding</span><span class="console-success">● Database reachable</span><span>Verification: ${d.pending} pending</span><a href="#system">Inspect health →</a></div><div class="metrics">${metric('Registered players',d.players,'players?all=1','All accounts · lifetime')}${metric('Submitting racers',d.racers,periodTarget('races',d),`Unique players · selected dates`)}${metric('Track identities',d.tracks,'tracks?all=1','All publication states · lifetime')}${metric('Track versions',d.versions,'tracks?all=1','Immutable documents · lifetime')}${metric('Verified submissions',d.states.verified||0,periodTarget('races?state=verified',d),`Selected dates`)}${metric('Awaiting verification',d.pending,'system/jobs?all=1','Current queue · all time')}</div><div class="console-grid">${card('Race submissions',chart(d))}${card('Needs attention',`<div class="console-kv"><dt>Queued / verifying</dt><dd>${link('system','jobs',`${d.pending} pending submissions`)}</dd></div><div class="console-kv"><dt>Rejected / failed</dt><dd><a href="#${periodTarget('races?state=rejected',d)}">${d.states.rejected||0} rejected</a> · <a href="#${periodTarget('races?state=failed',d)}">${d.states.failed||0} failed</a> in selected window</dd></div><div class="console-kv"><dt>Restricted accounts</dt><dd><a href="#players?state=disabled">${d.disabled} accounts</a></dd></div><p class="console-note">Verification outcomes are evidence, not allegations. Worker freshness, queue age and storage capacity are available under System. Purchase records and catalog controls are available under Economy; crash telemetry has no configured data source.</p>`)}</div><div class="console-grid">${card('Investigate a record','<p class="console-note">Follow stable player, track-version and race identities into their evidence. Published geometry and competition manifests remain immutable.</p><div class="console-actions"><a class="btn" href="#players">Players →</a><a class="btn" href="#tracks">Track library →</a><a class="btn" href="#races">Race submissions →</a></div>')}${card('Reporting coverage','<p class="console-note">These counts come from operational database records. Signed-in observed activity and exact-day return cohorts are available in Product analytics. Session duration, revenue and device performance have no configured data source.</p>')}</div>`;}
+ function playerType(value){return value===true?'Artificial':value===false?'Real':'Unavailable';}
+ const columns={players:['display_name','id','is_test_driver','disabled','created_at'],tracks:['name','state','hidden','number','rating_count','owner_id'],races:['id','player_id','status','time_ticks','attempts','created_at'],jobs:['id','status','attempts','failure_code','created_at'],audit:['action','entity_id','actor','reason','created_at'],grants:['id','player_id','source','quantity','created_at']};
+ function cell(kind,k,v,row){if(k==='is_test_driver')return esc(playerType(v));if(k==='created_at')return esc(date(v));if(k==='id'||k==='name'||k==='display_name')return link(kind,row.id,v);if(k==='player_id'||k==='owner_id')return link('players',v);if(k==='status'||k==='state')return status(v);if(k==='disabled')return status(v?'disabled':'active');if(k==='hidden')return status(v?'hidden':'visible');return esc(v);}
+@@ -82,10 +82,11 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api('overview?'+overviewQuery);if(ticket!==generation)return;
++  const d=await api((section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+-  if(section==='overview')html=await overview(d);
++  if(section==='product')html=productAnalyticsView(d);
++  else if(section==='overview')html=await overview(d);
+   else if(section==='studio')html=await studioCoverage();
+   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
+    html=id?await inspect(section,id,params):intro(titles[section]||section,'Server records · search, filter and inspect stable identities')+await listing(section,params);
+@@ -96,7 +97,7 @@
+    else html+=card('Current observation',kv({api:'responding',database:d.database,schema:d.schema,environment:d.environment,observed_at:d.as_of,pending_verifications:d.pending}))+await systemHealth();
+   }else if(section==='economy')html=await commercePage(params);
+   else if(section==='live')html=intro('Live operations','Compatibility is pinned per race contract.','CONTROL')+card('Configuration boundaries',kv({track_schema:'creator-track-v5',replay_schemas:'bmt-replay-v1 / bmt-replay-v2',resume_policy:'rewind-1',race_configuration:'Inspect a race for its exact immutable manifest'}))+unavailable('Remote configuration','There is no mutable configuration registry, activation service or retained rollback snapshots.');
+-  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+unavailable('Retention, creator funnels & device analytics','These require telemetry and metric contracts beyond the stored submission records.');
++  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+card('Observed product activity','<p class="console-note">Submitted attempts and observed product activity answer different questions. <a href="'+scopedHref('product',params)+'">Open Product analytics</a> for signed-in activity, ordered journeys and exact-day return cohorts. Device and crash diagnostics are not collected.</p>');
+   else html=intro('Page not found','Use the navigation to choose a workspace.');
+   if(ticket!==generation)return;
+   $('#main').innerHTML=html;
+diff --git a/backend/bmt_backend/admin_ui/index.html b/backend/bmt_backend/admin_ui/index.html
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -8,6 +8,7 @@
+   <script src="/admin/assets/commerce.js" defer></script>
+   <script src="/admin/assets/support.js" defer></script>
+   <script src="/admin/assets/studio.js" defer></script>
++  <script src="/admin/assets/product_analytics.js" defer></script>
+   <script src="/admin/assets/app.js" defer></script>
+ </head>
+ <body>
+diff --git a/backend/bmt_backend/admin_ui/product_analytics.js b/backend/bmt_backend/admin_ui/product_analytics.js
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/product_analytics.js
+@@ -0,0 +1,87 @@
++'use strict';
++function paCount(value,fallback='Unavailable'){
++ return Number.isInteger(value)&&value>=0?value.toLocaleString('en-US'):fallback;
++}
++function paRatio(count,total){
++ return Number.isInteger(count)&&Number.isInteger(total)&&total>0?(100*count/total).toFixed(1)+'%':null;
++}
++function paMetric(title,value,note,id){
++ return `<div class="metric"><div class="metric-label">${esc(title)}</div><div class="metric-value" id="${id}">${esc(value)}</div><div class="metric-meta">${esc(note)}</div></div>`;
++}
++function paActivity(data){
++ const max=Math.max(1,...data.daily.map(row=>Number.isInteger(row.active_players)?row.active_players:0));
++ const bars=data.daily.map(row=>{
++  const observed=row.observed&&Number.isInteger(row.active_players),label=row.day+': '+(observed?paCount(row.active_players)+' active players'+(row.current_partial?' · In progress':''):'Not observed');
++  return `<div class="pa-day ${observed?'observed':'unobserved'}" aria-label="${esc(label)}" title="${esc(label)}"><div class="pa-day-value">${observed?paCount(row.active_players):'—'}</div><div class="pa-day-bar" style="height:${observed?Math.max(2,100*row.active_players/max):70}%"></div><span>${esc(row.day.slice(5))}${row.current_partial?'*':''}</span></div>`;
++ }).join('');
++ const table=`<div class="console-table"><table id="pa-daily-table"><thead><tr><th scope="col">UTC day</th><th scope="col">Observed active players</th><th scope="col">Accepted race submissions</th><th scope="col">Day status</th></tr></thead><tbody>${data.daily.map(row=>`<tr><th scope="row">${esc(row.day)}</th><td>${paCount(row.active_players,'Not observed')}</td><td>${paCount(row.accepted_races,'Not observed')}</td><td>${!row.observed?'Not observed':row.current_partial?'In progress':'Complete'}</td></tr>`).join('')}</tbody></table></div>`;
++ return `<div class="pa-chart-scroll"><div class="pa-activity-chart" role="img" aria-label="Daily observed active players. Exact daily values are available in the evidence table." style="min-width:${Math.max(380,data.daily.length*40)}px">${bars}</div></div><p class="console-note">Daily distinct signed-in players with qualifying observed activity. Hatched days have no observation coverage; * marks an incomplete UTC day.</p><details class="studio-chart-data"><summary>View daily evidence table</summary>${table}</details>`;
++}
++function paFunnel(name,funnel,id,creatorValue=null,observedScope=true){
++ const known=Number.isInteger(funnel.cohort_players),size=known?funnel.cohort_players:0;
++ const unavailable=!observedScope?'Not observed':!funnel.mature?'Not mature':'Unavailable';
++ const steps=funnel.steps.map((step,index)=>{
++  const count=Number.isInteger(step.count)&&step.count>=0?step.count:null;
++  const ratio=count==null?null:paRatio(count,size),width=count==null||size<=0?0:Math.min(100,100*count/size);
++  const names={app_first_open:'First observed open',menu_ready:'Menu ready',race_attempt:'Race attempt',race_started:'Race started',race_finished:'Race finished',second_voluntary_race:'Second voluntary race',editor_opened:'Editor opened',draft_saved:'Draft saved',publish_requested:'Publication requested',track_published:'Track published'};
++  return `<li><span class="pa-step-number">${index+1}</span><div class="pa-step-name">${esc(names[step.name]||step.name)}</div><div class="pa-funnel-track" aria-hidden="true"><div style="width:${width}%"></div></div><div class="pa-step-count">${paCount(count,unavailable)}<small>${esc(ratio||'')}</small></div></li>`;
++ }).join('');
++ const firstRace=id==='pa-first-race-funnel';
++ const maturity=!known?unavailable:funnel.mature?(size>0?'Mature cohort':'No eligible cohort'):'No mature cohort';
++ const seconds=funnel.second_race_followup_seconds;
++ const secondWindow=Number.isInteger(seconds)&&seconds>0?(seconds%60===0?seconds/60+' minutes':seconds+' seconds'):null;
++ const definition=firstRace?'First observed open, with 24 hours of follow-up. '+(secondWindow?'The second start follows the first finish within '+secondWindow+'; pre-finish retries are excluded. ':'')+'Race completion is a client observation; acceptance is counted separately.':'First observed editor open, with seven days of follow-up. Publication uses the server record.';
++ const cohortLabel=known?paCount(funnel.cohort_players)+' cohort player'+(size===1?'':'s'):unavailable==='Not mature'?'Follow-up not mature':'Cohort '+unavailable.toLowerCase();
++ const reachCount=!creatorValue||creatorValue.external_racer_7d_versions==null||creatorValue.mature_published_versions==null?'Not observed':creatorValue.mature_published_versions===0?'No mature published versions':paCount(creatorValue.external_racer_7d_versions)+' / '+paCount(creatorValue.mature_published_versions);
++ const reach=creatorValue?`<div class="pa-published-reach"><h4>Published-track reach</h4><dl id="pa-creator-reach"><div><dt>Observed published versions</dt><dd>${paCount(creatorValue.published_versions,'Not observed')}</dd></div><div><dt>Complete ${esc(creatorValue.cohort_followup_days)}-day follow-up</dt><dd>${paCount(creatorValue.mature_published_versions,'Not observed')}</dd></div><div><dt>External accepted racer within ${esc(creatorValue.cohort_followup_days)} days</dt><dd>${reachCount}</dd></div></dl><p class="console-note">Published-version cohort; accepted ordinary races by another player.</p></div>`:'';
++ return card(name,`<div class="pa-funnel-meta"><span>${esc(cohortLabel)}</span><span class="studio-coverage-state ${funnel.mature&&size>0?'supported':'partial'}">${maturity}</span></div><ol class="pa-funnel" id="${id}">${steps}</ol><p class="console-note">${definition} Steps are ordered; percentages use this cohort as the denominator.</p>${reach}`);
++}
++function paRetentionValue(cell){
++ if(!cell.mature)return '<span class="pa-not-mature">Not mature</span>';
++ if(cell.returned==null)return '<span class="pa-not-observed">Unavailable</span>';
++ if(!cell.eligible)return '<span class="pa-not-observed">No eligible players</span>';
++ const ratio=paRatio(cell.returned,cell.eligible);
++ return `<strong>${esc(ratio||'Unavailable')}</strong><small>${paCount(cell.returned)} / ${paCount(cell.eligible)}</small>`;
++}
++function paRetention(rows){
++ if(!rows.length)return '<p class="console-empty">No first-activity cohorts observed in this window.</p>';
++ return `<p class="console-note">Exact-day return after first observed qualifying activity. Only complete target UTC days are mature; missing coverage is not a zero return.</p><div class="console-table"><table id="pa-retention-table"><thead><tr><th scope="col">First observed activity</th><th scope="col">Cohort players</th><th scope="col">Exact D1</th><th scope="col">Exact D7</th></tr></thead><tbody>${rows.map(row=>`<tr><th scope="row">${esc(row.cohort_day)}</th><td>${paCount(row.cohort_players)}</td><td>${paRetentionValue(row.d1)}</td><td>${paRetentionValue(row.d7)}</td></tr>`).join('')}</tbody></table></div>`;
++}
++function paChoices(rows,id,subject){
++ if(!rows.length)return `<p class="console-empty">No ${esc(subject)} exposure or selection observations in this window.</p>`;
++ return `<div class="console-table"><table id="${id}"><thead><tr><th scope="col">${esc(subject)}</th><th scope="col">Exposure events</th><th scope="col">Selection events</th></tr></thead><tbody>${rows.map(row=>`<tr><th scope="row">${esc(row.id)}</th><td>${paCount(row.exposures)}</td><td>${paCount(row.selections)}</td></tr>`).join('')}</tbody></table></div><p class="console-note">Recorded offer exposures and selections, not unique players or causal preference.</p>`;
++}
++function paStore(store){
++ if(!store)return '<p class="console-empty">Store observations are unavailable.</p>';
++ const offers=store.offers.length?`<div class="console-table"><table id="pa-store-offers"><thead><tr><th scope="col">Offer</th><th scope="col">Exposure events</th><th scope="col">Purchase request events</th></tr></thead><tbody>${store.offers.map(offer=>`<tr><th scope="row">${esc(offer.id)}</th><td>${paCount(offer.exposures,'Not observed')}</td><td>${paCount(offer.requests,'Not observed')}</td></tr>`).join('')}</tbody></table></div>`:'<p class="console-empty">No offer observations in this window.</p>';
++ return `<dl class="pa-action-counts"><div><dt>Store opens</dt><dd id="pa-store-opened">${paCount(store.opened,'Not observed')}</dd></div></dl>${offers}<p class="console-note">Client observations. Verified payment, fulfillment and revenue are unavailable.</p>`;
++}
++function paSocial(challenges){
++ const labels=[['challenge_opened','Challenge opens'],['challenge_joined','Challenge join events'],['challenge_created','Challenge creation events'],['share_clicked','Share clicks']];
++ return `<dl class="pa-action-counts" id="pa-social-counts">${labels.map(([key,label])=>`<div><dt>${label}</dt><dd data-social-metric="${key}">${paCount(challenges?.[key],'Not observed')}</dd></div>`).join('')}</dl><p class="console-note">Client observations, not distinct participants or authoritative challenge membership.</p>`;
++}
++function paQuality(quality){
++ const labels=[['dropped_events','Reported dropped events'],['rejected_events','Reported rejected events'],['persistence_failures','Reported persistence failures']];
++ return `<dl class="pa-loss-summary" id="pa-collection-loss">${labels.map(([key,label])=>`<div><dt>${label}</dt><dd data-quality-metric="${key}">${paCount(quality?.[key],'Not observed')}</dd></div>`).join('')}</dl><p class="console-note">Per-player maximum reports; shared installations and account changes can overlap.</p>`;
++}
++function productAnalyticsView(data){
++ const coverage=data.coverage,latest=data.daily.at(-1);
++ const observedScope=data.daily.some(row=>row.observed);
++ const latestNote=latest?latest.day+' UTC'+(!latest.observed?' · Not observed':latest.current_partial?' · In progress':' · Complete day'):'No observed days';
++ const utcDay=value=>new Date(value*1000).toISOString().slice(0,10);
++ const weekNote=data.weekly_since!=null&&data.weekly_until!=null?utcDay(data.weekly_since)+' – '+utcDay(data.weekly_until-1)+' UTC':'Distinct signed-in players';
++ const pending=(coverage.pending_events_capped?'≥ ':'')+paCount(coverage.pending_events);
++ const metrics=`<div class="metrics four pa-metrics">${paMetric('Latest daily active players',paCount(latest?.active_players,'Not observed'),latestNote,'pa-dau')}${paMetric('7-day active players',paCount(data.weekly_active_players,'Not observed'),weekNote,'pa-wau')}${paMetric('Active players in selected window',paCount(data.period_active_players,'Not observed'),'Distinct signed-in players','pa-period-active')}${paMetric('Events awaiting projection',pending,coverage.pending_events_capped?'Queue count is a lower bound':'New evidence may still be processing','pa-pending')}</div>`;
++ const retention=coverage.fact_retention_days!=null?`<div><dt>Reporting retention</dt><dd>${paCount(coverage.fact_retention_days)} days${coverage.retained_from!=null?' · From '+esc(utcDay(coverage.retained_from)):''}</dd></div>`:'';
++ const scope=`<div class="studio-scope pa-scope" id="pa-coverage"><p>${esc(coverage.scope)}</p><dl><div><dt>Collection began</dt><dd>${coverage.collection_started_at==null?'Not started':esc(date(coverage.collection_started_at))}</dd></div><div><dt>Processed through</dt><dd>${coverage.processed_through==null?'No projected observations':esc(date(coverage.processed_through))}</dd></div><div><dt>Latest receipt</dt><dd>${coverage.latest_receipt_at==null?'No acknowledged batches':esc(date(coverage.latest_receipt_at))}</dd></div>${retention}</dl></div>`;
++ const limits=`<ul class="studio-limits">${coverage.limitations.filter(value=>!value.startsWith('Loss counters are client-reported')).map(value=>`<li>${esc(value)}</li>`).join('')}</ul>`;
++ const disabled=data.telemetry_enabled===false?'<p class="console-error" role="status">Product telemetry is disabled on this backend. Retained observations, if present, do not establish current activity coverage.</p>':'';
++ return intro('Product analytics','Observed signed-in activity, ordered journeys and exact-day returns.','LEARN')+disabled+scope+metrics+
++  card('Observed activity',paActivity(data))+
++  `<div class="console-grid pa-funnels">${paFunnel('First-race journey',data.funnels.first_race,'pa-first-race-funnel',null,observedScope)}${paFunnel('Creator journey',data.funnels.creator,'pa-creator-funnel',data.creator_value,observedScope)}</div>`+
++  card('Exact-day retention',paRetention(data.retention))+
++  `<div class="console-grid">${card('Car exposure & selection',paChoices(data.preferences.cars,'pa-car-choices','Car'))}${card('Biome exposure & selection',paChoices(data.preferences.biomes,'pa-biome-choices','Biome'))}</div>`+
++  `<div class="console-grid">${card('Observed Store actions',paStore(data.store))}${card('Social & challenges',paSocial(data.challenges))}</div>`+
++  card('Reported collection loss',paQuality(data.quality))+
++  card('Metric coverage',limits);
++}
+diff --git a/backend/bmt_backend/admin_ui/studio.js b/backend/bmt_backend/admin_ui/studio.js
+--- a/backend/bmt_backend/admin_ui/studio.js
++++ b/backend/bmt_backend/admin_ui/studio.js
+@@ -2,7 +2,7 @@
+ let studioCurrent=null;
+ const studioStatusLabels={supported:'Available',partial:'Partial',unavailable:'Unavailable'};
+ const studioSourceRoutes={race_evidence:'races',track_versions:'tracks',player_support:'players',
+-  race_bundle:'races',competition_health:'system',operational_counts:'analytics',provider_commerce:'economy'};
++  race_bundle:'races',competition_health:'system',operational_counts:'analytics',provider_commerce:'economy',behaviour:'product'};
+ function studioCoverageTable(items,requirements=false){
+  return `<div class="console-table studio-coverage"><table><thead><tr><th scope="col">Source</th><th scope="col">Coverage</th><th scope="col">Evidence and limits</th>${requirements?'<th scope="col">Requirements</th>':''}</tr></thead><tbody>${items.map(item=>`<tr><th scope="row">${esc(item.title||item.key.replaceAll('_',' '))}</th><td><span class="studio-coverage-state ${esc(item.status)}">${esc(studioStatusLabels[item.status]||item.status)}</span></td><td>${esc(item.description)}${studioSourceRoutes[item.key]&&requirements?`<br><a href="${scopedHref(studioSourceRoutes[item.key])}">Open evidence →</a>`:''}</td>${requirements?`<td>${(item.requirement_ids||[]).map(esc).join(' · ')}</td>`:''}</tr>`).join('')}</tbody></table></div>`;
+ }
+diff --git a/backend/bmt_backend/admin_ui/style.css b/backend/bmt_backend/admin_ui/style.css
+--- a/backend/bmt_backend/admin_ui/style.css
++++ b/backend/bmt_backend/admin_ui/style.css
+@@ -45,3 +45,14 @@
+ @media(max-width:1250px){.topbar .search-trigger{width:150px}.topbar{gap:8px}.topbar kbd{display:none}}
+ @media(max-width:980px){.studio-timeline li{grid-template-columns:125px minmax(0,1fr)}}
+ @media(max-width:740px){.topbar>#days{width:94px;font-size:10px}.topbar>label{display:none}.topbar .search-trigger{width:40px}.topbar .menu-toggle{display:inline-flex}.studio-timeline li{grid-template-columns:1fr;gap:5px}.console-intro h1{font-size:23px}.studio-race-metrics .metric-value{font-size:21px}}
++
++/* Prepared product-analysis facts; no client event scans or polling. */
++.pa-metrics .metric-value{font-size:25px;overflow-wrap:anywhere}.pa-scope p{font-size:12px;color:#405b67}.pa-scope dl{display:flex;gap:20px;flex-wrap:wrap;margin:10px 0 0}.pa-scope dl>div{display:flex;gap:8px}.pa-scope dt{color:#607782}.pa-scope dd{margin:0}
++.pa-chart-scroll{overflow-x:auto;padding:24px 8px 12px;scrollbar-width:thin}.pa-activity-chart{height:210px;display:flex;align-items:end;gap:8px;border-bottom:1px solid #d8e3e3;padding-bottom:26px}.pa-day{height:160px;flex:1;min-width:28px;display:flex;justify-content:end;flex-direction:column;position:relative;text-align:center}.pa-day-bar{background:#75a89b;border-radius:4px 4px 0 0;width:100%;min-height:3px}.pa-day-value{font-size:10px;color:#3b635e;margin-bottom:5px}.pa-day>span{position:absolute;bottom:-22px;font-size:9px;width:100%;white-space:nowrap;color:#607782}.pa-day.unobserved .pa-day-bar{background:repeating-linear-gradient(135deg,#e0e7e8,#e0e7e8 4px,#f5f7f7 4px,#f5f7f7 8px)}.pa-day.unobserved .pa-day-value{color:#6b7d85}
++.pa-funnels{grid-template-columns:repeat(2,minmax(0,1fr))}.pa-funnel-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11px;color:#536b76;margin-bottom:15px}.pa-funnel{list-style:none;margin:0;padding:0}.pa-funnel li{display:grid;grid-template-columns:22px minmax(100px,1fr) minmax(50px,1fr) 56px;gap:10px;align-items:center;padding:10px 0}.pa-step-number{font-size:10px;color:#83939b}.pa-step-name{font-size:11px}.pa-funnel-track{height:12px;background:#edf2f2;border-radius:4px;overflow:hidden}.pa-funnel-track>div{height:100%;background:#79a899;border-radius:4px}.pa-step-count{font-size:12px;text-align:right;font-variant-numeric:tabular-nums}.pa-step-count small{display:block;font-size:9px;color:#697f89}.pa-funnel+.console-note{margin-top:14px;font-size:11px}
++#pa-retention-table{min-width:530px}#pa-retention-table td strong{font-weight:600;color:#24705c}#pa-retention-table td small{display:block;font-size:10px;color:#6b8089}.pa-not-mature,.pa-not-observed{font-size:11px;color:#6c7e88}.pa-not-mature{background:#f4eee3;border-radius:4px;padding:4px 7px;display:inline-block}
++#pa-car-choices,#pa-biome-choices{min-width:380px}#pa-daily-table{min-width:530px}#pa-daily-table th,#pa-retention-table th,#pa-car-choices th,#pa-biome-choices th{white-space:normal}#pa-daily-table tbody th,#pa-retention-table tbody th,#pa-car-choices tbody th,#pa-biome-choices tbody th{font-size:12px;text-transform:none;letter-spacing:0;background:transparent;color:var(--ink)}
++@media(max-width:1150px){.pa-funnels{grid-template-columns:1fr}}
++@media(max-width:740px){.pa-metrics .metric-value{font-size:22px}.pa-scope dl{gap:7px;flex-direction:column}.pa-scope dl>div{flex-wrap:wrap}.pa-funnel li{grid-template-columns:18px minmax(70px,1fr) minmax(35px,1fr) 45px;gap:7px}.pa-step-name{font-size:10px}.pa-funnel-meta .studio-coverage-state{white-space:normal}}
++.pa-action-counts{margin:0 0 12px}.pa-action-counts>div,.pa-published-reach dl>div{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid #e7eef0;font-size:12px}.pa-action-counts dt,.pa-published-reach dt{color:#596f7b}.pa-action-counts dd,.pa-published-reach dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums}.pa-published-reach{border-top:1px solid #dce6e7;padding-top:14px;margin-top:16px}.pa-published-reach h4{font-size:12px;margin:0 0 5px}.pa-published-reach dl>div{font-size:11px}.pa-published-reach .console-note{font-size:11px;margin-top:8px}#pa-store-offers{min-width:420px}#pa-store-offers tbody th{font-size:11px;text-transform:none;letter-spacing:0;background:transparent;color:var(--ink)}
++.pa-loss-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:0 0 12px}.pa-loss-summary dt{font-size:11px;color:#596f7b}.pa-loss-summary dd{font-size:20px;font-weight:600;margin:8px 0 0}.pa-loss-summary>div{min-width:0}@media(max-width:740px){.pa-loss-summary{grid-template-columns:1fr}.pa-loss-summary>div{display:flex;align-items:center;justify-content:space-between;gap:12px}.pa-loss-summary dd{margin:0;font-size:17px}}
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -20,6 +20,7 @@
+ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
+     from . import admin, admin_commerce, browser_auth, commerce, discovery, resumes, rivalry, runs, test_drivers, tracks
+     from .verifier import GodotVerifier
++    from . import telemetry, product_analytics
+     from . import studio
+     from . import challenges
+     from . import admin_purchase_controls, admin_support
+@@ -58,6 +59,8 @@
+     app.include_router(admin_purchase_controls.router)
+     app.include_router(admin_support.router)
+     app.include_router(studio.router)
++    app.include_router(telemetry.router)
++    app.include_router(product_analytics.router)
+     app.include_router(auth.router, prefix="/v1")
+     app.include_router(browser_auth.router, prefix="/v1")
+     app.include_router(tracks.router, prefix="/v1")
+@@ -121,6 +124,16 @@
+             "entitlements_version": 1,
+             "store_catalog_version": 1,
+             "admin_console_configured": bool(settings.admin_owner_key or settings.admin_analyst_key),
++            "product_telemetry": {
++                "enabled": getattr(settings, "telemetry_enabled", False),
++                "schema_version": 1,
++                "max_events": 50,
++                "max_batch_bytes": 65536,
++                "flush_seconds": 60,
++                "idle_flush_seconds": 300,
++                "response_limit_bytes": 16384,
++                "guest_coverage": False,
++            },
+             "track_schema": "creator-track-v5",
+             "replay_schema": "bmt-replay-v1",
+             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2", "bmt-trajectory-v1"],
+diff --git a/backend/bmt_backend/config.py b/backend/bmt_backend/config.py
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -12,6 +12,11 @@
+     test_drivers_enabled: bool = False
+     test_driver_api_url: str = ""
+     purchase_simulation_enabled: bool = False
++    telemetry_enabled: bool = False
++    telemetry_client_backlog: int = 50000
++    telemetry_processor_batch: int = 500
++    telemetry_raw_days: int = 7
++    telemetry_fact_days: int = 180
+     dev_auth_key: str = ""
+     database_url: str = "postgresql+psycopg://bmt@localhost/bmt"
+     public_base_url: str = "http://localhost:8080"
+@@ -64,6 +69,10 @@
+     s3_prefix: str = "bmt/v1"
+ 
+     def __post_init__(self):
++        if (not 50 <= self.telemetry_client_backlog <= 1000000
++                or not 1 <= self.telemetry_processor_batch <= 1000
++                or not 1 <= self.telemetry_raw_days <= 30 or not 14 <= self.telemetry_fact_days <= 366):
++            raise ValueError("Invalid bounded telemetry settings")
+         for key in (self.admin_owner_key, self.admin_analyst_key):
+             if key and len(key) < 32:
+                 raise ValueError("Admin keys require at least 32 characters")
+diff --git a/backend/bmt_backend/histogram_snapshots.py b/backend/bmt_backend/histogram_snapshots.py
+--- a/backend/bmt_backend/histogram_snapshots.py
++++ b/backend/bmt_backend/histogram_snapshots.py
+@@ -119,6 +119,8 @@
+ 
+ def refresh_all_for_diagnostics(app, *, clock=None):
+     """Explicit offline/test refresh; never called from a request or normal race."""
++    from .lap_bests import backfill_all_for_diagnostics
++    backfill_all_for_diagnostics(app.state.session_factory)
+     clock = now() if clock is None else clock
+     with app.state.session_factory() as session:
+         session.execute(update(HistogramSnapshot).values(next_refresh_at=clock, dirty=True))
+diff --git a/backend/bmt_backend/lap_bests.py b/backend/bmt_backend/lap_bests.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/lap_bests.py
+@@ -0,0 +1,119 @@
++"""Bounded, reset-fenced backfill of accepted flying-lap personal bests."""
++from sqlalchemy import func, or_, select
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++from sqlalchemy.dialects.sqlite import insert as sqlite_insert
++
++from .identity_models import Player
++from .track_models import Board, LapBestState, LapPersonalBest, OperationState, PersonalBest, Run
++
++
++def accepted_lap(run, manifest):
++    laps = run.lap_ticks
++    if (run.status != "verified" or not run.time_ticks or run.time_ticks <= 0
++            or manifest.get("purpose") == "creator_test" or not isinstance(laps, list) or len(laps) != 5
++            or any(type(ticks) is not int or not 1 <= ticks <= 216000 for ticks in laps)):
++        return None
++    index = min(range(1, 5), key=lambda i: (laps[i], i))
++    return {"board_id":run.board_id, "player_id":run.player_id, "run_id":run.id,
++            "time_ticks":laps[index], "lap_index":index, "achieved_at":run.finished_at or run.created_at,
++            "source_created_at":run.created_at}
++
++
++def backfill_one(factory, *, limit=200, after_read=None):
++    """One board, at most 200 attempts. Cursor and PB inserts commit together.
++
++    A reset can proceed during the read. Its epoch/cursor is rechecked while
++    holding the state row at publication; stale batches never restore records.
++    New accepted runs are captured by DB triggers independently of this cursor.
++    """
++    if not 1 <= limit <= 200:
++        raise ValueError("Lap backfill batch must contain 1..200 attempts")
++    with factory() as session:
++        state = session.scalar(select(LapBestState).where(LapBestState.complete.is_(False))
++                               .order_by(LapBestState.board_id).limit(1))
++        if state is None:
++            return {"worked":False, "complete":True, "inspected":0, "invalid_records":0}
++        board_id, epoch, cursor, cutoff = state.board_id, state.epoch, state.cursor, state.cutoff
++        board = session.get(Board, board_id)
++        rows = session.execute(select(Run, Player.is_test_driver).join(Player, Player.id == Run.player_id)
++            .where(Run.board_id == board_id, Run.id > cursor).order_by(Run.id).limit(limit)).all()
++        next_cursor = rows[-1][0].id if rows else cursor
++    if after_read:
++        after_read()
++    with factory() as session:
++        if session.bind.dialect.name == "sqlite":
++            # SQLite has no row locks: reserve its single writer before checking
++            # the epoch, so another connection cannot reset between check/insert.
++            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
++        current = session.scalar(select(LapBestState).where(LapBestState.board_id == board_id).with_for_update())
++        if current.epoch != epoch or current.cursor != cursor or current.complete:
++            return {"worked":True, "complete":False, "inspected":len(rows), "fenced":True, "invalid_records":0}
++        # Re-read and hold these old source facts through publication. A source
++        # corrected/deleted during the initial read cannot become a stale PB.
++        live = session.execute(select(Run, Player.is_test_driver).join(Player, Player.id == Run.player_id)
++            .where(Run.id.in_([run.id for run,_ in rows]), Run.board_id == board_id)
++            .with_for_update(read=True, of=Run)).all()
++        values, invalid = [], 0
++        for run, artificial in live:
++            value = accepted_lap(run, board.manifest)
++            if value and not (board.manifest.get("test_population") and artificial and run.created_at < cutoff):
++                values.append(value)
++            elif run.status == "verified" and board.manifest.get("purpose") != "creator_test" and value is None:
++                invalid += 1
++        insert = sqlite_insert if session.bind.dialect.name == "sqlite" else pg_insert
++        # Collapse this bounded batch to one candidate per driver before writing.
++        best = {}
++        for value in values:
++            key = value["player_id"]
++            if key not in best or value["time_ticks"] < best[key]["time_ticks"]:
++                best[key] = value
++        for value in best.values():
++            statement = insert(LapPersonalBest).values(**value)
++            session.execute(statement.on_conflict_do_update(
++                index_elements=[LapPersonalBest.board_id, LapPersonalBest.player_id],
++                set_={name:getattr(statement.excluded, name) for name in (
++                    "time_ticks","run_id","lap_index","achieved_at","source_created_at")},
++                where=LapPersonalBest.time_ticks > statement.excluded.time_ticks))
++        current.cursor = next_cursor
++        current.invalid_records += invalid
++        current.complete = len(rows) < limit
++        session.commit()
++    return {"worked":True, "complete":False, "board_complete":len(rows)<limit,
++            "inspected":len(rows), "invalid_records":invalid}
++
++
++def backfill_all_for_diagnostics(factory):
++    """Explicit maintenance/tests only; never run in a GET or race acceptance."""
++    batches = 0
++    while backfill_one(factory)["worked"]:
++        batches += 1
++    return batches
++
++
++def legacy_best_lap_times(board_id, session, *, test_population=False):
++    """Offline parity oracle only; never called by requests or the worker."""
++    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
++    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
++    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
++        Player, Player.id == Run.player_id).join(PersonalBest,
++        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
++        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
++        *(lap > 0 for lap in laps))
++    if not test_population:
++        statement = statement.where(Player.is_test_driver.is_(False))
++    else:
++        # Retained audit runs from an owner-requested test-record reset must not
++        # restore retired lap records. Real players are never part of that reset.
++        board = session.get(Board, board_id)
++        if board:
++            resets = session.scalars(select(OperationState).where(
++                OperationState.id.startswith("test-pop-batch:"),
++                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
++            cutoff = max((row.details.get("created_at", 0) for row in resets
++                          if row.details.get("request", {}).get("clear_test_records")
++                          and any(entry.get("version_id") == board.version_id
++                                  for entry in row.details.get("tracks", []))), default=0)
++            if cutoff:
++                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
++    return statement.group_by(Run.player_id).subquery()
++
+diff --git a/backend/bmt_backend/maintenance.py b/backend/bmt_backend/maintenance.py
+--- a/backend/bmt_backend/maintenance.py
++++ b/backend/bmt_backend/maintenance.py
+@@ -13,7 +13,7 @@
+ from .resume_models import ResumeRace, ResumeReceipt
+ from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryTicket
+ from .storage import LocalBlobStore, PinnedBlobStore, make_blob_store
+-from .track_models import IdempotencyRecord, OperationState, PersonalBest, Run, RunTicket, TrackVersion
++from .track_models import IdempotencyRecord, LapPersonalBest, OperationState, PersonalBest, Run, RunTicket, TrackVersion
+ 
+ 
+ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool = False, online: bool = False,
+@@ -42,6 +42,7 @@
+         candidates = session.scalars(select(Run).where(
+             Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
+             ~Run.id.in_(select(PersonalBest.run_id)),
++            ~Run.id.in_(select(LapPersonalBest.run_id)),
+             ~Run.id.in_(select(RivalryBest.run_id)),
+             ~Run.id.in_(select(Challenge.target_run_id).where(Challenge.target_run_id.is_not(None))),
+             ~Run.id.in_(select(ChallengeMember.run_id).where(ChallengeMember.run_id.is_not(None))),
+@@ -195,12 +196,16 @@
+     parser.add_argument("--online", action="store_true", help="Use publication pins while API and workers continue")
+     parser.add_argument("--object-cursor", type=json.loads, help="next_object_cursor from the previous retention batch")
+     parser.add_argument("--backfill-discovery", action="store_true", help="Backfill at most 100 legacy preview projections")
++    parser.add_argument("--backfill-laps", action="store_true", help="Backfill at most 200 accepted lap records; repeat until complete")
+     args = parser.parse_args()
+     settings = Settings.from_env()
+     engine = make_engine(settings.database_url,settings)
+     factory = make_session_factory(engine)
+     blobs = make_blob_store(settings,factory)
+-    if args.backfill_discovery:
++    if args.backfill_laps:
++        from .lap_bests import backfill_one
++        print(json.dumps(backfill_one(factory)))
++    elif args.backfill_discovery:
+         print(json.dumps(backfill_discovery(factory,blobs)))
+     elif args.retention or args.apply_retention:
+         print(json.dumps(retain(factory,blobs,settings.retention_days,apply=args.apply_retention,offline=args.offline,online=args.online,object_cursor=args.object_cursor)))
+diff --git a/backend/bmt_backend/middleware.py b/backend/bmt_backend/middleware.py
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -4,6 +4,7 @@
+ import json
+ import logging
+ import math
++import os
+ import threading
+ import time
+ import uuid
+@@ -123,6 +124,7 @@
+     def __init__(self, app, settings, session_factory):
+         self.app, self.settings, self.session_factory = app, settings, session_factory
+         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
++        self.telemetry_parsers = asyncio.Semaphore(1)
+         self.read_leases = OrderedDict()
+ 
+     async def read_budget(self, peer, limit, category="read"):
+@@ -176,6 +178,7 @@
+         scope.setdefault("state", {})["request_id"] = request_id
+         status = 500
+         acquired = False
++        acquired_pool = None
+         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
+ 
+         async def response_send(message):
+@@ -209,6 +212,9 @@
+                 return await error(405, "METHOD_NOT_ALLOWED")
+             if health and (headers.get(b"content-length", b"0") != b"0" or b"transfer-encoding" in headers):
+                 return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
++            if (os.environ.get("BMT_DEPLOYMENT_MAINTENANCE", "false").lower() == "true"
++                    and scope["path"].startswith("/v1/") and method not in ("GET", "HEAD", "OPTIONS")):
++                return await error(503, "DEPLOYMENT_MAINTENANCE")
+             token_auth = scope["path"] in ("/v1/auth/google/browser/poll", "/v1/auth/refresh")
+             if not health:
+                 peer = (scope.get("client") or ("unknown", 0))[0]
+@@ -244,7 +250,8 @@
+                 if not allowed:
+                     return await error(429, "RATE_LIMITED")
+             path = scope["path"]
+-            limit = min(self.settings.max_body_bytes, 8*1024*1024 if path in ("/v1/runs", "/v1/discovery/tracks", "/v1/discovery/random") else
++            limit = min(self.settings.max_body_bytes, 64*1024 if path == "/v1/telemetry/batches" else
++                        8*1024*1024 if path in ("/v1/runs", "/v1/discovery/tracks", "/v1/discovery/random") else
+                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
+             upload = method in ("POST", "PUT", "PATCH") and limit > 32768
+             encoding = headers.get(b"content-encoding", b"identity")
+@@ -252,7 +259,8 @@
+                 return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
+             if upload:
+                 try:
+-                    await asyncio.wait_for(self.parsers.acquire(), timeout=0.1)
++                    acquired_pool = self.telemetry_parsers if path == "/v1/telemetry/batches" else self.parsers
++                    await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
+                     acquired = True
+                 except (asyncio.TimeoutError, TimeoutError):
+                     return await error(503, "REQUEST_VALIDATION_BUSY")
+@@ -327,7 +335,7 @@
+             # serialization: releasing after json.loads did not bound live trees.
+             scope.get("state", {}).pop("bounded_json", None)
+             if acquired:
+-                self.parsers.release()
++                acquired_pool.release()
+             route = scope.get("route")
+             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
+             log.info(
+diff --git a/backend/bmt_backend/migrations/env.py b/backend/bmt_backend/migrations/env.py
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -12,6 +12,7 @@
+     rivalry_models,
+     test_driver_models,
+     track_models,
++    telemetry_models,
+ )
+ from bmt_backend.db import Base
+ 
+diff --git a/backend/bmt_backend/migrations/versions/0024_lap_personal_bests.py b/backend/bmt_backend/migrations/versions/0024_lap_personal_bests.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0024_lap_personal_bests.py
+@@ -0,0 +1,356 @@
++"""Durable flying-lap minima, PB-only revisions and resumable shadow backfill."""
++import importlib
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0024_lap_personal_bests"
++down_revision = "0023_operational_read_indexes"
++branch_labels = None
++depends_on = None
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def candidates(where, *, sqlite):
++    """Immutable migration SQL. Reject missing, fractional or non-five-lap facts."""
++    if sqlite:
++        array = "CASE WHEN json_type(r.lap_ticks)='array' THEN r.lap_ticks ELSE '[]' END"
++        items = f"json_each({array}) j"
++        tick = "CASE WHEN j.type='integer' AND j.value BETWEEN 1 AND 216000 THEN j.value END"
++        index = "CAST(j.key AS integer)"
++        five = f"json_array_length({array})=5 AND (SELECT count(*) FROM {items} WHERE {tick} IS NOT NULL)=5"
++        private = "json_extract(b.manifest,'$.test_population')=1"
++        purpose = "coalesce(json_extract(b.manifest,'$.purpose'),'')"
++    else:
++        array = "CASE WHEN json_typeof(r.lap_ticks)='array' THEN r.lap_ticks ELSE '[]'::json END"
++        items = f"json_array_elements({array}) WITH ORDINALITY j(value,ordinal)"
++        tick = ("CASE WHEN json_typeof(j.value)='number' AND j.value::text ~ '^[0-9]+$' THEN "
++                "CASE WHEN j.value::text::numeric BETWEEN 1 AND 216000 THEN j.value::text::integer END END")
++        index = "(j.ordinal-1)::integer"
++        five = f"json_array_length({array})=5 AND (SELECT count(*) FROM {items} WHERE {tick} IS NOT NULL)=5"
++        private = "b.manifest->>'test_population'='true'"
++        purpose = "coalesce(b.manifest->>'purpose','')"
++    return f"""SELECT r.board_id,r.player_id,r.id AS run_id,{tick} AS time_ticks,
++        {index} AS lap_index,coalesce(r.finished_at,r.created_at) AS achieved_at,r.created_at AS source_created_at
++        FROM runs r JOIN boards b ON b.id=r.board_id JOIN players p ON p.id=r.player_id
++        JOIN lap_best_state s ON s.board_id=r.board_id CROSS JOIN {items}
++        WHERE {where} AND r.status='verified' AND r.time_ticks>0 AND {purpose}<>'creator_test'
++        AND {five} AND {index} BETWEEN 1 AND 4
++        AND (NOT coalesce({private},false) OR NOT p.is_test_driver OR r.created_at>=s.cutoff)"""
++
++
++def upsert(selection, *, improve, winning_source=False):
++    guard = " WHERE excluded.time_ticks<lap_personal_bests.time_ticks" if improve else (
++        " WHERE lap_personal_bests.run_id=OLD.id" if winning_source else "")
++    return f"""INSERT INTO lap_personal_bests(board_id,player_id,run_id,time_ticks,lap_index,achieved_at,source_created_at)
++        SELECT board_id,player_id,run_id,time_ticks,lap_index,achieved_at,source_created_at FROM ({selection}) c
++        ORDER BY time_ticks,achieved_at,run_id,lap_index LIMIT 1
++        ON CONFLICT(board_id,player_id) DO UPDATE SET run_id=excluded.run_id,time_ticks=excluded.time_ticks,
++            lap_index=excluded.lap_index,achieved_at=excluded.achieved_at,source_created_at=excluded.source_created_at{guard};"""
++
++
++def reset_repair(region, *, sqlite):
++    # An administrative cutoff can retire the old winner while a later accepted
++    # attempt already exists. Repair only those affected driver/board subsets.
++    selection = candidates(f"""EXISTS(SELECT 1 FROM lap_personal_bests l JOIN runs retired ON retired.id=l.run_id
++        WHERE l.board_id=r.board_id AND l.player_id=r.player_id AND retired.created_at<s.cutoff)
++        AND p.is_test_driver=true AND {region}""",sqlite=sqlite)
++    return f"""INSERT INTO lap_personal_bests(board_id,player_id,run_id,time_ticks,lap_index,achieved_at,source_created_at)
++        SELECT board_id,player_id,run_id,time_ticks,lap_index,achieved_at,source_created_at FROM
++        (SELECT c.*,row_number() OVER(PARTITION BY board_id,player_id ORDER BY time_ticks,achieved_at,run_id,lap_index) n
++         FROM ({selection}) c) ranked WHERE n=1
++        ON CONFLICT(board_id,player_id) DO UPDATE SET run_id=excluded.run_id,time_ticks=excluded.time_ticks,
++        lap_index=excluded.lap_index,achieved_at=excluded.achieved_at,source_created_at=excluded.source_created_at;"""
++
++
++def reset_region(details, *, sqlite):
++    if sqlite:
++        versions = f"SELECT json_extract(value,'$.version_id') FROM json_each({details},'$.tracks')"
++    else:
++        versions = f"SELECT entry->>'version_id' FROM jsonb_array_elements(coalesce({details}->'tracks','[]'::jsonb)) entry"
++    # Preserve the reset API's existing physical-track/all-car clearing scope,
++    # including older pinned versions, rather than retaining mismatched cutoffs.
++    return f"""b.version_id IN (SELECT v.id FROM track_versions v WHERE v.track_id IN
++        (SELECT track_id FROM track_versions WHERE id IN ({versions})))"""
++
++
++def upgrade():
++    op.create_table("lap_personal_bests",
++        sa.Column("board_id",sa.String(64),sa.ForeignKey("boards.id"),primary_key=True),
++        sa.Column("player_id",sa.String(36),sa.ForeignKey("players.id"),primary_key=True),
++        sa.Column("run_id",sa.String(36),sa.ForeignKey("runs.id"),nullable=False),
++        sa.Column("time_ticks",sa.Integer(),nullable=False),
++        sa.Column("lap_index",sa.Integer(),nullable=False),
++        sa.Column("achieved_at",sa.Integer(),nullable=False),
++        sa.Column("source_created_at",sa.Integer(),nullable=False),
++        sa.CheckConstraint("time_ticks>0"),sa.CheckConstraint("lap_index BETWEEN 1 AND 4"))
++    op.create_index("ix_lap_personal_bests_run_id","lap_personal_bests",["run_id"])
++    op.create_table("lap_best_state",
++        sa.Column("board_id",sa.String(64),sa.ForeignKey("boards.id"),primary_key=True),
++        sa.Column("cutoff",sa.Integer(),nullable=False,server_default="0"),
++        sa.Column("epoch",sa.Integer(),nullable=False,server_default="0"),
++        sa.Column("cursor",sa.String(36),nullable=False,server_default=""),
++        sa.Column("complete",sa.Boolean(),nullable=False,server_default=sa.true()),
++        sa.Column("invalid_records",sa.Integer(),nullable=False,server_default="0"))
++    op.create_index("ix_run_board_player_id","runs",["board_id","player_id","id"])
++    op.create_index("ix_run_board_id","runs",["board_id","id"])
++    # No history replay in the migration transaction. The worker/maintenance
++    # command walks old boards in bounded batches before snapshot publication.
++    sql("INSERT INTO lap_best_state(board_id,complete) SELECT id,false FROM boards")
++    sql("UPDATE histogram_snapshots SET dirty=true,invalidated=true,next_refresh_at=0")
++    sqlite = op.get_bind().dialect.name == "sqlite"
++    if sqlite:
++        for event in ("insert","update","delete"):
++            sql(f"DROP TRIGGER lap_revision_{event}")
++            sql(f"DROP TRIGGER lap_reset_{event}")
++        for name in ("run_delete","run_retire"):
++            sql(f"DROP TRIGGER histogram_{name}")
++        sql("CREATE TRIGGER lap_state_board AFTER INSERT ON boards BEGIN INSERT INTO lap_best_state(board_id) VALUES(NEW.id); END")
++        for action in ("INSERT","UPDATE"):
++            sql(f"""CREATE TRIGGER lap_pb_eligible_{action.lower()} BEFORE {action} ON lap_personal_bests
++                WHEN EXISTS(SELECT 1 FROM players p JOIN boards b ON b.id=NEW.board_id
++                JOIN lap_best_state s ON s.board_id=b.id WHERE p.id=NEW.player_id AND p.is_test_driver=true
++                AND json_extract(b.manifest,'$.test_population')=1 AND NEW.source_created_at<s.cutoff)
++                BEGIN SELECT RAISE(IGNORE); END""")
++        for event,ref in (("INSERT","NEW"),("DELETE","OLD")):
++            sql(f"CREATE TRIGGER lap_pb_{event.lower()} AFTER {event} ON lap_personal_bests BEGIN "
++                f"UPDATE boards SET lap_revision=lap_revision+1 WHERE id={ref}.board_id; END")
++        sql("""CREATE TRIGGER lap_pb_update AFTER UPDATE ON lap_personal_bests
++            WHEN OLD.time_ticks IS NOT NEW.time_ticks BEGIN
++            UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id; END""")
++        # Removal/correction must hide a stale snapshot immediately, while
++        # ordinary improvements retain the existing scheduled cadence.
++        for event,guard in (("DELETE","1"),("UPDATE","NEW.time_ticks>OLD.time_ticks")):
++            sql(f"""CREATE TRIGGER lap_pb_retire_{event.lower()} AFTER {event} ON lap_personal_bests WHEN {guard} BEGIN
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE
++                (version_id,vehicle_id) IN (SELECT version_id,vehicle_id FROM boards WHERE id=OLD.board_id); END""")
++        sql("CREATE TRIGGER lap_capture_insert AFTER INSERT ON runs WHEN NEW.status='verified' BEGIN " +
++            upsert(candidates("r.id=NEW.id",sqlite=True),improve=True) + " END")
++        guard = ("OLD.status IS NOT NEW.status OR OLD.lap_ticks IS NOT NEW.lap_ticks OR OLD.board_id IS NOT NEW.board_id "
++                 "OR OLD.player_id IS NOT NEW.player_id OR OLD.created_at IS NOT NEW.created_at OR OLD.time_ticks IS NOT NEW.time_ticks")
++        repair = candidates("r.board_id=OLD.board_id AND r.player_id=OLD.player_id",sqlite=True)
++        sql(f"CREATE TRIGGER lap_capture_update AFTER UPDATE ON runs WHEN {guard} BEGIN " +
++            upsert(candidates('r.id=NEW.id',sqlite=True),improve=True) + " END")
++        sql(f"""CREATE TRIGGER lap_repair_update AFTER UPDATE ON runs WHEN ({guard}) AND
++            EXISTS(SELECT 1 FROM lap_personal_bests WHERE run_id=OLD.id) BEGIN
++            {upsert(repair,improve=False,winning_source=True)}
++            DELETE FROM lap_personal_bests WHERE run_id=OLD.id AND NOT EXISTS(SELECT 1 FROM ({repair}) c);
++            END""")
++        other = candidates("r.board_id=OLD.board_id AND r.player_id=OLD.player_id AND r.id<>OLD.id",sqlite=True)
++        sql(f"""CREATE TRIGGER lap_capture_delete BEFORE DELETE ON runs
++            WHEN EXISTS(SELECT 1 FROM lap_personal_bests WHERE run_id=OLD.id) BEGIN
++            {upsert(other,improve=False,winning_source=True)} DELETE FROM lap_personal_bests WHERE run_id=OLD.id; END""")
++        for event in ("INSERT","UPDATE"):
++            guard = "NEW.id LIKE 'test-pop-batch:%' AND json_extract(NEW.details,'$.request.clear_test_records')=1"
++            if event=="UPDATE":
++                changed=" OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                    for p in ("request.clear_test_records","created_at","vehicle_id","tracks"))
++                guard+=f" AND ({changed})"
++            region = reset_region("NEW.details",sqlite=True)
++            sql(f"""CREATE TRIGGER lap_state_reset_{event.lower()} AFTER {event} ON operation_state WHEN {guard} BEGIN
++                UPDATE lap_best_state SET epoch=epoch+1,cutoff=json_extract(NEW.details,'$.created_at')
++                WHERE cutoff<json_extract(NEW.details,'$.created_at') AND board_id IN
++                (SELECT b.id FROM boards b WHERE json_extract(b.manifest,'$.test_population')=1 AND {region});
++                {reset_repair(region,sqlite=True)}
++                DELETE FROM lap_personal_bests WHERE player_id IN (SELECT id FROM players WHERE is_test_driver=true)
++                AND board_id IN (SELECT b.id FROM boards b WHERE json_extract(b.manifest,'$.test_population')=1 AND {region})
++                AND run_id IN (SELECT r.id FROM runs r JOIN lap_best_state s ON s.board_id=r.board_id WHERE r.created_at<s.cutoff); END""")
++        for event,refs in (("INSERT",["NEW"]),("DELETE",["OLD"]),("UPDATE",["OLD","NEW"])):
++            sql(f"DROP TRIGGER histogram_reset_{event.lower()}")
++            if event=="UPDATE":
++                changed=" OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                    for p in ("request.clear_test_records","created_at","vehicle_id","tracks"))
++                guard=f"(OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND " \
++                    f"(json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1) AND ({changed})"
++            else:
++                guard=f"{refs[0]}.id LIKE 'test-pop-batch:%' AND json_extract({refs[0]}.details,'$.request.clear_test_records')=1"
++            regions=" OR ".join("version_id IN (SELECT b.version_id FROM boards b WHERE " +
++                reset_region(ref+".details",sqlite=True)+")" for ref in refs)
++            sql(f"""CREATE TRIGGER histogram_reset_{event.lower()} AFTER {event} ON operation_state WHEN {guard} BEGIN
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0
++                WHERE include_artificial=true AND ({regions}); END""")
++        historical = """UPDATE lap_best_state SET cutoff=coalesce((SELECT max(json_extract(o.details,'$.created_at'))
++            FROM operation_state o JOIN boards b ON b.id=lap_best_state.board_id WHERE
++            o.id LIKE 'test-pop-batch:%' AND json_extract(o.details,'$.request.clear_test_records')=1
++            AND json_extract(b.manifest,'$.test_population')=1 AND """ + reset_region("o.details",sqlite=True) + "),0)"
++        sql(historical)
++        # Boards first created after a reset inherit the durable cutoff.
++        sql("CREATE TRIGGER lap_state_cutoff AFTER INSERT ON lap_best_state BEGIN " + historical + " WHERE board_id=NEW.board_id; END")
++        sql(f"""CREATE TRIGGER lap_player_reclassify AFTER UPDATE OF is_test_driver ON players
++            WHEN OLD.is_test_driver IS NOT NEW.is_test_driver AND NEW.is_test_driver=true BEGIN
++            {reset_repair('p.id=NEW.id',sqlite=True)}
++            DELETE FROM lap_personal_bests WHERE player_id=NEW.id AND board_id IN
++            (SELECT board_id FROM lap_best_state s WHERE lap_personal_bests.source_created_at<s.cutoff); END""")
++    else:
++        sql("DROP TRIGGER lap_revision ON runs")
++        sql("DROP FUNCTION bmt_lap_revision()")
++        sql("DROP TRIGGER lap_reset ON operation_state")
++        sql("DROP FUNCTION bmt_lap_reset()")
++        for name in ("run_delete","run_retire"):
++            sql(f"DROP TRIGGER histogram_{name} ON runs")
++        sql("""CREATE FUNCTION bmt_lap_state_board() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            INSERT INTO lap_best_state(board_id) VALUES(NEW.id); RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_state_board AFTER INSERT ON boards FOR EACH ROW EXECUTE FUNCTION bmt_lap_state_board()")
++        sql("""CREATE FUNCTION bmt_lap_pb_eligible() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE reset_cutoff integer;
++            BEGIN
++                IF EXISTS(SELECT 1 FROM players p JOIN boards b ON b.id=NEW.board_id
++                    WHERE p.id=NEW.player_id AND p.is_test_driver=true AND b.manifest->>'test_population'='true') THEN
++                    -- Only artificial private writes take a compatible share
++                    -- lock. Real/public acceptance never waits on reset state.
++                    SELECT cutoff INTO reset_cutoff FROM lap_best_state WHERE board_id=NEW.board_id FOR SHARE;
++                    IF NEW.source_created_at<reset_cutoff THEN RETURN NULL; END IF;
++                END IF;
++                RETURN NEW;
++            END $$""")
++        sql("CREATE TRIGGER lap_pb_eligible BEFORE INSERT OR UPDATE ON lap_personal_bests FOR EACH ROW EXECUTE FUNCTION bmt_lap_pb_eligible()")
++        sql("""CREATE FUNCTION bmt_lap_pb_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF TG_OP='INSERT' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id;
++            ELSIF TG_OP='DELETE' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=OLD.board_id;
++            ELSIF OLD.time_ticks IS DISTINCT FROM NEW.time_ticks THEN
++                UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id;
++            END IF;
++            IF TG_OP='DELETE' OR (TG_OP='UPDATE' AND NEW.time_ticks>OLD.time_ticks) THEN
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE (version_id,vehicle_id) IN
++                (SELECT version_id,vehicle_id FROM boards WHERE id=OLD.board_id);
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_pb_revision AFTER INSERT OR UPDATE OR DELETE ON lap_personal_bests FOR EACH ROW EXECUTE FUNCTION bmt_lap_pb_revision()")
++        repair = candidates("r.board_id=OLD.board_id AND r.player_id=OLD.player_id",sqlite=False)
++        other = candidates("r.board_id=OLD.board_id AND r.player_id=OLD.player_id AND r.id<>OLD.id",sqlite=False)
++        sql(f"""CREATE FUNCTION bmt_lap_capture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF TG_OP='DELETE' THEN
++                IF EXISTS(SELECT 1 FROM lap_personal_bests WHERE run_id=OLD.id) THEN
++                    {upsert(other,improve=False,winning_source=True)} DELETE FROM lap_personal_bests WHERE run_id=OLD.id;
++                END IF; RETURN OLD;
++            END IF;
++            IF TG_OP='UPDATE' THEN
++                IF OLD.status IS NOT DISTINCT FROM NEW.status AND OLD.lap_ticks::text IS NOT DISTINCT FROM NEW.lap_ticks::text
++                    AND OLD.board_id IS NOT DISTINCT FROM NEW.board_id AND OLD.player_id IS NOT DISTINCT FROM NEW.player_id
++                    AND OLD.created_at IS NOT DISTINCT FROM NEW.created_at AND OLD.time_ticks IS NOT DISTINCT FROM NEW.time_ticks
++                    THEN RETURN NULL; END IF;
++                IF EXISTS(SELECT 1 FROM lap_personal_bests WHERE run_id=OLD.id) THEN
++                    {upsert(repair,improve=False,winning_source=True)}
++                    DELETE FROM lap_personal_bests WHERE run_id=OLD.id AND NOT EXISTS(SELECT 1 FROM ({repair}) c);
++                END IF;
++            END IF;
++            {upsert(candidates('r.id=NEW.id',sqlite=False),improve=True)} RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_capture AFTER INSERT OR UPDATE ON runs FOR EACH ROW EXECUTE FUNCTION bmt_lap_capture()")
++        sql("CREATE TRIGGER lap_capture_delete BEFORE DELETE ON runs FOR EACH ROW EXECUTE FUNCTION bmt_lap_capture()")
++        region = reset_region("NEW.details::jsonb",sqlite=False)
++        sql(f"""CREATE FUNCTION bmt_lap_state_reset() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF TG_OP='UPDATE' AND OLD.details::jsonb->'created_at' IS NOT DISTINCT FROM NEW.details::jsonb->'created_at'
++                AND OLD.details::jsonb->'tracks' IS NOT DISTINCT FROM NEW.details::jsonb->'tracks'
++                AND OLD.details::jsonb->'vehicle_id' IS NOT DISTINCT FROM NEW.details::jsonb->'vehicle_id'
++                AND OLD.details::jsonb#>'{{request,clear_test_records}}' IS NOT DISTINCT FROM NEW.details::jsonb#>'{{request,clear_test_records}}'
++                THEN RETURN NULL; END IF;
++            IF NEW.id LIKE 'test-pop-batch:%' AND NEW.details#>>'{{request,clear_test_records}}'='true' THEN
++                UPDATE lap_best_state SET epoch=epoch+1,cutoff=(NEW.details->>'created_at')::integer
++                WHERE cutoff<(NEW.details->>'created_at')::integer AND board_id IN
++                (SELECT b.id FROM boards b WHERE b.manifest->>'test_population'='true' AND {region});
++                {reset_repair(region,sqlite=False)}
++                DELETE FROM lap_personal_bests WHERE player_id IN (SELECT id FROM players WHERE is_test_driver=true)
++                AND board_id IN (SELECT b.id FROM boards b WHERE b.manifest->>'test_population'='true' AND {region})
++                AND run_id IN (SELECT r.id FROM runs r JOIN lap_best_state s ON s.board_id=r.board_id WHERE r.created_at<s.cutoff);
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_state_reset AFTER INSERT OR UPDATE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_lap_state_reset()")
++        regions=" OR ".join("version_id IN (SELECT b.version_id FROM boards b WHERE " +
++            reset_region(ref,sqlite=False)+")" for ref in ("previous","current_data"))
++        sql(f"""CREATE OR REPLACE FUNCTION bmt_histogram_reset() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE previous jsonb; current_data jsonb;
++            BEGIN
++                IF TG_OP<>'INSERT' AND OLD.id LIKE 'test-pop-batch:%' THEN previous=OLD.details::jsonb; END IF;
++                IF TG_OP<>'DELETE' AND NEW.id LIKE 'test-pop-batch:%' THEN current_data=NEW.details::jsonb; END IF;
++                IF (previous#>>'{{request,clear_test_records}}'='true' OR current_data#>>'{{request,clear_test_records}}'='true')
++                    AND (previous#>'{{request,clear_test_records}}' IS DISTINCT FROM current_data#>'{{request,clear_test_records}}'
++                    OR previous->'created_at' IS DISTINCT FROM current_data->'created_at'
++                    OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id'
++                    OR previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN
++                    UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0
++                    WHERE include_artificial=true AND ({regions});
++                END IF; RETURN NULL;
++            END $$""")
++        historical = """SELECT coalesce(max((o.details->>'created_at')::integer),0) FROM operation_state o
++            JOIN boards b ON b.id=NEW.board_id WHERE o.id LIKE 'test-pop-batch:%'
++            AND o.details#>>'{request,clear_test_records}'='true' AND b.manifest->>'test_population'='true'
++            AND """ + reset_region("o.details::jsonb",sqlite=False)
++        sql(f"""CREATE FUNCTION bmt_lap_state_cutoff() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            NEW.cutoff=({historical}); RETURN NEW; END $$""")
++        sql("CREATE TRIGGER lap_state_cutoff BEFORE INSERT ON lap_best_state FOR EACH ROW EXECUTE FUNCTION bmt_lap_state_cutoff()")
++        sql("""UPDATE lap_best_state s SET cutoff=coalesce((SELECT max((o.details->>'created_at')::integer)
++            FROM operation_state o JOIN boards b ON b.id=s.board_id WHERE o.id LIKE 'test-pop-batch:%'
++            AND o.details#>>'{request,clear_test_records}'='true' AND b.manifest->>'test_population'='true'
++            AND """ + reset_region("o.details::jsonb",sqlite=False) + "),0)")
++        sql(f"""CREATE FUNCTION bmt_lap_player_reclassify() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            {reset_repair('p.id=NEW.id',sqlite=False)}
++            DELETE FROM lap_personal_bests WHERE player_id=NEW.id AND board_id IN
++            (SELECT board_id FROM lap_best_state s WHERE lap_personal_bests.source_created_at<s.cutoff);
++            RETURN NULL; END $$""")
++        sql("""CREATE TRIGGER lap_player_reclassify AFTER UPDATE OF is_test_driver ON players FOR EACH ROW
++            WHEN (OLD.is_test_driver IS DISTINCT FROM NEW.is_test_driver AND NEW.is_test_driver=true)
++            EXECUTE FUNCTION bmt_lap_player_reclassify()""")
++
++
++def downgrade():
++    sqlite = op.get_bind().dialect.name == "sqlite"
++    if sqlite:
++        for name in ("lap_state_board","lap_state_cutoff","lap_state_reset_insert","lap_state_reset_update",
++                     "lap_pb_insert","lap_pb_update","lap_pb_delete","lap_pb_retire_delete","lap_pb_retire_update",
++                     "lap_capture_insert","lap_capture_update","lap_repair_update","lap_capture_delete","lap_player_reclassify",
++                     "lap_pb_eligible_insert","lap_pb_eligible_update"):
++            sql(f"DROP TRIGGER {name}")
++    else:
++        for name,table in (("lap_state_board","boards"),("lap_state_cutoff","lap_best_state"),
++                           ("lap_state_reset","operation_state"),("lap_pb_revision","lap_personal_bests"),
++                           ("lap_capture","runs"),("lap_capture_delete","runs"),("lap_player_reclassify","players"),
++                           ("lap_pb_eligible","lap_personal_bests")):
++            sql(f"DROP TRIGGER {name} ON {table}")
++        for name in ("state_board","state_cutoff","state_reset","pb_revision","capture","player_reclassify","pb_eligible"):
++            sql(f"DROP FUNCTION bmt_lap_{name}()")
++    op.drop_table("lap_personal_bests")
++    op.drop_table("lap_best_state")
++    op.drop_index("ix_run_board_player_id",table_name="runs")
++    op.drop_index("ix_run_board_id",table_name="runs")
++    # Restore the previous source-of-revision and scoped invalidation contracts.
++    restore_revisions(sqlite)
++    scoped = importlib.import_module("bmt_backend.migrations.versions.0023_operational_read_indexes")
++    # Its helper expects the old triggers to exist before replacing them.
++    if sqlite:
++        for event in ("insert","update","delete"):
++            sql(f"CREATE TRIGGER lap_reset_{event} AFTER {event.upper()} ON operation_state BEGIN SELECT 1; END")
++        for name,event in (("run_delete","DELETE"),("run_retire","UPDATE")):
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} ON runs BEGIN SELECT 1; END")
++    else:
++        sql("CREATE FUNCTION bmt_lap_reset() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$")
++        sql("CREATE TRIGGER lap_reset AFTER INSERT OR UPDATE OR DELETE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_lap_reset()")
++        for name,event in (("run_delete","DELETE"),("run_retire","UPDATE")):
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} ON runs FOR EACH ROW EXECUTE FUNCTION bmt_histogram_invalidate()")
++    scoped.invalidate_triggers(scoped=True)
++    sql("UPDATE histogram_snapshots SET dirty=true,invalidated=true,next_refresh_at=0")
++
++
++def restore_revisions(sqlite):
++    if sqlite:
++        for event,ref in (("INSERT","NEW"),("DELETE","OLD")):
++            sql(f"CREATE TRIGGER lap_revision_{event.lower()} AFTER {event} ON runs WHEN {ref}.status='verified' BEGIN "
++                f"UPDATE boards SET lap_revision=lap_revision+1 WHERE id={ref}.board_id; END")
++        sql("""CREATE TRIGGER lap_revision_update AFTER UPDATE ON runs
++            WHEN (OLD.status='verified' OR NEW.status='verified') AND
++            (OLD.status IS NOT NEW.status OR OLD.lap_ticks IS NOT NEW.lap_ticks OR OLD.board_id IS NOT NEW.board_id
++             OR OLD.player_id IS NOT NEW.player_id OR OLD.created_at IS NOT NEW.created_at)
++            BEGIN UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN(OLD.board_id,NEW.board_id); END""")
++    else:
++        sql("""CREATE FUNCTION bmt_lap_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF TG_OP='INSERT' THEN
++                IF NEW.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id; END IF;
++            ELSIF TG_OP='DELETE' THEN
++                IF OLD.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=OLD.board_id; END IF;
++            ELSIF (OLD.status='verified' OR NEW.status='verified') AND
++                (OLD.status IS DISTINCT FROM NEW.status OR OLD.lap_ticks::text IS DISTINCT FROM NEW.lap_ticks::text
++                OR OLD.board_id IS DISTINCT FROM NEW.board_id OR OLD.player_id IS DISTINCT FROM NEW.player_id
++                OR OLD.created_at IS DISTINCT FROM NEW.created_at) THEN
++                UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN(OLD.board_id,NEW.board_id);
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_revision AFTER INSERT OR UPDATE OR DELETE ON runs FOR EACH ROW EXECUTE FUNCTION bmt_lap_revision()")
+diff --git a/backend/bmt_backend/migrations/versions/0025_product_telemetry.py b/backend/bmt_backend/migrations/versions/0025_product_telemetry.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0025_product_telemetry.py
+@@ -0,0 +1,59 @@
++"""Add bounded product observations and prepared analytics; no historical guesses."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0025_product_telemetry"
++down_revision = "0024_lap_personal_bests"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_table("product_events", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("client_id", sa.String(36)), sa.Column("entity_id", sa.String(36)),
++        sa.Column("player_id", sa.String(36), nullable=False),
++        sa.Column("is_test_driver", sa.Boolean()), sa.Column("source", sa.String(8), nullable=False),
++        sa.Column("name", sa.String(32), nullable=False), sa.Column("occurred_at", sa.Integer(), nullable=False),
++        sa.Column("received_at", sa.Integer(), nullable=False), sa.Column("session_id", sa.String(36)),
++        sa.Column("install_id", sa.String(36)),
++        sa.Column("seq", sa.Integer()), sa.Column("monotonic_ms", sa.Integer()),
++        sa.Column("build_id", sa.String(80), nullable=False), sa.Column("platform", sa.String(12), nullable=False),
++        sa.Column("clock_quality", sa.String(16), nullable=False),
++        sa.Column("payload_hash", sa.String(64), nullable=False), sa.Column("properties", sa.JSON(), nullable=False),
++        sa.Column("processed_at", sa.Integer()), sa.Column("compacted", sa.Boolean(), nullable=False))
++    op.create_index("ix_product_pending", "product_events", ["processed_at", "received_at", "id"])
++    op.create_index("ix_product_pending_order", "product_events", ["received_at", "id"],
++        sqlite_where=sa.text("processed_at IS NULL"), postgresql_where=sa.text("processed_at IS NULL"))
++    op.create_index("ix_product_client_cleanup", "product_events", ["received_at", "id"],
++        sqlite_where=sa.text("source='client' AND processed_at IS NOT NULL"),
++        postgresql_where=sa.text("source='client' AND processed_at IS NOT NULL"))
++    op.create_index("ix_product_server_compact", "product_events", ["received_at", "id"],
++        sqlite_where=sa.text("source='server' AND processed_at IS NOT NULL AND compacted=false"),
++        postgresql_where=sa.text("source='server' AND processed_at IS NOT NULL AND compacted=false"))
++    op.create_table("product_player_days", sa.Column("day", sa.Integer(), primary_key=True),
++        sa.Column("player_id", sa.String(36), primary_key=True))
++    op.create_index("ix_product_activity_player", "product_player_days", ["player_id", "day"])
++    op.create_table("product_metrics", sa.Column("day", sa.Integer(), primary_key=True),
++        sa.Column("key", sa.String(48), primary_key=True), sa.Column("dimension", sa.String(32), primary_key=True),
++        sa.Column("value", sa.Integer(), nullable=False))
++    op.create_table("product_profiles", sa.Column("player_id", sa.String(36), primary_key=True),
++        sa.Column("first_activity_at", sa.Integer()), sa.Column("milestones", sa.JSON(), nullable=False),
++        sa.Column("projection", sa.JSON(), nullable=False), sa.Column("truncated", sa.Boolean(), nullable=False),
++        sa.Column("quality", sa.JSON(), nullable=False), sa.Column("truncations", sa.JSON(), nullable=False))
++    op.create_table("product_publications", sa.Column("version_id", sa.String(36), primary_key=True),
++        sa.Column("owner_id", sa.String(36), nullable=False), sa.Column("published_at", sa.Integer(), nullable=False),
++        sa.Column("observed", sa.Boolean(), nullable=False), sa.Column("first_external_at", sa.Integer()))
++    op.create_index("ix_product_publication_age", "product_publications", ["published_at"])
++    op.create_table("product_state", sa.Column("id", sa.Integer(), primary_key=True),
++        sa.Column("collection_started_at", sa.Integer()), sa.Column("processed_through", sa.Integer()),
++        sa.Column("latest_receipt_at", sa.Integer()), sa.Column("observed_at", sa.Integer()),
++        sa.Column("pending_events", sa.Integer(), nullable=False), sa.Column("processed_events", sa.Integer(), nullable=False),
++        sa.Column("truncated_profiles", sa.Integer(), nullable=False),
++        sa.Column("pending_clients", sa.Integer(), nullable=False), sa.Column("pending_capped", sa.Boolean(), nullable=False),
++        sa.Column("retained_from_day", sa.Integer()), sa.Column("fact_days", sa.Integer(), nullable=False))
++    op.execute(sa.text("INSERT INTO product_state(id,pending_events,processed_events,truncated_profiles,pending_clients,pending_capped,fact_days) VALUES(1,0,0,0,0,false,180)"))
++
++
++def downgrade():
++    for table in ("product_state", "product_publications", "product_profiles", "product_metrics", "product_player_days", "product_events"):
++        op.drop_table(table)
+diff --git a/backend/bmt_backend/product_analytics.py b/backend/bmt_backend/product_analytics.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/product_analytics.py
+@@ -0,0 +1,410 @@
++"""Independent bounded projection and prepared product reads; never scans raw races."""
++
++from collections import Counter
++from datetime import datetime, timezone
++
++from fastapi import APIRouter, Query, Request
++from sqlalchemy import delete, false, func, select, text, tuple_, update
++
++from .admin import Access, Window
++from .admin_ranges import calendar_range
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .telemetry import insert_for
++from .telemetry_models import (
++    ProductEvent,
++    ProductMetric,
++    ProductPlayerDay,
++    ProductProfile,
++    ProductPublication,
++    ProductState,
++)
++from .track_models import now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["product analytics"])
++DAY = 86400
++MILESTONE_LIMIT = 128
++ACTIVE = {"session_started", "session_foregrounded", "session_heartbeat", "menu_ready", "race_started",
++    "editor_opened", "race_accepted", "creator_validated", "track_published"}
++FIRST_RACE = ("app_first_open", "menu_ready", "race_attempt", "race_started", "race_finished", "second_voluntary_race")
++CREATOR = ("editor_opened", "draft_saved", "publish_requested", "track_published")
++MILESTONES = set(FIRST_RACE[:-1] + CREATOR)
++PENDING_PROBE_LIMIT = 5000
++
++
++def milestone(value):
++    return list(value) if len(value) == 5 else [value[0], value[1], "", 0, 0]
++
++
++def order(value):
++    return value[1], value[3], value[4], value[2]
++
++
++def after(value, prior, *, strict=False):
++    if value[1] != prior[1]:
++        return value[1] > prior[1]
++    if value[2] and value[2] == prior[2]:
++        return (value[3], value[4]) > (prior[3], prior[4]) if strict else (value[3], value[4]) >= (prior[3], prior[4])
++    return not strict
++
++
++def ordered_journey(values, steps, horizon):
++    anchors = [value for value in values if value[0] == steps[0]]
++    if not anchors:
++        return []
++    start = min(anchors, key=order)
++    prior, result = start, []
++    for name in steps:
++        if name == "second_voluntary_race":
++            candidates = [value for value in values if value[0] == "race_started" and after(value, prior, strict=True)
++                and value[1] <= prior[1] + 600]
++        else:
++            candidates = [value for value in values if value[0] == name and after(value, prior)
++                and value[1] <= start[1] + horizon]
++        if not candidates:
++            break
++        prior = min(candidates, key=order)
++        result.append(prior)
++    return result
++
++
++def bounded_frontiers(values):
++    """Keep earliest relevant per-step frontiers rather than all later replays."""
++    values = [milestone(value) for value in values]
++    result, truncated = [], set()
++    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
++        anchors = [value[1] for value in values if value[0] == steps[0]]
++        anchor = min(anchors) if anchors else None
++        frontier = ordered_journey(values, steps, horizon)
++        # Once the ordered journey is proved, repeats carry no new funnel fact.
++        if len(frontier) == len(steps):
++            result.extend(frontier)
++            continue
++        if steps == FIRST_RACE and len(frontier) == len(steps) - 1:
++            result.extend(frontier)
++            continue
++        for name in steps:
++            if name == "second_voluntary_race":
++                continue
++            candidates = sorted({tuple(value) for value in values if value[0] == name
++                and (anchor is None or anchor <= value[1] <= anchor + horizon)}, key=order)
++            cap = 1 if name == steps[0] else 18
++            selected = candidates[:cap]
++            if prefix == "first_race" and name == "race_started" and len(candidates) > cap:
++                selected = candidates[:1] + candidates[-(cap - 1):]
++            result.extend(list(value) for value in selected)
++            if len(candidates) > cap:
++                truncated.add(prefix)
++    return sorted(result, key=order), truncated
++
++
++def bounded_milestones(values):
++    result, truncated = bounded_frontiers(values)
++    if all(len(value) == 2 for value in values):
++        result = [value[:2] for value in result]
++    return result, bool(truncated)
++
++
++def journey_projection(profile):
++    """Ordered first-observed journeys; late arrivals restate only this projection."""
++    result = {}
++    milestones = [milestone(value) for value in profile.milestones or []]
++    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
++        frontier = ordered_journey(milestones, steps, horizon)
++        if not frontier:
++            continue
++        start = frontier[0][1]
++        for name, _value in zip(steps, frontier, strict=False):
++            result[f"{start // DAY}|{prefix}_{name}|"] = 1
++        if (profile.truncations or {}).get(prefix):
++            result[f"{start // DAY}|{prefix}_truncated_profiles|"] = 1
++    return result
++
++
++def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
++    """One separate-worker transaction, capped events and prepared-fact cleanup."""
++    if not 1 <= limit <= 1000 or not 1 <= raw_days <= 30 or not 14 <= fact_days <= 366:
++        raise ValueError("INVALID_PRODUCT_PROCESSOR_BUDGET")
++    at = now() if at is None else at
++    with factory() as session:
++        if session.bind.dialect.name == "sqlite":
++            session.execute(text("BEGIN IMMEDIATE"))
++        state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
++        if state is None:
++            raise RuntimeError("PRODUCT_MIGRATION_REQUIRED")
++        events = session.scalars(select(ProductEvent).where(ProductEvent.processed_at.is_(None))
++            .order_by(ProductEvent.received_at, ProductEvent.id).limit(limit)).all()
++        players = {event.player_id for event in events}
++        profiles = {profile.player_id: profile for profile in session.scalars(
++            select(ProductProfile).where(ProductProfile.player_id.in_(players)))} if players else {}
++        missing_flags = {event.player_id for event in events if event.is_test_driver is None}
++        flags = dict(session.execute(select(Player.id, Player.is_test_driver).where(Player.id.in_(missing_flags))).all()) if missing_flags else {}
++        version_ids = {event.properties.get("track_version_id", event.properties.get("track_version"))
++            for event in events if event.source == "server" and event.name in ("race_accepted", "track_published")}
++        version_ids.discard(None)
++        publications = {row.version_id: row for row in session.scalars(select(ProductPublication)
++            .where(ProductPublication.version_id.in_(version_ids)))} if version_ids else {}
++        new_activity = {(event.occurred_at // DAY, event.player_id) for event in events if event.name in ACTIVE}
++        deltas = Counter()
++        if new_activity:
++            inserted = session.execute(insert_for(session, ProductPlayerDay).values([
++                {"day": day, "player_id": player} for day, player in sorted(new_activity)])
++                .on_conflict_do_nothing(index_elements=["day", "player_id"])
++                .returning(ProductPlayerDay.day, ProductPlayerDay.player_id)).all()
++            for day, _player in inserted:
++                deltas[(day, "active_players", "")] += 1
++        for event in events:
++            if event.player_id not in profiles:
++                profile = ProductProfile(player_id=event.player_id, milestones=[], projection={}, truncated=False, quality={}, truncations={})
++                session.add(profile)
++                profiles[event.player_id] = profile
++            profile = profiles[event.player_id]
++            if event.is_test_driver is None:
++                event.is_test_driver = bool(flags.get(event.player_id, False))
++            if event.name in ACTIVE:
++                profile.first_activity_at = min(profile.first_activity_at or event.occurred_at, event.occurred_at)
++            if event.name in MILESTONES:
++                value = [event.name, event.occurred_at, event.session_id or "", event.monotonic_ms or 0, event.seq or 0]
++                values = profile.milestones or []
++                if value not in values:
++                    profile.milestones, truncated = bounded_frontiers([*values, value])
++                    truncations = dict(profile.truncations or {})
++                    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
++                        if prefix in truncated:
++                            truncations[prefix] = True
++                        elif len(ordered_journey(profile.milestones, steps, horizon)) == len(steps):
++                            truncations[prefix] = False
++                    was_truncated = bool(profile.truncated)
++                    profile.truncations = truncations
++                    profile.truncated = any(truncations.values())
++                    state.truncated_profiles += int(profile.truncated) - int(was_truncated)
++            day, props = event.occurred_at // DAY, event.properties or {}
++            if event.source == "server" and event.name in ("track_published", "race_accepted"):
++                version = props.get("track_version_id", props.get("track_version"))
++                owner = props.get("owner_id") or (event.player_id if event.name == "track_published" else None)
++                published_at = props.get("published_at", event.occurred_at if event.name == "track_published" else None)
++                if version and owner and published_at is not None and published_at >= (at // DAY - fact_days) * DAY:
++                    publication = publications.get(version)
++                    if publication is None:
++                        publication = ProductPublication(version_id=version, owner_id=owner,
++                            published_at=published_at, observed=False)
++                        session.add(publication)
++                        publications[version] = publication
++                    before = bool(publication.first_external_at is not None
++                        and publication.published_at <= publication.first_external_at <= publication.published_at + 7 * DAY)
++                    was_observed = publication.observed
++                    if event.name == "track_published":
++                        publication.observed = True
++                    elif event.player_id != publication.owner_id and event.occurred_at >= publication.published_at:
++                        publication.first_external_at = min(publication.first_external_at or event.occurred_at, event.occurred_at)
++                    after = bool(publication.first_external_at is not None
++                        and publication.published_at <= publication.first_external_at <= publication.published_at + 7 * DAY)
++                    publication_day = publication.published_at // DAY
++                    if publication.observed and not was_observed:
++                        deltas[(publication_day, "publication_versions", "")] += 1
++                        deltas[(publication_day, "publication_external_7d", "")] += int(after)
++                    elif publication.observed:
++                        deltas[(publication_day, "publication_external_7d", "")] += int(after) - int(before)
++            if event.name == "collection_summary":
++                quality = dict(profile.quality or {})
++                for key, value in props.items():
++                    delta = max(0, value - quality.get(key, 0))
++                    deltas[(day, "reported_" + key, "")] += delta
++                    quality[key] = max(value, quality.get(key, 0))
++                profile.quality = quality
++            prefix = "server_event_" if event.source == "server" and event.name.startswith("challenge_") else "event_"
++            deltas[(day, prefix + event.name, "")] += 1
++            if event.source == "server" and event.name == "race_accepted":
++                deltas[(day, "accepted_races", "")] += 1
++            if event.source == "client" and event.name in ("car_exposed", "car_selected") and props.get("car_id"):
++                deltas[(day, "car_exposures" if event.name == "car_exposed" else "car_selections", props["car_id"])] += 1
++            if event.source == "client" and event.name in ("track_exposed", "track_selected") and props.get("biome"):
++                deltas[(day, "biome_exposures" if event.name == "track_exposed" else "biome_selections", props["biome"])] += 1
++            if event.source == "client" and event.name in ("offer_exposed", "purchase_requested") and props.get("product_id"):
++                deltas[(day, "store_exposures" if event.name == "offer_exposed" else "store_requests", props["product_id"])] += 1
++            event.processed_at = at
++        needed = {(profile.first_activity_at // DAY + offset, profile.player_id)
++            for profile in profiles.values() if profile.first_activity_at is not None
++            and profile.first_activity_at // DAY >= at // DAY - fact_days for offset in (1, 7)}
++        returns = set(session.execute(select(ProductPlayerDay.day, ProductPlayerDay.player_id)
++            .where(tuple_(ProductPlayerDay.day, ProductPlayerDay.player_id).in_(needed)))) if needed else set()
++        for profile in profiles.values():
++            projection = journey_projection(profile)
++            previous = profile.projection or {}
++            if profile.first_activity_at is not None:
++                cohort = profile.first_activity_at // DAY
++                if cohort < at // DAY - fact_days:
++                    projection.update({key: value for key, value in previous.items() if "|retention_" in key})
++                else:
++                    projection[f"{cohort}|retention_cohort_players|"] = 1
++                    for offset in (1, 7):
++                        if (cohort + offset, profile.player_id) in returns:
++                            projection[f"{cohort}|retention_d{offset}_returned|"] = 1
++            for key in set(previous) | set(projection):
++                day, metric, dimension = key.split("|", 2)
++                if int(day) >= at // DAY - fact_days:
++                    deltas[(int(day), metric, dimension)] += projection.get(key, 0) - previous.get(key, 0)
++            profile.projection = projection
++        values = [{"day": day, "key": key, "dimension": dimension, "value": value}
++            for (day, key, dimension), value in deltas.items() if value]
++        if values:
++            statement = insert_for(session, ProductMetric).values(values)
++            session.execute(statement.on_conflict_do_update(index_elements=["day", "key", "dimension"],
++                set_={"value": ProductMetric.value + statement.excluded.value}))
++        session.flush()
++        state.pending_clients = max(0, state.pending_clients - sum(event.source == "client" for event in events))
++        pending_probe = (select(ProductEvent.id).where(ProductEvent.processed_at.is_(None))
++            .order_by(ProductEvent.received_at, ProductEvent.id).limit(PENDING_PROBE_LIMIT))
++        state.pending_events = session.scalar(select(func.count()).select_from(pending_probe.subquery()))
++        state.pending_capped = state.pending_events == PENDING_PROBE_LIMIT
++        oldest = session.scalar(select(ProductEvent.received_at).where(ProductEvent.processed_at.is_(None))
++            .order_by(ProductEvent.received_at, ProductEvent.id).limit(1))
++        state.processed_through = min(at, oldest - 1) if oldest is not None else at
++        state.observed_at = at
++        state.retained_from_day = at // DAY - fact_days
++        state.fact_days = fact_days
++        state.processed_events += len(events)
++        if events:
++            observed_events = [event for event in events if event.name != "collection_rejected"]
++            if observed_events:
++                earliest = min(event.occurred_at for event in observed_events)
++                state.collection_started_at = min(state.collection_started_at or earliest, earliest)
++            latest = max(event.received_at for event in events)
++            state.latest_receipt_at = max(state.latest_receipt_at or latest, latest)
++        # Recent client receipt IDs outlive the maximum accepted client-event age;
++        # old retransmission is then rejected by ingestion's occurrence bound.
++        expired = session.scalars(select(ProductEvent.id).where(ProductEvent.source == "client",
++            ProductEvent.processed_at.is_not(None), ProductEvent.received_at < at - (raw_days + 1) * DAY,
++            ProductEvent.occurred_at < at - 7 * DAY).limit(limit)).all()
++        if expired:
++            session.execute(delete(ProductEvent).where(ProductEvent.id.in_(expired)))
++        # Authoritative receipts retain a small permanent dedupe tombstone so
++        # replaying a server outbox record cannot double a prepared metric.
++        old_server = session.scalars(select(ProductEvent.id).where(ProductEvent.source == "server",
++            ProductEvent.processed_at.is_not(None), ProductEvent.received_at < at - raw_days * DAY,
++            ProductEvent.compacted == false()).limit(limit)).all()
++        if old_server:
++            session.execute(update(ProductEvent).where(ProductEvent.id.in_(old_server)).values(properties={}, compacted=True))
++        for model, columns in ((ProductPlayerDay, (ProductPlayerDay.day, ProductPlayerDay.player_id)),
++                (ProductMetric, (ProductMetric.day, ProductMetric.key, ProductMetric.dimension))):
++            expired_keys = session.execute(select(*columns).where(model.day < at // DAY - fact_days)
++                .order_by(*columns).limit(limit)).all()
++            if expired_keys:
++                session.execute(delete(model).where(tuple_(*columns).in_(expired_keys)))
++        expired_publications = session.scalars(select(ProductPublication.version_id)
++            .where(ProductPublication.published_at < (at // DAY - fact_days) * DAY).limit(limit)).all()
++        if expired_publications:
++            session.execute(delete(ProductPublication).where(ProductPublication.version_id.in_(expired_publications)))
++        session.commit()
++        return {"processed": len(events), "pending": state.pending_events, "processed_through": state.processed_through,
++            "observed_at": at, "retired_client_events": len(expired), "compacted_server_receipts": len(old_server)}
++
++
++def prepared_report(session, since, until, at):
++    start, last = since // DAY, (until - 1) // DAY
++    state = session.get(ProductState, 1)
++    begun = state.collection_started_at if state else None
++    watermark = state.processed_through if state else None
++    retained_floor = state.retained_from_day if state and state.retained_from_day is not None else 0
++    rows = session.scalars(select(ProductMetric).where(ProductMetric.day >= start,
++        ProductMetric.day >= retained_floor, ProductMetric.day <= min(last, at // DAY)).limit(12000)).all()
++    values = {(row.day, row.key, row.dimension): row.value for row in rows}
++    collected_day = None if begun is None else begun // DAY
++    def observed(day):
++        return (collected_day is not None and watermark is not None
++            and max(collected_day, retained_floor) <= day <= min(at // DAY, watermark // DAY))
++    def count(day, key, dimension=""):
++        return values.get((day, key, dimension), 0) if observed(day) else None
++    scope_observed = any(observed(day) for day in range(start, last + 1))
++    daily = [{"day": datetime.fromtimestamp(day * DAY, timezone.utc).date().isoformat(),
++        "active_players": count(day, "active_players"), "accepted_races": count(day, "accepted_races"),
++        "observed_race_finishes": count(day, "event_race_finished"),
++        "current_partial": (day + 1) * DAY > at, "observed": observed(day)} for day in range(start, last + 1)]
++    weekly_start = last - 6
++    def distinct(first, final):
++        visible_last = min(at // DAY, watermark // DAY) if watermark is not None else -1
++        if begun is None or final < max(collected_day, retained_floor) or first > visible_last:
++            return None
++        return session.scalar(select(func.count(func.distinct(ProductPlayerDay.player_id)))
++            .where(ProductPlayerDay.day >= max(first, retained_floor), ProductPlayerDay.day <= min(final, visible_last)))
++    retention = []
++    for day in range(start, last + 1):
++        cohort = count(day, "retention_cohort_players")
++        if cohort in (None, 0):
++            continue
++        row = {"cohort_day": datetime.fromtimestamp(day * DAY, timezone.utc).date().isoformat(), "cohort_players": cohort}
++        for offset in (1, 7):
++            mature = (watermark is not None and (day + offset + 1) * DAY <= min(at, watermark)
++                and observed(day + offset) and not state.pending_events)
++            row[f"d{offset}"] = {"mature": mature, "eligible": cohort,
++                "returned": count(day, f"retention_d{offset}_returned") if mature else None}
++        retention.append(row)
++    funnels = {}
++    for prefix, steps, horizon in (("first_race", FIRST_RACE, 1), ("creator", CREATOR, 7)):
++        mature_days = [day for day in range(start, last + 1) if observed(day)
++            and watermark is not None and (day + horizon + 1) * DAY + (600 if prefix == "first_race" else 0) <= min(at, watermark)]
++        counts = [{"name": name, "count": sum(values.get((day, prefix + "_" + name, ""), 0)
++            for day in mature_days) if scope_observed and mature_days
++                and not sum(values.get((day, prefix + "_truncated_profiles", ""), 0) for day in mature_days) else None} for name in steps]
++        funnels[prefix] = {"cohort_players": counts[0]["count"], "steps": counts, "mature": bool(mature_days),
++            "mature_cohort_days": len(mature_days), "followup_days": horizon,
++            "truncated_cohort_players": sum(values.get((day, prefix + "_truncated_profiles", ""), 0) for day in mature_days),
++            "second_race_followup_seconds": 600 if prefix == "first_race" else None}
++    preferences = {}
++    for prefix, plural in (("car", "cars"), ("biome", "biomes")):
++        dimensions = sorted({row.dimension for row in rows if row.key in (prefix + "_exposures", prefix + "_selections")})
++        preferences[plural] = [{"id": dimension, "exposures": sum(values.get((day, prefix + "_exposures", dimension), 0)
++            for day in range(start, last + 1)), "selections": sum(values.get((day, prefix + "_selections", dimension), 0)
++            for day in range(start, last + 1))} for dimension in dimensions]
++    store_ids = sorted({row.dimension for row in rows if row.key in ("store_exposures", "store_requests")})
++    mature_publication_days = [day for day in range(start, last + 1) if observed(day)
++        and watermark is not None and (day + 8) * DAY <= min(at, watermark) and not state.pending_events]
++    return {"schema": "bmt-product-analytics-v1", "as_of": at, "since": since, "until": until,
++        "days": last - start + 1, "weekly_since": weekly_start * DAY, "weekly_until": until,
++        "coverage": {"collection_started_at": begun, "processed_through": watermark,
++            "latest_receipt_at": state.latest_receipt_at if state else None,
++            "pending_events": state.pending_events if state else 0, "pending_events_capped": bool(state and state.pending_capped),
++            "processor_observed_at": state.observed_at if state else None,
++            "truncated_profiles": state.truncated_profiles if state else 0,
++            "retained_from": retained_floor * DAY if state and state.retained_from_day is not None else None,
++            "fact_retention_days": state.fact_days if state else 180,
++            "scope": "Signed-in players only, including artificial players; qualified foreground observations and authoritative accepted results/publications.",
++            "limitations": ["Guest coverage is unavailable; no guest/account linking is performed.",
++                "Client finishes are observations; only server race_accepted facts increment accepted races.",
++                "Counts are prepared snapshots; processor lag and the current partial day remain visible.",
++                "First-race cohorts wait 24 hours plus 10 minutes for a second start; creator cohorts wait seven days. Profiles retain at most 128 ordered milestones; unresolved overflow is scoped to its cohort.",
++                f"Raw observations are bounded; retained facts cover {state.fact_days if state else 180} days. Earlier or unavailable coverage is not zero.",
++                "Event counts describe observed offers/actions; exposure comparisons do not establish causal preference.",
++                "Loss counters are client-reported per-player maxima; shared installations/account changes can overlap these reports."]},
++        "daily": daily, "weekly_active_players": distinct(weekly_start, last),
++        "period_active_players": distinct(start, last), "funnels": funnels,
++        "retention": retention, "preferences": preferences,
++        "store": {"opened": sum(values.get((day, "event_store_opened", ""), 0) for day in range(start, last + 1))
++            if scope_observed else None,
++            "offers": [{"id": sku, "exposures": sum(values.get((day, "store_exposures", sku), 0) for day in range(start, last + 1)),
++                "requests": sum(values.get((day, "store_requests", sku), 0) for day in range(start, last + 1))} for sku in store_ids],
++            "fulfilled": None},
++        "creator_value": {"published_versions": sum(values.get((day, "publication_versions", ""), 0) for day in range(start, last + 1))
++            if scope_observed else None,
++            "mature_published_versions": sum(values.get((day, "publication_versions", ""), 0) for day in mature_publication_days)
++            if scope_observed else None,
++            "external_racer_7d_versions": sum(values.get((day, "publication_external_7d", ""), 0) for day in mature_publication_days)
++            if scope_observed else None, "cohort_followup_days": 7},
++        "quality": {key: sum(values.get((day, "reported_" + key, ""), 0) for day in range(start, last + 1))
++            if scope_observed else None for key in ("dropped_events", "rejected_events", "persistence_failures")},
++        "challenges": {key: sum(values.get((day, "event_" + key, ""), 0) for day in range(start, last + 1))
++            if scope_observed else None for key in ("challenge_opened", "challenge_joined", "challenge_created", "share_clicked")}}
++
++
++@router.get("/v1/admin/product-analytics")
++def analytics(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
++    since, until = window or calendar_range(days)
++    with request.app.state.session_factory() as session:
++        if session.bind.dialect.name == "postgresql":
++            session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++        elif session.bind.dialect.name == "sqlite":
++            session.execute(text("BEGIN"))
++        result = prepared_report(session, since, until, now())
++        result.update(role=role, environment=request.app.state.settings.environment,
++            telemetry_enabled=request.app.state.settings.telemetry_enabled)
++        return result
+diff --git a/backend/bmt_backend/product_worker.py b/backend/bmt_backend/product_worker.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/product_worker.py
+@@ -0,0 +1,56 @@
++"""Run product projection separately from competitive verification workers."""
++
++import argparse
++import signal
++import threading
++import time
++from dataclasses import replace
++
++from sqlalchemy import select
++
++from .config import Settings
++from .db import make_engine, make_session_factory
++from .product_analytics import project_pending
++from .telemetry_models import ProductEvent
++
++
++def pending_exists(factory):
++    with factory() as session:
++        return session.scalar(select(ProductEvent.id).where(ProductEvent.processed_at.is_(None))
++            .order_by(ProductEvent.received_at, ProductEvent.id).limit(1)) is not None
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--once", action="store_true")
++    args = parser.parse_args()
++    settings = Settings.from_env()
++    if not settings.telemetry_enabled:
++        print("Product telemetry is disabled")
++        return
++    stop = threading.Event()
++    for signum in (signal.SIGINT, signal.SIGTERM):
++        signal.signal(signum, lambda *_args: stop.set())
++    engine = make_engine(settings.database_url, replace(settings, database_pool_size=1, database_pool_overflow=0))
++    try:
++        factory = make_session_factory(engine)
++        idle_wait, maintenance_at = 15, 0.0
++        while not stop.is_set():
++            if not args.once and not pending_exists(factory) and time.monotonic() < maintenance_at:
++                stop.wait(idle_wait)
++                idle_wait = min(60, idle_wait * 2)
++                continue
++            result = project_pending(factory, limit=settings.telemetry_processor_batch,
++                raw_days=settings.telemetry_raw_days, fact_days=settings.telemetry_fact_days)
++            print(result, flush=True)
++            if args.once:
++                break
++            maintenance_at = time.monotonic() + 60
++            idle_wait = 15 if result["processed"] else min(60, idle_wait * 2)
++            stop.wait(0.2 if result["pending"] else idle_wait)
++    finally:
++        engine.dispose()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -7,7 +7,7 @@
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import Integer, case, cast, func, or_, select, text, tuple_
++from sqlalchemy import Integer, case, cast, func, select, text, tuple_
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
+@@ -24,7 +24,6 @@
+ from .track_models import (
+     Board,
+     BoardTimeCount,
+-    OperationState,
+     PersonalBest,
+     Run,
+     RunTicket,
+@@ -519,31 +518,21 @@
+ 
+ 
+ def best_lap_times(board_id, session, *, test_population=False):
+-    """One best verified flying lap per active driver, across comparable attempts."""
+-    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
+-    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
+-    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
+-        Player, Player.id == Run.player_id).join(PersonalBest,
+-        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
+-        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
+-        *(lap > 0 for lap in laps))
++    """Read one durable flying PB per eligible driver; never scan attempts."""
++    from .track_models import LapBestState, LapPersonalBest
++    state = session.get(LapBestState, board_id)
++    if state is not None and not state.complete:
++        raise RuntimeError("Flying-lap PB backfill is incomplete")
++    statement = select(LapPersonalBest.player_id, LapPersonalBest.time_ticks).join(
++        Player, Player.id == LapPersonalBest.player_id).join(PersonalBest,
++        (PersonalBest.board_id == LapPersonalBest.board_id) & (PersonalBest.player_id == LapPersonalBest.player_id)).where(
++        LapPersonalBest.board_id == board_id, Player.disabled.is_(False))
+     if not test_population:
+         statement = statement.where(Player.is_test_driver.is_(False))
+-    else:
+-        # Retained audit runs from an owner-requested test-record reset must not
+-        # restore retired lap records. Real players are never part of that reset.
+-        board = session.get(Board, board_id)
+-        if board:
+-            resets = session.scalars(select(OperationState).where(
+-                OperationState.id.startswith("test-pop-batch:"),
+-                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
+-            cutoff = max((row.details.get("created_at", 0) for row in resets
+-                          if row.details.get("request", {}).get("clear_test_records")
+-                          and any(entry.get("version_id") == board.version_id
+-                                  for entry in row.details.get("tracks", []))), default=0)
+-            if cutoff:
+-                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
+-    return statement.group_by(Run.player_id).subquery()
++    elif state is not None:
++        from sqlalchemy import or_
++        statement = statement.where(or_(Player.is_test_driver.is_(False), LapPersonalBest.source_created_at >= state.cutoff))
++    return statement.subquery()
+ 
+ 
+ def comparison_position(entries, session, ticks, own_ticks):
+diff --git a/backend/bmt_backend/service_worker.py b/backend/bmt_backend/service_worker.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/service_worker.py
+@@ -0,0 +1,166 @@
++"""Supervise competition and optional low-priority product work in one container."""
++
++from __future__ import annotations
++
++import logging
++import os
++import signal
++import subprocess
++import sys
++import time
++
++log = logging.getLogger("bmt.service_worker")
++
++
++def _product_priority():
++    # This supervisor is single-threaded; the pre-exec hook makes only this
++    # syscall, before product code imports or starts database/CPU work.
++    os.setpriority(os.PRIO_PROCESS, 0, 19)
++
++
++def _spawn(role, command):
++    options = {"start_new_session": os.name == "posix"}
++    if role == "product" and sys.platform.startswith("linux"):
++        options["preexec_fn"] = _product_priority
++    return subprocess.Popen(command, **options)
++
++
++def _adopt_descendants():
++    if not sys.platform.startswith("linux") or os.getpid() == 1:
++        return
++    # PID 1 already adopts descendants. A standalone Linux supervisor must do
++    # the same so a misbehaving child cannot leave an unreaped verifier behind.
++    import ctypes
++
++    library = ctypes.CDLL(None, use_errno=True)
++    if library.prctl(36, 1, 0, 0, 0) != 0:  # Linux PR_SET_CHILD_SUBREAPER
++        raise OSError(ctypes.get_errno(), "Cannot supervise descendant cleanup")
++
++
++def _reap_adopted():
++    if os.name != "posix":
++        return False
++    while True:
++        try:
++            pid, _status = os.waitpid(-1, os.WNOHANG)
++        except ChildProcessError:
++            return False
++        if pid == 0:
++            return True
++
++
++def _signal_child(child, signum):
++    if child.poll() is None:
++        try:
++            child.send_signal(signum)
++        except ProcessLookupError:
++            pass
++
++
++def _kill_group(child):
++    if os.name == "posix":
++        try:
++            os.killpg(child.pid, signal.SIGKILL)
++            return True
++        except ProcessLookupError:
++            return False
++    if child.poll() is None:
++        child.kill()
++        return True
++    return False
++
++
++def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, child_factory=_spawn):
++    """Fixed shipping roles; commands/factory injection is for process tests only.
++
++    Normal exit requires a stop request, clean child exits and no forced cleanup.
++    A daemon exiting by itself, including exit zero, stops its peer and fails the
++    service so an unhealthy product process cannot hide behind worker readiness.
++    """
++    if not 0.1 <= shutdown_seconds <= 300:
++        raise ValueError("Invalid bounded service shutdown budget")
++    shipping = {
++        "worker": (sys.executable, "-m", "bmt_backend.worker"),
++        "product": (sys.executable, "-m", "bmt_backend.product_worker"),
++    }
++    selected = commands if commands is not None else shipping
++    roles = ("worker", "product") if telemetry_enabled else ("worker",)
++    children, previous = {}, {}
++    requested_at, requested_signal, failed = None, None, False
++
++    def stop(signum, _frame):
++        nonlocal requested_at, requested_signal
++        if requested_at is None:
++            requested_at, requested_signal = time.monotonic(), signum
++
++    _adopt_descendants()
++    try:
++        for signum in (signal.SIGTERM, signal.SIGINT):
++            previous[signum] = signal.getsignal(signum)
++            signal.signal(signum, stop)
++        for role in roles:
++            if requested_at is not None:
++                break
++            children[role] = child_factory(role, selected[role])
++            log.info("service_child_started role=%s pid=%s", role, children[role].pid)
++        while requested_at is None:
++            for role, child in children.items():
++                code = child.poll()
++                if code is not None:
++                    log.error("service_child_exited role=%s code=%s", role, code)
++                    failed = True
++                    requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++                    break
++            if requested_at is None:
++                time.sleep(0.05)
++    except (OSError, KeyError, subprocess.SubprocessError):
++        log.exception("service_child_launch_failed")
++        failed = True
++        requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++    finally:
++        if requested_at is None:
++            requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++        # Signal the child PID, not its whole group: the competitive worker owns
++        # its verifier cancellation and retains its existing finish grace.
++        for child in children.values():
++            _signal_child(child, requested_signal)
++        deadline = requested_at + shutdown_seconds
++        while any(child.poll() is None for child in children.values()) and time.monotonic() < deadline:
++            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
++        for child in children.values():
++            if child.poll() is None:
++                failed = _kill_group(child) or failed
++        # Reap tracked children first; generic waitpid must not steal their exit
++        # status and accidentally report a failed worker as a clean shutdown.
++        for role, child in children.items():
++            try:
++                code = child.wait(timeout=1)
++            except subprocess.TimeoutExpired:
++                log.error("service_child_did_not_stop role=%s", role)
++                failed = True
++                continue
++            if code != 0:
++                failed = True
++        _reap_adopted()
++        for child in children.values():
++            # A direct child can exit without cleaning up its own descendants.
++            failed = _kill_group(child) or failed
++        reaping_until = time.monotonic() + 0.5
++        while _reap_adopted() and time.monotonic() < reaping_until:
++            time.sleep(0.01)
++        for signum, handler in previous.items():
++            signal.signal(signum, handler)
++    return 1 if failed else 0
++
++
++def main():
++    from .config import Settings
++
++    settings = Settings.from_env()
++    logging.basicConfig(level=logging.INFO)
++    return supervise(telemetry_enabled=settings.telemetry_enabled,
++        shutdown_seconds=settings.worker_shutdown_grace_seconds + 2)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/backend/bmt_backend/studio.py b/backend/bmt_backend/studio.py
+--- a/backend/bmt_backend/studio.py
++++ b/backend/bmt_backend/studio.py
+@@ -23,7 +23,7 @@
+     ("race_bundle", "Race evidence bundle", "partial", "Checksummed JSON snapshot of redacted server records; no full replay, client diagnostics or expiring hosted bundle.", ["BMT-052"]),
+     ("competition_health", "Verification health", "supported", "Current worker compatibility, queue age, recent server outcomes and configured backup marker.", ["BMT-071", "BMT-074"]),
+     ("operational_counts", "Operational counts", "supported", "Registered accounts and received submissions by UTC window; these are not foreground activity or retention.", ["BMT-020"]),
+-    ("behaviour", "Behaviour and retention", "unavailable", "No versioned mobile-event ingestion, foreground sessions, ordered onboarding events or discovery exposures.", ["BMT-010", "BMT-013", "BMT-022", "BMT-023"]),
++    ("behaviour", "Observed product activity", "partial", "Prepared signed-in activity, ordered first-race and creator cohorts, exact-day retention and observed selections. Guest coverage and historical pre-collection activity are unavailable.", ["BMT-010", "BMT-013", "BMT-022", "BMT-023"]),
+     ("client_quality", "Client quality", "unavailable", "No backend crash, ANR, build/device frame summaries or Play vitals feed.", ["BMT-070"]),
+     ("provider_commerce", "Verified provider commerce", "unavailable", "Development purchases exist; live Play verification, signed ad rewards, revenue and reconciliation feeds are not configured.", ["BMT-040", "BMT-041", "BMT-043", "BMT-048"]),
+     ("remote_config", "Remote configuration and experiments", "unavailable", "Pinned race manifests exist; no mutable configuration registry, activation, exposure or rollback service.", ["BMT-060", "BMT-063", "BMT-064"]),
+@@ -33,14 +33,23 @@
+ 
+ @router.get("/v1/admin/studio/capabilities")
+ def capabilities(request: Request, role: Access):
++    enabled = getattr(request.app.state.settings, "telemetry_enabled", False)
++    sources = [
++        {"key": key, "title": title, "status": status, "description": description,
++         "requirement_ids": ids} for key, title, status, description, ids in SOURCES
++    ]
++    if not enabled:
++        for source in sources:
++            if source["key"] == "behaviour":
++                source.update(status="unavailable", description="Product telemetry is disabled on this backend. No observed activity is implied by registered accounts or submitted attempts.")
+     return {
+         "schema": "bmt-studio-capabilities-v1", "as_of": now(),
+         "environment": request.app.state.settings.environment, "role": role, "read_only": True,
+-        "sources": [{"key": key, "title": title, "status": status, "description": description,
+-                     "requirement_ids": ids} for key, title, status, description, ids in SOURCES],
++        "sources": sources,
+         "limitations": [
+             "Capabilities describe this application implementation, not a live check of external providers.",
+             "Stored submissions do not establish race starts, quits, foreground playtime or voluntary returns.",
++            "Observed analytics begins with collected evidence; guest activity and pre-collection behaviour are not reconstructed.",
+             "A backup marker does not establish a successful restore or a recovery-time guarantee.",
+             "This Studio inspection does not change game records or execute verification.",
+         ],
+diff --git a/backend/bmt_backend/telemetry.py b/backend/bmt_backend/telemetry.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/telemetry.py
+@@ -0,0 +1,234 @@
++"""Bounded authenticated product ingestion; observations cannot grant game authority."""
++
++import json
++from typing import Annotated
++from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
++
++from fastapi import APIRouter, Depends, HTTPException, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import select, text
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++from sqlalchemy.dialects.sqlite import insert as sqlite_insert
++
++from .db import get_session
++from .middleware import ParsedJSONRoute
++from .security import current_player
++from .telemetry_models import ProductEvent, ProductState
++from .track_models import digest, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["product telemetry"])
++DB = Annotated[object, Depends(get_session)]
++Auth = Annotated[object, Depends(current_player)]
++POLICY = "bmt-product-telemetry-v1"
++SCHEMA = "bmt-product-events-v1"
++MAX_EVENTS, MAX_BYTES = 50, 65536
++MAX_AGE, FUTURE_ALLOWANCE = 7 * 86400, 300
++CARS = {"compact", "pickup", "classic", "formula", "kart"}
++BIOMES = {"pine", "desert", "night_city", "winter", "storm"}
++PRODUCTS = {"creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"}
++SERVER_NAMES = {"race_accepted", "creator_validated", "track_published", "challenge_created", "challenge_joined"}
++TRACK_FIELDS = {"track_version_id", "ticket_id", "car_id", "biome", "mode", "position"}
++ALLOWED = {
++    "app_first_open": set(), "session_started": {"reason"}, "session_foregrounded": {"reason"},
++    "session_backgrounded": {"foreground_ms"}, "session_heartbeat": {"foreground_ms"}, "menu_ready": set(),
++    "track_exposed": TRACK_FIELDS, "track_selected": TRACK_FIELDS,
++    "car_exposed": {"car_id", "position"}, "car_selected": {"car_id", "position"},
++    "race_attempt": TRACK_FIELDS, "race_started": TRACK_FIELDS,
++    "race_finished": TRACK_FIELDS | {"reason"}, "race_abandoned": TRACK_FIELDS | {"reason"},
++    "race_retried": TRACK_FIELDS | {"reason"},
++    "editor_opened": {"biome", "reason"}, "draft_saved": {"biome", "reason"},
++    "publish_requested": {"biome", "reason"},
++    "challenge_opened": {"challenge_id", "reason"}, "challenge_joined": {"challenge_id", "reason"},
++    "challenge_created": {"challenge_id", "reason"}, "share_clicked": {"challenge_id", "reason"},
++    "collection_summary": {"dropped_events", "rejected_events", "persistence_failures"},
++    "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
++}
++REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
++    "save", "publish", "edit", "test", "open", "join", "create", "share"}
++
++
++def insert_for(session, model):
++    return (pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert)(model)
++
++
++def uuid_value(value, *, version=None):
++    if not isinstance(value, str) or len(value) != 36:
++        raise ValueError("INVALID_EVENT")
++    parsed = UUID(value)
++    if version is not None and parsed.version != version:
++        raise ValueError("INVALID_EVENT")
++    return str(parsed)
++
++
++def integer(value, low=0, high=86400000):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError("INVALID_EVENT")
++    return value
++
++
++def properties(name, value):
++    if not isinstance(value, dict) or not set(value) <= ALLOWED[name]:
++        raise ValueError("INVALID_EVENT")
++    if name in ("offer_exposed", "purchase_requested") and "product_id" not in value:
++        raise ValueError("INVALID_EVENT")
++    if name in ("car_exposed", "car_selected") and "car_id" not in value:
++        raise ValueError("INVALID_EVENT")
++    result = {}
++    for key, item in value.items():
++        if key in ("track_version_id", "ticket_id", "challenge_id"):
++            item = uuid_value(item)
++        elif key == "car_id":
++            if item not in CARS:
++                raise ValueError("INVALID_EVENT")
++        elif key == "product_id":
++            if not isinstance(item, str) or item not in PRODUCTS:
++                raise ValueError("INVALID_EVENT")
++        elif key == "biome":
++            if not isinstance(item, str) or item not in BIOMES:
++                raise ValueError("INVALID_EVENT")
++        elif key == "mode":
++            if item not in ("free", "rivalry", "challenge", "creator"):
++                raise ValueError("INVALID_EVENT")
++        elif key == "position":
++            item = integer(item, high=1000)
++        elif key == "foreground_ms":
++            item = integer(item)
++        elif key in ("dropped_events", "rejected_events", "persistence_failures"):
++            item = integer(item, high=1000000)
++        elif key == "reason" and item not in REASONS:
++            raise ValueError("INVALID_EVENT")
++        result[key] = item
++    return result
++
++
++class Batch(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    schema_version: str = Field(alias="schema")
++    purpose_policy: str
++    build_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:\-]+$")
++    platform: str = Field(pattern=r"^(android|windows|linux|ios)$")
++    clock_quality: str = Field("client_clock", pattern=r"^(server_estimate|client_clock)$")
++    batch_id: str | None = None
++    install_id: str | None = None
++    events: list = Field(min_length=1, max_length=MAX_EVENTS)
++
++
++def append_server_event(session, name, event_id, player_id, dimensions, *, occurred_at=None, is_test_driver=None):
++    """Caller owns the authority transaction and feature gate; no game/query work."""
++    if name not in SERVER_NAMES:
++        raise ValueError("UNKNOWN_SERVER_PRODUCT_EVENT")
++    event_key = str(uuid5(NAMESPACE_URL, "bmt-product-server-v1/" + name + "/" + str(event_id)))
++    projected = {}
++    for key in ("track_version", "track_version_id", "run_id", "ticket_id", "owner_id", "published_at", "car_id", "biome", "lap_count"):
++        value = dimensions.get(key)
++        if key in ("track_version", "track_version_id", "run_id", "ticket_id", "owner_id") and isinstance(value, str):
++            try:
++                projected[key] = uuid_value(value)
++            except ValueError:
++                pass
++        elif ((key == "car_id" and isinstance(value, str) and value in CARS)
++                or (key == "biome" and isinstance(value, str) and value in BIOMES)
++                or (key == "lap_count" and type(value) is int and 0 <= value <= 20)
++                or (key == "published_at" and type(value) is int and 0 <= value <= 4102444800)):
++            projected[key] = value
++    occurred = now() if occurred_at is None else occurred_at
++    try:
++        entity_id = uuid_value(str(event_id))
++    except ValueError:
++        entity_id = None
++    value = {"id": event_key, "player_id": player_id, "is_test_driver": is_test_driver,
++        "entity_id": entity_id,
++        "source": "server", "name": name, "occurred_at": occurred, "received_at": now(),
++        "properties": projected, "build_id": "", "platform": "", "clock_quality": "server", "payload_hash": ""}
++    value["payload_hash"] = digest({key: value[key] for key in ("player_id", "name", "occurred_at", "properties")})
++    session.execute(insert_for(session, ProductEvent).values(value).on_conflict_do_nothing(index_elements=["id"]))
++    return event_key
++
++
++@router.post("/v1/telemetry/batches")
++def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
++    if not request.app.state.settings.telemetry_enabled:
++        raise HTTPException(503, "TELEMETRY_DISABLED")
++    if batch.schema_version != SCHEMA or batch.purpose_policy != POLICY:
++        raise HTTPException(422, "UNSUPPORTED_TELEMETRY_CONTRACT")
++    if len(json.dumps(batch.model_dump(), separators=(",", ":")).encode()) > MAX_BYTES:
++        raise HTTPException(413, "TELEMETRY_BATCH_TOO_LARGE")
++    for optional in (batch.batch_id, batch.install_id):
++        if optional is not None:
++            try:
++                uuid_value(optional, version=4)
++            except ValueError:
++                raise HTTPException(422, "INVALID_TELEMETRY_REFERENCE") from None
++    at = now()
++    parsed, acknowledgements = {}, []
++    for index, raw in enumerate(batch.events):
++        acknowledgement = {"index": index, "id": None, "status": "rejected", "reason": "INVALID_EVENT"}
++        acknowledgements.append(acknowledgement)
++        try:
++            if not isinstance(raw, dict):
++                raise TypeError("INVALID_EVENT")
++            event_id = uuid_value(raw.get("id"), version=4)
++            acknowledgement["id"] = event_id
++            if set(raw) != {"id", "name", "occurred_at", "session_id", "seq", "monotonic_ms", "properties"}:
++                raise ValueError("INVALID_EVENT")
++            name = raw["name"]
++            if not isinstance(name, str) or name not in ALLOWED:
++                raise ValueError("INVALID_EVENT")
++            occurred = integer(raw["occurred_at"], high=4102444800)
++            if occurred < at - MAX_AGE or occurred > at + FUTURE_ALLOWANCE:
++                raise ValueError("CLOCK_OUTSIDE_WINDOW")
++            event = {"id": event_id, "client_id": event_id, "entity_id": None, "player_id": player.id,
++                "is_test_driver": bool(player.is_test_driver), "source": "client", "name": name,
++                "occurred_at": occurred, "received_at": at,
++                "session_id": uuid_value(raw["session_id"], version=4), "seq": integer(raw["seq"], high=2147483647),
++                "install_id": batch.install_id,
++                "monotonic_ms": integer(raw["monotonic_ms"], high=2147483647),
++                "build_id": batch.build_id, "platform": batch.platform, "clock_quality": batch.clock_quality,
++                "properties": properties(name, raw["properties"])}
++            event["payload_hash"] = digest({key: value for key, value in event.items()
++                if key not in ("received_at", "is_test_driver")})
++            if event_id in parsed and parsed[event_id]["payload_hash"] != event["payload_hash"]:
++                raise ValueError("ID_CONFLICT")
++            parsed[event_id] = event
++            acknowledgement.pop("reason")
++            acknowledgement["status"] = "pending"
++        except (ValueError, TypeError) as error:
++            if str(error) in ("CLOCK_OUTSIDE_WINDOW", "ID_CONFLICT"):
++                acknowledgement["reason"] = str(error)
++            safe_id = acknowledgement["id"] or str(uuid5(NAMESPACE_URL, "rejected/" + str(uuid4())))
++            if safe_id not in parsed:
++                rejected = {"id": safe_id, "client_id": acknowledgement["id"], "entity_id": None, "player_id": player.id,
++                    "is_test_driver": bool(player.is_test_driver), "source": "client",
++                    "name": "collection_rejected", "occurred_at": at, "received_at": at,
++                    "session_id": None, "seq": None, "monotonic_ms": None,
++                    "install_id": batch.install_id,
++                    "build_id": batch.build_id, "platform": batch.platform, "clock_quality": "server",
++                    "properties": {"reason": acknowledgement["reason"]}}
++                rejected["payload_hash"] = digest({key: rejected[key] for key in ("player_id", "name", "properties")})
++                parsed[safe_id] = rejected
++    if parsed:
++        if session.bind.dialect.name == "sqlite":
++            session.execute(text("BEGIN IMMEDIATE"))
++        state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
++        existing = set(session.scalars(select(ProductEvent.id).where(ProductEvent.id.in_(parsed))))
++        if state.pending_clients + len(set(parsed) - existing) > request.app.state.settings.telemetry_client_backlog:
++            raise HTTPException(503, "TELEMETRY_BACKLOG_FULL")
++        inserted = set(session.scalars(insert_for(session, ProductEvent).values(list(parsed.values()))
++            .on_conflict_do_nothing(index_elements=["id"]).returning(ProductEvent.id)))
++        state.pending_clients += len(inserted)
++        state.pending_events += len(inserted)
++        state.latest_receipt_at = max(state.latest_receipt_at or at, at)
++        stored = {row.id: row for row in session.scalars(select(ProductEvent).where(ProductEvent.id.in_(parsed)))}
++        seen = set()
++        for acknowledgement in acknowledgements:
++            if acknowledgement["status"] != "pending":
++                continue
++            event_id = acknowledgement["id"]
++            row = stored[event_id]
++            if row.player_id != player.id or row.payload_hash != parsed[event_id]["payload_hash"]:
++                acknowledgement.update(status="rejected", reason="ID_CONFLICT")
++            else:
++                acknowledgement["status"] = "accepted" if event_id in inserted and event_id not in seen else "duplicate"
++            seen.add(event_id)
++    session.commit()  # No acknowledgement of acceptance precedes durable handling.
++    return {"schema": "bmt-product-acks-v1", "events": acknowledgements}
+diff --git a/backend/bmt_backend/telemetry_models.py b/backend/bmt_backend/telemetry_models.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/telemetry_models.py
+@@ -0,0 +1,91 @@
++"""Pseudonymous product observations and bounded prepared reporting facts."""
++
++from sqlalchemy import JSON, Boolean, Index, Integer, String, text
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++
++
++class ProductEvent(Base):
++    __tablename__ = "product_events"
++    __table_args__ = (Index("ix_product_pending", "processed_at", "received_at", "id"),
++        Index("ix_product_pending_order", "received_at", "id",
++            sqlite_where=text("processed_at IS NULL"), postgresql_where=text("processed_at IS NULL")),
++        Index("ix_product_client_cleanup", "received_at", "id",
++            sqlite_where=text("source='client' AND processed_at IS NOT NULL"),
++            postgresql_where=text("source='client' AND processed_at IS NOT NULL")),
++        Index("ix_product_server_compact", "received_at", "id",
++            sqlite_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false"),
++            postgresql_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false")))
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    client_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    player_id: Mapped[str] = mapped_column(String(36))
++    is_test_driver: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
++    source: Mapped[str] = mapped_column(String(8))
++    name: Mapped[str] = mapped_column(String(32))
++    occurred_at: Mapped[int] = mapped_column(Integer)
++    received_at: Mapped[int] = mapped_column(Integer)
++    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    install_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    monotonic_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    build_id: Mapped[str] = mapped_column(String(80), default="")
++    platform: Mapped[str] = mapped_column(String(12), default="")
++    clock_quality: Mapped[str] = mapped_column(String(16), default="unknown")
++    payload_hash: Mapped[str] = mapped_column(String(64))
++    properties: Mapped[dict] = mapped_column(JSON, default=dict)
++    processed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    compacted: Mapped[bool] = mapped_column(Boolean, default=False)
++
++
++class ProductPlayerDay(Base):
++    __tablename__ = "product_player_days"
++    day: Mapped[int] = mapped_column(Integer, primary_key=True)
++    player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    __table_args__ = (Index("ix_product_activity_player", "player_id", "day"),)
++
++
++class ProductMetric(Base):
++    __tablename__ = "product_metrics"
++    day: Mapped[int] = mapped_column(Integer, primary_key=True)
++    key: Mapped[str] = mapped_column(String(48), primary_key=True)
++    dimension: Mapped[str] = mapped_column(String(32), primary_key=True, default="")
++    value: Mapped[int] = mapped_column(Integer, default=0)
++
++
++class ProductProfile(Base):
++    __tablename__ = "product_profiles"
++    player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    first_activity_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    milestones: Mapped[list] = mapped_column(JSON, default=list)
++    projection: Mapped[dict] = mapped_column(JSON, default=dict)
++    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
++    quality: Mapped[dict] = mapped_column(JSON, default=dict)
++    truncations: Mapped[dict] = mapped_column(JSON, default=dict)
++
++
++class ProductState(Base):
++    __tablename__ = "product_state"
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    collection_started_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    processed_through: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    latest_receipt_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    observed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    pending_events: Mapped[int] = mapped_column(Integer, default=0)
++    processed_events: Mapped[int] = mapped_column(Integer, default=0)
++    truncated_profiles: Mapped[int] = mapped_column(Integer, default=0)
++    pending_clients: Mapped[int] = mapped_column(Integer, default=0)
++    pending_capped: Mapped[bool] = mapped_column(Boolean, default=False)
++    retained_from_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    fact_days: Mapped[int] = mapped_column(Integer, default=180)
++
++
++class ProductPublication(Base):
++    __tablename__ = "product_publications"
++    __table_args__ = (Index("ix_product_publication_age", "published_at"),)
++    version_id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    owner_id: Mapped[str] = mapped_column(String(36))
++    published_at: Mapped[int] = mapped_column(Integer)
++    observed: Mapped[bool] = mapped_column(Boolean, default=False)
++    first_external_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+diff --git a/backend/bmt_backend/track_models.py b/backend/bmt_backend/track_models.py
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -113,7 +113,9 @@
+ 
+ class Run(Base):
+     __tablename__ = "runs"
+-    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),)
++    __table_args__ = (Index("ix_run_claim", "status", "lease_until", "created_at"),
++                      Index("ix_run_board_player_id", "board_id", "player_id", "id"),
++                      Index("ix_run_board_id", "board_id", "id"))
+     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+     ticket_id: Mapped[str] = mapped_column(ForeignKey("run_tickets.id"), unique=True)
+     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
+@@ -260,3 +262,27 @@
+     invalidated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+     dirty: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+     payload: Mapped[dict] = mapped_column(JSON, default=dict)
++
++
++class LapPersonalBest(Base):
++    """Independent accepted flying-lap minimum; its source survives retention."""
++    __tablename__ = "lap_personal_bests"
++    __table_args__ = (CheckConstraint("time_ticks > 0"), CheckConstraint("lap_index BETWEEN 1 AND 4"),)
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
++    time_ticks: Mapped[int] = mapped_column(Integer)
++    lap_index: Mapped[int] = mapped_column(Integer)
++    achieved_at: Mapped[int] = mapped_column(Integer)
++    source_created_at: Mapped[int] = mapped_column(Integer)
++
++
++class LapBestState(Base):
++    """Bounded backfill cursor and irreversible artificial-record reset fence."""
++    __tablename__ = "lap_best_state"
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    cutoff: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    epoch: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    cursor: Mapped[str] = mapped_column(String(36), default="", server_default="")
++    complete: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
++    invalid_records: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+diff --git a/backend/bmt_backend/tracks.py b/backend/bmt_backend/tracks.py
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -376,8 +376,18 @@
+         raise HTTPException(409, "DRAFT_ARCHIVED")
+     consume_publication_slot(session, request.app.state.settings, entitlement, version,
+         official=session.get(Track, version.track_id).official)
++    first_publication = version.state != "published"
+     version.state = "published"
+     version.published_at = version.published_at or now()
++    if first_publication and getattr(request.app.state.settings, "telemetry_enabled", False):
++        from .telemetry import append_server_event
++        dimensions = {"track_version": version.id}
++        discovery = version.discovery or {}
++        biome = discovery.get("theme", discovery.get("biome"))
++        if biome:
++            dimensions["biome"] = biome
++        append_server_event(session, "track_published", version.id, player.id, dimensions,
++                            occurred_at=version.published_at, is_test_driver=player.is_test_driver)
+     session.flush()
+     return commit_response(session, player.id, scope, key, {}, _payload(request, session, version))
+ 
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -89,6 +89,9 @@
+             if validate_one(app):
+                 return True
+             if refresh_histograms:
++                from .lap_bests import backfill_one
++                if backfill_one(app.state.session_factory)["worked"]:
++                    return True
+                 from .histogram_snapshots import refresh_one as refresh_histogram
+                 if refresh_histogram(app):
+                     return True
+@@ -293,6 +296,20 @@
+                 .where(TrackVersion.id == version.id, TrackVersion.state == "draft")
+                 .values(state="tested", creator_test_run_id=run.id)
+             )
++        if getattr(settings, "telemetry_enabled", False):
++            from .telemetry import append_server_event
++            dimensions = {"track_version": version.id, "run_id": run.id, "ticket_id": run.ticket_id,
++                          "car_id": board.vehicle_id,
++                          "lap_count": len(run.lap_ticks)}
++            if version.published_at is not None:
++                dimensions.update(owner_id=track.owner_id, published_at=version.published_at)
++            discovery = version.discovery or {}
++            biome = discovery.get("theme", discovery.get("biome"))
++            if biome:
++                dimensions["biome"] = biome
++            append_server_event(session, "creator_validated" if creator_test else "race_accepted",
++                                run.id, run.player_id, dimensions, occurred_at=run.finished_at,
++                                is_test_driver=player.is_test_driver)
+         session.commit()
+         logger.info("verification_complete", extra={"run_id": run_id, "time_ticks": result["time_ticks"],
+             "worker_id": worker_id, "queue_wait_seconds": queue_wait,

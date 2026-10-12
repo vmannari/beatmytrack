@@ -1,0 +1,497 @@
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -15,7 +15,6 @@
+ var light: DirectionalLight3D
+ var base_light_energy: float = 0.5
+ var rng := RandomNumberGenerator.new()
+-var rain_audio: AudioStreamPlayer
+ var thunder_audio: AudioStreamPlayer
+ var lens_drops: Array[ColorRect] = []
+ var wet_glass_material: ShaderMaterial
+@@ -53,12 +52,6 @@
+ 	resized.connect(_update_lens)
+ 	_update_lens()
+ 	rng.randomize()
+-	rain_audio = AudioStreamPlayer.new()
+-	rain_audio.stream = preload("res://assets/audio/storm_rain.wav")
+-	rain_audio.volume_db = -24.0
+-	add_child(rain_audio)
+-	rain_audio.finished.connect(rain_audio.play)
+-	rain_audio.play()
+ 	thunder_audio = AudioStreamPlayer.new()
+ 	thunder_audio.stream = preload("res://assets/audio/storm_thunder.wav")
+ 	thunder_audio.volume_db = -12.0
+@@ -66,7 +59,6 @@
+ 	if light != null: base_light_energy = light.light_energy
+ 
+ func advance(delta: float, paused: bool) -> void:
+-	rain_audio.stream_paused = paused
+ 	thunder_audio.stream_paused = paused
+ 	if paused: return
+ 	elapsed = fmod(elapsed+delta,3600.0)
+@@ -225,6 +217,5 @@
+ 			newer = older
+ 
+ func _exit_tree() -> void:
+-	if is_instance_valid(rain_audio): rain_audio.stop()
+ 	if is_instance_valid(thunder_audio): thunder_audio.stop()
+ 	if is_instance_valid(light): light.light_energy = base_light_energy
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -236,7 +236,17 @@
+ 	# Desert replaces all tire/rolling beds immediately, including transition tails.
+ 	var tires_silent: bool = not grounded or desert
+ 	_layer("tire",asphalt*0.62,0.88+clampf(speed/46.0,0,1)*0.24,dt,tires_silent or surface_model.pavement==0.0 or surface_model.water>=1.0)
+-	_layer("road",rolling*0.13*surface_model.pavement,0.78+clampf(speed/46.0,0,1)*0.46,dt,tires_silent or surface_model.pavement==0.0)
++	# Wet asphalt is rolling contact, not a constant weather/spray bed.
++	# Reuse the road voice so wet driving does not increase the mixer budget.
++	var wet_road: bool = theme=="storm"
++	var road_player: AudioStreamPlayer = layers.road
++	var road_stream: AudioStreamWAV = _stream("wet_road" if wet_road else "road",true)
++	if road_player.stream != road_stream:
++		road_player.stream = road_stream
++		road_player.play()
++	var road_gain: float = movement*(0.10+smoothstep(0.4,42.0,speed)*0.24) if wet_road else rolling*0.13
++	var road_pitch: float = 0.84+clampf(speed/46.0,0.0,1.0)*0.30 if wet_road else 0.78+clampf(speed/46.0,0.0,1.0)*0.46
++	_layer("road",road_gain*surface_model.pavement,road_pitch,dt,tires_silent or surface_model.pavement==0.0 or speed<=0.4)
+ 	_layer("loose",movement*(0.10+rolling*0.25+scrub*0.15)*surface_model.gravel,0.82+clampf(speed/46.0,0,1)*0.28,dt,tires_silent or surface_model.gravel==0.0 or movement==0.0)
+ 	_layer("grass",movement*(0.12+rolling*0.30+scrub*0.14+surface_model.drive*0.08)*surface_model.grass,0.85+clampf(speed/46.0,0,1)*0.25,dt,tires_silent or surface_model.grass==0.0 or movement==0.0)
+ 	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain if desert else 1.0),sand_frequency*0.90 if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
+@@ -248,7 +258,7 @@
+ 		for player: AudioStreamPlayer in debris_events:
+ 			if player.playing: player.stop()
+ 	_present_grit(speed,rolling,scrub,dt,not desert and (sand_contact or surface_model.gravel>0.0))
+-	_layer("water",rolling*0.36*maxf(surface_model.water,1.0 if theme=="storm" else 0.0),0.9+clampf(speed/46.0,0,1)*0.2,dt,not grounded)
++	_layer("water",rolling*0.36*surface_model.water,0.9+clampf(speed/46.0,0,1)*0.2,dt,not grounded or surface_model.water==0.0 or speed<=0.4)
+ 	_layer("wind",smoothstep(10.0,46.0,speed)*0.14,1.0,dt,false)
+ 	impact_cooldown = maxf(0,impact_cooldown-dt)
+ 	chassis_cooldown = maxf(0,chassis_cooldown-dt)
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -188,12 +188,21 @@
+ noise = rng.normal(0,.1,RATE*4)
+ write("wind",filter_audio(noise,low=90,high=1600),[],rms=.07)
+ write("water",filter_audio(noise,low=500,high=6500),[],rms=.09)
++# Continuous wet tire hiss with recorded rolling texture underneath. No rain
++# droplets or periodic splash hits; a designed derivative, not a wet field recording.
++source = surface_sources["road"][0]
++road_texture = filter_audio(steady(read(source),6.0),low=180,high=4200)
++road_texture /= max(np.sqrt(np.mean(road_texture**2)),1e-8)
++wet_rng = np.random.default_rng(9102026)
++spray = filter_audio(wet_rng.normal(0,1,len(road_texture)),low=1100,high=5600)
++spray /= max(np.sqrt(np.mean(spray**2)),1e-8)
++write("wet_road",road_texture*.55+spray*.45,[source],rms=.13)
+ from surface_audio_mastering import render
+ previous_outputs = outputs[:]
+ outputs.clear()
+ render(read, steady, filter_audio, transpose, write, RATE)
+ replaced = {item["file"] for item in outputs}
+ outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
+-manifest = {"schema":"vehicle-audio-bank-v1","revision":"collision-direct-6","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+ (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+ print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/game/tests/test_vehicle_audio.gd b/game/tests/test_vehicle_audio.gd
+--- a/game/tests/test_vehicle_audio.gd
++++ b/game/tests/test_vehicle_audio.gd
+@@ -23,7 +23,7 @@
+ 	check(AudioServer.get_bus_effect(vehicle_bus,1) is AudioEffectHardLimiter,"vehicle peak ceiling installed")
+ 	check(AudioServer.get_bus_effect(0,0) is AudioEffectHardLimiter,"final output peak ceiling installed")
+ 	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(VehicleAudio.BANK+"manifest.json"))
+-	check(manifest.outputs.size()==46,"complete mastered bank including continuous desert underbody texture")
++	check(manifest.outputs.size()==47,"complete mastered bank including continuous desert texture and wet asphalt")
+ 	for clip: Dictionary in manifest.outputs:
+ 		var sample: AudioStreamWAV = load(VehicleAudio.BANK+str(clip.file))
+ 		check(sample.mix_rate==44100 and not sample.stereo and sample.format==AudioStreamWAV.FORMAT_16_BITS,"portable mono PCM: "+str(clip.file))
+@@ -97,7 +97,7 @@
+ 	check(float(audio.levels.sand)>0 and float(audio.levels.loose)==0 and float(audio.levels.tire)==0,"desert replaces tire/rolling noise with sand particles")
+ 	track.metadata.theme = "storm"
+ 	audio.present(state,control,track,0.1,false)
+-	check(float(audio.levels.water)>0,"wet road spray")
++	check(float(audio.levels.road)>0 and float(audio.levels.water)==0,"wet asphalt rolls without blanket weather spray")
+ 	var original_cells: PackedInt32Array = track.cells.duplicate()
+ 	track.cells.fill(6)
+ 	track.metadata.theme = "pine"
+diff --git a/game/tests/test_storm.gd b/game/tests/test_storm.gd
+--- a/game/tests/test_storm.gd
++++ b/game/tests/test_storm.gd
+@@ -175,7 +175,7 @@
+ 	var elapsed: float = weather.elapsed
+ 	var frozen_flash: float = weather.flash_strength()
+ 	weather.advance(10.0,true)
+-	check(weather.elapsed == elapsed and weather.rain_audio.stream_paused and not weather.thunder_audio.playing,"pause freezes weather and pending thunder")
++	check(weather.elapsed == elapsed and not weather.thunder_audio.playing and weather.thunder_count == 0,"pause freezes weather and pending thunder")
+ 	check(weather.flash_strength() == frozen_flash,"pause freezes the current lightning intensity")
+ 	if "--capture" in OS.get_cmdline_user_args():
+ 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/storm"))
+@@ -190,7 +190,7 @@
+ 	weather.advance(3.0,false)
+ 	check(weather.thunder_count == 1 and weather.thunder_audio.playing,"thunder actually starts after delay")
+ 	weather.advance(0.0,true)
+-	check(weather.rain_audio.stream_paused and weather.thunder_audio.stream_paused,"pause silences active rain and thunder")
++	check(weather.thunder_audio.stream_paused,"pause silences active thunder")
+ 	check(is_equal_approx(light.light_energy,weather.base_light_energy),"lightning restores overcast light")
+ 	check(race.sim.state.snapshot() == state_before,"weather never changes canonical car state")
+ 	if "--capture" in OS.get_cmdline_user_args():
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -68,3 +68,11 @@
+ Their first PCM frame is now the peak, with no quiet lead-in. Original
+ qubodup/Nox source attribution remains; other 43 clip hashes are unchanged.
+ Wind and water noise beds are original offline sound design.
++
++Wet asphalt correction, 2026-10-09: wet_road.wav blends filtered Nox CC0
++car-interior rolling with original sustained spray hiss. Mono resampling,
++filtering, crossfaded looping, loudness mastering and dither. This is a designed
++wet-tire derivative, not a dedicated wet-road field recording. The road voice
++follows speed and four-wheel asphalt contact; no continuous storm rain audio.
++Source/derivative filenames and SHA-256 values: manifest.json.
++All sources are local build inputs. The game makes no audio-generation/API calls.
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -1,6 +1,6 @@
+ {
+   "schema": "vehicle-audio-bank-v1",
+-  "revision": "collision-direct-6",
++  "revision": "wet-road-7",
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+@@ -620,6 +620,18 @@
+       "sha256": "b48a51956c09649f705751cffd638a6361efacded7bbdb986b9e0f4ba2aef507"
+     },
+     {
++      "file": "wet_road.wav",
++      "sources": [
++        "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 5.9,
++      "rms_dbfs": -17.721132953863265,
++      "peak_dbfs": -4.708356098982343,
++      "seam_step": 0.0654426392123542,
++      "sha256": "045eca8b451ebfc11f728aa5bdddefd1b59f1958631aff4306936745adaad687"
++    },
++    {
+       "file": "sand_roll.wav",
+       "sources": [
+         "gravel_drive_cc0.wav"
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; final database/import receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
++
++2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
+ 
+ 2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: missing results histograms diagnosed live: Underpass compact has100 verified artificial PBs, but client results-comparison endpoint404/absent OpenAPI. Exact-live-parent local three-module overlay built/imported; all112 canonical files byte-identical/no migration. Smoke API-contract guard plus tests added; SQLite9 and exact-packaged-module9/graphicalhist49/Ruff/scoped whitespace pass. Initial socket/certificate/WSL access, developer USERNAME_TAKEN and build import-path failures recorded/corrected. Earlier automatic approval rejection requires explicit development upload/rollout approval; no retry/cloud-service-image-schema/reseed/player-record/production change. Existing artificial diagnostic session only; no phone attachment/device test/export-install/PG/full Validate. Files/commands/evidence/scoped checkpoint/acceptance: docs/RESULTS_ENDPOINT_2026_10_09.md.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1376,6 +1376,11 @@
+ 2026-10-09 RW05-RW07/V03-V05/Q01: rewind resource correction shows banked count or ad icon for ordinary accounts and no resource badge for ad-free accounts, in both HUD and confirmation toolbar. Every race restart refreshes the wallet. Pinned graphical CaptureRewind70/zero failures; three HUD captures inspected. Restricted log/certificate attempts failed before successful local-access run with disposable workspace saves. No phone attachment/device test/export/install/live-account/full Validate/backend deployment. Files, commands, evidence and remaining acceptance: docs/REWIND.md (Rewind resource badge correction).
+ 
+ 
++## Storm wet-asphalt tire rolling, 2026-10-09
++
++2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
++
++
+ ## Challenge creation page and attempt limits, 2026-10-09
+ 
+ 2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; final database/import receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -140,3 +140,6 @@
+ Performed phrase-score recompose (2026-10-08): original authored MIDI melody/harmony/pulse, local Magenta RT2.0.3 performance, pitch-preserving retiming and complementary spectral/rhythmic derivatives of one clean used region. These are not isolated instrument stems. Model code is Apache2.0 and weights CC BY4.0; Google claims no rights in generated outputs under https://github.com/magenta/magenta-realtime/blob/main/MODEL.md. Model/weights are not shipped; no metered or runtime AI/API/new runtime dependency. No reference-game recordings/melodies/conditioning. Result/interface source credits retain cleared Karoryfer/VSCO CC0 provenance; full notices/manifests/source/output hashes retained. Raw opening peaks are excluded, all original/failed/rejected takes preserved; new menu PCM/guard and percussion seam processing documented. Shipping audio21,274,493 bytes. Artistic/theme-adherence and device acceptance remain pending; docs/PERFORMED_FLOW_SOUNDTRACK.md.
+ 
+ Windows collision output (2026-10-09): original native/windows_audio/impact.cpp, existing MIT Godot bindings e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77 and installed MinGW static compiler/thread runtimes. Final DLL SHA-256 CC10E916CA523F491F8CC9B818DB4E1A80C1252A962262C43937F467B8842822; system-only DLL imports. Supplied MIT/GCC runtime exception/MinGW/winpthreads notices under game/platform/windows must accompany future Windows packaging. Existing recorded sample provenance retained; Windows modules excluded from Android. No new source media, SDK/package download or external service. Actual checks and distribution limits: docs/WINDOWS_COLLISION_LATENCY.md.
++
++
++Storm wet tire correction (2026-10-09): `game/assets/audio/vehicles/wet_road.wav` is an offline blend of cleared Nox CC0 car-interior rolling and original sustained spray hiss, filtered/crossfaded/mastered/dithered by `scripts/build_vehicle_audio.py`. Designed wet-asphalt rolling, not a dedicated wet-road field recording. All46 prior WAV hashes retained, manifest/NOTICE updated; no new provider, purchase, runtime API or dependency. Ambient storm rain playback removed; original unused rain asset retained. Actual checks and listening samples: `docs/WET_ROAD_AUDIO.md`.
+diff --git a/game/tests/test_wet_road_audio.gd b/game/tests/test_wet_road_audio.gd
+--- /dev/null
++++ b/game/tests/test_wet_road_audio.gd
+@@ -0,0 +1,121 @@
++extends SceneTree
++## Wet rolling follows speed/material, with lifecycle guards and optional native PCM.
++const OUT: String = "res://../docs/evidence/wet-road-audio-2026-10-09"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	track.metadata.theme = "storm"
++	track.cells.fill(0)
++	var audio := VehicleAudio.new()
++	audio.use_windows_impacts = false
++	root.add_child(audio)
++	audio.configure("compact",VehicleCatalog.config("compact"))
++	var state := VehicleState.new()
++	state.position = track.spawn
++	var pedal := DriveFrame.sample(0,1,0)
++	var road: AudioStreamPlayer = audio.layers.road
++	var previous_gain: float = 0.0
++	var previous_pitch: float = 0.0
++	for speed: float in [4.0,12.0,24.0,40.0]:
++		audio.reset()
++		state.velocity = Vector2(0,speed)
++		var snapshot: Array = state.snapshot()
++		for tick: int in range(30): audio.present(state,pedal,track,0.05,false)
++		check(state.snapshot()==snapshot,"presentation preserves canonical state at "+str(speed))
++		check(float(audio.levels.road)>previous_gain,"rolling gain increases at "+str(speed))
++		check(road.pitch_scale>previous_pitch and road.pitch_scale<=1.14,"bounded speed texture at "+str(speed))
++		check(road.stream==audio.streams.wet_road,"wet derivative uses existing road voice")
++		check(float(audio.levels.water)==0.0,"no weather-wide spray")
++		previous_gain = float(audio.levels.road)
++		previous_pitch = road.pitch_scale
++	state.velocity = Vector2.ZERO
++	audio.present(state,pedal,track,0.05,false)
++	check(float(audio.levels.road)==0 and road.volume_linear==0,"stationary asphalt immediately silent despite throttle")
++	state.velocity = Vector2(0,-24)
++	audio.present(state,pedal,track,0.1,false)
++	check(float(audio.levels.road)>0,"reverse rolls on wet asphalt")
++	state.jump_height = 1
++	audio.present(state,pedal,track,0.05,false)
++	check(float(audio.levels.road)==0 and float(audio.levels.water)==0,"airborne tire contact immediately silent")
++	state.jump_height = 0
++	state.roll_ticks = 10
++	audio.present(state,pedal,track,0.05,false)
++	check(float(audio.levels.road)==0,"rolling car has no grounded tire bed")
++	state.roll_ticks = 0
++	track.cells.fill(1)
++	audio.present(state,pedal,track,0.05,false)
++	check(float(audio.levels.road)==0 and float(audio.levels.water)==0 and float(audio.levels.grass)>0,"storm grass has grass contact, no asphalt or blanket spray")
++	track.cells.fill(6)
++	audio.present(state,pedal,track,0.05,false)
++	check(float(audio.levels.road)==0 and float(audio.levels.water)>0,"puddles retain actual water contact")
++	track.cells.fill(0)
++	audio.present(state,pedal,track,0.05,false,true)
++	check(float(audio.levels.road)==0 and float(audio.levels.water)==0,"countdown suppresses road and puddle motion")
++	audio.present(state,pedal,track,0.05,false)
++	var cursor: AudioStream = road.stream
++	audio.present(state,pedal,track,0.05,true)
++	check(road.stream_paused and road.stream==cursor,"pause suspends rolling playback")
++	audio.reset()
++	check(float(audio.levels.road)==0 and not road.stream_paused,"retry clears levels and unpauses")
++	track.metadata.theme = "pine"
++	audio.present(state,pedal,track,0.1,false)
++	check(road.stream==audio.streams.road,"dry asphalt restores dry recording")
++	track.metadata.theme = "storm"
++	audio.present(state,pedal,track,0.1,false)
++	check(audio.get_child_count()==22,"wet rolling adds no playback voices")
++	var weather := StormWeather.new()
++	root.add_child(weather)
++	var weather_voices: int = 0
++	for child: Node in weather.get_children():
++		if child is AudioStreamPlayer:
++			weather_voices += 1
++			check(child==weather.thunder_audio,"weather contains only the requested thunder voice")
++	check(weather_voices==1,"storm has no ambient rain player")
++	weather.free()
++	if "--capture" in OS.get_cmdline_user_args():
++		check(DisplayServer.get_name()!="headless","native capture uses audio driver")
++		if DisplayServer.get_name()!="headless": await capture(audio,state,pedal,track)
++	audio.free()
++	await create_timer(0.15).timeout
++	print("WET_ROAD_AUDIO: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
++
++func capture(audio: VehicleAudio, state: VehicleState, pedal: DriveFrame, track: NativeTrack) -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var bus: int = AudioServer.get_bus_count()
++	AudioServer.add_bus()
++	AudioServer.set_bus_name(bus,"WetRoadReview")
++	AudioServer.set_bus_send(bus,"Tires")
++	var record := AudioEffectRecord.new()
++	record.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,record)
++	(audio.layers.road as AudioStreamPlayer).bus = "WetRoadReview"
++	var rows: Array[Dictionary] = []
++	for scene: String in ["slow","medium","fast","stopped","airborne","paused"]:
++		state.velocity = Vector2(0,4 if scene=="slow" else 16 if scene=="medium" else 40)
++		if scene=="stopped": state.velocity = Vector2.ZERO
++		state.jump_height = 1 if scene=="airborne" else 0
++		for tick: int in range(30): audio.present(state,pedal,track,0.05,scene=="paused")
++		await create_timer(0.20).timeout
++		record.set_recording_active(true)
++		await create_timer(2.5).timeout
++		record.set_recording_active(false)
++		var sample: AudioStreamWAV = record.get_recording()
++		check(sample.save_to_wav(OUT.path_join(scene+".wav"))==OK,"native rolling PCM: "+scene)
++		rows.append({"scene":scene,"speed_mps":state.velocity.length(),"gain":audio.levels.road,"pitch":(audio.layers.road as AudioStreamPlayer).pitch_scale,"rate":sample.mix_rate})
++	var report := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(rows,"\t")+"\n")
++	report.close()
++	(audio.layers.road as AudioStreamPlayer).bus = "Tires"
++	AudioServer.remove_bus(bus)
+diff --git a/game/tests/test_wet_road_audio.gd.uid b/game/tests/test_wet_road_audio.gd.uid
+--- /dev/null
++++ b/game/tests/test_wet_road_audio.gd.uid
+@@ -0,0 +1 @@
++uid://crh3h71ykspyx
+diff --git a/game/assets/audio/vehicles/wet_road.wav.import b/game/assets/audio/vehicles/wet_road.wav.import
+--- /dev/null
++++ b/game/assets/audio/vehicles/wet_road.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://wmgvx8f5krnc"
++path="res://.godot/imported/wet_road.wav-62eb65bbabac8a2ba41ac1afcea236a6.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/wet_road.wav"
++dest_files=["res://.godot/imported/wet_road.wav-62eb65bbabac8a2ba41ac1afcea236a6.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/scripts/review_wet_road_audio.py b/scripts/review_wet_road_audio.py
+--- /dev/null
++++ b/scripts/review_wet_road_audio.py
+@@ -0,0 +1,45 @@
++"""Review actual native wet rolling PCM, silence and unchanged existing masters."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/wet-road-audio-2026-10-09"
++BANK = ROOT / "game/assets/audio/vehicles"
++report = {"captures": [], "preserved_masters": [], "failures": []}
++previous = json.loads((ROOT / "docs/evidence/collision-attack-2026-10-08/before/game/assets/audio/vehicles/manifest.json").read_text())
++expected = {row["file"]: row["sha256"] for row in previous["outputs"]}
++# Those three impacts changed in the already-completed attack correction.
++onsets = json.loads((ROOT / "docs/evidence/collision-onset-audit-2026-10-09/source-onsets.json").read_text())
++expected.update({row["file"]: row["sha256"] for row in onsets["rows"]})
++for name, digest in expected.items():
++    actual = hashlib.sha256((BANK / name).read_bytes()).hexdigest()
++    report["preserved_masters"].append({"file": name, "sha256": actual, "matches": actual == digest})
++    if actual != digest:
++        report["failures"].append("Existing master changed: " + name)
++for name in ["slow", "medium", "fast", "stopped", "airborne", "paused"]:
++    with wave.open(str(OUT / (name + ".wav"))) as handle:
++        rate = handle.getframerate()
++        channels = handle.getnchannels()
++        pcm = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2").astype(np.float64) / 32768.0
++    # Avoid only the record start/stop boundaries, not any interior quiet periods.
++    trimmed = pcm[round(rate * channels * .1):-round(rate * channels * .1)]
++    rms = float(np.sqrt(np.mean(trimmed ** 2)))
++    peak = float(np.max(np.abs(trimmed)))
++    report["captures"].append({"scene": name, "rms": rms, "rms_dbfs": 20 * math.log10(max(rms, 1e-9)), "peak": peak})
++    if name in ["stopped", "airborne", "paused"]:
++        if peak != 0:
++            report["failures"].append("Contact should be exactly silent: " + name)
++    elif rms < .001 or peak >= .95:
++        report["failures"].append("Moving rolling must be audible with headroom: " + name)
++gains = [row["rms"] for row in report["captures"][:3]]
++if not gains[0] < gains[1] < gains[2]:
++    report["failures"].append("Native rolling RMS must increase with speed")
++(OUT / "review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++cards = "".join(f'<article><h2>{name.title()}</h2><audio controls preload="metadata" src="{name}.wav"></audio></article>' for name in ["slow", "medium", "fast", "stopped", "airborne", "paused"])
++(OUT / "review.html").write_text('<!doctype html><meta charset="utf-8"><title>Wet asphalt rolling review</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}h2{margin:0 0 10px}audio{width:100%}</style><h1>Wet asphalt rolling</h1><p>Isolated native road voice: 14.4, 57.6 and 144 km/h, followed by stopped, airborne and paused. Engine and other sounds are excluded from these listening samples.</p>' + cards, encoding="utf-8")
++print(json.dumps({"native_levels": report["captures"], "preserved_masters": len(expected), "failures": report["failures"]}, indent=2))
++raise SystemExit(bool(report["failures"]))
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- /dev/null
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -0,0 +1,68 @@
++# Storm wet-asphalt tire rolling, 2026-10-09
++
++The owner removes storm rain audio and requests tire rolling on wet asphalt
++that follows speed. SND19 implements this correction to SND04/SND05, with
++G01/R01/Q01/V06 presentation and canonical-state checks.
++
++`StormWeather` now creates only its occasional thunder voice. Visual weather,
++lightning and delayed thunder remain. The old rain WAV is retained as an unused
++historical asset; no runtime code loads or plays it.
++
++The existing road voice selects `wet_road.wav` in Storm. Four-wheel pavement
++coverage controls its mix. Gain increases through the driving-speed range;
++pitch stays bounded at 0.84–1.14. At rest, airborne, overturned, off asphalt and
++during countdown, road contact is immediately silent. Pause suspends playback;
++retry/rewind reset existing mixer state. Puddle spray uses actual water contact,
++including retained tire water, instead of a biome-wide maximum. Normal grass,
++sand and dry asphalt still select their established layers. No additional
++playback voices, physics/rules changes, UI labels or runtime dependencies.
++
++The new 5.9-second loop is offline sound design: filtered Nox CC0 car-interior
++rolling plus original sustained spray hiss. It is not a dedicated wet-road field
++recording. The builder, shipped notice and manifest retain provenance. The bank
++now contains 47 clips/10,786,852 bytes; all 46 existing WAVs match historical
++manifest hashes plus the subsequent three-impact onset audit. Looping voices
++remain bounded at 22 per race, with one fewer weather voice.
++
++Changed files: `game/track/storm_weather.gd`,
++`game/vehicle/vehicle_audio.gd`, `scripts/build_vehicle_audio.py`,
++`game/assets/audio/vehicles/{wet_road.wav,wet_road.wav.import,manifest.json,NOTICE.txt}`,
++`game/tests/{test_vehicle_audio.gd,test_storm.gd,test_wet_road_audio.gd,test_wet_road_audio.gd.uid}`,
++`scripts/review_wet_road_audio.py`, this document, `licenses/ASSETS.md`,
++`DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File
++scripts/dev.ps1` and pinned 4.7.2.stable.official.ed1daf0bf.
++
++| Actual command suffix / command | Actual outcome |
++| --- | --- |
++| `python scripts/build_vehicle_audio.py` | 47 clips; peak ceiling -1.514 dBFS. |
++| `Import` | Exit 0 with local Windows access. Restricted initial run could not read the Windows certificate store and was stopped; approved retry succeeds. |
++| `TestScript -ScriptPath res://tests/test_wet_road_audio.gd` | 33 checks, 0 failures. |
++| `TestScript -ScriptPath res://tests/test_wet_road_audio.gd -Graphical -TestArgument @('--capture')` via PowerShell `-Command` | 40 checks, 0 failures; six actual 48 kHz native PCM captures. Initial `-File` argument spelling failed before engine execution. |
++| `TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | 1,446 checks, 0 failures, including exact 960-tick canonical equivalence and bank hashes. |
++| `TestScript -ScriptPath res://tests/test_surface_impact_audio.gd` | 67 checks, 0 failures; exit 0 after delayed shutdown. An attempted narrowly scoped cleanup found no matching owned process and stopped nothing. |
++| `TestScript -ScriptPath res://tests/test_continuous_desert_audio.gd` | 28 checks, 0 failures; exit 0. |
++| `TestScript -ScriptPath res://tests/test_storm.gd` | 94 checks, 2 pre-existing visual spray failures, identical messages to `docs/evidence/verification-speed-2026-10-09/storm-validation-failure.log`. Weather/pause/thunder assertions pass. Initial adaptation queried paused state on an inactive thunder stream; corrected to test unchanged weather clock/no thunder start/count, with the separate active-thunder pause check retained. |
++| `python scripts/test_vehicle_audio_continuity.py --report docs/evidence/wet-road-audio-2026-10-09/continuity.json` | 40 looped assets including repeated wrap boundaries, 0 failures. |
++| `python scripts/review_wet_road_audio.py` | Six native captures, all 46 earlier masters unchanged, 0 failures. |
++
++Native isolated rolling RMS at 14.4/57.6/144 km/h is -37.42/-32.58/-27.44 dBFS;
++stopped/airborne/paused PCM is exactly zero. Audio measurements verify behavior
++and continuity, not owner approval of realism or the full game mix. Listening
++samples: [review.html](evidence/wet-road-audio-2026-10-09/review.html).
++Reports and the scoped review patch remain in the same evidence directory.
++The text patch passes `git -c core.autocrlf=false apply --reverse --check
++--ignore-space-change docs/evidence/wet-road-audio-2026-10-09/task-review.patch`.
++Default Git whitespace handling initially rejected CRLF working files; no
++runtime files were changed by either read-only patch check. The new WAV is
++stored separately and pinned by `checkpoint-files.json` and the bank manifest.
++The before-source files are reconstructed by reversing this task's edits because
++the initial backup command failed; PCM preservation is checked independently
++against the earlier saved manifest and onset audit. Existing workspace edits
++are preserved; the review patch stages no unrelated work.
++
++No phone attachment check or physical-device listening/performance test,
++Android export/install, full Validate, physics merge or deployment was performed.
++Remaining acceptance: owner listening to texture/balance in normal storm driving
++and on the target device. The two existing visual spray failures remain open.

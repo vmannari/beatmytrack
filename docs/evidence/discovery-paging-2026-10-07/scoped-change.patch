@@ -1,0 +1,2022 @@
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -18,7 +18,7 @@
+ 
+ 
+ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
+-    from . import admin, admin_commerce, browser_auth, commerce, resumes, rivalry, runs, test_drivers, tracks
++    from . import admin, admin_commerce, browser_auth, commerce, discovery, resumes, rivalry, runs, test_drivers, tracks
+     from .verifier import GodotVerifier
+ 
+     settings = settings or Settings.from_env()
+@@ -54,6 +54,9 @@
+     app.include_router(auth.router, prefix="/v1")
+     app.include_router(browser_auth.router, prefix="/v1")
+     app.include_router(tracks.router, prefix="/v1")
++    app.include_router(discovery.router, prefix="/v1")
++    app.state.discovery_memory = __import__("collections").OrderedDict()
++    app.state.discovery_lock = __import__("threading").RLock()
+     app.include_router(runs.router, prefix="/v1")
+     app.include_router(resumes.router, prefix="/v1")
+     app.include_router(commerce.router, prefix="/v1")
+@@ -114,6 +117,7 @@
+             "rewind_policy": "rewind-1",
+             "verification": "canonical-replay",
+             "track_lifecycle_version": 1,
++            "discovery_paging_version": 2,
+             "max_request_bytes": settings.max_body_bytes,
+             "upload_encodings": ["identity", "gzip"] if settings.transport_profile == "compact" else ["identity"],
+             "replay_wire_schema": "bmt-packed-input-v1" if settings.transport_profile == "compact" else None,
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -216,7 +216,7 @@
+                 category = (
+                     "auth_session" if token_auth else "auth"
+                     if scope["path"].startswith("/v1/auth/")
+-                    else ("read" if method in ("GET", "HEAD") else "write")
++                    else ("read" if method in ("GET", "HEAD") or scope["path"] in ("/v1/discovery/tracks", "/v1/discovery/random") else "write")
+                 )
+                 # Carrier NATs share only a generous abuse ceiling. Authenticated
+                 # players spend their own budget after session validation.
+@@ -244,7 +244,7 @@
+                 if not allowed:
+                     return await error(429, "RATE_LIMITED")
+             path = scope["path"]
+-            limit = min(self.settings.max_body_bytes, 8*1024*1024 if path == "/v1/runs" else
++            limit = min(self.settings.max_body_bytes, 8*1024*1024 if path in ("/v1/runs", "/v1/discovery/tracks", "/v1/discovery/random") else
+                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
+             upload = method in ("POST", "PUT", "PATCH") and limit > 32768
+             encoding = headers.get(b"content-encoding", b"identity")
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -4,6 +4,7 @@
+ from bmt_backend import (  # noqa: F401
+     admin_models,
+     commerce_models,
++    discovery,
+     identity_models,
+     object_models,
+     resume_models,
+--- a/backend/bmt_backend/security.py
++++ b/backend/bmt_backend/security.py
+@@ -100,7 +100,7 @@
+     # Saturated replicas must never require a nested second connection.
+     session.commit()
+     if not getattr(request.state, "player_budget_checked", False):
+-        read = request.method in ("GET", "HEAD")
++        read = request.method in ("GET", "HEAD") or request.url.path in ("/v1/discovery/tracks", "/v1/discovery/random")
+         limit = request.app.state.settings.rate_limit_per_minute if read else request.app.state.settings.write_limit_per_minute
+         cost = 4 if request.url.path == "/v1/runs" else 2 if request.url.path == "/v1/tracks" else 1
+         if not request.app.state.identity_budgets.allow(player.id, "player_read" if read else "player_write", limit, 1 if read else cost, session=session):
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -46,6 +46,11 @@
+ 
+ func request_public(path: String, owner_id: int) -> Dictionary:
+ 	return await _send(path,HTTPClient.METHOD_GET,{},false,"",PackedStringArray(),owner_id)
++
++func request_discovery(payload: Dictionary, owner_id: int, random_choice: bool = false) -> Dictionary:
++	var path: String = "/discovery/random" if random_choice else "/discovery/tracks"
++	if payload.get("section","all") == "saved": return await request_api(path,HTTPClient.METHOD_POST,payload,"",true)
++	return _checked(await _send(path,HTTPClient.METHOD_POST,payload,false,"",PackedStringArray(),owner_id),path,HTTPClient.METHOD_POST)
+ 
+ func base_url() -> String:
+ 	return _base_url
+@@ -316,7 +321,7 @@
+ 		var failed: Dictionary = _failure("REQUEST_START_FAILED")
+ 		failed.not_delivered = true
+ 		return failed
+-	if method == HTTPClient.METHOD_GET and owner_id != 0:
++	if owner_id != 0 and (method == HTTPClient.METHOD_GET or path.begins_with("/discovery/")):
+ 		request.set_meta("owner_id",owner_id)
+ 		_public_reads.append(request)
+ 	var completed: Array = await request.request_completed
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -21,6 +21,11 @@
+ var _snapshot_entries: Array[Dictionary] = []
+ var _catalog_serial: int = 0
+ const MAX_CATALOG_ENTRIES: int = 1000
++var discovery_pages: Node
++var _discovery_filters: Dictionary = {}
++var _discovery_favorites: Array = []
++var _discovery_raced: Array = []
++var _publication_pin: Dictionary = {}
+ var _recovered_outboxes: Dictionary = {}
+ var _pending_iterators: Dictionary = {}
+ var result_saves: Node
+@@ -183,6 +188,13 @@
+ 	return ok and DirAccess.rename_absolute(path+".tmp",path) == OK
+ 
+ func load_cached() -> void:
++	if is_instance_valid(discovery_pages):
++		discovery_pages.generation += 1
++		discovery_pages.query_key = ""
++		discovery_pages.total = -1
++		discovery_pages.pages.clear()
++		client.cancel_public_reads(discovery_pages.get_instance_id())
++	_publication_pin.clear()
+ 	_catalog_serial += 1
+ 	_search_serial += 1
+ 	catalog_url = str(client.base_url())
+@@ -211,6 +223,9 @@
+ 	return version.length() == 36 and version.replace("-","").is_valid_hex_number(false) and hash_value.length() == 64 and hash_value.is_valid_hex_number(false) and item.get("points") is Array
+ 
+ func refresh(force: bool = false) -> void:
++	if paged_discovery_available():
++		await query_discovery(_discovery_filters,_discovery_favorites,_discovery_raced,force)
++		return
+ 	if refreshing: return
+ 	if not force and Time.get_ticks_msec()-last_refresh_msec < 60000: return
+ 	last_refresh_msec = Time.get_ticks_msec()
+@@ -263,12 +278,22 @@
+ 	changed.emit()
+ 
+ func load_more() -> void:
++	if paged_discovery_available():
++		_ensure_discovery_pages()
++		var numbers: Array = discovery_pages.pages.keys()
++		var page: int = 0 if numbers.is_empty() else int(numbers.max())+1
++		if page*20 < int(discovery_pages.total): await discovery_pages._fetch(page)
++		return
+ 	if refreshing or _search_loading: return
+ 	if not _search_filters.is_empty():
+ 		if not _search_cursor.is_empty(): search(_search_filters,true)
+ 	elif not next_cursor.is_empty(): refresh(true)
+ 
+ func search(filters: Dictionary, append: bool = false) -> void:
++	if paged_discovery_available():
++		if append: await load_more()
++		else: await query_discovery(filters,_discovery_favorites,_discovery_raced)
++		return
+ 	_search_loading = true
+ 	_search_filters = filters.duplicate(true)
+ 	if not append: _search_cursor = ""
+@@ -291,6 +316,7 @@
+ 		entries = entries.filter(func(old: Dictionary) -> bool: return old.track_id != item.track_id)
+ 		entries.append(item)
+ 	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
++	_search_cursor = "" if response.data.get("next_cursor") == null else str(response.data.next_cursor)
+ 	_write(cache_root().path_join("index.json"),{"entries":entries})
+ 	status = "Cloud matches loaded"+(" Â· narrow your search for more" if response.data.get("next_cursor") != null else "")
+ 	changed.emit()
+@@ -307,11 +333,13 @@
+ 	return _write(directory.path_join(identity.sha256_text()+".json"),metadata) and _write(directory.path_join(("cloud_"+str(metadata.version_id)).sha256_text()+".json"),{"alias":identity})
+ 
+ func add_to_catalog(catalog: TrackCatalog, discovery: TrackDiscoveryProvider = null, retained: Array = []) -> void:
++	catalog.server_ordered = paged_discovery_available() and is_instance_valid(discovery_pages) and discovery_pages.total >= 0
+ 	catalog.entries = catalog.entries.filter(func(item: Dictionary) -> bool: return item.source != "cloud")
+ 	var available: Array[Dictionary] = entries.duplicate()
+ 	var known: Dictionary = {}
+ 	for item: Dictionary in available: known["cloud_"+str(item.track_id)] = true
+ 	for identity: Variant in retained:
++		if catalog.server_ordered: break # Collections are queried globally; do not scan every favorite file per page.
+ 		if known.has(str(identity)): continue
+ 		var saved: Dictionary = retained_entry(str(identity))
+ 		if saved.is_empty() or known.has(str(saved.id)): continue
+@@ -328,7 +356,13 @@
+ 		catalog.entries.append(entry)
+ 		if discovery != null:
+ 			discovery.track_stats[entry.id] = {"score":float(item.rating_average) if item.rating_average != null else -1.0,"new":true}
++			if item.has("verified_finishers"): discovery.track_stats[entry.id].plays = int(item.verified_finishers)
+ 	if discovery != null: discovery.available = true
++	if discovery != null and catalog.server_ordered:
++		var active: Dictionary = {}
++		for entry: Dictionary in catalog.entries: active[str(entry.id)] = true
++		for identity: Variant in discovery.track_stats.keys():
++			if str(identity).begins_with("cloud_") and not active.has(str(identity)): discovery.track_stats.erase(identity)
+ 
+ func entry_from_metadata(metadata: Dictionary) -> Dictionary:
+ 	var entry: Dictionary = metadata.duplicate(true)
+@@ -342,6 +376,14 @@
+ 
+ func remember_publication(metadata: Dictionary) -> bool:
+ 	if not _retain_metadata(metadata): return false
++	_publication_pin = metadata.duplicate(true)
++	_publication_pin.discovery_index = 0
++	if is_instance_valid(discovery_pages):
++		discovery_pages.generation += 1
++		discovery_pages.query_key = ""
++		discovery_pages.total = -1
++		discovery_pages.pages.clear()
++		client.cancel_public_reads(discovery_pages.get_instance_id())
+ 	# An older paginated snapshot cannot contain this newly committed revision.
+ 	# Fence outstanding reads and start the next refresh at the newest page.
+ 	_catalog_serial += 1
+@@ -359,6 +401,39 @@
+ 	_remember_aliases()
+ 	changed.emit()
+ 	return true
++
++func paged_discovery_available() -> bool:
++	return client != null and int(client.get("_capabilities").get("discovery_paging_version",0)) >= 2
++
++func _ensure_discovery_pages() -> void:
++	if is_instance_valid(discovery_pages): return
++	discovery_pages = preload("res://backend/discovery_pages.gd").new()
++	discovery_pages.client = client
++	add_child(discovery_pages)
++	discovery_pages.changed.connect(_discovery_changed)
++
++func query_discovery(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
++	_discovery_filters = filters.duplicate(true)
++	_discovery_favorites = favorites.duplicate()
++	_discovery_raced = raced.duplicate()
++	if not paged_discovery_available():
++		await search(filters)
++		return
++	_ensure_discovery_pages()
++	if not _publication_pin.is_empty(): discovery_pages.locate_version = str(_publication_pin.version_id)
++	await discovery_pages.begin(filters,favorites,raced,fresh or not _publication_pin.is_empty())
++
++func _discovery_changed() -> void:
++	entries = discovery_pages.entries()
++	if not _publication_pin.is_empty():
++		if not discovery_pages.loading and discovery_pages.total >= 0 and discovery_pages.error.is_empty(): _publication_pin.clear()
++		else: entries.append(_publication_pin)
++	refreshing = discovery_pages.loading
++	status = discovery_pages.error if not discovery_pages.error.is_empty() else ("Loading tracksâ€¦" if refreshing else "%d tracks" % maxi(0,int(discovery_pages.total)))
++	if not refreshing and discovery_pages.total >= 0:
++		# Persist only the first page for fast reopening; distant pages are reloadable.
++		if discovery_pages.pages.has(0): _write(cache_root().path_join("index.json"),{"entries":discovery_pages.pages[0].items})
++	changed.emit()
+ 
+ func _remember_aliases() -> void:
+ 	var path: String = cache_root().path_join("aliases.json")
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2958,6 +2958,7 @@
+ 	# Previous search/feed filters must not hide the track just published.
+ 	browser_state.clear()
+ 	browser_state.focus_track = "cloud_"+str(receipt.track_id)
++	if cloud.paged_discovery_available(): browser_state.feed = "new"
+ 	race_area_mode = "free"
+ 	_show_screen("tracks")
+ 
+--- a/game/tests/analyse_discovery_scale.gd
++++ b/game/tests/analyse_discovery_scale.gd
+@@ -95,15 +95,15 @@
+ 	observations.search_loaded_records = search_cloud.entries.size()
+ 	observations.search_requests_after_load_more = search_client.search_requests
+ 	observations.saved_search_cursor = search_cloud._search_cursor
+-	check(search_cloud.entries.size() == 20 and search_client.search_requests == 1,"server search continuation is not stored; load_more performs no second request")
++	check(search_cloud.entries.size() == 40 and search_client.search_requests == 2,"legacy search now stores and follows server continuation")
+ 	var random_pool: Array[Dictionary] = discovery.query(catalog,{},[])
+ 	observations.random_loaded_candidates_before_resync = random_pool.size()
+ 	cloud.add_to_catalog(catalog,discovery)
+ 	observations.discovery_stat_records_after_resync = discovery.track_stats.size()
+ 	print("DISCOVERY_SCALE_OBSERVATIONS: "+JSON.stringify(observations))
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-scale-2026-10-07")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-paging-2026-10-07")
+ 	DirAccess.make_dir_recursive_absolute(output)
+-	var file := FileAccess.open(output.path_join("observations.json"),FileAccess.WRITE)
++	var file := FileAccess.open(output.path_join("legacy-after-paging.json"),FileAccess.WRITE)
+ 	check(file != null,"analysis output opens inside workspace")
+ 	if file != null:
+ 		file.store_string(JSON.stringify({"observations":observations,"checks":checks,"failures":failures},"\t"))
+--- a/game/tests/test_track_lifecycle.gd
++++ b/game/tests/test_track_lifecycle.gd
+@@ -87,6 +87,8 @@
+ 	var client := LostResponseClient.new()
+ 	root.add_child(client)
+ 	client.configure(OS.get_environment("BMT_API_URL"))
++	var bootstrap: Dictionary = await client.request_api("/bootstrap")
++	check(bootstrap.ok and int(bootstrap.data.get("discovery_paging_version",0)) == 2,"publication integration negotiates stable discovery pages")
+ 	var login: Dictionary = await client.development_login("lifecycle-creator","Lifecycle Creator",OS.get_environment("BMT_DEV_AUTH_KEY"))
+ 	check(login.ok,"creator signs in")
+ 	var initial_slots: Dictionary = await client.request_api("/me/entitlements",HTTPClient.METHOD_GET,{},"",true)
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -22,6 +22,7 @@
+ var detail: VBoxContainer
+ var count_label: Label
+ var random_button: Button
++var refresh_button: Button
+ var discovery := TrackDiscoveryProvider.new()
+ var race_button: Button
+ var loading: bool = true
+@@ -142,22 +143,24 @@
+ 	filter_dialog.catalog = catalog
+ 	filter_dialog.discovery = discovery
+ 	filter_dialog.records = records
++	filter_dialog.server_feeds = cloud != null and cloud.paged_discovery_available()
+ 	add_child(filter_dialog)
+ 	filter_dialog.applied.connect(func(filters: Dictionary) -> void:
+ 		state.merge(filters,true)
+ 		_refresh()
+-		if cloud != null: cloud.search(state))
++		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
+ 	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
+ 	search_dialog = SearchDrawer.new()
+ 	search_dialog.catalog = catalog
+ 	search_dialog.discovery = discovery
+ 	search_dialog.records = records
++	search_dialog.cloud = cloud
+ 	add_child(search_dialog)
+ 	search_dialog.applied.connect(func(search: Dictionary) -> void:
+ 		state.merge(search,true)
+ 		state.page = 0
+ 		_refresh()
+-		if cloud != null: cloud.search(state))
++		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
+ 	search_dialog.selected.connect(_select)
+ 	search_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
+ 	if cloud != null:
+@@ -190,7 +193,7 @@
+ 		_refresh()
+ 		_show_detail()
+ 		_random_on_open()
+-		if cloud != null: cloud.refresh()
++		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 		return
+ 	loading = true
+ 	catalog.clear_resolved()
+@@ -207,7 +210,7 @@
+ 		_refresh()
+ 		_show_detail()
+ 		_random_on_open()
+-		cloud.refresh()
++		cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 		return
+ 	for index: int in range(builtin_ids.size()):
+ 		catalog.add_builtin(builtin_ids[index])
+@@ -231,7 +234,7 @@
+ 	catalog.indexed_revision = revision
+ 	_refresh()
+ 	_random_on_open()
+-	if cloud != null: cloud.refresh()
++	if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 
+ func activate_page() -> void:
+ 	if not page_preview: return
+@@ -247,11 +250,12 @@
+ 			_show_detail()
+ 			_page_dirty = false
+ 		_random_on_open()
+-		if cloud != null: cloud.refresh()
++		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 
+ func _sync_cloud_catalog() -> bool:
+ 	if cloud == null: return false
+ 	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
++	if cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages): current.append([cloud.discovery_pages.total,cloud.discovery_pages.generation,cloud.discovery_pages.loading])
+ 	if current == _cloud_catalog_state: return false
+ 	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+ 	_cloud_catalog_state = current.duplicate(true)
+@@ -264,6 +268,7 @@
+ 	if is_instance_valid(cloud_status): cloud_status.text = cloud.status
+ 	if not _sync_cloud_catalog(): return
+ 	_refresh()
++	_random_on_open()
+ 	if not selecting:
+ 		for entry: Dictionary in catalog.entries:
+ 			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
+@@ -273,18 +278,21 @@
+ 
+ func _selected_is_available() -> bool:
+ 	if cloud == null: return true
++	if cloud.paged_discovery_available() and selected_track.metadata.has("cloud_version"):
++		return not cloud.retained_entry(selected_track.identity).is_empty()
+ 	return selected_track.metadata.has("cloud_version") and catalog.entries.any(func(entry: Dictionary) -> bool: return str(entry.id) == selected_track.identity)
+ 
+ func _random_on_open() -> void:
+ 	var focus_id: String = str(state.get("focus_track",""))
+ 	if not focus_id.is_empty():
+-		state.erase("focus_track")
+ 		for entry: Dictionary in matches:
+ 			if str(entry.id) != focus_id: continue
++			if cloud == null or not cloud.paged_discovery_available() or (is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0): state.erase("focus_track")
+ 			_select(entry)
+ 			_reveal_track.call_deferred(focus_id)
+ 			return
+ 	if state.get("random_on_open",false):
++		if cloud != null and cloud.paged_discovery_available() and (not is_instance_valid(cloud.discovery_pages) or cloud.discovery_pages.total < 0): return
+ 		state.erase("random_on_open")
+ 		_random()
+ 
+@@ -295,7 +303,7 @@
+ 	for index: int in range(matches.size()):
+ 		if str(matches[index].id) != identity: continue
+ 		gallery.call("_stop_snap")
+-		gallery.scroll_horizontal = index*tile_stride
++		gallery.scroll_horizontal = int(matches[index].get("discovery_index",index))*tile_stride
+ 		_render_tiles(true)
+ 		return
+ 
+@@ -312,7 +320,8 @@
+ 		gallery.call("_stop_snap")
+ 		gallery.scroll_horizontal = 0
+ 	_query_signature = signature
+-	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
++	var track_count: int = _page_total()
++	gallery_content.custom_minimum_size.x = maxi(1,track_count*tile_stride-12)
+ 	_render_tiles(true)
+ 	if matches.is_empty() and grid.get_child_count() == 0:
+ 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
+@@ -327,6 +336,7 @@
+ 	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
+ 	random_button.disabled = matches.is_empty() or loading
+ 	var filter_count: int = FilterDrawer.active_count(state)
++	if is_instance_valid(refresh_button): refresh_button.disabled = cloud == null or cloud.refreshing
+ 	filter_button.text = "Filters"+(" - %d" % filter_count if filter_count > 0 else "")
+ 	filter_button.add_theme_color_override("font_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
+ 	filter_button.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
+@@ -335,6 +345,9 @@
+ 
+ func _render_tiles(reconcile: bool = false) -> void:
+ 	if not is_instance_valid(grid): return
++	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0:
++		_render_paged_tiles(reconcile)
++		return
+ 	if cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
+ 		cloud.load_more()
+ 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+@@ -386,17 +399,81 @@
+ 	gallery.position.x = (gallery_slot.size.x-(slots*tile_stride-12))*0.5
+ 	gallery.size = Vector2(slots*tile_stride-12,140)
+ 	gallery.set("snap_stride",tile_stride)
+-	gallery_content.custom_minimum_size.x = maxi(1,matches.size()*tile_stride-12)
++	gallery_content.custom_minimum_size.x = maxi(1,_page_total()*tile_stride-12)
+ 	gallery.scroll_horizontal = first*tile_stride
+ 	_tile_start = -1
+ 	_render_tiles()
+ 
+ func _random() -> void:
++	if cloud != null and cloud.paged_discovery_available():
++		if not is_instance_valid(cloud.discovery_pages) or cloud.discovery_pages.total <= 0: return
++		random_button.disabled = true
++		var metadata: Dictionary = await cloud.discovery_pages.random_entry(selected_track.identity)
++		if not is_inside_tree(): return
++		random_button.disabled = false
++		if metadata.is_empty(): notice.emit("No matching tracks are available. Refresh to retry."); return
++		var public_entry: Dictionary = cloud.entry_from_metadata(metadata)
++		gallery.call("_stop_snap")
++		gallery.scroll_horizontal = int(metadata.discovery_index)*tile_stride
++		_render_tiles(true)
++		_select(public_entry)
++		return
+ 	var entry: Dictionary = TrackCatalog.random_entry(matches,selected_track.identity,rng)
+ 	if entry.is_empty(): return
+ 	gallery.call("_stop_snap")
+ 	gallery.scroll_horizontal = matches.find(entry)*tile_stride
+ 	_select(entry)
++
++func _page_total() -> int:
++	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0: return int(cloud.discovery_pages.total)
++	return matches.size()
++
++func _render_paged_tiles(reconcile: bool) -> void:
++	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
++	if not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
++	if first == _tile_start and not reconcile: return
++	_tile_start = first
++	var end: int = mini(_page_total(),first+12)
++	var retained: Dictionary = {}
++	for child: Node in grid.get_children():
++		var index: int = int(child.get_meta("catalog_index",-1))
++		var metadata: Dictionary = cloud.discovery_pages.entry_at(index) if index >= 0 else {}
++		if index < first or index >= end or (not child is TrackTile and not metadata.is_empty()) or (child is TrackTile and str(child.entry.get("version_id","")) != str(metadata.get("version_id",""))):
++			grid.remove_child(child)
++			child.queue_free()
++		else: retained[index] = child
++	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
++	for index: int in range(first,end):
++		if retained.has(index):
++			if retained[index] is TrackTile and reconcile:
++				var current_entry: Dictionary = cloud.entry_from_metadata(cloud.discovery_pages.entry_at(index))
++				retained[index].update_entry(current_entry,current_entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(current_entry.id),0)),current_entry.id == preview_entry.get("id",selected_track.identity))
++			grid.move_child(retained[index],index-first)
++			continue
++		var metadata: Dictionary = cloud.discovery_pages.entry_at(index)
++		if metadata.is_empty():
++			var pending: Label = MenuStyle.label("Unavailable" if cloud.discovery_pages.pages.has(index/20) else "Loading tracksâ€¦",16,true)
++			pending.custom_minimum_size = Vector2(tile_stride-12,140)
++			pending.set_meta("catalog_index",index)
++			grid.add_child(pending)
++			grid.move_child(pending,index-first)
++			continue
++		var entry: Dictionary = cloud.entry_from_metadata(metadata)
++		var tile := TrackTile.new()
++		tile.set_meta("catalog_index",index)
++		tile.compact = true
++		tile.entry = entry
++		tile.favorite = entry.id in records.settings.get("favorites",[])
++		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
++		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
++		tile.name = "Track_"+str(entry.id)
++		tile.pressed.connect(_select_tile.bind(tile))
++		tile.focus_entered.connect(_focus_tile.bind(tile))
++		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
++		grid.add_child(tile)
++		grid.move_child(tile,index-first)
++		tile.custom_minimum_size = Vector2(tile_stride-12,140)
++		tile.size_flags_horizontal = Control.SIZE_FILL
+ 
+ func _select(entry: Dictionary) -> void:
+ 	var cached: NativeTrack = catalog.cached_track(entry)
+@@ -604,6 +681,13 @@
+ 	search.name = "RaceSearch"
+ 	search.icon = MenuIcon.texture("search")
+ 	actions.add_child(search)
++	refresh_button = MenuStyle.button("",func() -> void:
++		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]),true))
++	refresh_button.name = "RefreshTracks"
++	refresh_button.icon = MenuIcon.texture("restart")
++	refresh_button.tooltip_text = "Refresh this list with the latest published tracks"
++	refresh_button.custom_minimum_size = Vector2(48,60)
++	actions.add_child(refresh_button)
+ 	for button: Button in [random_button,filters,search]:
+ 		button.custom_minimum_size = Vector2(196,60)
+ 		button.size_flags_horizontal = Control.SIZE_FILL
+--- a/game/ui/track_catalog.gd
++++ b/game/ui/track_catalog.gd
+@@ -6,6 +6,7 @@
+ var library: TrackLibrary
+ var shared_directories: Array[String] = []
+ var indexed_revision: int = -1
++var server_ordered: bool = false
+ var source_metadata: Dictionary = {}
+ var _resolved: Dictionary = {}
+ var _resolved_revision: int = -1
+--- a/game/ui/track_discovery_provider.gd
++++ b/game/ui/track_discovery_provider.gd
+@@ -17,6 +17,10 @@
+ 	return previous >= 0 and current >= 0 and ceili(current/10.0) > ceili(previous/10.0)
+ 
+ func query(catalog: TrackCatalog, state: Dictionary, favorites: Array, ratings: Dictionary = {}, raced_tracks: Array = [], now_seconds: int = -1) -> Array[Dictionary]:
++	if catalog.server_ordered:
++		var ordered: Array[Dictionary] = catalog.entries.filter(func(entry: Dictionary) -> bool: return entry.has("discovery_index"))
++		ordered.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.discovery_index) < int(b.discovery_index))
++		return ordered
+ 	var now: int = int(Time.get_unix_time_from_system()) if now_seconds < 0 else now_seconds
+ 	var local_state: Dictionary = state.duplicate(true)
+ 	local_state.sort = "name"
+--- a/game/ui/track_filter_drawer.gd
++++ b/game/ui/track_filter_drawer.gd
+@@ -3,7 +3,7 @@
+ signal applied(filters: Dictionary)
+ signal closed
+ 
+-const DEFAULTS: Dictionary = {"section":"all","theme":"all","race_count":"any","minimum_rating":0.0,"age_days":0,"race_history":"any","sort":"recommended"}
++const DEFAULTS: Dictionary = {"section":"all","feed":"recommended","theme":"all","race_count":"any","minimum_rating":0.0,"age_days":0,"race_history":"any","sort":"recommended"}
+ var catalog: TrackCatalog
+ var discovery: TrackDiscoveryProvider
+ var records: LocalRecords
+@@ -19,6 +19,7 @@
+ var rating_value: Label
+ var return_focus: Control
+ var motion: Tween
++var server_feeds: bool = false
+ var rating_pointer: int = -1
+ 
+ func _ready() -> void:
+@@ -71,9 +72,10 @@
+ 	groups.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	groups.add_theme_constant_override("separation",8)
+ 	scroll.add_child(groups)
+-	_group(groups,"SHOW","compass","section",3,[["all","Recommended","compass"],["favorites","Favorites","star"],["saved","My tracks","person"]])
++	_group(groups,"SHOW","compass","section",3,[["all","All tracks","compass"],["favorites","Favorites","star"],["saved","My tracks","person"]])
++	_group(groups,"DISCOVER","compass","feed",2,[["recommended","Recommended","compass"],["new","New","clock"],["popular","Popular","friends"],["rated","Top rated","star"]])
+ 	_group(groups,"BIOMES","biomes","theme",3,[["all","All","biomes"],["pine","Grass","leaf"],["desert","Desert","cactus"],["winter","Winter","snowflake"],["night_city","Night","night"],["storm","Storm","storm"]])
+-	_group(groups,"RACE COUNT","friends","race_count",4,[["any","Any",""],["low","Low",""],["medium","Medium",""],["high","High",""]])
++	_group(groups,"VERIFIED DRIVERS","friends","race_count",4,[["any","Any",""],["low","Low",""],["medium","Medium",""],["high","High",""]])
+ 	count_hint = MenuStyle.label("Race counts aren't available yet",12,true)
+ 	groups.add_child(count_hint)
+ 	var rating_group := VBoxContainer.new()
+@@ -118,8 +120,8 @@
+ 	sorting.name = "FilterSort"
+ 	sorting.custom_minimum_size.y = 48
+ 	sorting.add_theme_font_size_override("font_size",17)
+-	for caption: String in ["Recommended","Name Aâ€“Z","Highest rated","Most raced"]: sorting.add_item(caption)
+-	sorting.tooltip_text = "Recommended uses the default name order. Ratings match the values shown on the cards."
++	for caption: String in ["Feed order","Name Aâ€“Z","Top rated","Most drivers"]: sorting.add_item(caption)
++	sorting.tooltip_text = "Top rated accounts for the number of ratings. Cards show the actual average."
+ 	sorting.item_selected.connect(func(index: int) -> void: _choose("sort",["recommended","name","score","plays"][index]))
+ 	sort_group.add_child(sorting)
+ 	layout.add_child(HSeparator.new())
+@@ -196,7 +198,6 @@
+ 	draft = state.duplicate(true)
+ 	for key: String in DEFAULTS:
+ 		if not draft.has(key): draft[key] = DEFAULTS[key]
+-	draft.feed = "recommended"
+ 	return_focus = focus_owner
+ 	show()
+ 	set_process_input(true)
+@@ -234,6 +235,7 @@
+ 			var button: Button = choice.button
+ 			var selected: bool = draft.get(key,DEFAULTS[key]) == choice.value
+ 			button.disabled = key == "race_count" and choice.value != "any" and not counts_available
++			if key == "feed" and choice.value != "recommended" and not server_feeds: button.disabled = true
+ 			var style := MenuStyle.box(MenuStyle.ACCENT if selected else Color("10232f"),10)
+ 			style.border_color = MenuStyle.ACCENT if selected else MenuStyle.BORDER
+ 			style.set_border_width_all(1)
+@@ -246,13 +248,14 @@
+ 				var biome_color: Color = preload("res://ui/biome_badge.gd").color(str(choice.value))
+ 				for color_key: String in ["font_color","font_focus_color","icon_normal_color","icon_focus_color"]:
+ 					button.add_theme_color_override(color_key,biome_color)
+-			button.tooltip_text = "Race counts aren't available yet" if button.disabled else ("Low: 0â€“9 Â· Medium: 10â€“49 Â· High: 50+ completed races" if key == "race_count" else str(button.text))
++			button.tooltip_text = "Verified driver counts aren't available yet" if button.disabled else ("Low: 0â€“9 Â· Medium: 10â€“49 Â· High: 50+ distinct verified drivers" if key == "race_count" else str(button.text))
+ 	rating_slider.set_value_no_signal(float(draft.get("minimum_rating",0.0)))
+ 	rating_value.text = "Any" if rating_slider.value == 0.0 else "%.1f+" % rating_slider.value
+ 	rating_slider.tooltip_text = "Minimum rating: "+rating_value.text+" (0.1 steps)"
+ 	sorting.selected = maxi(0,["recommended","name","score","plays"].find(draft.sort))
+ 	var found: int = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[])).size()
+ 	apply_button.text = "SHOW %d TRACK%s" % [found,"" if found == 1 else "S"]
++	if catalog.server_ordered: apply_button.text = "SHOW TRACKS"
+ 	active_label.text = "%d filter%s active" % [active_count(draft),"" if active_count(draft) == 1 else "s"]
+ 	active_label.add_theme_color_override("font_color",MenuStyle.ACCENT if active_count(draft) > 0 else MenuStyle.TEXT)
+ 
+@@ -269,7 +272,6 @@
+ func _apply() -> void:
+ 	var result: Dictionary = {}
+ 	for key: String in DEFAULTS: result[key] = draft[key]
+-	result.feed = "recommended"
+ 	applied.emit(result)
+ 	close()
+ 
+--- a/game/ui/track_search_drawer.gd
++++ b/game/ui/track_search_drawer.gd
+@@ -21,6 +21,9 @@
+ var return_focus: Control
+ var motion: Tween
+ var shown: int = 4
++var cloud: Node
++var server_pages: Node
++var search_delay: Timer
+ var keyboard_height: float = 0.0
+ var layout: VBoxContainer
+ var header: HBoxContainer
+@@ -31,6 +34,11 @@
+ var keyboard_done: Button
+ 
+ func _ready() -> void:
++	search_delay = Timer.new()
++	search_delay.one_shot = true
++	search_delay.wait_time = 0.25
++	search_delay.timeout.connect(_search_global)
++	add_child(search_delay)
+ 	layer = 40
+ 	overlay = Control.new()
+ 	overlay.theme = MenuStyle.theme()
+@@ -104,7 +112,8 @@
+ 		draft.search = value
+ 		shown = 4
+ 		scroll.scroll_vertical = 0
+-		refresh_results())
++		refresh_results()
++		_queue_search())
+ 	edit.text_submitted.connect(func(_value: String) -> void:
+ 		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): _dismiss_keyboard()
+ 		else: _apply())
+@@ -127,6 +136,7 @@
+ 	results.add_theme_constant_override("separation",8)
+ 	scroll.add_child(results)
+ 	more_button = MenuStyle.button("",func() -> void:
++		if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size(): _apply(); return
+ 		shown += 20
+ 		refresh_results())
+ 	more_button.name = "MoreSearchResults"
+@@ -211,6 +221,7 @@
+ 	shown = 4
+ 	scroll.scroll_vertical = 0
+ 	show()
++	_queue_search()
+ 	set_process_input(true)
+ 	_layout()
+ 	refresh_results()
+@@ -227,6 +238,7 @@
+ 	shown = 4
+ 	scroll.scroll_vertical = 0
+ 	refresh_results()
++	_queue_search()
+ 
+ func clear_search() -> void:
+ 	edit.text = ""
+@@ -234,10 +246,14 @@
+ 	shown = 4
+ 	scroll.scroll_vertical = 0
+ 	refresh_results()
++	_queue_search()
+ 	edit.grab_focus()
+ 
+ func refresh_results() -> void:
+ 	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
++	if is_instance_valid(server_pages) and server_pages.total >= 0 and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_pages.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
++		matches.clear()
++		for metadata: Dictionary in server_pages.entries(): matches.append(cloud.entry_from_metadata(metadata))
+ 	for index: int in range(scopes.size()):
+ 		var active: bool = index == int(draft.get("search_kind",0))
+ 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10232f"),10)
+@@ -247,6 +263,10 @@
+ 		scopes[index].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.TEXT)
+ 		scopes[index].add_theme_color_override("font_focus_color",MenuStyle.INK if active else MenuStyle.TEXT)
+ 	count_label.text = "%d track%s found" % [matches.size(),"" if matches.size() == 1 else "s"]
++	if is_instance_valid(server_pages) and server_pages.total >= 0:
++		count_label.text = "%d track%s found" % [int(server_pages.total),"" if int(server_pages.total) == 1 else "s"]
++		if server_pages.loading: count_label.text = "Searchingâ€¦"
++		if not server_pages.error.is_empty(): count_label.text = server_pages.error
+ 	apply_button.text = "SHOW %d TRACK%s" % [matches.size(),"" if matches.size() == 1 else "S"]
+ 	for child: Node in results.get_children():
+ 		results.remove_child(child)
+@@ -258,6 +278,9 @@
+ 		results.add_child(empty)
+ 	more_button.visible = keyboard_height <= 0.0 and matches.size() > shown
+ 	more_button.text = "+ %d more tracks" % maxi(0,matches.size()-shown)
++	if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size():
++		more_button.visible = keyboard_height <= 0.0
++		more_button.text = "BROWSE ALL %d MATCHES" % int(server_pages.total)
+ 	_trap_focus()
+ 
+ func _result(entry: Dictionary) -> void:
+@@ -343,12 +366,30 @@
+ 	close()
+ 
+ func close() -> void:
++	search_delay.stop()
++	if is_instance_valid(server_pages):
++		server_pages.generation += 1
++		server_pages.loading = false
++		cloud.client.cancel_public_reads(server_pages.get_instance_id())
+ 	if motion != null: motion.kill()
+ 	edit.release_focus()
+ 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+ 	hide()
+ 	set_process_input(false)
+ 	closed.emit()
++
++func _queue_search() -> void:
++	if cloud != null and cloud.paged_discovery_available() and visible: search_delay.start()
++
++func _search_global() -> void:
++	if cloud == null or not visible or not cloud.paged_discovery_available(): return
++	if not is_instance_valid(server_pages):
++		server_pages = preload("res://backend/discovery_pages.gd").new()
++		server_pages.client = cloud.client
++		add_child(server_pages)
++		server_pages.changed.connect(func() -> void:
++			if visible: refresh_results())
++	await server_pages.begin(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 	if is_instance_valid(return_focus): return_focus.release_focus()
+ 
+ func _input(event: InputEvent) -> void:
+--- /dev/null
++++ b/game/backend/discovery_pages.gd
+@@ -0,0 +1,160 @@
++extends Node
++## A query owns its order/cursors. Only nearby preview pages stay in memory;
++## absolute positions survive eviction, so previous pages can be fetched again.
++signal changed
++var client: Node
++var query: Dictionary = {}
++var query_key: String = ""
++var origin: String = ""
++var generation: int = 0
++var total: int = -1
++var snapshot: String = ""
++var cursor: String = ""
++var pages: Dictionary = {}
++var loading: bool = false
++var error: String = ""
++var desired_index: int = 0
++var locate_version: String = ""
++var last_used: int = 0
++const PAGE_SIZE: int = 20
++const MAX_PAGES: int = 15
++
++func scope() -> String:
++	return str(client.base_url())+"/"+str(client.player.get("id",""))
++
++static func ids(values: Array) -> Array[String]:
++	var result: Array[String] = []
++	for value: Variant in values:
++		if str(value).begins_with("cloud_"): result.append(str(value).trim_prefix("cloud_"))
++	result.sort()
++	return result
++
++static func payload(filters: Dictionary, favorites: Array = [], raced: Array = []) -> Dictionary:
++	var body: Dictionary = {"search":str(filters.get("search","")),"search_kind":int(filters.get("search_kind",0)),
++		"theme":str(filters.get("theme","all")),"minimum_rating":float(filters.get("minimum_rating",0.0)),
++		"age_days":int(filters.get("age_days",0)),"race_count":str(filters.get("race_count","any")),
++		"race_history":str(filters.get("race_history","any")),"section":str(filters.get("section","all")),
++		"feed":str(filters.get("feed","recommended")),"sort":str(filters.get("sort","recommended"))}
++	if body.feed not in ["recommended","new","popular","trending","rated"]: body.feed = "recommended"
++	if body.sort not in ["recommended","name","creator","score","plays","new"]: body.sort = "recommended"
++	if body.section == "favorites": body.ids = ids(favorites)
++	if body.race_history != "any": body.raced_ids = ids(raced)
++	return body
++
++func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
++	var body: Dictionary = payload(filters,favorites,raced)
++	var key: String = JSON.stringify(body)
++	if not fresh and key == query_key and origin == scope() and total >= 0 and Time.get_ticks_msec()-last_used < 60000:
++		request_visible(desired_index)
++		return
++	generation += 1
++	client.cancel_public_reads(get_instance_id())
++	query = body
++	query_key = key
++	origin = scope()
++	total = -1
++	snapshot = ""
++	cursor = ""
++	pages.clear()
++	loading = false
++	error = ""
++	desired_index = 0
++	await _fetch(0,fresh)
++
++func _fetch(page_number: int, fresh: bool = false) -> void:
++	if loading or query.is_empty(): return
++	loading = true
++	var serial: int = generation
++	var body: Dictionary = query.duplicate(true)
++	body.offset = page_number*PAGE_SIZE
++	if not snapshot.is_empty(): body.cursor = _cursor_at(body.offset)
++	if fresh: body.fresh = true
++	var locating: bool = snapshot.is_empty() and not locate_version.is_empty()
++	if locating: body.locate_version = locate_version
++	changed.emit()
++	var result: Dictionary = await client.request_discovery(body,get_instance_id())
++	if serial != generation or origin != scope(): return
++	loading = false
++	if not result.ok:
++		error = "Refresh tracks to continue this expired list." if int(result.get("status",0)) == 410 else "Could not load tracks. Retry when connected."
++		changed.emit()
++		return
++	var data: Dictionary = result.data
++	var effective_page: int = int(data.get("offset",-1))/PAGE_SIZE if locating else page_number
++	if not _valid_page(data,effective_page):
++		error = "Invalid track page. Refresh to retry."
++		changed.emit()
++		return
++	total = int(data.total)
++	snapshot = str(data.snapshot)
++	cursor = str(data.get("page_cursor",""))
++	pages[effective_page] = {"items":data.items,"used":Time.get_ticks_msec()}
++	if locating:
++		desired_index = effective_page*PAGE_SIZE
++		locate_version = ""
++	while pages.size() > MAX_PAGES:
++		var oldest: int = -1
++		for number: int in pages:
++			if oldest < 0 or int(pages[number].used) < int(pages[oldest].used): oldest = number
++		pages.erase(oldest)
++	error = ""
++	last_used = Time.get_ticks_msec()
++	changed.emit()
++	# A fast swipe can change the requested page while the HTTP read is pending.
++	var wanted: int = maxi(0,desired_index/PAGE_SIZE)
++	if wanted != effective_page and wanted*PAGE_SIZE < total and not pages.has(wanted): _fetch.call_deferred(wanted)
++
++func _cursor_at(_offset: int) -> String:
++	# The opaque server token binds the query/snapshot; offset is a separate input.
++	return cursor
++
++func _valid_page(data: Dictionary, page_number: int) -> bool:
++	if not data.get("items") is Array or data.items.size() > PAGE_SIZE or not data.get("total") is float and not data.get("total") is int: return false
++	if int(data.total) < 0 or float(data.total) != float(int(data.total)) or int(data.get("offset",-1)) != page_number*PAGE_SIZE or str(data.get("snapshot","")).length() != 36: return false
++	var seen: Dictionary = {}
++	for item: Variant in data.items:
++		if not item is Dictionary or str(item.get("version_id","")).length() != 36 or str(item.get("content_hash","")).length() != 64 or not item.get("points") is Array: return false
++		if not item.get("track_id") is String or str(item.track_id).is_empty() or not item.get("name") is String or not item.get("creator") is String: return false
++		var index: int = int(item.get("discovery_index",-1))
++		if index < page_number*PAGE_SIZE or index >= mini(int(data.total),(page_number+1)*PAGE_SIZE): return false
++		if seen.has(str(item.track_id)) or seen.has(index): return false
++		seen[str(item.track_id)] = true
++		seen[index] = true
++	return true
++
++func request_visible(index: int) -> void:
++	desired_index = maxi(0,index)
++	if loading or total < 0 or desired_index >= total: return
++	var number: int = desired_index/PAGE_SIZE
++	if not pages.has(number): _fetch(number); return
++	pages[number].used = Time.get_ticks_msec()
++	# One-page prefetch; never drain the whole community catalog.
++	if desired_index%PAGE_SIZE >= 8 and (number+1)*PAGE_SIZE < total and not pages.has(number+1): _fetch(number+1)
++
++func entries() -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	var numbers: Array = pages.keys()
++	numbers.sort()
++	for number: int in numbers:
++		for item: Dictionary in pages[number].items: result.append(item)
++	return result
++
++func entry_at(index: int) -> Dictionary:
++	var number: int = index/PAGE_SIZE
++	if not pages.has(number): return {}
++	for item: Dictionary in pages[number].items:
++		if int(item.discovery_index) == index: return item
++	return {}
++
++func random_entry(exclude: String) -> Dictionary:
++	var serial: int = generation
++	var body: Dictionary = query.duplicate(true)
++	if not snapshot.is_empty(): body.cursor = _cursor_at(0)
++	body.exclude = exclude.trim_prefix("cloud_")
++	var response: Dictionary = await client.request_discovery(body,get_instance_id(),true)
++	if serial != generation or origin != scope() or not response.ok or not response.data.get("items") is Array or response.data.items.is_empty(): return {}
++	return response.data.items[0]
++
++func _exit_tree() -> void:
++	generation += 1
++	if is_instance_valid(client): client.cancel_public_reads(get_instance_id())
+--- /dev/null
++++ b/game/tests/test_discovery_pages.gd
+@@ -0,0 +1,170 @@
++extends SceneTree
++## Real virtual carousel over 5,000 server-shaped records; fixture metadata only.
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String
++
++class PagedClient extends Client:
++	signal release_read
++	var requests: Array[Dictionary] = []
++	var document: Dictionary
++	var hash_value: String
++	var hold_once: bool = false
++	var invalid_once: bool = false
++	func metadata(number: int, index: int) -> Dictionary:
++		return {"track_id":"fixture-track-"+str(number),"version_id":"00000000-0000-4000-8000-"+str(number+1).pad_zeros(12),"content_hash":hash_value,"name":"Course %04d" % number,"creator":"Discovery Fixture","creator_id":"fixture-owner","theme":"pine","points":document.points,"rating_average":null,"rating_count":0,"verified_finishers":0,"discovery_index":index,"published_at":5000-number}
++	func request_discovery(body: Dictionary, _owner: int, random_choice: bool = false) -> Dictionary:
++		requests.append(body.duplicate(true))
++		var numbers: Array[int] = []
++		for number: int in range(5000):
++			var search: String = str(body.get("search",""))
++			if not search.is_empty() and not ("Course %04d" % number).contains(search): continue
++			if body.has("ids") and "fixture-track-"+str(number) not in body.ids: continue
++			numbers.append(number)
++		var offset: int = int(body.get("offset",0))
++		if random_choice: offset = mini(4347,maxi(0,numbers.size()-1))
++		var items: Array = []
++		for index: int in range(offset,mini(offset+(1 if random_choice else 20),numbers.size())): items.append(metadata(numbers[index],index))
++		var data: Dictionary = {"items":items,"total":numbers.size(),"offset":offset,"snapshot":"11111111-1111-4111-8111-111111111111","page_cursor":"opaque-fixture-snapshot","next_cursor":"opaque-fixture-snapshot" if offset+20 < numbers.size() else null}
++		if invalid_once: invalid_once = false; data.items = [{"wrong":"response"}]
++		if hold_once:
++			hold_once = false
++			await release_read
++		else: await get_tree().process_frame
++		return {"ok":true,"status":200,"data":data,"error":""}
++	func request_api(_path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		return {"ok":false,"status":0,"data":{},"error":"offline fixture"}
++	func request_public(_path: String, _owner: int) -> Dictionary:
++		return {"ok":false,"status":0,"data":{},"error":"offline fixture"}
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func settle(pages: Node) -> void:
++	for _frame: int in range(60):
++		await process_frame
++		if not pages.loading: break
++	for _frame: int in range(3): await process_frame
++
++func capture(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await create_timer(0.3).timeout
++	await RenderingServer.frame_post_draw
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-paging-2026-10-07")
++	DirAccess.make_dir_recursive_absolute(output)
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png")) == OK,"capture "+name)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.theme = MenuStyle.theme()
++	create_timer(90).timeout.connect(func() -> void: push_error("Discovery page deadline"); quit(1))
++	folder = ProjectSettings.globalize_path("res://../build/discovery-page-test-"+str(Time.get_ticks_usec()))
++	var client := PagedClient.new()
++	root.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	client._capabilities = {"discovery_paging_version":2}
++	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
++	client.hash_value = JSON.stringify(client.document).sha256_text()
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	root.add_child(cloud)
++	cloud.load_cached()
++	await cloud.query_discovery({"sort":"name"})
++	var pages: Node = cloud.discovery_pages
++	print("DISCOVERY_INITIAL: total=",pages.total," entries=",cloud.entries.size()," error=",pages.error," requests=",client.requests.size())
++	check(pages.total == 5000 and cloud.entries.size() == 20,"first page exposes total without fetching entire catalog")
++	var started: int = Time.get_ticks_usec()
++	for number: int in range(1,250):
++		pages.desired_index = number*20
++		await pages._fetch(number)
++		check(pages.pages.size() <= 15 and cloud.entries.size() <= 300,"preview cache remains bounded while reaching each page")
++	check(pages.entry_at(4999).track_id == "fixture-track-4999","last of 5000 tracks remains reachable")
++	check(not pages.pages.has(0),"distant first-page payload is evicted")
++	pages.request_visible(0)
++	await settle(pages)
++	check(pages.entry_at(0).track_id == "fixture-track-0" and pages.pages.size() <= 15,"scrolling back reloads first page at its original position")
++	print("DISCOVERY_5000_PAGING_MS: ",(Time.get_ticks_usec()-started)/1000.0)
++	await cloud.query_discovery({"search":"4999","sort":"name"})
++	check(pages.total == 1 and cloud.entries[0].track_id == "fixture-track-4999","global search finds a track beyond every cached window")
++	await cloud.query_discovery({"section":"favorites"},["cloud_fixture-track-4998"])
++	check(pages.total == 1 and cloud.entries[0].track_id == "fixture-track-4998","favorites fetch exact IDs independently of community cache")
++	client.hold_once = true
++	cloud.query_discovery({"search":"1000"})
++	await process_frame
++	await cloud.query_discovery({"search":"2000"})
++	client.release_read.emit()
++	await process_frame
++	check(pages.total == 1 and cloud.entries[0].track_id == "fixture-track-2000","late previous query cannot overwrite current search")
++	await cloud.query_discovery({"sort":"name"})
++	client.invalid_once = true
++	pages.desired_index = 20
++	await pages._fetch(1)
++	check(not pages.error.is_empty() and pages.entry_at(0).track_id == "fixture-track-0","invalid next page preserves usable loaded page")
++	await cloud.query_discovery({"sort":"name"},[],[],true)
++	check(client.requests[-1].get("fresh",false) and int(client.requests[-1].offset) == 0,"Refresh starts a new first page")
++	cloud._write(cloud.cache_root().path_join(client.hash_value+".json"),client.document)
++	var library := TrackLibrary.new(folder.path_join("drafts"))
++	var catalog := TrackCatalog.new(library)
++	cloud.add_to_catalog(catalog)
++	var entry: Dictionary = cloud.entry_from_metadata(client.metadata(0,0))
++	check(await cloud.download(entry),"selected fixture uses normal retained publication metadata")
++	var native_track: NativeTrack = cloud.compile_entry(entry)
++	check(native_track != null,"fixture selected track compiles through normal cache validation")
++	if native_track == null: quit(1); return
++	catalog.remember_track(entry,native_track)
++	var browser := TrackBrowser.new()
++	browser.library = library
++	browser.catalog = catalog
++	browser.cloud = cloud
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	browser.selected_track = native_track
++	browser.state = {"sort":"name"}
++	browser.size = root.get_visible_rect().size
++	root.add_child(browser)
++	for _frame: int in range(6): await process_frame
++	var first_id: String = str(browser.grid.get_child(0).entry.id)
++	pages.desired_index = 20
++	await pages._fetch(1)
++	await settle(pages)
++	check(browser.grid.get_child_count() <= 12 and str(browser.grid.get_child(0).entry.id) == first_id,"appending server page keeps first visible card stable and bounds controls")
++	check(browser.grid.get_children().all(func(node: Node) -> bool: return node.size.y <= 140.0),"paged card footers remain inside the carousel height")
++	check(browser.gallery_content.custom_minimum_size.x >= 5000*browser.tile_stride-12,"virtual scrollbar covers full global results")
++	await capture("default-discovery")
++	browser.gallery.scroll_horizontal = 4250*browser.tile_stride
++	browser._render_tiles(true)
++	await settle(pages)
++	check(browser.grid.get_child_count() <= 12 and browser.grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"deep scrolling loads every visible card across page boundary")
++	check(not browser.race_button.disabled,"evicting selected track's preview does not disable its cached race")
++	await capture("deep-discovery")
++	browser.search_dialog.open_for(browser.state,browser.find_child("RaceSearch",true,false))
++	browser.search_dialog.edit.text = "4999"
++	browser.search_dialog.edit.text_changed.emit("4999")
++	await create_timer(0.35).timeout
++	for _frame: int in range(5): await process_frame
++	check(browser.search_dialog.matches.size() == 1 and browser.search_dialog.matches[0].track_id == "fixture-track-4999","search drawer performs debounced global lookup")
++	check(pages.total == 5000,"live search preview leaves active carousel query unchanged")
++	await capture("global-search")
++	browser.search_dialog._apply()
++	await settle(pages)
++	check(pages.total == 1 and browser.matches[0].track_id == "fixture-track-4999","applying search switches carousel to complete global result set")
++	browser.filter_dialog.open_for(browser.state,browser.filter_button)
++	check(browser.filter_dialog.find_child("Choice_feed_new",true,false) != null and browser.filter_dialog.find_child("Choice_feed_popular",true,false) != null,"feed controls expose New and Popular")
++	await capture("discovery-filters")
++	browser.filter_dialog.close()
++	root.size = Vector2i(960,540)
++	browser.size = root.get_visible_rect().size
++	for _frame: int in range(5): await process_frame
++	await capture("compact-discovery")
++	browser.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await process_frame
++	await process_frame
++	print("DISCOVERY_PAGE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_discovery_live.gd
+@@ -0,0 +1,78 @@
++extends SceneTree
++## Opt-in public staging read with isolated records/cache and real menu captures.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func capture(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await create_timer(0.6).timeout
++	await RenderingServer.frame_post_draw
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-paging-2026-10-07")
++	DirAccess.make_dir_recursive_absolute(output)
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png")) == OK,"capture "+name)
++
++func run() -> void:
++	var origin: String = OS.get_environment("BMT_STAGING_API_URL")
++	if origin.is_empty(): push_error("Explicit staging origin required"); quit(1); return
++	OS.set_environment("BMT_API_URL",origin)
++	root.size = Vector2i(1280,720)
++	create_timer(90).timeout.connect(func() -> void: push_error("Live discovery deadline"); quit(1))
++	var folder: String = ProjectSettings.globalize_path("res://../build/discovery-live-"+str(Time.get_ticks_usec()))
++	var app: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("drafts"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(not app.online.client.signed_in(),"public diagnostic has no saved player session")
++	check(app.cloud.paged_discovery_available(),"live bootstrap enables discovery protocol two")
++	await app.cloud.query_discovery({"feed":"new"},[],[],true)
++	var pages: Node = app.cloud.discovery_pages
++	check(pages.total >= 28 and app.cloud.entries.size() <= 20,"live first page exposes global count with bounded previews")
++	while app.cloud.entries.size() < pages.total:
++		await app.cloud.load_more()
++		if pages.loading: await process_frame
++		if not pages.error.is_empty(): break
++	check(app.cloud.entries.size() == pages.total,"normal Load more reaches every current public track")
++	var matches: Array = app.cloud.entries.filter(func(item: Dictionary) -> bool: return item.name == "Star" and item.track_id == "3fe3be78-8db0-4404-81fe-9a25742f6cd1")
++	check(matches.size() == 1,"published Star appears exactly once")
++	if matches.is_empty(): quit(1); return
++	var metadata: Dictionary = matches[0]
++	check(await app.cloud.download(app.cloud.entry_from_metadata(metadata)),"Star downloads through ordinary document/hash validation")
++	app._open_published_track(metadata)
++	var browser: TrackBrowser = app.root_ui.find_child("TrackBrowser",true,false)
++	var deadline: int = Time.get_ticks_msec()+15000
++	while (browser.loading or browser.selecting or browser.selected_track.identity != "cloud_"+str(metadata.track_id)) and Time.get_ticks_msec() < deadline: await process_frame
++	for _frame: int in range(5): await process_frame
++	check(browser.selected_track.identity == "cloud_"+str(metadata.track_id) and not browser.race_button.disabled,"actual Star is selected and ready in Free Race")
++	check(browser.grid.get_child_count() <= 12,"actual menu bounds active cards")
++	check(browser.grid.get_children().all(func(node: Node) -> bool: return node.size.y <= 140.0),"actual card names and creators fit inside carousel")
++	await capture("live-star-desktop")
++	browser.search_dialog.open_for(browser.state,browser.find_child("RaceSearch",true,false))
++	browser.search_dialog.edit.text = "Star"
++	browser.search_dialog.edit.text_changed.emit("Star")
++	await create_timer(0.6).timeout
++	deadline = Time.get_ticks_msec()+15000
++	while (not is_instance_valid(browser.search_dialog.server_pages) or browser.search_dialog.server_pages.loading) and Time.get_ticks_msec() < deadline: await process_frame
++	check(browser.search_dialog.matches.any(func(item: Dictionary) -> bool: return item.track_id == metadata.track_id),"live global search finds Star")
++	await capture("live-global-search")
++	browser.search_dialog.close()
++	browser.filter_dialog.open_for(browser.state,browser.filter_button)
++	check(not browser.filter_dialog.find_child("Choice_feed_popular",true,false).disabled,"live menu enables Popular")
++	await capture("live-filter-drawer")
++	browser.filter_dialog.close()
++	root.size = Vector2i(960,540)
++	for _frame: int in range(5): await process_frame
++	await browser._reveal_track("cloud_"+str(metadata.track_id))
++	await capture("live-star-compact")
++	print("LIVE_DISCOVERY: %d checks, %d failures; %d public tracks" % [checks,failures,pages.total])
++	app.queue_free()
++	await process_frame
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/backend/bmt_backend/discovery.py
+@@ -0,0 +1,251 @@
++"""Stable community queries: shared short-lived result order, bounded preview pages.
++
++Snapshots store immutable version IDs, not documents/previews. Page reads recheck
++visibility. DB persistence permits API replicas/restarts to share the same order.
++"""
++from collections import OrderedDict, deque
++import hashlib
++import json
++import random
++import threading
++import time
++import uuid
++
++from fastapi import APIRouter, Depends, HTTPException, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import JSON, Integer, String, Index, any_, delete, func, literal, or_, select
++from sqlalchemy.dialects.postgresql import ARRAY
++from sqlalchemy.exc import IntegrityError
++from sqlalchemy.orm import Mapped, mapped_column, aliased
++
++from .db import Base, get_session
++from .identity_models import Player
++from .security import bearer, current_player
++from .track_models import Board, Run, Track, TrackVersion
++from .tracks import discovery_payload
++from .cursors import encode_cursor, decode_cursor
++
++router = APIRouter(tags=["discovery"])
++PAGE_SIZE = 20
++CACHE_SECONDS = 20
++SNAPSHOT_SECONDS = 1800
++MAX_MEMORY_IDS = 100_000
++
++
++class DiscoverySnapshot(Base):
++    __tablename__ = "discovery_snapshots"
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    query_hash: Mapped[str] = mapped_column(String(64), nullable=False)
++    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
++    version_ids: Mapped[list] = mapped_column(JSON, nullable=False)
++    __table_args__ = (Index("ix_discovery_snapshot_expiry", "expires_at"),)
++
++
++class Query(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    search: str = Field("", max_length=80)
++    search_kind: int = Field(0, ge=0, le=2)
++    theme: str = Field("all", max_length=40)
++    minimum_rating: float = Field(0, ge=0, le=5)
++    age_days: int = Field(0, ge=0, le=36500)
++    race_count: str = Field("any", pattern="^(any|low|medium|high)$")
++    race_history: str = Field("any", pattern="^(any|raced|unraced)$")
++    raced_ids: list[str] = Field(default_factory=list, max_length=50000)
++    ids: list[str] | None = Field(None, max_length=50000)
++    section: str = Field("all", pattern="^(all|favorites|saved)$")
++    feed: str = Field("recommended", pattern="^(recommended|new|popular|rated|trending)$")
++    sort: str = Field("recommended", pattern="^(recommended|name|creator|score|plays|new)$")
++    cursor: str = Field("", max_length=400)
++    offset: int | None = Field(None, ge=0)
++    fresh: bool = False
++    exclude: str = Field("", max_length=80)
++    locate_version: str = Field("", max_length=36)
++
++
++def _identity(request, session, credentials):
++    return current_player(request, credentials, session) if credentials else None
++
++
++def _hash(query, owner):
++    values = query.model_dump(exclude={"cursor", "offset", "fresh", "exclude", "locate_version"})
++    values["search"] = query.search.strip()
++    for key in ("ids", "raced_ids"):
++        if values[key] is not None:
++            if any(not isinstance(v, str) or not 1 <= len(v) <= 80 for v in values[key]):
++                raise HTTPException(422, "INVALID_TRACK_IDS")
++            values[key] = sorted(set(values[key]))
++    values["owner"] = owner
++    return hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def _cache(request):
++    if not hasattr(request.app.state, "discovery_memory"):
++        # create_app normally installs this; keep standalone route tests safe.
++        request.app.state.discovery_memory = OrderedDict()
++        request.app.state.discovery_lock = threading.RLock()
++    return request.app.state.discovery_memory, request.app.state.discovery_lock
++
++
++def _remember(request, key, expires, ids, fingerprint):
++    cache, lock = _cache(request)
++    cache[key] = (expires, ids, fingerprint)
++    cache.move_to_end(key)
++    while len(cache) > 64 or sum(len(v[1]) for v in cache.values()) > MAX_MEMORY_IDS:
++        cache.popitem(last=False)
++
++
++def _ordered_ids(session, query, owner, timestamp):
++    newer = aliased(TrackVersion)
++    statement = select(TrackVersion.id, Track.official).select_from(TrackVersion).join(Track).join(Player, Player.id == Track.owner_id).where(
++        TrackVersion.state == "published", Track.hidden.is_(False), Player.disabled.is_(False), Player.is_test_driver.is_(False),
++        TrackVersion.published_at <= timestamp,
++        ~select(newer.id).where(newer.track_id == Track.id, newer.state == "published",
++            newer.published_at <= timestamp, newer.number > TrackVersion.number).exists())
++    if owner: statement = statement.where(Track.owner_id == owner)
++    if query.ids is not None: statement = statement.where(_in_ids(Track.id, query.ids, session))
++    if query.section == "favorites" and query.ids is None: statement = statement.where(False)
++    if query.theme != "all": statement = statement.where(TrackVersion.discovery["theme"].as_string() == query.theme)
++    if query.minimum_rating: statement = statement.where(TrackVersion.rating_count > 0,
++        TrackVersion.rating_sum >= (query.minimum_rating-0.000001) * TrackVersion.rating_count)
++    if query.age_days: statement = statement.where(TrackVersion.created_at >= timestamp-query.age_days*86400)
++    if query.race_history == "raced": statement = statement.where(_in_ids(Track.id, query.raced_ids, session))
++    if query.race_history == "unraced": statement = statement.where(~_in_ids(Track.id, query.raced_ids, session))
++    if query.race_count == "low": statement = statement.where(TrackVersion.verified_finishers < 10)
++    if query.race_count == "medium": statement = statement.where(TrackVersion.verified_finishers >= 10, TrackVersion.verified_finishers < 50)
++    if query.race_count == "high": statement = statement.where(TrackVersion.verified_finishers >= 50)
++    if query.search.strip():
++        name = TrackVersion.name.icontains(query.search.strip(), autoescape=True)
++        creator = Player.display_name.icontains(query.search.strip(), autoescape=True)
++        statement = statement.where(name if query.search_kind == 1 else creator if query.search_kind == 2 else or_(name, creator))
++    ordering = query.sort
++    if ordering == "recommended": ordering = {"new":"new", "popular":"popular", "trending":"popular", "rated":"score"}.get(query.feed, "recommended")
++    if query.feed == "rated": statement = statement.where(TrackVersion.rating_count > 0)
++    if ordering == "popular":
++        # Aggregate actual recent verified entrants, excluding creator proof and artificial identities.
++        recent = select(TrackVersion.track_id.label("track_id"), func.count(func.distinct(Run.player_id)).label("drivers")).select_from(Run).join(Board, Board.id == Run.board_id).join(TrackVersion, TrackVersion.id == Board.version_id).join(Player, Player.id == Run.player_id).where(
++            Run.status == "verified", Run.finished_at >= timestamp-7*86400, Player.disabled.is_(False), Player.is_test_driver.is_(False),
++            or_(Board.manifest["purpose"].as_string().is_(None), Board.manifest["purpose"].as_string() != "creator_test"),
++            or_(Board.manifest["test_population"].as_boolean().is_(None), Board.manifest["test_population"].as_boolean().is_(False)),
++            or_(TrackVersion.creator_test_run_id.is_(None), Run.id != TrackVersion.creator_test_run_id)).group_by(TrackVersion.track_id).subquery()
++        statement = statement.outerjoin(recent, recent.c.track_id == Track.id).order_by(func.coalesce(recent.c.drivers, 0).desc())
++    elif ordering == "score":
++        # Provisional confidence weight: five neutral 3.5-star observations; displayed average is unchanged.
++        statement = statement.order_by((TrackVersion.rating_count > 0).desc(), ((TrackVersion.rating_sum+17.5)/(TrackVersion.rating_count+5.0)).desc())
++    elif ordering == "plays": statement = statement.order_by(TrackVersion.verified_finishers.desc())
++    elif ordering == "creator": statement = statement.order_by(func.lower(Player.display_name), func.lower(TrackVersion.name))
++    elif ordering == "name": statement = statement.order_by(func.lower(TrackVersion.name))
++    statement = statement.order_by(TrackVersion.published_at.desc(), TrackVersion.id)
++    rows = session.execute(statement).all()
++    if ordering == "recommended":
++        # Three trusted official choices followed by one community choice; all remain accessible.
++        official = deque(row[0] for row in rows if row[1])
++        community = deque(row[0] for row in rows if not row[1])
++        result = []
++        while official or community:
++            for _ in range(min(3, len(official))): result.append(official.popleft())
++            if community: result.append(community.popleft())
++        return result
++    return [row[0] for row in rows]
++
++
++def _in_ids(column, values, session):
++    # One bound parameter even for a large personal collection/history.
++    if session.get_bind().dialect.name == "postgresql":
++        return column == any_(literal(values, type_=ARRAY(String(80))))
++    table = func.json_each(json.dumps(values)).table_valued("value")
++    return column.in_(select(table.c.value))
++
++
++def _snapshot(request, session, query, owner):
++    timestamp = int(time.time())
++    fingerprint = _hash(query, owner)
++    if query.cursor:
++        value = decode_cursor(query.cursor)
++        if value.get("query") != fingerprint or not isinstance(value.get("snapshot"), str) or type(value.get("offset")) is not int or value["offset"] < 0:
++            raise HTTPException(422, "INVALID_CURSOR")
++        identity, offset = value["snapshot"], value["offset"] if query.offset is None else query.offset
++    else:
++        identity = str(uuid.uuid4()) if query.fresh else str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint+":"+str(timestamp//CACHE_SECONDS)))
++        offset = query.offset or 0
++    cache, lock = _cache(request)
++    with lock:
++        flights = getattr(request.app.state, "discovery_flights", None)
++        if flights is None:
++            request.app.state.discovery_flights = flights = {}
++        flight = flights.setdefault(identity, threading.Lock())
++    try:
++        with flight:
++            with lock:
++                cached = cache.get(identity)
++            if cached is not None and cached[0] > timestamp and cached[2] == fingerprint:
++                with lock: cache.move_to_end(identity)
++                return identity, fingerprint, offset, cached[1]
++            row = session.get(DiscoverySnapshot, identity)
++            if row is not None and row.query_hash == fingerprint and row.expires_at > timestamp:
++                with lock: _remember(request, identity, row.expires_at, row.version_ids, fingerprint)
++                return identity, fingerprint, offset, row.version_ids
++            if query.cursor: raise HTTPException(410, "DISCOVERY_SNAPSHOT_EXPIRED")
++            # Bound expiry cleanup; never remove a live browsing snapshot.
++            expired = session.scalars(select(DiscoverySnapshot.id).where(DiscoverySnapshot.expires_at <= timestamp).limit(64)).all()
++            if expired: session.execute(delete(DiscoverySnapshot).where(DiscoverySnapshot.id.in_(expired)))
++            ids = _ordered_ids(session, query, owner, timestamp)
++            row = DiscoverySnapshot(id=identity, query_hash=fingerprint, expires_at=timestamp+SNAPSHOT_SECONDS, version_ids=ids)
++            session.add(row)
++            try: session.commit()
++            except IntegrityError:
++                session.rollback()
++                row = session.get(DiscoverySnapshot, identity)
++                if row is None or row.query_hash != fingerprint: raise
++                ids = row.version_ids
++            with lock: _remember(request, identity, row.expires_at, ids, fingerprint)
++            return identity, fingerprint, offset, ids
++    finally:
++        with lock:
++            if flights.get(identity) is flight: flights.pop(identity, None)
++
++
++def _page(request, session, query, credentials, random_choice=False):
++    player = _identity(request, session, credentials) if query.section == "saved" else None
++    if query.section == "saved" and player is None: raise HTTPException(401, "AUTH_REQUIRED")
++    snapshot, fingerprint, offset, ids = _snapshot(request, session, query, player.id if player else "")
++    if not random_choice and not query.cursor and query.locate_version in ids:
++        offset = ids.index(query.locate_version)//PAGE_SIZE*PAGE_SIZE
++    if random_choice:
++        # Uniform sampling of the entire filtered snapshot, independent of client cache residency.
++        candidates = list(enumerate(ids))
++        random.SystemRandom().shuffle(candidates)
++    else: candidates = list(enumerate(ids[offset:offset+PAGE_SIZE], offset))
++    items = []
++    fallback = None
++    batches = [candidates] if not random_choice else [candidates[i:i+100] for i in range(0,len(candidates),100)]
++    for batch in batches:
++        chosen = dict(batch)
++        rows = session.execute(select(TrackVersion, Track, Player.display_name).select_from(TrackVersion).join(Track).join(Player, Player.id == Track.owner_id).where(
++            TrackVersion.id.in_(list(chosen.values())), TrackVersion.state == "published", Track.hidden.is_(False), Player.disabled.is_(False), Player.is_test_driver.is_(False))).all()
++        available = {row[0].id: row for row in rows}
++        for position, version_id in chosen.items():
++            if version_id not in available: continue
++            version, track, name = available[version_id]
++            item = discovery_payload(request, version, track, name)
++            item.update(discovery_index=position, verified_finishers=version.verified_finishers)
++            if random_choice and track.id == query.exclude:
++                fallback = item
++                continue
++            items.append(item)
++            if random_choice: break
++        if random_choice and items: break
++    if random_choice and not items and fallback is not None: items = [fallback]
++    next_offset = offset+PAGE_SIZE
++    cursor = encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":next_offset}) if next_offset < len(ids) else None
++    session.commit()
++    return {"items":items,"next_cursor":cursor,"page_cursor":encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":0}),"total":len(ids),"offset":offset,"snapshot":snapshot,"page_size":PAGE_SIZE,"expires_in":SNAPSHOT_SECONDS}
++
++
++@router.post("/discovery/tracks")
++def discover(query: Query, request: Request, session=Depends(get_session), credentials=Depends(bearer)):
++    return _page(request, session, query, credentials)
++
++
++@router.post("/discovery/random")
++def choose_random(query: Query, request: Request, session=Depends(get_session), credentials=Depends(bearer)):
++    return _page(request, session, query, credentials, True)
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0019_discovery_snapshots.py
+@@ -0,0 +1,29 @@
++"""Shared stable discovery order without duplicating track documents."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0019_discovery_snapshots"
++down_revision = "0018_player_country"
++branch_labels = None
++depends_on = None
++
++def upgrade():
++    op.create_table("discovery_snapshots", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("query_hash", sa.String(64), nullable=False), sa.Column("expires_at", sa.Integer(), nullable=False),
++        sa.Column("version_ids", sa.JSON(), nullable=False))
++    op.create_index("ix_discovery_snapshot_expiry", "discovery_snapshots", ["expires_at"])
++    op.create_index("ix_discovery_names", "track_versions", [sa.text("lower(name)"), "state"])
++    op.create_index("ix_discovery_recent_runs", "runs", ["status", "finished_at", "board_id", "player_id"])
++
++    if op.get_bind().dialect.name == "postgresql":
++        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
++        op.execute("CREATE INDEX ix_discovery_name_trgm ON track_versions USING gin (name public.gin_trgm_ops)")
++        op.execute("CREATE INDEX ix_discovery_creator_trgm ON players USING gin (display_name public.gin_trgm_ops)")
++
++def downgrade():
++    if op.get_bind().dialect.name == "postgresql":
++        op.drop_index("ix_discovery_name_trgm", table_name="track_versions")
++        op.drop_index("ix_discovery_creator_trgm", table_name="players")
++    op.drop_index("ix_discovery_recent_runs", table_name="runs")
++    op.drop_index("ix_discovery_names", table_name="track_versions")
++    op.drop_table("discovery_snapshots")
+--- /dev/null
++++ b/backend/tests/test_discovery_paging.py
+@@ -0,0 +1,209 @@
++"""Global coverage, shared stable order, visibility, confidence and query cost."""
++import time
++import uuid
++import os
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import event, update, text
++from sqlalchemy.engine import make_url
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++from bmt_backend.migrate import upgrade
++from conftest import TestIdentity as DiscoveryIdentity
++
++from bmt_backend import discovery
++from bmt_backend.discovery import DiscoverySnapshot
++from bmt_backend.track_models import Board, Run, RunTicket, Track, TrackVersion
++from bmt_backend.identity_models import Player
++
++
++@pytest.fixture(params=["sqlite",pytest.param("postgres",marks=pytest.mark.postgres)])
++def auth_app(request, tmp_path):
++    endpoint = os.environ.get("BMT_DISCOVERY_TEST_DATABASE_URL","")
++    schema = ""
++    admin = None
++    if request.param == "postgres":
++        if not endpoint: pytest.skip("Owned discovery PostgreSQL lab not supplied")
++        address = make_url(endpoint)
++        assert address.host in ("127.0.0.1","localhost") and address.database == "bmt_discovery_lab"
++        admin = make_engine(endpoint)
++        schema = "bmt_load_"+uuid.uuid4().hex
++        with admin.begin() as connection: connection.execute(text('CREATE SCHEMA "'+schema+'"'))
++        engine = make_engine(endpoint,schema=schema)
++    else:
++        endpoint = "sqlite:///"+(tmp_path/"discovery.sqlite").as_posix()
++        engine = make_engine(endpoint)
++    settings = Settings(database_url=endpoint, object_dir=str(tmp_path/"objects"), google_client_ids=("test-client",),auth_limit_per_minute=10000,write_limit_per_minute=10000,rate_limit_per_minute=10000)
++    app = create_app(settings,engine=engine,identity_verifier=DiscoveryIdentity())
++    try:
++        upgrade(engine)
++        yield app
++    finally:
++        engine.dispose()
++        if admin is not None:
++            with admin.begin() as connection: connection.execute(text('DROP SCHEMA "'+schema+'" CASCADE'))
++            admin.dispose()
++
++
++@pytest.fixture
++def catalog(auth_app, auth_client, sign_in, monkeypatch):
++    identity = sign_in("Discovery Author")
++    owner = identity["player"]["id"]
++    timestamp = int(time.time())
++    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: timestamp+1))
++    with auth_app.state.session_factory() as session:
++        tracks = [dict(id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"discovery-track-{n}")), owner_id=owner, official=n < 9) for n in range(5000)]
++        versions = [dict(id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"discovery-version-{n}")),track_id=tracks[n]["id"],number=1,name=f"Circuit {n:05d}",content_hash="a"*64,manifest={},discovery={"theme":"pine" if n%2 else "desert","points":[[0,0],[10,0],[10,10]]},state="published",published_at=timestamp-n,created_at=timestamp-n,verified_finishers=n%100,rating_sum=0,rating_count=0) for n in range(5000)]
++        session.execute(Track.__table__.insert(),tracks)
++        session.execute(TrackVersion.__table__.insert(),versions)
++        session.commit()
++    return SimpleNamespace(app=auth_app,client=auth_client,tracks=tracks,versions=versions,owner=owner,token=identity["access_token"],timestamp=timestamp)
++
++
++def query(catalog, **body):
++    response = catalog.client.post("/v1/discovery/tracks",json=body)
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++def test_global_search_filters_and_deep_page(catalog):
++    page = query(catalog,search="Circuit 04999",search_kind=1)
++    assert page["total"] == 1 and page["items"][0]["track_id"] == catalog.tracks[4999]["id"]
++    filtered = query(catalog,theme="pine",race_count="high",sort="name")
++    assert filtered["total"] == 1250
++    assert all(row["theme"] == "pine" and row["verified_finishers"] >= 50 for row in filtered["items"])
++    first = query(catalog,sort="name")
++    deep = query(catalog,sort="name",cursor=first["page_cursor"],offset=4980)
++    assert deep["total"] == 5000 and deep["items"][0]["name"] == "Circuit 04980" and deep["next_cursor"] is None
++    assert first["items"][0]["name"] == "Circuit 00000"
++    assert [row["discovery_index"] for row in deep["items"]] == list(range(4980,5000))
++    anchored = query(catalog,sort="name",locate_version=catalog.versions[4983]["id"],fresh=True)
++    assert anchored["offset"] == 4980 and anchored["total"] == 5000 and any(row["version_id"] == catalog.versions[4983]["id"] for row in anchored["items"])
++
++
++def test_order_snapshot_survives_rating_publish_and_cache_restart(catalog):
++    first = query(catalog,sort="score")
++    with catalog.app.state.session_factory() as session:
++        session.execute(update(TrackVersion).where(TrackVersion.id == catalog.versions[30]["id"]).values(rating_sum=500,rating_count=100))
++        session.add(TrackVersion(id=str(uuid.uuid4()),track_id=catalog.tracks[0]["id"],number=2,name="Changed newest",content_hash="b"*64,manifest={},discovery={"theme":"pine","points":[]},state="published",published_at=catalog.timestamp+1,created_at=catalog.timestamp+1))
++        session.commit()
++    catalog.app.state.discovery_memory.clear() # Second replica/restarted API uses the persistent envelope.
++    again = query(catalog,sort="score",cursor=first["page_cursor"],offset=0)
++    assert [v["version_id"] for v in first["items"]] == [v["version_id"] for v in again["items"]]
++    next_page = query(catalog,sort="score",cursor=first["next_cursor"])
++    assert next_page["offset"] == 20 and next_page["items"][0]["discovery_index"] == 20
++    assert not set(v["track_id"] for v in first["items"]) & set(v["track_id"] for v in next_page["items"])
++    fresh = query(catalog,sort="score",fresh=True)
++    assert fresh["items"][0]["track_id"] == catalog.tracks[30]["id"]
++    assert catalog.client.post("/v1/discovery/tracks",json={"sort":"name","cursor":first["page_cursor"]}).status_code == 422
++
++
++def test_shared_first_page_avoids_rebuilding_order(catalog, monkeypatch):
++    original = discovery._ordered_ids
++    calls = []
++    def count(*args): calls.append(1); return original(*args)
++    monkeypatch.setattr(discovery,"_ordered_ids",count)
++    first = query(catalog,feed="new")
++    second = query(catalog,feed="new")
++    catalog.app.state.discovery_memory.clear()
++    third = query(catalog,feed="new")
++    assert first["snapshot"] == second["snapshot"] == third["snapshot"] and len(calls) == 1
++    statements = []
++    def record(_conn,_cursor,sql,*_args): statements.append(sql)
++    event.listen(catalog.app.state.engine,"before_cursor_execute",record)
++    try: query(catalog,feed="new",cursor=first["page_cursor"],offset=4000)
++    finally: event.remove(catalog.app.state.engine,"before_cursor_execute",record)
++    assert len([s for s in statements if "SELECT" in s.upper()]) <= 5
++    assert not any("ORDER BY" in s.upper() and "published_at" in s for s in statements)
++
++
++def test_personal_collections_are_independent_of_preview_cache(catalog):
++    favorite = catalog.tracks[4999]["id"]
++    page = query(catalog,section="favorites",ids=[favorite])
++    assert page["total"] == 1 and page["items"][0]["track_id"] == favorite
++    assert query(catalog,section="favorites",ids=[])["total"] == 0
++    raced = query(catalog,race_history="raced",raced_ids=[favorite])
++    assert raced["total"] == 1 and raced["items"][0]["track_id"] == favorite
++    assert query(catalog,race_history="unraced",raced_ids=[favorite])["total"] == 4999
++    assert catalog.client.post("/v1/discovery/tracks",json={"section":"saved"}).status_code == 401
++    mine = catalog.client.post("/v1/discovery/tracks",json={"section":"saved"},headers={"Authorization":"Bearer "+catalog.token})
++    assert mine.status_code == 200 and mine.json()["total"] == 5000
++
++
++def test_visibility_rechecked_and_unrated_discoverable(catalog):
++    first = query(catalog,feed="new")
++    hidden = first["items"][0]["track_id"]
++    with catalog.app.state.session_factory() as session:
++        session.execute(update(Track).where(Track.id == hidden).values(hidden=True))
++        session.commit()
++    old_page = query(catalog,feed="new",cursor=first["page_cursor"],offset=0)
++    assert all(v["track_id"] != hidden for v in old_page["items"])
++    fresh = query(catalog,feed="new",fresh=True)
++    assert fresh["total"] == 4999 and all(v["rating_average"] is None for v in fresh["items"])
++    assert query(catalog,feed="rated")["total"] == 0
++
++
++def test_confidence_rating_and_global_random(catalog, monkeypatch):
++    with catalog.app.state.session_factory() as session:
++        session.execute(update(TrackVersion).where(TrackVersion.id == catalog.versions[4000]["id"]).values(rating_sum=5,rating_count=1))
++        session.execute(update(TrackVersion).where(TrackVersion.id == catalog.versions[4001]["id"]).values(rating_sum=480,rating_count=100))
++        session.commit()
++    rated = query(catalog,feed="rated")
++    assert rated["items"][0]["track_id"] == catalog.tracks[4001]["id"] and rated["items"][0]["rating_average"] == 4.8
++    import random
++    monkeypatch.setattr(discovery.random,"SystemRandom",lambda: random.Random(17))
++    response = catalog.client.post("/v1/discovery/random",json={"theme":"pine","sort":"name"})
++    assert response.status_code == 200
++    picked = response.json()["items"][0]
++    assert picked["theme"] == "pine" and picked["discovery_index"] > 1000
++
++
++def test_expiry_and_bad_inputs_preserve_documents(catalog):
++    first = query(catalog,feed="new")
++    with catalog.app.state.session_factory() as session:
++        session.execute(update(DiscoverySnapshot).values(expires_at=catalog.timestamp))
++        session.commit()
++    catalog.app.state.discovery_memory.clear()
++    assert catalog.client.post("/v1/discovery/tracks",json={"feed":"new","cursor":first["page_cursor"]}).status_code == 410
++    for body in ({"cursor":"bad"},{"offset":-1},{"feed":"unknown"},{"minimum_rating":6},{"ids":["x"*81]}):
++        assert catalog.client.post("/v1/discovery/tracks",json=body).status_code == 422
++    assert query(catalog,feed="new",fresh=True)["total"] == 5000
++
++
++def test_popular_uses_distinct_recent_verified_drivers(catalog):
++    with catalog.app.state.session_factory() as session:
++        real = [str(uuid.uuid4()) for _ in range(3)]
++        artificial = str(uuid.uuid4())
++        session.add_all([Player(id=value,display_name="Activity fixture",needs_username=True,is_test_driver=value==artificial) for value in [*real,artificial]])
++        session.flush()
++        def finish(track_number, player, age=0, status="verified", manifest=None):
++            board_id = uuid.uuid4().hex+uuid.uuid4().hex
++            ticket_id = str(uuid.uuid4())
++            session.add(Board(id=board_id,version_id=catalog.versions[track_number]["id"],vehicle_id="compact",manifest=manifest or {}))
++            session.flush()
++            session.add(RunTicket(id=ticket_id,player_id=player,board_id=board_id,expires_at=catalog.timestamp+1000))
++            session.flush()
++            session.add(Run(ticket_id=ticket_id,player_id=player,board_id=board_id,replay_hash="a"*64,status=status,finished_at=catalog.timestamp-age))
++            session.flush()
++        for _ in range(8): finish(0,real[0])
++        finish(1,real[1]); finish(1,real[2])
++        finish(2,artificial)
++        finish(2,real[0],manifest={"test_population":True})
++        finish(2,real[1],manifest={"purpose":"creator_test"})
++        finish(2,real[2],age=8*86400)
++        finish(2,real[0],status="failed")
++        session.commit()
++    popular = query(catalog,feed="popular")
++    assert [row["track_id"] for row in popular["items"][:2]] == [catalog.tracks[1]["id"],catalog.tracks[0]["id"]]
++
++
++def test_random_rechecks_sparse_visibility_and_allows_sole_current_track(catalog):
++    initial = query(catalog,sort="name")
++    survivor = catalog.tracks[4999]["id"]
++    with catalog.app.state.session_factory() as session:
++        session.execute(update(Track).where(Track.id != survivor).values(hidden=True))
++        session.commit()
++    picked = catalog.client.post("/v1/discovery/random",json={"sort":"name","cursor":initial["page_cursor"],"exclude":survivor})
++    assert picked.status_code == 200 and picked.json()["items"][0]["track_id"] == survivor
+--- /dev/null
++++ b/backend/schemas/discovery-query-v2.schema.json
+@@ -0,0 +1,117 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "type": "object",
++  "additionalProperties": false,
++  "title": "Beat my track discovery query v2",
++  "properties": {
++    "search": {
++      "type": "string",
++      "maxLength": 80
++    },
++    "search_kind": {
++      "type": "integer",
++      "minimum": 0,
++      "maximum": 2
++    },
++    "theme": {
++      "type": "string",
++      "maxLength": 40
++    },
++    "minimum_rating": {
++      "type": "number",
++      "minimum": 0,
++      "maximum": 5
++    },
++    "age_days": {
++      "type": "integer",
++      "minimum": 0,
++      "maximum": 36500
++    },
++    "race_count": {
++      "enum": [
++        "any",
++        "low",
++        "medium",
++        "high"
++      ],
++      "description": "Compatibility key for distinct verified-driver bands."
++    },
++    "race_history": {
++      "enum": [
++        "any",
++        "raced",
++        "unraced"
++      ],
++      "description": "Client-supplied local completed-race collection."
++    },
++    "ids": {
++      "type": [
++        "array",
++        "null"
++      ],
++      "maxItems": 50000,
++      "items": {
++        "type": "string",
++        "minLength": 1,
++        "maxLength": 80
++      }
++    },
++    "raced_ids": {
++      "type": "array",
++      "maxItems": 50000,
++      "items": {
++        "type": "string",
++        "minLength": 1,
++        "maxLength": 80
++      }
++    },
++    "section": {
++      "enum": [
++        "all",
++        "favorites",
++        "saved"
++      ]
++    },
++    "feed": {
++      "enum": [
++        "recommended",
++        "new",
++        "popular",
++        "rated",
++        "trending"
++      ]
++    },
++    "sort": {
++      "enum": [
++        "recommended",
++        "name",
++        "creator",
++        "score",
++        "plays",
++        "new"
++      ]
++    },
++    "cursor": {
++      "type": "string",
++      "maxLength": 400
++    },
++    "offset": {
++      "type": [
++        "integer",
++        "null"
++      ],
++      "minimum": 0
++    },
++    "fresh": {
++      "type": "boolean"
++    },
++    "exclude": {
++      "type": "string",
++      "maxLength": 80
++    },
++    "locate_version": {
++      "type": "string",
++      "maxLength": 36
++    }
++  }
++}
+--- /dev/null
++++ b/backend/schemas/discovery-page-v2.schema.json
+@@ -0,0 +1,108 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "type": "object",
++  "additionalProperties": false,
++  "title": "Beat my track discovery page v2",
++  "required": [
++    "items",
++    "total",
++    "offset",
++    "snapshot",
++    "page_cursor",
++    "next_cursor",
++    "page_size",
++    "expires_in"
++  ],
++  "properties": {
++    "items": {
++      "type": "array",
++      "maxItems": 20,
++      "items": {
++        "type": "object",
++        "required": [
++          "track_id",
++          "version_id",
++          "content_hash",
++          "name",
++          "creator",
++          "points",
++          "discovery_index",
++          "verified_finishers"
++        ],
++        "properties": {
++          "track_id": {
++            "type": "string"
++          },
++          "version_id": {
++            "type": "string",
++            "minLength": 36,
++            "maxLength": 36
++          },
++          "content_hash": {
++            "type": "string",
++            "pattern": "^[0-9a-f]{64}$"
++          },
++          "name": {
++            "type": "string"
++          },
++          "creator": {
++            "type": "string"
++          },
++          "points": {
++            "type": "array",
++            "maxItems": 96,
++            "items": {
++              "type": "array",
++              "minItems": 2,
++              "maxItems": 2,
++              "items": {
++                "type": "number"
++              }
++            }
++          },
++          "discovery_index": {
++            "type": "integer",
++            "minimum": 0
++          },
++          "verified_finishers": {
++            "type": "integer",
++            "minimum": 0
++          }
++        }
++      }
++    },
++    "total": {
++      "type": "integer",
++      "minimum": 0,
++      "description": "Visible match count at snapshot creation; later hides leave stable unavailable positions."
++    },
++    "offset": {
++      "type": "integer",
++      "minimum": 0
++    },
++    "snapshot": {
++      "type": "string",
++      "minLength": 36,
++      "maxLength": 36
++    },
++    "page_cursor": {
++      "type": "string",
++      "maxLength": 400
++    },
++    "next_cursor": {
++      "type": [
++        "string",
++        "null"
++      ],
++      "maxLength": 400
++    },
++    "page_size": {
++      "const": 20
++    },
++    "expires_in": {
++      "type": "integer",
++      "minimum": 0,
++      "maximum": 1800
++    }
++  }
++}
+--- /dev/null
++++ b/docs/DISCOVERY_PAGING.md
+@@ -0,0 +1,91 @@
++# Community discovery implementation â€” October 7â€“8, 2026
++
++Requirements **B01â€“B07 / B19â€“B20 / B23 / R01 / V03â€“V05 / Q01**. The owner accepted the discovery/load/cost proposals and requested implementation. This slice replaces the partial, locally reordered community list with stable global queries while retaining the established menu art, carousel, publication return and canonical racer.
++
++## Result
++
++- **20-preview pages**, with a virtual carousel spanning the entire result set and at most **12 active cards**. The phone/client keeps **15 nearby pages / 300 previews**; evicted pages can be fetched again at their original positions.
++- Global name/creator search and public filters run before paging. The search drawer makes an independent **250 ms debounced** lookup; it leaves the active gallery alone until Apply/selection. Cached suggestions remain available while the lookup runs. Broad searches offer **Browse all matches** rather than creating thousands of search buttons.
++- **Recommended / New / Popular / Top rated**, plus **Favorites / My tracks**, under Filters. Personal collections fetch their exact logical IDs independently of community preview residency. Raced/Not raced retains the explicit device-history contract. The available count filter is labeled **Verified drivers**, using the actual distinct-finisher counter; it does not claim a completed-race total.
++- Server ordering is retained when pages append. **Refresh** starts a new snapshot; scrolling continues/reloads the current one. Random samples the complete eligible snapshot and rechecks current visibility, including the case where most tracks were hidden since browsing began.
++- Publication opens **Free Race â†’ New**, selects its acknowledged public revision and locates that revision's page even if simultaneous publications put it beyond page one. The temporary handoff pin clears after a valid server result; withdrawal still removes it.
++- Existing backends negotiate compatibility through bootstrap. The legacy path now stores/follows search continuation; modern feed controls are disabled when the server lacks protocol two. Its historical 1,000-entry behavior remains only on that compatibility path.
++
++## Backend and cache contract
++
++`POST /v1/discovery/tracks` accepts the normalized query, opaque snapshot cursor and optional absolute offset. `POST /v1/discovery/random` selects globally under the same query. Responses contain a stable snapshot ID, total-at-creation, absolute card indices, 20-item page, continuation cursor and page token. `locate_version` positions the initial page around an acknowledged publication without changing query eligibility. The query hash binds filters and ownership; cursors cannot be reused across a different query or account collection.
++
++Migration **0019_discovery_snapshots**, following the concurrent **0018_player_country** prerequisite, stores only ordered immutable version IDs, not track documents or preview payloads. A common first query shares its result for **20 seconds**, including across API replicas through the database. Browsing snapshots expire after **30 minutes**; visibility is rechecked on every page/random read. A hide leaves an unavailable position until Refresh rather than shifting every following card. Expired snapshots are deleted in bounded batches on cache misses. Each API keeps at most 64 snapshot entries / 100,000 IDs in memory, with per-query coalescing rather than one global lock around cold database work.
++
++PostgreSQL uses native trigram indexes for name/creator substrings, a recent verified-run index and existing publication/latest-version indexes. Large personal ID lists use one array parameter on PostgreSQL and a JSON table on SQLite. Discovery POSTs spend read budgets and bounded request-body allowances. No new search/cache service, runtime AI, analytics provider, payment integration or hosting resource was added. Cloud SQL's supported extension list was checked before packaging `pg_trgm`: [official extension documentation](https://docs.cloud.google.com/sql/docs/postgres/extensions).
++
++**Provisional ranking defaults**, available for owner review: Recommended interleaves three trusted official choices with one community choice; all eligible tracks remain reachable. Popular orders by distinct actual verified drivers over the preceding seven days and excludes artificial identities, creator-test boards and test populations. Top rated uses five neutral 3.5-star prior observations to reduce single-vote dominance. Cards still show their actual rating average. New includes unrated publications, and Weekly Rivalry's eligibility thresholds are not used as a Free Race gate.
++
++## Retained staging rollout
++
++The existing development backend now advertises `discovery_paging_version: 2`. Successful pre-change Cloud SQL backup: **1791407633405**. Current immutable image:
++
++`europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:06081c2f82d50687fc152abeeeb675b2ebcea5a9479d664d18a4cdb9b80af9af`
++
++The initial ownership/image guard caught a newer unrelated deployment and refused to roll it back. The final image is a minimal overlay over that actual deployed parent (`b486feaaâ€¦`). Existing authentication, country behavior, store/rivalry code, accounts, tracks, original share links and records are preserved. The schema prerequisite adds its approved country column/data before 0019; country UI/auth behavior was not replaced by this slice.
++
++All **98 packaged game files** remain byte-identical to the parent; game digest **de432eebe52d9edbb1ad4476f13267cc4fd5b8687ff07a3f69afa248903d4a01**. The inherited engine/native contract stays physics **0.52**, compiler **22**, rules **v19**, five laps. Matching API/worker/migration/smoke/catalog templates use the new image. Existing CPU/memory/instance counts and protection/retention settings remain. This update adds no hosting instances or subscriptions.
++
++The packaged native replay/storage/schema smoke passed after rollout. Public discovery and the actual Star menu/search were checked from an isolated guest session/cache; no saved owner session was read and no player race/PB/purchase was submitted. Snapshot cache rows are internal read-model state.
++
++## Actual checks and measurements
++
++Pinned **4.7.2.stable.official.ed1daf0bf**, through `scripts/dev.ps1`:
++
++| Check | Actual result |
++| --- | --- |
++| Real virtual carousel / 5,000 server-shaped records, complete traversal, eviction/reload, stale queries, invalid pages, global search/favorites, sizing and five captures | **274 checks, zero failures**, graphical; earlier headless **268** before final sizing assertion |
++| Actual public staging catalog, Star/download/selection, global search, feed controls, card footers, desktop/compact captures | **15 checks, zero failures; 28 public tracks** |
++| Original publication regression | **22 checks, zero failures** |
++| App flow / offline catalog / menu presentation / recovery | **99 / 21 / 48 / 86 checks, zero failures** |
++| Discovery contracts on SQLite and owned PostgreSQL 17 | **18 pytest cases passed**, one existing Starlette warning |
++| Real HTTP cloud library and durable publishing with protocol two explicitly negotiated | **2 tests passed**, including lost response, cache-index recovery, new revision and withdrawal |
++| Existing auth/lifecycle/scalability batch | **58 passed / 3 skipped / 21 PostgreSQL cases deselected** |
++| Updated legacy diagnostic | **6 checks, zero failures**; search now reaches 40 results through two requests; original analysis source/results retained separately |
++| Ruff F/E9, task whitespace | Passed; normal repository CRLF notices only |
++
++Owned PostgreSQL **17.11**, **1 CPU / 512 MiB**, **50,000 synthetic tracks / 100 authors**, sequential Windows TestClient, no TLS/mobile latency: warm page p95 **15â€“71 ms** by query; deep page p95 **28 ms**; random p95 **98 ms**. Cold broad queries **326â€“407 ms**, rare-name cold **26 ms**, creator cold **80 ms**. The rare-name plan uses the trigram bitmap index. This is a local sequential benchmark, not deployed concurrency/capacity proof; cold broad queries exceed the earlier provisional 200 ms target. [Exact benchmark and plan](evidence/discovery-paging-2026-10-07/postgres-50000.json). The labeled PostgreSQL lab and its private connection files were removed after testing.
++
++Actual commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_discovery_pages.gd -Graphical
++$env:BMT_STAGING_API_URL = 'https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_discovery_live.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_discovery.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCatalog
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestMenus
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_review_followups.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendTestLifecycle
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/analyse_discovery_scale.gd
++.tools/backend-venv/Scripts/python.exe .tools/discovery_pg_lab.py start
++.tools/backend-venv/Scripts/python.exe .tools/discovery_pg_lab.py test
++.tools/backend-venv/Scripts/python.exe .tools/discovery_pg_benchmark.py
++.tools/backend-venv/Scripts/python.exe .tools/discovery_pg_lab.py stop
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_auth.py backend/tests/test_track_lifecycle.py backend/tests/test_scalability.py -q -k 'not postgres' --tb=short
++.tools/backend-venv/Scripts/python.exe -m ruff check --select F,E9 backend/bmt_backend/discovery.py backend/tests/test_discovery_paging.py backend/bmt_backend/migrations/versions/0019_discovery_snapshots.py
++```
++
++Owned ignored operator `.tools/discovery_rollout.py`: `inspect`, `build`, `backup`, `migrate`, `deploy`, `smoke`. Frozen/overlay source, exact parent/image, successful backup and ownership checks protect the existing retained environment. Build checks the migration graph and actual native manifest as the runtime UID. No production deployment occurred.
++
++Corrected intermediate failures remain in the task record: initial migration-number collision with concurrent country work; ambiguous ORM page join; PostgreSQL fixture's schema-prefix guard; fixture empty-string search; missing retained fixture metadata; publication pin persisting after withdrawal; missing migration prerequisite in the parent image; container home ownership causing a rejected native startup; card minimum size being overwritten by `_ready()`; two unused imports and a mistyped test path. Guards, assertions, native error detection and schema/ownership checks were retained. The failed migration stopped before SQL changes. Runtime packaging ownership was fixed rather than suppressing engine errors.
++
++## Changed files and evidence
++
++Runtime: `game/backend/discovery_pages.gd`, `cloud_tracks.gd`, `backend_client.gd`; `game/core/app.gd`; `game/ui/track_browser.gd`, `track_catalog.gd`, `track_discovery_provider.gd`, `track_filter_drawer.gd`, `track_search_drawer.gd`; backend `bmt_backend/discovery.py`, `app.py`, `middleware.py`, `security.py`, `migrations/env.py`, `migrations/versions/0019_discovery_snapshots.py`. Contracts: `backend/schemas/discovery-query-v2.schema.json`, `discovery-page-v2.schema.json`.
++
++Tests: `backend/tests/test_discovery_paging.py`, `game/tests/test_discovery_pages.gd`, `test_discovery_live.gd`, protocol negotiation in `test_track_lifecycle.gd`, and the updated legacy `analyse_discovery_scale.gd`. Documentation: this report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, task-start sources, source hashes, logs and scoped Git patch. Concurrent physics/rules, soundtrack, country and predictive-driver source work remains outside the task patch.
++
++Inspected actual captures: [Star desktop](evidence/discovery-paging-2026-10-07/live-star-desktop.png), [compact Star](evidence/discovery-paging-2026-10-07/live-star-compact.png), [global search](evidence/discovery-paging-2026-10-07/live-global-search.png), [filter drawer](evidence/discovery-paging-2026-10-07/live-filter-drawer.png). Earlier clipped-card captures were replaced only within this task's evidence after correction; the prior publication-review captures are preserved.
++
++## Remaining acceptance
++
++Restart the desktop app to load the updated client. The test backend is already updated. Owner ranking/visual acceptance, actual phone touch/readability/frame-time/memory, long-session expiry handling and concurrent/unique-query workload remain to measure. Database snapshot ID storage and cold whole-query materialization need monitoring as catalogs/query diversity grow; cache miss timing is not an achieved 200 ms gate.
++
++No Android export/install/device exercise or full Validate was performed; phone attachment was not checked. The separate current workspace physics **0.53 / rules v20** changes were intentionally excluded from this deployment and still need their own matching verifier rollout for online racing. This discovery task did not migrate old scores or change pinned rivalry contracts.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
++
+ 2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
+ 
+ 2026-10-07 MUS20-MUS27/G01/R01/Q01/V06: owner-directed "music locks in" band world and higher tempo integrated: signature D-E-A-F#, recorded guitar/bass/acoustic kit, five related six-layer palettes, race144/menu112BPM; confidence uses clean gates/line/streak and recorded personal/rival pace, no raw-speed normalization. Reserved soar at recorded59.982s, musical setbacks/rebuild, once-per-lap two-beat PB breath and real-results motif/PB sting. Final soundtrack1158/graphical1163/flow29, App99/ghost38/rewind57/vehicle1434 checks pass; ghost fixture27 warnings retained. 37 assets/160 combinations/18 real captures unclipped; exact loops/breath/pause/hover, browser9 previews validated. Earlier tempo/renders preserved; targeted tremolo-seam/sparse-backtrack/decoder fixes retain failing evidence. Canonical concurrent work excluded, no phone test/export/install/full Validate/backend action; artist/AAA approval pending. Commands/files/source licences/scoped checkpoint: docs/LOCKED_IN_SOUNDTRACK.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
++
+ 2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
+ 
+ 2026-10-07 TD02-TD03/TD05-TD06/TD08-TD09/T01-T04/Q01: owner-proposed precomputed trajectories and predictive artificial drivers implemented locally as profiled-trajectory-4. Half-metre connected corridors/bridge hints, geometric curvature and cyclic speed envelopes, canonical pilot qualification, bounded Frenet LTV MPC10Hz/1.6s and persistent derived cache; ordinary physics120Hz/five ordered laps unchanged. Final27/27 independently verified vs26/27, median21.1% faster and recorded contacts8346-to5 on identical physics0.53/compiler22/rules20; four circuits remain slower. Native1382/parse347/App99 and affected backend49 pass/4 skip/15 deselected, lint pass; five-car disturbed recovery and sharp Star/spline proofs pass. Bridge cache planning4082.5-to1.3ms, mean update0.78ms and exact cold/warm controls. Development-only committed-upload recovery preserves older controller results after cache loss; errors stop only owned processes. Inspected comparison chart, source hashes/scoped patch and normalized records retained. No cloud/backend rollout, migration, phone attachment check/device test, Android export/install/full Validate or new population. Commands/files/corrected failures/limitations: docs/PREDICTIVE_TEST_DRIVERS.md.
+@@ -1267,4 +1269,3 @@
+ ## Locked-in band world and 144 BPM steering, 2026-10-07
+ 
+ 2026-10-07 MUS20-MUS27/G01/R01/Q01/V06: owner-directed "music locks in" band world and higher tempo integrated: signature D-E-A-F#, recorded guitar/bass/acoustic kit, five related six-layer palettes, race144/menu112BPM; confidence uses clean gates/line/streak and recorded personal/rival pace, no raw-speed normalization. Reserved soar at recorded59.982s, musical setbacks/rebuild, once-per-lap two-beat PB breath and real-results motif/PB sting. Final soundtrack1158/graphical1163/flow29, App99/ghost38/rewind57/vehicle1434 checks pass; ghost fixture27 warnings retained. 37 assets/160 combinations/18 real captures unclipped; exact loops/breath/pause/hover, browser9 previews validated. Earlier tempo/renders preserved; targeted tremolo-seam/sparse-backtrack/decoder fixes retain failing evidence. Canonical concurrent work excluded, no phone test/export/install/full Validate/backend action; artist/AAA approval pending. Commands/files/source licences/scoped checkpoint: docs/LOCKED_IN_SOUNDTRACK.md.
+-

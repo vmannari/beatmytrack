@@ -1,0 +1,314 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -29,7 +29,6 @@
+ var track_markers: Array[ColorRect] = []
+ var detail_route: LapRouteView
+ const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
+-const COMPACT_ART: Texture2D = preload("res://assets/menu/rivalry_compact_cutout_v1.png")
+ const STANDINGS_GUTTER: int = 12
+ const QUIET_BORDER := Color("2e495a88")
+ const Badge = preload("res://ui/biome_badge.gd")
+@@ -247,10 +246,10 @@
+ 	field.add_theme_constant_override("separation",12)
+ 	parent.add_child(field)
+ 	var podium := HBoxContainer.new()
+-	podium.custom_minimum_size.y = 170
++	podium.custom_minimum_size.y = 116
+ 	podium.add_theme_constant_override("separation",10)
+ 	field.add_child(podium)
+-	for _position: int in range(3): _loading_block(podium,148).size_flags_vertical = Control.SIZE_SHRINK_END
++	for position: int in [1,0,2]: _loading_block(podium,116 if position == 0 else 104).size_flags_vertical = Control.SIZE_SHRINK_END
+ 	var standings: VBoxContainer = _card(field,"",12)
+ 	_copy(standings,"STANDINGS",27)
+ 	_copy(standings,"Loading…",18,MenuStyle.MUTED)
+@@ -337,7 +336,7 @@
+ 	subtitle.tooltip_text = subtitle.text
+ 	track_rows.clear()
+ 	track_markers.clear()
+-	for index: int in range(model.tracks.size()): _track_row(tracks,index,finale)
++	for index: int in range(model.tracks.size()): _track_row(tracks,index)
+ 	if finale:
+ 		var next: Button = _action(tracks,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
+ 		next.custom_minimum_size.y = 64
+@@ -421,6 +420,11 @@
+ 		gap.custom_minimum_size.x = 54
+ 		gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 		if own: own_panel = panel
++	if standings_scroll_offset >= 0:
++		# Seed the real range before its first draw, rather than painting at zero
++		# and restoring the remembered rows a few frames later.
++		scroll.get_v_scroll_bar().max_value = rows.get_combined_minimum_size().y
++		scroll.scroll_vertical = standings_scroll_offset
+ 	if own_panel != null: _reveal_player.call_deferred(scroll,own_panel)
+ 
+ func _reveal_player(scroll: ScrollContainer, player: Control) -> void:
+@@ -434,8 +438,7 @@
+ 
+ func _ensure_player_visible(scroll: ScrollContainer, player: Control) -> void:
+ 	if is_inside_tree() and is_instance_valid(scroll) and is_instance_valid(player):
+-		if standings_scroll_offset >= 0: scroll.scroll_vertical = standings_scroll_offset
+-		else: scroll.ensure_control_visible(player)
++		if standings_scroll_offset < 0: scroll.ensure_control_visible(player)
+ 		standings_ready = true
+ 
+ func _display_name(row: Dictionary) -> String:
+@@ -458,7 +461,7 @@
+ func _podium(parent: Control) -> void:
+ 	var podium := HBoxContainer.new()
+ 	podium.name = "RivalryPodium"
+-	podium.custom_minimum_size.y = 170
++	podium.custom_minimum_size.y = 116
+ 	podium.add_theme_constant_override("separation",10)
+ 	parent.add_child(podium)
+ 	var leaders: Array[Dictionary] = []
+@@ -466,7 +469,8 @@
+ 		if row.get("rank") != null and leaders.size() < 3: leaders.append(row)
+ 	if leaders.is_empty():
+ 		var intro: VBoxContainer = _card(podium,"winter",12)
+-		_copy(intro,"THE WEEK STARTS HERE",28,MenuStyle.ACCENT)
++		intro.add_theme_constant_override("separation",4)
++		_copy(intro,"THE WEEK STARTS HERE",24,MenuStyle.ACCENT)
+ 		_copy(intro,"Five circuits. Unlimited attempts.",17)
+ 		_copy(intro,"Set your first time to join the battle.",16,MenuStyle.MUTED)
+ 		return
+@@ -477,7 +481,7 @@
+ 		var card: VBoxContainer = _card(podium,"",9)
+ 		var panel: PanelContainer = card.get_parent()
+ 		panel.name = "RivalryPodium_"+str(position+1)
+-		panel.custom_minimum_size.y = 170 if position == 0 else 148
++		panel.custom_minimum_size.y = 116 if position == 0 else 104
+ 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
+ 		panel.size_flags_stretch_ratio = 1.08 if position == 0 else 1.0
+ 		var style: StyleBoxFlat = MenuStyle.card(9)
+@@ -491,12 +495,12 @@
+ 		card.add_child(rank)
+ 		var icon := TextureRect.new()
+ 		icon.texture = MenuIcon.texture("trophy")
+-		icon.custom_minimum_size = Vector2(32,34) if position == 0 else Vector2(28,30)
++		icon.custom_minimum_size = Vector2(26,28) if position == 0 else Vector2(24,26)
+ 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+ 		icon.modulate = color
+ 		rank.add_child(icon)
+-		_copy(rank,rank_text(driver),38 if position == 0 else 33,color)
++		_copy(rank,rank_text(driver),32 if position == 0 else 29,color)
+ 		var identity := HBoxContainer.new()
+ 		identity.add_theme_constant_override("separation",6)
+ 		card.add_child(identity)
+@@ -506,20 +510,9 @@
+ 		driver_name.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 		driver_name.autowrap_mode = TextServer.AUTOWRAP_OFF
+ 		driver_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-		_copy(card,str(int(driver.points))+" pts",22,color)
+-		_space(card)
+-		var car := TextureRect.new()
+-		car.name = "RivalryPodiumCar_"+str(position+1)
+-		car.texture = COMPACT_ART if model.vehicle_id == "compact" else VehicleCatalog.artwork(model.vehicle_id)
+-		car.custom_minimum_size.y = 72 if position == 0 else 60
+-		car.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-		car.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-		car.modulate = Color("fff0cd") if position == 0 else Color("dbe9f5") if position == 1 else Color("f8cfb9")
+-		car.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+-		car.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		card.add_child(car)
+-
+-func _track_row(parent: Control, index: int, finale: bool) -> void:
++		_copy(card,str(int(driver.points))+" pts",20,color)
++
++func _track_row(parent: Control, index: int) -> void:
+ 	var track: Dictionary = model.tracks[index]
+ 	var line := HBoxContainer.new()
+ 	line.name = "RivalryTrackRow_"+str(index)
+@@ -595,12 +588,6 @@
+ 	var delta: Label = _copy(times,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms") != null and not gap.leader.is_empty() and gap.own.rank != 1 else "Leading" if gap.own.get("rank") == 1 else "Leader time" if not gap.leader.is_empty() else "Set a time",13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
+ 	delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 	_ignore_tree(content_row)
+-	var action: Button = _action(line,"","OpenRivalryTrack_"+str(index),func() -> void: track_requested.emit(index))
+-	action.icon = MenuIcon.texture("arrow")
+-	action.custom_minimum_size = Vector2(48,54)
+-	action.size_flags_horizontal = Control.SIZE_FILL
+-	action.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	action.tooltip_text = "View results" if finale else "View "+str(track.name)
+ 
+ func _select_track(index: int) -> void:
+ 	if selected != index: track_selected.emit(index)
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -801,6 +801,7 @@
+ func _commit_menu_neighbor(direction: int) -> void:
+ 	if screen == "rivalry": _remember_rivalry_standings(content)
+ 	var neighbor: Dictionary = menu_neighbors[direction]
++	if neighbor.screen == "rivalry": _reset_rivalry_entry_view()
+ 	_refresh_cached_menu_page(neighbor.screen, neighbor.content)
+ 	var offset: float = menu_body.position.x
+ 	_stop_menu_page_motion()
+@@ -870,6 +871,7 @@
+ func _navigate_menu_page(next: String) -> void:
+ 	# Explicit refreshes still use _show_screen. User navigation promotes the same
+ 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
++	if next == "rivalry": _reset_rivalry_entry_view()
+ 	if menu_page_motion != null: _finish_menu_page_slide()
+ 	if not is_instance_valid(menu_body) or not menu_body.is_inside_tree() or not root_ui.is_ancestor_of(menu_body):
+ 		_show_screen(next)
+@@ -1348,6 +1350,14 @@
+ 	challenge_recording = recording
+ 	challenge_result_view = false
+ 	await _start_race(track,false,guest,issued)
++
++func _reset_rivalry_entry_view() -> void:
++	if rivalry_racing and rivalry_section in ["race_results","result"] and is_instance_valid(game):
++		remove_child(game)
++		game.queue_free()
++		game = null
++		rivalry_racing = false
++	rivalry_section = "overview"
+ 
+ func _open_rivalry() -> void:
+ 	if _rivalry_entry_pending: return
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -52,7 +52,7 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-navigation-2026-10-09/ui")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-hub-compact-2026-10-09/ui")
+ 	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
+ 	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
+ 	var fixture := WeeklyRivalry.new(true)
+@@ -99,7 +99,8 @@
+ 		var winner: Control = app.root_ui.find_child("RivalryPodium_1",true,false)
+ 		var runner: Control = app.root_ui.find_child("RivalryPodium_2",true,false)
+ 		check(winner.size.y > runner.size.y and winner.position.y < runner.position.y,"centre winner has a taller podium card")
+-		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) != null,"podium shows the fictional vehicle artwork")
++		check(winner.size.y <= 128,"the podium remains compact enough to prioritize standings")
++		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) == null,"podium omits car pictures")
+ 		var left_panel: Control = app.root_ui.find_child("RivalryDriversPanel",true,false)
+ 		var right_panel: Control = app.root_ui.find_child("RivalryTracksPanel",true,false)
+ 		check(absf(left_panel.get_global_rect().end.y-right_panel.get_global_rect().end.y) < 1.0,"main panel bottom edges align")
+@@ -107,6 +108,8 @@
+ 		check(player_points.text == str(int(WeeklyRivalry.self_row(app.rivalry.model.standing()).points)),"highlighted player row shows the model points")
+ 		var player_row: Control = app.root_ui.find_child("Driver_you",true,false)
+ 		var table_scroll: Control = app.root_ui.find_child("RivalryStandingsScroll",true,false)
++		check(table_scroll.size.y >= winner.size.y*1.65,"standings have substantially more vertical room than the podium")
++		print("RIVALRY_HUB_LAYOUT: ",dimensions," podium=",winner.size.y," standings=",table_scroll.size.y)
+ 		check(table_scroll.get_global_rect().grow(1).encloses(player_row.get_global_rect()),"the highlighted player row is visible within the standings viewport")
+ 		var gap_header: Control = app.root_ui.find_child("RivalryColumn_GAP",true,false)
+ 		var player_gap: Control = app.root_ui.find_child("RivalryPlayerGap_you",true,false)
+@@ -117,13 +120,11 @@
+ 		check(app.root_ui.find_child("RivalryDataNotice",true,false) == null,"no debug footer remains")
+ 		check(app.root_ui.find_child("RivalryFloatingNavigation",true,false) == null,"overview needs no redundant section tabs")
+ 		check(app.root_ui.find_child("RivalryStartRace",true,false) == null and app.root_ui.find_child("RivalryRaceSelected",true,false) == null,"race starts only from track details")
+-		var car_image: Image = WeeklyRivalryPage.COMPACT_ART.get_image()
+-		check(car_image.detect_alpha() != Image.ALPHA_NONE,"compact podium art keeps genuine alpha")
+ 		await capture("overview",dimensions)
+ 		for slot: int in range(5):
+ 			var choose: Button = app.root_ui.find_child("SelectRivalryTrack_"+str(slot),true,false)
+-			var open: Button = app.root_ui.find_child("OpenRivalryTrack_"+str(slot),true,false)
+-			check(choose != null and open != null,"overview exposes every circuit and its detail action")
++			check(choose != null and app.root_ui.find_child("OpenRivalryTrack_"+str(slot),true,false) == null,"each track has one clickable row and no separate arrow")
++			check(absf(choose.get_global_rect().size.x-(choose.get_parent() as Control).get_global_rect().size.x) < 1.0,"the track row fills the available width")
+ 			check(app.menu_body_slot.get_global_rect().encloses(choose.get_global_rect()),"all five circuits are visible immediately")
+ 			var overview: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+ 			var early_launch: Array[int] = []
+@@ -148,15 +149,33 @@
+ 			(app.root_ui.find_child("RivalryBackToOverview",true,false) as Button).pressed.emit()
+ 			await settle()
+ 			check(app.rivalry_section == "overview" and app.rivalry_track == slot,"Back to Rivalry returns to the overview and remembers the track")
+-			(app.root_ui.find_child("OpenRivalryTrack_"+str(slot),true,false) as Button).pressed.emit()
+-			await settle()
+-			check(app.rivalry_section == "detail" and app.rivalry_track == slot,"the row arrow opens the same track details")
+-			(app.root_ui.find_child("RivalryBackToOverview",true,false) as Button).pressed.emit()
+-			await settle()
++		(app.root_ui.find_child("SelectRivalryTrack_0",true,false) as Button).pressed.emit()
++		await settle()
++		app._rivalry_changed()
++		await settle()
++		check(app.rivalry_section == "detail","background refresh preserves an open track detail")
++		app._open_rivalry()
++		await settle()
++		check(app.rivalry_section == "overview" and app.root_ui.find_child("RivalryTracksPanel",true,false) != null,"opening Rivalry again always returns to its overview")
++		(app.root_ui.find_child("SelectRivalryTrack_1",true,false) as Button).pressed.emit()
++		await settle()
++		app._navigate_menu_page("garage")
++		await settle()
++		app._navigate_menu_page("rivalry")
++		await settle()
++		check(app.rivalry_section == "overview" and app.root_ui.find_child("RivalryDriversPanel",true,false) != null,"returning from a primary menu opens tracks and standings")
++		var suspended_race := Node.new()
++		app.add_child(suspended_race)
++		app.game = suspended_race
++		app.rivalry_racing = true
++		app.rivalry_section = "result"
++		app._open_rivalry()
++		await settle()
++		check(app.rivalry_section == "overview" and app.game == null and not is_instance_valid(suspended_race),"explicit Rivalry entry releases a suspended result race and opens the hub")
+ 		app.rivalry.model.tracks[2].available = false
+ 		app._rivalry()
+ 		await settle()
+-		var unavailable: Button = app.root_ui.find_child("OpenRivalryTrack_2",true,false)
++		var unavailable: Button = app.root_ui.find_child("SelectRivalryTrack_2",true,false)
+ 		check(not unavailable.disabled,"an unavailable track remains open for inspection")
+ 		unavailable.pressed.emit()
+ 		await settle()
+--- a/docs/RIVALRY_NAVIGATION.md
++++ b/docs/RIVALRY_NAVIGATION.md
+@@ -1,3 +1,5 @@
++2026-10-09 follow-up: separate track arrows and podium car pictures are removed; explicit Rivalry entry always opens the overview and a compact podium gives the standings more height. See [current compact hub and verification](RIVALRY_HUB_COMPACT.md).
++
+ # Rivalry track entry — 2026-10-09
+ 
+ Requirements: WR01–WR02, WR07–WR10, TD09, R01, V03–V05, Q01. The owner's two supplied screenshots authorize using the overview as the championship hub and the existing track detail as the race entry point. This supersedes the separate Tracks/Standings sections and direct race starts from the overview.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Rivalry compact hub correction (2026-10-09)
++The owner removes the separate track arrows: each full-width track row opens detail. Explicit Rivalry entry must always open the overview with its five tracks and standings, including repeat activation and returns from primary menus; background refresh preserves the current detail/results. Compact the podium positions, remove their car pictures and expand the standings vertically while retaining the slightly taller gold winner, real rank/points, player highlight, remembered scrolling and aligned panels. This supersedes the arrows, remembered entry section and podium vehicle art in earlier overrides. Preserve populated first load, vertical Race transitions, detail-based race start, five laps, normal results first, best-only verified scoring and public isolation. See `docs/RIVALRY_HUB_COMPACT.md` for actual changes, checks and screenshots.
+ 
+ ## Rivalry track-entry override (2026-10-09)
+ The owner requests overview track rows/arrows to open the existing track detail, with races started from its Race action and Back to Rivalry returning to the overview. Remove redundant Tracks/Standings tabs, the single Overview tab and overview race starts; keep the podium, five immediately visible tracks and scrollable standings in the hub. Completed-week details remain inspectable with racing disabled. This supersedes the separate rivalry sections and direct overview races in earlier overrides. Preserve five-lap racing, ghost choice, normal results first, best-only verified scoring and internal development/public-population isolation. See `docs/RIVALRY_NAVIGATION.md` for actual files, commands, screenshots and remaining acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
++
+ 2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
+ 
+ 2026-10-09 SND16-SND17/SND05/SND08/SND11/SND14-SND15/G01/R01/Q01/V06: owner Windows collision delay reproduced through own-process WASAPI output: 130-144ms/median138.16 despite reported10ms; requested3ms ineffective. New bounded RAW Windows impact adapter/minimum one queued period gives actual Game wall39-46ms/median43.95, visible/audio62 physical81 and one cue. Native calibration separates capture/render clocks; no zero-acoustic claim. Four shared body slots, volume/mute/pause/reset/callback/fallback guards retained; final output9/native16/headless2/timing43/attack22/wall167/vehicle1442/desert28/App99/rewind57/parser394 checks pass. Reproducible1470270-byte DLL/CC10E916, existing bindings/compiler only; Android1220-file content ZIP excludes all Windows modules, three checks pass. Contaminated wall capture rejected/repeated; initial compiler/activation/timeout/locked-DLL failures retained and corrected without killing owner editor. Attack83 shutdown references retained. No phone attachment check/physical Android audio/APK install/full Validate/physics merge/backend/production action. Restart/owner connected-speaker-Bluetooth/device-switch acceptance remains. Files/actual commands/captures/limits/scoped checkpoint: docs/WINDOWS_COLLISION_LATENCY.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
++
+ 2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
+ 
+ 2026-10-09 SND16-SND17/SND05/SND08/SND11/SND14-SND15/G01/R01/Q01/V06: owner Windows collision delay reproduced through own-process WASAPI output: 130-144ms/median138.16 despite reported10ms; requested3ms ineffective. New bounded RAW Windows impact adapter/minimum one queued period gives actual Game wall39-46ms/median43.95, visible/audio62 physical81 and one cue. Native calibration separates capture/render clocks; no zero-acoustic claim. Four shared body slots, volume/mute/pause/reset/callback/fallback guards retained; final output9/native16/headless2/timing43/attack22/wall167/vehicle1442/desert28/App99/rewind57/parser394 checks pass. Reproducible1470270-byte DLL/CC10E916, existing bindings/compiler only; Android1220-file content ZIP excludes all Windows modules, three checks pass. Contaminated wall capture rejected/repeated; initial compiler/activation/timeout/locked-DLL failures retained and corrected without killing owner editor. Attack83 shutdown references retained. No phone attachment check/physical Android audio/APK install/full Validate/physics merge/backend/production action. Restart/owner connected-speaker-Bluetooth/device-switch acceptance remains. Files/actual commands/captures/limits/scoped checkpoint: docs/WINDOWS_COLLISION_LATENCY.md.
+--- /dev/null
++++ b/docs/RIVALRY_HUB_COMPACT.md
+@@ -0,0 +1,24 @@
++# Compact Rivalry hub — 2026-10-09
++
++Requirements: WR01–WR02, WR08–WR10, R01, V03–V05, Q01. The owner requests removing separate track arrows, always entering Rivalry on the overview, and increasing standings height by compacting the podium and removing its car pictures. This supersedes those parts of the preceding track-entry and podium references.
++
++Every track is one full-width clickable row. Its former arrow button is removed; clicking the row still opens track detail and racing starts there. Explicit Rivalry entry, repeated trophy activation, primary menu navigation and committed horizontal page returns reset the section to the overview. Background refresh keeps an open detail or result in place. Entry from rivalry results releases the suspended race through the existing cleanup pattern. The populated-first-load wait, vertical Race transitions and account/request fences remain.
++
++The gold winner remains slightly taller than the silver/bronze cards. Podium minimum heights change from 170/148 to 116/104 logical pixels; trophies and rank text are smaller. Car pictures and their empty spacer are removed, including the now-unused compact-art preload. Scenery and source assets remain. Loading placeholders and the unranked introduction use the same compact area. Standings retain their original rows, columns, scrollbar gutter, remembered scroll position and highlighted player. Native measurements show the winning card at **116 logical pixels** and the standings scroll viewport at **284 logical pixels** across the three tested resolutions, with seven complete standings rows visible. The five track rows remain immediately visible and both main panels still align at the bottom.
++
++Runtime changes: `game/ui/weekly_rivalry_page.gd` and `game/core/app.gd`. Updated checks: `game/tests/test_weekly_rivalry.gd`. Documentation: this report, the current-guide note in `docs/RIVALRY_NAVIGATION.md`, `AGENTS.md`, status and phase plan. No canonical simulation, backend, scoring, ghost contract, rules, track data, asset file or gameplay camera change.
++
++Actual commands use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned `4.7.2.stable.official.ed1daf0bf`, and isolated `APPDATA=build/rivalry-hub-compact-2026-10-09/userdata`. Approved execution allows Godot's Windows certificate-store reads; existing player files and certificate configuration are untouched.
++
++| Command | Actual result |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical` | Final **1,151 checks, zero failures**, at 1280×720, 960×540 and 1600×720. Covers all five full-width rows, absent arrows/art, compact podium and expanded standings measurements, detail/ghost/Race/back flow, repeated entry, primary-menu return, suspended-result cleanup, background refresh, completed/busy/unavailable gates and touch/clipping bounds. 21 native screenshots. |
++| `TestScript -ScriptPath res://tests/test_race_mode_carousel.gd -Graphical` | **42 checks, zero failures**; vertical directions, fixed header/rail, refresh and interrupted transitions. No capture directory set for this run. |
++| `TestScript -ScriptPath res://tests/test_rivalry_entry.gd` | **66 checks, zero failures**, headless; populated first load, refresh, automatic membership, account fencing, errors and canceled entry. |
++| `TestApp` | **99 checks, zero failures**. |
++
++Reviewed [desktop overview](evidence/rivalry-hub-compact-2026-10-09/ui/overview-1280x720.png) and [compact overview](evidence/rivalry-hub-compact-2026-10-09/ui/overview-960x540.png). These use isolated layout fixtures, never substituted live scores. Existing full detail/results/verification-pending/completed-week/forming-group captures are also retained by the same regression. No new player-facing explanation or diagnostic text is added.
++
++The final native run paused its first capture while its window was minimized. Restoring only the verified test process's window resumed capture and completed all checks; existing owner/editor windows were untouched.
++
++The task-only review patch, original source copies and verification record under `docs/evidence/rivalry-hub-compact-2026-10-09/` retain the checkpoint and preserve unrelated work. Remaining acceptance: owner visual/interaction approval and physical-phone touch/legibility/performance. No phone attachment check or device test, Android export/install, full Validate/replay regression, new backend HTTP test, staging or production action was performed.

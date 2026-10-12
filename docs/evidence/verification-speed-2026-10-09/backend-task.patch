@@ -1,0 +1,511 @@
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -69,6 +69,7 @@
+         run = session.scalar(
+             select(Run)
+             .join(Board, Board.id == Run.board_id)
++            .join(Player, Player.id == Run.player_id)
+             .outerjoin(QueuePlayer, QueuePlayer.player_id == Run.player_id)
+             .where(
+                 pinned_filter(Board.manifest, manifest),
+@@ -77,7 +78,7 @@
+                     and_(Run.status == "verifying", Run.lease_until <= now()),
+                 )
+             )
+-            .order_by(func.coalesce(QueuePlayer.last_claim_at, 0), Run.created_at, Run.id)
++            .order_by(Player.is_test_driver, func.coalesce(QueuePlayer.last_claim_at, 0), Run.created_at, Run.id)
+             .with_for_update(skip_locked=True, of=Run)
+             .limit(1)
+         )
+@@ -280,6 +281,7 @@
+         session.commit()
+         logger.info("verification_complete", extra={"run_id": run_id, "time_ticks": result["time_ticks"],
+             "worker_id": worker_id, "queue_wait_seconds": queue_wait,
++            "verification_method":result.get("verification_method","canonical-replay"),
+             "verification_seconds":round(time.monotonic()-started,4)})
+     heartbeat(app,worker_id,phase="idle",last_verification_seconds=round(time.monotonic()-started,4))
+     app.state.pending_finalization = None
+--- a/backend/bmt_backend/observability.py
++++ b/backend/bmt_backend/observability.py
+@@ -15,7 +15,7 @@
+             value = {"event": message}
+         value["level"] = record.levelname.lower()
+         for field in ("run_id", "time_ticks", "failure_code", "worker_id",
+-                      "verification_seconds", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
++                      "verification_seconds", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
+             if hasattr(record, field):
+                 value[field] = getattr(record, field)
+         # Record only exception type: arbitrary exception text can include submitted data.
+--- a/backend/bmt_backend/automatic_test_drivers.py
++++ b/backend/bmt_backend/automatic_test_drivers.py
+@@ -13,6 +13,7 @@
+ 
+ from sqlalchemy import select, update
+ 
++from .background_work import BackgroundControl, BackgroundYielded
+ from .countries import test_country
+ from .identity_models import Identity, Player
+ from .rivalry_models import RivalryGroup, RivalryMember
+@@ -138,13 +139,14 @@
+             def generator(*args, **kwargs):
+                 if stopping(app):
+                     raise RuntimeError("Test driver worker is draining")
+-                control = getattr(app.state, "worker_control", None)
+-                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+ 
+             before = sum(job["status"] == "waiting" for job in plan["jobs"])
+             tick(api, plan, settings, path, maximum=1, generator=generator)
+             after = sum(job["status"] == "waiting" for job in plan["jobs"])
+             return before != after
++    except BackgroundYielded:
++        return False
+     except RuntimeError:
+         if not stopping(app):
+             logger.exception("automatic_test_driver_pass_failed", extra={"group_id": group_id})
+--- a/backend/bmt_backend/test_population_batch.py
++++ b/backend/bmt_backend/test_population_batch.py
+@@ -12,6 +12,7 @@
+ from sqlalchemy.orm import aliased
+ 
+ from .contracts import build_contract, current_manifest
++from .background_work import BackgroundControl, BackgroundYielded
+ from .identity_models import Player
+ from .rivalry_models import RivalryBest
+ from .test_driver_generator import CONTROLLER_VERSION
+@@ -256,15 +257,16 @@
+         if recovered.get("run"):
+             result = recovered["run"]
+         else:
+-            control = getattr(app.state, "worker_control", None)
+             def generator(*args, **kwargs):
+-                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+             replay = recording(api, plan, job, {"traits": traits}, settings, path, generator=generator)
+             ticket = api.call("POST", "/run-tickets", {"version_id": job["version_id"],
+                 "vehicle_id": data["vehicle_id"], "test_population": True}, job["subject"], job["id"]+"-ticket")
+             result = api.call("POST", "/runs", {"ticket_id": ticket["ticket_id"], "replay": replay["replay"]},
+                               job["subject"], job["id"]+"-upload")
+         outcome = {"status": "submitted", "run_id": result["run_id"], "lease_until": 0}
++    except BackgroundYielded:
++        outcome = {"status": "waiting", "due": now()+3, "lease_until": 0}
+     except DriverDidNotFinish as error:
+         outcome = {"status": "waiting" if job["attempt"] < 4 else "uncompleted",
+                    "attempt": job["attempt"]+1, "due": now()+10, "lease_until": 0,
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -120,8 +120,14 @@
+         "lap_ticks": run.lap_ticks,
+         "failure_code": run.failure_code,
+         "retryable": run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"),
+-        "poll_after_ms": 2500 if run.status in ("queued", "verifying") else 0,
+-    }
++        "poll_after_ms": pending_poll_ms(run),
++    }
++
++
++def pending_poll_ms(run, status=None):
++    if (status or (run.status if run else "upload_pending")) not in ("queued", "verifying", "upload_pending"):
++        return 0
++    return 1000 if run is not None and now()-run.created_at < 10 else 2500
+ 
+ 
+ @router.get("/manifest")
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -449,7 +449,8 @@
+     require_member(session, binding.group_id, player.id, request)
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "verified" if binding.outcome else "expired" if now() >= own.expires_at else "upload_pending"
+-    return {"status": status, "poll_after_ms": 2500 if status in ("queued", "verifying", "upload_pending") else 0,
++    from .runs import pending_poll_ms
++    return {"status": status, "poll_after_ms": pending_poll_ms(run,status),
+             "failure_code": run.failure_code if run else None,
+             "outcome": binding.outcome, "slot": binding.slot}
+ 
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -369,8 +369,9 @@
+     available(session, challenge.code)
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "expired" if now() >= own.expires_at else "upload_pending"
++    from .runs import pending_poll_ms
+     return {"status": status, "failure_code": run.failure_code if run else None, "outcome": binding.outcome,
+-            "poll_after_ms": 2500 if status in ("queued", "verifying", "upload_pending") else 0,
++            "poll_after_ms": pending_poll_ms(run,status),
+             "challenge": snapshot(session, request, challenge, player.id)}
+ 
+ 
+--- a/game/backend/runner.gd
++++ b/game/backend/runner.gd
+@@ -2,6 +2,8 @@
+ ## Data-only process boundary around unchanged game simulation and compiler.
+ const MAX_FRAMES: int = 216000
+ const REPLAY_SCHEMA: String = "bmt-replay-v1"
++const VerificationTrack = preload("res://backend/verification_track.gd")
++const LightweightVerifier = preload("res://backend/lightweight_verifier.gd")
+ var output_path: String = ""
+ var service_dir: String = ""
+ var job_token: String = ""
+@@ -127,6 +129,7 @@
+ 	# trig results changes JSON identity across operating systems (even tiny zeros).
+ 	var track: NativeTrack = TrackCompiler.compile(doc)
+ 	if track == null: return {"error":"Track compilation failed"}
++	track = VerificationTrack.frozen(track)
+ 	var info: Dictionary = manifest()
+ 	info.track_content_hash = track.content_hash
+ 	info.route_length = track.route_length
+@@ -199,6 +202,7 @@
+ 	var saved: Dictionary = {}
+ 	var next_event: int = 0
+ 	var offset: int = 0
++	var frame := DriveFrame.new()
+ 	for values: Array in replay.frames:
+ 		if offset == 0 and values.size() == 5: LaunchStart.initialize(sim.state,int(values[4]))
+ 		if sim.state.tick in targets:
+@@ -220,7 +224,6 @@
+ 		if session.finished:
+ 			respond({},"Replay contains frames after the race finished")
+ 			return
+-		var frame := DriveFrame.new()
+ 		frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
+ 		frame.handbrake = int(values[3]) if values.size() >= 4 else 0
+ 		frame.launch_start = int(values[4]) if values.size() == 5 else 0
+@@ -288,4 +291,8 @@
+ 	var compiled: Dictionary = compile_track(request.document)
+ 	if compiled.has("error"): respond({},compiled.error); return
+ 	if request.operation == "track": respond(compiled.manifest); return
++	if request.operation == "run" and request.get("race_proof") is Dictionary and request.replay.get("rewinds",[]).is_empty():
++		var initial: VehicleSimulation = initial_simulation(compiled.track,request.vehicle_id)
++		var quick: Dictionary = LightweightVerifier.check(compiled.track,request.race_proof,initial.state,initial.config,request.replay.frames.size(),compiled.manifest,bool(request.get("capture_ghost",true)))
++		if not quick.is_empty(): respond(quick); return
+ 	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest,request.operation == "creator_test",request.document,bool(request.get("capture_ghost",true)))
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -71,6 +71,12 @@
+ 
+ 
+ def validate_replay(replay: dict) -> None:
++    proof = None
++    if type(replay) is dict and "race_proof" in replay:
++        proof = replay["race_proof"]
++        if proof is None:
++            raise VerificationError("Malformed race movement proof")
++        replay = {key: value for key, value in replay.items() if key != "race_proof"}
+     if type(replay) is not dict or not (
+         (set(replay) == {"schema", "frames"} and replay.get("schema") == REPLAY_SCHEMA)
+         or (set(replay) == {"schema", "frames", "rewinds"} and replay.get("schema") == "bmt-replay-v2")
+@@ -87,6 +93,9 @@
+ 
+         if len(frame) == 5 and (frame_index != 0 or frame[4] not in (1, 2)):
+             raise VerificationError("Invalid launch marker")
++
++    if proof is not None:
++        validate_race_proof(proof, len(frames))
+ 
+     events = replay.get("rewinds", [])
+     if type(events) is not list or len(events) > 3 or (replay["schema"] == "bmt-replay-v2" and not events):
+@@ -352,7 +361,9 @@
+         if type(vehicle_id) is not str or vehicle_id not in self.manifest()["vehicles"]:
+             raise VerificationError("Unsupported vehicle")
+         result = self._invoke(
+-            {"operation": "creator_test" if creator_test else "run", "document": document, "replay": replay, "vehicle_id": vehicle_id, "capture_ghost":capture_ghost}
++            {"operation": "creator_test" if creator_test else "run", "document": document,
++             "replay": {key: value for key, value in replay.items() if key != "race_proof"},
++             "race_proof": replay.get("race_proof"), "vehicle_id": vehicle_id, "capture_ghost":capture_ghost}
+         )
+         ticks, laps, milliseconds = result.get("time_ticks"), result.get("lap_ticks"), result.get("time_ms")
+         if (
+@@ -369,6 +380,25 @@
+         if not creator_test and capture_ghost:
+             validate_ghost(result.get("ghost"), ticks)
+         return result
++
++
++def validate_race_proof(proof, frames):
++    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
++            or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
++            or not 2 <= len(proof["samples"]) <= MAX_FRAMES // 6 + 12):
++        raise VerificationError("Malformed race movement proof")
++    previous = -1
++    for sample in proof["samples"]:
++        if (type(sample) is not list or len(sample) != 8
++                or any(type(value) not in (int, float) or not math.isfinite(value) for value in sample)
++                or type(sample[0]) is not int or not previous < sample[0] <= frames
++                or type(sample[6]) is not int or sample[6] not in (0, 1)
++                or not 0 <= sample[7] <= 32
++                or any(abs(value) > 100000 for value in sample[1:6])):
++            raise VerificationError("Malformed race movement sample")
++        previous = sample[0]
++    if proof["samples"][0][0] != 0:
++        raise VerificationError("Movement proof must begin at the race start")
+ 
+ 
+ def validate_ghost(recording, race_ticks):
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -135,7 +135,8 @@
+             "replay_schema": "bmt-replay-v1",
+             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2"],
+             "rewind_policy": "rewind-1",
+-            "verification": "canonical-replay",
++            "verification": "movement-proof-with-replay-fallback",
++            "lightweight_race_proofs": True,
+             "track_lifecycle_version": 1,
+             "discovery_paging_version": 2,
+             "max_request_bytes": settings.max_body_bytes,
+--- a/backend/bmt_backend/replay_wire.py
++++ b/backend/bmt_backend/replay_wire.py
+@@ -11,7 +11,7 @@
+     if value.get("schema") != "bmt-packed-input-v1":
+         return value
+     count, controls = value.get("frame_count"), value.get("controls")
+-    if (set(value) - {"schema", "replay_schema", "frame_count", "controls", "rewinds"}
++    if (set(value) - {"schema", "replay_schema", "frame_count", "controls", "rewinds", "race_proof"}
+             or type(count) is not int or not 1 <= count <= MAX_FRAMES
+             or type(controls) is not str or len(controls) != count * 8
+             or value.get("replay_schema") not in ("bmt-replay-v1", "bmt-replay-v2")):
+@@ -32,4 +32,6 @@
+     replay = {"schema": value["replay_schema"], "frames": frames}
+     if "rewinds" in value:
+         replay["rewinds"] = value["rewinds"]
++    if "race_proof" in value:
++        replay["race_proof"] = value["race_proof"]
+     return replay
+--- /dev/null
++++ b/game/backend/verification_track.gd
+@@ -0,0 +1,110 @@
++extends NativeTrack
++## Exact read-only query acceleration for server-owned immutable compiled tracks.
++## Editor/playable tracks keep NativeTrack's live-cell implementation.
++
++const TILE: int = 16
++var _tile_width: int = 0
++var _tile_height: int = 0
++var _solid_ground := PackedByteArray()
++var _solid_deck := PackedByteArray()
++var _water := PackedByteArray()
++var _local_route := PackedVector2Array()
++var _kerb_near: Dictionary = {}
++var _kerb_margin: float = 0.0
++var _soft_props: Array = []
++var _jump_objects: Array = []
++var _fluid_objects: Array = []
++
++static func frozen(source: NativeTrack) -> NativeTrack:
++	var track := new()
++	for property: Dictionary in source.get_property_list():
++		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
++			track.set(property.name,source.get(property.name))
++	track._build_query_index()
++	return track
++
++func _build_query_index() -> void:
++	_tile_width = ceili(float(grid_width)/TILE)
++	_tile_height = ceili(float(grid_height)/TILE)
++	_solid_ground.resize(_tile_width*_tile_height)
++	_solid_deck.resize(_solid_ground.size())
++	_water.resize(_solid_ground.size())
++	for y: int in range(grid_height):
++		var tile_row: int = (y/TILE)*_tile_width
++		for x: int in range(grid_width):
++			var index: int = y*grid_width+x
++			var tile: int = tile_row+x/TILE
++			if cells[index] == 4: _solid_ground[tile] = 1
++			if deck_cells[index] == 4: _solid_deck[tile] = 1
++			if cells[index] in [3,6]: _water[tile] = 1
++	# Same 25 candidates and tie order as NativeTrack, with modulo moved to setup.
++	_local_route.resize(route.size()+24)
++	for index: int in range(_local_route.size()):
++		_local_route[index] = route[posmod(index-8,route.size())]
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		_kerb_margin = maxf(_kerb_margin,(config.wheelbase+config.track_width)*0.5)
++	var reach: int = ceili(_kerb_margin/RoadKerbs.BUCKET)
++	for key: Vector2i in kerbs.buckets:
++		for y: int in range(-reach,reach+1):
++			for x: int in range(-reach,reach+1): _kerb_near[key+Vector2i(x,y)] = true
++	for object: Dictionary in hazard_objects:
++		if object.kind in CreatorCatalog.SOFT: _soft_props.append(object)
++		if object.kind == "jump": _jump_objects.append(object)
++		if object.kind in ["oil","puddle"]: _fluid_objects.append(object)
++
++func nearest_route(point: Vector2, previous: int = -1) -> int:
++	if previous < 0: return super.nearest_route(point,previous)
++	var best: int = 0
++	var distance: float = INF
++	for offset: int in range(25):
++		var d: float = _local_route[previous+offset].distance_squared_to(point)
++		if d < distance:
++			distance = d
++			best = offset
++	return posmod(previous+best-8,route.size())
++
++func _clear_tiles(mask: PackedByteArray, first_x: int, first_y: int, end_x: int, end_y: int) -> bool:
++	for y: int in range(maxi(0,first_y)/TILE,mini(grid_height-1,end_y)/TILE+1):
++		for x: int in range(maxi(0,first_x)/TILE,mini(grid_width-1,end_x)/TILE+1):
++			if mask[y*_tile_width+x] != 0: return false
++	return true
++
++func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
++	var cx: int = floori((point.x+half_extent.x)/cell_size)
++	var cy: int = floori((half_extent.y-point.y)/cell_size)
++	var reach: int = ceili(radius/cell_size)+1
++	# Out-of-grid cells are solid. A positive tile uses the original exact sweep.
++	if cx-reach >= 0 and cy-reach >= 0 and cx+reach < grid_width and cy+reach < grid_height:
++		if _clear_tiles(_solid_deck if elevated else _solid_ground,cx-reach,cy-reach,cx+reach,cy+reach):
++			return Vector3.ZERO
++	return super._contact(point,radius,elevated)
++
++func water_depth(point: Vector2) -> float:
++	# All 81 bilinear footprints fit inside this conservative box. Exterior
++	# cells are solid, never water; any wet tile falls back to identical arithmetic.
++	var radius: float = 1.4+2.0*cell_size
++	var first_x: int = floori((point.x-radius+half_extent.x)/cell_size)
++	var end_x: int = floori((point.x+radius+half_extent.x)/cell_size)
++	var first_y: int = floori((half_extent.y-point.y-radius)/cell_size)
++	var end_y: int = floori((half_extent.y-point.y+radius)/cell_size)
++	if _clear_tiles(_water,first_x,first_y,end_x,end_y): return 0.0
++	return super.water_depth(point)
++
++func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
++	if (config.wheelbase+config.track_width)*0.5 <= _kerb_margin:
++		if not _kerb_near.has(Vector2i((state.position/RoadKerbs.BUCKET).floor())): return Vector4.ZERO
++	return super.kerb_heights(state,config)
++
++func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
++	if not tyre_origins.is_empty(): LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)
++	if not _soft_props.is_empty(): LightProps.step(state,_soft_props,_contact,from,step_seconds,config.mass,config.collision_radius)
++
++func launch_jump(state: VehicleState, previous: Vector2) -> void:
++	if not _jump_objects.is_empty(): TrackHazards.launch(state,previous,_jump_objects)
++
++func surface_factors(state: VehicleState) -> Vector2:
++	var base: Vector2 = _native_surface_factors(state)
++	if _fluid_objects.is_empty(): return base
++	var hazard: Vector2 = TrackHazards.factors(state,_fluid_objects)
++	return Vector2(base.x*hazard.x,base.y+hazard.y)
+--- /dev/null
++++ b/game/backend/lightweight_verifier.gd
+@@ -0,0 +1,61 @@
++extends RefCounted
++## Plausibility + every ordered road gate. Does not reproduce tire/collision forces.
++## Uncertain trajectories return to the canonical replay, never reject a legal race.
++
++static func check(track: NativeTrack, proof: Dictionary, initial: VehicleState, config: HandlingConfig, frames: int, info: Dictionary, capture_ghost: bool) -> Dictionary:
++	var samples: Array = proof.get("samples",[])
++	if samples.size() < 2: return {}
++	var first: Array = samples[0]
++	if int(first[0]) != 0 or Vector2(first[1],first[2]).distance_to(initial.position) > 0.05: return {}
++	if Vector2(first[4],first[5]).length() > 0.05 or int(first[6]) != int(initial.track_elevated): return {}
++	var state := VehicleState.new()
++	var session := TrackSession.new()
++	session._configure(track)
++	var ghost := PersonalGhostRun.new()
++	var bridge: BridgeElevation = BridgeElevation.new(track) if capture_ghost else null
++	var previous: Vector2 = initial.position
++	var previous_tick: int = 0
++	var previous_layer: int = int(initial.track_elevated)
++	var previous_speed: float = 0.0
++	var previous_velocity := Vector2.ZERO
++	var lap_ticks: Array[int] = []
++	var last_lap: int = 0
++	var hint: int = initial.route_index
++	for index: int in range(samples.size()):
++		var sample: Array = samples[index]
++		var tick: int = int(sample[0])
++		var position := Vector2(sample[1],sample[2])
++		var velocity := Vector2(sample[4],sample[5])
++		var layer: int = int(sample[6])
++		if index > 0:
++			var elapsed: float = float(tick-previous_tick)/VehicleSimulation.TICK_RATE
++			var speed: float = velocity.length()
++			# Broad tolerance for launch, impacts and sampling. Never accept a
++			# teleport or sustained overspeed through this fast path.
++			if tick <= previous_tick or tick-previous_tick > 6 or session.finished: return {}
++			if speed > config.maximum_speed+0.1 or previous.distance_to(position) > config.maximum_speed*elapsed+0.05: return {}
++			if (position-previous-(velocity+previous_velocity)*elapsed*0.5).length() > 0.15: return {}
++			if speed-previous_speed > config.engine_force/config.mass*1.5*elapsed+0.15: return {}
++			if position.abs().x > track.half_extent.x or position.abs().y > track.half_extent.y: return {}
++			hint = track.nearest_route(position,hint)
++			session.elapsed_ticks = tick-1
++			session.advance(track,previous,position,hint,layer == 1,previous_layer)
++			if session.completed_laps > lap_ticks.size():
++				lap_ticks.append(tick-last_lap)
++				last_lap = tick
++			previous_speed = speed
++		state.tick = tick
++		state.position = position
++		state.heading = float(sample[3])
++		state.velocity = velocity
++		state.track_elevated = layer == 1
++		state.route_index = hint
++		state.jump_height = float(sample[7])
++		if capture_ghost: ghost.capture(state,session,track,bridge,config,true)
++		previous = position
++		previous_tick = tick
++		previous_layer = layer
++		previous_velocity = velocity
++	if not session.finished or session.completed_laps != RaceRules.LAPS or previous_tick != frames: return {}
++	return {"time_ticks":frames,"time_ms":roundi(session.race_time_seconds()*1000.0),
++		"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if capture_ghost else {},"verification_method":"movement-proof-v1"}
+--- /dev/null
++++ b/game/backend/race_proof.gd
+@@ -0,0 +1,17 @@
++extends RefCounted
++## Small movement evidence for the owner-approved lightweight server check.
++const STRIDE: int = 6
++var samples: Array = []
++var _laps: int = 0
++
++func capture(state: VehicleState, session: TrackSession, force: bool = false) -> void:
++	var boundary: bool = session.completed_laps > _laps
++	_laps = session.completed_laps
++	if not force and not boundary and not session.finished and state.tick % STRIDE != 0: return
++	if not samples.is_empty() and int(samples[-1][0]) == state.tick: return
++	samples.append([state.tick,state.position.x,state.position.y,state.heading,
++		state.velocity.x,state.velocity.y,int(state.track_elevated),state.jump_height])
++
++func recording(session: TrackSession) -> Dictionary:
++	if not session.finished or samples.is_empty(): return {}
++	return {"schema":"bmt-race-proof-v1","samples":samples.duplicate()}
+--- /dev/null
++++ b/backend/bmt_backend/background_work.py
+@@ -0,0 +1,37 @@
++"""Cooperatively yield development generation when a player submits a race."""
++import time
++
++from sqlalchemy import and_, or_, select
++
++from .identity_models import Player
++from .job_contracts import pinned_filter
++from .track_models import Board, Run, now
++
++
++class BackgroundYielded(RuntimeError):
++    """Keep the unfinished artificial attempt for the next idle period."""
++
++
++class BackgroundControl:
++    def __init__(self, app):
++        self.app = app
++        self.next_check = 0.0
++        self.manifest = app.state.verifier.manifest()
++
++    def is_set(self):
++        control = getattr(self.app.state, "worker_control", None)
++        if control and control.abort.is_set():
++            return True
++        current = time.monotonic()
++        if current < self.next_check:
++            return False
++        self.next_check = current + 0.25
++        with self.app.state.session_factory() as session:
++            pending = session.scalar(select(Run.id).join(Board).join(Player, Player.id == Run.player_id)
++                .where(Player.is_test_driver.is_(False), pinned_filter(Board.manifest, self.manifest),
++                       or_(and_(Run.status == "queued", Run.lease_until <= now()),
++                           and_(Run.status == "verifying", Run.lease_until <= now())))
++                .limit(1))
++        if pending is not None:
++            raise BackgroundYielded("Player race is ready for verification")
++        return False

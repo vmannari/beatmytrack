@@ -1,0 +1,30 @@
+--- a/auth.py
++++ b/auth.py
+@@ -37,10 +37,15 @@
+         return name
+ 
+ 
+-class GoogleLogin(ProfileBody):
+-    display_name: str = "Racer"
++class GoogleLogin(StrictBody):
++    display_name: str | None = Field(default=None, min_length=1, max_length=40)
+     id_token: str = Field(min_length=20, max_length=16384)
+     challenge_id: str = Field(min_length=36, max_length=36)
++
++    @field_validator("display_name")
++    @classmethod
++    def clean_name(cls, name):
++        return None if name is None else ProfileBody.clean_name(name)
+ 
+ 
+ class ProfileUpdate(StrictBody):
+@@ -196,7 +201,8 @@
+     challenge = LoginChallenge(nonce_hash=digest(nonce), expires_at=now() + 300)
+     session.add(challenge)
+     session.commit()
+-    return {"challenge_id": challenge.id, "nonce": nonce, "expires_at": challenge.expires_at}
++    return {"challenge_id": challenge.id, "nonce": nonce, "expires_at": challenge.expires_at,
++            "client_id": request.app.state.settings.google_web_client_id}
+ 
+ 
+ @router.post("/auth/google")

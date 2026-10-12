@@ -1,0 +1,1159 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -3,6 +3,8 @@
+ ## Recorded local sound bank. All state is presentation-only and scoped to this race.
+ const BANK: String = "res://assets/audio/vehicles/"
+ const IMPACTS: Array[String] = ["impact_0","impact_1","impact_2"]
++const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
++const GRIT_SPACING: Array[float] = [4.2,6.6,5.1,3.7]
+ var model := VehicleAudioModel.new()
+ var engine_load: Array[AudioStreamPlayer] = []
+ var engine_coast: Array[AudioStreamPlayer] = []
+@@ -22,25 +24,28 @@
+ var was_silent: bool = true
+ var event_count: int = 0
+ var engine_envelope: float = 0.0
++var grit_distance: float = 0.0
++var grit_cooldown: float = 0.0
++var grit_count: int = 0
+ 
+ func _ready() -> void:
+ 	name = "VehicleAudio"
+ 	for i: int in range(3):
+ 		engine_load.append(_player("EngineLoad%d"%i,"Engine"))
+ 		engine_coast.append(_player("EngineCoast%d"%i,"Engine"))
+-	for layer: String in ["tire","road","loose","grass","wind","water"]:
++	for layer: String in ["tire","road","loose","grass","wind","water","sand"]:
+ 		var player: AudioStreamPlayer = _player(layer.capitalize(),"Tires" if layer in ["tire","road","loose","grass","water"] else "Vehicle")
+ 		layers[layer] = player
+ 		player.stream = _stream(layer,true)
+ 		levels[layer] = 0.0
+ 	for i: int in range(4): events.append(_player("BodyEvent%d"%i,"Vehicle"))
+-	for clip: String in IMPACTS+ ["chassis"]: _stream(clip,false)
++	for clip: String in IMPACTS+GRIT+ ["chassis"]: _stream(clip,false)
+ 
+ func _player(label: String, target_bus: String) -> AudioStreamPlayer:
+ 	var player := AudioStreamPlayer.new()
+ 	player.name = label
+ 	player.bus = target_bus
+-	player.volume_db = -80.0
++	player.volume_linear = 0.0
+ 	add_child(player)
+ 	return player
+ 
+@@ -71,6 +76,9 @@
+ 	impact_index = 0
+ 	event_count = 0
+ 	engine_envelope = 0.0
++	grit_distance = 0.0
++	grit_cooldown = 0.0
++	grit_count = 0
+ 	last_tick = -1
+ 	last_jump = 0.0
+ 	last_jump_velocity = 0.0
+@@ -78,13 +86,13 @@
+ 	active = true
+ 	for player: AudioStreamPlayer in engine_load+engine_coast:
+ 		player.stop()
+-		player.volume_db = -80.0
++		player.volume_linear = 0.0
+ 		player.stream_paused = false
+ 		player.play()
+ 	for layer: String in layers:
+ 		var player: AudioStreamPlayer = layers[layer]
+ 		player.stop()
+-		player.volume_db = -80.0
++		player.volume_linear = 0.0
+ 		player.stream_paused = false
+ 		levels[layer] = 0.0
+ 		player.play()
+@@ -129,17 +137,24 @@
+ 		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(load_blend)*engine_envelope))
+ 		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(1.0-load_blend)*engine_envelope*0.84))
+ 	var speed: float = state.velocity.length()
+-	var rolling: float = smoothstep(0.8,25.0,speed) if state.jump_height<=0.0 and not countdown else 0.0
++	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown
++	var rolling: float = smoothstep(0.8,25.0,speed) if grounded else 0.0
+ 	var surface: int = track.cell_at(state.position,state.track_elevated) if track != null else 0
+ 	var theme: String = str(track.metadata.get("theme","pine")) if track != null else "pine"
++	var desert: bool = theme=="desert"
++	var sand_contact: bool = desert and surface in [0,1,2,5] and grounded
+ 	var loose: bool = surface in [1,2,5,7] or (surface==0 and theme=="desert")
+ 	var water: bool = surface in [3,6] or state.tire_water>0.05
+ 	var scrub: float = TireAudio.scrub_amount(state) if not countdown else 0.0
+-	var asphalt: float = scrub if not loose and not water and theme!="winter" else 0.0
+-	_layer("tire",asphalt*0.62,0.88+clampf(speed/46.0,0,1)*0.24,dt,state.jump_height>0.0)
+-	_layer("road",rolling*0.13 if not loose else 0.0,0.78+clampf(speed/46.0,0,1)*0.46,dt,state.jump_height>0.0)
+-	_layer("loose",rolling*(0.23+scrub*0.22) if loose and surface!=1 else 0.0,0.78+clampf(speed/46.0,0,1)*0.5,dt,state.jump_height>0.0)
+-	_layer("grass",rolling*(0.25+scrub*0.18) if surface==1 else 0.0,0.8+clampf(speed/46.0,0,1)*0.4,dt,state.jump_height>0.0)
++	var asphalt: float = scrub if not loose and not water and theme!="winter" and not desert else 0.0
++	# Desert replaces all tire/rolling beds immediately, including transition tails.
++	var tires_silent: bool = not grounded or desert
++	_layer("tire",asphalt*0.62,0.88+clampf(speed/46.0,0,1)*0.24,dt,tires_silent)
++	_layer("road",rolling*0.13 if not loose else 0.0,0.78+clampf(speed/46.0,0,1)*0.46,dt,tires_silent)
++	_layer("loose",rolling*(0.23+scrub*0.22) if loose and surface!=1 else 0.0,0.78+clampf(speed/46.0,0,1)*0.5,dt,tires_silent)
++	_layer("grass",rolling*(0.25+scrub*0.18) if surface==1 else 0.0,0.8+clampf(speed/46.0,0,1)*0.4,dt,tires_silent)
++	_layer("sand",rolling*(0.28+scrub*0.38)*(1.2 if surface in [1,2] else 1.0) if sand_contact else 0.0,0.88+clampf(speed/46.0,0,1)*0.32,dt,not sand_contact)
++	_present_grit(speed,rolling,scrub,dt,sand_contact)
+ 	_layer("water",rolling*0.36 if water or theme=="storm" else 0.0,0.9+clampf(speed/46.0,0,1)*0.2,dt,state.jump_height>0.0)
+ 	_layer("wind",smoothstep(10.0,46.0,speed)*0.14,1.0,dt,false)
+ 	impact_cooldown = maxf(0,impact_cooldown-dt)
+@@ -160,8 +175,24 @@
+ 	last_jump_velocity = state.jump_velocity
+ 	was_silent = false
+ 
+-func _layer(key: String, desired: float, pitch: float, delta: float, airborne: bool) -> void:
+-	levels[key] = 0.0 if airborne else lerpf(float(levels[key]),desired,1.0-exp(-delta*14.0))
++func _present_grit(speed: float, rolling: float, slip: float, delta: float, on_sand: bool) -> void:
++	if not on_sand or speed<3.0:
++		grit_distance = 0.0
++		grit_cooldown = 0.0
++		return
++	if was_silent: return
++	grit_cooldown = maxf(0.0,grit_cooldown-delta)
++	grit_distance += speed*delta*(0.45+rolling*0.55)*(1.0+slip*0.9)
++	var spacing: float = GRIT_SPACING[grit_count%GRIT_SPACING.size()]
++	if grit_cooldown==0.0 and grit_distance>=spacing:
++		var variation: int = grit_count%GRIT.size()
++		_event(GRIT[variation],(0.10+rolling*0.14+slip*0.10)*[0.86,1.0,0.92][variation],[1.07,0.94,1.15][variation])
++		grit_count += 1
++		grit_distance = minf(grit_distance-spacing,1.0)
++		grit_cooldown = 0.12 # Bounded foley; no unbounded catch-up burst after a slow frame.
++
++func _layer(key: String, desired: float, pitch: float, delta: float, immediate_silence: bool) -> void:
++	levels[key] = 0.0 if immediate_silence else lerpf(float(levels[key]),desired,1.0-exp(-delta*14.0))
+ 	var player: AudioStreamPlayer = layers[key]
+-	player.volume_db = linear_to_db(maxf(0.0001,float(levels[key])))
++	player.volume_linear = maxf(0.0,float(levels[key]))
+ 	player.pitch_scale = pitch
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -161,6 +161,16 @@
+ }
+ for name,(source,low,high) in surface_sources.items():
+     write(name,filter_audio(steady(read(source)),low=low,high=high),[source],rms=.11)
++# Desert spray is granular ground foley, with the vehicle's low tonal bands removed.
++source = "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav"
++write("sand",filter_audio(steady(read(source)),low=1400,high=10500),[source],rms=.10)
++for index,number in enumerate(["01","03","05"]):
++    source = "Footsteps_Iceland_Run_Black_Pebble_Mono_"+number+".wav"
++    grains = filter_audio(read(source),low=380,high=8500)
++    peak = int(np.argmax(np.abs(grains)))
++    # Short crunchy sprays: strip the footfall's bass and keep the pebble scatter.
++    grains = grains[max(0,peak-round(.009*RATE)):peak+round(.18*RATE)]
++    write("grit_"+str(index),grains,[source],looping=False,rms=.17)
+ for index,source in enumerate(["Vehicle_Car_Door_Closing_Exterior_Mono_01.wav","Vehicle_Car_Trunk_Close_Impact_Mono.wav","Vehicle_Car_Door_Closing_Exterior_Mono_02.wav"]):
+     values = read(source)
+     peak = np.argmax(np.abs(values))
+diff --git a/scripts/fetch_vehicle_audio.py b/scripts/fetch_vehicle_audio.py
+--- a/scripts/fetch_vehicle_audio.py
++++ b/scripts/fetch_vehicle_audio.py
+@@ -67,6 +67,9 @@
+         "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav",
+         "Vehicle_Car_Door_Closing_Exterior_Mono_02.wav",
+         "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav",
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_01.wav",
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_03.wav",
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_05.wav",
+     }
+     records = []
+     for name in names:
+diff --git a/game/tests/test_vehicle_audio.gd b/game/tests/test_vehicle_audio.gd
+--- a/game/tests/test_vehicle_audio.gd
++++ b/game/tests/test_vehicle_audio.gd
+@@ -23,7 +23,7 @@
+ 	check(AudioServer.get_bus_effect(vehicle_bus,1) is AudioEffectHardLimiter,"vehicle peak ceiling installed")
+ 	check(AudioServer.get_bus_effect(0,0) is AudioEffectHardLimiter,"final output peak ceiling installed")
+ 	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(VehicleAudio.BANK+"manifest.json"))
+-	check(manifest.outputs.size()==40,"complete mastered bank")
++	check(manifest.outputs.size()==44,"complete mastered bank including desert debris")
+ 	for clip: Dictionary in manifest.outputs:
+ 		var sample: AudioStreamWAV = load(VehicleAudio.BANK+str(clip.file))
+ 		check(sample.mix_rate==44100 and not sample.stereo and sample.format==AudioStreamWAV.FORMAT_16_BITS,"portable mono PCM: "+str(clip.file))
+@@ -62,7 +62,7 @@
+ 	var audio := VehicleAudio.new()
+ 	root.add_child(audio)
+ 	audio.configure("compact",config)
+-	check(audio.get_child_count()==16,"bounded race voice count")
++	check(audio.get_child_count()==17,"bounded race voice count including dedicated sand layer")
+ 	state.velocity = Vector2(6,20)
+ 	var snapshot: Array = state.snapshot()
+ 	audio.present(state,control,track,0.1,false)
+@@ -94,7 +94,7 @@
+ 	track.metadata.theme = "desert"
+ 	state.velocity = Vector2(6,20)
+ 	for i: int in range(10): audio.present(state,control,track,0.05,false)
+-	check(float(audio.levels.loose)>0 and float(audio.levels.tire)<0.01,"desert replaces asphalt squeal with sand scrub")
++	check(float(audio.levels.sand)>0 and float(audio.levels.loose)==0 and float(audio.levels.tire)==0,"desert replaces tire/rolling noise with sand particles")
+ 	track.metadata.theme = "storm"
+ 	audio.present(state,control,track,0.1,false)
+ 	check(float(audio.levels.water)>0,"wet road spray")
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -27,6 +27,9 @@
+ affiliation or claim of exact engine reproduction. Engine variants use cuts,
+ transposition, equalization, on-load/coast filtering and crossfaded loops.
+ Body impacts use edited vehicle body/door recordings, not crash recordings.
++Desert sand spray is filtered Nox dirty-ground driving foley. grit_0/1/2 use
++Nox Iceland black-pebble footstep recordings, filtered/cut/mastered into short
++stone-scatter bursts. These are designed gravel foley, not exact car-rock recordings.
+ Wind and water noise beds are original offline sound design.
+ Source/derivative filenames and SHA-256 values: manifest.json.
+ All sources are local build inputs. The game makes no audio-generation/API calls.
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -4,6 +4,30 @@
+   "channels": 1,
+   "bits": 16,
+   "sources": [
++    {
++      "filename": "Footsteps_Iceland_Run_Black_Pebble_Mono_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Iceland_Packs_NOX_SOUND/Iceland_Footsteps_Pack_NOX_SOUND/Footsteps_Iceland_Run/Footsteps_Iceland_Run_Black_Pebble_Mono_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "7c0568bd3d87108883298d80bfa14a87b1b69027f956a5267c218e365a7ad3a9"
++    },
++    {
++      "filename": "Footsteps_Iceland_Run_Black_Pebble_Mono_03.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Iceland_Packs_NOX_SOUND/Iceland_Footsteps_Pack_NOX_SOUND/Footsteps_Iceland_Run/Footsteps_Iceland_Run_Black_Pebble_Mono_03.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "8a23ee361ac1562d98dc00c7b99b0ec51da36b047398f98bef0674e254e8cf39"
++    },
++    {
++      "filename": "Footsteps_Iceland_Run_Black_Pebble_Mono_05.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Iceland_Packs_NOX_SOUND/Iceland_Footsteps_Pack_NOX_SOUND/Footsteps_Iceland_Run/Footsteps_Iceland_Run_Black_Pebble_Mono_05.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "a61d335b56fe9a0be44395b898a41020eb34f8afb4e0f67dae1cc519847f1406"
++    },
+     {
+       "filename": "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav",
+       "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
+@@ -563,6 +587,54 @@
+       "sha256": "d417a93e73dba42b8b18e899de82c15a0f9920224bfb7d3ff683884291d321d9"
+     },
+     {
++      "file": "sand.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav"
++      ],
++      "loop": true,
++      "seconds": 3.1,
++      "rms_dbfs": -22.55337601965689,
++      "peak_dbfs": -1.514414278762366,
++      "seam_step": 0.004705698169147551,
++      "sha256": "135dd48b7ab70729b051b2807965ba63fc656a47c3e634fa1ca815469b112e25"
++    },
++    {
++      "file": "grit_0.wav",
++      "sources": [
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_01.wav"
++      ],
++      "loop": false,
++      "seconds": 0.18900226757369615,
++      "rms_dbfs": -20.366381503154383,
++      "peak_dbfs": -1.514414278762366,
++      "seam_step": null,
++      "sha256": "c5a0de7bf49bf7fbce921b1ea40caf1dcc841b3d20bccf0807339aa4b2ba652a"
++    },
++    {
++      "file": "grit_1.wav",
++      "sources": [
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_03.wav"
++      ],
++      "loop": false,
++      "seconds": 0.18900226757369615,
++      "rms_dbfs": -22.60868983000151,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": null,
++      "sha256": "25692f4327436be13b7e4a5a70fc8fbf720d08fab4bd15f1680a1f84f10021e7"
++    },
++    {
++      "file": "grit_2.wav",
++      "sources": [
++        "Footsteps_Iceland_Run_Black_Pebble_Mono_05.wav"
++      ],
++      "loop": false,
++      "seconds": 0.18900226757369615,
++      "rms_dbfs": -19.70411414749848,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": null,
++      "sha256": "7cbf197ff46ea705032fb9a8f046bcbd1b310593b8ffdc903ad615cee0dd514d"
++    },
++    {
+       "file": "impact_0.wav",
+       "sources": [
+         "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav"
+diff --git a/docs/VEHICLE_AUDIO.md b/docs/VEHICLE_AUDIO.md
+--- a/docs/VEHICLE_AUDIO.md
++++ b/docs/VEHICLE_AUDIO.md
+@@ -4,6 +4,11 @@
+ resampler overflow was reproduced and fixed; all loops now pass dropout and wrap
+ checks. [Correction, actual checks and continuous previews](VEHICLE_AUDIO_CONTINUITY.md)
+ supersede the initial listening captures and continuity assumptions below.
++
++The owner's desert correction now replaces every desert tire/tread bed with a
++dedicated sand spray and pebble-scatter mix. The current bank has 44 clips and a
++17-voice race limit. [Desert audio behavior and evidence](DESERT_AUDIO.md) supersede
++the initial generic loose-ground presentation described below.
+ 
+ The owner requested removal of the current soundtrack and AAA-level high-quality
+ car sounds. The race now creates a recorded vehicle mixer instead of the generated
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -87,3 +87,5 @@
+ 2026-09-25 contact-lighting-1: contact/bridge/cloud shadow shaders and depth-volume geometry are project-authored procedural code. Cloud patterns use mathematical value noise; no external texture, reference artwork, generated raster asset or runtime service is shipped. See docs/CONTACT_LIGHTING.md.
+ 
+ Vehicle-audio continuity/tire mix correction (2026-10-06): original cleared masters/licenses unchanged. Float64 resampling replaces overflow-corrupted derivatives; `manifest.json` pins rebuilt hashes. Dry tire presentation gain increases 4.25 dB. Continuous engine-only and tire before/after captures, including recorded-tire CC BY 3.0 attribution, are in `docs/evidence/vehicle-audio-continuity-2026-10-06/`; initial broken captures remain historical evidence. See `docs/VEHICLE_AUDIO_CONTINUITY.md`.
++
++Desert particle audio (2026-10-06): `sand.wav` reuses Nox CC0 dirty-ground driving foley with low vehicle tones filtered away. `grit_0/1/2.wav` derive from Nox CC0 Iceland black-pebble recordings (01/03/05), cut, high-pass filtered and mastered into stone-scatter sprays. These are designed gravel foley, not exact car-rock recordings. The current 44-clip bank pins 22 source masters/derivative hashes in its manifest; all original 40 clip hashes are identical. Shipping notice updated. Actual mix and silent tire-bus evidence: `docs/DESERT_AUDIO.md`.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 SND07/SND04-SND06/G01/R01/Q01/V06: owner requests sand/flying-rock feedback with no desert tire noise. Desert immediately mutes squeal/tread/generic rolling beds; dedicated granular sand loop and three CC0 pebble-foley sprays respond to speed/slip and stop new emissions at rest/airborne/roll/pause/countdown/water. Distance-based cadence/shared event slots; 17 bounded voices and +323,606 bytes, original40 clip hashes identical. Graphical desert29/audio1434/parser314 and37-loop continuity checks pass, exact960-tick simulation equivalence; actual12s mix peak-3.34dBFS/no clipping and digitally silent tire bus. No canonical/backend/UI change, attachment check/phone test/export/install/full Validate/deployment. Source/license ledger, audition, actual commands, scoped review and remaining ear/mobile acceptance: docs/DESERT_AUDIO.md. Concurrent work preserved.
++
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP07: connected spline seam reproduced as two inset end-cap paint/apron strips across the lane. Presentation now restores whole cap edges to the shared plane and omits their strips, including asymmetric corners/reversed endpoints; canonical contours/contacts/compiler22 unchanged, kit115 invalidates old bakes. Final graphical join127, composition36, borders1107/four exact legacy biomes, shoulders71+18, spline476/exact five laps13517 ticks, cache66, workflow252, rewind57, parser312 and backend2 pass. Necessary resume-script one-line tab repair preserves its condition. Before/after inspected; snapshots/scoped patch retained; failed intermediate fixture/palette/normal/parse attempts documented. No phone attachment check/device test/export/install or backend/cloud deployment/full Validate. Owner/map/phone acceptance remains. Commands, files and evidence: docs/SPLINE_JOIN_FIX.md.
+ 
+ 2026-10-06 SND02/SND04-SND06/G01/R01/Q01/V06: owner intermittent-loop report reproduced as offline Windows int32 resampler overflow, not broken source recordings. Float64 coordinates and generator gap guard rebuild 40 PCM clips; 22 formerly interrupted loops become zero failures across all36 looped assets/three repeats and15 actual engine-bus segments. Cursor-observed 4-10 wraps/voice; graphical48/audio1418/handling88/parser311 pass. Muted tire feedback raises dry-slip gain4.25dB with actual before/after full-mix captures, no clipping and silent pause tails. Unsupported WAV loop-count probe and concurrent resume-indent/import failure corrected without weakening continuity; backend/resume files not edited. No attachment check/phone test/export/install/full Validate/deployment/canonical change. Continuous previews, source hashes, scoped patch, actual commands and acceptance: docs/VEHICLE_AUDIO_CONTINUITY.md. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1211,3 +1211,7 @@
+ ## Vehicle-loop and tire-presence correction, 2026-10-06
+ 
+ Owner reports intermittent sound fragments/looping and muted tires. Offline float64 resampling removes Windows integer-overflow gaps in the generated masters; the clip generator rejects interrupted loops. Before22 failures becomes zero across36 looped assets/15 actual captured segments; graphical48/audio1418/handling88/parser311 pass. Dry tire gain rises4.25dB with unclipped actual A/B mix evidence. No canonical changes, phone check/test, export/install, full Validate or deployment. See docs/VEHICLE_AUDIO_CONTINUITY.md for exact commands, corrected intermediate probes, provenance and scoped review.
++
++## Desert particle-audio correction, 2026-10-06
++
++Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated sand loop and bounded pebble-scatter foley replace tire/tread/generic rolling beds; exact muted tire output and movement/slip/lifecycle behavior are tested. Graphical desert29/audio1434/parser314 and37 loop-continuity checks pass; 960-tick canonical equivalence exact. No attachment/phone test/export/install/full Validate or backend change. Actual commands, CC0 source/derivative provenance, recorded mix and scoped review: docs/DESERT_AUDIO.md.
+diff --git a/game/tests/test_desert_audio.gd b/game/tests/test_desert_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_desert_audio.gd
+@@ -0,0 +1,145 @@
++extends SceneTree
++## Desert material feedback: tire silence, airborne/stationary bounds, foley and exact state.
++var checks: int = 0
++var failures: int = 0
++const OUTPUT: String = "res://../docs/evidence/desert-audio-2026-10-06"
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	track.metadata.theme = "desert"
++	track.cells.fill(0)
++	var state := VehicleState.new()
++	state.position = track.spawn
++	var input: DriveFrame = DriveFrame.sample(0,0.7,0)
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",config)
++	state.velocity = Vector2(7,25)
++	# Start with a real paved-road envelope, then change the presentation theme.
++	track.metadata.theme = "pine"
++	audio.present(state,input,track,.1,false)
++	check(float(audio.levels.tire)>0,"paved slide remains audible")
++	track.metadata.theme = "desert"
++	var before: Array = state.snapshot()
++	audio.present(state,input,track,.016,false)
++	for key: String in ["tire","road","loose","grass"]:
++		check(float(audio.levels[key])==0 and (audio.layers[key] as AudioStreamPlayer).volume_linear==0,"desert immediately silences "+key)
++	check(float(audio.levels.sand)>0,"desert grains replace tires")
++	check(before==state.snapshot(),"desert feedback is read-only")
++	for cell: int in [0,1,2,5]:
++		track.cells.fill(cell)
++		audio.present(state,input,track,.1,false)
++		check(float(audio.levels.sand)>0 and float(audio.levels.tire)==0,"road/apron/shoulder follow desert particle material: %d"%cell)
++	track.cells.fill(0)
++	audio.reset()
++	state.velocity = Vector2.ZERO
++	for i: int in range(120): audio.present(state,input,track,1.0/60,false)
++	check(float(audio.levels.sand)==0 and audio.grit_count==0,"stationary revving cannot emit gravel")
++	state.velocity = Vector2(0,25)
++	for i: int in range(120): audio.present(state,input,track,1.0/60,false)
++	var straight_count: int = audio.grit_count
++	var straight_level: float = float(audio.levels.sand)
++	check(straight_count>0 and straight_count<=17,"ordinary driving emits bounded pebble scatter")
++	audio.reset()
++	state.velocity = Vector2(10,25)
++	for i: int in range(120): audio.present(state,input,track,1.0/60,false)
++	check(audio.grit_count>straight_count and float(audio.levels.sand)>straight_level,"sliding throws more sand/rocks than straight driving")
++	check(audio.grit_count<=17,"rock cadence stays within eight bursts/second")
++	var active_grit: int = audio.grit_count
++	state.jump_height = 1.0
++	for i: int in range(30): audio.present(state,input,track,1.0/60,false)
++	check(float(audio.levels.sand)==0 and audio.grit_count==active_grit,"airborne wheels stop new grains and scatter")
++	state.jump_height = 0.0
++	state.roll_ticks = 20
++	for i: int in range(30): audio.present(state,input,track,1.0/60,false)
++	check(float(audio.levels.sand)==0 and audio.grit_count==active_grit,"rolled car cannot spray gravel")
++	state.roll_ticks = 0
++	for i: int in range(30): audio.present(state,input,track,1.0/60,true)
++	check(audio.grit_count==active_grit,"pause suspends debris cadence")
++	audio.reset()
++	for i: int in range(30): audio.present(state,input,track,1.0/60,false,true)
++	check(float(audio.levels.sand)==0 and audio.grit_count==0,"countdown has no particle sound")
++	for cell: int in [3,6]:
++		track.cells.fill(cell)
++		audio.present(state,input,track,.1,false)
++		check(float(audio.levels.sand)==0 and float(audio.levels.water)>0,"water replaces dry sand on cell %d"%cell)
++	track.metadata.theme = "pine"
++	track.cells.fill(0)
++	audio.reset()
++	for i: int in range(120): audio.present(state,input,track,1.0/60,false)
++	check(audio.grit_count==0 and float(audio.levels.sand)==0 and float(audio.levels.tire)>0,"other biomes retain tire audio")
++	track.metadata.theme = "desert"
++	audio.reset()
++	state.tick = 100
++	for i: int in range(30): audio.present(state,input,track,1.0/60,false)
++	check(audio.grit_count>0,"pre-rewind grains exist")
++	state.tick = 5
++	audio.present(state,input,track,1.0/60,false)
++	check(audio.grit_count==0 and audio.grit_distance==0,"rewind resets particle history")
++	var plain := VehicleSimulation.new(config)
++	var mixed := VehicleSimulation.new(config)
++	plain.reset(Vector2.ZERO,0)
++	mixed.reset(Vector2.ZERO,0)
++	audio.reset()
++	for tick: int in range(960):
++		var control: DriveFrame = DriveFrame.sample(sin(float(tick)*.031)*.8,1.0,.1 if tick%240>200 else 0.0)
++		plain.step(control)
++		mixed.step(control)
++		audio.present(mixed.state,control,track,1.0/120,false)
++	check(plain.state.snapshot()==mixed.state.snapshot() and audio.grit_count>0,"desert debris leaves 960 canonical ticks exactly equivalent")
++	audio.free()
++	if DisplayServer.get_name()!="headless": await capture(track,config)
++	print("DESERT_AUDIO: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
++
++func capture(track: NativeTrack, config: HandlingConfig) -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var master := AudioEffectRecord.new()
++	var tires := AudioEffectRecord.new()
++	master.format = AudioStreamWAV.FORMAT_16_BITS
++	tires.format = AudioStreamWAV.FORMAT_16_BITS
++	var tire_bus: int = AudioServer.get_bus_index("Tires")
++	AudioServer.add_bus_effect(0,master)
++	AudioServer.add_bus_effect(tire_bus,tires)
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",config)
++	var state := VehicleState.new()
++	state.position = track.spawn
++	var elapsed: float = 0.0
++	var previous_usec: int = Time.get_ticks_usec()
++	master.set_recording_active(true)
++	tires.set_recording_active(true)
++	while elapsed<12.0:
++		await process_frame
++		var now_usec: int = Time.get_ticks_usec()
++		var delta: float = float(now_usec-previous_usec)/1000000.0
++		previous_usec = now_usec
++		elapsed += delta
++		state.tick += 1
++		var speed: float = 25.0*clampf((elapsed-1.0)/2.0,0,1)
++		state.velocity = Vector2(speed*.4 if elapsed>5.0 and elapsed<8.8 else 0.0,speed)
++		audio.present(state,DriveFrame.sample(0,0.65,0),track,delta,elapsed>11.0)
++	master.set_recording_active(false)
++	tires.set_recording_active(false)
++	check(master.get_recording().save_to_wav(OUTPUT.path_join("desert-driving.wav"))==OK,"saved full desert sound mix")
++	var tire_recording: AudioStreamWAV = tires.get_recording()
++	check(tire_recording.save_to_wav(OUTPUT.path_join("desert-tire-bus.wav"))==OK,"saved tire-silence proof")
++	var peak: int = 0
++	var pcm: PackedByteArray = tire_recording.data
++	for offset: int in range(0,pcm.size(),2): peak = maxi(peak,absi(pcm.decode_s16(offset)))
++	check(peak==0,"actual desert tire bus is digitally silent")
++	check(audio.grit_count>0,"actual desert capture includes pebble bursts")
++	audio.free()
++	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
++	AudioServer.remove_bus_effect(tire_bus,AudioServer.get_bus_effect_count(tire_bus)-1)
+diff --git a/game/tests/test_desert_audio.gd.uid b/game/tests/test_desert_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_desert_audio.gd.uid
+@@ -0,0 +1 @@
++uid://b5swlwof7hqvx
+diff --git a/scripts/review_desert_audio.py b/scripts/review_desert_audio.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_desert_audio.py
+@@ -0,0 +1,27 @@
++"""Review actual captured desert mix and exact tire silence; local audio-only evidence."""
++from pathlib import Path
++import json
++import wave
++import math
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT/"docs/evidence/desert-audio-2026-10-06"
++stats = []
++for name in ["desert-driving.wav","desert-tire-bus.wav"]:
++    with wave.open(str(OUT/name)) as handle:
++        rate = handle.getframerate()
++        channels = handle.getnchannels()
++        frames = handle.getnframes()
++        data = np.frombuffer(handle.readframes(frames),dtype="<i2").astype(np.float64)/32768.0
++    peak = float(np.max(np.abs(data)))
++    rms = float(np.sqrt(np.mean(data*data)))
++    silent_tail = float(np.max(np.abs(data[-rate*channels//2:])))
++    assert silent_tail==0, name+": paused tail must be silent"
++    if name=="desert-tire-bus.wav": assert peak==0, "No dry-desert tire output is permitted"
++    else: assert .03<peak<.9, "Desert mix must be audible and unclipped"
++    stats.append({"file":name,"seconds":frames/rate,"peak":peak,"peak_dbfs":20*math.log10(peak) if peak else None,"rms":rms,"clipped_samples":int(np.sum(np.abs(data)>=.999)),"silent_tail":silent_tail})
++(OUT/"levels.json").write_text(json.dumps(stats,indent=2)+"\n",encoding="utf-8")
++html = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Desert sand and stones — Beat my track</title><style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:760px;margin:48px auto;padding:0 24px}h1{font-size:32px}h2,a{color:#ffd667}article{padding:22px;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p,small{color:#b3bec5}</style><main><h1>Desert sand and flying stones</h1><p>The game emits sand spray and short pebble-scatter bursts. Desert tire squeal and tread loops are silent.</p><article><h2>Actual game mix</h2><audio controls preload="metadata" src="desert-driving.wav"></audio><p>Idle → acceleration → ordinary driving → sliding (5–9 s) → straight driving → pause. Includes the engine, wind, sand and pebble bursts.</p></article><p>The separately captured dry tire bus has a peak of exactly zero. All contact, pause and replay checks pass. Phone listening remains pending.</p><small>Sand/stone foley: Nox Sound Design Essentials Series (CC0). Dirty-ground driving and black-pebble recordings were filtered, cut, looped and mastered for this mix. Full source hashes and derivative details: game/assets/audio/vehicles/manifest.json and NOTICE.txt.</small></main></html>'''
++(OUT/"audition.html").write_text(html,encoding="utf-8")
++print(json.dumps(stats,indent=2))
+diff --git a/docs/DESERT_AUDIO.md b/docs/DESERT_AUDIO.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DESERT_AUDIO.md
+@@ -0,0 +1,62 @@
++# Desert sand and flying-rock audio — 2026-10-06
++
++The owner requests no tire sound in Desert, with flying-rock and sand feedback
++instead. SND07 refines SND04 material audio, SND05 lifecycle, Q01 voice bounds and
++V06 provenance. Desert immediately mutes tire squeal, tread/road, generic loose
++ground and grass loops, including old transition tails. A dedicated sand spray
++loop and three short pebble-scatter variants replace them.
++
++Sand is audible during ordinary movement and grows with speed/slip; sandy
++shoulders strengthen it. The ground classes match the existing desert sand
++particles/grooves (road, grass/soil and kerb cells 0/1/2/5). Debris cadence derives
++from traveled presentation distance, with varied spacing/pitch/gain and a 120 ms
++minimum interval. The existing four one-shot slots bound all event playback.
++Nothing writes simulation state, input logs, physics, handling, rules or track data.
++
++New grains stop when stationary, airborne, rolled, paused, counting down or on
++water/puddles. Water retains splash feedback. Retry/rewind clear particle history;
++existing short gravel tails may finish after the last ejection. Other biomes keep
++their existing tire mix. Initial/muted loop volume now uses true zero gain; the
++dry-desert tire bus is measured digitally silent.
++
++Assets: `sand.wav` is filtered Nox dirty-ground driving foley with low vehicle tones
++removed. `grit_0/1/2.wav` use Nox Iceland black-pebble recordings cut, filtered and
++mastered as short stone sprays. These are designed gravel foley, not exact car-rock
++recordings. All three added masters are CC0 from the already-used
++[Nox Sound Design Essentials Series](https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound),
++fetched as bounded archive ranges with no purchase. The current manifest pins 22
++source recordings and 44 derivatives; shipping credits/asset ledger are updated.
++
++The four new clips add **323,606 bytes**: total bank **8,294,974 bytes**, with maximum
++asset peak -1.514 dBFS. All **40 previous clip hashes remain identical**. The added
++sand loop changes the explicit voice limit from 16 to **17** (six engine, seven
++material/wind, four event slots); no new event players or unbounded bursts.
++
++## Actual verification
++
++All Godot commands use `scripts/dev.ps1` and
++`4.7.2.stable.official.ed1daf0bf`.
++
++| Actual command | Result |
++| --- | --- |
++| `python scripts/fetch_vehicle_audio.py` | Three added CC0 pebble masters; 22 source masters verified/pinned. Existing sources reused; no purchase. |
++| `python scripts/build_vehicle_audio.py` | 44 PCM clips; 8,294,974 bytes. Existing 40 clip hashes identical to the task-start manifest. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import` | Exit 0, including new clips and script UID. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_desert_audio.gd -Graphical` | **29 checks, 0 failures**: material classes, exact tire gain silence, moving/slide/stop/airborne/roll/pause/countdown/water behavior, cadence bounds, retry/rewind and exact 960-tick simulation equivalence. Actual twelve-second mix and tire-bus capture saved; tire bus peak exactly 0. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1,434 checks, 0 failures**. Golden clip count and explicit bounded voice count updated for the approved four clips/one loop; feedback/replay contracts preserved. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | **314 scripts, 0 failures** at this run. |
++| `python scripts/test_vehicle_audio_continuity.py --report docs/evidence/desert-audio-2026-10-06/loop-continuity.json` | **37 looped assets, 0 failures**, with three repeats, gap and wrap-boundary checks. |
++| `python scripts/review_desert_audio.py` | Audible/unclipped full mix, exactly silent tire recording and paused tails; local review page and numeric levels saved. |
++
++[Listen to the actual desert mix](evidence/desert-audio-2026-10-06/audition.html).
++Actual logs, source hashes and a task-scoped review patch are in that directory.
++Source files: `game/vehicle/vehicle_audio.gd`, `game/tests/test_vehicle_audio.gd`, new
++`game/tests/test_desert_audio.gd`/`.uid`, `scripts/build_vehicle_audio.py`,
++`scripts/fetch_vehicle_audio.py`, new `scripts/review_desert_audio.py`, new sand/grit
++WAV/import metadata, bank manifest/notice and provenance/status notes. No visible
++game UI changes; audio is the presentation evidence. Concurrent work preserved;
++no shared-index or commit mutation.
++
++No phone attachment check, phone audio/performance test, Android export/install,
++full Validate or backend deployment was performed. Owner listening for sand/rock
++character and balance, phone speakers/headphones and performance remain unverified.
+diff --git a/game/assets/audio/vehicles/sand.wav.import b/game/assets/audio/vehicles/sand.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/sand.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bl00w7nc0n3l1"
++path="res://.godot/imported/sand.wav-27ea9230a6fe4f09866ea989291db0c8.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/sand.wav"
++dest_files=["res://.godot/imported/sand.wav-27ea9230a6fe4f09866ea989291db0c8.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/grit_0.wav.import b/game/assets/audio/vehicles/grit_0.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/grit_0.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bhfoqqs5r7poq"
++path="res://.godot/imported/grit_0.wav-4421af1ac726b0ce8fdeff9d190adf76.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/grit_0.wav"
++dest_files=["res://.godot/imported/grit_0.wav-4421af1ac726b0ce8fdeff9d190adf76.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/grit_1.wav.import b/game/assets/audio/vehicles/grit_1.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/grit_1.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://c6ww0pu34jo52"
++path="res://.godot/imported/grit_1.wav-4e74213071fb8f18c99f4396bf394fb8.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/grit_1.wav"
++dest_files=["res://.godot/imported/grit_1.wav-4e74213071fb8f18c99f4396bf394fb8.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/grit_2.wav.import b/game/assets/audio/vehicles/grit_2.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/grit_2.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dijtwq620lg7a"
++path="res://.godot/imported/grit_2.wav-08f96efbccdaff09b8c049845c406f3a.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/grit_2.wav"
++dest_files=["res://.godot/imported/grit_2.wav-08f96efbccdaff09b8c049845c406f3a.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/docs/evidence/desert-audio-2026-10-06/audition.html b/docs/evidence/desert-audio-2026-10-06/audition.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/desert-audio-2026-10-06/audition.html
+@@ -0,0 +1 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Desert sand and stones — Beat my track</title><style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:760px;margin:48px auto;padding:0 24px}h1{font-size:32px}h2,a{color:#ffd667}article{padding:22px;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p,small{color:#b3bec5}</style><main><h1>Desert sand and flying stones</h1><p>The game emits sand spray and short pebble-scatter bursts. Desert tire squeal and tread loops are silent.</p><article><h2>Actual game mix</h2><audio controls preload="metadata" src="desert-driving.wav"></audio><p>Idle → acceleration → ordinary driving → sliding (5–9 s) → straight driving → pause. Includes the engine, wind, sand and pebble bursts.</p></article><p>The separately captured dry tire bus has a peak of exactly zero. All contact, pause and replay checks pass. Phone listening remains pending.</p><small>Sand/stone foley: Nox Sound Design Essentials Series (CC0). Dirty-ground driving and black-pebble recordings were filtered, cut, looped and mastered for this mix. Full source hashes and derivative details: game/assets/audio/vehicles/manifest.json and NOTICE.txt.</small></main></html>
+\ No newline at end of file
+diff --git a/docs/evidence/desert-audio-2026-10-06/levels.json b/docs/evidence/desert-audio-2026-10-06/levels.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/desert-audio-2026-10-06/levels.json
+@@ -0,0 +1,20 @@
++[
++  {
++    "file": "desert-driving.wav",
++    "seconds": 12.0,
++    "peak": 0.680694580078125,
++    "peak_dbfs": -3.340954147641649,
++    "rms": 0.08575211607036554,
++    "clipped_samples": 0,
++    "silent_tail": 0.0
++  },
++  {
++    "file": "desert-tire-bus.wav",
++    "seconds": 12.0,
++    "peak": 0.0,
++    "peak_dbfs": null,
++    "rms": 0.0,
++    "clipped_samples": 0,
++    "silent_tail": 0.0
++  }
++]
+diff --git a/docs/evidence/desert-audio-2026-10-06/loop-continuity.json b/docs/evidence/desert-audio-2026-10-06/loop-continuity.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/desert-audio-2026-10-06/loop-continuity.json
+@@ -0,0 +1,413 @@
++{
++  "bank": [
++    {
++      "file": "compact_0_load.wav",
++      "rms_min": 0.08867701248063467,
++      "rms_median": 0.1308160211145388,
++      "floor": 0.0052326408445815525,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.028411865234375,
++      "reference_step": 0.04694497680664078
++    },
++    {
++      "file": "compact_0_coast.wav",
++      "rms_min": 0.06914020480632754,
++      "rms_median": 0.10276858111691728,
++      "floor": 0.004110743244676691,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.62701416015625,
++      "seam_step": 0.020721435546875,
++      "reference_step": 0.030576766967773672
++    },
++    {
++      "file": "compact_1_load.wav",
++      "rms_min": 0.09231117683527203,
++      "rms_median": 0.14044023942254577,
++      "floor": 0.005617609576901831,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.46893310546875,
++      "seam_step": 0.00286865234375,
++      "reference_step": 0.03579730224609401
++    },
++    {
++      "file": "compact_1_coast.wav",
++      "rms_min": 0.07324166594713914,
++      "rms_median": 0.11033074980997708,
++      "floor": 0.004413229992399083,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.338043212890625,
++      "seam_step": 0.0091552734375,
++      "reference_step": 0.02166766357421901
++    },
++    {
++      "file": "compact_2_load.wav",
++      "rms_min": 0.09233044062476997,
++      "rms_median": 0.13957114527400158,
++      "floor": 0.005582845810960063,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.51837158203125,
++      "seam_step": 0.002166748046875,
++      "reference_step": 0.14697540283203514
++    },
++    {
++      "file": "compact_2_coast.wav",
++      "rms_min": 0.07079241778766401,
++      "rms_median": 0.10974583000064478,
++      "floor": 0.004389833200025791,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.43048095703125,
++      "seam_step": 0.00408935546875,
++      "reference_step": 0.05954034423828203
++    },
++    {
++      "file": "pickup_0_load.wav",
++      "rms_min": 0.0682511088700233,
++      "rms_median": 0.13686039199498184,
++      "floor": 0.005474415679799274,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.54754638671875,
++      "seam_step": 0.006805419921875,
++      "reference_step": 0.01763916015625
++    },
++    {
++      "file": "pickup_0_coast.wav",
++      "rms_min": 0.052617912999667726,
++      "rms_median": 0.10752232328587642,
++      "floor": 0.004300892931435057,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.42218017578125,
++      "seam_step": 0.0030517578125,
++      "reference_step": 0.01177978515625
++    },
++    {
++      "file": "pickup_1_load.wav",
++      "rms_min": 0.06689664280570229,
++      "rms_median": 0.1350556033779221,
++      "floor": 0.0054022241351168844,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.63580322265625,
++      "seam_step": 0.006591796875,
++      "reference_step": 0.02893659973144569
++    },
++    {
++      "file": "pickup_1_coast.wav",
++      "rms_min": 0.051672603782687475,
++      "rms_median": 0.10595255303214249,
++      "floor": 0.0042381021212857,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.49346923828125,
++      "seam_step": 0.0001220703125,
++      "reference_step": 0.017626449584962067
++    },
++    {
++      "file": "pickup_2_load.wav",
++      "rms_min": 0.07091717822755758,
++      "rms_median": 0.13723001395667322,
++      "floor": 0.005489200558266929,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.61553955078125,
++      "seam_step": 0.01263427734375,
++      "reference_step": 0.04931542968750602
++    },
++    {
++      "file": "pickup_2_coast.wav",
++      "rms_min": 0.053675280568006155,
++      "rms_median": 0.10782766939187045,
++      "floor": 0.004313106775674818,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.472991943359375,
++      "seam_step": 0.006683349609375,
++      "reference_step": 0.027315917968750547
++    },
++    {
++      "file": "classic_0_load.wav",
++      "rms_min": 0.02077474313298082,
++      "rms_median": 0.12161960586598264,
++      "floor": 0.004864784234639306,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4873046875,
++      "seam_step": 0.00140380859375,
++      "reference_step": 0.01607197570800789
++    },
++    {
++      "file": "classic_0_coast.wav",
++      "rms_min": 0.016112024838479965,
++      "rms_median": 0.09528836223909143,
++      "floor": 0.003811534489563657,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.38909912109375,
++      "seam_step": 6.103515625e-05,
++      "reference_step": 0.01171875
++    },
++    {
++      "file": "classic_1_load.wav",
++      "rms_min": 0.027714533037444755,
++      "rms_median": 0.12767563999896447,
++      "floor": 0.005107025599958579,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.47662353515625,
++      "seam_step": 0.003173828125,
++      "reference_step": 0.0235595703125
++    },
++    {
++      "file": "classic_1_coast.wav",
++      "rms_min": 0.021156085410584197,
++      "rms_median": 0.10053244712643206,
++      "floor": 0.004021297885057283,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.3798828125,
++      "seam_step": 0.00360107421875,
++      "reference_step": 0.0172119140625
++    },
++    {
++      "file": "classic_2_load.wav",
++      "rms_min": 0.033000732505771395,
++      "rms_median": 0.13181760963801203,
++      "floor": 0.0052727043855204814,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.470672607421875,
++      "seam_step": 0.001556396484375,
++      "reference_step": 0.03529441833496105
++    },
++    {
++      "file": "classic_2_coast.wav",
++      "rms_min": 0.025714762915011628,
++      "rms_median": 0.10417055366153388,
++      "floor": 0.004166822146461356,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.3763427734375,
++      "seam_step": 3.0517578125e-05,
++      "reference_step": 0.02556098937988316
++    },
++    {
++      "file": "formula_0_load.wav",
++      "rms_min": 0.00881500888324068,
++      "rms_median": 0.1109866426295885,
++      "floor": 0.00443946570518354,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.6312255859375,
++      "seam_step": 0.00714111328125,
++      "reference_step": 0.09235278320312634
++    },
++    {
++      "file": "formula_0_coast.wav",
++      "rms_min": 0.007065316092446806,
++      "rms_median": 0.08792373143512139,
++      "floor": 0.003516949257404856,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4754638671875,
++      "seam_step": 0.002960205078125,
++      "reference_step": 0.0473037109375003
++    },
++    {
++      "file": "formula_1_load.wav",
++      "rms_min": 0.01173172010070506,
++      "rms_median": 0.11155297520736202,
++      "floor": 0.004462119008294481,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.6317138671875,
++      "seam_step": 0.006591796875,
++      "reference_step": 0.1284965820312589
++    },
++    {
++      "file": "formula_1_coast.wav",
++      "rms_min": 0.009011076345723384,
++      "rms_median": 0.0891037682742222,
++      "floor": 0.003564150730968888,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.44573974609375,
++      "seam_step": 0.001373291015625,
++      "reference_step": 0.057755737304689525
++    },
++    {
++      "file": "formula_2_load.wav",
++      "rms_min": 0.02293473551079373,
++      "rms_median": 0.11279246473502616,
++      "floor": 0.004511698589401047,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.635528564453125,
++      "seam_step": 0.001007080078125,
++      "reference_step": 0.15945141601562796
++    },
++    {
++      "file": "formula_2_coast.wav",
++      "rms_min": 0.0186830126018077,
++      "rms_median": 0.09014232100384485,
++      "floor": 0.0036056928401537944,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.462432861328125,
++      "seam_step": 0.000579833984375,
++      "reference_step": 0.06455175781250055
++    },
++    {
++      "file": "kart_0_load.wav",
++      "rms_min": 0.061569405095356584,
++      "rms_median": 0.13297625409837138,
++      "floor": 0.005319050163934856,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.5731201171875,
++      "seam_step": 0.016204833984375,
++      "reference_step": 0.07283467102050789
++    },
++    {
++      "file": "kart_0_coast.wav",
++      "rms_min": 0.04727432807777834,
++      "rms_median": 0.10313272473536603,
++      "floor": 0.004125308989414641,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4178466796875,
++      "seam_step": 0.0,
++      "reference_step": 0.029436828613281563
++    },
++    {
++      "file": "kart_1_load.wav",
++      "rms_min": 0.06987227831147048,
++      "rms_median": 0.13501555039320365,
++      "floor": 0.005400622015728146,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.548492431640625,
++      "seam_step": 0.009033203125,
++      "reference_step": 0.09327185058593734
++    },
++    {
++      "file": "kart_1_coast.wav",
++      "rms_min": 0.05590047142488343,
++      "rms_median": 0.10553971077501104,
++      "floor": 0.004221588431000441,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.418731689453125,
++      "seam_step": 0.0042724609375,
++      "reference_step": 0.03796710205078124
++    },
++    {
++      "file": "kart_2_load.wav",
++      "rms_min": 0.06831281158638486,
++      "rms_median": 0.13472708398227645,
++      "floor": 0.005389083359291058,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.543060302734375,
++      "seam_step": 0.0001220703125,
++      "reference_step": 0.09918676757812683
++    },
++    {
++      "file": "kart_2_coast.wav",
++      "rms_min": 0.05333672026769595,
++      "rms_median": 0.10483472677638132,
++      "floor": 0.004193389071055253,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.422637939453125,
++      "seam_step": 0.001190185546875,
++      "reference_step": 0.04716607666015671
++    },
++    {
++      "file": "road.wav",
++      "rms_min": 0.07143030802840468,
++      "rms_median": 0.10870677836815643,
++      "floor": 0.004348271134726257,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.437286376953125,
++      "seam_step": 0.007080078125,
++      "reference_step": 0.05073992919921899
++    },
++    {
++      "file": "loose.wav",
++      "rms_min": 0.030266358774524518,
++      "rms_median": 0.05411948584495756,
++      "floor": 0.0021647794337983023,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.00054931640625,
++      "reference_step": 0.09430633544921996
++    },
++    {
++      "file": "grass.wav",
++      "rms_min": 0.06900371815198782,
++      "rms_median": 0.10786998220947105,
++      "floor": 0.004314799288378842,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.59820556640625,
++      "seam_step": 0.052459716796875,
++      "reference_step": 0.11273895263671996
++    },
++    {
++      "file": "tire.wav",
++      "rms_min": 0.06769392569932695,
++      "rms_median": 0.10801923995759116,
++      "floor": 0.0043207695983036466,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.431671142578125,
++      "seam_step": 0.0,
++      "reference_step": 0.084869384765625
++    },
++    {
++      "file": "sand.wav",
++      "rms_min": 0.03241435595520678,
++      "rms_median": 0.06531356933795666,
++      "floor": 0.0026125427735182666,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.00469970703125,
++      "reference_step": 0.1536179199218779
++    },
++    {
++      "file": "wind.wav",
++      "rms_min": 0.0477922658842437,
++      "rms_median": 0.06937802572643446,
++      "floor": 0.0027751210290573787,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.299530029296875,
++      "seam_step": 0.0096435546875,
++      "reference_step": 0.027557373046875
++    },
++    {
++      "file": "water.wav",
++      "rms_min": 0.06209480158898277,
++      "rms_median": 0.08992369580167696,
++      "floor": 0.0035969478320670785,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.43206787109375,
++      "seam_step": 0.05462646484375,
++      "reference_step": 0.14044207763671945
++    }
++  ],
++  "captures": [],
++  "failures": []
++}

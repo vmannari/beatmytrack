@@ -1,0 +1,1082 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -56,6 +56,7 @@
+ var editor_world: EditorWorld
+ var object_browser_state: Dictionary = {}
+ var object_browser: ObjectBrowser
++var object_population_panel: ObjectPopulationPanel
+ var editor_palette: Control
+ var editor_context: HBoxContainer
+ var surface_toolbar: PanelContainer
+@@ -1966,6 +1967,7 @@
+ 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+ 	object_browser.select_requested.connect(func() -> void:
+ 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
++	object_browser.populate_requested.connect(_open_object_population)
+ 	editor_tools_panel = _editor_panel(overlay,"EditorTools")
+ 	editor_inspector = VBoxContainer.new()
+ 	editor_tools_panel.add_child(editor_inspector)
+@@ -3331,6 +3333,7 @@
+ 		_unhandled_key_input(event)
+ 
+ func _unhandled_key_input(event: InputEvent) -> void:
++	if is_instance_valid(object_population_panel): return
+ 	if screen != "create" or is_instance_valid(game) or not event is InputEventKey or not event.pressed: return
+ 	var focus: Control = get_viewport().gui_get_focus_owner()
+ 	if focus is LineEdit or focus is TextEdit: return
+@@ -3776,6 +3779,58 @@
+ 	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+ 	_object_placement("single")
++
++func _open_object_population() -> void:
++	if is_instance_valid(object_population_panel) or not is_instance_valid(canvas): return
++	if _has_pending_editor_work():
++		_notice("Confirm or cancel the preview before populating.")
++		return
++	if document.objects.size() >= ObjectPopulation.MAX_OBJECTS:
++		_notice("Remove an object before adding more.")
++		return
++	var errors: Array[String] = TrackDocument.validate(document,false)
++	if not errors.is_empty():
++		_notice(errors[0])
++		return
++	if editor_preview_thread != null or canvas.native_preview == null:
++		_editor_hint("The track is still being prepared. Try Populate again shortly.")
++		return
++	canvas.cancel_gesture()
++	var preview := ObjectPopulationPanel.new()
++	preview.source = document.duplicate(true)
++	preview.terrain = canvas.native_preview
++	preview.navigation_canvas = canvas
++	preview.previous_mode = canvas.mode
++	canvas.mode = "pan"
++	object_population_panel = preview
++	root_ui.add_child(preview)
++	preview.preview_changed.connect(func(track: NativeTrack) -> void:
++		if screen == "create" and is_instance_valid(editor_world): editor_world.show_track(track))
++	preview.cancel_requested.connect(func() -> void: _close_object_population(false))
++	preview.apply_requested.connect(func(objects: Array) -> void:
++		if document != preview.source:
++			_close_object_population(false)
++			_editor_hint("The track changed. Open Populate again.")
++			return
++		if objects.is_empty() or document.objects.size()+objects.size() > ObjectPopulation.MAX_OBJECTS: return
++		_remember()
++		document.objects.append_array(objects)
++		document["automatic_scenery"] = false
++		canvas.selected_object = -1
++		canvas.mode = "objects"
++		_close_object_population(true)
++		_save_draft(true)
++		_build_editor_tools())
++
++func _close_object_population(applied: bool) -> void:
++	if not is_instance_valid(object_population_panel): return
++	if is_instance_valid(canvas):
++		canvas.cancel_gesture()
++		canvas.mode = "objects" if applied else object_population_panel.previous_mode
++	object_population_panel.queue_free()
++	object_population_panel = null
++	if not applied and is_instance_valid(editor_world) and is_instance_valid(canvas):
++		editor_world.show_track(canvas.native_preview)
+ 
+ func _object_placement(value: String) -> void:
+ 	canvas.cancel_gesture()
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -4,6 +4,7 @@
+ signal mode_chosen(mode: String)
+ signal size_chosen(scale: float)
+ signal select_requested
++signal populate_requested
+ var category: String = "All"
+ var biome: String = "pine"
+ var current: String = "tree"
+@@ -36,6 +37,10 @@
+ 			category = value; page = 0; _tiles())
+ 		button.name = "Category_"+value
+ 		categories.add_child(button)
++	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
++	populate.name = "PopulateObjects"
++	populate.custom_minimum_size = Vector2(100,44)
++	top.add_child(populate)
+ 	var paging := HBoxContainer.new()
+ 	column.add_child(paging)
+ 	previous=EditorButton.make("","back",func() -> void: page-=1; _tiles())
+diff --git a/game/editor/creator_catalog.gd b/game/editor/creator_catalog.gd
+--- a/game/editor/creator_catalog.gd
++++ b/game/editor/creator_catalog.gd
+@@ -37,6 +37,7 @@
+  ["barrel","Barrel","Props",["barrel"]],
+  ["pallet","Pallet","Props",["pallet"]],
+  ["parked_car","Parked vehicle","Props",["parked_car","van"]],
++ ["car_wreck","Car wreck","Props",["car_wreck"]],
+  ["container","Container","Props",["container"]],
+  ["shed","Garage","Buildings",["shed"]],
+  ["hut","Marshal hut","Buildings",["hut"]],
+diff --git a/game/editor/creator_objects.gd b/game/editor/creator_objects.gd
+--- a/game/editor/creator_objects.gd
++++ b/game/editor/creator_objects.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Original scalable stamps; the same footprint is used in plans and native cells.
+ 
+-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "container", "shed", "hut", "grandstand"]
++const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand"]
+ 
+ static func dimensions(kind: String) -> Vector2:
+ 	match kind:
+@@ -18,7 +18,7 @@
+ 		"gantry": return Vector2(12,1)
+ 		"crate", "barrel": return Vector2(1.2,1.2)
+ 		"pallet": return Vector2(2,1.4)
+-		"parked_car": return Vector2(4.2,1.8)
++		"parked_car", "car_wreck": return Vector2(4.2,1.8)
+ 		"van": return Vector2(5,2)
+ 		"container": return Vector2(6,2.5)
+ 		"shed": return Vector2(7,5)
+diff --git a/game/editor/track_document.gd b/game/editor/track_document.gd
+--- a/game/editor/track_document.gd
++++ b/game/editor/track_document.gd
+@@ -7,7 +7,7 @@
+ const MAX_POINTS: int = 96
+ const MAX_BYTES: int = 524288
+ const MAX_COORD: float = 120.0
+-const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "start_line", "hidden_scenery"]
++const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "start_line", "hidden_scenery", "automatic_scenery"]
+ 
+ 
+ static func create_default() -> Dictionary:
+@@ -46,6 +46,8 @@
+ 			return ["This file contains unsupported track data."]
+ 	if data.get("schema") != SCHEMA:
+ 		errors.append("This track format is not supported.")
++	if data.has("automatic_scenery") and not data.automatic_scenery is bool:
++		return ["Automatic scenery must be on or off."]
+ 	if data.has("hidden_scenery"):
+ 		if not data.hidden_scenery is Array or data.hidden_scenery.size() > 256: return ["Too many removed scenery trees."]
+ 		for key: Variant in data.hidden_scenery:
+diff --git a/game/editor/creator_scenery.gd b/game/editor/creator_scenery.gd
+--- a/game/editor/creator_scenery.gd
++++ b/game/editor/creator_scenery.gd
+@@ -7,6 +7,7 @@
+ 
+ static func generate(document: Dictionary, cells: PackedInt32Array, deck: PackedInt32Array, grid: Vector2i, extent: Vector2, cell: float) -> Array:
+ 	var result: Array = []
++	if not document.get("automatic_scenery",true): return result
+ 	var winter: bool = document.get("theme","pine") == "winter"
+ 	if document.get("theme","pine") != "pine" and not winter: return result
+ 	# A native remix must retain its imported ground/deck geometry exactly.
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -112,6 +112,23 @@
+ 		"pallet":
+ 			for z: float in [-0.52,0.52]: box.call(Vector3(0,0.06,z),Vector3(1.9,0.12,0.16),wood.darkened(0.15))
+ 			for x: int in range(5): box.call(Vector3(-0.8+x*0.4,0.14,0),Vector3(0.3,0.16,1.4),wood)
++		"car_wreck":
++			# Original stripped fictional compact: collapsed roof, exposed cabin,
++			# rusted panels and missing front wheel. Static opaque batched geometry.
++			var rust := Color("79513d")
++			box.call(Vector3(0,0.32,0),Vector3(4.2,0.42,1.8),rust.darkened(0.12))
++			box.call(Vector3(-1.55,0.60,0),Vector3(1.0,0.20,1.7),Color("8c6950"))
++			box.call(Vector3(1.50,0.49,0.05),Vector3(1.1,0.13,1.5),rust)
++			box.call(Vector3(-0.15,0.57,0),Vector3(1.8,0.08,1.45),Color("293334"))
++			for side: float in [-1.0,1.0]:
++				box.call(Vector3(-0.2,0.69,side*0.78),Vector3(2.1,0.25,0.10),rust)
++				_face(tool,kit,center,scale,turn,[Vector3(-1.1,0.8,side*0.75),Vector3(-0.85,1.15,side*0.62),Vector3(0.30,1.04,side*0.65),Vector3(0.75,0.77,side*0.75)],Color("65564a"))
++			_face(tool,kit,center,scale,turn,[Vector3(-0.85,1.15,-0.62),Vector3(0.30,1.04,-0.65),Vector3(0.1,0.89,0.64),Vector3(-0.85,1.15,0.62)],rust.lightened(0.08))
++			for axle: float in [-1.3,1.3]:
++				for side: float in [-1.0,1.0]:
++					if axle > 0.0 and side > 0.0: continue
++					mound.call(Vector3(axle,0.24,side*0.78),Vector3(0.3,0.24,0.17),Color("252c2b"))
++			box.call(Vector3(2.03,0.24,0),Vector3(0.13,0.15,1.55),metal.darkened(0.35))
+ 		"parked_car", "van":
+ 			var length: float = 4.2 if kind == "parked_car" else 5.0
+ 			box.call(Vector3(0,0.55,0),Vector3(length,0.65,1.8),Color("8e9f9a"))
+diff --git a/game/track/contact_shading.gd b/game/track/contact_shading.gd
+--- a/game/track/contact_shading.gd
++++ b/game/track/contact_shading.gd
+@@ -3,7 +3,7 @@
+ ## Cosmetic depth projections. No collision, timing or canonical-state writes.
+ const VERSION: String = "contact-lighting-12"
+ const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2)}
+-const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","container","shed","hut","grandstand"]
++const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","car_wreck","container","shed","hut","grandstand"]
+ 
+ static func material() -> ShaderMaterial:
+ 	var result := ShaderMaterial.new()
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-121"
++const VERSION: String = "track-kit-123"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -321,6 +321,13 @@
+ 		var points: PackedVector2Array = RoadPieces.samples(piece)
+ 		# Exact repeated vertices share road UV queries only within this piece.
+ 		var axis_cache: Dictionary = {}
++		if theme_id == "winter":
++			var geometry: Dictionary = RoadPieces.section_geometry(pieces,index,topology)
++			points = geometry.points
++			axis_cache["winter_widths"] = geometry.widths
++			var distances := PackedFloat32Array([0.0])
++			for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
++			axis_cache["winter_distances"] = distances
+ 		var road_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,0.0,topology)
+ 		var marking_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,-0.20,topology)
+ 		var swept: bool = piece.kind == "spline" or road_join.get("swept",false)
+@@ -659,7 +666,21 @@
+ 		if not sand_cache.has(point): sand_cache[point] = _sand_coordinates(point,points)
+ 		tool.set_uv(sand_cache[point])
+ 		tool.set_uv2(_cached_asphalt_axis(point,points,axis_cache))
++		if theme_id == "winter": tool.set_color(Color(_winter_half_width(Vector2(sand_cache[point]).x,axis_cache)/32.0,0,0,1))
+ 		tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
++
++func _winter_half_width(along: float, cache: Dictionary) -> float:
++	if not cache.has("winter_widths"): return 5.0
++	var widths: PackedFloat32Array = cache.winter_widths
++	var distances: PackedFloat32Array = cache.winter_distances
++	var low: int = 0
++	var high: int = distances.size()-1
++	while high-low > 1:
++		var middle: int = (low+high)/2
++		if distances[middle] <= along: low = middle
++		else: high = middle
++	var fraction: float = clampf((along-distances[low])/maxf(distances[high]-distances[low],0.0001),0,1)
++	return lerpf(widths[low],widths[high],fraction)*0.5
+ 
+ 
+ 
+@@ -697,6 +718,8 @@
+ 	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+ 	var uv2 := PackedVector2Array()
+ 	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
++	var vertex_colors := PackedColorArray()
++	if arrays[Mesh.ARRAY_COLOR] != null: vertex_colors = arrays[Mesh.ARRAY_COLOR]
+ 	var flat := SurfaceTool.new()
+ 	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	for triangle: int in range(0,vertices.size(),3):
+@@ -709,6 +732,7 @@
+ 			flat.set_normal((vertices[order[2]]-vertices[order[0]]).cross(vertices[order[1]]-vertices[order[0]]).normalized() if theme_id == "desert" and gravel else Vector3.UP)
+ 			if not uv.is_empty(): flat.set_uv(uv[index])
+ 			if not uv2.is_empty(): flat.set_uv2(uv2[index])
++			if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+ 			flat.add_vertex(vertices[index])
+ 	var instance := MeshInstance3D.new()
+ 	instance.mesh = flat.commit()
+@@ -736,6 +760,7 @@
+ 	material.set_shader_parameter("asphalt_surface",asphalt_surface)
+ 	material.set_shader_parameter("edge_fringe",edge_fringe)
+ 	material.set_shader_parameter("road_marking",road_marking)
++	material.set_shader_parameter("winter_width_data",theme_id == "winter" and asphalt_surface and not edge_fringe)
+ 	instance.material_override = material
+ 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	if theme_id == "night_city" and partition_night_ground:
+@@ -1467,10 +1492,12 @@
+ 
+ func _winter_bank_offset(anchor: Vector2, t: float) -> float:
+ 	var drift: float = sin(anchor.x*0.43+anchor.y*0.29)*sin(anchor.y*0.37-anchor.x*0.21)
+-	return lerpf(-0.55,0.95,t/0.5) if t <= 0.5 else lerpf(0.95,4.4+drift*0.8,(t-0.5)/0.5)
++	var crown: float = 0.90+drift*0.30+sin(anchor.x*1.1+anchor.y*0.73)*0.13
++	return lerpf(-0.72,crown,t/0.5) if t <= 0.5 else lerpf(crown,4.4+drift*0.8,(t-0.5)/0.5)
+ 
+ func _winter_bank_section(tool: SurfaceTool, a: Vector2, b: Vector2, na: Vector2, nb: Vector2, points: PackedVector2Array) -> void:
+ 	# Compact ploughed crown and a broad downhill apron which sinks into terrain.
++	var half_widths := Vector2(absf(_sand_coordinates(a,points).y),absf(_sand_coordinates(b,points).y))
+ 	for band: int in range(8):
+ 		for corner: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
+ 			var anchor: Vector2 = a if corner.x == 0 else b
+@@ -1486,6 +1513,7 @@
+ 			tool.set_normal(Vector3(-gradient.x,1.0,gradient.y).normalized())
+ 			tool.set_uv(Vector2(t,0.0))
+ 			tool.set_uv2(_sand_coordinates(point,points))
++			tool.set_color(Color((half_widths.x if corner.x == 0 else half_widths.y)/32.0,0,0,1))
+ 			tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
+ 
+ 
+@@ -1510,16 +1538,17 @@
+ 	# Deposited snow masses vary along/across the crown; the road toe stays smooth.
+ 	var broad: float = sin(anchor.x*0.67+anchor.y*0.39)*sin(anchor.y*0.53-anchor.x*0.31)
+ 	var chunks: float = sin(anchor.x*1.83+anchor.y*1.27)*sin(anchor.y*1.61-anchor.x*0.91)
+-	var crest: float = 0.68+broad*0.20+chunks*0.08
++	var cluster: float = pow(clampf(0.5+chunks*0.5,0.0,1.0),1.7)
++	var crest: float = 0.26+cluster*0.66+broad*0.09
+ 	return lerpf(0.018,crest,smoothstep(0.05,0.50,t)) if t <= 0.50 else lerpf(crest,-0.065,smoothstep(0.50,1.0,t))
+ 
+ 
+ func _winter_deposit(tool: SurfaceTool, anchor: Vector2, outward: Vector2, occupied: Dictionary) -> void:
+ 	var center: Vector2 = anchor+outward*0.95
+-	var key := Vector2i(floori(center.x/2.1),floori(center.y/2.1))
++	var key := Vector2i(floori(center.x/1.35),floori(center.y/1.35))
+ 	if occupied.has(key) or occupied.size() >= 240: return
+ 	var seed_value: int = absi(key.x*73856093 ^ key.y*19349663)
+-	if seed_value%4 < 2: return
++	if seed_value%5 == 0: return
+ 	occupied[key] = true
+ 	center += outward*(float(seed_value%13)/13.0-0.5)*0.22
+ 	var radius: float = 0.35+float(seed_value%11)*0.04
+diff --git a/docs/schemas/creator-track-v5.schema.json b/docs/schemas/creator-track-v5.schema.json
+--- a/docs/schemas/creator-track-v5.schema.json
++++ b/docs/schemas/creator-track-v5.schema.json
+@@ -144,6 +144,7 @@
+               "barrel",
+               "pallet",
+               "parked_car",
++              "car_wreck",
+               "van",
+               "container",
+               "shed",
+@@ -676,6 +677,11 @@
+         }
+       }
+     },
++    "automatic_scenery": {
++      "type": "boolean",
++      "default": true,
++      "description": "Populate saves explicit placements and sets this false to prevent an additional implicit scenery population."
++    },
+     "hidden_scenery": {
+       "type": "array",
+       "maxItems": 256,
+diff --git a/game/editor/object_population.gd b/game/editor/object_population.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_population.gd
+@@ -0,0 +1,219 @@
++class_name ObjectPopulation
++extends RefCounted
++## Editor-only placement. Saved objects, never a race-time generator.
++## Exact Euclidean distance transform on a coarse road mask, then bounded
++## random sequential inhibition (minimum spacing) with clustered woodland.
++
++const CELL: float = 2.0
++const MASK_ERROR: float = 3.0 # Conservative raster/sample uncertainty.
++const CLEARANCE: float = 4.0
++const MAX_OBJECTS: int = 96
++const BIN: float = 12.0
++const NATURE: Array[String] = ["tree", "broadleaf", "rock", "boulder"]
++const ROADSIDE: Array[String] = ["shed", "hut", "car_wreck", "container", "parked_car", "barrel", "crate"]
++
++var source: Dictionary
++var terrain: NativeTrack
++var extent: Vector2
++var grid: Vector2i
++var distances: PackedFloat32Array
++var sites: PackedVector2Array
++var occupied: Array
++var start: Vector2
++var error: String = ""
++var prepare_usec: int = 0
++var sample_usec: int = 0
++
++func prepare(document: Dictionary, track: NativeTrack) -> void:
++	var began: int = Time.get_ticks_usec()
++	source = document.duplicate(true)
++	terrain = track
++	occupied = source.objects.duplicate(true)
++	# Populate replaces the implicit backdrop. Hand-placed/adopted objects stay.
++	var pose: Array = source.get("start_line",source.get("practice_start",{})).get("position",source.points[0])
++	start = Vector2(pose[0],pose[1])
++	var sections: Array[Dictionary] = []
++	if not source.layout.is_empty():
++		var layout: Dictionary = TrackDocument.route_data(source.layout)
++		sections.append({"points":layout.points,"widths":layout.widths,"closed":true})
++	var topology: Dictionary = RoadPieces.prepare_endpoints(source.pieces)
++	for index: int in range(source.pieces.size()):
++		var geometry: Dictionary = RoadPieces.section_geometry(source.pieces,index,topology)
++		sections.append({"points":geometry.points,"widths":geometry.widths,"closed":false})
++	if source.base_track != "" and track != null: extent = track.half_extent
++	for section: Dictionary in sections:
++		for index: int in range(section.points.size()):
++			extent = extent.max(section.points[index].abs()+Vector2.ONE*float(section.widths[index])*0.5)
++	for stroke: Dictionary in source.paint:
++		if int(stroke.surface) != 0: continue
++		for point: Array in stroke.points: extent = extent.max(Vector2(point[0],point[1]).abs()+Vector2.ONE*float(stroke.width)*0.5)
++	if extent == Vector2.ZERO:
++		error = "Add a road before populating the track."
++		return
++	extent = ((extent+Vector2.ONE*38.0).min(Vector2.ONE*110.0)/CELL).ceil()*CELL
++	grid = Vector2i(roundi(extent.x*2.0/CELL),roundi(extent.y*2.0/CELL))
++	var mask := PackedInt32Array()
++	mask.resize(grid.x*grid.y); mask.fill(1)
++	if source.base_track != "" and track != null:
++		for y: int in range(grid.y):
++			for x: int in range(grid.x):
++				var point: Vector2 = _point(x,y)
++				if point.abs().x < track.half_extent.x-1.0 and point.abs().y < track.half_extent.y-1.0 and track.cell_at(point) in [0,2,5]: mask[y*grid.x+x] = 0
++	for section: Dictionary in sections:
++		# Include bridges as protected road at every elevation.
++		TrackCompiler._raster_road(section.points,section.widths,0,mask,grid,extent,CELL,section.closed)
++	var road_paint: Array = []
++	for stroke: Dictionary in source.paint:
++		if int(stroke.surface) == 0:
++			var copy: Dictionary = stroke.duplicate(true)
++			copy.protect_road = false
++			road_paint.append(copy)
++	TrackCompiler._paint(road_paint,mask,grid,extent,CELL,mask.duplicate())
++	if not mask.has(0):
++		error = "Add a road before populating the track."
++		return
++	distances = _distance_field(mask,grid)
++	for y: int in range(grid.y):
++		for x: int in range(grid.x):
++			if distances[y*grid.x+x] > CLEARANCE+MASK_ERROR and distances[y*grid.x+x] < 38.0: sites.append(_point(x,y))
++	prepare_usec = Time.get_ticks_usec()-began
++
++func generate(seed_value: int, density: float, roadside_reach: float) -> Array:
++	var began: int = Time.get_ticks_usec()
++	var result: Array = []
++	if not error.is_empty() or sites.is_empty(): return result
++	var target: int = mini(MAX_OBJECTS-source.objects.size(),roundi(lerpf(24.0,80.0,clampf(density,0.0,1.0))))
++	if target <= 0: return result
++	var rng := RandomNumberGenerator.new()
++	rng.seed = seed_value
++	var noise := FastNoiseLite.new()
++	noise.seed = seed_value & 0x7fffffff
++	noise.frequency = 0.045
++	var buckets: Dictionary = {}
++	var largest: float = 0.0
++	for object: Dictionary in occupied:
++		_insert(buckets,object)
++		largest = maxf(largest,radius(object))
++	var near_sites := PackedVector2Array()
++	var far_sites := PackedVector2Array()
++	for point: Vector2 in sites:
++		if distance_at(point) < roadside_reach-MASK_ERROR: near_sites.append(point)
++		if distance_at(point) > roadside_reach*0.6: far_sites.append(point)
++	var centres := PackedVector2Array()
++	for index: int in range(5):
++		if not far_sites.is_empty(): centres.append(far_sites[rng.randi_range(0,far_sites.size()-1)])
++	var near_target: int = mini(target,maxi(1,roundi(target*0.25)))
++	for phase: int in range(2):
++		var candidates: PackedVector2Array = near_sites if phase == 0 else far_sites
++		if candidates.is_empty(): continue
++		for attempt: int in range(1600):
++			if result.size() >= (near_target if phase == 0 else target): break
++			var point: Vector2 = candidates[rng.randi_range(0,candidates.size()-1)]+Vector2(rng.randf_range(-0.8,0.8),rng.randf_range(-0.8,0.8))
++			var kind: String
++			if phase == 0:
++				kind = ROADSIDE[result.size()%ROADSIDE.size()]
++			else:
++				var cluster: float = 0.0
++				for centre: Vector2 in centres: cluster = maxf(cluster,exp(-point.distance_squared_to(centre)/500.0))
++				if rng.randf() > clampf(0.2+cluster*0.6+noise.get_noise_2dv(point)*0.35,0.1,0.95): continue
++				kind = "rock" if rng.randf() < (0.85 if source.theme == "desert" else 0.3) else "tree"
++				if source.theme == "desert": kind = "boulder" if rng.randf() < 0.3 else "rock"
++				elif source.theme == "night_city" and kind == "tree": kind = "broadleaf"
++			var rotation: float = rng.randf_range(0.0,359.99)
++			if phase == 0 and kind != "car_wreck": rotation = road_rotation(point)+float(rng.randi_range(-1,1))*90.0
++			var object: Dictionary = {"kind":kind,"position":[snappedf(point.x,0.01),snappedf(point.y,0.01)],"rotation":fposmod(snappedf(rotation,0.01),360.0),"scale":snappedf(rng.randf_range(0.8,1.15),0.01)}
++			point = Vector2(object.position[0],object.position[1])
++			var reach: float = radius(object)
++			var distance: float = distance_at(point)
++			if distance-MASK_ERROR-reach < CLEARANCE: continue
++			if phase == 0 and distance+MASK_ERROR+reach > roadside_reach: continue
++			if point.abs().x+reach > 108.0 or point.abs().y+reach > 108.0: continue
++			if point.distance_to(start) < 10.0+reach: continue
++			if not _separated(buckets,point,reach,largest) or not _ground_clear(point,reach): continue
++			result.append(object)
++			_insert(buckets,object)
++			largest = maxf(largest,reach)
++	sample_usec = Time.get_ticks_usec()-began
++	# Use the same numerical representation as the saved authoring JSON.
++	return JSON.parse_string(JSON.stringify(result))
++
++static func radius(object: Dictionary) -> float:
++	var reach: float = CreatorObjects.size_of(object).length()*0.5
++	if object.kind in ["tree","broadleaf"]: reach = maxf(reach,3.0*float(object.get("scale",1.0)))
++	return reach
++
++func distance_at(point: Vector2) -> float:
++	var x: int = clampi(floori((point.x+extent.x)/CELL),0,grid.x-1)
++	var y: int = clampi(floori((extent.y-point.y)/CELL),0,grid.y-1)
++	return distances[y*grid.x+x]
++
++func road_rotation(point: Vector2) -> float:
++	var gradient := Vector2(distance_at(point+Vector2.RIGHT*CELL)-distance_at(point-Vector2.RIGHT*CELL),distance_at(point+Vector2.UP*CELL)-distance_at(point-Vector2.UP*CELL))
++	return rad_to_deg(Vector2(-gradient.y,gradient.x).angle())
++
++func _point(x: int, y: int) -> Vector2:
++	return Vector2((x+0.5)*CELL-extent.x,extent.y-(y+0.5)*CELL)
++
++static func _insert(buckets: Dictionary, object: Dictionary) -> void:
++	var point := Vector2(object.position[0],object.position[1])
++	var key := Vector2i(floori(point.x/BIN),floori(point.y/BIN))
++	if not buckets.has(key): buckets[key] = []
++	buckets[key].append(object)
++
++static func _separated(buckets: Dictionary, point: Vector2, reach: float, largest: float) -> bool:
++	var margin: float = reach+largest+1.5
++	for y: int in range(floori((point.y-margin)/BIN),floori((point.y+margin)/BIN)+1):
++		for x: int in range(floori((point.x-margin)/BIN),floori((point.x+margin)/BIN)+1):
++			for object: Dictionary in buckets.get(Vector2i(x,y),[]):
++				if point.distance_to(Vector2(object.position[0],object.position[1])) < reach+radius(object)+1.5: return false
++	return true
++
++func _ground_clear(point: Vector2, reach: float) -> bool:
++	if terrain == null: return true
++	var cell: float = terrain.cell_size
++	for y: int in range(maxi(0,floori((terrain.half_extent.y-point.y-reach)/cell)),mini(terrain.grid_height,ceili((terrain.half_extent.y-point.y+reach)/cell))):
++		for x: int in range(maxi(0,floori((point.x-reach+terrain.half_extent.x)/cell)),mini(terrain.grid_width,ceili((point.x+reach+terrain.half_extent.x)/cell))):
++			var at: int = y*terrain.grid_width+x
++			var sample := Vector2((x+0.5)*cell-terrain.half_extent.x,terrain.half_extent.y-(y+0.5)*cell)
++			if sample.distance_to(point) > reach+cell: continue
++			if terrain.cells[at] in [3,4,6] or terrain.deck_cells[at] >= 0: return false
++	return true
++
++static func _distance_field(mask: PackedInt32Array, size: Vector2i) -> PackedFloat32Array:
++	var field := PackedFloat32Array()
++	field.resize(mask.size())
++	for y: int in range(size.y):
++		var row := PackedFloat64Array()
++		row.resize(size.x)
++		for x: int in range(size.x): row[x] = 0.0 if mask[y*size.x+x] == 0 else 1.0e12
++		var transformed: PackedFloat64Array = _edt(row)
++		for x: int in range(size.x): field[y*size.x+x] = transformed[x]
++	for x: int in range(size.x):
++		var column := PackedFloat64Array()
++		column.resize(size.y)
++		for y: int in range(size.y): column[y] = field[y*size.x+x]
++		var transformed: PackedFloat64Array = _edt(column)
++		for y: int in range(size.y): field[y*size.x+x] = sqrt(transformed[y])*CELL
++	return field
++
++static func _edt(values: PackedFloat64Array) -> PackedFloat64Array:
++	# Lower envelope of parabolas: linear time per row/column.
++	var vertices := PackedInt32Array()
++	vertices.resize(values.size())
++	var boundaries := PackedFloat64Array()
++	boundaries.resize(values.size()+1)
++	boundaries[0] = -INF; boundaries[1] = INF
++	var k: int = 0
++	for q: int in range(1,values.size()):
++		var crossing: float = ((values[q]+q*q)-(values[vertices[k]]+vertices[k]*vertices[k]))/(2.0*(q-vertices[k]))
++		while crossing <= boundaries[k]:
++			k -= 1
++			crossing = ((values[q]+q*q)-(values[vertices[k]]+vertices[k]*vertices[k]))/(2.0*(q-vertices[k]))
++		k += 1; vertices[k] = q; boundaries[k] = crossing; boundaries[k+1] = INF
++	var result := PackedFloat64Array()
++	result.resize(values.size())
++	k = 0
++	for q: int in range(values.size()):
++		while boundaries[k+1] < q: k += 1
++		result[q] = (q-vertices[k])*(q-vertices[k])+values[vertices[k]]
++	return result
+diff --git a/game/editor/object_population.gd.uid b/game/editor/object_population.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_population.gd.uid
+@@ -0,0 +1 @@
++uid://r0uisgn6jjnw
+diff --git a/game/editor/object_population_panel.gd b/game/editor/object_population_panel.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_population_panel.gd
+@@ -0,0 +1,151 @@
++class_name ObjectPopulationPanel
++extends Control
++## Modal editor preview: the authored document remains untouched until Apply.
++signal preview_changed(track: NativeTrack)
++signal apply_requested(objects: Array)
++signal cancel_requested
++
++var source: Dictionary
++var terrain: NativeTrack
++var seed_value: int = 27
++var density: float = 0.65
++var roadside_reach: float = 22.0
++var generated: Array = []
++var population: ObjectPopulation
++var worker: Thread
++var revision: int = 0
++var worker_revision: int = -1
++var pending: bool = true
++var debounce: float = 0.0
++var ready_to_apply: bool = false
++var status: Label
++var apply_button: Button
++var panel: PanelContainer
++var navigation_canvas: EditorCanvas
++var previous_mode: String = "objects"
++
++func _ready() -> void:
++	name = "ObjectPopulation"
++	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	mouse_filter = Control.MOUSE_FILTER_STOP
++	panel = PanelContainer.new()
++	panel.name = "PopulationControls"
++	panel.add_theme_stylebox_override("panel",EditorStyle.panel())
++	add_child(panel)
++	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
++	panel.offset_left = -324; panel.offset_right = -16
++	panel.offset_top = -171; panel.offset_bottom = 171
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",10)
++	panel.add_child(column)
++	column.add_child(MenuStyle.label("Populate",23))
++	column.add_child(MenuStyle.label("Density",16))
++	var density_slider := HSlider.new()
++	density_slider.name = "PopulationDensity"
++	density_slider.min_value = 0; density_slider.max_value = 1; density_slider.step = 0.05
++	density_slider.value = density; density_slider.custom_minimum_size.y = 44
++	column.add_child(density_slider)
++	density_slider.value_changed.connect(func(value: float) -> void: density = value; request_preview())
++	var reach_label: Label = MenuStyle.label("Roadside reach · %d m" % roadside_reach,16)
++	reach_label.name = "PopulationReachLabel"
++	column.add_child(reach_label)
++	var reach_slider := HSlider.new()
++	reach_slider.name = "PopulationReach"
++	reach_slider.min_value = 16; reach_slider.max_value = 32; reach_slider.step = 1
++	reach_slider.value = roadside_reach; reach_slider.custom_minimum_size.y = 44
++	column.add_child(reach_slider)
++	reach_slider.value_changed.connect(func(value: float) -> void:
++		roadside_reach = value; reach_label.text = "Roadside reach · %d m" % value; request_preview())
++	var shuffle: Button = EditorStyle.button("Shuffle",func() -> void: seed_value += 1; request_preview())
++	shuffle.name = "PopulationShuffle"; shuffle.custom_minimum_size.y = 44
++	column.add_child(shuffle)
++	status = MenuStyle.label("Preparing scenery…",15,true)
++	status.name = "PopulationStatus"; status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(status)
++	var actions := HBoxContainer.new()
++	column.add_child(actions)
++	var cancel: Button = EditorStyle.button("Cancel",func() -> void: cancel_requested.emit())
++	cancel.name = "PopulationCancel"; cancel.custom_minimum_size.y = 44
++	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	actions.add_child(cancel)
++	apply_button = EditorStyle.button("Apply",func() -> void:
++		if ready_to_apply: apply_requested.emit(generated.duplicate(true)))
++	apply_button.name = "PopulationApply"; apply_button.custom_minimum_size.y = 44
++	apply_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	actions.add_child(apply_button)
++	apply_button.disabled = true
++	cancel.grab_focus()
++
++func request_preview() -> void:
++	revision += 1
++	pending = true; debounce = 0.18; ready_to_apply = false
++	apply_button.disabled = true; status.text = "Preparing scenery…"; status.show()
++
++func _gui_input(event: InputEvent) -> void:
++	_forward_navigation(event)
++
++func _input(event: InputEvent) -> void:
++	# Finish a navigation gesture even if its finger/cursor crosses the panel.
++	if not is_instance_valid(navigation_canvas) or navigation_canvas.active_pointer == -99: return
++	if event is InputEventMouseMotion or event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventScreenDrag:
++		_forward_navigation(event)
++		get_viewport().set_input_as_handled()
++
++func _forward_navigation(event: InputEvent) -> void:
++	if not is_instance_valid(navigation_canvas): return
++	if event is InputEventMouse or event is InputEventScreenTouch or event is InputEventScreenDrag:
++		var local: InputEvent = event.duplicate()
++		local.position = event.position+global_position-navigation_canvas.global_position
++		navigation_canvas._gui_input(local)
++		accept_event()
++
++func _process(delta: float) -> void:
++	debounce = maxf(0.0,debounce-delta)
++	if worker != null and not worker.is_alive():
++		var result: Dictionary = worker.wait_to_finish()
++		worker = null
++		population = result.population
++		if worker_revision == revision:
++			generated = result.objects
++			ready_to_apply = not generated.is_empty() and result.track != null
++			apply_button.disabled = not ready_to_apply
++			status.text = str(result.error)
++			if status.text.is_empty() and not ready_to_apply: status.text = "No room for more objects."
++			status.visible = not status.text.is_empty()
++			if result.track != null: preview_changed.emit(result.track)
++	if worker == null and pending and debounce <= 0.0:
++		pending = false; worker_revision = revision
++		worker = Thread.new()
++		var error: Error = worker.start(_generate.bind(seed_value,density,roadside_reach))
++		if error != OK:
++			worker = null
++			status.text = "Could not prepare scenery. Close and try again."
++
++func _generate(seed_snapshot: int, density_snapshot: float, reach_snapshot: float) -> Dictionary:
++	var prepared: ObjectPopulation = population
++	if prepared == null:
++		prepared = ObjectPopulation.new()
++		prepared.prepare(source,terrain)
++	var objects: Array = prepared.generate(seed_snapshot,density_snapshot,reach_snapshot)
++	var candidate: Dictionary = source.duplicate(true)
++	candidate.objects.append_array(objects)
++	candidate["automatic_scenery"] = false
++	# An unfinished lap can still have scenery; the temporary route only
++	# renders the editor preview, never enters the authored document.
++	if not TrackDocument.validate(candidate).is_empty() and TrackDocument.validate(candidate,false).is_empty():
++		var fallback: Dictionary = TrackDocument.create_default()
++		for key: String in ["points","widths","corners"]: candidate[key] = fallback[key]
++		candidate.route_override = true
++	var track: NativeTrack
++	if prepared.error.is_empty(): track = TrackCompiler.compile(candidate)
++	return {"population":prepared,"objects":objects,"track":track,"error":prepared.error}
++
++func _unhandled_key_input(event: InputEvent) -> void:
++	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
++		get_viewport().set_input_as_handled()
++		cancel_requested.emit()
++
++func _exit_tree() -> void:
++	if worker != null:
++		worker.wait_to_finish()
++		worker = null
+diff --git a/game/editor/object_population_panel.gd.uid b/game/editor/object_population_panel.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_population_panel.gd.uid
+@@ -0,0 +1 @@
++uid://dpk4tdikxyouo
+diff --git a/game/tests/test_object_population.gd b/game/tests/test_object_population.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_object_population.gd
+@@ -0,0 +1,248 @@
++extends SceneTree
++## Independent geometry, persistence and real-editor transaction checks.
++var checks: int = 0
++var failures: int = 0
++var captures: bool = false
++var app: Node
++var evidence: String = "res://../build/procedural-placement-2026-10-11"
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: "+label)
++
++func run() -> void:
++	captures = "--capture" in OS.get_cmdline_user_args() or "capture" in OS.get_cmdline_user_args()
++	_distance_transform()
++	for biome: String in TrackDocument.THEMES: _geometry(biome)
++	_special_geometry()
++	await _editor()
++	print("OBJECT_POPULATION checks=",checks," failures=",failures)
++	quit(0 if failures == 0 else 1)
++
++func _distance_transform() -> void:
++	var mask := PackedInt32Array([1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0])
++	var field: PackedFloat32Array = ObjectPopulation._distance_field(mask,Vector2i(5,4))
++	for y: int in range(4):
++		for x: int in range(5):
++			var expected: float = minf(Vector2(x,y).distance_to(Vector2(1,1)),Vector2(x,y).distance_to(Vector2(4,3)))*ObjectPopulation.CELL
++			check(absf(field[y*5+x]-expected) < 0.0001,"distance transform matches independent nearest-road calculation")
++
++func _geometry(biome: String) -> void:
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.theme = biome
++	doc.objects = [{"kind":"hut","position":[0,0],"rotation":0}]
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var before: String = JSON.stringify(doc)
++	var population := ObjectPopulation.new()
++	population.prepare(doc,track)
++	var objects: Array = population.generate(27,0.65,22.0)
++	var first_sample_usec: int = population.sample_usec
++	check(not objects.is_empty() and objects.size() <= 95,biome+" has a bounded usable population")
++	check(JSON.stringify(doc) == before,"generation cannot mutate authoring data")
++	check(objects == population.generate(27,0.65,22.0),"same seed reproduces fixed placements")
++	check(objects != population.generate(28,0.65,22.0),"shuffle changes the arrangement")
++	var dense: Array = population.generate(27,1.0,22.0)
++	var sparse: Array = population.generate(27,0.0,22.0)
++	check(dense.size() > sparse.size(),"density changes actual object population")
++	var roadside: int = 0
++	var woodland: int = 0
++	var layout: Dictionary = TrackDocument.route_data(doc.layout)
++	for object: Dictionary in objects:
++		var point := Vector2(object.position[0],object.position[1])
++		var radius: float = ObjectPopulation.radius(object)
++		var road_distance: float = _road_distance(point,layout.points,layout.widths,true)
++		check(road_distance-radius >= ObjectPopulation.CLEARANCE,"whole footprint stays clear of the actual variable-width road")
++		if object.kind in ObjectPopulation.ROADSIDE:
++			roadside += 1
++			check(road_distance+radius <= 22.0,"roadside objects stay entirely inside the roadside zone")
++		else:
++			woodland += 1
++			check(object.kind in ObjectPopulation.NATURE,"outer population contains only trees and rocks")
++			check(CreatorCatalog.NATURE_BIOMES.get(object.kind,[biome]).has(biome),"nature respects biome availability")
++		for other: Dictionary in population.occupied+objects:
++			if other == object: continue
++			var other_point := Vector2(other.position[0],other.position[1])
++			check(point.distance_to(other_point)+0.001 >= radius+ObjectPopulation.radius(other)+1.5,"generated footprints are separated from authored/automatic/generated objects")
++	check(roadside > 0 and woodland > 0,"both roadside and woodland zones are populated")
++	var candidate: Dictionary = doc.duplicate(true)
++	candidate.objects.append_array(objects)
++	candidate["automatic_scenery"] = false
++	check(TrackDocument.validate(candidate).is_empty(),"generated data obeys the shipping authoring contract")
++	if not TrackDocument.validate(candidate).is_empty(): print("VALIDATION_ERRORS ",TrackDocument.validate(candidate))
++	var compiled: NativeTrack = TrackCompiler.compile(candidate)
++	check(compiled != null and compiled.route == track.route and compiled.metadata.finish == track.metadata.finish,"population preserves the timed route and finish")
++	if compiled == null: return
++	check(compiled.metadata.scenery_objects.is_empty(),"explicit population cannot gain extra implicit objects")
++	for point: Vector2 in track.route:
++		check(compiled.cell_at(point) == track.cell_at(point),"population preserves existing road surfaces")
++	for object: Dictionary in objects:
++		if object.kind == "car_wreck":
++			check(compiled.cell_at(Vector2(object.position[0],object.position[1])) == 4,"wreck is a static solid obstacle")
++	print("POPULATION_MEASURE biome=",biome," objects=",objects.size()," prepare_us=",population.prepare_usec," sample_us=",first_sample_usec," grid=",population.grid)
++	var nearly_full: Dictionary = doc.duplicate(true)
++	nearly_full.objects.resize(95)
++	for i: int in range(95): nearly_full.objects[i] = {"kind":"rock","position":[0.0,0.0],"rotation":0.0}
++	var capped := ObjectPopulation.new()
++	capped.prepare(nearly_full,track)
++	check(capped.generate(27,1.0,22.0).size() <= 1,"generation respects remaining capacity")
++	var blank := ObjectPopulation.new()
++	blank.prepare(TrackDocument.create_blank(),null)
++	check(not blank.error.is_empty() and blank.generate(27,1.0,22.0).is_empty(),"empty maps give an actionable state without creating roads")
++
++func _road_distance(point: Vector2, points: PackedVector2Array, widths: PackedFloat32Array, closed: bool) -> float:
++	var best: float = INF
++	for index: int in range(points.size() if closed else points.size()-1):
++		var next: int = (index+1)%points.size()
++		var nearest: Vector2 = Geometry2D.get_closest_point_to_segment(point,points[index],points[next])
++		var along: float = clampf((nearest-points[index]).dot(points[next]-points[index])/maxf(0.00001,points[index].distance_squared_to(points[next])),0.0,1.0)
++		best = minf(best,point.distance_to(nearest)-lerpf(widths[index],widths[next],along)*0.5)
++	return best
++
++func _special_geometry() -> void:
++	var doc: Dictionary = TrackDocument.create_blank()
++	var spline: Dictionary = RoadPieces.create("spline",Vector2(-40,-28))
++	spline.point_widths = [6.0,8.0,20.0,10.0,6.0]
++	spline.width = 20.0
++	doc.pieces = [spline,RoadPieces.create("bridge",Vector2(-24,15)),RoadPieces.create("hairpin",Vector2(28,-12))]
++	doc.paint = [{"surface":0,"width":8.0,"shape":"round","points":[[-25,-2],[28,-2]]},{"surface":3,"width":16.0,"shape":"square","points":[[-45,30]]}]
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	check(track != null,"mixed spline/bridge/hairpin/free-painted-road fixture compiles")
++	if track == null:
++		print("MIXED_VALIDATION_ERRORS ",TrackDocument.validate(doc))
++		return
++	var population := ObjectPopulation.new()
++	population.prepare(doc,track)
++	var geometry: Array[Dictionary] = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(doc.pieces)
++	for i: int in range(doc.pieces.size()): geometry.append(RoadPieces.section_geometry(doc.pieces,i,topology))
++	for seed_value: int in [5,27,99]:
++		var objects: Array = population.generate(seed_value,1.0,24.0)
++		check(not objects.is_empty(),"mixed road geometry can be populated")
++		for object: Dictionary in objects:
++			var point := Vector2(object.position[0],object.position[1])
++			var radius: float = ObjectPopulation.radius(object)
++			var actual: float = point.distance_to(Geometry2D.get_closest_point_to_segment(point,Vector2(-25,-2),Vector2(28,-2)))-4.0
++			for section: Dictionary in geometry: actual = minf(actual,_road_distance(point,section.points,section.widths,false))
++			check(actual-radius >= ObjectPopulation.CLEARANCE,"spline widths, bridge ramps, hairpins and painted roads stay clear")
++			if object.kind in ObjectPopulation.ROADSIDE: check(actual+radius <= 24.0,"roadside placement follows the nearest of all road sections")
++			var water_local: Vector2 = point-Vector2(-45,30)
++			check(water_local.distance_to(water_local.clamp(Vector2.ONE*-8.0,Vector2.ONE*8.0)) >= radius,"population avoids the entire water footprint")
++	var invalid: Dictionary = doc.duplicate(true)
++	invalid["automatic_scenery"] = "false"
++	check(not TrackDocument.validate(invalid,false).is_empty(),"automatic scenery flag is strictly boolean")
++
++func _wait_editor() -> void:
++	var deadline: int = Time.get_ticks_msec()+20000
++	while Time.get_ticks_msec() < deadline and (app.editor_preview_thread != null or app.canvas.native_preview == null or app.editor_world._building): await process_frame
++	check(app.editor_preview_thread == null and app.canvas.native_preview != null and not app.editor_world._building,"real editor preparation finishes")
++
++func _wait_population(panel: ObjectPopulationPanel) -> void:
++	var deadline: int = Time.get_ticks_msec()+20000
++	while is_instance_valid(panel) and Time.get_ticks_msec() < deadline and (panel.worker != null or panel.pending or not panel.ready_to_apply): await process_frame
++	check(is_instance_valid(panel) and panel.ready_to_apply and panel.worker == null and not panel.pending,"latest background placement preview finishes")
++	await _wait_editor()
++
++func _editor() -> void:
++	root.size = Vector2i(1280,720)
++	app = (load("res://core/app.tscn") as PackedScene).instantiate()
++	var directory: String = "user://object_population_tests_"+TrackLibrary.unique_id()
++	app.set("library",TrackLibrary.new(directory))
++	app.set("records",LocalRecords.new(directory.path_join("records.json")))
++	root.add_child(app)
++	await process_frame
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.id = "population_fixture"; doc.name = "Woodland circuit"
++	app.set("document",doc)
++	app.call("_show_screen","create")
++	await _wait_editor()
++	app.call("_editor_category","objects")
++	await process_frame
++	var populate: Button = app.object_browser.find_child("PopulateObjects",true,false)
++	check(populate != null and populate.visible,"Objects exposes Populate")
++	check(root.get_visible_rect().encloses(populate.get_global_rect()),"Populate action fits the viewport")
++	var original: Dictionary = app.document.duplicate(true)
++	var original_hash: String = app.canvas.native_preview.content_hash
++	populate.pressed.emit()
++	var panel: ObjectPopulationPanel = app.object_population_panel
++	await _wait_population(panel)
++	check(app.document == original and app.history.is_empty(),"preview leaves the document and undo history untouched")
++	var first: Array = panel.generated.duplicate(true)
++	(panel.find_child("PopulationShuffle",true,false) as Button).pressed.emit()
++	await _wait_population(panel)
++	check(panel.generated != first,"real Shuffle button changes the preview")
++	(panel.find_child("PopulationDensity",true,false) as HSlider).value = 0.1
++	(panel.find_child("PopulationDensity",true,false) as HSlider).value = 0.9
++	(panel.find_child("PopulationReach",true,false) as HSlider).value = 26
++	await _wait_population(panel)
++	check(panel.density == 0.9 and panel.roadside_reach == 26 and panel.ready_to_apply,"rapid settings changes settle on the newest preview")
++	var canvas_before: Dictionary = app.document.duplicate(true)
++	var pan_before: Vector2 = app.canvas.pan
++	var down := InputEventMouseButton.new()
++	down.button_index = MOUSE_BUTTON_LEFT; down.pressed = true; down.position = Vector2(500,240)
++	panel._gui_input(down)
++	var motion := InputEventMouseMotion.new()
++	motion.position = Vector2(530,255)
++	panel._input(motion)
++	var up := InputEventMouseButton.new()
++	up.button_index = MOUSE_BUTTON_LEFT; up.pressed = false; up.position = Vector2(530,255)
++	panel._input(up)
++	check(app.canvas.pan != pan_before and app.document == canvas_before and app.canvas.active_pointer == -99,"preview supports navigation without authoring or stuck gestures")
++	app.canvas.pan = pan_before
++	app.canvas.zoom_by(0.65)
++	await _capture("preview-desktop")
++	root.size = Vector2i(960,540)
++	await process_frame; await process_frame
++	check(root.get_visible_rect().encloses(panel.panel.get_global_rect()),"population controls fit compact landscape")
++	await _capture("preview-compact")
++	(panel.find_child("PopulationCancel",true,false) as Button).pressed.emit()
++	await process_frame
++	await _wait_editor()
++	check(app.document == original and app.history.is_empty(),"Cancel removes preview without saving or creating undo")
++	check(app.editor_world.track.content_hash == original_hash,"Cancel restores the actual original scenery")
++	app.call("_open_object_population")
++	panel = app.object_population_panel
++	await _wait_population(panel)
++	var generated: Array = panel.generated.duplicate(true)
++	(panel.find_child("PopulationApply",true,false) as Button).pressed.emit()
++	await process_frame
++	await _wait_editor()
++	check(app.document.objects == original.objects+generated and app.history.size() == 1,"Apply commits exactly one undoable group")
++	check(app.library.save_document(app.document) == OK,"populated track saves")
++	var restored: Dictionary = app.library.load_document(doc.id)
++	check(restored.objects == app.document.objects,"save/reload retains exact placements including wrecks")
++	check(not restored.automatic_scenery and TrackCompiler.compile(restored).content_hash == app.canvas.native_preview.content_hash,"reload retains the same collision/content contract without implicit scenery")
++	var populated: Dictionary = app.document.duplicate(true)
++	app.call("_undo")
++	await _wait_editor()
++	check(app.document == original,"Undo restores the original document")
++	app.call("_redo")
++	await _wait_editor()
++	check(app.document == populated,"Redo restores exact generated placements")
++	var canvas: EditorCanvas = app.canvas
++	canvas.mode = "objects"
++	canvas.selected_object = 0
++	app.call("_delete_selection")
++	await _wait_editor()
++	check(app.document.objects.size() == populated.objects.size()-1,"generated objects remain individually deletable")
++	root.size = Vector2i(1280,720)
++	await process_frame; await process_frame
++	canvas.fit()
++	await _capture("applied-editor")
++	# Close during preparation: join the owned worker and discard its result.
++	app.call("_open_object_population")
++	panel = app.object_population_panel
++	await process_frame
++	app.call("_close_object_population",false)
++	await process_frame
++	check(not is_instance_valid(panel),"closing during generation cleans up its worker")
++	app.queue_free()
++	await process_frame
++
++func _capture(label: String) -> void:
++	if not captures: return
++	var deadline: int = Time.get_ticks_msec()+20000
++	while app.editor_world._building and Time.get_ticks_msec() < deadline: await process_frame
++	for tick: int in range(5): await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path(evidence.path_join(label+".png"))) == OK,"actual editor capture "+label)
+diff --git a/game/tests/test_object_population.gd.uid b/game/tests/test_object_population.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_object_population.gd.uid
+@@ -0,0 +1 @@
++uid://dqyk2j3c8h1hp
+diff --git a/docs/PROCEDURAL_OBJECT_PLACEMENT.md b/docs/PROCEDURAL_OBJECT_PLACEMENT.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PROCEDURAL_OBJECT_PLACEMENT.md
+@@ -0,0 +1,76 @@
++# Procedural object placement — 2026-10-11
++
++Owner authorization: implement the discussed mobile-conscious object placement in the editor. Roads remain authored separately. This is a local editor slice; no production deployment was requested.
++
++## Requirements and behavior
++
++- **POP01:** Objects → **Populate** opens an actual 3D preview with Density, Roadside reach, Shuffle, Cancel and Apply. Pan, wheel zoom and the existing native touch/pinch navigation work while editing is suspended.
++- **POP02:** The nearest actual road edge controls eligibility. Buildings, original car wrecks, parked vehicles, containers, crates and barrels fit wholly inside the roadside reach (16–32 m, default 22 m). The outer population contains only biome-compatible trees/broadleaf trees and rocks/boulders. Desert uses rocks because the existing nature kit has no desert tree.
++- **POP03:** An exact separable Euclidean distance transform on a 2 m road mask prepares the field. Bounded random sequential inhibition, spatial buckets, smooth noise and cluster centres produce irregular spacing and woodland patches. This is minimum-distance rejection sampling, not an implementation of Bridson's active-list sampler or WFC.
++- **POP04:** Four metres of footprint clearance plus a conservative 3 m mask/sample allowance protects layout roads, variable-width spline pieces, bridge approaches/decks and asphalt free paint. Existing authored object footprints, water/solid terrain, the start and the authoring boundary are excluded. Buildings/equipment align with the road-field tangent; wrecks vary freely.
++- **POP05:** Sampling is seeded and bounded to 1,600 attempts per placement phase. Density requests 24–80 new objects, limited by remaining room under the existing 96 authored-object cap. In crowded maps the result can contain fewer. One worker caches preparation; slider changes debounce for 180 ms, stale results cannot become the applied result, and closing joins/discards the owned worker.
++- **POP06:** Preview never changes the document, autosave or undo history. Apply appends fixed editable objects as one undo entry through the existing WIP save path. Cancel restores the original native scene. Generated objects can be moved, rotated, resized and deleted with ordinary tools; undo/redo and JSON reload retain their placements. No generator runs during races.
++- **POP07:** Apply saves optional `automatic_scenery: false`. This replaces the implicit background population with the explicit objects and prevents extra automatic trees/fences appearing after the map expands. Manually placed/adopted objects and existing hidden-scenery keys remain. Documents without the flag retain their old implicit scenery behavior. Domain validation and the v5 JSON schema require a boolean.
++- **POP08:** Add the allowlisted `car_wreck` object (4.2 × 1.8 m footprint): an original fictional rusted compact with a collapsed roof, open cabin and missing front wheel. It uses opaque shared prop geometry, static canonical obstacle cells and the existing spatial contact-shadow batches. No external asset, AI service or new dependency. Visual kit 122 invalidates cached thumbnails for the extended kit.
++
++Relevant preserved project requirements: G01/R01 canonical driving separation, Q01 honest evidence, V03/V05 compact actionable UI, creator free object editing, unlimited ordinary racing, pinned race contracts and sharing data without user scripts/images. No physics, timing, scoring or acceptance-checker implementation changed.
++
++## Changed files
++
++- `game/editor/object_population.gd` / `.uid`: field preparation, bounded seeded sampling, footprint/terrain checks.
++- `game/editor/object_population_panel.gd` / `.uid`: preview worker, settings, revision fencing and navigation forwarding.
++- `game/editor/object_browser.gd`, `game/core/app.gd`: entry action, modal keyboard guard, preview/commit/cancel transactions.
++- `game/editor/creator_catalog.gd`, `game/editor/creator_objects.gd`: wreck asset family and footprint.
++- `game/track/creator_prop_visual.gd`, `game/track/contact_shading.gd`, `game/track/native_track_visual.gd`: original wreck geometry, shared shadow inclusion, kit version.
++- `game/editor/track_document.gd`, `game/editor/creator_scenery.gd`, `docs/schemas/creator-track-v5.schema.json`: optional suppression flag and additive wreck enum.
++- `game/tests/test_object_population.gd` / `.uid`: independent distance/road geometry, spacing, water, capacity, all five biomes and actual editor persistence/navigation checks.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and the task-only evidence/checkpoint below.
++
++## Actual commands and results
++
++Commands use pinned `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`. PowerShell needs a process-only execution-policy override on this machine. Restricted Godot import initially failed reading the Windows certificate store; the reviewed elevated import completed, and tests used isolated temporary test profiles.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_object_population.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_object_population.gd -Graphical -TestArgument capture -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_object_population.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestObjects -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestHazards -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCreator -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor -CommandTimeoutSeconds 60
++```
++
++| Check | Actual result |
++|---|---|
++| Final headless population | 20,581 checks, 0 failures |
++| Native Compatibility population/captures | 20,584 checks, 0 failures; RTX 3090/OpenGL |
++| Native Mobile Vulkan population | 20,581 checks, 0 failures; RTX 3090, not an Android measurement |
++| Existing object browser | 67 checks, 0 failures |
++| Existing hazards/scenery | 154 checks, 0 failures |
++| Existing creator | 113 checks, **1 failure**: compiler-v22 golden hash is stale against the starting compiler-v23 source |
++| Pre-task scenery comparison | Five ordinary biome hashes/cells/decks/routes/scenery exactly equal current; 0 failures |
++| Doctor | Matching templates found; **no attached device** |
++
++The read-only baseline probe reconstructed the pre-task scenery script by removing only the new optional suppression guard, and compiled the same ordinary documents with the unchanged compiler. Pine was `369c5f28…` before and after; the old fixture expects `e2119106…`. The failing fixture was not altered. Probe command: `TestScript -ScriptPath res://tests/probe_population_baseline.gd`; the temporary test source is retained in evidence and removed from the runtime project.
++
++Initial meaningful failures were retained in evidence: exact object equality after JSON reload exposed numeric representation differences (placements now normalize through authoring JSON); assigning a new document key with dot notation created a StringName rejected by strict key validation (the flag now uses a String key). The mixed-road test initially supplied a spline whose overall width was narrower than its widest node; the fixture was corrected to meet the existing contract. The water witness now checks actual circle-to-square separation. No product invariant or existing failing assertion was weakened.
++
++Final 60-object sample preparation on this desktop: **7.65–9.15 ms**, with **4.52–6.75 ms** for sampling. These timings exclude native track compilation, scene construction, rendering and file writes. The field is at most 110 × 110 float32 values (48,400 bytes); this is not a whole-feature memory measurement. Phone responsiveness, frame time and thermal performance remain unmeasured.
++
++## Evidence and review checkpoint
++
++Actual native captures were inspected at 1280 × 720 and 960 × 540:
++
++- [Desktop preview](evidence/procedural-placement-2026-10-11/preview-desktop.png)
++- [Compact landscape preview](evidence/procedural-placement-2026-10-11/preview-compact.png)
++- [Applied editable population](evidence/procedural-placement-2026-10-11/applied-editor.png)
++
++The evidence directory contains final logs, initial failure logs, the baseline probe, source hashes and a task-only Git-format patch. This checkpoint is against the task's starting working tree, which already contains substantial owner work; it does not stage or commit that unrelated work. `git apply --reverse --check` validates the task patch against the final workspace. Existing shared status documents are recorded with hashes separately to avoid packaging concurrent tasks in the patch.
++
++## Remaining acceptance
++
++- Owner review of distribution, density and original wreck appearance; optional painted selection areas/templates are outside this first whole-map tool.
++- Physical Android editor touch/pinch, latency, sustained racing frame time, memory and thermal checks. No phone was attached; no device test, APK export or installation was performed.
++- Any deployed canonical backend must receive the matching additive `automatic_scenery`/`car_wreck` authoring support before new populated tracks can be verified there. Local source is ready; **no backend image build/upload, deployment, live publication or player-data write was performed**. Deployment needs explicit owner authorization.
++- Existing creator-v22 golden-hash failure remains, with exact pre-task parity evidence. No full Validate or unrelated physics regression was claimed.

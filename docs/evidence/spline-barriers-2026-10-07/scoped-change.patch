@@ -1,0 +1,533 @@
+diff --git a/game/editor/roadside_boundary.gd b/game/editor/roadside_boundary.gd
+--- /dev/null
++++ b/game/editor/roadside_boundary.gd
+@@ -0,0 +1,83 @@
++class_name RoadsideBoundary
++extends RefCounted
++## Exposed spline-sweep perimeter; raw inside offsets can reverse or self-cross.
++## Small editor-only geometry cache, independent of canonical simulation.
++static var _cache: Array[Dictionary] = []
++
++static func run(path: Dictionary, begin: float, delta: float, side: float, clearance: float, single_length: float = 0.0) -> PackedVector2Array:
++	var contours: Array[PackedVector2Array] = _contours(path,clearance)
++	var first: Dictionary = RoadPieces._at(path,begin)
++	var last: Dictionary = RoadPieces._at(path,begin+delta)
++	var first_normal := Vector2(-first.tangent.y,first.tangent.x)*side
++	var last_normal := Vector2(-last.tangent.y,last.tangent.x)*side
++	var a: Vector2 = Vector2(first.point)+first_normal*(float(first.width)*0.5+clearance)
++	var b: Vector2 = Vector2(last.point)+last_normal*(float(last.width)*0.5+clearance)
++	var best: Dictionary = {}
++	var score: float = INF
++	for polygon: PackedVector2Array in contours:
++		var boundary: Dictionary = {"points":polygon,"widths":PackedFloat32Array(),"closed":true}
++		boundary.widths.resize(polygon.size()); boundary.widths.fill(1.0)
++		var start: Dictionary = RoadPieces._nearest(boundary,a)
++		var finish: Dictionary = RoadPieces._nearest(boundary,b)
++		var start_pose: Dictionary = RoadPieces._at(boundary,float(start.along))
++		var finish_pose: Dictionary = RoadPieces._at(boundary,float(finish.along))
++		# Do not switch to the opposite side or connect separate grass islands.
++		if (Vector2(start_pose.point)-Vector2(first.point)).dot(first_normal) <= 0.0: continue
++		if (Vector2(finish_pose.point)-Vector2(last.point)).dot(last_normal) <= 0.0: continue
++		var distance: float = float(start.distance)+float(finish.distance)
++		if distance < score:
++			score = distance
++			best = {"path":boundary,"start":start.along,"finish":finish.along,"tangent":start_pose.tangent}
++	if best.is_empty(): return PackedVector2Array()
++	var direction: float = signf(Vector2(best.tangent).dot(Vector2(first.tangent)*(1.0 if delta >= 0.0 else -1.0)))
++	if direction == 0.0: direction = -side*(1.0 if delta >= 0.0 else -1.0)
++	var length: float = RoadPieces._path_length(best.path)
++	if absf(delta) < 0.01:
++		var single: float = minf(single_length,length*0.5)
++		return _slice(best.path,float(best.start)-direction*single*0.5,single,direction)
++	var travel: float = fposmod((float(best.finish)-float(best.start))*direction,length)
++	return _slice(best.path,float(best.start),travel,direction)
++
++static func _slice(path: Dictionary, begin: float, distance: float, direction: float) -> PackedVector2Array:
++	var result := PackedVector2Array([Vector2(RoadPieces._at(path,begin).point)])
++	var vertices: Array[Dictionary] = []
++	var points: PackedVector2Array = path.points
++	var length: float = RoadPieces._path_length(path)
++	var along: float = 0.0
++	for i: int in range(points.size()):
++		var travel: float = fposmod((along-begin)*direction,length)
++		if travel > 0.00001 and travel < distance-0.00001: vertices.append({"point":points[i],"distance":travel})
++		along += points[i].distance_to(points[(i+1)%points.size()])
++	vertices.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return float(a.distance)<float(b.distance))
++	for vertex: Dictionary in vertices: result.append(vertex.point)
++	result.append(Vector2(RoadPieces._at(path,begin+distance*direction).point))
++	return result
++
++static func _contours(path: Dictionary, clearance: float) -> Array[PackedVector2Array]:
++	var entry: Dictionary = {}
++	for saved: Dictionary in _cache:
++		if saved.points == path.points and saved.widths == path.widths and saved.closed == path.closed and saved.node_indices == path.get("node_indices",[]):
++			entry = saved; break
++	if entry.is_empty():
++		var points: PackedVector2Array = path.points.duplicate()
++		var widths: PackedFloat32Array = path.widths.duplicate()
++		if path.closed:
++			points.append(points[0]); widths.append(widths[0])
++		entry = {"points":path.points.duplicate(),"widths":path.widths.duplicate(),"closed":path.closed,"node_indices":path.get("node_indices",[]).duplicate(),
++			"geometry":{"points":points,"widths":widths,"node_indices":path.get("node_indices",[])},
++			"road":SplineBorders.contours({"points":points,"widths":widths,"node_indices":path.get("node_indices",[])},[]),"offsets":{}}
++		_cache.append(entry)
++		if _cache.size() > 4: _cache.pop_front()
++	if not entry.offsets.has(clearance):
++		if entry.offsets.size() >= 8: entry.offsets.clear()
++		# Expand the actual variable-width sweep before the union. Applying a
++		# normal/polygon offset afterwards can fold or retain a hidden return.
++		var expanded: Dictionary = entry.geometry.duplicate(true)
++		var widths: PackedFloat32Array = expanded.widths
++		for i: int in range(widths.size()): widths[i] += clearance*2.0
++		expanded.widths = widths
++		var cleaned: Array[PackedVector2Array] = []
++		for polygon: PackedVector2Array in SplineBorders.contours(expanded,[]):
++			cleaned.append(SplineBorders.simplify(polygon,0.015))
++		entry.offsets[clearance] = cleaned
++	return entry.offsets[clearance]
+diff --git a/game/editor/roadside_boundary.gd.uid b/game/editor/roadside_boundary.gd.uid
+--- /dev/null
++++ b/game/editor/roadside_boundary.gd.uid
+@@ -0,0 +1 @@
++uid://b7oujvwr00gmt
+diff --git a/game/editor/road_pieces.gd b/game/editor/road_pieces.gd
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -393,6 +393,8 @@
+ 	var dimensions: Vector2 = CreatorObjects.dimensions(kind)
+ 	if kind in ["tyre_stack","tyre_wall"]: scale = 1.0
+ 	dimensions *= scale
++	if path.get("spline",false) and kind in ObjectRuns.CONTINUOUS:
++		return ObjectRuns.build(RoadsideBoundary.run(path,begin,delta,side,dimensions.y*0.5+0.8,dimensions.x),kind,scale,capacity)
+ 	if absf(delta) < 0.01:
+ 		var center: Vector2 = Vector2(anchor.point)+Vector2(-tangent.y,tangent.x)*side*(float(anchor.width)*0.5+dimensions.y*0.5+0.8)
+ 		if center.abs().x <= 110.0 and center.abs().y <= 110.0:
+@@ -445,22 +447,30 @@
+ 				else: continue
+ 			var points := PackedVector2Array()
+ 			var widths := PackedFloat32Array()
++			var nodes: Array[int] = []
+ 			var index: int = seed
+ 			var endpoint: int = start_end
+ 			var closed: bool = false
++			var has_spline: bool = false
+ 			while index not in visited:
+ 				visited.append(index)
++				has_spline = has_spline or pieces[index].kind == "spline"
+ 				var geometry: Dictionary = section_geometry(pieces,index,topology)
+ 				var section: PackedVector2Array = geometry.points
+ 				var section_widths: PackedFloat32Array = geometry.widths
++				var section_nodes: Array = geometry.get("node_indices",[0,section.size()-1])
+ 				if endpoint == 1:
+ 					section.reverse()
+ 					section_widths.reverse()
++					var reversed_nodes: Array[int] = []
++					for node: int in section_nodes: reversed_nodes.append(section.size()-1-node)
++					section_nodes = reversed_nodes
+ 				for section_index: int in range(section.size()):
+ 					var point: Vector2 = section[section_index]
+ 					if not points.is_empty() and points[-1].distance_to(point) < 0.01: continue
+ 					points.append(point)
+ 					widths.append(section_widths[section_index])
++					if section_index in section_nodes: nodes.append(points.size()-1)
+ 				var matches: Array = _matches(topology,index,1-endpoint)
+ 				if matches.size() != 1: break
+ 				index = int(matches[0][0])
+@@ -469,7 +479,7 @@
+ 			if closed and points[0].distance_to(points[-1]) < 0.01:
+ 				points.resize(points.size()-1)
+ 				widths.resize(widths.size()-1)
+-			paths.append({"points":points,"widths":widths,"closed":closed})
++			paths.append({"points":points,"widths":widths,"closed":closed,"spline":has_spline,"node_indices":nodes})
+ 	return paths
+ 
+ 
+diff --git a/game/tests/test_spline_barriers.gd b/game/tests/test_spline_barriers.gd
+--- /dev/null
++++ b/game/tests/test_spline_barriers.gd
+@@ -0,0 +1,238 @@
++extends SceneTree
++## Owner's tight spline fence fold: no intersections or solid rails on asphalt.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = ""
++var before: bool = false
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func road(width: float = 12.0) -> Dictionary:
++	var piece: Dictionary = RoadPieces.create("spline",Vector2(-42,-12),0.0,width)
++	piece.spline_points = [[0.0,0.0],[42.0,-26.0],[39.0,29.0],[58.0,-7.0],[70.0,68.0]]
++	return piece
++
++func endpoints(object: Dictionary) -> PackedVector2Array:
++	var center := Vector2(object.position[0],object.position[1])
++	var arm: Vector2 = Vector2.from_angle(deg_to_rad(float(object.rotation)))*CreatorObjects.size_of(object).x*0.5
++	return PackedVector2Array([center-arm,center+arm])
++
++func crossings(objects: Array) -> int:
++	var count: int = 0
++	for i: int in range(objects.size()):
++		var a: PackedVector2Array = endpoints(objects[i])
++		for j: int in range(i+2,objects.size()):
++			var b: PackedVector2Array = endpoints(objects[j])
++			var hit: Variant = Geometry2D.segment_intersects_segment(a[0],a[1],b[0],b[1])
++			if hit is Vector2 and minf(minf(hit.distance_to(a[0]),hit.distance_to(a[1])),minf(hit.distance_to(b[0]),hit.distance_to(b[1]))) > 0.001: count += 1
++	return count
++
++func polygon_crossings(polygon: PackedVector2Array) -> int:
++	var result: int = 0
++	for i: int in range(polygon.size()):
++		var a: Vector2 = polygon[i]
++		var b: Vector2 = polygon[(i+1)%polygon.size()]
++		for j: int in range(i+2,polygon.size()):
++			if i == 0 and j == polygon.size()-1: continue
++			var c: Vector2 = polygon[j]
++			var d: Vector2 = polygon[(j+1)%polygon.size()]
++			var hit: Variant = Geometry2D.segment_intersects_segment(a,b,c,d)
++			if hit is Vector2 and minf(minf(hit.distance_to(a),hit.distance_to(b)),minf(hit.distance_to(c),hit.distance_to(d))) > 0.001: result += 1
++	return result
++
++func taps(piece: Dictionary, side: float) -> PackedVector2Array:
++	var geometry: Dictionary = SplineRoad.geometry(piece)
++	var points: PackedVector2Array = geometry.points
++	var a: Vector2 = (points[1]-points[0]).normalized()
++	var b: Vector2 = (points[-1]-points[-2]).normalized()
++	return PackedVector2Array([points[0]+Vector2(-a.y,a.x)*side*(float(geometry.widths[0])*0.5+1.5),points[-1]+Vector2(-b.y,b.x)*side*(float(geometry.widths[-1])*0.5+1.5)])
++
++func run() -> void:
++	before = OS.get_environment("BMT_SPLINE_BARRIERS_BEFORE") == "1"
++	root.size = Vector2i(1280,720)
++	var piece: Dictionary = road()
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "spline_fence_fold"; doc.name = "Steep spline fences"; doc.pieces = [piece]
++	check(TrackDocument.validate(doc,false).is_empty(),"steep spline is a valid draft")
++	var affected: float = 1.0
++	var old: GDScript = GDScript.new()
++	old.source_code = FileAccess.get_file_as_string("res://../docs/evidence/spline-barriers-2026-10-07/before/game/editor/road_pieces.gd").replace("\r\n","\n").replace("class_name RoadPieces\n","")
++	check(old.reload() == OK,"task-start placement source loads")
++	for side: float in [-1.0,1.0]:
++		var ends: PackedVector2Array = taps(piece,side)
++		var legacy: Array = old.barrier_run(doc,ends[0],ends[1],"fence")
++		print("SPLINE_FENCE_BEFORE side=",side," sections=",legacy.size()," crossings=",crossings(legacy))
++		if crossings(legacy)>0: affected = side
++		if not before:
++			var current: Array = RoadPieces.barrier_run(doc,ends[0],ends[1],"fence")
++			check(not current.is_empty(),"steep spline side creates a fence")
++			check(crossings(current) == 0,"steep spline fences cannot cross each other")
++			var asphalt: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
++			var on_road: int = 0
++			for object: Dictionary in current:
++				var rail: PackedVector2Array = endpoints(object)
++				for blend: float in [0.0,0.25,0.5,0.75,1.0]:
++					var point: Vector2 = rail[0].lerp(rail[1],blend)
++					var covered: int = 0
++					for polygon: PackedVector2Array in asphalt:
++						if Geometry2D.is_point_in_polygon(point,polygon): covered += -1 if Geometry2D.is_polygon_clockwise(polygon) else 1
++					if covered > 0: on_road += 1
++			print("SPLINE_FENCE_AFTER side=",side," sections=",current.size()," crossings=",crossings(current)," on_road=",on_road)
++			check(on_road == 0,"no fitted fence segment crosses the actual spline asphalt")
++	if not before: geometry_cases()
++	if DisplayServer.get_name() != "headless":
++		evidence = ProjectSettings.globalize_path("res://../docs/evidence/spline-barriers-2026-10-07/"+("before" if before else "after"))
++		DirAccess.make_dir_recursive_absolute(evidence)
++		await capture_editor(doc,piece,affected,old)
++	print("SPLINE_BARRIERS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func audit(objects: Array, contours: Array[PackedVector2Array], label: String) -> void:
++	check(not objects.is_empty(),label+" keeps an exposed run")
++	check(crossings(objects) == 0,label+" has no crossed rails")
++	for i: int in range(objects.size()):
++		var rail: PackedVector2Array = endpoints(objects[i])
++		if i > 0: check(endpoints(objects[i-1])[1].distance_to(rail[0]) < 0.001,label+" keeps exact continuous endpoints")
++		var tangent: Vector2 = (rail[1]-rail[0]).normalized()
++		var normal := Vector2(-tangent.y,tangent.x)*CreatorObjects.size_of(objects[i]).y*0.5
++		var clear: bool = true
++		for blend: float in [0.0,0.25,0.5,0.75,1.0]:
++			for lateral: float in [-1.0,0.0,1.0]:
++				var point: Vector2 = rail[0].lerp(rail[1],blend)+normal*lateral
++				var covered: int = 0
++				for polygon: PackedVector2Array in contours:
++					if Geometry2D.is_point_in_polygon(point,polygon): covered += -1 if Geometry2D.is_polygon_clockwise(polygon) else 1
++				if covered > 0:
++					if clear: print("SPLINE_FENCE_ON_ROAD ",label," section=",i," point=",point)
++					clear = false
++		check(clear,label+" entire fence footprint stays off asphalt")
++
++func geometry_cases() -> void:
++	var fixtures: Array[Dictionary] = [road(),road(20.0),road(),road()]
++	fixtures[2].flip = true
++	fixtures[3].heading = 35.0; fixtures[3].point_widths = [6.0,20.0,8.0,16.0,12.0]; fixtures[3].width = 20.0
++	var warm: Array[float] = []
++	var first_build: Array[float] = []
++	for variant: int in range(fixtures.size()):
++		var piece: Dictionary = fixtures[variant]
++		var document: Dictionary = TrackDocument.create_blank(); document.pieces = [piece]
++		var contours: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
++		var unchanged: Dictionary = piece.duplicate(true)
++		check(RoadPieces.validate(piece).is_empty(),"tight spline fixture remains valid")
++		RoadsideBoundary._cache.clear()
++		for kind: String in ["fence","guardrail","wire_fence","barrier"]:
++			for scale: float in [0.75,1.5]:
++				for side: float in [-1.0,1.0]:
++					var ends: PackedVector2Array = taps(piece,side)
++					var started: int = Time.get_ticks_usec()
++					var run: Array = RoadPieces.barrier_run(document,ends[0],ends[1],kind,scale)
++					if kind == "fence" and scale == 0.75 and side == -1.0: first_build.append(float(Time.get_ticks_usec()-started)/1000.0)
++					audit(run,contours,"variant%d %s %.2f side%.0f" % [variant,kind,scale,side])
++					document.objects = run
++					check(TrackDocument.validate(document,false).is_empty(),"fitted spline run obeys saved contract")
++					document.objects = []
++					var reverse: Array = RoadPieces.barrier_run(document,ends[1],ends[0],kind,scale)
++					check(not reverse.is_empty() and crossings(reverse) == 0,"reverse selection follows clean boundary")
++					if not run.is_empty() and not reverse.is_empty():
++						check(endpoints(run[0])[0].distance_to(endpoints(reverse[-1])[1]) < 0.01 and endpoints(run[-1])[1].distance_to(endpoints(reverse[0])[0]) < 0.01,"reversing taps reverses the same exposed perimeter arc")
++		var ends: PackedVector2Array = taps(piece,1.0)
++		var uncapped: Array = RoadPieces.barrier_run(document,ends[0],ends[1],"fence")
++		document.objects.resize(94)
++		var capped: Array = RoadPieces.barrier_run(document,ends[0],ends[1],"fence")
++		check(capped.size() == 2 and capped == uncapped.slice(0,2),"object capacity preserves a continuous perimeter prefix")
++		document.objects = []
++		var started: int = Time.get_ticks_usec()
++		var cached: Array = RoadPieces.barrier_run(document,ends[0],ends[1],"fence")
++		warm.append(float(Time.get_ticks_usec()-started)/1000.0)
++		RoadsideBoundary._cache.clear()
++		var fresh: Array = RoadPieces.barrier_run(document,ends[0],ends[1],"fence")
++		check(cached == fresh,"cached and fresh perimeter placement are identical")
++		check(cached == uncapped,"repeat placement is deterministic")
++		for polygon: PackedVector2Array in RoadsideBoundary._cache[-1].offsets[1.05]: check(polygon_crossings(polygon) == 0,"expanded fence perimeter is simple")
++		check(piece == unchanged,"placement preserves all authored spline geometry")
++		var route: Dictionary = RoadPieces._paths(document.pieces)[0]
++		var sample: Dictionary = RoadPieces._at(route,RoadPieces._path_length(route)*0.36)
++		var tap: Vector2 = Vector2(sample.point)+Vector2(-sample.tangent.y,sample.tangent.x)*(float(sample.width)*0.5+1.5)
++		audit(RoadPieces.barrier_run(document,tap,tap,"fence"),contours,"coincident tap on tight spline")
++	# A real closed sweep has an inner grass island; never bridge it to the exterior.
++	var loop: Dictionary = RoadPieces.create("spline",Vector2(-20,-20),0.0,8.0)
++	loop.spline_points = [[0.0,0.0],[40.0,0.0],[40.0,40.0],[0.0,40.0],[0.0,0.0]]
++	var loop_doc: Dictionary = TrackDocument.create_blank(); loop_doc.pieces = [loop]
++	var path: Dictionary = RoadPieces._paths(loop_doc.pieces)[0]
++	var total: float = RoadPieces._path_length(path)
++	var a: Dictionary = RoadPieces._at(path,total*0.15)
++	var b: Dictionary = RoadPieces._at(path,total*0.65)
++	var start: Vector2 = Vector2(a.point)+Vector2(-a.tangent.y,a.tangent.x)*5.5
++	var finish: Vector2 = Vector2(b.point)+Vector2(-b.tangent.y,b.tangent.x)*5.5
++	var island_run: Array = RoadPieces.barrier_run(loop_doc,start,finish,"fence")
++	var canonical: Array[PackedVector2Array] = RoadEdges.section_contours([loop],0)
++	check(canonical == RoadsideBoundary._cache[-1].road,"placement uses the same forced-knot sweep as rendered spline")
++	audit(island_run,canonical,"inner grass island")
++	var joined: Dictionary = TrackDocument.create_blank()
++	var spline: Dictionary = road()
++	var end: Dictionary = RoadPieces.end_pose(spline)
++	var next: Dictionary = RoadPieces.create("straight",end.position,float(end.heading),12.0)
++	next.length = 20.0
++	joined.pieces = [spline,next]
++	var joined_contours: Array[PackedVector2Array] = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(joined.pieces)
++	for i: int in range(2): joined_contours.append_array(RoadEdges.section_contours(joined.pieces,i,0.0,topology))
++	for side: float in [-1.0,1.0]:
++		var ends: PackedVector2Array = taps(spline,side)
++		var pose: Dictionary = RoadPieces.end_pose(next)
++		var forward := Vector2.from_angle(deg_to_rad(float(pose.heading)))
++		var target: Vector2 = Vector2(pose.position)+Vector2(-forward.y,forward.x)*side*7.5
++		audit(RoadPieces.barrier_run(joined,ends[0],target,"fence"),joined_contours,"spline-to-straight joined edge")
++		# Opening the chain at its other end must not change exposure checks.
++		joined.pieces.reverse()
++		audit(RoadPieces.barrier_run(joined,target,ends[0],"fence"),joined_contours,"reversed connected edge")
++		joined.pieces.reverse()
++	check(RoadsideBoundary._cache.size() <= 4,"perimeter cache is bounded")
++	print("SPLINE_FENCE_FIRST_BUILD_MS ",first_build)
++	print("SPLINE_FENCE_WARM_MS ",warm)
++
++func settle() -> void:
++	await process_frame
++	var deadline: int = Time.get_ticks_msec()+20000
++	while (app.editor_preview_thread != null or app.editor_world._building or app.editor_world._visual_track == null or app.editor_world._visual_track.metadata.get("creator_document",{}).get("objects",[]) != app.document.objects) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"latest editor fence scenery completes")
++
++func capture_editor(doc: Dictionary, piece: Dictionary, side: float, old: GDScript) -> void:
++	var directory: String = "user://spline_barriers_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory); app.records = LocalRecords.new(directory.path_join("records.json")); app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = doc; app.canvas = null; app.editor_view.clear(); app.call("_show_screen","create")
++	await settle()
++	app.call("_editor_category","objects"); app.call("_choose_object","fence"); app.call("_object_placement","road edge")
++	app.object_browser.current = "fence"; app.object_browser.category = "Barriers"; app.object_browser.refresh()
++	var canvas: EditorCanvas = app.canvas
++	var ends: PackedVector2Array = taps(piece,side)
++	if before:
++		canvas.run_preview = old.barrier_run(doc,ends[0],ends[1],"fence")
++		canvas.drawing_run = true; canvas.active_pointer = -1; canvas._end(-1)
++	else:
++		canvas._place(canvas.to_screen(ends[0])); canvas._place(canvas.to_screen(ends[1]))
++	await settle()
++	if not before:
++		var placed: Dictionary = app.document.duplicate(true)
++		check(app.history.size() == 1,"spline perimeter run is one undo operation")
++		check(app.library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(placed)),"spline perimeter sections survive autosave")
++		check(crossings(placed.objects) == 0,"actual editor gestures place no crossing fence")
++		app.call("_undo"); await settle()
++		check(app.document.objects.is_empty(),"Undo removes every fitted spline fence section")
++		app.call("_redo"); await settle()
++		check(app.document == placed,"Redo restores the exact clean spline run")
++	canvas.fit()
++	await shot("steep-spline-fence")
++	canvas.zoom_by(1.8,canvas.to_screen(Vector2(7,-5)))
++	await shot("steep-spline-fence-closeup")
++	app.queue_free(); await process_frame
++
++func shot(label: String) -> void:
++	for frame: int in range(3): await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(label+".png")) == OK,"save actual editor "+label)
+diff --git a/game/tests/test_spline_barriers.gd.uid b/game/tests/test_spline_barriers.gd.uid
+--- /dev/null
++++ b/game/tests/test_spline_barriers.gd.uid
+@@ -0,0 +1 @@
++uid://criu4o28510tq
+diff --git a/docs/SPLINE_BARRIERS.md b/docs/SPLINE_BARRIERS.md
+--- /dev/null
++++ b/docs/SPLINE_BARRIERS.md
+@@ -0,0 +1,44 @@
++# Tight spline fence correction — 2026-10-07
++
++Requirements **T01–T04, R01, V03/V05, Q01**. The owner's follow-up screenshot identifies a case missing from the first [continuous barrier pass](CONTINUOUS_BARRIERS.md): a normal offset of a tight inside spline bend folds back, leaving crossing fences on the asphalt even though individual rail sections meet.
++
++The retained steep spline reproduces this: the previous generator creates **62 sections/one self-crossing** on one side and **55 sections/two self-crossings** on the other. The correction creates **46 and 47 sections, zero crossings and zero sampled rail points on the asphalt**. The larger regression also checks both lateral edges of every section, including its full selected thickness.
++
++Spline-containing road chains now build the exposed perimeter from the same variable-width sweep used for spline roads. Fence clearance is added to the sweep widths **before** its disk/segment union, so folded inside offsets and hidden return edges disappear together. Placement follows one continuous contour between the selected ends in the selected travel direction. Original spline knots and joined widths are retained; reversing a road chain also reverses their sample indices. Inner grass islands remain separate contours. Coincident taps fit a short perimeter run rather than dropping a full straight panel through a tight bend.
++
++The editor-only cache holds at most four geometry entries and eight clearance variants per entry. Actual desktop first builds for four fixtures measured **25.644–33.465 ms**; repeated queries measured **1.741–2.911 ms**. This is an initial editor build cost, not proof of phone frame pacing. No time, file I/O or cache lookup was added to canonical simulation steps.
++
++## Changed files
++
++- `game/editor/roadside_boundary.gd` and `.uid`: exposed perimeter selection, clearance sweep, directional slicing and bounded cache.
++- `game/editor/road_pieces.gd`: spline chain detection, preserved knot indices and the new placement branch.
++- `game/tests/test_spline_barriers.gd` and `.uid`: owner-like folded fixture, thick/wide/mirrored/rotated/variable-width roads, both directions, wooden/wire fences/guardrails/concrete, exact joins, full-width asphalt clearance, grass islands, joined/reversed pieces, coincident taps, cap behavior, cache equivalence, unchanged authoring data and actual editor save/undo/redo.
++- This document, the earlier barrier document, status/phase records and the evidence checkpoint.
++
++No authoring-schema, physics/rules/compiler version, gameplay camera, prop-mesh or road-rendering change. Existing ordinary road runs and free Line/Curve behavior retain the first pass. Existing placed runs are stored individual objects: **Undo/delete and re-place a crossed run after restarting the app** to apply the corrected generation. Player files are not automatically rewritten.
++
++## Actual checks
++
++All engine commands use the pinned `4.7.2.stable.official.ed1daf0bf` via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with process-local `APPDATA=build/barrier-test-user` and separately injected fixture records/library/cloud roots. Approved elevated execution provides Windows certificate-store access. No service/account writes.
++
++| Actual arguments | Outcome |
++| --- | --- |
++| `-Action Import` | Exit 0; new helper registered. |
++| `-Action TestScript -ScriptPath res://tests/test_spline_barriers.gd -Graphical` | **6,656 checks, zero failures**, actual before/after editor output and save/undo/redo. |
++| `-Action TestScript -ScriptPath res://tests/test_continuous_barriers.gd` | **7,715 checks, zero failures**. |
++| `-Action TestPieces` | **377 checks, zero failures**; same creator golden `e2119106df24929d541890a8f600e3be7970947471cf09a5eec2db28f8fbc792`, two five-lap drives with zero contacts. |
++| `-Action TestWorkflow` | **252 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **346 scripts, zero failures**. |
++| `git diff --check -- game/editor/road_pieces.gd` | Exit 0; existing CRLF normalization notice. |
++
++An intermediate polygon-offset approach removed the original crossings but failed three full-width checks on a narrow mirrored fence. It was replaced with clearance applied before sweep union; those assertions now pass. A diagnostic revision mistakenly checked coverage before subtracting hole contours, producing extra false failures; accounting was corrected without weakening the no-asphalt check. Final results above are actual completed runs, not planned verification.
++
++## Evidence and remaining acceptance
++
++- [Before: folded fence](evidence/spline-barriers-2026-10-07/before/steep-spline-fence-closeup.png).
++- [After: exposed perimeter fence](evidence/spline-barriers-2026-10-07/after/steep-spline-fence-closeup.png).
++- [After: complete editor view](evidence/spline-barriers-2026-10-07/after/steep-spline-fence.png).
++
++Captures are actual 1280×720 engine output and were inspected. The supplied screenshot guided the reproduction; it is not claimed to be the owner's exact saved track. Pre-edit source, failed/passing logs, a task-only review patch and source hashes are retained under `docs/evidence/spline-barriers-2026-10-07/`.
++
++Owner review on the actual map and physical Android finger feel/performance remain. **No phone/device test, attachment check, export/install, full Validate, backend deployment or production action was performed.** The existing 96-object limit remains. Unrelated physics, soundtrack and rivalry edits were preserved.
+diff --git a/docs/CONTINUOUS_BARRIERS.md b/docs/CONTINUOUS_BARRIERS.md
+--- a/docs/CONTINUOUS_BARRIERS.md
++++ b/docs/CONTINUOUS_BARRIERS.md
+@@ -1,4 +1,6 @@
+ # Continuous barrier placement — 2026-10-07
++
++Follow-up: the owner's steep spline screenshot exposed a remaining folded inside offset. [The spline correction](SPLINE_BARRIERS.md) replaces that offset with the exposed expanded-sweep perimeter; final spline 6,656 checks and original barrier 7,715 checks pass. Re-place existing crossed runs to regenerate them.
+ 
+ Requirements: **T01–T04, R01, V03/V05, Q01**. Owner request: fence/barrier placement modes should produce smooth continuous runs along roads.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-07 T01-T04/R01/V03/V05/Q01: owner screenshot's tight-spline crossing fence reproduced (62/55 sections,1/2 crossings) and corrected with exposed clearance sweep perimeter (46/47,zero crossings/on-road samples). Retained knots/widths, inner islands, reverse/joined chains and coincident taps; bounded4-geometry/8-margin cache. Final graphical6656/old barriers7715/pieces377/workflow252/parser346 pass, original compiler22 golden/five-lap drives preserved. Cold25.644-33.465ms/warm1.741-2.911ms desktop; actual before/after inspected. Intermediate offset and diagnostic-hole failures corrected without weakened footprint checks. No player-file rewrite/phone/device/attachment check/export/install/full Validate/backend deployment; re-place old crossed runs, actual-map/mobile acceptance remains. Files/commands/logs/scoped checkpoint: docs/SPLINE_BARRIERS.md.
++
+ 2026-10-07 WR10/R01/V03-V05/Q01: owner-requested Race chequered flag and standings-column repair implemented. Reuses existing waving checker icon, names both panels STANDINGS and reserves matching header/row scrollbar gutters with 12px clear space; fixed lane preserves dimensions for short fields. Final graphical1097 checks/zero failures at three landscape sizes include measured gap/header clearance and right-edge alignment; screenshot inspected/scoped checkpoint retained. No new asset generation, physics/backend change, live-backend/phone/attachment test, export/install/full Validate or deployment. Unrelated .53/rules20/editor work preserved. Files, commands, evidence and acceptance: docs/RIVALRY_REFERENCE.md (column correction).
+ 
+ 2026-10-07 G01/T03: owner rejects barely noticeable .52 drag and requests considerable slowdown. Normal-impulse scrape friction0.18-to1.0, physics0.53/local compatibility and oval expected pin; smooth resolver/normals/recoil/alignment/feedback retained. Same108km/h2deg one-second coast99.082-to75.953km/h, powered135.430-to110.858km/h; first tangent loss0.629-to3.492%. Strong-scrub20268/diagnostic14820 and selected backend121 checks pass/50PG deselected; explicit coast/power slowdown and no-freeze/energy/corner/reverse/replay targets covered. Full332 parses and preceding core checks pass, concurrent ObjectRuns cache update stops storm; pinned Import and final storm/soil/suspension/records/rewind/ghost/camera/cars/kart/history all pass, no full-green claim. Inspected native screenshot/unclipped PCM, scoped patch/hash/log evidence retained. Concurrent rules20/editor/hub work preserved. No phone attachment check/device/export/install/live deployment/score migration; matching verifier rollout remains. Files, actual commands, results and limits: docs/SHALLOW_COLLISION_FIX.md (considerably stronger slowdown), docs/evidence/strong-wall-drag-2026-10-07.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-07 T01-T04/R01/V03/V05/Q01: owner screenshot's tight-spline crossing fence reproduced (62/55 sections,1/2 crossings) and corrected with exposed clearance sweep perimeter (46/47,zero crossings/on-road samples). Retained knots/widths, inner islands, reverse/joined chains and coincident taps; bounded4-geometry/8-margin cache. Final graphical6656/old barriers7715/pieces377/workflow252/parser346 pass, original compiler22 golden/five-lap drives preserved. Cold25.644-33.465ms/warm1.741-2.911ms desktop; actual before/after inspected. Intermediate offset and diagnostic-hole failures corrected without weakened footprint checks. No player-file rewrite/phone/device/attachment check/export/install/full Validate/backend deployment; re-place old crossed runs, actual-map/mobile acceptance remains. Files/commands/logs/scoped checkpoint: docs/SPLINE_BARRIERS.md.
++
+ 2026-10-07 WR10/R01/V03-V05/Q01: owner-requested Race chequered flag and standings-column repair implemented. Reuses existing waving checker icon, names both panels STANDINGS and reserves matching header/row scrollbar gutters with 12px clear space; fixed lane preserves dimensions for short fields. Final graphical1097 checks/zero failures at three landscape sizes include measured gap/header clearance and right-edge alignment; screenshot inspected/scoped checkpoint retained. No new asset generation, physics/backend change, live-backend/phone/attachment test, export/install/full Validate or deployment. Unrelated .53/rules20/editor work preserved. Files, commands, evidence and acceptance: docs/RIVALRY_REFERENCE.md (column correction).
+ 
+ 2026-10-07 G01/T03: owner rejects barely noticeable .52 drag and requests considerable slowdown. Normal-impulse scrape friction0.18-to1.0, physics0.53/local compatibility and oval expected pin; smooth resolver/normals/recoil/alignment/feedback retained. Same108km/h2deg one-second coast99.082-to75.953km/h, powered135.430-to110.858km/h; first tangent loss0.629-to3.492%. Strong-scrub20268/diagnostic14820 and selected backend121 checks pass/50PG deselected; explicit coast/power slowdown and no-freeze/energy/corner/reverse/replay targets covered. Full332 parses and preceding core checks pass, concurrent ObjectRuns cache update stops storm; pinned Import and final storm/soil/suspension/records/rewind/ghost/camera/cars/kart/history all pass, no full-green claim. Inspected native screenshot/unclipped PCM, scoped patch/hash/log evidence retained. Concurrent rules20/editor/hub work preserved. No phone attachment check/device/export/install/live deployment/score migration; matching verifier rollout remains. Files, actual commands, results and limits: docs/SHALLOW_COLLISION_FIX.md (considerably stronger slowdown), docs/evidence/strong-wall-drag-2026-10-07.
+diff --git a/docs/evidence/spline-barriers-2026-10-07/review_checkpoint.py b/docs/evidence/spline-barriers-2026-10-07/review_checkpoint.py
+--- /dev/null
++++ b/docs/evidence/spline-barriers-2026-10-07/review_checkpoint.py
+@@ -0,0 +1,62 @@
++"""Scope the tight-spline follow-up against its own task-start source."""
++import difflib
++import hashlib
++import json
++import shutil
++from pathlib import Path
++
++evidence = Path(__file__).resolve().parent
++repo = evidence.parents[2]
++summary = (
++    "2026-10-07 T01-T04/R01/V03/V05/Q01: owner screenshot's tight-spline crossing fence reproduced "
++    "(62/55 sections,1/2 crossings) and corrected with exposed clearance sweep perimeter "
++    "(46/47,zero crossings/on-road samples). Retained knots/widths, inner islands, reverse/joined "
++    "chains and coincident taps; bounded4-geometry/8-margin cache. Final graphical6656/old barriers7715/"
++    "pieces377/workflow252/parser346 pass, original compiler22 golden/five-lap drives preserved. "
++    "Cold25.644-33.465ms/warm1.741-2.911ms desktop; actual before/after inspected. "
++    "Intermediate offset and diagnostic-hole failures corrected without weakened footprint checks. "
++    "No player-file rewrite/phone/device/attachment check/export/install/full Validate/backend deployment; "
++    "re-place old crossed runs, actual-map/mobile acceptance remains. "
++    "Files/commands/logs/scoped checkpoint: docs/SPLINE_BARRIERS.md.\n\n"
++)
++for name in ("DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"):
++    target = repo / name
++    previous = target.read_text(encoding="utf-8-sig")
++    if summary not in previous:
++        baseline = evidence / "before" / name
++        baseline.parent.mkdir(parents=True, exist_ok=True)
++        if not baseline.exists(): shutil.copyfile(target, baseline)
++        target.write_text(summary + previous, encoding="utf-8")
++
++names = [
++    "game/editor/roadside_boundary.gd", "game/editor/roadside_boundary.gd.uid",
++    "game/editor/road_pieces.gd", "game/tests/test_spline_barriers.gd", "game/tests/test_spline_barriers.gd.uid",
++    "docs/SPLINE_BARRIERS.md", "docs/CONTINUOUS_BARRIERS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md",
++    "docs/evidence/spline-barriers-2026-10-07/review_checkpoint.py",
++]
++parts = []
++hashes = {}
++for name in names:
++    source = repo / name
++    baseline = evidence / "before" / name
++    old = baseline.read_text(encoding="utf-8-sig").splitlines(keepends=True) if baseline.exists() else []
++    new = source.read_text(encoding="utf-8-sig").splitlines(keepends=True)
++    difference = list(difflib.unified_diff(old, new, fromfile=f"a/{name}" if baseline.exists() else "/dev/null", tofile=f"b/{name}"))
++    if difference:
++        parts.append(f"diff --git a/{name} b/{name}\n")
++        parts.extend(difference)
++    hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
++(evidence / "scoped-change.patch").write_text("".join(parts), encoding="utf-8")
++(evidence / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")
++
++logs = evidence / "logs"
++logs.mkdir(exist_ok=True)
++markers = ("SPLINE_FENCE_BEFORE", "CONTINUOUS_BARRIERS:", "ROAD_PIECES_TESTS:", "EDITOR_WORKFLOW_TESTS:", "SCRIPT_PARSE:")
++for directory in (repo / "build/logs").iterdir():
++    if not directory.is_dir(): continue
++    for source in directory.glob("*.log"):
++        if source.stat().st_mtime < evidence.stat().st_ctime - 30: continue
++        contents = source.read_text(encoding="utf-8-sig", errors="replace")
++        if any(marker in contents for marker in markers) or (directory.name.startswith("Import-") and "RoadsideBoundary" in contents):
++            shutil.copyfile(source, logs / f"{directory.name}-{source.name}")
++print(f"SPLINE_BARRIER_CHECKPOINT: {len(hashes)} source hashes; task-only patch retained")

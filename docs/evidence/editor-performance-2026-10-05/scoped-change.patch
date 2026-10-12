@@ -1,0 +1,3371 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -65,6 +65,10 @@
+ var editor_raster_cache: Dictionary = {"enabled":true}
+ var editor_compiled_cache: Array[Dictionary] = []
+ var editor_saved_snapshot: Dictionary = {}
++var editor_route_pieces: Array = []
++var editor_route_fields: Dictionary = {}
++var editor_loading: PanelContainer
++var editor_pending_road_bake: Dictionary = {}
+ var online: AccountController
+ var account_button: Button
+ var startup_complete: bool = false
+@@ -104,11 +108,16 @@
+ 	editor_preview_document = {}
+ 
+ func _process(_delta: float) -> void:
++	if is_instance_valid(editor_loading) and is_instance_valid(canvas):
++		editor_loading.visible = editor_preview_thread != null or canvas.native_preview == null or editor_world._building
+ 	if editor_preview_thread == null or editor_preview_thread.is_alive(): return
+ 	# Finish the detailed scene between gestures, never underneath a finger.
+ 	if is_instance_valid(canvas) and canvas.active_pointer != -99: return
+ 	var result: NativeTrack = editor_preview_thread.wait_to_finish()
+ 	editor_preview_thread = null
++	if result != null and not editor_pending_road_bake.is_empty() and result.metadata.get("creator_document",{}) == editor_pending_road_bake:
++		NativeTrackVisual.request_saved_road_bake.call_deferred(result)
++		editor_pending_road_bake.clear()
+ 	if not is_instance_valid(canvas) or screen != "create": return
+ 	if document != editor_preview_document:
+ 		_queue_editor_preview()
+@@ -252,7 +261,8 @@
+ 	var slide: bool = is_instance_valid(root_ui) and root_ui.is_visible_in_tree() and previous_page in pages and next_page in pages and previous_page != next_page
+ 	var slide_direction: int = 1 if pages.find(next_page) > pages.find(previous_page) else -1
+ 	if drag_offset * slide_direction > 0.0: drag_offset = 0.0
+-	_finish_preview_thread()
++	# A departing page does not need its preview. The single worker retires in
++	# _process; a newly opened document supersedes its output without joining.
+ 	if is_instance_valid(object_browser):
+ 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
+ 	if is_instance_valid(canvas):
+@@ -1432,7 +1442,20 @@
+ 	overlay.add_child(editor_status)
+ 	# Retain status text for internal feedback consumers, without a canvas-wide hint bar.
+ 	editor_status.hide()
++	editor_loading = PanelContainer.new()
++	editor_loading.name = "EditorPreparation"
++	editor_loading.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	editor_loading.add_theme_stylebox_override("panel",EditorStyle.panel())
++	overlay.add_child(editor_loading)
++	editor_loading.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
++	editor_loading.offset_left = -110; editor_loading.offset_right = 110
++	editor_loading.offset_top = 118; editor_loading.offset_bottom = 160
++	var preparing: Label = MenuStyle.label("Preparing track…",17)
++	preparing.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	preparing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	editor_loading.add_child(preparing)
+ 	object_browser = ObjectBrowser.new()
++	object_browser.visible = false
+ 	for key: String in object_browser_state: object_browser.set(key,object_browser_state[key])
+ 	object_browser.current = canvas.stamp_kind
+ 	object_browser.biome = str(document.get("biome",document.theme))
+@@ -1465,8 +1488,14 @@
+ 	canvas.selection_changed.connect(_build_editor_tools)
+ 	_build_editor_tools()
+ 	_refresh_editor()
+-	var preview_track: NativeTrack = _editor_track_preview()
+-	if preview_track != null: canvas.show_native(preview_track)
++	# Reuse an exact completed preview if the worker is idle; otherwise let the
++	# existing single worker prepare the newest document while controls render.
++	var cached_preview: NativeTrack
++	if editor_preview_thread == null:
++		for entry: Dictionary in editor_compiled_cache:
++			if entry.document == document: cached_preview = entry.track; break
++	if cached_preview != null: canvas.show_native(cached_preview)
++	else: _queue_editor_preview()
+ 	_update_editor_issues()
+ 	if editor_view.is_empty(): canvas.call_deferred("fit")
+ 	_apply_editor_safe_area(overlay)
+@@ -1796,7 +1825,7 @@
+ 	if key in ["theme", "biome", "creator"]: return
+ 	_remember()
+ 	document[key] = value
+-	_save_draft()
++	_save_draft(true)
+ 	_show_screen("create")
+ 
+ func _undo() -> void:
+@@ -1841,9 +1870,14 @@
+ 	if document.is_empty(): return ERR_INVALID_DATA
+ 	_stamp_creator()
+ 	if not document.pieces.is_empty():
+-		var auto_route: Dictionary = RoadPieces.route_from_pieces(document)
+-		if auto_route.ok:
+-			for key: String in ["points","widths","corners","route_override"]: document[key] = auto_route.document[key]
++		if document.pieces != editor_route_pieces or editor_route_fields.is_empty():
++			var auto_route: Dictionary = RoadPieces.route_from_pieces(document)
++			if auto_route.ok:
++				editor_route_pieces = document.pieces.duplicate(true)
++				editor_route_fields.clear()
++				for key: String in ["points","widths","corners","route_override"]: editor_route_fields[key] = auto_route.document[key]
++		if document.pieces == editor_route_pieces:
++			for key: String in editor_route_fields: document[key] = editor_route_fields[key].duplicate(true) if editor_route_fields[key] is Array else editor_route_fields[key]
+ 	var errors: Array[String] = TrackDocument.validate(document)
+ 	var message: String
+ 	var save_error: Error = library.save_wip(document)
+@@ -1897,7 +1931,9 @@
+ 	if not canvas.paint_points.is_empty():
+ 		_notice("Confirm or cancel the surface preview first.")
+ 		return
+-	_save_draft()
++	if _save_draft(true) != OK:
++		_notice("Could not save: "+library.last_error)
++		return
+ 	var dialog := AcceptDialog.new()
+ 	dialog.title = "Share your circuit"
+ 	dialog.dialog_text = "Copy this circuit and send it to a friend. They can paste it into Import.\nLocal creation and racing shared circuits are free."
+@@ -2408,7 +2444,7 @@
+ 		canvas.selected = -1
+ 		document.base_track = ""
+ 		document.route_override = true
+-		_save_draft()
++		_save_draft(true)
+ 		_build_editor_tools()))
+ 	editor_inspector.add_child(help)
+ 
+@@ -2484,7 +2520,7 @@
+ 		if not canvas.ghost.is_empty():
+ 			_notice("The preview cannot be placed here. Move or cancel it before saving.")
+ 			return false
+-	if _save_draft() != OK:
++	if _save_draft(true) != OK:
+ 		_notice("Could not save: "+library.last_error)
+ 		return false
+ 	if library.save_document(document) != OK:
+@@ -2499,7 +2535,10 @@
+ 			var saved_track: NativeTrack = TrackCompiler.compile(document)
+ 			if saved_track != null: selected_track = saved_track
+ 		_notice("Saved on this device. Open Load track to edit or test it.")
+-		NativeTrackVisual.request_saved_road_bake(canvas.native_preview)
++		editor_pending_road_bake = document.duplicate(true)
++		if canvas.native_preview != null and canvas.native_preview.metadata.get("creator_document",{}) == document:
++			NativeTrackVisual.request_saved_road_bake.call_deferred(canvas.native_preview)
++			editor_pending_road_bake.clear()
+ 	var saved_title: Label = root_ui.find_child("TrackName",true,false) as Label
+ 	if saved_title != null: saved_title.text = str(document.name)
+ 	editor_saved_snapshot = document.duplicate(true)
+@@ -2815,7 +2854,7 @@
+ 	return result
+ 
+ func _compile_editor_preview_uncached(source: Dictionary) -> NativeTrack:
+-	if TrackDocument.validate(source).is_empty(): return TrackCompiler.compile(source,editor_raster_cache)
++	if TrackDocument.validate(source).is_empty(): return _compile_editor_with_masks(source)
+ 	if not TrackDocument.validate(source,false).is_empty(): return null
+ 	# A draft may have an unfinished lap. Render its actual map using a safe
+ 	# preview-only route; never change the saved route or permit racing it.
+@@ -2823,7 +2862,14 @@
+ 	var fallback: Dictionary = TrackDocument.create_default()
+ 	for key: String in ["points","widths","corners"]: preview_document[key] = fallback[key]
+ 	preview_document.route_override = true
+-	return TrackCompiler.compile(preview_document,editor_raster_cache)
++	return _compile_editor_with_masks(preview_document)
++
++func _compile_editor_with_masks(source: Dictionary) -> NativeTrack:
++	var track: NativeTrack = TrackCompiler.compile(source,editor_raster_cache)
++	if track != null:
++		track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,source.paint)
++		track.editor_road_mask = CreatorPreviewMasks.road(track)
++	return track
+ 
+ 
+ func _confirm_delete_track(id: String, title: String) -> void:
+@@ -3063,7 +3109,7 @@
+ 		if field.text.strip_edges().is_empty(): return
+ 		document.name=field.text.strip_edges()
+ 		(root_ui.find_child("TrackName",true,false) as Label).text=document.name
+-		_save_draft()
++		_save_draft(true)
+ 		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
+ 		dialog.hide(); dialog.queue_free()
+ 	dialog.confirmed.connect(apply_name)
+diff --git a/game/editor/editor_canvas.gd b/game/editor/editor_canvas.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/editor_canvas.gd
+@@ -0,0 +1,1249 @@
++class_name EditorCanvas
++extends Control
++## One finger drags handles or pans; two fingers pan/zoom. No precision gestures required.
++
++signal edit_started
++signal document_changed
++signal edit_finished
++signal hint_changed(text: String)
++signal selection_changed
++signal native_changed(track: NativeTrack)
++
++const PLANNING_PITCH: float = 70.0
++
++var document: Dictionary
++var mode: String = "road"
++var world_backdrop: bool = false
++var selected_piece: int = -1
++var ghost: Dictionary = {}
++var piece_kind: String = "straight"
++var snap_enabled: bool = true
++var snap_matched: bool = false
++var road_action: String = "move"
++var geometry_drag: String = ""
++var geometry_origin: float = 0.0
++var road_approval_pending: bool = false
++var endpoint_drag: int = -1
++var piece_before_drag: Dictionary = {}
++var desktop_pan: bool = false
++var pending_road_tap: bool = false
++var pending_piece_accept: bool = false
++var start_drag: bool = false
++var pending_start_flip: bool = false
++var protect_road: bool = true
++var free_run: bool = false
++var run_shape: String = "line"
++var run_draw: PackedVector2Array = []
++var drawing_run: bool = false
++var stamp_scale: float = 1.0
++var run_start := Vector2.INF
++var run_preview: Array = []
++var issue_marker := Vector2.INF
++var issue_text: String = ""
++var brush_surface: int = 2
++var brush_width: float = 10.0
++var brush_shape: String = "round"
++var paint_points: Array = []
++var paint_mode: String = "free"
++var pending_paint_accept: bool = false
++var paint_handle: int = -1
++var paint_before_gesture: Array = []
++var zoom: float = 1.0
++var pan := Vector2.ZERO
++var selected: int = -1
++var selected_object: int = -1
++var stamp_kind: String = "tree"
++var stamp_rotation: float = 0.0
++var pending_stamp: bool = false
++var press_position := Vector2.ZERO
++var drag_origin := Vector2.ZERO
++var pointer_origin := Vector2.ZERO
++var changed_in_gesture: bool = false
++var active_pointer: int = -99
++var touches: Dictionary = {}
++var dragging: bool = false
++var panning: bool = false
++var previous_pointer := Vector2.ZERO
++var preview: TrackMap
++var fitted: bool = false
++var fit_pending_native: bool = false
++var native_preview: NativeTrack
++var visual_preview: NativeTrack
++
++func _ready() -> void:
++	clip_contents = true
++	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
++	mouse_filter = Control.MOUSE_FILTER_STOP
++	resized.connect(func() -> void:
++		if not fitted: fit()
++		queue_redraw())
++	preview = TrackMap.new()
++	preview.visible = false
++	add_child(preview)
++
++func scale_factor() -> float:
++	return maxf(0.01, minf(size.x / 110.0, size.y / 90.0)) * zoom
++
++func to_screen(point: Vector2) -> Vector2:
++	return size * 0.5 + pan + Vector2(point.x, -point.y*(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0)) * scale_factor()
++
++func to_world(point: Vector2) -> Vector2:
++	var local: Vector2 = (point - size * 0.5 - pan) / scale_factor()
++	return Vector2(local.x, -local.y/(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0))
++
++func fit() -> void:
++	if size.x < 10 or size.y < 10: return
++	fit_pending_native = native_preview == null and document.get("base_track","") != ""
++	fitted = true
++	zoom = 1.0
++	pan = Vector2.ZERO
++	if not document.is_empty():
++		var bounds := Rect2(Vector2(document.points[0][0], document.points[0][1]), Vector2.ZERO)
++		for p: Array in document.points: bounds = bounds.expand(Vector2(p[0], p[1]))
++		for p: Array in document.layout.get("points",[]): bounds = bounds.expand(Vector2(p[0],p[1]))
++		for piece: Dictionary in document.get("pieces",[]):
++			for p: Vector2 in RoadPieces.samples(piece):
++				bounds = bounds.expand(p-Vector2.ONE*float(piece.width)*0.5).expand(p+Vector2.ONE*float(piece.width)*0.5)
++		for stroke: Dictionary in document.paint:
++			for p: Array in stroke.points:
++				var center := Vector2(p[0],p[1])
++				var radius: Vector2 = Vector2.ONE*float(stroke.width)*0.5
++				bounds = bounds.expand(center-radius).expand(center+radius)
++		for object: Dictionary in document.objects:
++			for p: Vector2 in CreatorObjects.outline(object): bounds = bounds.expand(p)
++		if document.base_track != "" and native_preview != null: bounds = Rect2(-native_preview.half_extent,native_preview.half_extent*2)
++		var base: float = scale_factor()
++		zoom = clampf(minf((size.x-24) / (bounds.size.x + 24), (size.y-156) / (bounds.size.y + 24)) / base, 0.25, 16.0)
++		pan += size*0.5-to_screen(bounds.get_center())
++	queue_redraw()
++
++func zoom_by(factor: float, anchor: Vector2 = Vector2.INF) -> void:
++	fit_pending_native = false
++	if anchor == Vector2.INF: anchor = size*0.5
++	var before: Vector2 = to_world(anchor)
++	zoom = clampf(zoom * factor, 0.25, 16.0)
++	pan += anchor-to_screen(before)
++	queue_redraw()
++
++func refresh() -> void:
++	queue_redraw()
++
++func show_native(track: NativeTrack) -> void:
++	native_preview = track
++	if fit_pending_native:
++		fit_pending_native = false
++		fit()
++	# The 3D editor never draws this legacy CPU-rasterized map texture.
++	if not world_backdrop: preview.show_track(track)
++	native_changed.emit(track)
++	queue_redraw()
++
++func cancel_gesture() -> void:
++	pending_paint_accept = false
++	run_draw.clear()
++	drawing_run=false
++	run_preview.clear()
++	run_start=Vector2.INF
++	if dragging and changed_in_gesture: edit_finished.emit()
++	paint_points.clear()
++	pending_stamp = false
++	dragging = false
++	panning = false
++	active_pointer = -99
++	touches.clear()
++	desktop_pan = false
++	pending_road_tap = false
++	pending_piece_accept = false
++	start_drag = false
++	pending_start_flip = false
++
++func _gui_input(event: InputEvent) -> void:
++	if document.is_empty(): return
++	if event is InputEventKey: return
++	# Menus/text fields use Godot mouse emulation; this canvas handles every
++	# native finger itself, so ignore the duplicate synthesized mouse stream.
++	if event is InputEventMouse and event.device == -1:
++		accept_event()
++		return
++	if event is InputEventMouseButton:
++		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed: zoom_by(1.15,event.position)
++		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed: zoom_by(1.0 / 1.15,event.position)
++		elif event.button_index in [MOUSE_BUTTON_MIDDLE,MOUSE_BUTTON_RIGHT] or (event.button_index == MOUSE_BUTTON_LEFT and (desktop_pan or Input.is_physical_key_pressed(KEY_SPACE))):
++			if event.pressed:
++				var draft: Array = paint_points.duplicate(true)
++				cancel_gesture()
++				if paint_mode != "free": paint_points = draft
++				desktop_pan = true
++				active_pointer = -int(event.button_index)
++				previous_pointer = event.position
++			else:
++				desktop_pan = false
++				active_pointer = -99
++		elif event.button_index == MOUSE_BUTTON_LEFT:
++			if event.pressed: _begin(event.position, -1)
++			else: _end(-1)
++	elif event is InputEventMouseMotion and active_pointer < 0 and active_pointer != -99:
++		_move(event.position)
++	elif event is InputEventScreenTouch:
++		if event.pressed and not event.canceled:
++			touches[event.index] = event.position
++			if touches.size() == 1: _begin(event.position, event.index)
++			else:
++				pending_road_tap = false
++				pending_piece_accept = false
++				pending_start_flip = false
++				start_drag = false
++				pending_paint_accept = false
++				paint_handle = -1
++				drawing_run=false
++				run_draw.clear()
++				run_preview.clear()
++				if paint_mode == "free": paint_points.clear()
++				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
++				pending_stamp = false
++				if dragging and changed_in_gesture: edit_finished.emit()
++				dragging = false
++		else:
++			var was_pinching: bool = touches.size() >= 2
++			touches.erase(event.index)
++			if event.canceled:
++				pending_paint_accept = false
++				paint_handle = -1
++				drawing_run=false
++				run_draw.clear()
++				run_preview.clear()
++				pending_road_tap = false
++				pending_piece_accept = false
++				pending_start_flip = false
++				start_drag = false
++				pending_stamp = false
++				if paint_mode == "free": paint_points.clear()
++				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
++			_end(event.index)
++			if was_pinching and touches.size() == 1:
++				# Either finger may lift first. The remaining finger continues
++				# navigation, including after a platform cancellation event.
++				active_pointer = int(touches.keys()[0])
++				previous_pointer = touches[active_pointer]
++				dragging = false
++				panning = true
++	elif event is InputEventScreenDrag:
++		if not touches.has(event.index): return
++		if touches.size() >= 2:
++			var keys: Array = touches.keys()
++			var a: Vector2 = touches[keys[0]]
++			var b: Vector2 = touches[keys[1]]
++			touches[event.index] = event.position
++			var next_a: Vector2 = touches[keys[0]]
++			var next_b: Vector2 = touches[keys[1]]
++			pan += (next_a + next_b - a - b) * 0.5
++			zoom_by(next_a.distance_to(next_b) / maxf(20.0, a.distance_to(b)),(next_a+next_b)*0.5)
++			if touches.has(active_pointer): previous_pointer = touches[active_pointer]
++		else:
++			touches[event.index] = event.position
++			if active_pointer == event.index: _move(event.position)
++	accept_event()
++
++func _begin(point: Vector2, pointer: int) -> void:
++	fit_pending_native = false
++	active_pointer = pointer
++	previous_pointer = point
++	press_position = point
++	pointer_origin = to_world(point)
++	changed_in_gesture = false
++	if mode=="place":
++		for object: Dictionary in document.objects:
++			if CreatorObjects.contains(object,to_world(point)):
++				mode="objects"
++				break
++	start_drag = false
++	pending_start_flip = false
++	if mode == "road" and ghost.is_empty() and document.has("start_line"):
++		var controls: Dictionary = start_controls()
++		if Vector2(controls.flip).distance_to(point) <= 28:
++			pending_start_flip = true
++			return
++		if Geometry2D.get_closest_point_to_segment(point,controls.left,controls.right).distance_to(point) <= 18:
++			start_drag = true
++			dragging = true
++			selected_piece = -1
++			return
++	if mode == "road":
++		_begin_road(point)
++		return
++	if mode in ["run","start","start_line"]:
++		run_draw=PackedVector2Array([to_world(point)])
++		drawing_run=false
++		pending_stamp = true
++		return
++	if mode == "paint":
++		if paint_mode != "free":
++			paint_before_gesture = paint_points.duplicate(true)
++			if paint_accept_rect().has_point(point):
++				pending_paint_accept = true
++				return
++			paint_handle = -1
++			for i: int in range(paint_points.size()):
++				if to_screen(Vector2(paint_points[i][0],paint_points[i][1])).distance_to(point) <= 24:
++					paint_handle = i
++					break
++			if paint_handle < 0 and paint_points.size() < 64:
++				paint_points.append(_paint_position(point))
++				paint_handle = paint_points.size()-1
++			queue_redraw()
++			return
++		paint_points = [_paint_position(point)]
++		queue_redraw()
++		return
++	if mode in ["pan","waypoints","move","add"]:
++		panning = true
++		return
++	pending_stamp = mode == "place"
++	if pending_stamp: return
++	selected = -1
++	selected_object = -1
++	var nearest: float = 30.0
++	if mode == "objects":
++		for i: int in range(document.objects.size()-1,-1,-1):
++			var object: Dictionary = document.objects[i]
++			var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
++			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
++				selected_object = i
++				break
++		if selected_object < 0 and native_preview != null and document.objects.size() < 96:
++			for object: Dictionary in native_preview.metadata.get("scenery_objects",[]):
++				if CreatorObjects.contains(object,to_world(point)) or to_screen(Vector2(object.position[0],object.position[1])).distance_to(point) < 24:
++					edit_started.emit()
++					if not document.has("hidden_scenery"): document["hidden_scenery"] = []
++					document.hidden_scenery.append(CreatorScenery.key(object))
++					document.objects.append(object.duplicate(true))
++					changed_in_gesture = true
++					selected_object = document.objects.size()-1
++					document_changed.emit()
++					break
++	selection_changed.emit()
++	if selected_object >= 0:
++		var value: Array = document.objects[selected_object].position
++		drag_origin = Vector2(value[0],value[1])
++		dragging = true
++	else: panning = true
++	queue_redraw()
++
++func _move(point: Vector2) -> void:
++	if pending_paint_accept:
++		if press_position.distance_to(point) > 12:
++			pending_paint_accept = false
++			panning = true
++		else: return
++	if pending_start_flip:
++		if press_position.distance_to(point) > 8: pending_start_flip = false
++		return
++	if start_drag:
++		if press_position.distance_to(point) < 3 and not changed_in_gesture: return
++		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
++		if pose.is_empty(): return
++		if not changed_in_gesture: edit_started.emit()
++		changed_in_gesture = true
++		document["start_line"] = pose
++		document_changed.emit()
++		queue_redraw()
++		return
++	if desktop_pan:
++		pan += point-previous_pointer
++		previous_pointer = point
++		queue_redraw()
++		return
++	if pending_road_tap and press_position.distance_to(point) > 8:
++		pending_road_tap = false
++		pending_piece_accept = false
++		panning = true
++	if mode == "road" and dragging:
++		_move_road(point)
++		previous_pointer = point
++		return
++	if mode == "run" and (drawing_run or press_position.distance_to(point)>12):
++		drawing_run=true
++		pending_stamp=false
++		var target: Vector2 = to_world(point).clamp(Vector2(-110,-110),Vector2(110,110))
++		if run_shape=="curve":
++			if run_draw[-1].distance_to(target)>0.3 and run_draw.size()<512: run_draw.append(target)
++			run_preview=_path_run(run_draw)
++		else:
++			run_preview=_object_run(to_world(press_position) if run_start==Vector2.INF else run_start,target)
++		queue_redraw()
++		return
++	if mode == "paint" and paint_mode != "free" and paint_handle >= 0:
++		paint_points[paint_handle] = _paint_position(point)
++		queue_redraw()
++		return
++	if mode == "paint" and not paint_points.is_empty() and paint_mode == "free":
++		var p: Array = _paint_position(point)
++		if Vector2(p[0],p[1]).distance_to(Vector2(paint_points[-1][0],paint_points[-1][1])) >= 0.5 and paint_points.size() < 512:
++			paint_points.append(p)
++		queue_redraw()
++		return
++	if pending_stamp:
++		if press_position.distance_to(point) > 12:
++			pending_stamp = false
++			panning = true
++	if dragging:
++		var position: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
++			edit_started.emit()
++			changed_in_gesture = true
++		if changed_in_gesture:
++			if selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
++			document_changed.emit()
++	elif panning: pan += point-previous_pointer
++	previous_pointer = point
++	queue_redraw()
++
++func _place(point: Vector2) -> void:
++	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++	if mode == "start_line":
++		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
++		if pose.is_empty():
++			hint_changed.emit("Place the start line on a road.")
++			return
++		edit_started.emit()
++		document["start_line"] = pose
++		mode = "road"
++		document_changed.emit()
++		edit_finished.emit()
++		selection_changed.emit()
++		queue_redraw()
++		return
++	if mode == "start":
++		edit_started.emit()
++		var heading: float = 0.0
++		if native_preview != null:
++			var nearest_route: float = INF
++			for i: int in range(native_preview.route.size()):
++				var a: Vector2 = native_preview.route[i]
++				var b: Vector2 = native_preview.route[(i+1)%native_preview.route.size()]
++				var distance: float = Geometry2D.get_closest_point_to_segment(position,a,b).distance_squared_to(position)
++				if distance < nearest_route:
++					nearest_route = distance
++					heading = fposmod(rad_to_deg((b-a).angle()),360)
++		var nearest_piece: float = INF
++		for piece: Dictionary in document.pieces:
++			var samples: PackedVector2Array = RoadPieces.samples(piece)
++			for i: int in range(samples.size()-1):
++				var distance: float = Geometry2D.get_closest_point_to_segment(position,samples[i],samples[i+1]).distance_squared_to(position)
++				if distance < nearest_piece and distance <= float(piece.width)*float(piece.width)*0.25:
++					nearest_piece = distance
++					heading = fposmod(rad_to_deg((samples[i+1]-samples[i]).angle()),360)
++		document["practice_start"] = {"position":[position.x,position.y],"heading":heading}
++		mode = "road"
++		document_changed.emit()
++		edit_finished.emit()
++		selection_changed.emit()
++		queue_redraw()
++		return
++	if mode == "run":
++		if run_start == Vector2.INF:
++			run_start = position
++			hint_changed.emit("Tap the end of the free wall line." if free_run else "Tap the end of the run. Barriers follow the nearest road edge.")
++		else:
++			run_preview = _object_run(run_start,position)
++			if not run_preview.is_empty():
++				edit_started.emit()
++				document.objects.append_array(run_preview)
++				document_changed.emit()
++				edit_finished.emit()
++				hint_changed.emit("%d objects placed." % run_preview.size())
++			run_start = Vector2.INF
++			run_preview.clear()
++		queue_redraw()
++		return
++	if mode == "place":
++		if document.objects.size() >= 96:
++			hint_changed.emit("Use up to 96 objects. Select one to move or remove it.")
++			return
++		edit_started.emit()
++		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
++		if stamp_scale != 1.0: object["scale"]=stamp_scale
++		document.objects.append(object)
++		selected_object = document.objects.size()-1
++		selected = -1
++	else: return
++	document_changed.emit()
++	edit_finished.emit()
++	selection_changed.emit()
++	queue_redraw()
++
++func _end(pointer: int) -> void:
++	if pointer != active_pointer: return
++	if pending_paint_accept:
++		pending_paint_accept = false
++		confirm_paint()
++	if pending_start_flip:
++		pending_start_flip = false
++		flip_start_line()
++	start_drag = false
++	if pending_piece_accept:
++		pending_piece_accept = false
++		dragging = false
++		confirm_piece()
++	if drawing_run:
++		if not run_preview.is_empty():
++			edit_started.emit()
++			document.objects.append_array(run_preview)
++			document_changed.emit()
++			edit_finished.emit()
++			hint_changed.emit("%d objects placed / Undo removes the whole run" % run_preview.size())
++		drawing_run=false
++		run_draw.clear()
++		run_preview.clear()
++		run_start=Vector2.INF
++	if pending_road_tap and not ghost.is_empty():
++		var target: Vector2 = to_world(press_position)
++		var trial: Dictionary = ghost.duplicate(true)
++		trial.position = [target.x,target.y]
++		if RoadPieces.validate(trial).is_empty():
++			ghost = trial
++			_snap_ghost()
++		selection_changed.emit()
++	pending_road_tap = false
++	pending_piece_accept = false
++	if paint_mode == "free": confirm_paint()
++	paint_handle = -1
++	if pending_stamp: _place(press_position)
++	if dragging and changed_in_gesture:
++		edit_finished.emit()
++		if geometry_drag != "": selection_changed.emit()
++	pending_stamp = false
++	dragging = false
++	panning = false
++	active_pointer = -99
++	if not touches.is_empty():
++		active_pointer = int(touches.keys()[0])
++		previous_pointer = touches[active_pointer]
++		panning = true
++	queue_redraw()
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: cancel_gesture()
++
++func _draw() -> void:
++	if document.is_empty() or size.x < 10 or size.y < 10: return
++	var palette: Array[Color] = TrackTheme.palette(str(document.theme))
++	if not world_backdrop: draw_style_box(MenuStyle.box(palette[1].darkened(0.2)), Rect2(Vector2.ZERO, size))
++	if not world_backdrop and native_preview != null and preview.surface_texture != null:
++		var corner: Vector2 = to_screen(Vector2(-native_preview.half_extent.x,native_preview.half_extent.y))
++		draw_texture_rect(preview.surface_texture, Rect2(corner,native_preview.half_extent * 2.0 * scale_factor()), false)
++	if world_backdrop and native_preview != null and document.base_track == "" and (document.layout.is_empty() or not document.pieces.is_empty()):
++		var extent: Vector2 = native_preview.half_extent-Vector2.ONE*native_preview.cell_size
++		var corners: Array[Vector2] = [to_screen(Vector2(-extent.x,extent.y)),to_screen(extent),to_screen(Vector2(extent.x,-extent.y)),to_screen(-extent)]
++		for i: int in range(4): draw_dashed_line(corners[i],corners[(i+1)%4],Color(0.85,0.92,0.85,0.28),1.0,8.0,true)
++	var grid_metres: float = 0.5 if scale_factor() > 40 else 1.0 if scale_factor() > 14 else 5.0 if scale_factor() > 6 else 10.0
++	var spacing: float = grid_metres * scale_factor()
++	var origin: Vector2 = to_screen(Vector2.ZERO)
++	if mode=="road":
++		for x: float in range(ceili(size.x / spacing) + 1):
++			var xx: float = fposmod(origin.x, spacing) + x * spacing
++			draw_line(Vector2(xx,0),Vector2(xx,size.y),Color(1,1,1,0.035))
++		for y: float in range(ceili(size.y / spacing) + 1):
++			var yy: float = fposmod(origin.y, spacing) + y * spacing
++			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
++	var sampled: Dictionary = TrackDocument.route_data(document)
++	var route: PackedVector2Array = sampled.points
++	if native_preview == null and not world_backdrop:
++		for i: int in range(route.size()):
++			var a: Vector2 = to_screen(route[i])
++			var b: Vector2 = to_screen(route[(i+1)%route.size()])
++			var width: float = float(sampled.widths[i])*scale_factor()
++			draw_line(a,b,palette[5],width+2*scale_factor(),true)
++			draw_circle(a,width*0.5+scale_factor(),palette[5])
++		for i: int in range(route.size()):
++			var a: Vector2 = to_screen(route[i])
++			var b: Vector2 = to_screen(route[(i+1)%route.size()])
++			var width: float = float(sampled.widths[i])*scale_factor()
++			var color: Color = palette[2] if document.surface == "dirt" else palette[0]
++			draw_line(a,b,color,width,true)
++			draw_circle(a,width*0.5,color)
++	if mode == "waypoints":
++		var line := PackedVector2Array()
++		for p: Vector2 in route: line.append(to_screen(p))
++		line.append(line[0])
++		draw_polyline(line,Color(1,0.85,0.35,0.9),2,true)
++	if route.size() > 1 and mode == "waypoints":
++		var start: Vector2 = to_screen(route[0])
++		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * TrackDocument.node_width(document,0) * scale_factor() * 0.5
++		draw_line(start-across,start+across,Color("e0e7dd"),3,true)
++		var direction: Vector2 = (to_screen(route[1])-start).normalized()
++		var arrow: Vector2 = start + direction * 24
++		draw_line(arrow-direction.rotated(0.65)*12,arrow,Color("edf1f3"),3,true)
++		draw_line(arrow-direction.rotated(-0.65)*12,arrow,Color("edf1f3"),3,true)
++	for i: int in range(document.points.size() if mode == "waypoints" else 0):
++		var p: Array = document.points[i]
++		var center: Vector2 = to_screen(Vector2(p[0],p[1]))
++		draw_circle(center,4,Color("f3c644"))
++		if i == 0:
++			draw_string(ThemeDB.fallback_font,center+Vector2(-23,-18),"START",HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color.WHITE)
++	for piece: Dictionary in pending_road_pieces(): _draw_piece(piece,false,false)
++	for i: int in range(document.get("objects",[]).size()):
++		if world_backdrop and (mode not in ["objects","place","run"] or i != selected_object): continue
++		var object: Dictionary = document.objects[i]
++		var outline := PackedVector2Array()
++		for point: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(point))
++		var color: Color = palette[CreatorObjects.surface(object.kind)]
++		if not world_backdrop: draw_colored_polygon(outline,color.lightened(0.12))
++		outline.append(outline[0])
++		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
++		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
++		if not world_backdrop: draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
++	if not paint_points.is_empty():
++		var color: Color = palette[brush_surface]
++		color.a = 0.7
++		var path: PackedVector2Array = SurfacePaint.contour(paint_points,paint_mode)
++		var screen_path := PackedVector2Array()
++		for p: Vector2 in path: screen_path.append(to_screen(p))
++		if paint_mode == "area" and screen_path.size() >= 3:
++			if not Geometry2D.triangulate_polygon(screen_path).is_empty(): draw_colored_polygon(screen_path,color)
++			screen_path.append(screen_path[0])
++		if screen_path.size() > 1: draw_polyline(screen_path,color,2.0 if paint_mode == "area" else brush_width*scale_factor(),true)
++		if paint_mode != "area":
++			for p: Vector2 in screen_path: draw_circle(p,brush_width*scale_factor()*0.5,color)
++		if paint_mode != "free":
++			for p: Array in paint_points:
++				var at: Vector2 = to_screen(Vector2(p[0],p[1]))
++				draw_circle(at,10,Color("f5c842"))
++				draw_circle(at,5,Color("182533"))
++		var accept: Rect2 = paint_accept_rect()
++		if accept.has_area():
++			draw_style_box(MenuStyle.box(Color("f3c644"),14),accept)
++			var center: Vector2 = accept.get_center()
++			draw_polyline(PackedVector2Array([center+Vector2(-12,0),center+Vector2(-3,9),center+Vector2(14,-10)]),Color("142331"),4,true)
++	if mode == "road":
++		for i: int in range(document.get("pieces",[]).size()):
++			if i == selected_piece: _draw_piece(document.pieces[i],false)
++		if not ghost.is_empty(): _draw_piece(ghost,true)
++		for join: Dictionary in RoadPieces.joins(document.get("pieces",[])):
++			draw_circle(to_screen(join.position),5,Color("e2efec"),false,2,true)
++	if document.has("practice_start") and mode in ["waypoints","move","add","start"]:
++		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
++		draw_circle(start,14,Color("16c2cf"),false,3,true)
++		draw_string(ThemeDB.fallback_font,start+Vector2(20,5),"Practice start",HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color.WHITE)
++	if document.has("start_line") and mode in ["road","start_line"]: _draw_start_line()
++	if run_start != Vector2.INF: draw_circle(to_screen(run_start),10,Color("16c2cf"),false,3,true)
++	for object: Dictionary in run_preview:
++		var outline := PackedVector2Array()
++		for p: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(p))
++		draw_colored_polygon(outline,Color(0.05,0.8,0.86,0.6))
++	if issue_marker != Vector2.INF:
++		var marker: Vector2 = to_screen(issue_marker)
++		draw_circle(marker,22,Color("ec4659"),false,3,true)
++		draw_string(ThemeDB.fallback_font,marker+Vector2(-4,6),"!",HORIZONTAL_ALIGNMENT_LEFT,-1,23,Color.WHITE)
++		if not issue_text.is_empty():
++			var callout: Vector2 = (marker+Vector2(35,-42)).clamp(Vector2(110,90),size-Vector2(305,140))
++			var box := StyleBoxFlat.new()
++			box.bg_color = Color("25191e")
++			box.border_color = Color("ec4659")
++			box.set_border_width_all(1)
++			box.set_corner_radius_all(6)
++			draw_style_box(box,Rect2(callout-Vector2(10,24),Vector2(290,38)))
++			draw_string(ThemeDB.fallback_font,callout,issue_text,HORIZONTAL_ALIGNMENT_LEFT,270,16,Color("ffadb5"))
++	var ruler: float = 10.0 if scale_factor() < 15 else 2.0
++	var base := Vector2(size.x-32,size.y-26)
++	draw_line(base-Vector2(ruler*scale_factor(),0),base,Color("e5ece8"),2,true)
++	draw_string(ThemeDB.fallback_font,base-Vector2(42,9),"%.1f m" % ruler,HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color("e5ece8"))
++
++func choose_piece(kind: String) -> void:
++	cancel_gesture()
++	mode = "road"
++	selected_piece = -1
++	piece_kind = kind
++	ghost = RoadPieces.create(kind,to_world(size*0.5)-Vector2(14,0))
++	if not document.pieces.is_empty():
++		var end: Dictionary = RoadPieces.end_pose(document.pieces[-1])
++		ghost = RoadPieces.create(kind,end.position,end.heading,document.pieces[-1].width)
++	_snap_ghost()
++	selection_changed.emit()
++	queue_redraw()
++
++func _snap_ghost() -> void:
++	snap_matched = false
++	if snap_enabled:
++		var match_result: Dictionary = RoadPieces.snap(ghost,document.pieces,selected_piece)
++		if RoadPieces.validate(match_result.piece).is_empty() and _valid_bridge_edit(match_result.piece,selected_piece):
++			ghost = match_result.piece
++			snap_matched = match_result.matched
++
++func confirm_piece() -> void:
++	if ghost.is_empty():
++		selected_piece = -1
++	else:
++		var errors: Array[String] = RoadPieces.validate(ghost)
++		if not errors.is_empty():
++			hint_changed.emit(errors[0])
++			return
++		if document.pieces.size() >= RoadPieces.MAX_PIECES: return
++		if not _valid_bridge_edit(ghost,-1): return
++		edit_started.emit()
++		document.pieces.append(ghost.duplicate(true))
++		ghost.clear()
++		selected_piece = -1
++		document_changed.emit()
++		road_approval_pending = true
++		edit_finished.emit()
++		road_approval_pending = false
++	selection_changed.emit()
++	queue_redraw()
++
++func _begin_road(point: Vector2) -> void:
++	geometry_drag = ""
++	endpoint_drag = -1
++	pending_road_tap = false
++	pending_piece_accept = false
++	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
++	if not current.is_empty():
++		for key: String in geometry_keys(current):
++			if to_screen(_geometry_handle(current,key)).distance_to(point) <= 24:
++				geometry_drag = key
++				geometry_origin = RoadPieces.height(current) if key == "height" else float(current.get(key,0.0 if key == "curvature" else 90.0))
++				piece_before_drag = current.duplicate(true)
++				dragging = true
++				queue_redraw()
++				return
++		for end: int in range(2):
++			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
++			if to_screen(handle).distance_to(point) <= 26:
++				endpoint_drag = end
++				piece_before_drag = current.duplicate(true)
++				dragging = true
++				return
++	if not current.is_empty() and piece_accept_rect(current).has_point(point):
++		pending_piece_accept = true
++		drag_origin = Vector2(current.position[0],current.position[1])
++		dragging = true
++		return
++	if not ghost.is_empty():
++		var samples: PackedVector2Array = RoadPieces.samples(ghost)
++		var hit: bool = false
++		for p: Vector2 in samples:
++			if to_screen(p).distance_to(point) < maxf(28,float(ghost.width)*scale_factor()*0.5): hit = true
++		if not hit:
++			pending_road_tap = true
++			return
++		drag_origin = Vector2(ghost.position[0],ghost.position[1])
++		dragging = true
++	else:
++		var candidates: Array[int] = []
++		if selected_piece >= 0: candidates.append(selected_piece)
++		for i: int in range(document.pieces.size()-1,-1,-1):
++			if i != selected_piece: candidates.append(i)
++		selected_piece = -1
++		for i: int in candidates:
++			for p: Vector2 in RoadPieces.samples(document.pieces[i]):
++				if to_screen(p).distance_to(point) < maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
++					selected_piece = i
++					break
++			if selected_piece >= 0: break
++		if selected_piece >= 0:
++			var piece: Dictionary = document.pieces[selected_piece]
++			piece_before_drag = piece.duplicate(true)
++			for end: int in range(2):
++				var handle: Vector2 = Vector2(piece.position[0],piece.position[1]) if end == 0 else RoadPieces.end_pose(piece).position
++				if to_screen(handle).distance_to(point) <= 26: endpoint_drag = end
++			drag_origin = Vector2(piece.position[0],piece.position[1])
++			dragging = true
++		else: panning = true
++	selection_changed.emit()
++	queue_redraw()
++
++func _attached_end(piece: Dictionary) -> int:
++	return RoadPieces.attached_end(piece,document.pieces,selected_piece if ghost.is_empty() else -1)
++
++func anchored_change(before: Dictionary, changed: Dictionary, key: String) -> Dictionary:
++	return RoadPieces.keep_attachment(before,changed,_attached_end(before),key != "heading")
++
++func _move_road(point: Vector2) -> void:
++	var piece: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece]
++	if pending_piece_accept:
++		if press_position.distance_to(point) <= 8: return
++		pending_piece_accept = false
++	if press_position.distance_to(point) < 3 and not changed_in_gesture: return
++	if endpoint_drag >= 0:
++		var target: Vector2 = to_world(point)
++		var moving_end: int = endpoint_drag
++		var attached: int = _attached_end(piece_before_drag)
++		if moving_end == attached:
++			moving_end = 1-attached
++			target = Vector2(RoadPieces._pose(piece_before_drag,moving_end).position)+to_world(point)-pointer_origin
++		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece if ghost.is_empty() else -1)
++		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,moving_end,target)
++		if trial.is_empty():
++			hint_changed.emit("Keep the section inside the map and within its size limits.")
++			return
++		if not _valid_bridge_edit(trial,selected_piece): return
++		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
++		changed_in_gesture = true
++		if ghost.is_empty():
++			document.pieces[selected_piece] = trial
++			document_changed.emit()
++		else: ghost = trial
++		snap_matched = false
++		queue_redraw()
++		return
++	if geometry_drag != "":
++		var increased: Dictionary = piece_before_drag.duplicate(true)
++		increased[geometry_drag] = geometry_origin+1.0
++		if piece.kind == "s_bend" and geometry_drag == "radius": increased.height = RoadPieces.height(piece_before_drag)
++		increased = anchored_change(piece_before_drag,increased,geometry_drag)
++		var axis: Vector2 = _geometry_anchor(increased,geometry_drag)-_geometry_anchor(piece_before_drag,geometry_drag)
++		var delta: float = (to_world(point)-pointer_origin).dot(axis)/maxf(0.01,axis.length_squared())
++		if piece.kind == "curve" and geometry_drag == "angle":
++			var side: float = -1.0 if piece.flip else 1.0
++			var center: Vector2 = Vector2(piece_before_drag.position[0],piece_before_drag.position[1])+Vector2(0,side*float(piece_before_drag.radius)).rotated(deg_to_rad(float(piece_before_drag.heading)))
++			var anchor: Vector2 = _geometry_anchor(piece_before_drag,"angle")
++			delta = rad_to_deg((anchor-center).angle_to(anchor+to_world(point)-pointer_origin-center))/( -0.8 if _attached_end(piece_before_drag) == 1 else 0.8)*side
++		var trial: Dictionary = piece_before_drag.duplicate(true)
++		trial[geometry_drag] = snappedf(geometry_origin+delta,0.01 if geometry_drag == "curvature" else 0.5)
++		if geometry_drag == "curvature": trial.curvature = clampf(float(trial.curvature),-0.3,0.3)
++		elif geometry_drag == "heading": trial.heading = fposmod(float(trial.heading),360.0)
++		else:
++			var lower: float = 6.0 if geometry_drag == "width" else 3.0 if geometry_drag == "radius" else 2.0 if geometry_drag == "height" else 5.0 if geometry_drag == "angle" else 24.0 if piece.kind == "bridge" else 2.0 if piece.kind == "straight" else 0.0
++			var upper: float = 20.0 if geometry_drag == "width" else 60.0 if geometry_drag in ["radius","height"] else 270.0 if geometry_drag == "angle" else 120.0
++			trial[geometry_drag] = clampf(float(trial[geometry_drag]),lower,upper)
++		if piece.kind == "s_bend" and geometry_drag == "radius": trial.height = RoadPieces.height(piece_before_drag)
++		trial = anchored_change(piece_before_drag,trial,geometry_drag)
++		if not RoadPieces.validate(trial).is_empty(): return
++		if not _valid_bridge_edit(trial,selected_piece): return
++		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
++		changed_in_gesture = true
++		if ghost.is_empty(): document.pieces[selected_piece] = trial
++		else: ghost = trial
++		snap_matched = false
++		if ghost.is_empty(): document_changed.emit()
++		queue_redraw()
++		return
++	var target: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE*0.5)
++	var moved: Dictionary = piece.duplicate(true)
++	moved.position = [target.x,target.y]
++	if not RoadPieces.validate(moved).is_empty():
++		hint_changed.emit("Keep the whole section inside the map.")
++		return
++	if not _valid_bridge_edit(moved,selected_piece): return
++	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
++	changed_in_gesture = true
++	if not ghost.is_empty():
++		ghost = moved
++		_snap_ghost()
++	else:
++		document.pieces[selected_piece] = moved
++		if snap_enabled:
++			var result: Dictionary = RoadPieces.snap(moved,document.pieces,selected_piece)
++			if RoadPieces.validate(result.piece).is_empty() and _valid_bridge_edit(result.piece,selected_piece):
++				document.pieces[selected_piece] = result.piece
++		document_changed.emit()
++	queue_redraw()
++
++func pending_road_pieces() -> Array:
++	var pending: Array = []
++	if not world_backdrop: return pending
++	if native_preview == null: return document.pieces
++	var displayed: NativeTrack = visual_preview if visual_preview != null else native_preview
++	var compiled: Array = displayed.metadata.get("creator_document",{}).get("pieces",[])
++	for index: int in range(document.pieces.size()):
++		if index >= compiled.size() or document.pieces[index] != compiled[index]: pending.append(document.pieces[index])
++	return pending
++
++func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
++	var geometry: Dictionary = RoadPieces.section_geometry([piece],0)
++	var points: PackedVector2Array = geometry.points
++	var widths: PackedFloat32Array = geometry.widths
++	var line := PackedVector2Array()
++	var left := PackedVector2Array()
++	var right := PackedVector2Array()
++	for i: int in range(points.size()):
++		var direction: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(i-1,0)]).normalized()
++		if piece.kind == "taper": direction = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
++		var normal := Vector2(-direction.y,direction.x)*widths[i]*0.5
++		line.append(to_screen(points[i]))
++		left.append(to_screen(points[i]+normal))
++		right.append(to_screen(points[i]-normal))
++	# Individual triangles also handle a deliberately tight bend whose inner
++	# edge folds over itself; a single outline is not a simple polygon there.
++	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("61533e") if document.surface == "dirt" else Color("45494c")
++	for i: int in range(left.size()-1):
++		draw_primitive(PackedVector2Array([left[i],right[i],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
++		draw_primitive(PackedVector2Array([right[i],right[i+1],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
++	draw_polyline(left,Color("b9faff") if controls else Color("dce1dc"),2,true)
++	draw_polyline(right,Color("b9faff") if controls else Color("dce1dc"),2,true)
++	if not controls: return
++	if dragging and geometry_drag != "":
++		if geometry_drag == "width":
++			draw_polyline(left,Color("76ddeb"),4,true)
++			draw_polyline(right,Color("76ddeb"),4,true)
++		else:
++			draw_polyline(line,Color("f6bf69"),3,true)
++
++	for endpoint: int in [0,points.size()-1]:
++		draw_line(left[endpoint],right[endpoint],Color.WHITE,2,true)
++		draw_circle(line[endpoint],13,Color("f2f6f7"))
++		draw_circle(line[endpoint],13,Color("163541"),false,2,true)
++		if _attached_end(piece) == (0 if endpoint == 0 else 1):
++			draw_rect(Rect2(line[endpoint]-Vector2(5,1),Vector2(10,8)),Color("163541"),false,2)
++			draw_arc(line[endpoint]+Vector2(0,-1),4,PI,TAU,10,Color("163541"),2,true)
++		else:
++			for axis: Vector2 in [Vector2.RIGHT,Vector2.DOWN]:
++				_draw_handle_arrow(line[endpoint],axis,7,Color("163541"))
++	for key: String in geometry_keys(piece):
++		var handle: Vector2 = to_screen(_geometry_handle(piece,key))
++		if piece.kind == "bridge": draw_line(to_screen(_geometry_anchor(piece,key)),handle,Color("b9faff"),1.5,true)
++		var increased: Dictionary = piece.duplicate(true)
++		increased[key] = (RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0)))+1.0
++		if piece.kind == "s_bend" and key == "radius": increased.height = RoadPieces.height(piece)
++		increased = anchored_change(piece,increased,key)
++		var axis: Vector2 = (to_screen(_geometry_anchor(increased,key))-to_screen(_geometry_anchor(piece,key))).normalized()
++		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
++		if piece.kind != "bridge": continue
++		var caption: String = geometry_caption(piece,key)
++		var label_size := Vector2(ThemeDB.fallback_font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+12,24)
++		var label_pos: Vector2 = handle+Vector2(-label_size.x*0.5,24)
++		draw_style_box(MenuStyle.box(Color("142331"),5),Rect2(label_pos,label_size))
++		draw_string(ThemeDB.fallback_font,label_pos+Vector2(6,17),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color.WHITE)
++
++
++	var accept_rect: Rect2 = piece_accept_rect(piece)
++	draw_style_box(MenuStyle.box(Color("f3c644"),14),accept_rect)
++	var c: Vector2 = accept_rect.get_center()
++	draw_polyline(PackedVector2Array([c+Vector2(-12,0),c+Vector2(-3,9),c+Vector2(14,-10)]),Color("142331"),4,true)
++
++func _draw_geometry_glyph(center: Vector2, key: String, axis: Vector2, active: bool) -> void:
++	var ink := Color("142331")
++	var fill := Color("76ddeb") if key == "width" else Color("f6bf69")
++	if active:
++		draw_circle(center,23,Color(1,0.85,0.4,0.25))
++		fill = Color("ffdd80")
++		_draw_handle_arrow(center,axis,34,Color("fff5cd"))
++	if key == "width":
++		draw_style_box(MenuStyle.box(fill,6),Rect2(center-Vector2(17,17),Vector2(34,34)))
++		var normal := axis.orthogonal()
++		for sign_value: float in [-1.0,1.0]:
++			var edge: Vector2 = center+axis*11*sign_value
++			draw_line(edge-normal*9,edge+normal*9,ink,2,true)
++		_draw_handle_arrow(center,axis,7,ink)
++	else:
++		draw_circle(center,17,fill)
++		if key in ["angle","heading"]:
++			draw_arc(center,10,-PI*0.8,PI*0.15,16,ink,2,true)
++			var tip: Vector2 = center+Vector2.from_angle(PI*0.15)*10
++			draw_polyline(PackedVector2Array([tip+Vector2(-5,-1),tip,tip+Vector2(1,-5)]),ink,2,true)
++			if key == "angle":
++				draw_line(center,center+Vector2(0,-7),ink,2,true)
++				draw_line(center,center+Vector2(7,0),ink,2,true)
++		elif key in ["curvature","radius"]:
++			var normal := axis.orthogonal()
++			var curve := PackedVector2Array()
++			for i: int in range(17):
++				var t: float = float(i)/16.0
++				curve.append(center+normal*lerpf(-11,11,t)+axis*(sin(PI*t)*7-5))
++			draw_polyline(curve,ink,2.5,true)
++			_draw_handle_arrow(center+axis*6,axis,5,ink)
++		elif key in ["height","span"]:
++			var wave := PackedVector2Array()
++			for i: int in range(17):
++				var t: float = float(i)/16.0
++				var point := Vector2(-5+sin(t*TAU)*4,lerpf(-10,10,t))
++				wave.append(center+(point if key == "height" else Vector2(point.y,point.x)))
++			draw_polyline(wave,ink,2,true)
++			_draw_handle_arrow(center+(Vector2(7,0) if key == "height" else Vector2(0,7)),Vector2.UP if key == "height" else Vector2.RIGHT,9,ink)
++		else: # Straight-arm length: parallel arms with extension arrows.
++			var normal := axis.orthogonal()
++			for side: float in [-1.0,1.0]:
++				draw_line(center-axis*10+normal*7*side,center+axis*10+normal*7*side,ink,2,true)
++			_draw_handle_arrow(center,axis,8,ink)
++
++func _draw_handle_arrow(center: Vector2, axis: Vector2, reach: float, color: Color) -> void:
++	var normal := axis.orthogonal()
++	draw_line(center-axis*reach,center+axis*reach,color,2,true)
++	for side: float in [-1.0,1.0]:
++		var tip: Vector2 = center+axis*reach*side
++		draw_polyline(PackedVector2Array([tip-axis*3*side+normal*3,tip,tip-axis*3*side-normal*3]),color,2,true)
++
++func piece_accept_rect(piece: Dictionary) -> Rect2:
++	var points: PackedVector2Array = RoadPieces.samples(piece)
++	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
++
++func geometry_keys(piece: Dictionary) -> Array[String]:
++	if piece.kind == "straight": return ["width"]
++	if piece.kind == "taper": return ["width","narrow_width","length"]
++	if piece.kind == "curve": return ["width","curvature","angle"]
++	if piece.kind == "s_bend": return ["width","radius","height"]
++	if piece.kind == "hairpin": return ["width","radius","length"]
++	var keys: Array[String] = ["width"]
++	if piece.kind != "s_bend": keys.push_front("length")
++	if piece.kind not in ["straight","bridge"]: keys.append("radius")
++	if piece.kind == "s_bend": keys.append("height")
++	if piece.kind == "curve": keys.append("angle")
++	keys.append("heading")
++	return keys
++
++func geometry_caption(piece: Dictionary, key: String) -> String:
++	var title: String = "Rotate" if key == "heading" else "Narrow width" if key == "narrow_width" else "Straight" if key == "length" and piece.kind not in ["straight","taper","bridge"] else key.capitalize()
++	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
++	return ("%s %.0f deg" if key in ["angle","heading"] else "%s %.1f m") % [title,value]
++
++func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
++	return to_world(geometry_controls(piece)[key])
++
++func geometry_controls(piece: Dictionary) -> Dictionary:
++	var controls: Dictionary = {}
++	if piece.kind != "bridge":
++		var occupied: Array[Vector2] = [to_screen(Vector2(piece.position[0],piece.position[1])),to_screen(RoadPieces.end_pose(piece).position)]
++		for key: String in geometry_keys(piece):
++			var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
++			var candidate: Vector2 = anchor
++			if key != "width":
++				for step: int in range(97):
++					candidate = anchor+Vector2.LEFT.rotated(float(step%8)*TAU/8.0)*float((step+7)/8)*12.0
++					var clear: bool = not piece_accept_rect(piece).grow(20).has_point(candidate)
++					for other: Vector2 in occupied:
++						if candidate.distance_to(other) < 48: clear = false; break
++					if clear: break
++			controls[key] = candidate
++			occupied.append(candidate)
++		return controls
++	var blocked: Array[Rect2] = [piece_accept_rect(piece).grow(20)]
++	for endpoint: Vector2 in [Vector2(piece.position[0],piece.position[1]),Vector2(RoadPieces.end_pose(piece).position)]:
++		blocked.append(Rect2(to_screen(endpoint)-Vector2(40,40),Vector2(80,80)))
++	for key: String in geometry_keys(piece):
++		var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
++		var candidate: Vector2 = anchor
++		for step: int in range(81):
++			var ring: int = (step+7)/8
++			var offset: Vector2 = Vector2.UP.rotated(float(step%8)*TAU/8.0)*float(ring)*64.0
++			candidate = anchor+offset
++			var area := Rect2(candidate-Vector2(70,26),Vector2(140,78))
++			var overlaps: bool = false
++			for rect: Rect2 in blocked:
++				if rect.intersects(area): overlaps = true; break
++			if not overlaps: break
++		controls[key] = candidate
++		blocked.append(Rect2(candidate-Vector2(70,26),Vector2(140,78)))
++	return controls
++
++func _geometry_anchor(piece: Dictionary, key: String) -> Vector2:
++	var points: PackedVector2Array = RoadPieces.samples(piece)
++	var forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
++	if piece.kind == "curve" and key in ["width","angle","curvature"]:
++		var side: float = -1.0 if piece.flip else 1.0
++		var fraction: float = (0.2 if _attached_end(piece) == 1 else 0.8) if key == "angle" else 0.5
++		var turn: float = deg_to_rad(float(piece.get("angle",90.0)))*fraction
++		var radius: float = float(piece.radius)
++		var bulge: float = float(piece.get("curvature",0.0))*RoadPieces.curve_bulge_scale(piece)*pow(sin(PI*fraction),2)
++		var reach: float = radius+bulge+float(piece.width)*0.5 if key == "width" else maxf(1.0,radius+bulge-float(piece.width)*0.5-2.0)
++		return points[0]+Vector2(reach*sin(turn),side*(radius-reach*cos(turn))).rotated(deg_to_rad(float(piece.heading)))
++	if piece.kind == "hairpin":
++		var side: float = -1.0 if piece.flip else 1.0
++		var radius: float = float(piece.radius)
++		var half: float = float(piece.width)*0.5
++		var reach: float = radius+half if key == "width" else maxf(1.0,radius-half-2.0)
++		var turn: float = PI*0.25 if key == "radius" else PI*0.5
++		return points[0]+Vector2(float(piece.length)+reach*sin(turn),side*(radius-reach*cos(turn))).rotated(deg_to_rad(float(piece.heading)))
++	if piece.kind == "s_bend" and key in ["radius","height"]:
++		var radius: float = float(piece.radius)
++		var side: float = -1.0 if piece.flip else 1.0
++		var vertical: float = RoadPieces.height(piece)/(2.0*(1.0-cos(PI*0.25)))
++		var turn: float = PI*0.125
++		var local := Vector2(RoadPieces.S_END_LENGTH+radius*sin(turn),side*vertical*(1.0-cos(turn)))
++		var tangent := Vector2(radius*cos(turn),side*vertical*sin(turn)).normalized()
++		var normal := Vector2(-tangent.y,tangent.x)*side
++		if key == "height":
++			local = Vector2(2.0*RoadPieces.S_END_LENGTH+2.0*radius*sin(PI*0.25),side*RoadPieces.height(piece))-local
++			normal = -normal
++		local += normal*(float(piece.width)*0.5+2.0)
++		return points[0]+local.rotated(deg_to_rad(float(piece.heading)))
++	if key == "heading": return points[0]+forward*maxf(12.0,float(piece.length))
++	if key == "length": return points[0]+forward*float(piece.length)
++	if key == "narrow_width":
++		var end_forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(piece.heading)))
++		var end_normal := Vector2(-end_forward.y,end_forward.x)*(-1.0 if piece.flip else 1.0)
++		return points[-1]-end_normal*float(piece.narrow_width)*0.5
++	if key == "height": return points[-1]
++	if key in ["radius","angle"]: return points[-1]
++	var middle: int = points.size()/2
++	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
++	return points[middle]+Vector2(-direction.y,direction.x)*float(piece.width)*0.5
++
++func cycle_piece() -> void:
++	var hits: Array[int] = []
++	for i: int in range(document.pieces.size()):
++		for p: Vector2 in RoadPieces.samples(document.pieces[i]):
++			if to_screen(p).distance_to(press_position) <= maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
++				hits.append(i)
++				break
++	if hits.is_empty(): return
++	selected_piece = hits[(hits.find(selected_piece)+1)%hits.size()]
++	ghost.clear()
++	mode = "road"
++	selection_changed.emit()
++	queue_redraw()
++
++func _valid_bridge_edit(piece: Dictionary, index: int) -> bool:
++	var pieces: Array = document.pieces.duplicate(true)
++	if index >= 0 and ghost.is_empty(): pieces[index] = piece
++	else: pieces.append(piece)
++	var errors: Array[String] = CreatorBridges.validate(pieces,document.base_track)
++	if errors.is_empty(): return true
++	hint_changed.emit(errors[0])
++	return false
++
++
++func _paint_position(point: Vector2) -> Array:
++	var p: Vector2 = to_world(point).snapped(Vector2.ONE*0.5).clamp(Vector2(-110,-110),Vector2(110,110))
++	if document.base_track != "" and native_preview != null: p = p.clamp(-native_preview.half_extent+Vector2.ONE,native_preview.half_extent-Vector2.ONE)
++	if native_preview != null and brush_width <= native_preview.cell_size:
++		var cell: float = native_preview.cell_size
++		var extent: Vector2 = native_preview.half_extent
++		p.x = (floorf((p.x+extent.x)/cell)+0.5)*cell-extent.x
++		p.y = extent.y-(floorf((extent.y-p.y)/cell)+0.5)*cell
++	return [p.x,p.y]
++
++func _object_run(start: Vector2, finish: Vector2) -> Array:
++	if not free_run: return RoadPieces.barrier_run(document,start,finish,stamp_kind)
++	return _path_run(PackedVector2Array([start,finish]))
++
++func _path_run(path: PackedVector2Array) -> Array:
++	var result: Array = []
++	if path.size()<2: return result
++	var length: float = 0
++	for i: int in range(path.size()-1): length+=path[i].distance_to(path[i+1])
++	var spacing: float = CreatorObjects.dimensions(stamp_kind).x
++	if stamp_kind=="cone": spacing=2.0
++	var desired: int = maxi(1,ceili(length/spacing))
++	var count: int = mini(96-document.objects.size(),desired)
++	var segment: int = 0
++	var traversed: float = 0
++	for i: int in range(count):
++		var distance: float = length*(i+0.5)/desired
++		while segment<path.size()-2 and traversed+path[segment].distance_to(path[segment+1])<distance:
++			traversed+=path[segment].distance_to(path[segment+1]); segment+=1
++		var tangent: Vector2 = path[segment+1]-path[segment]
++		var p: Vector2 = path[segment].lerp(path[segment+1],clampf((distance-traversed)/maxf(0.001,tangent.length()),0,1))
++		p=p.clamp(Vector2(-110,-110),Vector2(110,110))
++		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360)})
++	return result
++
++
++func connect_nearby() -> void:
++	if selected_piece < 0 or not ghost.is_empty(): return
++	var piece: Dictionary = document.pieces[selected_piece]
++	var best: float = RoadPieces.SNAP_DISTANCE
++	var result: Dictionary = {}
++	for endpoint: int in range(2):
++		if not RoadPieces._partner(document.pieces,selected_piece,endpoint).is_empty(): continue
++		var origin: Vector2 = RoadPieces._pose(piece,endpoint).position
++		var target: Vector2 = RoadPieces.snap_endpoint(origin,document.pieces,selected_piece)
++		var distance: float = origin.distance_to(target)
++		if distance < 0.001 or distance > best: continue
++		var trial: Dictionary = RoadPieces.move_endpoint(piece,endpoint,target)
++		if not trial.is_empty() and _valid_bridge_edit(trial,selected_piece):
++			best = distance
++			result = trial
++	if result.is_empty():
++		hint_changed.emit("Move an open end within 8 m of another open end, then Connect.")
++		return
++	edit_started.emit()
++	document.pieces[selected_piece] = result
++	document_changed.emit()
++	edit_finished.emit()
++	selection_changed.emit()
++	queue_redraw()
++
++func choose_start_line() -> void:
++	cancel_gesture()
++	ghost.clear()
++	selected_piece = -1
++	mode = "start_line"
++	selection_changed.emit()
++	hint_changed.emit("Tap a road to place the start line. Tap its direction arrow to reverse racing direction.")
++	queue_redraw()
++
++func flip_start_line() -> void:
++	if not document.has("start_line"): return
++	edit_started.emit()
++	document.start_line.heading = fposmod(float(document.start_line.heading)+180.0,360.0)
++	document_changed.emit()
++	edit_finished.emit()
++	queue_redraw()
++
++func start_controls() -> Dictionary:
++	var pose: Dictionary = document.start_line
++	var center := Vector2(pose.position[0],pose.position[1])
++	var forward := Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading)))
++	var width: float = float(document.width)
++	var frame: Dictionary = RoadPieces.road_frame(document.pieces,center,forward)
++	if not frame.is_empty(): width = float(frame.width)
++	var normal := Vector2(-forward.y,forward.x)*width*0.5
++	var screen_forward: Vector2 = (to_screen(center+forward)-to_screen(center)).normalized()
++	return {"center":to_screen(center),"left":to_screen(center-normal),"right":to_screen(center+normal),"forward":screen_forward,"flip":to_screen(center)+screen_forward*72}
++
++func _draw_start_line() -> void:
++	var controls: Dictionary = start_controls()
++	var a: Vector2 = controls.left
++	var b: Vector2 = controls.right
++	for i: int in range(12):
++		draw_line(a.lerp(b,float(i)/12),a.lerp(b,float(i+1)/12),Color.WHITE if i%2 == 0 else Color("142331"),9,true)
++	draw_circle(controls.center,12,Color("16c2cf"))
++	draw_circle(controls.center,12,Color.WHITE,false,2,true)
++	var button: Vector2 = controls.flip
++	var axis: Vector2 = controls.forward
++	var normal := Vector2(-axis.y,axis.x)
++	draw_line(controls.center,button,Color("f3c644"),2,true)
++	draw_circle(button,26,Color("f3c644"))
++	draw_line(button-axis*12,button+axis*12,Color("142331"),3,true)
++	draw_polyline(PackedVector2Array([button+axis*4+normal*8,button+axis*12,button+axis*4-normal*8]),Color("142331"),3,true)
++	var text_pos: Vector2 = button+Vector2(-61,36)
++	draw_style_box(MenuStyle.box(Color("142331"),5),Rect2(text_pos-Vector2(6,17),Vector2(138,27)))
++	draw_string(ThemeDB.fallback_font,text_pos,"Tap to reverse",HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE)
++
++func confirm_paint() -> void:
++	if paint_points.is_empty(): return
++	var minimum: int = 3 if paint_mode == "area" else 2 if paint_mode == "line" else 1
++	if paint_points.size() < minimum:
++		hint_changed.emit("Place at least %d points, then confirm." % minimum)
++		return
++	if paint_mode == "area" and not SurfacePaint.valid_area(paint_points):
++		hint_changed.emit("Move the points to make a simple enclosed area.")
++		return
++	if document.paint.size() >= 256:
++		hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
++		return
++	edit_started.emit()
++	document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0,"mode":paint_mode})
++	paint_points.clear()
++	paint_handle = -1
++	document_changed.emit()
++	edit_finished.emit()
++	queue_redraw()
++
++func paint_accept_rect() -> Rect2:
++	if mode != "paint" or paint_mode == "free" or paint_points.size() < (3 if paint_mode == "area" else 2): return Rect2()
++	var path: PackedVector2Array = SurfacePaint.contour(paint_points,paint_mode)
++	var candidate := Vector2.ZERO
++	if paint_mode == "area":
++		var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(path)
++		var largest: float = -1.0
++		for i: int in range(0,triangles.size(),3):
++			var a: Vector2 = path[triangles[i]]
++			var b: Vector2 = path[triangles[i+1]]
++			var c: Vector2 = path[triangles[i+2]]
++			var area: float = absf((b-a).cross(c-a))
++			if area > largest:
++				largest = area
++				candidate = (a+b+c)/3.0
++		if largest < 0.01: return Rect2()
++	else:
++		# Choose a point on the smoothed line away from its editable dots.
++		var best: float = -1.0
++		for i: int in range(path.size()-1):
++			var at: Vector2 = (path[i]+path[i+1])*0.5
++			var distance: float = INF
++			for p: Array in paint_points: distance = minf(distance,at.distance_to(Vector2(p[0],p[1])))
++			if distance > best:
++				best = distance
++				candidate = at
++	return Rect2(to_screen(candidate)-Vector2(28,28),Vector2(56,56))
+diff --git a/game/editor/editor_world.gd b/game/editor/editor_world.gd
+--- a/game/editor/editor_world.gd
++++ b/game/editor/editor_world.gd
+@@ -92,8 +92,17 @@
+ 	track = data
+ 	if is_node_ready() and not _building:
+ 		if reuse:
+-			visual.refresh_editor_objects(track)
+-			_visual_track = track
++			if _visual_track.metadata.get("creator_document",{}).get("objects",[]) != track.metadata.get("creator_document",{}).get("objects",[]) or _visual_track.metadata.get("scenery_objects",[]) != track.metadata.get("scenery_objects",[]):
++				var target: NativeTrack = track
++				_building = true
++				await visual.refresh_editor_objects(target,true,true)
++				if not is_inside_tree(): return
++				_building = false
++				_visual_track = target
++				if track != target:
++					show_track(track)
++					return
++			else: _visual_track = track
+ 			_mark_presented()
+ 			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+ 		else:
+@@ -120,6 +129,7 @@
+ 	# generated trees on clear grass; those footprints already render as grass.
+ 	# Keep all terrain/solid props in the comparison so they rebuild correctly.
+ 	for document: Dictionary in [old_document,new_document]:
++		for key: String in ["id","name","creator"]: document.erase(key)
+ 		var fixed_objects: Array = []
+ 		for object: Dictionary in document.objects:
+ 			if object.kind not in ["tyre_stack","tyre_wall"]: fixed_objects.append(object)
+@@ -144,7 +154,7 @@
+ 		world.add_child(candidate)
+ 		_building = true
+ 		# Keep the existing scene while the replacement is built in short slices.
+-		await candidate.build(target,BridgePresentation.new(target),visual != null)
++		await candidate.build(target,BridgePresentation.new(target),true)
+ 		if not is_inside_tree(): return
+ 		while is_instance_valid(canvas) and canvas.active_pointer != -99:
+ 			await get_tree().process_frame
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -18,6 +18,9 @@
+ var previous: Button
+ var next: Button
+ var page_size: int = 6
++var _tile_key: Array = []
++var _detail_key: Array = []
++var _styled_category: String = ""
+ 
+ func _ready() -> void:
+ 	name = "ObjectBrowser"
+@@ -51,6 +54,8 @@
+ 	resized.connect(func() -> void:
+ 		var count: int=maxi(1,int((size.x-120)/110))
+ 		if count!=page_size: page_size=count; page=0; _tiles())
++	visibility_changed.connect(func() -> void:
++		if is_visible_in_tree(): _tiles())
+ 	options=PopupPanel.new()
+ 	options.name="ObjectOptionsPopup"
+ 	options.add_theme_stylebox_override("panel",EditorStyle.panel())
+@@ -87,14 +92,27 @@
+ 	refresh()
+ 
+ func _tiles() -> void:
+-	if tiles == null: return
+-	_clear(tiles)
+-	for button: Button in categories.get_children():
+-		EditorStyle.apply(button,button.text==category)
++	if tiles == null or not is_visible_in_tree(): return
++	if _styled_category != category:
++		_styled_category = category
++		for button: Button in categories.get_children(): EditorStyle.apply(button,button.text==category)
+ 	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
+ 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
+ 	previous.visible=page>0
+ 	next.visible=(page+1)*page_size<entries.size()
++	var key: Array = [biome,category if entries.is_empty() else ""]
++	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
++	if key == _tile_key:
++		for tile: Node in tiles.get_children():
++			if not tile is Button: continue
++			var family: Array = CreatorCatalog.family(tile.name.trim_prefix("Asset_"))
++			var chosen: bool = not family.is_empty() and current in family[3]
++			if tile.button_pressed == chosen: continue
++			tile.set_pressed_no_signal(chosen)
++			EditorStyle.card(tile,chosen)
++		return
++	_tile_key = key
++	_clear(tiles)
+ 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
+ 		var asset: Array = entries[index]
+ 		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome))
+@@ -103,6 +121,9 @@
+ func refresh() -> void:
+ 	if details == null: return
+ 	_tiles()
++	var key: Array = [current,placement,stamp_scale,biome]
++	if key == _detail_key: return
++	_detail_key = key
+ 	_clear(details)
+ 	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
+ 	behavior.name = "ObjectBehavior"
+diff --git a/game/editor/object_thumbnail.gd b/game/editor/object_thumbnail.gd
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -1,6 +1,27 @@
+ class_name ObjectThumbnail
+ extends Button
+ ## Small one-shot renders use exactly the placed-object mesh builder.
++const CACHE_LIMIT: int = 48
++static var _images: Dictionary = {}
++var _viewport: SubViewport
++var _image: TextureRect
++var _cache_key: String
++
++func _ready() -> void:
++	if _viewport != null and DisplayServer.get_name() != "headless": _bake_preview()
++
++func _bake_preview() -> void:
++	await RenderingServer.frame_post_draw
++	if not is_inside_tree() or not is_instance_valid(_viewport): return
++	var pixels: Image = _viewport.get_texture().get_image()
++	if pixels == null or pixels.is_empty(): return
++	var baked: ImageTexture = ImageTexture.create_from_image(pixels)
++	if _images.size() >= CACHE_LIMIT: _images.erase(_images.keys()[0])
++	_images[_cache_key] = baked
++	_image.texture = baked
++	_viewport.queue_free()
++	_viewport = null
++
+ static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine") -> Button:
+ 	var button := ObjectThumbnail.new()
+ 	button.name = "Asset_"+kind
+@@ -10,6 +31,32 @@
+ 	button.button_pressed = chosen
+ 	button.pressed.connect(action)
+ 	EditorStyle.card(button,chosen)
++	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION
++	var cached: Texture2D = _images.get(button._cache_key)
++	var viewport: SubViewport
++	if cached == null:
++		viewport = _render_preview(button,kind,biome)
++		button._viewport = viewport
++	var image := TextureRect.new()
++	image.texture = cached if cached != null else viewport.get_texture()
++	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
++	image.position = Vector2(4,1)
++	image.size = Vector2(96,58)
++	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	button.add_child(image)
++	button._image = image
++	var label := Label.new()
++	label.text = title
++	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	label.add_theme_font_size_override("font_size",14)
++	label.add_theme_font_override("font",EditorStyle.FONT)
++	label.position = Vector2(0,59)
++	label.size = Vector2(104,20)
++	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	button.add_child(label)
++	return button
++
++static func _render_preview(button: Button, kind: String, biome: String) -> SubViewport:
+ 	var viewport := SubViewport.new()
+ 	viewport.size = Vector2i(208,128)
+ 	viewport.msaa_3d=Viewport.MSAA_4X
+@@ -55,23 +102,7 @@
+ 	camera.size=maxf(0.1,maxf(extent.y,extent.x/(208.0/128.0))*1.08)
+ 	camera.look_at_from_position(center+Vector3(7,6,-10),center)
+ 	camera.current = true
+-	var image := TextureRect.new()
+-	image.texture = viewport.get_texture()
+-	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
+-	image.position = Vector2(4,1)
+-	image.size = Vector2(96,58)
+-	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	button.add_child(image)
+-	var label := Label.new()
+-	label.text = title
+-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	label.add_theme_font_size_override("font_size",14)
+-	label.add_theme_font_override("font",EditorStyle.FONT)
+-	label.position = Vector2(0,59)
+-	label.size = Vector2(104,20)
+-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	button.add_child(label)
+-	return button
++	return viewport
+ 
+ 
+ static func _mesh_bounds(node: Node, parent: Transform3D = Transform3D.IDENTITY) -> AABB:
+diff --git a/game/editor/road_pieces.gd b/game/editor/road_pieces.gd
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -125,13 +125,15 @@
+ 
+ static func snap(piece: Dictionary, pieces: Array, exclude: int = -1) -> Dictionary:
+ 	var result: Dictionary = {"piece":piece.duplicate(true),"matched":false,"target_index":-1,"endpoint":-1,"distance":SNAP_DISTANCE}
++	var topology: Dictionary = prepare_endpoints(pieces)
++	var poses: Array = [_pose(piece,0),_pose(piece,1)]
+ 	for index: int in range(pieces.size()):
+ 		if index == exclude: continue
+ 		for target_end: int in range(2):
+-			var target: Dictionary = _pose(pieces[index],target_end)
+-			if _partner(pieces,index,target_end,exclude).size() > 0: continue
++			var target: Dictionary = topology.poses[index*2+target_end]
++			if not _matches(topology,index,target_end,exclude).is_empty(): continue
+ 			for endpoint: int in range(2):
+-				var pose: Dictionary = _pose(piece,endpoint)
++				var pose: Dictionary = poses[endpoint]
+ 				var distance: float = Vector2(pose.position).distance_to(target.position)
+ 				if distance >= float(result.distance): continue
+ 				var fitted: Dictionary = piece.duplicate(true)
+@@ -145,27 +147,54 @@
+ 	return result
+ 
+ 
++## Local immutable preparation: no shared cache or thread-dependent state.
++## Keep the old piece/endpoint ordering and exact distance test at bucket edges.
++static func prepare_endpoints(pieces: Array) -> Dictionary:
++	var poses: Array[Dictionary] = []
++	var buckets: Dictionary = {}
++	for index: int in range(pieces.size()):
++		for endpoint: int in range(2):
++			var pose: Dictionary = _pose(pieces[index],endpoint)
++			var bucket := Vector2i(floori(pose.position.x/JOIN_DISTANCE),floori(pose.position.y/JOIN_DISTANCE))
++			if not buckets.has(bucket): buckets[bucket] = []
++			buckets[bucket].append(poses.size())
++			poses.append(pose)
++	var partners: Array = []
++	for id: int in range(poses.size()):
++		var position: Vector2 = poses[id].position
++		var bucket := Vector2i(floori(position.x/JOIN_DISTANCE),floori(position.y/JOIN_DISTANCE))
++		var candidates: Array = []
++		for x: int in range(-1,2):
++			for y: int in range(-1,2): candidates.append_array(buckets.get(bucket+Vector2i(x,y),[]))
++		candidates.sort()
++		var matches: Array = []
++		for other: int in candidates:
++			if other/2 == id/2: continue
++			if position.distance_to(poses[other].position) <= JOIN_DISTANCE: matches.append([other/2,other%2])
++		partners.append(matches)
++	return {"poses":poses,"partners":partners}
++
++static func _matches(topology: Dictionary, index: int, endpoint: int, exclude: int = -1) -> Array:
++	var matches: Array = topology.partners[index*2+endpoint]
++	if exclude < 0: return matches
++	var filtered: Array = []
++	for match: Array in matches:
++		if int(match[0]) != exclude: filtered.append(match)
++	return filtered
++
+ static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1) -> Array:
+-	var pose: Dictionary = _pose(pieces[index],endpoint)
+-	var matches: Array = []
+-	for other: int in range(pieces.size()):
+-		if other == index or other == exclude: continue
+-		for other_end: int in range(2):
+-			var candidate: Dictionary = _pose(pieces[other],other_end)
+-			if Vector2(pose.position).distance_to(candidate.position) > JOIN_DISTANCE: continue
+-			# Touching endpoints connect even at a sharp angle or width change.
+-			matches.append([other,other_end])
+-	return matches
++	return _matches(prepare_endpoints(pieces),index,endpoint,exclude)
+ 
+ 
+ static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1) -> int:
+ 	var attached: Array[bool] = [false,false]
++	var topology: Dictionary = prepare_endpoints(pieces)
+ 	for endpoint: int in [0,1]:
+ 		var position: Vector2 = _pose(piece,endpoint).position
+ 		for index: int in range(pieces.size()):
+ 			if index == exclude: continue
+ 			for other_end: int in [0,1]:
+-				if position.distance_to(_pose(pieces[index],other_end).position) <= JOIN_DISTANCE:
++				if position.distance_to(topology.poses[index*2+other_end].position) <= JOIN_DISTANCE:
+ 					attached[endpoint] = true
+ 	return -1 if attached[0] == attached[1] else 0 if attached[0] else 1
+ 
+@@ -225,11 +254,12 @@
+ static func snap_endpoint(target: Vector2, pieces: Array, exclude: int) -> Vector2:
+ 	var best: float = SNAP_DISTANCE
+ 	var result: Vector2 = target
++	var topology: Dictionary = prepare_endpoints(pieces)
+ 	for i: int in range(pieces.size()):
+ 		if i == exclude: continue
+ 		for endpoint: int in range(2):
+-			if not _partner(pieces,i,endpoint,exclude).is_empty(): continue
+-			var position: Vector2 = _pose(pieces[i],endpoint).position
++			if not _matches(topology,i,endpoint,exclude).is_empty(): continue
++			var position: Vector2 = topology.poses[i*2+endpoint].position
+ 			var distance: float = target.distance_to(position)
+ 			if distance < best:
+ 				best = distance
+@@ -237,20 +267,22 @@
+ 	return result
+ 
+ 
+-static func joins(pieces: Array) -> Array[Dictionary]:
++static func joins(pieces: Array, topology: Dictionary = {}) -> Array[Dictionary]:
++	if topology.is_empty(): topology = prepare_endpoints(pieces)
+ 	var issues: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
+ 		for endpoint: int in range(2):
+-			var matches: Array = _partner(pieces,index,endpoint)
++			var matches: Array = _matches(topology,index,endpoint)
+ 			if matches.size() == 1: continue
+-			issues.append({"index":index,"endpoint":endpoint,"position":_pose(pieces[index],endpoint).position,
++			issues.append({"index":index,"endpoint":endpoint,"position":topology.poses[index*2+endpoint].position,
+ 				"message":"Open road end" if matches.is_empty() else "More than two sections meet here"})
+ 	return issues
+ 
+ 
+ static func connected_route(pieces: Array) -> Dictionary:
+ 	var fail: Dictionary = {"ok":false,"points":PackedVector2Array(),"widths":PackedFloat32Array(),"errors":["Connect the road ends to make one closed lap."]}
+-	if pieces.size() < 2 or not joins(pieces).is_empty(): return fail
++	var topology: Dictionary = prepare_endpoints(pieces)
++	if pieces.size() < 2 or not joins(pieces,topology).is_empty(): return fail
+ 	var points := PackedVector2Array()
+ 	var widths := PackedFloat32Array()
+ 	var visited: Array[int] = []
+@@ -258,7 +290,7 @@
+ 	var endpoint: int = 0
+ 	while index not in visited:
+ 		visited.append(index)
+-		var geometry: Dictionary = section_geometry(pieces,index)
++		var geometry: Dictionary = section_geometry(pieces,index,topology)
+ 		var section: PackedVector2Array = geometry.points
+ 		var section_widths: PackedFloat32Array = geometry.widths
+ 		if endpoint == 1:
+@@ -267,7 +299,7 @@
+ 		for i: int in range(section.size()-1):
+ 			points.append(section[i])
+ 			widths.append(section_widths[i])
+-		var partner: Array = _partner(pieces,index,1-endpoint)[0]
++		var partner: Array = _matches(topology,index,1-endpoint)[0]
+ 		index = int(partner[0])
+ 		endpoint = int(partner[1])
+ 	if index != 0 or endpoint != 0 or visited.size() != pieces.size(): return fail
+@@ -368,6 +400,7 @@
+ static func _paths(pieces: Array) -> Array[Dictionary]:
+ 	var paths: Array[Dictionary] = []
+ 	var visited: Array[int] = []
++	var topology: Dictionary = prepare_endpoints(pieces)
+ 	# Open chains first, then remaining closed chains. Intersections in the
+ 	# surface do not silently switch the selected road at a crossing.
+ 	for open_only: bool in [true,false]:
+@@ -375,8 +408,8 @@
+ 			if seed in visited: continue
+ 			var start_end: int = 0
+ 			if open_only:
+-				if _partner(pieces,seed,0).is_empty(): start_end = 0
+-				elif _partner(pieces,seed,1).is_empty(): start_end = 1
++				if _matches(topology,seed,0).is_empty(): start_end = 0
++				elif _matches(topology,seed,1).is_empty(): start_end = 1
+ 				else: continue
+ 			var points := PackedVector2Array()
+ 			var widths := PackedFloat32Array()
+@@ -385,7 +418,7 @@
+ 			var closed: bool = false
+ 			while index not in visited:
+ 				visited.append(index)
+-				var geometry: Dictionary = section_geometry(pieces,index)
++				var geometry: Dictionary = section_geometry(pieces,index,topology)
+ 				var section: PackedVector2Array = geometry.points
+ 				var section_widths: PackedFloat32Array = geometry.widths
+ 				if endpoint == 1:
+@@ -396,7 +429,7 @@
+ 					if not points.is_empty() and points[-1].distance_to(point) < 0.01: continue
+ 					points.append(point)
+ 					widths.append(section_widths[section_index])
+-				var matches: Array = _partner(pieces,index,1-endpoint)
++				var matches: Array = _matches(topology,index,1-endpoint)
+ 				if matches.size() != 1: break
+ 				index = int(matches[0][0])
+ 				endpoint = int(matches[0][1])
+@@ -448,7 +481,8 @@
+ 
+ 
+ ## Shared width samples for surface compilation and presentation.
+-static func section_geometry(pieces: Array, index: int) -> Dictionary:
++static func section_geometry(pieces: Array, index: int, topology: Dictionary = {}) -> Dictionary:
++	if topology.is_empty(): topology = prepare_endpoints(pieces)
+ 	var piece: Dictionary = pieces[index]
+ 	var points: PackedVector2Array = samples(piece)
+ 	var widths := PackedFloat32Array()
+@@ -458,7 +492,7 @@
+ 	var authored_ends: Array[float] = [float(piece.width),float(piece.get("narrow_width",piece.width))]
+ 	var ends: Array[float] = authored_ends.duplicate()
+ 	for endpoint: int in range(2):
+-		var matches: Array = _partner(pieces,index,endpoint)
++		var matches: Array = _matches(topology,index,endpoint)
+ 		if matches.size() == 1:
+ 			var other: Dictionary = pieces[int(matches[0][0])]
+ 			var other_width: float = float(other.get("narrow_width",other.width)) if int(matches[0][1]) == 1 else float(other.width)
+@@ -474,8 +508,9 @@
+ 
+ 
+ ## Both sides of a join use the same cross-section, even for reversed pieces.
+-static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> PackedVector2Array:
+-	var geometry: Dictionary = section_geometry(pieces,index)
++static func section_outline(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> PackedVector2Array:
++	if topology.is_empty(): topology = prepare_endpoints(pieces)
++	var geometry: Dictionary = section_geometry(pieces,index,topology)
+ 	var points: PackedVector2Array = geometry.points
+ 	var left := PackedVector2Array()
+ 	var right := PackedVector2Array()
+@@ -488,9 +523,9 @@
+ 		var center: Vector2 = points[i]
+ 		if i == 0 or i == points.size()-1:
+ 			var endpoint: int = 0 if i == 0 else 1
+-			var matches: Array = _partner(pieces,index,endpoint)
++			var matches: Array = _matches(topology,index,endpoint)
+ 			if matches.size() == 1:
+-				var pose: Dictionary = _pose(pieces[int(matches[0][0])],int(matches[0][1]))
++				var pose: Dictionary = topology.poses[int(matches[0][0])*2+int(matches[0][1])]
+ 				var other: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading))) * (-1.0 if endpoint == 0 else 1.0)
+ 				var shared: Vector2 = (normal+Vector2(-other.y,other.x)).normalized()
+ 				normal = shared/maxf(0.25,shared.dot(normal))
+@@ -505,8 +540,9 @@
+ static func road_frame(pieces: Array, point: Vector2, forward: Vector2) -> Dictionary:
+ 	var best: Dictionary = {}
+ 	var distance: float = INF
++	var topology: Dictionary = prepare_endpoints(pieces)
+ 	for index: int in range(pieces.size()):
+-		var geometry: Dictionary = section_geometry(pieces,index)
++		var geometry: Dictionary = section_geometry(pieces,index,topology)
+ 		var path: Dictionary = {"points":geometry.points,"widths":geometry.widths,"closed":false}
+ 		var nearest: Dictionary = _nearest(path,point)
+ 		if float(nearest.distance) >= distance: continue
+diff --git a/game/editor/track_compiler.gd b/game/editor/track_compiler.gd
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -41,9 +41,10 @@
+ 	var road_widths: PackedFloat32Array = road_samples.widths
+ 	var sections: Array[Dictionary] = []
+ 	var bridges: Array = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
+ 	for piece_index: int in range(document.pieces.size()):
+ 		var piece: Dictionary = document.pieces[piece_index]
+-		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index)
++		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
+ 		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
+ 		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
+ 	var radius: float = widths[0] * 0.5
+diff --git a/game/track/native_track.gd b/game/track/native_track.gd
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -31,6 +31,8 @@
+ var hazard_objects: Array = []
+ var kerbs := RoadKerbs.new()
+ var snow_banks := SnowBanks.new()
++var editor_overlay_mask: Image
++var editor_road_mask: Image
+ 
+ 
+ static func read(path: String) -> NativeTrack:
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -36,6 +36,9 @@
+ var scenic_count: int = 0
+ var editor_objects: NativeTrackVisual
+ var editor_cover: NativeTrackVisual
++var editor_scenery: NativeTrackVisual
++var _editor_scenery_sources: Array = []
++var _editor_object_revision: int = 0
+ var cache_road_meshes: bool = true
+ var persist_road_meshes: bool = true
+ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+@@ -79,6 +82,7 @@
+ 	await _build_creator_roads(track)
+ 	if _menu_slices and not is_inside_tree(): return
+ 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): await _build_kerbs(track)
++	if _menu_slices and not is_inside_tree(): return
+ 	await _build_barriers(track)
+ 	if _menu_slices and not is_inside_tree(): return
+ 	if editor_preview:
+@@ -86,39 +90,83 @@
+ 	else:
+ 		await _build_low_cover(track)
+ 		await _build_placed_objects(track)
++	if _menu_slices and not is_inside_tree(): return
+ 	bridge.build(self)
+ 	_build_finish(track)
+ 	_build_snow_banks(track)
+ 
+ 
+ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, sliced: bool = false) -> void:
++	_editor_object_revision += 1
++	var revision: int = _editor_object_revision
+ 	if theme_id == "night_city" and partition_night_ground and get_child_count() > 0 and get_child(0) is MeshInstance3D:
+ 		# Moving/scaling a lamp in the editor can expose the outer backdrop.
+ 		(get_child(0) as MeshInstance3D).layers = 2 if _lamps_inside_terrain(track) else 1
++	var objects := NativeTrackVisual.new()
++	objects.editor_preview = true
++	objects._menu_slices = sliced
++	objects._slice_started = Time.get_ticks_usec()
++	objects.theme_id = theme_id
++	objects.colors = colors
++	objects.visible = false
++	add_child(objects)
++	# Authored props are small, immediate edits. Generated scenery has its own
++	# stable batch, so placing one tyre does not recreate every meadow tree.
++	var authored := NativeTrack.new()
++	authored.metadata = {"creator_document":track.metadata.get("creator_document",{}),"scenery_objects":[]}
++	authored.tyre_origins = track.tyre_origins
++	await objects._build_placed_objects(authored)
++	if sliced and not is_inside_tree(): return
++	if revision != _editor_object_revision:
++		objects.queue_free()
++		return
+ 	if editor_objects != null:
+ 		remove_child(editor_objects)
+ 		editor_objects.queue_free()
+-	editor_objects = NativeTrackVisual.new()
+-	editor_objects.editor_preview = true
+-	editor_objects._menu_slices = sliced
+-	editor_objects._slice_started = Time.get_ticks_usec()
+-	editor_objects.theme_id = theme_id
+-	editor_objects.colors = colors
+-	add_child(editor_objects)
++	editor_objects = objects
++	objects.visible = true
+ 	if refresh_cover:
++		var cover := NativeTrackVisual.new()
++		cover.editor_preview = true
++		cover._menu_slices = sliced
++		cover._slice_started = Time.get_ticks_usec()
++		cover.theme_id = theme_id
++		cover.colors = colors
++		cover.visible = false
++		add_child(cover)
++		await cover._build_low_cover(track)
++		if sliced and not is_inside_tree(): return
++		if revision != _editor_object_revision:
++			cover.queue_free()
++			return
+ 		if editor_cover != null:
+ 			remove_child(editor_cover)
+ 			editor_cover.queue_free()
+-		editor_cover = NativeTrackVisual.new()
+-		editor_cover.editor_preview = true
+-		editor_cover._menu_slices = sliced
+-		editor_cover._slice_started = Time.get_ticks_usec()
+-		editor_cover.theme_id = theme_id
+-		editor_cover.colors = colors
+-		add_child(editor_cover)
+-		await editor_cover._build_low_cover(track)
++		editor_cover = cover
++		cover.visible = true
++	var scenery: Array = track.metadata.get("scenery_objects",[])
++	if editor_scenery == null or scenery != _editor_scenery_sources:
++		var scenery_batch := NativeTrackVisual.new()
++		scenery_batch.editor_preview = true
++		scenery_batch._menu_slices = sliced
++		scenery_batch._slice_started = Time.get_ticks_usec()
++		scenery_batch.theme_id = theme_id
++		scenery_batch.colors = colors
++		scenery_batch.visible = false
++		add_child(scenery_batch)
++		var generated := NativeTrack.new()
++		generated.metadata = {"creator_document":{"objects":[]},"scenery_objects":scenery}
++		await scenery_batch._build_placed_objects(generated)
+ 		if sliced and not is_inside_tree(): return
+-	await editor_objects._build_placed_objects(track)
++		if revision != _editor_object_revision:
++			scenery_batch.queue_free()
++			return
++		if editor_scenery != null:
++			remove_child(editor_scenery)
++			editor_scenery.queue_free()
++		editor_scenery = scenery_batch
++		scenery_batch.visible = true
++		_editor_scenery_sources = scenery.duplicate(true)
+ 
+ 
+ func _build_terrain(track: NativeTrack) -> void:
+@@ -235,13 +283,14 @@
+ 	var fringe_count: int = 0
+ 	var sand_clods: int = 0
+ 	var outlines: Array[Dictionary] = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	for index: int in range(pieces.size()):
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+ 			if not is_inside_tree(): return
+ 			_slice_started = Time.get_ticks_usec()
+ 		if pieces[index].kind == "bridge": continue
+-		for polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index)]:
++		for polygon: PackedVector2Array in [RoadPieces.section_outline(pieces,index,0.0,topology)]:
+ 			var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 			for point: Vector2 in polygon: bounds = bounds.expand(point)
+ 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
+@@ -255,8 +304,8 @@
+ 		var points: PackedVector2Array = RoadPieces.samples(piece)
+ 		# Exact repeated vertices share road UV queries only within this piece.
+ 		var axis_cache: Dictionary = {}
+-		var road_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index)
+-		var marking_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index,-0.20)
++		var road_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index,0.0,topology)
++		var marking_join: Dictionary = preload("res://track/visual_road_join.gd").build(pieces,index,-0.20,topology)
+ 		var cuts: Array[Dictionary] = marking_join.cuts
+ 		var road_outline: PackedVector2Array = road_join.polygon
+ 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
+@@ -293,7 +342,7 @@
+ 					if Geometry2D.is_point_in_polygon(midpoint+outward,polygon): outward = -outward
+ 					# Probe beyond this road edge. Testing the stripe itself would
+ 					# leave a gap where adjacent sections' rounded end caps overlap.
+-					if not _road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
++					if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces,topology): continue
+ 					if theme_id == "winter" and not dirt:
+ 						_winter_bank_section(winter_bank,p,q,normal_p,normal_q,points)
+ 						winter_sections += 1
+@@ -302,22 +351,14 @@
+ 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
+ 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points,axis_cache)
+ 					fringe_count += 1
+-					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
+-					# Continuous sand beneath the tapered kerb ends.
++					# Continuous sand transition around the road.
+ 					# Only the outer contour varies; road/paint stay fixed.
+ 					var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+ 					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+ 					shoulder_mesh.add_quad(p,q,outer_p,outer_q)
+ 					counts[0] += 1
+-					if theme_id == "desert" and sand_clods < 1800:
+-						var seed_value: int = absi(int(midpoint.x*1731.0+midpoint.y*7919.0))
+-						var taper: float = _berm_envelope(midpoint,points) if is_kerb else 0.0
+-						if seed_value%100 < (52 if is_kerb else 4) and (not is_kerb or taper > 0.08):
+-							var normal: Vector2 = (normal_p+normal_q)*0.5
+-							var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
+-							var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
+-							_sand_clod(shoulders,center,(q-p).angle(),size,seed_value,1.65 if is_kerb else 1.0)
+-							sand_clods += 1
++					# Desert edges are a flat compacted-to-loose sand transition.
++					# Authored contacts remain canonical; no decorative raised clods.
+ 					# Retain the authored road-edge marking and keep it smooth;
+ 					# only the asphalt/sand colour transition receives subtle breakup.
+ 					if dirt or theme_id in ["desert","winter"]: continue
+@@ -332,6 +373,7 @@
+ 	if _menu_slices and not is_inside_tree(): return
+ 	set_meta("desert_clod_count",sand_clods)
+ 	await _build_kerbs(track)
++	if _menu_slices and not is_inside_tree(): return
+ 	if counts[0]: await _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+ 	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
+ 	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+@@ -608,37 +650,12 @@
+ 
+ 
+ func _creator_overlay_mask(track: NativeTrack, paint: Array) -> Image:
+-	var excluded: PackedByteArray = RoadKerbs.exclusion_mask(track,paint)
+-	# Only authored paint may replace the decorative verge. Native road/kerb
+-	# cells must keep their skirt, which conceals the coarse raster boundary.
+-	var painted := PackedInt32Array()
+-	painted.resize(track.cells.size())
+-	painted.fill(-1)
+-	var paint_mask := PackedInt32Array()
+-	paint_mask.resize(track.cells.size())
+-	paint_mask.fill(1)
+-	var overlays: Array = paint.duplicate(true)
+-	for stroke: Dictionary in overlays: stroke.protect_road = false
+-	TrackCompiler._paint(overlays,painted,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,paint_mask)
+-	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8)
+-	mask.fill(Color.WHITE)
+-	for y: int in range(track.grid_height):
+-		for x: int in range(track.grid_width):
+-			# Road protection preserves asphalt/markings; authored non-grass
+-			# paint replaces only the decorative verge beneath its footprint.
+-			var index: int = y*track.grid_width+x
+-			mask.set_pixel(x,y,Color(1.0 if excluded[index] == 0 else 0.0,1.0 if painted[index] in [-1,1] else 0.0,1.0 if painted[index] == 2 else 0.0,1.0))
+-	return mask
++	if track.editor_overlay_mask != null and paint == track.metadata.get("creator_document",{}).get("paint",[]): return track.editor_overlay_mask
++	return CreatorPreviewMasks.overlay(track,paint)
+ 
+ 
+ func _creator_road_mask(track: NativeTrack) -> Image:
+-	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_L8)
+-	mask.fill(Color.BLACK)
+-	for y: int in range(track.grid_height):
+-		for x: int in range(track.grid_width):
+-			if track.cells[y*track.grid_width+x] == 0:
+-				mask.set_pixel(x,y,Color.WHITE)
+-	return mask
++	return track.editor_road_mask if track.editor_road_mask != null else CreatorPreviewMasks.road(track)
+ 
+ 
+ 
+@@ -1342,7 +1359,8 @@
+ 	var triangles: Array[Dictionary] = track.kerbs.triangles
+ 	# A solitary piece has no cosmetic join to fair; retain its canonical kerb.
+ 	if document.get("pieces",[]).size() > 1 and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+-		triangles = preload("res://track/visual_road_join.gd").kerb_triangles(document)
++		triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
++		if _menu_slices and not is_inside_tree(): return
+ 	if triangles.is_empty(): return
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+diff --git a/game/track/road_edges.gd b/game/track/road_edges.gd
+--- a/game/track/road_edges.gd
++++ b/game/track/road_edges.gd
+@@ -2,12 +2,13 @@
+ extends RefCounted
+ ## Pure road-edge construction shared by contact geometry and rendering.
+ 
+-static func _join_cuts(pieces: Array, index: int) -> Array[Dictionary]:
++static func _join_cuts(pieces: Array, index: int, topology: Dictionary = {}) -> Array[Dictionary]:
++	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
+ 	var cuts: Array[Dictionary] = []
+-	var outline: PackedVector2Array = RoadPieces.section_outline(pieces,index)
++	var outline: PackedVector2Array = RoadPieces.section_outline(pieces,index,0.0,topology)
+ 	var count: int = outline.size()/2
+ 	for endpoint: int in range(2):
+-		if RoadPieces._partner(pieces,index,endpoint).size() != 1: continue
++		if RoadPieces._matches(topology,index,endpoint).size() != 1: continue
+ 		var a: Vector2 = outline[0 if endpoint == 0 else count-1]
+ 		var b: Vector2 = outline[-1 if endpoint == 0 else count]
+ 		var normal: Vector2 = (b-a).normalized().orthogonal()
+@@ -116,13 +117,14 @@
+ 	return nearest_distance
+ 
+ 
+-static func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary], pieces: Array = []) -> bool:
++static func _road_edge_exposed(point: Vector2, index: int, outlines: Array[Dictionary], pieces: Array = [], topology: Dictionary = {}) -> bool:
++	if not pieces.is_empty() and topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
+ 	for outline: Dictionary in outlines:
+ 		if int(outline.index) == index or not Rect2(outline.bounds).has_point(point): continue
+ 		var joined_neighbor: bool = false
+ 		if not pieces.is_empty():
+ 			for endpoint: int in range(2):
+-				var matches: Array = RoadPieces._partner(pieces,index,endpoint)
++				var matches: Array = RoadPieces._matches(topology,index,endpoint)
+ 				if matches.size() == 1 and int(matches[0][0]) == int(outline.index):
+ 					var pose: Dictionary = RoadPieces._pose(pieces[index],endpoint)
+ 					if point.distance_to(pose.position) < float(pieces[index].width): joined_neighbor = true
+diff --git a/game/track/road_kerbs.gd b/game/track/road_kerbs.gd
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -86,18 +86,19 @@
+ 	var result: Array[Dictionary] = []
+ 	if document.get("surface","asphalt") == "dirt": return result
+ 	var pieces: Array = document.get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var outlines: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+-		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index)
++		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index,0.0,topology)
+ 		var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 		for point: Vector2 in polygon: bounds = bounds.expand(point)
+ 		outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+-		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index)
+-		var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)
++		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
++		var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20,topology),cuts)
+ 		var distance: float = 0.0
+ 		for edge: int in range(polygon.size()):
+ 			var a: Vector2 = polygon[edge]
+@@ -116,7 +117,7 @@
+ 				var midpoint: Vector2 = (p+q)*0.5
+ 				var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
+ 				if Geometry2D.is_point_in_polygon(midpoint+outward,polygon): outward = -outward
+-				if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
++				if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces,topology): continue
+ 				if not RoadEdges._on_join_plane(a,b,cuts) and RoadEdges._inner_bend_distance(midpoint,points) >= 0.0:
+ 					result.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+ 	return result
+diff --git a/game/track/visual_road_join.gd b/game/track/visual_road_join.gd
+--- a/game/track/visual_road_join.gd
++++ b/game/track/visual_road_join.gd
+@@ -2,18 +2,19 @@
+ extends RefCounted
+ ## Small cosmetic fillets only; canonical outlines and contact geometry stay intact.
+ 
+-static func build(pieces: Array, index: int, margin: float = 0.0) -> Dictionary:
+-	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index)
+-	var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin),cuts)
++static func build(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> Dictionary:
++	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
++	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
++	var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin,topology),cuts)
+ 	polygon = fair_contour(polygon,cuts)
+ 	var replacements: Dictionary = {}
+ 	var source_cuts: Array[Dictionary] = cuts.duplicate(true)
+ 	for cut: Dictionary in cuts:
+-		var partner: Array = RoadPieces._partner(pieces,index,int(cut.endpoint))[0]
++		var partner: Array = RoadPieces._matches(topology,index,int(cut.endpoint))[0]
+ 		var other: int = int(partner[0])
+ 		if pieces[other].kind == "bridge": continue
+-		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other)
+-		var other_polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin),other_cuts)
++		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other,topology)
++		var other_polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin,topology),other_cuts)
+ 		other_polygon = fair_contour(other_polygon,other_cuts)
+ 		var ends: Array[Vector2] = []
+ 		for i: int in range(polygon.size()):
+@@ -100,24 +101,28 @@
+ 		result[i] += displacement.limit_length(0.25)*weight
+ 	return result
+ 
+-static func kerb_triangles(document: Dictionary) -> Array[Dictionary]:
++static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callable()) -> Array[Dictionary]:
+ 	var pieces: Array = document.get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var outlines: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
++		if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 		if pieces[index].kind == "bridge": continue
+-		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index)
++		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index,0.0,topology)
+ 		var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 		for point: Vector2 in polygon: bounds = bounds.expand(point)
+ 		outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
+ 	var segments: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
++		if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 		if pieces[index].kind == "bridge": continue
+-		var shape: Dictionary = build(pieces,index,-0.2)
++		var shape: Dictionary = build(pieces,index,-0.2,topology)
+ 		var polygon: PackedVector2Array = shape.polygon
+ 		var cuts: Array[Dictionary] = shape.cuts
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+ 		var distance: float = 0
+ 		for edge: int in range(polygon.size()):
++			if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 			var a: Vector2 = polygon[edge]
+ 			var b: Vector2 = polygon[(edge+1)%polygon.size()]
+ 			if RoadEdges._on_join_cut(a,b,cuts): continue
+@@ -134,12 +139,13 @@
+ 				var middle: Vector2 = (p+q)*0.5
+ 				var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
+ 				if Geometry2D.is_point_in_polygon(middle+outward,polygon): outward = -outward
+-				if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces): continue
++				if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces,topology): continue
+ 				if RoadEdges._on_join_plane(a,b,cuts) or RoadEdges._inner_bend_distance(middle,points) < 0: continue
+ 				segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+ 	var visual := RoadKerbs.new()
+ 	var first: int = 0
+ 	while first < segments.size():
++		if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 		var last: int = first
+ 		while last+1 < segments.size():
+ 			var a: Dictionary = segments[last]
+diff --git a/game/tests/profile_placement.gd b/game/tests/profile_placement.gd
+--- a/game/tests/profile_placement.gd
++++ b/game/tests/profile_placement.gd
+@@ -45,6 +45,10 @@
+ 	app.set("document",doc)
+ 	app.call("_show_screen","create")
+ 	await process_frame
++	await settled(app)
++	var initial_deadline: int = Time.get_ticks_msec()+15000
++	while app.editor_world._building and Time.get_ticks_msec()<initial_deadline: await process_frame
++	check(not app.editor_world._building,"initial editor scenery completes before placement measurements")
+ 	var canvas: EditorCanvas = app.get("canvas")
+ 	app.call("_choose_object","tyre_stack")
+ 	var baseline: bool = "--baseline" in OS.get_cmdline_user_args()
+@@ -62,6 +66,7 @@
+ 	begin = Time.get_ticks_usec()
+ 	canvas.show_native(track)
+ 	print("PLACEMENT visual_ms=",(Time.get_ticks_usec()-begin)/1000.0)
++	while app.editor_world._building and Time.get_ticks_msec()<initial_deadline: await process_frame
+ 	var initial_visual: NativeTrackVisual = app.get("editor_world").visual
+ 	for i: int in range(3):
+ 		var point: Vector2 = canvas.to_screen(Vector2(-10+i*4,0))
+diff --git a/game/tests/profile_road_approval.gd b/game/tests/profile_road_approval.gd
+--- a/game/tests/profile_road_approval.gd
++++ b/game/tests/profile_road_approval.gd
+@@ -33,6 +33,9 @@
+ 	app.set("document",doc)
+ 	app.call("_show_screen","create")
+ 	await process_frame
++	var initial_deadline: int = Time.get_ticks_msec()+15000
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<initial_deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"initial editor preview completes before approval measurements")
+ 	var canvas: EditorCanvas = app.get("canvas")
+ 	canvas.snap_enabled = false
+ 	var approval_started: int = Time.get_ticks_usec()
+@@ -83,7 +86,7 @@
+ 	check(app.get("canvas") == canvas,"redo retains the canvas and viewport")
+ 	check(app.get("document").pieces.size() == 8,"redo restores the approved road")
+ 	app.call("_save_track_explicit")
+-	check(app.get("editor_preview_thread") == null,"explicit save drains pending preview work")
++	check(app.library.load_document(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),"explicit save commits the exact document independently of pending preview work")
+ 	# Reproduce the old synchronous undo path on the same fixture for comparison.
+ 	var before: int = Time.get_ticks_usec()
+ 	app.redo_history.append(app.document.duplicate(true))
+@@ -93,6 +96,9 @@
+ 	print("EDITOR_HISTORY legacy_undo_ms=",(Time.get_ticks_usec()-before)/1000.0)
+ 	canvas = app.get("canvas")
+ 	var world: EditorWorld = app.get("editor_world")
++	deadline = Time.get_ticks_msec()+15000
++	while (app.editor_preview_thread != null or world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not world._building,"reopened scenery completes before cache-reuse assertions")
+ 	var initial_visual: NativeTrackVisual = world.visual
+ 	app.call("_redo")
+ 	deadline = Time.get_ticks_msec()+15000
+diff --git a/game/tests/test_editor_workflow.gd b/game/tests/test_editor_workflow.gd
+--- a/game/tests/test_editor_workflow.gd
++++ b/game/tests/test_editor_workflow.gd
+@@ -68,6 +68,10 @@
+ 	app.call("_show_screen","create")
+ 	await process_frame
+ 	await process_frame
++	await _wait_preview()
++	var scene_deadline: int = Time.get_ticks_msec()+15000
++	while app.editor_world._building and Time.get_ticks_msec()<scene_deadline: await process_frame
++	check(not app.editor_world._building,"opened editor scenery completes within deadline")
+ 
+ 
+ func _blank_and_connect() -> void:
+@@ -319,7 +323,7 @@
+ 	doc.pieces = [curve]
+ 	await _show_document(doc)
+ 	(app.get("test_button") as Button).pressed.emit()
+-	await process_frame
++	await _wait_practice()
+ 	var game: Node = app.get("game")
+ 	check(game != null,"zero-lead-in tight bend can enter untimed practice")
+ 	if game != null:
+@@ -433,7 +437,7 @@
+ 	var before_practice: Dictionary = doc.duplicate(true)
+ 	var compiled_before: NativeTrack = TrackCompiler.compile(doc)
+ 	(app.get("test_button") as Button).pressed.emit()
+-	await process_frame
++	await _wait_practice()
+ 	var game: Node = app.get("game")
+ 	check(game != null and bool(game.get("editor_test")), "a closed section circuit launches actual editor practice")
+ 	if game != null:
+@@ -675,3 +679,9 @@
+ 	var deadline: int = Time.get_ticks_msec()+15000
+ 	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+ 	check(app.get("editor_preview_thread") == null,"background collision validation finishes within deadline")
++
++func _wait_practice() -> void:
++	var deadline: int = Time.get_ticks_msec()+15000
++	while app.game == null and Time.get_ticks_msec()<deadline: await process_frame
++	while is_instance_valid(app.race_loading) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.game != null and not is_instance_valid(app.race_loading),"editor practice preparation completes within deadline")
+diff --git a/game/tests/test_editor_v2.gd b/game/tests/test_editor_v2.gd
+--- a/game/tests/test_editor_v2.gd
++++ b/game/tests/test_editor_v2.gd
+@@ -156,6 +156,9 @@
+ 	await _capture("editor-v2-objects")
+ 	# The current editor saves explicitly; its old preview dialog was removed.
+ 	app.call("_save_track_explicit")
++	var preview_deadline: int = Time.get_ticks_msec()+15000
++	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
++	check(app.editor_preview_thread == null,"explicit save preview completes before immutable identity comparisons")
+ 	await _capture("editor-v2-saved")
+ 	var saved: Dictionary = (app.get("library") as TrackLibrary).load_document(doc.id)
+ 	check(JSON.stringify(saved,"",true) == JSON.stringify(JSON.parse_string(JSON.stringify(app.get("document"))),"",true),"widths, corners, objects and transforms persist together")
+diff --git a/game/tests/test_free_editor.gd b/game/tests/test_free_editor.gd
+--- a/game/tests/test_free_editor.gd
++++ b/game/tests/test_free_editor.gd
+@@ -101,6 +101,7 @@
+ 	app.call("_show_screen","create")
+ 	await process_frame
+ 	await process_frame
++	await _wait_preview(app)
+ 	var canvas: EditorCanvas = app.get("canvas")
+ 	check(canvas.mode == "road","creator opens with the compact road palette")
+ 	app.call("_editor_category","paint")
+@@ -190,6 +191,7 @@
+ 	await process_frame
+ 	await process_frame
+ 	canvas = app.get("canvas")
++	await _wait_preview(app)
+ 	check(canvas != null and canvas.document.id == remix.id,"Load track opens the saved starter remix")
+ 	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/starter_circuit.json").cells,"starter editing preserves native map geometry")
+ 	# The preview dialog is owned by root app; close it before remix evidence.
+@@ -209,3 +211,8 @@
+ 	await RenderingServer.frame_post_draw
+ 	await RenderingServer.frame_post_draw
+ 	check(root.get_texture().get_image().save_png(capture_directory.path_join(name+".png")) == OK,"screenshot "+name)
++
++func _wait_preview(app: Node) -> void:
++	var deadline: int = Time.get_ticks_msec()+15000
++	while app.editor_preview_thread != null and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"opened track collision preparation completes before native-grid editing assertions")
+diff --git a/game/tests/test_hazards.gd b/game/tests/test_hazards.gd
+--- a/game/tests/test_hazards.gd
++++ b/game/tests/test_hazards.gd
+@@ -121,6 +121,9 @@
+ 	root.add_child(app); await process_frame
+ 	app.set("document",scenery_doc); app.call("_show_screen","create")
+ 	await process_frame; await process_frame
++	var preview_deadline: int = Time.get_ticks_msec()+15000
++	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
++	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"scenery selection waits for actual collision/scenery preparation")
+ 	var canvas: EditorCanvas = app.get("canvas")
+ 	canvas.mode="objects"; canvas._begin(canvas.to_screen(point),-1); canvas._end(-1)
+ 	check(canvas.selected_object>=0 and scenery_doc.hidden_scenery.has(CreatorScenery.key(tree)),"scenery tree can be selected and adopted into document")
+diff --git a/game/tests/test_tyres_and_load.gd b/game/tests/test_tyres_and_load.gd
+--- a/game/tests/test_tyres_and_load.gd
++++ b/game/tests/test_tyres_and_load.gd
+@@ -196,7 +196,7 @@
+ 	check(save_error==OK,"publication fixture saved: "+library.last_error)
+ 	check(library.publish_document(doc)==ERR_UNAUTHORIZED,"untested publishing rejected at persistence boundary")
+ 	app.call("_show_screen","drafts")
+-	app.call("_test_saved_draft","wip:publication_test")
++	await app.call("_test_saved_draft","wip:publication_test")
+ 	await process_frame
+ 	var game: Node = app.get("game")
+ 	check(game!=null and bool(game.get("editor_test")),"Test drive starts untimed editor practice")
+@@ -206,7 +206,7 @@
+ 	app.call("_leave_race")
+ 	await process_frame
+ 	check(app.get("screen")=="drafts" and not library.is_tested(doc),"aborting returns to drafts without tested status")
+-	app.call("_test_saved_draft","wip:publication_test")
++	await app.call("_test_saved_draft","wip:publication_test")
+ 	await process_frame
+ 	game = app.get("game")
+ 	game.set_physics_process(false)
+diff --git a/game/tests/test_shoulders.gd b/game/tests/test_shoulders.gd
+--- a/game/tests/test_shoulders.gd
++++ b/game/tests/test_shoulders.gd
+@@ -36,7 +36,7 @@
+ 	if absf(area-30.0) > 0.001: failures += 1
+ 	print("SHOULDER_TESTS: union area=%f, triangles=%d, failures=%d; nearest-road shading and no overlapping interiors" % [area,polygons.size(),failures])
+ 	failures += _test_joins()
+-	failures += _test_internal_contours()
++	failures += await _test_internal_contours()
+ 	quit(0 if failures == 0 else 1)
+ 
+ func _test_joins() -> int:
+@@ -105,7 +105,7 @@
+ 	var track: NativeTrack = TrackCompiler.compile(document)
+ 	var contacts: Array[Dictionary] = track.kerbs.triangles.duplicate(true)
+ 	var cells: PackedInt32Array = track.cells.duplicate()
+-	var rendered: Array[Dictionary] = helper.kerb_triangles(document)
++	var rendered: Array[Dictionary] = await helper.kerb_triangles(document)
+ 	checks += 3
+ 	if rendered.is_empty():
+ 		failures += 1
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -158,6 +158,7 @@
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/profile_editor_performance.gd') 'editor-performance-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd') 'bridge-hud-tests.log'
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -3,6 +3,8 @@
+ 2026-10-05 V02/V04/V05/Q01: Supplied desert bank reference applied with pale patchy apron coverage, reduced continuous dark contact and mineral flecks through shared Grass soft/irregular blend. CaptureDesert 113 checks pass; screenshot inspected/scoped shader diff saved. No phone attachment check/device test/export or canonical change. Files, actual command/log and visual acceptance: docs/DESERT_ROAD_REFINEMENT.md (Supplied bank reference).
+ 
+ 2026-10-05 V02/V04/V05/Q01: Owner desert refinement broadens irregular road-edge colour blending about 29%, lightens sandy bank pigments and reduces inner-edge darkening. CaptureDesert 113 checks pass; screenshot inspected/scoped shader patch saved. No phone attachment check/device test/export or canonical change. Files, actual command/log and acceptance: docs/DESERT_ROAD_REFINEMENT.md (Gradual colour and lighter banks).
++
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested editor performance slice implemented: indexed exact road topology, cached route derivation, asynchronous initial/loading previews and sliced scenery, Save without preview joins, metadata/scenery reuse, separate authored prop batches, background byte-identical masks, retained object controls and bounded baked thumbnails. Final graphical 96-piece opening handler 6603 to 31 ms, Save about 48 ms, undo/redo about 30 ms, objects 25 ms, roads 42 ms, browser refresh about 0.1 ms. 1216 graphical checks, workflow 245 and verifier 57 pass; exact geometry/replay/surface and component checks pass. Broad App 97/five PB/results failures retained; no full green Validate. Cold load still records 687 ms (earlier 1018 ms) frame on shared host; no phone performance/export/install or backend deployment. Scoped source patch preserves concurrent backend/handling/desert/finish-line work. Commands, files, screenshots, failed attempts and remaining acceptance: docs/EDITOR_PERFORMANCE_2026_10_05.md.
+ 
+ 2026-10-05 V02/V04/V05/Q01: Owner rejects sharp desert edge. Inspected and reused Grass shoulder_fringe (equal settled/broken blend) with wider mapped coverage and broad variation. CaptureDesert 113 checks pass; softened irregular-edge screenshot inspected and shader checkpoint saved. No phone attachment check/device test/export or canonical change. See docs/DESERT_ROAD_REFINEMENT.md (Grass shoulder transition reuse).
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -3,6 +3,8 @@
+ 2026-10-05 V02/V04/V05/Q01: Supplied desert bank reference applied with pale patchy apron coverage, reduced continuous dark contact and mineral flecks through shared Grass soft/irregular blend. CaptureDesert 113 checks pass; screenshot inspected/scoped shader diff saved. No phone attachment check/device test/export or canonical change. Files, actual command/log and visual acceptance: docs/DESERT_ROAD_REFINEMENT.md (Supplied bank reference).
+ 
+ 2026-10-05 V02/V04/V05/Q01: Owner desert refinement broadens irregular road-edge colour blending about 29%, lightens sandy bank pigments and reduces inner-edge darkening. CaptureDesert 113 checks pass; screenshot inspected/scoped shader patch saved. No phone attachment check/device test/export or canonical change. Files, actual command/log and acceptance: docs/DESERT_ROAD_REFINEMENT.md (Gradual colour and lighter banks).
++
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested editor performance slice implemented: indexed exact road topology, cached route derivation, asynchronous initial/loading previews and sliced scenery, Save without preview joins, metadata/scenery reuse, separate authored prop batches, background byte-identical masks, retained object controls and bounded baked thumbnails. Final graphical 96-piece opening handler 6603 to 31 ms, Save about 48 ms, undo/redo about 30 ms, objects 25 ms, roads 42 ms, browser refresh about 0.1 ms. 1216 graphical checks, workflow 245 and verifier 57 pass; exact geometry/replay/surface and component checks pass. Broad App 97/five PB/results failures retained; no full green Validate. Cold load still records 687 ms (earlier 1018 ms) frame on shared host; no phone performance/export/install or backend deployment. Scoped source patch preserves concurrent backend/handling/desert/finish-line work. Commands, files, screenshots, failed attempts and remaining acceptance: docs/EDITOR_PERFORMANCE_2026_10_05.md.
+ 
+ 2026-10-05 V02/V04/V05/Q01: Owner rejects sharp desert edge. Inspected and reused Grass shoulder_fringe (equal settled/broken blend) with wider mapped coverage and broad variation. CaptureDesert 113 checks pass; softened irregular-edge screenshot inspected and shader checkpoint saved. No phone attachment check/device test/export or canonical change. See docs/DESERT_ROAD_REFINEMENT.md (Grass shoulder transition reuse).
+ 
+diff --git a/game/editor/creator_preview_masks.gd b/game/editor/creator_preview_masks.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/creator_preview_masks.gd
+@@ -0,0 +1,26 @@
++class_name CreatorPreviewMasks
++extends RefCounted
++## CPU-only presentation masks. Safe on the preview worker; no GPU or tree work.
++
++static func overlay(track: NativeTrack, paint: Array) -> Image:
++	var excluded: PackedByteArray = track.kerbs.blocked if track.kerbs.blocked.size() == track.cells.size() and paint == track.metadata.get("creator_document",{}).get("paint",[]) else RoadKerbs.exclusion_mask(track,paint)
++	var painted := PackedInt32Array()
++	painted.resize(track.cells.size()); painted.fill(-1)
++	var paint_mask := PackedInt32Array()
++	paint_mask.resize(track.cells.size()); paint_mask.fill(1)
++	var overlays: Array = paint.duplicate(true)
++	for stroke: Dictionary in overlays: stroke.protect_road = false
++	TrackCompiler._paint(overlays,painted,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,paint_mask)
++	var pixels := PackedByteArray()
++	pixels.resize(track.cells.size()*3)
++	for index: int in range(track.cells.size()):
++		pixels[index*3] = 255 if excluded[index] == 0 else 0
++		pixels[index*3+1] = 255 if painted[index] in [-1,1] else 0
++		pixels[index*3+2] = 255 if painted[index] == 2 else 0
++	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8,pixels)
++
++static func road(track: NativeTrack) -> Image:
++	var pixels := PackedByteArray()
++	pixels.resize(track.cells.size())
++	for index: int in range(track.cells.size()): pixels[index] = 255 if track.cells[index] == 0 else 0
++	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_L8,pixels)
+diff --git a/game/tests/profile_editor_performance.gd b/game/tests/profile_editor_performance.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_editor_performance.gd
+@@ -0,0 +1,208 @@
++extends SceneTree
++## Exact contract equivalence and real editor lifecycle/performance observations.
++
++const BEFORE = preload("res://tests/fixtures/road_pieces_before_performance.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var folder: String
++var evidence: String
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func metric(label: String, started: int) -> void:
++	print("EDITOR_PERFORMANCE ",label," ms=",(Time.get_ticks_usec()-started)/1000.0)
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	var started: int = Time.get_ticks_usec()
++	var slowest: float = 0.0
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
++		var before: int = Time.get_ticks_usec()
++		await process_frame
++		slowest = maxf(slowest,(Time.get_ticks_usec()-before)/1000.0)
++	check(app.editor_preview_thread == null and not app.editor_world._building,"editor preparation completes by its deadline")
++	metric("settled",started)
++	print("EDITOR_PERFORMANCE maximum_frame_interval_ms=",slowest)
++	check(app.canvas.native_preview != null,"completed preparation has compiled collision data")
++
++func show(doc: Dictionary, label: String) -> void:
++	app.canvas = null; app.editor_view.clear()
++	app.document = doc.duplicate(true)
++	app.history.clear(); app.redo_history.clear()
++	var started: int = Time.get_ticks_usec()
++	app.call("_show_screen","create")
++	metric(label+"_open_handler",started)
++	check(app.editor_preview_thread != null,"uncached opening queues a worker instead of blocking for compilation")
++	check(app.canvas.native_preview == null and app.editor_loading.visible,"opening shows honest preparation state before collision/scenery are ready")
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(evidence+"/"+label+"-preparing.png")
++	await settle()
++	await process_frame
++	check(not app.editor_loading.visible,"preparation notice retires when compiler and scenery are ready")
++	var independent: NativeTrack = TrackCompiler.compile(app.document)
++	check(independent.content_hash == app.canvas.native_preview.content_hash and independent.cells == app.canvas.native_preview.cells,"prepared track exactly matches an independent compile")
++	check(app.canvas.native_preview.editor_overlay_mask.get_data() == legacy_overlay(independent,app.document.paint).get_data(),"background overlay mask is byte-identical to original pixel construction")
++	var road := Image.create(independent.grid_width,independent.grid_height,false,Image.FORMAT_L8)
++	road.fill(Color.BLACK)
++	for index: int in range(independent.cells.size()):
++		if independent.cells[index] == 0: road.set_pixel(index%independent.grid_width,index/independent.grid_width,Color.WHITE)
++	check(app.canvas.native_preview.editor_road_mask.get_data() == road.get_data(),"background road mask is byte-identical to original pixel construction")
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(evidence+"/"+label+"-ready.png")
++
++func circuit() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "performance_closed"; doc.name = "96 connected pieces"
++	var position := Vector2(-47,-36)
++	var heading: float = 0.0
++	for side: int in range(2):
++		for i: int in range(47):
++			var piece: Dictionary = RoadPieces.create("straight",position,heading,6)
++			piece.length = 2.0; doc.pieces.append(piece)
++			position = RoadPieces.end_pose(piece).position
++		var turn: Dictionary = RoadPieces.create("hairpin",position,heading,6)
++		turn.radius = 36.0; doc.pieces.append(turn)
++		var pose: Dictionary = RoadPieces.end_pose(turn)
++		position = pose.position; heading = pose.heading
++	return doc
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://").path_join("../docs/evidence/editor-performance-2026-10-05").simplify_path()
++	DirAccess.make_dir_recursive_absolute(evidence)
++	var closed: Dictionary = circuit()
++	var corpus: Array = [[],closed.pieces]
++	for count: int in [4,24,48,96]:
++		var pieces: Array = []
++		for i: int in range(count):
++			var piece: Dictionary = RoadPieces.create("straight",Vector2(-100+(i%12)*17,-94+(i/12)*24),0,6)
++			piece.length = 12.0; pieces.append(piece)
++		corpus.append(pieces)
++	# Includes ambiguous joins, near bucket boundaries, reversed and tapered widths.
++	for offset: float in [-0.150001,-0.15,-0.149999,0.0,0.149999,0.15,0.150001]:
++		var first: Dictionary = RoadPieces.create("taper",Vector2(-28,0))
++		var at: Vector2 = RoadPieces.end_pose(first).position
++		corpus.append([first,RoadPieces.create("straight",at+Vector2(offset,0),180,14),RoadPieces.create("curve",at+Vector2(0,offset),90)])
++	for pieces: Array in corpus:
++		var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++		check(RoadPieces.joins(pieces) == BEFORE.joins(pieces),"indexed issue ordering/positions match frozen contract")
++		check(RoadPieces.connected_route(pieces) == BEFORE.connected_route(pieces),"indexed route widths/points match frozen contract")
++		for index: int in range(pieces.size()):
++			for endpoint: int in range(2):
++				check(RoadPieces._matches(topology,index,endpoint) == BEFORE._partner(pieces,index,endpoint),"endpoint membership and ordering match frozen scan")
++			check(RoadPieces.section_geometry(pieces,index,topology) == BEFORE.section_geometry(pieces,index),"section widths and samples remain exact")
++			check(RoadPieces.section_outline(pieces,index,0.0,topology) == BEFORE.section_outline(pieces,index),"canonical outline remains exact")
++		var doc: Dictionary = TrackDocument.create_blank(); doc.pieces = pieces
++		var started: int = Time.get_ticks_usec()
++		RoadPieces.route_from_pieces(doc); RoadPieces.joins(pieces)
++		metric("route_and_issues_%d" % pieces.size(),started)
++	closed = RoadPieces.route_from_pieces(closed).document
++	folder = "user://editor_performance_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder)
++	app.records = LocalRecords.new(folder+"/records.json")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await show(closed,"closed-96")
++	var world: EditorWorld = app.editor_world
++	var original_visual: NativeTrackVisual = world.visual
++	app.call("_remember")
++	app.document.name = "Changed closed title"
++	var started: int = Time.get_ticks_usec()
++	app.call("_save_draft",true); metric("closed_title_edit",started)
++	started = Time.get_ticks_usec()
++	check(app.call("_save_track_now"),"explicit Save succeeds while preview is pending")
++	metric("closed_explicit_save",started)
++	check(app.library.load_document(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),"explicit Save durably commits exact current authoring data")
++	for notice: Node in app.root_ui.find_children("*","AcceptDialog",true,false): notice.confirmed.emit()
++	await process_frame
++	await settle()
++	check(world.visual == original_visual,"metadata-only changes retain all scenery")
++	started = Time.get_ticks_usec(); app.call("_undo"); metric("closed_undo",started)
++	started = Time.get_ticks_usec(); app.call("_redo"); metric("closed_redo",started)
++	await settle()
++	check(app.canvas.native_preview.content_hash == TrackCompiler.compile(app.document).content_hash,"rapid history supersession retains exact latest collision identity")
++	# Uncached road approval while a large connected map is shown.
++	app.canvas.choose_piece("curve")
++	app.canvas.ghost = RoadPieces.create("curve",Vector2(-15,0))
++	started = Time.get_ticks_usec(); app.canvas.confirm_piece(); metric("large_road_approval",started)
++	check(app.document.pieces.size() == 96 and not app.canvas.ghost.is_empty(),"road capacity is still enforced")
++	app.canvas.ghost.clear()
++	# Select/delete a road then approve its replacement at the legal 96-piece cap.
++	app.call("_remember"); app.document.pieces.remove_at(0); app.call("_save_draft",true)
++	app.canvas.choose_piece("straight")
++	app.canvas.ghost = closed.pieces[0].duplicate(true)
++	started = Time.get_ticks_usec(); app.canvas.confirm_piece(); metric("large_legal_road_approval",started)
++	check(app.document.pieces.size() == 96,"legal road placement commits immediately")
++	await settle()
++	# Object placement and thumbnail selection use the actual canvas/browser.
++	app.call("_editor_category","objects")
++	await process_frame
++	var browser: ObjectBrowser = app.object_browser
++	var cards: Array[Node] = browser.tiles.get_children()
++	started = Time.get_ticks_usec(); browser.choose("rock"); metric("object_selection",started)
++	check(browser.tiles.get_children() == cards,"selection retains visible thumbnail controls")
++	for repetition: int in range(3):
++		started = Time.get_ticks_usec(); browser.refresh(); metric("browser_refresh",started)
++	if DisplayServer.get_name() != "headless":
++		for frame: int in range(3): await RenderingServer.frame_post_draw
++		check(ObjectThumbnail._images.size() > 0 and ObjectThumbnail._images.size() <= ObjectThumbnail.CACHE_LIMIT,"rendered thumbnails enter a bounded texture cache")
++		root.get_texture().get_image().save_png(evidence+"/objects-cached.png")
++	app.call("_choose_object","tyre_stack")
++	started = Time.get_ticks_usec(); app.canvas._place(app.canvas.to_screen(Vector2(0,0))); metric("object_placement",started)
++	check(app.document.objects.size() == 1,"placing an object updates authored data immediately")
++	await settle()
++	# The real saved-draft load path includes local read/validation and reset.
++	var saved: Dictionary = app.library.load_document("performance_closed")
++	started = Time.get_ticks_usec(); app.call("_load_saved_document","performance_closed"); metric("saved_track_load",started)
++	check(app.document == saved,"loading reads the exact saved original rather than later unsaved geometry")
++	await settle()
++	app.call("_editor_category","paint")
++	app.canvas.paint_mode = "free"
++	app.canvas.brush_surface = 2
++	app.canvas.paint_points = [[-8.0,0.0],[0.0,0.0],[8.0,0.0]]
++	started = Time.get_ticks_usec(); app.canvas.confirm_paint(); metric("paint_commit",started)
++	check(app.document.paint.size() == 1,"surface gesture commits immediately")
++	await settle()
++	var painted: NativeTrack = TrackCompiler.compile(app.document)
++	check(app.canvas.native_preview.content_hash == painted.content_hash and app.canvas.native_preview.cells == painted.cells,"paint collision remains exactly independently compiled")
++	check(app.canvas.native_preview.editor_overlay_mask.get_data() == legacy_overlay(painted,app.document.paint).get_data(),"painted mask bytes match the original protected-road algorithm")
++	if DisplayServer.get_name() != "headless":
++		root.size = Vector2i(960,540)
++		await process_frame
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(evidence+"/paint-ready-compact.png")
++	# Navigation does not wait for an obsolete compiler job.
++	app.call("_remember"); app.document.pieces[0].width = 7.0
++	app.call("_save_draft",true)
++	started = Time.get_ticks_usec(); app.call("_show_screen","tracks"); metric("leave_with_pending_preview",started)
++	check(app.screen == "tracks","navigation completes while obsolete work retires")
++	app.queue_free(); await process_frame
++	cleanup(folder)
++	print("EDITOR_PERFORMANCE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func cleanup(path: String) -> void:
++	if not DirAccess.dir_exists_absolute(path): return
++	for child: String in DirAccess.get_directories_at(path): cleanup(path.path_join(child))
++	for file: String in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
++	DirAccess.remove_absolute(path)
++
++func legacy_overlay(track: NativeTrack, paint: Array) -> Image:
++	var excluded: PackedByteArray = RoadKerbs.exclusion_mask(track,paint)
++	var painted := PackedInt32Array(); painted.resize(track.cells.size()); painted.fill(-1)
++	var protection := PackedInt32Array(); protection.resize(track.cells.size()); protection.fill(1)
++	var overlays: Array = paint.duplicate(true)
++	for stroke: Dictionary in overlays: stroke.protect_road = false
++	TrackCompiler._paint(overlays,painted,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,protection)
++	var mask := Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8)
++	for index: int in range(track.cells.size()):
++		mask.set_pixel(index%track.grid_width,index/track.grid_width,Color(1.0 if excluded[index] == 0 else 0.0,1.0 if painted[index] in [-1,1] else 0.0,1.0 if painted[index] == 2 else 0.0,1.0))
++	return mask
+diff --git a/game/tests/fixtures/road_pieces_before_performance.gd b/game/tests/fixtures/road_pieces_before_performance.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/road_pieces_before_performance.gd
+@@ -0,0 +1,516 @@
++## Frozen pre-optimization contract oracle, 2026-10-05. Test-only.
++extends RefCounted
++## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
++## Road pieces are geometry; race routing is an explicit, separate operation.
++
++const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge"]
++const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
++const S_END_LENGTH: float = 2.0
++const MAX_PIECES: int = 96
++const SNAP_DISTANCE: float = 8.0
++const JOIN_DISTANCE: float = 0.15
++const JOIN_ANGLE: float = 2.0
++
++
++static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
++	var piece: Dictionary = {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
++		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 0.0 if kind in ["hairpin","curve"] else S_END_LENGTH, "radius":12.0 if kind == "hairpin" else 16.0,
++		"width":clampf(width,6.0,20.0), "flip":false}
++	if kind == "taper":
++		piece.length = 28.0
++		piece.narrow_width = minf(6.0,float(piece.width))
++	return piece
++
++
++static func validate(piece: Variant) -> Array[String]:
++	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) or not piece.has_all(KEYS):
++		return ["Invalid road section."]
++	if piece.kind == "taper" and (not piece.has("narrow_width") or not _number(piece.narrow_width) or float(piece.narrow_width) < 6.0 or float(piece.narrow_width) > float(piece.width)): return ["Taper narrow width must be 6 metres or more and no wider than its wide end."]
++	if piece.has("narrow_width") and piece.kind != "taper": return ["Only taper sections can have a narrow width."]
++	if piece.has("curvature") and (piece.kind != "curve" or not _number(piece.curvature) or absf(float(piece.curvature)) > 0.3): return ["Curve curvature must be between -0.3 and 0.3."]
++	if piece.has("angle") and (not _number(piece.angle) or float(piece.angle) < 5 or float(piece.angle) > 270): return ["Curve angle must be 5 to 270 degrees."]
++	if piece.has("height") and (piece.kind != "s_bend" or not _number(piece.height) or float(piece.height) < 2.0 or float(piece.height) > 60.0): return ["S-bend height must be 2 to 60 metres."]
++	if piece.kind not in KINDS: return ["Choose a built-in road section."]
++	if not piece.position is Array or piece.position.size() != 2: return ["Road sections need two coordinates."]
++	for value: Variant in piece.position:
++		if not _number(value) or absf(float(value)) > 120.0: return ["Keep road sections inside the map."]
++	for key: String in ["heading", "length", "radius", "width"]:
++		if not _number(piece[key]): return ["Road section dimensions must be finite numbers."]
++	if float(piece.heading) < 0.0 or float(piece.heading) >= 360.0: return ["Road heading must be between 0 and 359 degrees."]
++	if piece.kind == "bridge" and float(piece.length) < 24.0: return ["A bridge needs at least 24 m for its two ramps."]
++	if float(piece.length) < (2.0 if piece.kind == "straight" else 0.0) or float(piece.length) > 120.0:
++		return ["Use a straight length of 2–120 m or a lead-in of 0–120 m."]
++	if float(piece.radius) < 3.0 or float(piece.radius) > 60.0: return ["Use a bend radius of 3–60 m."]
++	if float(piece.width) < 6.0 or float(piece.width) > 20.0: return ["Use a road width of 6–20 m."]
++	if not piece.flip is bool: return ["Road mirror must be on or off."]
++	for point: Vector2 in samples(piece):
++		if point.abs().x > 120.0 or point.abs().y > 120.0: return ["Keep the whole road section inside the map."]
++	return []
++
++
++static func samples(piece: Dictionary) -> PackedVector2Array:
++	var local := PackedVector2Array([Vector2.ZERO])
++	var length: float = 0.0 if piece.kind == "curve" else S_END_LENGTH if piece.kind == "s_bend" else float(piece.length)
++	var count: int = maxi(1,ceili(length/0.75))
++	for i: int in range(1,count+1):
++		if length > 0.0: local.append(Vector2(length*float(i)/count,0.0))
++	var radius: float = float(piece.radius)
++	var side: float = -1.0 if piece.flip else 1.0
++	if piece.kind == "curve":
++		_arc(local,radius,deg_to_rad(float(piece.get("angle",90.0)))*side,0.0,1.0+3.0*absf(float(piece.get("curvature",0.0))))
++		var amount: float = float(piece.get("curvature",0.0))*curve_bulge_scale(piece)
++		for i: int in range(1,local.size()-1):
++			var fraction: float = float(i)/(local.size()-1)
++			var turn: float = deg_to_rad(float(piece.get("angle",90.0)))*fraction
++			local[i] += Vector2(sin(turn),-side*cos(turn))*amount*pow(sin(PI*fraction),2)
++	elif piece.kind == "hairpin":
++		_arc(local,radius,PI*side,0.0)
++		for i: int in range(1,count+1):
++			if length > 0.0: local.append(Vector2(length*(1.0-float(i)/count),side*2.0*radius))
++	elif piece.kind == "s_bend":
++		_arc(local,radius,PI*0.25*side,0.0)
++		_arc(local,radius,-PI*0.25*side,PI*0.25*side)
++		var exit_start: Vector2 = local[-1]
++		for i: int in range(1,count+1): local.append(exit_start+Vector2(S_END_LENGTH*float(i)/count,0))
++	if piece.kind == "s_bend":
++		var height_scale: float = height(piece)/(2.0*radius*(1.0-cos(PI*0.25)))
++		for i: int in range(local.size()): local[i].y *= height_scale
++	elif piece.kind == "taper":
++		var shift: float = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
++		for i: int in range(local.size()): local[i].y += shift*float(i)/maxf(1.0,float(local.size()-1))
++	var result := PackedVector2Array()
++	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
++	for point: Vector2 in local: result.append(origin+point.rotated(deg_to_rad(float(piece.heading))))
++	result[-1] = end_pose(piece).position
++	return result
++
++
++static func curve_bulge_scale(piece: Dictionary) -> float:
++	# Shallow bends get a smaller range, avoiding a large bulge on a tiny arc.
++	return float(piece.radius)*pow(minf(1.0,float(piece.get("angle",90.0))/90.0),2)
++
++
++static func height(piece: Dictionary) -> float:
++	return float(piece.get("height",2.0*float(piece.radius)*(1.0-cos(PI*0.25))))
++
++
++static func _arc(points: PackedVector2Array, radius: float, angle: float, heading: float, density: float = 1.0) -> void:
++	var origin: Vector2 = points[-1]
++	var side: float = signf(angle)
++	var count: int = maxi(2,ceili(radius*absf(angle)*density/0.75))
++	for i: int in range(1,count+1):
++		var turn: float = absf(angle)*float(i)/count
++		points.append(origin+Vector2(radius*sin(turn),side*radius*(1.0-cos(turn))).rotated(heading))
++
++
++static func end_pose(piece: Dictionary) -> Dictionary:
++	var turn: float = float(piece.get("angle",90.0)) if piece.kind == "curve" else (180.0 if piece.kind == "hairpin" else 0.0)
++	var radius: float = float(piece.radius)
++	var side: float = -1.0 if piece.flip else 1.0
++	var local := Vector2(0.0 if piece.kind == "curve" else float(piece.length),0.0)
++	if piece.kind == "curve": local += Vector2(radius*sin(deg_to_rad(turn)),side*radius*(1.0-cos(deg_to_rad(turn))))
++	elif piece.kind == "hairpin": local = Vector2(0.0,side*2.0*radius)
++	elif piece.kind == "s_bend": local = Vector2(2.0*S_END_LENGTH+2.0*radius*sin(PI*0.25),side*height(piece))
++	elif piece.kind == "taper": local.y = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
++	var origin := Vector2(float(piece.position[0]),float(piece.position[1]))
++	return {"position":origin+local.rotated(deg_to_rad(float(piece.heading))), "heading":fposmod(float(piece.heading)+turn*side,360.0)}
++
++
++static func _pose(piece: Dictionary, endpoint: int) -> Dictionary:
++	if endpoint == 1:
++		var end: Dictionary = end_pose(piece)
++		return {"position":end.position,"heading":fposmod(float(end.heading)+180.0,360.0)}
++	return {"position":Vector2(piece.position[0],piece.position[1]),"heading":float(piece.heading)}
++
++
++static func snap(piece: Dictionary, pieces: Array, exclude: int = -1) -> Dictionary:
++	var result: Dictionary = {"piece":piece.duplicate(true),"matched":false,"target_index":-1,"endpoint":-1,"distance":SNAP_DISTANCE}
++	for index: int in range(pieces.size()):
++		if index == exclude: continue
++		for target_end: int in range(2):
++			var target: Dictionary = _pose(pieces[index],target_end)
++			if _partner(pieces,index,target_end,exclude).size() > 0: continue
++			for endpoint: int in range(2):
++				var pose: Dictionary = _pose(piece,endpoint)
++				var distance: float = Vector2(pose.position).distance_to(target.position)
++				if distance >= float(result.distance): continue
++				var fitted: Dictionary = piece.duplicate(true)
++				var delta: float = wrapf(float(target.heading)+180.0-float(pose.heading),-180.0,180.0)
++				fitted.heading = fposmod(float(piece.heading)+delta,360.0)
++				var moved: Dictionary = _pose(fitted,endpoint)
++				var shift: Vector2 = Vector2(target.position)-Vector2(moved.position)
++				fitted.position = [float(fitted.position[0])+shift.x,float(fitted.position[1])+shift.y]
++				if not validate(fitted).is_empty(): continue
++				result = {"piece":fitted,"matched":true,"target_index":index,"endpoint":target_end,"distance":distance}
++	return result
++
++
++static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1) -> Array:
++	var pose: Dictionary = _pose(pieces[index],endpoint)
++	var matches: Array = []
++	for other: int in range(pieces.size()):
++		if other == index or other == exclude: continue
++		for other_end: int in range(2):
++			var candidate: Dictionary = _pose(pieces[other],other_end)
++			if Vector2(pose.position).distance_to(candidate.position) > JOIN_DISTANCE: continue
++			# Touching endpoints connect even at a sharp angle or width change.
++			matches.append([other,other_end])
++	return matches
++
++
++static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1) -> int:
++	var attached: Array[bool] = [false,false]
++	for endpoint: int in [0,1]:
++		var position: Vector2 = _pose(piece,endpoint).position
++		for index: int in range(pieces.size()):
++			if index == exclude: continue
++			for other_end: int in [0,1]:
++				if position.distance_to(_pose(pieces[index],other_end).position) <= JOIN_DISTANCE:
++					attached[endpoint] = true
++	return -1 if attached[0] == attached[1] else 0 if attached[0] else 1
++
++static func keep_attachment(before: Dictionary, changed: Dictionary, endpoint: int, keep_tangent: bool = true) -> Dictionary:
++	if endpoint < 0: return changed
++	var result: Dictionary = changed.duplicate(true)
++	var fixed: Dictionary = _pose(before,endpoint)
++	if keep_tangent:
++		var turn: float = wrapf(float(fixed.heading)-float(_pose(result,endpoint).heading),-180.0,180.0)
++		result.heading = fposmod(float(result.heading)+turn,360.0)
++	var shift: Vector2 = Vector2(fixed.position)-Vector2(_pose(result,endpoint).position)
++	result.position = [float(result.position[0])+shift.x,float(result.position[1])+shift.y]
++	return result
++
++
++static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> Dictionary:
++	var result: Dictionary = piece.duplicate(true)
++	var start := Vector2(piece.position[0],piece.position[1])
++	var end: Vector2 = end_pose(piece).position
++	var old_chord: Vector2 = end-start
++	var chord: Vector2 = target-start if endpoint == 1 else end-target
++	if chord.length() < 0.01 or old_chord.length() < 0.01: return {}
++	if piece.kind == "taper":
++		var lateral: float = (float(piece.width)-float(piece.narrow_width))*0.5*(-1.0 if piece.flip else 1.0)
++		if chord.length() <= absf(lateral): return {}
++		result.length = sqrt(chord.length_squared()-lateral*lateral)
++		var local := Vector2(float(result.length),lateral)
++		result.heading = fposmod(rad_to_deg(chord.angle()-local.angle()),360.0)
++		if endpoint == 0: result.position = [target.x,target.y]
++		return result if validate(result).is_empty() else {}
++	if piece.kind == "s_bend":
++		# Scale only the curved span; the two 2 m tangents never scale.
++		var x: float = 2.0*float(piece.radius)*sin(PI*0.25)
++		var y: float = height(piece)
++		var fixed: float = 2.0*S_END_LENGTH
++		var square: float = x*x+y*y
++		var discriminant: float = fixed*fixed*x*x+square*(chord.length_squared()-fixed*fixed)
++		if discriminant <= 0.0: return {}
++		var scale: float = (-fixed*x+sqrt(discriminant))/square
++		if scale <= 0.0: return {}
++		result.radius = float(piece.radius)*scale
++		result.height = y*scale
++		result.length = S_END_LENGTH
++		var local := Vector2(fixed+x*scale,(-1.0 if piece.flip else 1.0)*y*scale)
++		result.heading = fposmod(rad_to_deg(chord.angle()-local.angle()),360.0)
++		if endpoint == 0: result.position = [target.x,target.y]
++		return result if validate(result).is_empty() else {}
++	var factor: float = chord.length()/old_chord.length()
++	result.heading = fposmod(float(piece.heading)+rad_to_deg(old_chord.angle_to(chord)),360.0)
++	result.length = 0.0 if piece.kind == "curve" else float(piece.length)*factor
++	if piece.has("height"): result.height = float(piece.height)*factor
++	if piece.kind not in ["straight","bridge"]: result.radius = float(piece.radius)*factor
++	if endpoint == 0: result.position = [target.x,target.y]
++	return result if validate(result).is_empty() else {}
++
++
++static func snap_endpoint(target: Vector2, pieces: Array, exclude: int) -> Vector2:
++	var best: float = SNAP_DISTANCE
++	var result: Vector2 = target
++	for i: int in range(pieces.size()):
++		if i == exclude: continue
++		for endpoint: int in range(2):
++			if not _partner(pieces,i,endpoint,exclude).is_empty(): continue
++			var position: Vector2 = _pose(pieces[i],endpoint).position
++			var distance: float = target.distance_to(position)
++			if distance < best:
++				best = distance
++				result = position
++	return result
++
++
++static func joins(pieces: Array) -> Array[Dictionary]:
++	var issues: Array[Dictionary] = []
++	for index: int in range(pieces.size()):
++		for endpoint: int in range(2):
++			var matches: Array = _partner(pieces,index,endpoint)
++			if matches.size() == 1: continue
++			issues.append({"index":index,"endpoint":endpoint,"position":_pose(pieces[index],endpoint).position,
++				"message":"Open road end" if matches.is_empty() else "More than two sections meet here"})
++	return issues
++
++
++static func connected_route(pieces: Array) -> Dictionary:
++	var fail: Dictionary = {"ok":false,"points":PackedVector2Array(),"widths":PackedFloat32Array(),"errors":["Connect the road ends to make one closed lap."]}
++	if pieces.size() < 2 or not joins(pieces).is_empty(): return fail
++	var points := PackedVector2Array()
++	var widths := PackedFloat32Array()
++	var visited: Array[int] = []
++	var index: int = 0
++	var endpoint: int = 0
++	while index not in visited:
++		visited.append(index)
++		var geometry: Dictionary = section_geometry(pieces,index)
++		var section: PackedVector2Array = geometry.points
++		var section_widths: PackedFloat32Array = geometry.widths
++		if endpoint == 1:
++			section.reverse()
++			section_widths.reverse()
++		for i: int in range(section.size()-1):
++			points.append(section[i])
++			widths.append(section_widths[i])
++		var partner: Array = _partner(pieces,index,1-endpoint)[0]
++		index = int(partner[0])
++		endpoint = int(partner[1])
++	if index != 0 or endpoint != 0 or visited.size() != pieces.size(): return fail
++	return {"ok":true,"points":points,"widths":widths,"errors":[]}
++
++
++static func route_from_pieces(document: Dictionary) -> Dictionary:
++	var route: Dictionary = connected_route(document.pieces)
++	if not route.ok: return {"ok":false,"document":document.duplicate(true),"errors":route.errors}
++	var doc: Dictionary = document.duplicate(true)
++	var points: PackedVector2Array = route.points
++	var widths: PackedFloat32Array = route.widths
++	var length: float = TrackDocument.route_length(points)
++	if length < 40.0 or length > 1600.0: return {"ok":false,"document":doc,"errors":["Keep the complete lap between 40 and 1600 metres."]}
++	var count: int = clampi(floori(length/2.5),4,TrackDocument.MAX_POINTS)
++	doc.points = []
++	doc.widths = []
++	doc.corners = []
++	var segment: int = 0
++	var traveled: float = 0.0
++	for i: int in range(count):
++		var target: float = length*float(i)/count
++		var span: float = points[segment].distance_to(points[(segment+1)%points.size()])
++		while traveled+span < target and segment < points.size()-1:
++			traveled += span
++			segment += 1
++			span = points[segment].distance_to(points[(segment+1)%points.size()])
++		var blend: float = clampf((target-traveled)/maxf(span,0.0001),0.0,1.0)
++		var point: Vector2 = points[segment].lerp(points[(segment+1)%points.size()],blend)
++		doc.points.append([point.x,point.y])
++		doc.widths.append(widths[segment])
++		doc.corners.append("sharp")
++	doc.route_override = true
++	var errors: Array[String] = TrackDocument.validate(doc)
++	return {"ok":errors.is_empty(),"document":doc,"errors":errors}
++
++
++static func _number(value: Variant) -> bool:
++	return (value is int or value is float) and is_finite(float(value))
++
++
++static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier") -> Array:
++	var result: Array = []
++	if kind not in CreatorObjects.KINDS: return result
++	var capacity: int = maxi(0,96-document.objects.size())
++	if capacity == 0: return result
++	var candidates: Array[Dictionary] = _paths(document.pieces)
++	if not document.layout.is_empty():
++		var layout: Dictionary = TrackDocument.route_data(document.layout)
++		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
++	if candidates.is_empty():
++		var guide: Dictionary = TrackDocument.route_data(document)
++		candidates.append({"points":guide.points,"widths":guide.widths,"closed":true})
++	var best: Dictionary = {}
++	var score: float = INF
++	for path: Dictionary in candidates:
++		var a: Dictionary = _nearest(path,start)
++		var b: Dictionary = _nearest(path,finish)
++		if float(a.distance)+float(b.distance) < score:
++			score = float(a.distance)+float(b.distance)
++			best = {"path":path,"a":a,"b":b}
++	if best.is_empty(): return result
++	var path: Dictionary = best.path
++	var length: float = _path_length(path)
++	var begin: float = float(best.a.along)
++	var delta: float = float(best.b.along)-begin
++	if path.closed and absf(delta) > length*0.5: delta -= signf(delta)*length
++	var anchor: Dictionary = _at(path,begin)
++	var tangent: Vector2 = anchor.tangent
++	var side: float = 1.0 if tangent.cross(start-Vector2(anchor.point)) >= 0.0 else -1.0
++	var dimensions: Vector2 = CreatorObjects.dimensions(kind)
++	if absf(delta) < 0.01:
++		var center: Vector2 = Vector2(anchor.point)+Vector2(-tangent.y,tangent.x)*side*(float(anchor.width)*0.5+dimensions.y*0.5+0.8)
++		if center.abs().x <= 110.0 and center.abs().y <= 110.0:
++			result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)})
++		return result
++	var offset_points := PackedVector2Array()
++	var count: int = maxi(1,ceili(absf(delta)/0.75))
++	for i: int in range(count+1):
++		var sample: Dictionary = _at(path,begin+delta*float(i)/count)
++		var normal := Vector2(-sample.tangent.y,sample.tangent.x)
++		offset_points.append(Vector2(sample.point)+normal*side*(float(sample.width)*0.5+dimensions.y*0.5+0.8))
++	var offset_widths := PackedFloat32Array()
++	offset_widths.resize(offset_points.size())
++	offset_widths.fill(1.0)
++	var offset_path: Dictionary = {"points":offset_points,"widths":offset_widths,"closed":false}
++	var run_length: float = _path_length(offset_path)
++	var step: float = dimensions.x+0.2
++	var stamps: int = mini(capacity,maxi(1,floori(run_length/step)+1))
++	for i: int in range(stamps):
++		var sample: Dictionary = _at(offset_path,minf(float(i)*step,run_length))
++		var center: Vector2 = sample.point
++		if center.abs().x > 110.0 or center.abs().y > 110.0: continue
++		result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(Vector2(sample.tangent).angle()),360.0)})
++	return result
++
++
++static func _paths(pieces: Array) -> Array[Dictionary]:
++	var paths: Array[Dictionary] = []
++	var visited: Array[int] = []
++	# Open chains first, then remaining closed chains. Intersections in the
++	# surface do not silently switch the selected road at a crossing.
++	for open_only: bool in [true,false]:
++		for seed: int in range(pieces.size()):
++			if seed in visited: continue
++			var start_end: int = 0
++			if open_only:
++				if _partner(pieces,seed,0).is_empty(): start_end = 0
++				elif _partner(pieces,seed,1).is_empty(): start_end = 1
++				else: continue
++			var points := PackedVector2Array()
++			var widths := PackedFloat32Array()
++			var index: int = seed
++			var endpoint: int = start_end
++			var closed: bool = false
++			while index not in visited:
++				visited.append(index)
++				var geometry: Dictionary = section_geometry(pieces,index)
++				var section: PackedVector2Array = geometry.points
++				var section_widths: PackedFloat32Array = geometry.widths
++				if endpoint == 1:
++					section.reverse()
++					section_widths.reverse()
++				for section_index: int in range(section.size()):
++					var point: Vector2 = section[section_index]
++					if not points.is_empty() and points[-1].distance_to(point) < 0.01: continue
++					points.append(point)
++					widths.append(section_widths[section_index])
++				var matches: Array = _partner(pieces,index,1-endpoint)
++				if matches.size() != 1: break
++				index = int(matches[0][0])
++				endpoint = int(matches[0][1])
++				if index == seed and endpoint == start_end: closed = true
++			if closed and points[0].distance_to(points[-1]) < 0.01:
++				points.resize(points.size()-1)
++				widths.resize(widths.size()-1)
++			paths.append({"points":points,"widths":widths,"closed":closed})
++	return paths
++
++
++static func _path_length(path: Dictionary) -> float:
++	var length: float = 0.0
++	var points: PackedVector2Array = path.points
++	for i: int in range(points.size() if path.closed else points.size()-1):
++		length += points[i].distance_to(points[(i+1)%points.size()])
++	return length
++
++
++static func _nearest(path: Dictionary, point: Vector2) -> Dictionary:
++	var result: Dictionary = {"distance":INF,"along":0.0}
++	var traveled: float = 0.0
++	var points: PackedVector2Array = path.points
++	for i: int in range(points.size() if path.closed else points.size()-1):
++		var a: Vector2 = points[i]
++		var b: Vector2 = points[(i+1)%points.size()]
++		var nearest: Vector2 = Geometry2D.get_closest_point_to_segment(point,a,b)
++		var distance: float = nearest.distance_to(point)
++		if distance < float(result.distance): result = {"distance":distance,"along":traveled+a.distance_to(nearest)}
++		traveled += a.distance_to(b)
++	return result
++
++
++static func _at(path: Dictionary, along: float) -> Dictionary:
++	var points: PackedVector2Array = path.points
++	var widths: PackedFloat32Array = path.widths
++	var total: float = _path_length(path)
++	var target: float = fposmod(along,total) if path.closed and total > 0.0 else clampf(along,0.0,total)
++	var traveled: float = 0.0
++	var segments: int = points.size() if path.closed else points.size()-1
++	for i: int in range(segments):
++		var next: int = (i+1)%points.size()
++		var span: float = points[i].distance_to(points[next])
++		if traveled+span >= target or i == segments-1:
++			var blend: float = clampf((target-traveled)/maxf(span,0.0001),0.0,1.0)
++			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend)}
++		traveled += span
++	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0]}
++
++
++## Shared width samples for surface compilation and presentation.
++static func section_geometry(pieces: Array, index: int) -> Dictionary:
++	var piece: Dictionary = pieces[index]
++	var points: PackedVector2Array = samples(piece)
++	var widths := PackedFloat32Array()
++	var distances := PackedFloat32Array([0.0])
++	for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
++	var total: float = distances[-1]
++	var authored_ends: Array[float] = [float(piece.width),float(piece.get("narrow_width",piece.width))]
++	var ends: Array[float] = authored_ends.duplicate()
++	for endpoint: int in range(2):
++		var matches: Array = _partner(pieces,index,endpoint)
++		if matches.size() == 1:
++			var other: Dictionary = pieces[int(matches[0][0])]
++			var other_width: float = float(other.get("narrow_width",other.width)) if int(matches[0][1]) == 1 else float(other.width)
++			ends[endpoint] = (authored_ends[endpoint]+other_width)*0.5
++	var reach: float = minf(total*0.5,maxf(8.0,absf(ends[1]-ends[0])*4.0))
++	for distance: float in distances:
++		var fraction: float = distance/maxf(total,0.0001)
++		var width: float = lerpf(authored_ends[0],authored_ends[1],fraction)
++		width += (ends[0]-authored_ends[0])*(1.0-smoothstep(0.0,reach,distance))
++		width += (ends[1]-authored_ends[1])*(1.0-smoothstep(0.0,reach,total-distance))
++		widths.append(width)
++	return {"points":points,"widths":widths}
++
++
++## Both sides of a join use the same cross-section, even for reversed pieces.
++static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> PackedVector2Array:
++	var geometry: Dictionary = section_geometry(pieces,index)
++	var points: PackedVector2Array = geometry.points
++	var left := PackedVector2Array()
++	var right := PackedVector2Array()
++	for i: int in range(points.size()):
++		var tangent: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(0,i-1)]).normalized()
++		if pieces[index].kind == "taper": tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
++		if i == 0: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
++		if i == points.size()-1: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(end_pose(pieces[index]).heading)))
++		var normal := Vector2(-tangent.y,tangent.x)
++		var center: Vector2 = points[i]
++		if i == 0 or i == points.size()-1:
++			var endpoint: int = 0 if i == 0 else 1
++			var matches: Array = _partner(pieces,index,endpoint)
++			if matches.size() == 1:
++				var pose: Dictionary = _pose(pieces[int(matches[0][0])],int(matches[0][1]))
++				var other: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading))) * (-1.0 if endpoint == 0 else 1.0)
++				var shared: Vector2 = (normal+Vector2(-other.y,other.x)).normalized()
++				normal = shared/maxf(0.25,shared.dot(normal))
++				center = center.lerp(pose.position,0.5)
++		left.append(center+normal*(float(geometry.widths[i])*0.5+margin))
++		right.append(center-normal*(float(geometry.widths[i])*0.5+margin))
++	right.reverse()
++	return left+right
++
++
++## Resolve road geometry independently from the authored lap-route direction.
++static func road_frame(pieces: Array, point: Vector2, forward: Vector2) -> Dictionary:
++	var best: Dictionary = {}
++	var distance: float = INF
++	for index: int in range(pieces.size()):
++		var geometry: Dictionary = section_geometry(pieces,index)
++		var path: Dictionary = {"points":geometry.points,"widths":geometry.widths,"closed":false}
++		var nearest: Dictionary = _nearest(path,point)
++		if float(nearest.distance) >= distance: continue
++		distance = nearest.distance
++		best = _at(path,nearest.along)
++		if Vector2(best.tangent).dot(forward) < 0.0: best.tangent = -Vector2(best.tangent)
++	return best if distance <= float(best.get("width",0.0))*0.5 else {}
+diff --git a/game/editor/creator_preview_masks.gd.uid b/game/editor/creator_preview_masks.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/editor/creator_preview_masks.gd.uid
+@@ -0,0 +1 @@
++uid://dn0qs3ltm0x6t
+diff --git a/game/tests/profile_editor_performance.gd.uid b/game/tests/profile_editor_performance.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_editor_performance.gd.uid
+@@ -0,0 +1 @@
++uid://tpsr8l7kos1b
+diff --git a/game/tests/fixtures/road_pieces_before_performance.gd.uid b/game/tests/fixtures/road_pieces_before_performance.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/road_pieces_before_performance.gd.uid
+@@ -0,0 +1 @@
++uid://bp2j78jg4nodh
+diff --git a/docs/EDITOR_PERFORMANCE_2026_10_05.md b/docs/EDITOR_PERFORMANCE_2026_10_05.md
+new file mode 100644
+--- /dev/null
++++ b/docs/EDITOR_PERFORMANCE_2026_10_05.md
+@@ -0,0 +1,72 @@
++# Editor performance improvements — 2026-10-05
++
++Owner request: improve track loading, road/object placement, saving and undo/redo before the other usability work in [the editor review](TRACK_EDITOR_REVIEW_2026_10_05.md). Requirements: R01, T01–T04, V03–V05, Q01.
++
++The editor now responds without synchronously compiling and building an entire newly loaded map. It shows the actual road skeleton and a preparation notice, compiles on its existing single worker, and builds replacement scenery in frame slices. Saved-track reading, atomic persistence and canonical validation remain real operations. Large-map response times improved substantially; background scenery still takes seconds to complete, and cold/shared-host frame spikes remain measurable.
++
++## Implementation
++
++- Road topology prepares endpoint poses once, indexes nearby candidates spatially, and retains the original exact distance test and piece/endpoint ordering. Routing, snapping, outlines, join cuts, kerbs and cosmetic joins share that preparation rather than repeatedly rescanning/recomputing the same endpoints. Preparation is local to each operation, without mutable global caches or simulation-time randomness.
++- Successful automatic route fields are cached by the complete road-piece array. Ordinary object/name edits reuse them; geometry changes invalidate them. Undo/redo retain the canvas, viewport and history semantics.
++- Uncached opening queues the preview worker. Initial scenery uses the same cooperative build path as replacements. Changing pages does not join an obsolete preview; superseded compiler/scenery output cannot replace the current document. Exit checks were added after newly yielding stages. Native-remix Fit completes when its extent becomes available, unless the user has already navigated or zoomed.
++- Explicit Save commits the exact current authoring document without waiting for its visual preview. Rename, metadata changes, sharing and Clear map use the background preview path. Saved-road baking is requested for matching completed previews; pending matching saves can request it when their worker completes. The legacy locally selected race-track refresh still compiles synchronously to preserve its immediate exact-selection contract.
++- CPU road/overlay images are prepared with the preview on the worker and kept separately from serialized native metadata. Their bytes match the original pixel algorithm. GPU resources and scene-tree changes remain on the main thread.
++- Name, creator and identity changes retain scenery. Authored props have a separate batch from generated scenery, so placing one tyre does not rebuild every generated tree. Ground-cover refreshes yield; replacement batches retain old layers until ready. Revision guards prevent an older refresh from overwriting newer immediate props.
++- Object cards and unchanged detail/category controls are retained. One-shot thumbnail renders become cached textures; later visits use the texture directly. The cache is limited to 48 images, approximately 5 MiB of uncompressed RGBA pixels at 208×128, plus engine/GPU overhead. Existing compiled/scenery caches remain bounded at three previews and two detached trees.
++
++No handling constants, simulation step, compiler version, schema, saved-file format or canonical content golden was changed by this task. Other ongoing handling, backend, desert and finish-line artwork changes were preserved. The frozen pre-optimization road helper is an export-excluded test oracle, not a runtime compatibility layer.
++
++## Actual desktop measurements
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, Windows, Compatibility renderer, RTX 3090, 1280×720. The final graphical script executes real app/canvas/library operations on a valid connected 96-piece circuit; earlier independent open-draft samples use the same supported 96-piece limit. These are elapsed handler and sampled frame intervals, not physical-phone or input-to-photon measurements.
++
++| Operation | Review baseline | Final graphical run |
++| --- | ---: | ---: |
++| Connected 96-piece opening handler | 6602.960 ms | **31.050 ms** |
++| Actual saved-track read/open/reset | Not separately measured | **44.092 ms** |
++| Explicit save while preview pending | 1221.086 ms for foreground preview save | **47.951 ms**, including saved-original commit |
++| Undo / redo on connected map | Open-draft undo 202.953 ms; no equivalent connected redo sample | **29.722 / 29.337 ms** |
++| Legal road approval on large map | Not separately measured | **42.159 ms** |
++| Object placement on large map | First implementation sample 96.769 ms | **24.803 ms** |
++| Surface stroke commit | Not separately measured | **33.602 ms** |
++| Browser refresh, three samples | 35.822 / 35.651 / 39.648 ms | **0.073 / 0.102 / 0.098 ms** |
++| Route attempt + issues on open 96-piece draft | 145.751–169.705 ms | **3.016 ms** |
++| Leave while preview pending | Previously joined the worker; no matching sample | **43.522 ms** |
++
++The save comparison is deliberately conservative: the new number includes writing the saved original; the review's foreground call waited for preview compilation and only saved WIP. Undo fixtures differ and are identified above. Repeated small-map placement in the final regression batch returned in approximately 13–19 ms; small road approval returned in approximately 14–23 ms. Headless/parallel regression timing is not presented as graphical benchmark evidence.
++
++The final large-map initial detail took **3.249 s** after the skeleton capture, with a **687.405 ms maximum sampled frame interval**. An earlier graphical run recorded **1017.943 ms**; another recorded 144.943 ms. The host had seven Godot processes at the later process listing, and concurrent graphical capture logs changed during these measurements. Host interference is a plausible contributor, not proven attribution. These spikes are retained in the logs; no claim of locked 60 fps or completely eliminated loading hitches is made.
++
++In the final run, metadata/history updates settled with maximum sampled intervals of **13.802 / 12.263 ms**. A road replacement took **3.165 s**, maximum interval **55.434 ms**; object replacement took **482 ms**, maximum **30.526 ms**; saved-map scenery took **2.743 s**, maximum **85.529 ms**; painted scenery took **2.548 s**, maximum **46.093 ms**. The UI receives time between stages while waiting for complete scenery; total preparation time must not be confused with the handler's response time.
++
++## Verification and actual commands
++
++Engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, matching the pinned executable/templates. Reviewable source hashes, scoped patch, command inventory and copied logs are under [evidence/editor-performance-2026-10-05](evidence/editor-performance-2026-10-05/).
++
++- `-Action Import -CommandTimeoutSeconds 90`: passed; registered the new CPU-only mask helper and test scripts.
++- `-Action CheckScript -ScriptPath res://core/app.gd -CommandTimeoutSeconds 60`: passed at the implementation checkpoint.
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90`: final sampled project **301 scripts, zero failures**. The mixed workspace continued adding unrelated scripts later; this is the count at that command.
++- `-Action TestScript -ScriptPath res://tests/profile_editor_performance.gd -Graphical -CommandTimeoutSeconds 120`: final **1216 checks, zero failures**. Compares frozen original endpoint membership/order, route widths/points, canonical outlines and exact compiled output, including near-tolerance/ambiguous/reversed joins. Tests durable Save while preview is pending, metadata scenery retention, rapid history supersession, road capacity/placement, retained cards and bounded thumbnail cache, real saved loading, painting, matching image bytes and leaving during pending work. The headless version is now part of Validate.
++- Editor component runs: Workflow **245**, Placement **26**, Road approval **40**, Start line **27**, Creator **113**, Editor v2 **36**, Free editor **47**, Road pieces **362**, Practice **54**, Construction **104**, Bridge contacts **16**, Bridge HUD **144**, Refinement **32**, Tyres/load **71**, Objects **67**; completed runs had zero failures. Workflow's original two practice-launch failures were corrected by awaiting actual preparation with a deadline, preserving the spawn/content/driving assertions.
++- Exact regression components completed: Driving **72**, Handling **88**, launch-start **13,328**, checkpoint **266**, bridge checkpoints **259**, entry **258**, exit **2527**, notices **281**, Tracks **167**, extra tracks **27**, and raster **eight independent goldens**. Additional tyre/grid/pile equivalence verified **13,200 / 20,500 / 2400** exact comparisons. Kerbs **31**, Ice **69**, Desert **87**, Storm **91**, Soil **163**, Suspension **59**, shoulder/join/contour checks all passed. Golden fixtures were not regenerated or weakened.
++- Remaining components were run through `-Action TestScript -ScriptPath res://tests/<name>.gd -CommandTimeoutSeconds 120`: reliability **17**, records **54**, personal ghosts **38**, cameras **1332**, catalog **21**, menu loading **38**, night lighting **15**, deletion **20**, menu presentation **48**, kart **32**, car balance **one**; zero failures. `-Action TestCars -CommandTimeoutSeconds 300` completed **105 checks, zero failures**, including all five cars' five-lap fixtures. Its earlier parallel two-minute run timed out and is not counted as passed.
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q -x`: **57 passed**, one existing Starlette deprecation warning. This exercises the actual canonical backend verifier; no backend service/configuration or deployment was changed by this task.
++- Scoped `git diff --check` and the generated patch's reverse-application check passed.
++
++**Full Validate is not reported as green.** Attempts first stopped on coroutine caller updates and old synchronous preview/launch fixtures; those were corrected without removing their substantive assertions. An actual exit-time null-tree error was reproduced and fixed with cancellation fences. A later Validate stopped at the old tyre-test launch expectation; its complete updated suite now passes 71 checks. Remaining components were completed in separate batches. The current broad App suite still reports **97 checks with five PB/results assertions failing** (previous target, slower-finish gap, retained PB and PB display after reload). The editor performance changes do not modify those Results/record operations; their precise current mixed-workspace cause remains unverified, and no failing invariant was suppressed.
++
++Two tyre-test attempts also encountered a concurrently edited backend client preloading `resume_recovery.gd` before that file existed. The module later appeared; parser and complete tyre tests passed. Concurrent Results upload ownership and visual-kit/finish-line changes are excluded from this task's scoped patch. Several established driving/practice/ghost tests still emit ObjectDB cleanup warnings at exit; those are retained.
++
++## Changed files and evidence
++
++Runtime: `game/core/app.gd`; editor `editor_canvas.gd`, `editor_world.gd`, `object_browser.gd`, `object_thumbnail.gd`, `road_pieces.gd`, `track_compiler.gd`, new `creator_preview_masks.gd`; track `native_track.gd`, `native_track_visual.gd`, `road_edges.gd`, `road_kerbs.gd`, `visual_road_join.gd`.
++
++Verification: new `game/tests/profile_editor_performance.gd` and frozen `tests/fixtures/road_pieces_before_performance.gd`; updated placement/road-approval, workflow, editor-v2, free-editor, hazard, tyre/load and shoulder fixtures for real asynchronous completion; `scripts/dev.ps1` adds the new headless contract/lifecycle check to Validate. Associated new Godot UIDs are retained. Documentation: this file and task entries in `DEVELOPMENT_STATUS.md`/`docs/PHASE_0_PLAN.md`, plus evidence. The patch isolates these edits from the pre-existing/concurrent working tree; no mixed workspace commit was made.
++
++Inspected real engine captures: [preparing a large track](evidence/editor-performance-2026-10-05/closed-96-preparing.png), [completed large track](evidence/editor-performance-2026-10-05/closed-96-ready.png), [cached object artwork](evidence/editor-performance-2026-10-05/objects-cached.png), [painted compact view](evidence/editor-performance-2026-10-05/paint-ready-compact.png). The preparation notice is the only new visible editor presentation. The known Surface/header and Publish-glyph problems remain in this performance-first slice.
++
++## Remaining acceptance
++
++No Android export, install or physical-phone editor performance test was performed. The DN2103 was listed during the preceding review, not reverified for this change. There is no phone frame/memory/thermal or human finger-feel acceptance claim. All probe writes use unique disposable libraries/records, with their own cleanup; owner tracks were not deleted or migrated.
++
++Measure a quiet desktop and the target phone next, including first shader/texture use, long editing sessions, 96 authored objects, complex bridges and maximum paint density. Scene commits, GPU uploads, native bridge presentation, foreground atomic saves and legacy selected-track refresh still contain bounded synchronous work. Thumbnail readback happens once per uncached image; its cost and the bounded caches' total device memory require device measurement. Resolve the five broad PB/results failures before claiming a fully green integration/export gate. Other usability findings from the review remain separate work.

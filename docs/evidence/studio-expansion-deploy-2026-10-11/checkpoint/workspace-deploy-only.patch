@@ -1,0 +1,731 @@
+--- /dev/null
++++ b/.tools/studio_expansion_rollout_20261011.py
+@@ -0,0 +1,298 @@
++"""Explicitly authorized backend-only rollout over the exact deployed image."""
++import argparse
++import difflib
++import importlib.util
++import json
++import shutil
++from datetime import datetime, timezone
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++spec = importlib.util.spec_from_file_location('expansion_previous_rollout', ROOT / '.tools/product_telemetry_rollout_20261011.py')
++tp = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(tp)
++WORK = ROOT / 'build/studio-expansion-deploy-2026-10-11'
++OUTPUT = ROOT / 'docs/evidence/studio-expansion-deploy-2026-10-11'
++CONTEXT = WORK / 'image'
++WORK.mkdir(parents=True, exist_ok=True)
++OUTPUT.mkdir(parents=True, exist_ok=True)
++tp.WORK, tp.OUTPUT, tp.CONTEXT = WORK, OUTPUT, CONTEXT
++tp.RECEIPT = OUTPUT / 'rollout.json'
++tp.receipt = json.loads(tp.RECEIPT.read_text()) if tp.RECEIPT.exists() else {}
++tp.service = tp.stage.Staging(tp.config, tp.DIRECTORY, tp.PrivateRunner())
++tp.TELEMETRY_ENV['BMT_CLIENT_QUALITY_ENABLED'] = 'true'
++tp.ALLOWED_ENV = set(tp.TELEMETRY_ENV) | {'BMT_DEPLOYMENT_MAINTENANCE'}
++HEAD = '0027_client_quality'
++DIRECT = ['studio_cases.py','studio_case_models.py','studio_competitions.py','quality.py','quality_models.py',
++    'provider_proofs.py','migrations/versions/0026_studio_cases.py','migrations/versions/0027_client_quality.py',
++    'admin_ui/operations.js']
++PATCHED = ['admin.py','admin_ui/app.js','admin_ui/index.html','config.py','product_analytics.py','studio.py','telemetry.py']
++
++
++def patch_saved(name):
++    before = (ROOT / 'build/studio-expansion-2026-10-11/before' / ('backend__bmt_backend__'+name.replace('/','__'))).read_text(encoding='utf-8')
++    after = (ROOT / 'backend/bmt_backend' / name).read_text(encoding='utf-8')
++    source = (WORK / 'parent' / name).read_text(encoding='utf-8')
++    # Apply each unique before/after context to the deployed file, preserving any
++    # unrelated differences between the deployed parent and the dirty workspace.
++    matcher = difflib.SequenceMatcher(None,before.splitlines(True),after.splitlines(True),autojunk=False)
++    for group in matcher.get_grouped_opcodes(3):
++        old = ''.join(before.splitlines(True)[group[0][1]:group[-1][2]])
++        new = ''.join(after.splitlines(True)[group[0][3]:group[-1][4]])
++        assert source.count(old)==1, 'Ambiguous deployed-parent patch: '+name
++        source = source.replace(old,new,1)
++    return source
++
++
++def prepare():
++    assert tp.receipt.get('parent_extracted') and not CONTEXT.exists()
++    manifest = json.loads((ROOT/'docs/evidence/studio-expansion-2026-10-11/checkpoint.json').read_text())
++    frozen = {v['path']:v['after_sha256'] for v in manifest['files']}
++    for name in DIRECT+PATCHED+['app.py','migrations/env.py']:
++        path=ROOT/'backend/bmt_backend'/name
++        assert tp.digest(path.read_bytes())==frozen['backend/bmt_backend/'+name], 'Workspace source changed since reviewed checkpoint: '+name
++    CONTEXT.mkdir()
++    expected={}
++    def write(name,value):
++        compile(value,name,'exec') if name.endswith('.py') else None
++        path=CONTEXT/'source'/name;path.parent.mkdir(parents=True,exist_ok=True)
++        path.write_text(value,encoding='utf-8',newline='\n');expected[name]=tp.digest(path.read_bytes())
++    for name in DIRECT:
++        write(name,(ROOT/'backend/bmt_backend'/name).read_text(encoding='utf-8'))
++    for name in PATCHED:
++        write(name,patch_saved(name))
++    source=(WORK/'parent/app.py').read_text(encoding='utf-8')
++    source=tp.replace_once(source,'    from . import telemetry, product_analytics\n',
++        '    from . import telemetry, product_analytics, quality, studio_cases, studio_competitions\n')
++    source=tp.replace_once(source,'    app.include_router(product_analytics.router)\n',
++        '    app.include_router(product_analytics.router)\n    app.include_router(quality.router)\n    app.include_router(studio_cases.router)\n    app.include_router(studio_competitions.router)\n')
++    source=tp.replace_once(source,'                "guest_coverage": False,\n',
++        '                "guest_coverage": False,\n                "quality_schema_version": 1 if settings.client_quality_enabled else 0,\n')
++    write('app.py',source)
++    source=(WORK/'parent/migrations/env.py').read_text(encoding='utf-8')
++    source=tp.replace_once(source,'    track_models,\n','    track_models,\n    studio_case_models,\n    quality_models,\n')
++    write('migrations/env.py',source)
++    schema=ROOT/'backend/schemas/product-events-v1.schema.json'
++    assert tp.digest(schema.read_bytes())==frozen['backend/schemas/product-events-v1.schema.json']
++    (CONTEXT/'product-events-v1.schema.json').write_bytes(schema.read_bytes())
++    (CONTEXT/'expected.json').write_text(json.dumps(expected))
++    patch='''import hashlib,json,shutil,sys
++from pathlib import Path
++def hashes(folder):
++ return {p.relative_to(folder).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file() and '__pycache__' not in p.parts and '.godot' not in p.parts}
++backend=Path('/app/bmt_backend');game=Path('/opt/bmt');source=Path('/tmp/expansion-source')
++old=hashes(backend);canonical=hashes(game);expected=json.loads(Path('/tmp/expansion-expected.json').read_text())
++for name,value in expected.items():
++ p=source/name;assert hashlib.sha256(p.read_bytes()).hexdigest()==value
++ target=backend/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
++new=hashes(backend);changed=sorted(name for name,value in new.items() if old.get(name)!=value)
++assert changed==sorted(expected);assert hashes(game)==canonical
++assert all(new[k]==v for k,v in old.items() if k not in changed)
++sys.path.insert(0,'/app')
++from bmt_backend.config import Settings
++from bmt_backend.app import create_app
++from bmt_backend.migrate import upgrade,SCHEMA_HEAD
++from bmt_backend.cloud_smoke import check_comparison_route
++assert SCHEMA_HEAD=='0027_client_quality'
++a=create_app(Settings(environment='test',database_url='sqlite://',telemetry_enabled=True,client_quality_enabled=True))
++upgrade(a.state.engine);check_comparison_route(a)
++a.state.engine.dispose();a.state.verifier.close()
++Path('/app/expansion-overlay-proof.json').write_text(json.dumps({'changed_backend_files':changed,'backend_unchanged_files':len(old)-sum(k in old for k in changed),'canonical_unchanged':True,'canonical_files':len(canonical),'game_hashes':canonical,'schema':SCHEMA_HEAD,'comparison_route':True}))
++print('EXPANSION_SCOPED_OVERLAY_VALID')
++'''
++    (CONTEXT/'patch.py').write_text(patch)
++    (CONTEXT/'Dockerfile').write_text('FROM '+tp.receipt['parent']+'\nUSER root\nCOPY source /tmp/expansion-source\nCOPY expected.json /tmp/expansion-expected.json\nCOPY patch.py /tmp/expansion-patch.py\nCOPY product-events-v1.schema.json /app/schemas/product-events-v1.schema.json\nRUN python /tmp/expansion-patch.py\nUSER 10001:10001\n')
++    tp.receipt['frozen_files']={p.relative_to(CONTEXT).as_posix():tp.digest(p.read_bytes()) for p in CONTEXT.rglob('*') if p.is_file()}
++    tp.receipt['source_hash']=tp.digest(json.dumps(tp.receipt['frozen_files'],sort_keys=True).encode())
++    tp.receipt['overlay_files']=sorted(expected);tp.save()
++    print(json.dumps({'frozen_backend_files':len(expected),'canonical_changes':0,'schema':HEAD}))
++
++
++def build():
++    assert tp.receipt['frozen_files']=={p.relative_to(CONTEXT).as_posix():tp.digest(p.read_bytes()) for p in CONTEXT.rglob('*') if p.is_file()}
++    builder=tp.builder();tag='bmt-studio-expansion:'+tp.receipt['source_hash'][:16]
++    output=builder.runner.run([*builder.c['docker'],'build','--network=none','--pull=false','--platform=linux/amd64','--file=image/Dockerfile','--tag='+tag,'image'])
++    (WORK/'build.private.log').write_text(output)
++    proof=json.loads(builder.runner.run([*builder.c['docker'],'run','--rm','--network=none','--entrypoint=cat',tag,'/app/expansion-overlay-proof.json']))
++    assert proof['schema']==HEAD and proof['canonical_unchanged'] and proof['changed_backend_files']==tp.receipt['overlay_files']
++    (OUTPUT/'packaged-proof.json').write_text(json.dumps(proof,indent=2)+'\n')
++    tp.receipt['local_tag']=tag;tp.receipt['candidate_id']=json.loads(builder.runner.run([*builder.c['docker'],'image','inspect',tag,'--format={{json .Id}}']))
++    tp.receipt['maintenance_image']=tp.receipt['parent'];tp.save()
++    print(json.dumps({'built':tp.receipt['candidate_id'],'backend_files':len(proof['changed_backend_files']),'preserved_game_files':proof['canonical_files']}))
++
++
++def refresh_compatibility():
++    assert not tp.receipt.get('image') and not tp.receipt.get('writers_paused')
++    name='studio_competitions.py'
++    for path in CONTEXT.rglob('*'):
++        if path.is_file():assert tp.digest(path.read_bytes())==tp.receipt['frozen_files'][path.relative_to(CONTEXT).as_posix()]
++    source=(ROOT/'backend/bmt_backend'/name).read_bytes()
++    compile(source,name,'exec')
++    (CONTEXT/'source'/name).write_bytes(source)
++    expected=json.loads((CONTEXT/'expected.json').read_text());expected[name]=tp.digest(source)
++    (CONTEXT/'expected.json').write_text(json.dumps(expected))
++    tp.receipt['compatibility_fix']={'file':name,'sha256':tp.digest(source),'reason':'Deployed challenge ORM lacks optional attempt_limit; inspector reports unavailable rather than failing or inventing it.'}
++    tp.receipt['frozen_files']={p.relative_to(CONTEXT).as_posix():tp.digest(p.read_bytes()) for p in CONTEXT.rglob('*') if p.is_file()}
++    tp.receipt['source_hash']=tp.digest(json.dumps(tp.receipt['frozen_files'],sort_keys=True).encode())
++    tp.receipt.pop('exact_image_tests',None);tp.receipt.pop('exact_image_browser',None);tp.save()
++    print('Optional deployed challenge-field compatibility fix frozen; no live changes')
++
++
++def push():
++    assert tp.receipt.get('exact_image_tests') and tp.receipt.get('exact_image_browser')
++    builder=tp.builder();registry=tp.config['region']+'-docker.pkg.dev'
++    auth=WORK/'push-private';auth.mkdir(exist_ok=False)
++    try:
++        token=tp.service.call('auth','print-access-token')
++        builder.runner.run([*builder.c['docker'],'--config=push-private','login',registry,'--username=oauth2accesstoken','--password-stdin'],input_data=token)
++        tag=registry+'/'+tp.config['project']+'/'+tp.service.n['repo']+'/backend:studio-expansion-'+tp.receipt['source_hash'][:20]
++        builder.runner.run([*builder.c['docker'],'tag',tp.receipt['local_tag'],tag])
++        builder.runner.run([*builder.c['docker'],'--config=push-private','push',tag])
++        values=json.loads(builder.runner.run([*builder.c['docker'],'image','inspect',tag,'--format={{json .RepoDigests}}']))
++        tp.receipt['image']=next(v for v in values if v.startswith(registry+'/'));tp.save()
++    finally:
++        assert auth.resolve().parent==WORK.resolve() and WORK.resolve().is_relative_to(ROOT.resolve())
++        assert not auth.is_symlink() and all(not p.is_symlink() for p in auth.rglob('*'))
++        shutil.rmtree(auth)
++    print(json.dumps({'pushed':tp.receipt['image']}))
++
++
++def data_snapshot(name):
++    code='''import hashlib,json
++from sqlalchemy import text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url)
++with e.connect() as c:
++ c.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++ data={n:c.execute(text("SELECT count(*) FROM "+n)).scalar() for n in ("players","tracks","track_versions","boards","runs","personal_bests","lap_personal_bests","purchases","entitlements","resume_wallets","product_events")}
++ data['schema']=c.execute(text("SELECT version_num FROM alembic_version")).scalar()
++ data['active_run_jobs']=c.execute(text("SELECT count(*) FROM runs WHERE status IN ('queued','verifying')")).scalar()
++ data['pending_track_jobs']=c.execute(text("SELECT count(*) FROM track_validations WHERE status IN ('queued','validating')")).scalar()
++ for key,sql in {
++ 'race_pb_hash':"SELECT board_id,player_id,run_id,time_ticks,achieved_at FROM personal_bests ORDER BY board_id,player_id",
++ 'entitlement_hash':"SELECT * FROM entitlements ORDER BY player_id",
++ 'purchase_hash':"SELECT * FROM purchases ORDER BY id",
++ 'resume_hash':"SELECT * FROM resume_wallets ORDER BY player_id",
++ 'run_hash':"SELECT id,player_id,board_id,ticket_id,status,time_ticks,lap_ticks FROM runs ORDER BY id"
++ }.items():
++  rows=[list(r) for r in c.execute(text(sql))]
++  data[key]=hashlib.sha256(json.dumps(rows,separators=(',',':'),sort_keys=True).encode()).hexdigest()
++ if data['schema']=='0027_client_quality':
++  tables=['studio_cases','studio_case_events','studio_quarantines','quality_facts']
++  data['new_table_counts']={n:c.execute(text('SELECT count(*) FROM '+n)).scalar() for n in tables}
++  data['table_grants']={n:all(c.execute(text("SELECT has_table_privilege(current_user,:table,:privilege)"),{'table':n,'privilege':p}).scalar() for p in ['SELECT','INSERT','UPDATE','DELETE']) for n in tables}
++  data['role_unprivileged']=not any(c.execute(text("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=current_user")).one())
++ print('EXPANSION_SNAPSHOT:'+json.dumps(data,separators=(',',':')))
++e.dispose()
++'''
++    value=tp.execute_program(name,code,'EXPANSION_SNAPSHOT:',timeout=180)
++    if name=='stopped-writer':
++        assert tp.receipt.get('writers_paused') and value['schema']==tp.receipt['schema_before']
++        assert value['active_run_jobs']==value['pending_track_jobs']==0
++        tp.receipt['stopped_writer_check']=value
++    else:
++        assert value['schema']==HEAD and value['role_unprivileged'] and all(value['table_grants'].values())
++        baseline=tp.receipt['stopped_writer_check']
++        for field in baseline:
++            if field not in ('schema','product_events'):
++                assert value[field]==baseline[field], 'Unexpected durable data change: '+field
++        assert not any(value['new_table_counts'].values()), 'Deployment must not seed live diagnostics/cases'
++        tp.receipt['migration_parity']=True
++    tp.save();print(json.dumps({'phase':name,'schema':value['schema'],'players':value['players'],'runs':value['runs'],'race_pbs':value['personal_bests'],'durable_data_preserved':name!='stopped-writer'}))
++
++
++def verify_http(origin):
++    key=tp.staff_key(tp.service.describe('api',tp.service.n['api']))
++    assert tp.fetch(origin,'/ready').json()['status']=='ready'
++    bootstrap=tp.fetch(origin,'/v1/bootstrap').json()
++    assert bootstrap['product_telemetry']['enabled'] and bootstrap['product_telemetry']['quality_schema_version']==1
++    assert bootstrap['product_telemetry']['guest_coverage'] is False
++    overview=tp.fetch(origin,'/v1/admin/overview',key).json();assert overview['schema']==HEAD
++    data={}
++    for name,path in [('context','/v1/admin/studio/context'),('quality','/v1/admin/quality'),('cases','/v1/admin/cases'),
++        ('rivalry','/v1/admin/competitions?kind=rivalry'),('challenges','/v1/admin/competitions?kind=challenge'),('creators','/v1/admin/creator-health')]:
++        result=tp.fetch(origin,path,key).json();assert result['role'] in ('owner','analyst')
++        data[name]={'items':len(result.get('items',[]))}
++    assert tp.fetch(origin,'/v1/store/products').json()['store_available'] is False
++    capability=tp.fetch(origin,'/v1/admin/studio/capabilities',key).json()
++    states={v['key']:v['status'] for v in capability['sources']}
++    assert states['client_quality']=='partial' and states['provider_commerce']=='unavailable'
++    for kind,name in [('rivalry','rivalry'),('challenge','challenges')]:
++        listing=tp.fetch(origin,'/v1/admin/competitions?kind='+kind,key).json()
++        if listing['items']:
++            item=listing['items'][0]['id'];report=tp.fetch(origin,'/v1/admin/competitions/'+kind+'/'+item,key).json()
++            assert report['read_only'] and len(report['roster'])<=200 and len(report['results'])<=1000
++            data[name]['inspected_existing_record']=True
++    assets={}
++    for name in ['index.html','app.js','style.css','studio.js','support.js','commerce.js','product_analytics.js','operations.js']:
++        raw=tp.fetch(origin,'/admin' if name=='index.html' else '/admin/assets/'+name).content
++        path=CONTEXT/'source/admin_ui'/name
++        if not path.exists():path=WORK/'parent/admin_ui'/name
++        assert raw==path.read_bytes(), 'Deployed asset mismatch: '+name
++        assets[name]=tp.digest(raw)
++    return {'schema':HEAD,'quality_enabled':True,'guest_available':False,'store_available':False,'reads':data,'assets':assets,'as_of':datetime.now(timezone.utc).isoformat()}
++
++
++def canary():
++    assert tp.receipt.get('migration_parity')
++    tp.guard_target('api',tp.service.n['api'],[tp.receipt['parent']])
++    tag='studio-ops-'+tp.receipt['source_hash'][:10]
++    tp.service.call('run','services','update',tp.service.n['api'],'--region='+tp.config['region'],
++        '--image='+tp.receipt['image'],'--no-traffic','--tag='+tag,tp.telemetry_env_argument(),'--format=json')
++    current=tp.guard_target('api',tp.service.n['api'],[tp.receipt['image']])
++    active=[v for v in current['status']['traffic'] if v.get('percent',0)]
++    assert len(active)==1 and active[0]['revisionName']==tp.receipt['maintenance_revision']
++    route=next(v for v in current['status']['traffic'] if v.get('tag')==tag);assert route.get('percent',0)==0
++    tp.receipt.update(canary_revision=route['revisionName'],canary_url=route['url'],canary_tag=tag);tp.save()
++    result=verify_http(route['url']);(OUTPUT/'verify-canary.json').write_text(json.dumps(result,indent=2)+'\n')
++    tp.receipt['verify_canary']=True;tp.save();print(json.dumps({'canary':route['revisionName'],'schema':HEAD,'assets':len(result['assets']),'traffic':0}))
++
++
++def smoke():
++    assert tp.receipt.get('deployed')
++    tp.service.call('run','jobs','execute',tp.service.n['smoke'],'--region='+tp.config['region'],'--wait','--format=json')
++    result=verify_http(tp.receipt['url'])
++    health=tp.fetch(tp.receipt['url'],'/v1/admin/competition-health',tp.staff_key(tp.service.describe('api',tp.service.n['api']))).json()
++    assert health['status']=='ready' and health['available_workers']>=1
++    result['available_workers']=health['available_workers']
++    (OUTPUT/'verify-live.json').write_text(json.dumps(result,indent=2)+'\n')
++    tp.receipt.update(native_storage_schema_smoke=True,verify_live=True);tp.save()
++    print(json.dumps({'live_ready':True,'schema':HEAD,'worker_ready':health['available_workers'],'assets':len(result['assets'])}))
++
++
++def finish():
++    assert tp.receipt.get('verify_live') and tp.receipt.get('native_storage_schema_smoke') and tp.receipt.get('live_browser')
++    tp.service.call('run','services','update-traffic',tp.service.n['api'],'--region='+tp.config['region'],
++        '--remove-tags='+tp.receipt['canary_tag']+','+tp.receipt['maintenance_tag'],'--format=json')
++    current=tp.guard_target('api',tp.service.n['api'],[tp.receipt['image']])
++    assert any(v.get('revisionName')==tp.receipt['canary_revision'] and v.get('percent')==100 for v in current['status']['traffic'])
++    assert not any(v.get('tag') in (tp.receipt['canary_tag'],tp.receipt['maintenance_tag']) for v in current['status']['traffic'])
++    for name,kind in tp.receipt['targets'].items():
++        tp.guard_target(kind,name,[tp.receipt['image']],command=(['python'],['-m','bmt_backend.service_worker']) if kind=='worker' else None)
++    tp.receipt.update(completed=True,completed_utc=datetime.now(timezone.utc).isoformat(),temporary_tags_removed=True)
++    tp.save();print(json.dumps({'completed':True,'schema':HEAD,'revision':tp.receipt['canary_revision'],'url':tp.receipt['url']}))
++
++
++def main():
++    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['inspect','extract','prepare','build','probe','refresh','push','backup','maintenance','stopped','migrate','parity','canary','promote','smoke','finish'])
++    action=parser.parse_args().action
++    if action=='inspect':tp.inspect_live()
++    elif action=='extract':tp.extract_parent()
++    elif action=='prepare':prepare()
++    elif action=='build':build()
++    elif action=='refresh':refresh_compatibility()
++    elif action=='push':push()
++    elif action=='backup':tp.create_backup()
++    elif action=='maintenance':tp.maintenance_start()
++    elif action=='stopped':data_snapshot('stopped-writer')
++    elif action=='migrate':tp.migrate_database();data_snapshot('after-migration')
++    elif action=='parity':data_snapshot('after-migration')
++    elif action=='canary':canary()
++    elif action=='promote':tp.promote_and_resources()
++    elif action=='smoke':smoke()
++    elif action=='finish':finish()
++    else:tp.probe_database()
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/.tools/studio_expansion_image_tests_20261011.py
+@@ -0,0 +1,29 @@
++"""Exact-image regression using saved parent tests plus reviewed expansion tests."""
++import importlib.util
++import json
++import shutil
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[1]
++spec=importlib.util.spec_from_file_location('expansion_exact_tests',ROOT/'.tools/product_telemetry_image_tests_20261011.py')
++tests=importlib.util.module_from_spec(spec);spec.loader.exec_module(tests)
++tests.CONTEXT=ROOT/'build/studio-expansion-deploy-2026-10-11/image'
++tests.WORK=tests.CONTEXT.parent/'acceptance';tests.WORK.mkdir(parents=True,exist_ok=True)
++tests.OUTPUT=ROOT/'docs/evidence/studio-expansion-deploy-2026-10-11'
++tests.ROLLOUT=tests.OUTPUT/'rollout.json'
++ADDED=['test_studio_operations.py','test_studio_moderation.py','test_studio_expansion_postgres.py','test_client_quality.py','test_provider_proofs.py']
++tests.SELECTED += ADDED
++parent=ROOT/'build/product-telemetry-deploy-2026-10-11/acceptance'
++destination=tests.WORK/'frozen-tests'
++if not destination.exists():
++    shutil.copytree(parent/'frozen-tests',destination)
++    checkpoint=json.loads((ROOT/'docs/evidence/studio-expansion-2026-10-11/checkpoint.json').read_text())
++    frozen={v['path']:v['after_sha256'] for v in checkpoint['files']}
++    for name in ADDED:
++        source=ROOT/'backend/tests'/name
++        assert tests.hashes(source.parent)[name]==frozen['backend/tests/'+name]
++        shutil.copyfile(source,destination/name)
++for name in ['candidate-browser-server.py','candidate-maintenance-check.py','product_console.py']:
++    source=parent/name;target=tests.WORK/name
++    if not target.exists():shutil.copyfile(source,target)
++if __name__=='__main__':tests.main()
+--- /dev/null
++++ b/.tools/studio_expansion_live_browser_20261011.py
+@@ -0,0 +1,64 @@
++"""GET-only live Studio acceptance; no synthetic accounts/cases/diagnostics."""
++import importlib.util
++import json
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++ROOT=Path(__file__).resolve().parents[1]
++spec=importlib.util.spec_from_file_location('expansion_live_rollout',ROOT/'.tools/studio_expansion_rollout_20261011.py')
++rollout=importlib.util.module_from_spec(spec);spec.loader.exec_module(rollout)
++tp=rollout.tp
++assert tp.receipt.get('verify_live')
++resource=tp.service.describe('api',tp.service.n['api'])
++role,key=tp.prior.read_staff(resource)
++origin=tp.receipt['url'];checks=[];writes=[];errors=[];external=[]
++output=rollout.OUTPUT/'live-browser';output.mkdir(exist_ok=True)
++with sync_playwright() as driver:
++    browser=driver.chromium.launch(headless=True,executable_path='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
++    page=browser.new_page(viewport={'width':1440,'height':1000})
++    page.on('pageerror',lambda error:errors.append(str(error)))
++    def guard(route):
++        request=route.request
++        if request.method!='GET':
++            writes.append(request.url.split('?')[0]);route.abort();return
++        if not request.url.startswith(origin+'/'):
++            external.append(request.url.split('?')[0]);route.abort();return
++        route.continue_()
++    page.route('**/*',guard)
++    page.goto(origin+'/admin#quality');page.fill('#key',key);page.locator('#login button').click()
++    expect(page.locator('h1')).to_have_text('Client quality & track diagnostics')
++    page.wait_for_function("document.querySelector('#main').getAttribute('aria-busy')!=='true'")
++    expect(page.locator('#main')).to_contain_text('Frame-time histogram')
++    page.screenshot(path=str(output/'quality-desktop.png'),full_page=True);checks.append('Real prepared quality cockpit')
++    for fragment,title in [('quality?kind=segment_summary','Client quality & track diagnostics'),
++        ('quality?kind=creator','Creator health'),('competitions?kind=rivalry','Competition inspector'),('cases','Support cases')]:
++        page.evaluate('value=>location.hash=value',fragment)
++        expect(page.locator('h1')).to_have_text(title)
++        page.wait_for_function("document.querySelector('#main').getAttribute('aria-busy')!=='true'")
++        assert not page.locator('#main .console-error').count()
++        checks.append('GET-only '+fragment)
++    page.screenshot(path=str(output/'cases-desktop.png'),full_page=True)
++    listing=tp.fetch(origin,'/v1/admin/competitions?kind=rivalry',key).json()
++    if listing['items']:
++        page.evaluate('identity=>location.hash="competitions/"+identity+"?kind=rivalry"',listing['items'][0]['id'])
++        expect(page.locator('h1')).to_have_text('Weekly Rivalry inspection')
++        page.wait_for_function("document.querySelector('#main').getAttribute('aria-busy')!=='true'")
++        expect(page.locator('#main')).to_contain_text('Stored / evidence rank')
++        page.screenshot(path=str(output/'rivalry-desktop.png'),full_page=True)
++        checks.append('Actual existing rivalry provenance, without replaying a race')
++    page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(output/'studio-mobile.png'),full_page=True)
++    assert page.evaluate('document.documentElement.scrollWidth<=innerWidth');checks.append('390px responsive Studio')
++    page.locator('#logout').click();expect(page.locator('#login')).to_be_visible()
++    # Lock replaces the workspace with its sign-in form. Assert the actual
++    # access/content invariant, without requiring a hidden or empty container.
++    expect(page.locator('#main h1')).to_have_text('BMT Studio')
++    assert page.locator('#main table, #main svg, [data-case-action], #pa-dau').count()==0
++    assert page.locator('#key').input_value()==''
++    assert page.evaluate("key==='' && role==='' && reporting===null")
++    assert not page.evaluate('Object.keys(localStorage).length+Object.keys(sessionStorage).length')
++    assert not writes and not errors and not external;checks.append('Lock clears access; zero writes, external requests or JavaScript errors')
++    browser.close()
++result={'checks':checks,'api_writes':0,'synthetic_records':0,'role':role,'schema':rollout.HEAD}
++(output/'receipt.json').write_text(json.dumps(result,indent=2)+'\n')
++tp.receipt['live_browser']=True;tp.save();print(json.dumps({'live_browser_checks':len(checks),'api_writes':0,'synthetic_records':0}))
+--- /dev/null
++++ b/.tools/studio_expansion_finalize_20261011.py
+@@ -0,0 +1,92 @@
++"""Record completed backend-only deployment; preserve unrelated workspace changes."""
++import difflib
++import hashlib
++import json
++from datetime import datetime
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[1]
++WORK=ROOT/'build/studio-expansion-deploy-2026-10-11'
++OUT=ROOT/'docs/evidence/studio-expansion-deploy-2026-10-11'
++r=json.loads((OUT/'rollout.json').read_text())
++assert r['completed'] and r['verify_live'] and r['live_browser'] and r['migration_parity']
++proof=json.loads((OUT/'packaged-proof.json').read_text())
++acceptance=json.loads((OUT/'exact-image-acceptance.json').read_text())
++snapshot=json.loads((OUT/'after-migration.json').read_text())
++live=json.loads((OUT/'verify-live.json').read_text())
++start=datetime.fromisoformat(r['maintenance_started_utc']);end=datetime.fromisoformat(r['maintenance_ended_utc'])
++seconds=round((end-start).total_seconds())
++report=f'''# Backend Studio expansion deployment — 2026-10-11
++
++The owner explicitly authorized backend deployment. **Completed {r['completed_utc']}** on the existing retained staging service, [Studio]({r['url']}/admin#quality).
++
++Revision `{r['canary_revision']}` serves 100%, schema is **0027_client_quality**, and the API, existing worker and migration/smoke/catalog jobs use image `{r['image']}`. The temporary canary and maintenance tags are removed. The runtime CPU, memory, instance count, existing secret bindings, authentication gates and owned database/storage resources were preserved. No extra always-on cloud instance was added.
++
++This deploys the **partial implementation** described in [the local expansion report](STUDIO_EXPANSION_2026_10_11.md): quality/track diagnostic views, rivalry/challenge inspectors and case/report/appeal/quarantine workflows. Signed-in quality ingestion is enabled through negotiated version1; guest coverage remains unavailable. Updated clients are needed to emit the new observations. No Android/client build, device test or app installation was performed by this backend deployment.
++
++Play/AdMob proof adapters are packaged but have no production fulfillment endpoint. Live purchase verification/acknowledgement, signed reward intents/callback fulfillment, revenue/reconciliation feeds, the complete reversal ledger, verified recovery and production compensation remain unavailable. Crash stacks, Play vitals and consented expiring enhanced captures also remain outside this deployed slice. Store availability remains false. No real purchase, ad reward, recovery, compensation or synthetic live case/diagnostic was performed.
++
++The exact parent is `{r['parent']}`. The scoped overlay changes **18 backend files**, preserving **{proof['canonical_files']} packaged game files** and **{proof['backend_unchanged_files']} unrelated backend files** byte-for-byte. The server game/compiler contract remains the deployed contract; unrelated local gameplay/art/compiler changes and the local creator golden failure were not exported to server verification. The product processor remains a separate nice19 child on the original one-worker pool, with100-event batches and its existing one-connection configuration.
++
++Actual commands and acceptance:
++
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_rollout_20261011.py inspect/extract/prepare/build` (separate invocations): fresh ownership/runtime/image guards, exact-parent extraction, frozen hashes, additive local schema migration and protected package comparison.
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_image_tests_20261011.py`: exact installed image **{acceptance['sqlite']['passed']} SQLite passes / {acceptance['sqlite']['skipped']} skips**, **{acceptance['postgres']['passed']} PostgreSQL passes / {acceptance['postgres']['skipped']} skips**, **53 maintenance checks**, **11 browser checks**. Newly owned containers/networks removed. Tests retain the saved parent regression corpus plus reviewed expansion tests; no assertions were removed.
++- Initial image checks exposed the deployed challenge ORM's absent `attempt_limit` attribute. The inspector now returns `attempt_limit_available=false` and an unavailable value instead of failing or inventing a limit. No challenge model, scoring rule or migration21 data was changed. The failed image receipt is preserved; the corrected image passed. Runtime source differs from the original local checkpoint only by this documented compatibility fix and surgical deployed-parent integration.
++- `push/backup/maintenance/stopped/migrate/canary/promote/smoke/finish` (separate invocations): tested image push; successful Cloud SQL backup **{r['backup_id']}**; retryable write gate and stopped worker; additive migrations25→26→27 through owned `cloud_setup`; runtime grants on four new tables and non-superuser role; durable-data parity; zero-traffic canary; normal-traffic promotion; original worker resumed; native/storage/schema smoke and cleanup.
++- The controlled write-maintenance window was **{r['maintenance_started_utc']}–{r['maintenance_ended_utc']}**, approximately **{seconds//60}m{seconds%60:02d}s**. Existing client durable retries receive503 during the gate. Migration data checks retained **{snapshot['players']} players**, **{snapshot['runs']} runs**, **{snapshot['personal_bests']} race PBs**; race-result/run, purchase, entitlement and resume hashes match the stopped-writer snapshot. New case/event/quarantine/quality tables started empty. No historical client diagnostics or cases were manufactured. Backup success is not a rehearsed-restore guarantee.
++- Canary and live reads verified schema27/readiness, context/quality/case/creator/competition APIs, an actual existing rivalry inspection, signed-in-only capability, store-unavailable state and all **eight UI asset hashes**. Existing one-worker competition readiness is confirmed. No verifier/proof-object read is invoked by the competition inspector.
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_live_browser_20261011.py`: **eight GET-only live Edge checks**, real quality/heatmap/creator/case/rivalry views,390px layout, zero successful mutation requests, zero synthetic records, zero external requests and zero JavaScript errors. Lock restores the sign-in form, removes data views and clears key/role/reporting plus browser storage. Initial harness assumptions that the main container was hidden/empty were corrected against the actual sign-in replacement behavior; application security assertions were retained.
++
++Evidence: [package proof](evidence/studio-expansion-deploy-2026-10-11/packaged-proof.json), [exact image tests](evidence/studio-expansion-deploy-2026-10-11/exact-image-acceptance.json), [database parity](evidence/studio-expansion-deploy-2026-10-11/after-migration.json), [live verification](evidence/studio-expansion-deploy-2026-10-11/verify-live.json), [live browser receipt](evidence/studio-expansion-deploy-2026-10-11/live-browser/receipt.json), [actual rivalry screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/rivalry-desktop.png), [quality screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/quality-desktop.png), [cases screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/cases-desktop.png), [mobile screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/studio-mobile.png).
++
++Remaining acceptance: provider IDs/configuration, consumed-slot refund and recovery/compensation approval choices; complete pending domain implementations; unique client artifact fingerprints, actual device/build/biome/race quality coverage, physical-device network/CPU acceptance and a separately authorized game/compiler rollout. Backend deployment does not resolve the local client/server compiler mismatch. No Git commit or whole-workspace export is claimed.
++'''
++(ROOT/'docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md').write_text(report,encoding='utf-8')
++before=WORK/'doc-before';before.mkdir(exist_ok=True)
++entry=('2026-10-11 STUDIO-EXPANSION-DEPLOY/BMT-018/030/033/034/036/070: owner authorizes backend deploy. '
++    f'Exactparent98cf→e6d5 scoped18backend files preserves114game/105other backend; schema25→26→27, revision{r["canary_revision"]}100%. '
++    f'Backup{r["backup_id"]}/stoppedwriter395players4311runs2883PBs/race-purchase-entitlement-resume hashes exact/empty newtables; '
++    'runtimegrants/non-superuser/eightassets/native-storage-schema/oneworker unchangedCPU-mem/nice19/100event batch; '
++    'exactimageSQLite116+PG180/6skips/maintenance53/browser11/liveGET8 pass. Optional challenge-limit field unavailable on deployed ORM; fixed inspector without changing gameplay. '
++    f'Quality signed-in enabled/guest unavailable; no seeded records; tagsremoved/{seconds//60}m{seconds%60:02d}s writegate; '
++    'billing-revenue-reversalledger-recovery-compensation/enhancedcapture remain unavailable. No client export-install/device test/compiler rollout. '
++    'Commands/receipts/captures/scopedcheckpoint: docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md.\n\n')
++for relative in ['DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md','docs/STUDIO_EXPANSION_2026_10_11.md']:
++    path=ROOT/relative;original=path.read_bytes();saved=before/relative;saved.parent.mkdir(parents=True,exist_ok=True)
++    if not saved.exists():saved.write_bytes(original)
++    text=original.decode('utf-8')
++    if relative=='DEVELOPMENT_STATUS.md':text=entry+text
++    elif relative=='docs/PHASE_0_PLAN.md':text+='\n## Authorized Studio backend rollout (2026-10-11)\n\n'+entry
++    else:
++        first,rest=text.split('\n',1)
++        text=first+'\n\nAuthorized deployment follow-up: [completed backend rollout](STUDIO_EXPANSION_DEPLOY_2026_10_11.md), schema27/revision00038-van. The local checkpoint below describes original implementation scope; its missing features and device limits still apply.\n'+rest
++    if b'\r\n' in original:text=text.replace('\r\n','\n').replace('\n','\r\n')
++    path.write_bytes(text.encode())
++checkpoint=OUT/'checkpoint';checkpoint.mkdir(exist_ok=True)
++parts=[]
++for name in r['overlay_files']:
++    parent=WORK/'parent'/name;current=WORK/'image/source'/name
++    old=parent.read_text(encoding='utf-8') if parent.exists() else ''
++    parts.extend(difflib.unified_diff(old.splitlines(True),current.read_text(encoding='utf-8').splitlines(True),
++        fromfile='a/backend/bmt_backend/'+name if parent.exists() else '/dev/null',tofile='b/backend/bmt_backend/'+name))
++(checkpoint/'exact-parent-server.patch').write_text(''.join(parts),encoding='utf-8')
++paths=['.tools/studio_expansion_rollout_20261011.py','.tools/studio_expansion_image_tests_20261011.py',
++    '.tools/studio_expansion_live_browser_20261011.py','.tools/studio_expansion_finalize_20261011.py',
++    'docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md','backend/bmt_backend/studio_competitions.py']
++paths += [p.relative_to(before).as_posix() for p in before.rglob('*') if p.is_file()]
++files=[];parts=[]
++for relative in paths:
++    path=ROOT/relative;oldfile=before/relative
++    if relative=='backend/bmt_backend/studio_competitions.py':
++        # Original reviewed workspace source is retained in the task patch;
++        # deployed-server changes are fully represented in the separate patch.
++        old=None
++    else:old=oldfile.read_bytes() if oldfile.exists() else None
++    current=path.read_bytes();files.append({'path':relative,'before_sha256':hashlib.sha256(old).hexdigest() if old else None,'after_sha256':hashlib.sha256(current).hexdigest()})
++    parts.extend(difflib.unified_diff((old or b'').decode().splitlines(True),current.decode().splitlines(True),
++        fromfile='a/'+relative if old else '/dev/null',tofile='b/'+relative))
++(checkpoint/'workspace-deploy-only.patch').write_text(''.join(parts),encoding='utf-8')
++(checkpoint/'manifest.json').write_text(json.dumps({'candidate':r['image'],'parent':r['parent'],'schema':'0027_client_quality',
++    'completed_utc':r['completed_utc'],'protected_game_files':114,'files':files},indent=2)+'\n')
++print('Completed deployment report/status and scoped review checkpoints saved')
+--- /dev/null
++++ b/docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md
+@@ -0,0 +1,25 @@
++# Backend Studio expansion deployment — 2026-10-11
++
++The owner explicitly authorized backend deployment. **Completed 2026-10-11T20:02:03.035542+00:00** on the existing retained staging service, [Studio](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/admin#quality).
++
++Revision `bmt-stg-e7a444ab-api-00038-van` serves 100%, schema is **0027_client_quality**, and the API, existing worker and migration/smoke/catalog jobs use image `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:e6d5ee1d222e043be83faea093bc17ad12a15bbe0291f3da84c91550281711bc`. The temporary canary and maintenance tags are removed. The runtime CPU, memory, instance count, existing secret bindings, authentication gates and owned database/storage resources were preserved. No extra always-on cloud instance was added.
++
++This deploys the **partial implementation** described in [the local expansion report](STUDIO_EXPANSION_2026_10_11.md): quality/track diagnostic views, rivalry/challenge inspectors and case/report/appeal/quarantine workflows. Signed-in quality ingestion is enabled through negotiated version1; guest coverage remains unavailable. Updated clients are needed to emit the new observations. No Android/client build, device test or app installation was performed by this backend deployment.
++
++Play/AdMob proof adapters are packaged but have no production fulfillment endpoint. Live purchase verification/acknowledgement, signed reward intents/callback fulfillment, revenue/reconciliation feeds, the complete reversal ledger, verified recovery and production compensation remain unavailable. Crash stacks, Play vitals and consented expiring enhanced captures also remain outside this deployed slice. Store availability remains false. No real purchase, ad reward, recovery, compensation or synthetic live case/diagnostic was performed.
++
++The exact parent is `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:98cf7793107461526ebb6da4d04b480979338c72378332c00e5f1d066ca78b93`. The scoped overlay changes **18 backend files**, preserving **114 packaged game files** and **105 unrelated backend files** byte-for-byte. The server game/compiler contract remains the deployed contract; unrelated local gameplay/art/compiler changes and the local creator golden failure were not exported to server verification. The product processor remains a separate nice19 child on the original one-worker pool, with100-event batches and its existing one-connection configuration.
++
++Actual commands and acceptance:
++
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_rollout_20261011.py inspect/extract/prepare/build` (separate invocations): fresh ownership/runtime/image guards, exact-parent extraction, frozen hashes, additive local schema migration and protected package comparison.
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_image_tests_20261011.py`: exact installed image **116 SQLite passes / 3 skips**, **180 PostgreSQL passes / 3 skips**, **53 maintenance checks**, **11 browser checks**. Newly owned containers/networks removed. Tests retain the saved parent regression corpus plus reviewed expansion tests; no assertions were removed.
++- Initial image checks exposed the deployed challenge ORM's absent `attempt_limit` attribute. The inspector now returns `attempt_limit_available=false` and an unavailable value instead of failing or inventing a limit. No challenge model, scoring rule or migration21 data was changed. The failed image receipt is preserved; the corrected image passed. Runtime source differs from the original local checkpoint only by this documented compatibility fix and surgical deployed-parent integration.
++- `push/backup/maintenance/stopped/migrate/canary/promote/smoke/finish` (separate invocations): tested image push; successful Cloud SQL backup **1791748011386**; retryable write gate and stopped worker; additive migrations25→26→27 through owned `cloud_setup`; runtime grants on four new tables and non-superuser role; durable-data parity; zero-traffic canary; normal-traffic promotion; original worker resumed; native/storage/schema smoke and cleanup.
++- The controlled write-maintenance window was **2026-10-11T19:50:22.055905+00:00–2026-10-11T19:56:10.066385+00:00**, approximately **5m48s**. Existing client durable retries receive503 during the gate. Migration data checks retained **395 players**, **4311 runs**, **2883 race PBs**; race-result/run, purchase, entitlement and resume hashes match the stopped-writer snapshot. New case/event/quarantine/quality tables started empty. No historical client diagnostics or cases were manufactured. Backup success is not a rehearsed-restore guarantee.
++- Canary and live reads verified schema27/readiness, context/quality/case/creator/competition APIs, an actual existing rivalry inspection, signed-in-only capability, store-unavailable state and all **eight UI asset hashes**. Existing one-worker competition readiness is confirmed. No verifier/proof-object read is invoked by the competition inspector.
++- `.tools/backend-venv/Scripts/python.exe .tools/studio_expansion_live_browser_20261011.py`: **eight GET-only live Edge checks**, real quality/heatmap/creator/case/rivalry views,390px layout, zero successful mutation requests, zero synthetic records, zero external requests and zero JavaScript errors. Lock restores the sign-in form, removes data views and clears key/role/reporting plus browser storage. Initial harness assumptions that the main container was hidden/empty were corrected against the actual sign-in replacement behavior; application security assertions were retained.
++
++Evidence: [package proof](evidence/studio-expansion-deploy-2026-10-11/packaged-proof.json), [exact image tests](evidence/studio-expansion-deploy-2026-10-11/exact-image-acceptance.json), [database parity](evidence/studio-expansion-deploy-2026-10-11/after-migration.json), [live verification](evidence/studio-expansion-deploy-2026-10-11/verify-live.json), [live browser receipt](evidence/studio-expansion-deploy-2026-10-11/live-browser/receipt.json), [actual rivalry screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/rivalry-desktop.png), [quality screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/quality-desktop.png), [cases screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/cases-desktop.png), [mobile screenshot](evidence/studio-expansion-deploy-2026-10-11/live-browser/studio-mobile.png).
++
++Remaining acceptance: provider IDs/configuration, consumed-slot refund and recovery/compensation approval choices; complete pending domain implementations; unique client artifact fingerprints, actual device/build/biome/race quality coverage, physical-device network/CPU acceptance and a separately authorized game/compiler rollout. Backend deployment does not resolve the local client/server compiler mismatch. No Git commit or whole-workspace export is claimed.
+--- /dev/null
++++ b/backend/bmt_backend/studio_competitions.py
+@@ -0,0 +1,177 @@
++"""Bounded read-only competition provenance; never invokes verification or scoring writes."""
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from sqlalchemy import select, text
++
++from .admin import Access
++from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .rivalry import POINTS, rankings
++from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++from .studio import pinned_manifest
++from .track_models import Board, Run, RunTicket, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio competitions"])
++
++
++def snapshot(session):
++    if session.bind.dialect.name == "postgresql":
++        session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++    else:
++        session.execute(text("BEGIN"))
++
++
++def record(row, fields):
++    return {field: getattr(row, field) for field in fields}
++
++
++@router.get("/v1/admin/competitions")
++def list_competitions(request: Request, role: Access, kind: str = "rivalry", limit: int = Query(50, ge=1, le=100)):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    model, fields = ((RivalryGroup, ("id", "week_start", "ends_at", "vehicle_id", "member_count", "archived"))
++        if kind == "rivalry" else (Challenge, ("id", "mode", "created_at", "ends_at", "member_count", "cancelled")))
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(model).order_by(model.created_at.desc(), model.id).limit(limit + 1)).all()
++        return {"kind": kind, "items": [record(row, fields) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
++
++
++def proof(run, player_id, board, ticket):
++    problems = []
++    if run is None:
++        return ["SOURCE_RUN_UNAVAILABLE"]
++    if run.status != "verified":
++        problems.append("SOURCE_NOT_VERIFIED")
++    if run.player_id != player_id or board is None or run.board_id != board.id:
++        problems.append("SOURCE_CONTRACT_MISMATCH")
++    if ticket is None or ticket.player_id != player_id or ticket.board_id != run.board_id:
++        problems.append("SOURCE_TICKET_MISMATCH")
++    if type(run.time_ticks) is not int or run.time_ticks <= 0:
++        problems.append("SOURCE_TIME_UNAVAILABLE")
++    return problems
++
++
++@router.get("/v1/admin/competitions/{kind}/{identity}")
++def inspect_competition(kind: str, identity: UUID, request: Request, role: Access):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    with request.app.state.session_factory() as session:
++        snapshot(session)
++        entity = session.get(RivalryGroup if kind == "rivalry" else Challenge, str(identity))
++        if entity is None:
++            raise HTTPException(404, "COMPETITION_NOT_FOUND")
++        member_model = RivalryMember if kind == "rivalry" else ChallengeMember
++        member_field = member_model.group_id if kind == "rivalry" else member_model.challenge_id
++        members = session.execute(select(member_model, Player).join(Player).where(member_field == entity.id)
++            .order_by(Player.id).limit(201)).all()
++        if len(members) > 200:
++            raise HTTPException(409, "COMPETITION_ROSTER_EXCEEDS_INSPECTION_BUDGET")
++        if kind == "rivalry":
++            if not isinstance(entity.tracks, list) or len(entity.tracks) > 5:
++                raise HTTPException(409, "INVALID_PINNED_TRACK_LIST")
++            best_model = RivalryArchivedBest if entity.archived else RivalryBest
++            bests = list(session.scalars(select(best_model).where(best_model.group_id == entity.id).limit(1001)))
++            slots = entity.tracks
++            definition = record(entity, ("id", "week_start", "ends_at", "contract_key", "skill_band", "vehicle_id", "archived", "test_population"))
++        else:
++            bests = [member for member, _player in members if member.time_ticks is not None]
++            board = session.get(Board, entity.board_id)
++            if board is None:
++                raise HTTPException(409, "PINNED_BOARD_UNAVAILABLE")
++            slots = [{"board_id": board.id, "version_id": board.version_id, "tick_rate": board.manifest.get("tick_rate")}]
++            definition = record(entity, ("id", "board_id", "mode", "ends_at", "cancelled", "target_run_id", "target_ticks"))
++            definition.update(attempt_limit=getattr(entity, "attempt_limit", None),
++                attempt_limit_available=hasattr(entity, "attempt_limit"))
++        if len(bests) > 1000:
++            raise HTTPException(409, "COMPETITION_RESULTS_EXCEED_INSPECTION_BUDGET")
++        run_ids = {getattr(best, "run_id", None) for best in bests} - {None}
++        if kind == "challenge" and entity.target_run_id:
++            run_ids.add(entity.target_run_id)
++        runs = {row.id: row for row in session.scalars(select(Run).where(Run.id.in_(run_ids)))} if run_ids else {}
++        tickets = {row.id: row for row in session.scalars(select(RunTicket).where(RunTicket.id.in_(
++            [run.ticket_id for run in runs.values()]))) } if runs else {}
++        ticket_model = RivalryTicket if kind == "rivalry" else ChallengeTicket
++        bindings = {row.ticket_id: row for row in session.scalars(select(ticket_model).where(
++            ticket_model.ticket_id.in_(tickets)))} if tickets else {}
++        board_ids = {slot.get("board_id") for slot in slots} | {run.board_id for run in runs.values()}
++        boards = {row.id: row for row in session.scalars(select(Board).where(Board.id.in_(board_ids - {None})))}
++        roster = {player.id: {"player_id": player.id, "name": player.display_name, "is_test_driver": player.is_test_driver,
++            "disabled": player.disabled, "pre_round_skill": getattr(member, "skill", None),
++            "attempts_used": getattr(member, "attempts_used", None), "joined_at": member.joined_at,
++            "points": 0, "eligible_results": 0} for member, player in members}
++        results = []
++        for slot_index, slot in enumerate(slots):
++            rows = []
++            for best in bests:
++                if getattr(best, "slot", 0) != slot_index:
++                    continue
++                player = roster.get(best.player_id)
++                if player is None:
++                    continue
++                run = runs.get(getattr(best, "run_id", None))
++                board = boards.get(run.board_id) if run else boards.get(slot.get("board_id"))
++                problems = proof(run, best.player_id, board, tickets.get(run.ticket_id) if run else None)
++                if board and (board.version_id != slot.get("version_id") or board.id != slot.get("board_id")
++                        or kind == "rivalry" and board.vehicle_id != entity.vehicle_id):
++                    problems.append("PINNED_VERSION_MISMATCH")
++                binding = bindings.get(run.ticket_id) if run else None
++                seeded_target = kind == "challenge" and best.player_id == entity.creator_id and run and run.id == entity.target_run_id
++                if run and not seeded_target and (binding is None or
++                        (kind == "rivalry" and (binding.group_id != entity.id or binding.slot != slot_index)) or
++                        (kind == "challenge" and binding.challenge_id != entity.id)):
++                    problems.append("COMPETITION_TICKET_MISMATCH")
++                if run and not seeded_target and not (getattr(entity, "week_start", entity.created_at) <= run.created_at < entity.ends_at):
++                    problems.append("SUBMISSION_OUTSIDE_COMPETITION_WINDOW")
++                if run and run.time_ticks != best.time_ticks:
++                    problems.append("STORED_BEST_DIFFERS_FROM_SOURCE")
++                if player["disabled"] or player["is_test_driver"] and (kind == "challenge" or not entity.test_population):
++                    problems.append("PLAYER_NOT_COMPETITIVELY_ELIGIBLE")
++                tick_rate = board.manifest.get("tick_rate") if board else None
++                if type(tick_rate) is not int or not 0 < tick_rate <= 1000:
++                    problems.append("PINNED_TICK_RATE_UNAVAILABLE")
++                elif kind == "rivalry" and tick_rate != slot.get("tick_rate"):
++                    problems.append("PINNED_TICK_RATE_MISMATCH")
++                rows.append({"id": best.player_id, "player_id": best.player_id, "slot": slot_index, "run_id": getattr(best, "run_id", None),
++                    "stored_ticks": best.time_ticks, "ticks": run.time_ticks if not problems else None,
++                    "seconds": run.time_ticks / tick_rate if not problems and type(tick_rate) is int and tick_rate > 0 else None,
++                    "provenance": "accepted_run" if not problems else "unavailable_or_inconsistent",
++                    "problems": problems, "evidence_route": "/v1/admin/studio/races/" + run.id if run else None,
++                    "manifest": pinned_manifest(board)})
++            eligible = [row for row in rows if row["ticks"] is not None]
++            rankings(eligible, "ticks")
++            stored = [{"id": row["player_id"], "ticks": row["stored_ticks"]} for row in rows
++                if not roster[row["player_id"]]["disabled"] and type(row["stored_ticks"]) is int and row["stored_ticks"] > 0]
++            rankings(stored, "ticks")
++            stored_ranks = {row["id"]: row["rank"] for row in stored}
++            for row in rows:
++                row.setdefault("rank", None)
++                row["rank_from_stored_bests"] = stored_ranks.get(row["player_id"])
++                stored_rank = row["rank_from_stored_bests"]
++                row["points_from_stored_bests"] = POINTS[stored_rank - 1] if kind == "rivalry" and stored_rank and stored_rank <= len(POINTS) else 0
++                row["points"] = POINTS[row["rank"] - 1] if kind == "rivalry" and row["rank"] and row["rank"] <= len(POINTS) else 0
++                roster[row["player_id"]]["points"] += row["points"]
++                roster[row["player_id"]]["eligible_results"] += int(row["ticks"] is not None)
++            results.extend(rows)
++        ticket_field = ticket_model.group_id if kind == "rivalry" else ticket_model.challenge_id
++        attempts = session.execute(select(Run.status).join(ticket_model, ticket_model.ticket_id == Run.ticket_id)
++            .where(ticket_field == entity.id).order_by(Run.created_at, Run.id).limit(501)).all()
++        counts = {}
++        for (state,) in attempts[:500]:
++            counts[state] = counts.get(state, 0) + 1
++        target = None
++        if kind == "challenge" and entity.target_run_id:
++            run = runs.get(entity.target_run_id)
++            target = {"run_id": entity.target_run_id, "stored_ticks": entity.target_ticks,
++                "problems": proof(run, entity.creator_id, boards.get(entity.board_id), tickets.get(run.ticket_id) if run else None)}
++            if entity.mode == "beat" and run and run.time_ticks != entity.target_ticks:
++                target["problems"].append("STORED_TARGET_DIFFERS_FROM_SOURCE")
++        return {"kind": kind, "definition": definition, "roster": list(roster.values()), "results": results,
++            "target": target, "points_policy": list(POINTS) if kind == "rivalry" else None,
++            "attempt_states": counts, "attempts_truncated": len(attempts) > 500,
++            "as_of": now(), "role": role, "read_only": True,
++            "limits": ["Ranks/points recomputed from linked accepted evidence; inconsistencies do not mutate official results.",
++                "Archived timing without a retained run cannot prove original acceptance.",
++                "Ghosts and attempt count do not confer score eligibility; no verifier or proof-object reads.",
++                "Reward delivery is unavailable; no progression reward is inferred."]}
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 STUDIO-EXPANSION-DEPLOY/BMT-018/030/033/034/036/070: owner authorizes backend deploy. Exactparent98cf→e6d5 scoped18backend files preserves114game/105other backend; schema25→26→27, revisionbmt-stg-e7a444ab-api-00038-van100%. Backup1791748011386/stoppedwriter395players4311runs2883PBs/race-purchase-entitlement-resume hashes exact/empty newtables; runtimegrants/non-superuser/eightassets/native-storage-schema/oneworker unchangedCPU-mem/nice19/100event batch; exactimageSQLite116+PG180/6skips/maintenance53/browser11/liveGET8 pass. Optional challenge-limit field unavailable on deployed ORM; fixed inspector without changing gameplay. Quality signed-in enabled/guest unavailable; no seeded records; tagsremoved/5m48s writegate; billing-revenue-reversalledger-recovery-compensation/enhancedcapture remain unavailable. No client export-install/device test/compiler rollout. Commands/receipts/captures/scopedcheckpoint: docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md.
++
+ 2026-10-11 FM01-FM04/RLOAD10-RLOAD11/V03/V05/B01/R01/Q01: owner scenic fault-message reference. Real owned borderless dialog/dim input-blocking scrim/original sunset road art/sharp vector warning/editable title-cause/yellow OK-Close; keyboard/focus/long-copy scrolling/page cleanup and info-confirmation separation. Honest update/offline copy/no rollout promises or compiler diagnostics. Import/compile pass; final Compatibility83/MobileVulkan83/Rivalry29/free21/App99=315checks/0fail; 1280-960-1600 and cause captures inspected. Historical captures restored exact; task-only checkpoint. Doctor no attached phone/no physical test/APK/fullValidate/physics-regression/backend-livewrites/deploy; compiler rollout blocker retained. Files/commands/provenance/owner-device acceptance: docs/FAULT_MESSAGES.md.
+ 
+ 2026-10-11 SND61/SND60/SND37/G01/R01/Q01: owner cannot hear background rumble/wants50% longer lightning intervals. Shared bed0.10->0.30/+9.542dB, spacing9-16s->13.5-24s/first6->9s; accepted strong cue/rain/flashshape/WAVs/generators/canonical unchanged. Native lifecycle50/racecapture29/PCM review pass; measured -25.592dBFS/2.678dB below engine/12.050dB below strong cue/no gaps/mixpeak0.794/pause-mute0. Storm94 retains two prior visual spray failures; new timing/count passes. Doctor no attached phone/no device listening/export-install/fullValidate/backend/deploy. Files/commands/audio/task-only checkpoint/owner-device acceptance: docs/STORM_BACKGROUND_RUMBLE.md (SND61).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1791,3 +1791,8 @@
+ ## Reversed settling dirt curve, 2026-10-11
+ 
+ 2026-10-11 CW26/CW01-CW25/V06/G01/R01/Q01: owner reverses curve/flatter rear as dirt falls. Shader-only concave half-wheelbase-scaled arc: rises~22deg behind front tire/~11deg middle/flat rear axle/slight downward tail; both sides/end projection. NativeCompatibility15+MobileVulkan15/actual flatter rear and arc crest-tail checks/rimslow195 pass; previous upright-rear assertion explicitly superseded. Actual Desert-Grass-Storm both sides/rear corners inspected; masks/palette/rims/20xslow/scrub/saves/physics/score unchanged. No phone-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/SETTLING_DIRT.md.
++
++## Authorized Studio backend rollout (2026-10-11)
++
++2026-10-11 STUDIO-EXPANSION-DEPLOY/BMT-018/030/033/034/036/070: owner authorizes backend deploy. Exactparent98cf→e6d5 scoped18backend files preserves114game/105other backend; schema25→26→27, revisionbmt-stg-e7a444ab-api-00038-van100%. Backup1791748011386/stoppedwriter395players4311runs2883PBs/race-purchase-entitlement-resume hashes exact/empty newtables; runtimegrants/non-superuser/eightassets/native-storage-schema/oneworker unchangedCPU-mem/nice19/100event batch; exactimageSQLite116+PG180/6skips/maintenance53/browser11/liveGET8 pass. Optional challenge-limit field unavailable on deployed ORM; fixed inspector without changing gameplay. Quality signed-in enabled/guest unavailable; no seeded records; tagsremoved/5m48s writegate; billing-revenue-reversalledger-recovery-compensation/enhancedcapture remain unavailable. No client export-install/device test/compiler rollout. Commands/receipts/captures/scopedcheckpoint: docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md.
++
+--- a/docs/STUDIO_EXPANSION_2026_10_11.md
++++ b/docs/STUDIO_EXPANSION_2026_10_11.md
+@@ -1,4 +1,6 @@
+ # Studio expansion — local checkpoint, 2026-10-11
++
++Authorized deployment follow-up: [completed backend rollout](STUDIO_EXPANSION_DEPLOY_2026_10_11.md), schema27/revision00038-van. The local checkpoint below describes original implementation scope; its missing features and device limits still apply.
+ 
+ At 18:38 UTC this is a **partial local implementation**, not a completed implementation of all four requested areas and not a deployment. The live backend remains on the previously deployed product-telemetry release. Guest coverage remains unavailable. Local car dirt/washing state is not collected.
+ 

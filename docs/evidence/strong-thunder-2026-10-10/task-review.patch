@@ -1,0 +1,247 @@
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -5,8 +5,8 @@
+ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
+ const MIN_INTERVAL: float = 9.0
+ const MAX_INTERVAL: float = 16.0
+-const RAIN_LEVEL: float = 0.36818182
+-const THUNDER_LEVEL: float = 0.65
++const RAIN_LEVEL: float = 0.28
++const THUNDER_LEVEL: float = 1.0
+ const RAIN_FADE_SECONDS: float = 0.75
+ var elapsed: float = 0.0
+ var until_lightning: float = 6.0
+diff --git a/scripts/build_storm_thunder.py b/scripts/build_storm_thunder.py
+--- a/scripts/build_storm_thunder.py
++++ b/scripts/build_storm_thunder.py
+@@ -56,9 +56,13 @@
+     hz=np.fft.rfftfreq(len(values),1/RATE)
+     spectrum=np.fft.rfft(values)*(1-np.exp(-(hz/45)**4))*np.exp(-(hz/3200)**4)
+     values=np.fft.irfft(spectrum,n=len(values));values-=values.mean()
++    # Fuller sustained thunder: control isolated peaks before loudness matching
++    # so the rolling body can be strong without exhausting the output ceiling.
++    knee=max(np.sqrt(np.mean(values**2))*3.0,1e-8)
++    values=np.tanh(values/knee)*knee
+     attack=round(.015*RATE);release=min(round(1.0*RATE),len(values)//3)
+     values[:attack]*=np.linspace(0,1,attack);values[-release:]*=np.linspace(1,0,release)
+-    values*=min(.18/max(np.sqrt(np.mean(values**2)),1e-8),.70/max(np.max(np.abs(values)),1e-8))
++    values*=min(.22/max(np.sqrt(np.mean(values**2)),1e-8),.84/max(np.max(np.abs(values)),1e-8))
+     pcm=np.rint(values*32767).astype('<i2')
+     target=ROOT/'game/assets/audio/storm_thunder.wav'
+     with wave.open(str(target),'wb') as handle:
+@@ -68,7 +72,7 @@
+     manifest=dict(file=target.name,source=PAGE,download=MEDIA,author='Joseph SARDIN & Axeline T.',license='CC0-1.0',
+         source_sha256=digest,sha256=hashlib.sha256(target.read_bytes()).hexdigest(),source_start_seconds=start/rate,
+         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
+-        edits='sustained-onset7.5s excerpt; mono44.1kHz;45Hz-3.2kHz softening;15ms attack/1s release; RMS .18/peak cap .70',
++        edits='sustained-onset7.5s excerpt; mono44.1kHz;45Hz-3.2kHz softening; soft peak control for stronger body;15ms attack/1s release; RMS .22/peak cap .84',
+         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+     (target.parent/'storm_thunder_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+     print(json.dumps(manifest,indent=2))
+diff --git a/game/tests/capture_thunder_audio.gd b/game/tests/capture_thunder_audio.gd
+--- a/game/tests/capture_thunder_audio.gd
++++ b/game/tests/capture_thunder_audio.gd
+@@ -1,6 +1,7 @@
+ extends SceneTree
+ ## Real race presentation: lightning/delayed recorded thunder, pause and mute.
+ const OUT: String = "res://../docs/evidence/rain-thunder-2026-10-10"
++var evidence_dir: String = OUT
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -15,7 +16,9 @@
+ 	if DisplayServer.get_name()=="headless":
+ 		quit(1)
+ 		return
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): evidence_dir = argument.trim_prefix("--evidence-dir=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
+ 	var game: Node = load("res://core/game.tscn").instantiate()
+ 	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+ 	game.initial_track.metadata.theme = "storm"
+@@ -70,11 +73,11 @@
+ 			if weather.thunder_count>thunder_before and thunder_at<0: thunder_at = elapsed
+ 		for i: int in range(records.size()):
+ 			records[i].set_recording_active(false)
+-			check(records[i].get_recording().save_to_wav(OUT.path_join(scene+"-"+names[i]+".wav"))==OK,"native thunder reference: "+scene+" "+names[i])
++			check(records[i].get_recording().save_to_wav(evidence_dir.path_join(scene+"-"+names[i]+".wav"))==OK,"native thunder reference: "+scene+" "+names[i])
+ 		check(weather.thunder_count==thunder_before+(0 if paused else 1),"one delayed cue or frozen pending thunder: "+scene)
+ 		if scene=="strike": check(lightning_at>=0 and thunder_at-lightning_at>=1.2 and thunder_at-lightning_at<=2.9,"thunder follows lightning within configured delay")
+ 		rows.append({"scene":scene,"lightning_at":lightning_at,"thunder_at":thunder_at,"music_gain":AudioServer.get_bus_volume_linear(AudioServer.get_bus_index("Music")),"rain_gain":weather.rain_gain,"thunder_gain":weather.thunder_audio.volume_linear})
+-	var file := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++	var file := FileAccess.open(evidence_dir.path_join("capture.json"),FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(rows,"\t")+"\n")
+ 	file.close()
+ 	AudioServer.set_bus_mute(AudioServer.get_bus_index("Vehicle"),false)
+diff --git a/scripts/review_thunder_audio.py b/scripts/review_thunder_audio.py
+--- a/scripts/review_thunder_audio.py
++++ b/scripts/review_thunder_audio.py
+@@ -4,10 +4,15 @@
+ import json
+ import math
+ import wave
++import argparse
+ import numpy as np
+ 
+ ROOT=Path(__file__).resolve().parents[1]
+-OUT=ROOT/'docs/evidence/rain-thunder-2026-10-10'
++parser=argparse.ArgumentParser()
++parser.add_argument('--evidence-dir',type=Path,default=ROOT/'docs/evidence/rain-thunder-2026-10-10')
++parser.add_argument('--stronger',action='store_true')
++args=parser.parse_args()
++OUT=args.evidence_dir
+ def read(path):
+     with wave.open(str(path)) as f:
+         rate=f.getframerate();channels=f.getnchannels()
+@@ -41,7 +46,22 @@
+ if not all(row['matches'] for row in report['preserved']): report['failures'].append('Rain source/deferred wet mixer/wishlist changed')
+ report['rain_gain']=capture[0]['rain_gain']
+ report['rain_reduction_db']=20*math.log10(report['rain_gain']/.45)
+-if abs(report['rain_reduction_db']-20*math.log10(.45/.55))>.001: report['failures'].append('Rain reduction must match the preceding amount')
++if args.stronger:
++    mix,mix_rate=arrays['strike','mix']
++    mix_hop=round(.05*mix_rate)
++    mix_envelope=np.array([np.sqrt(np.mean(mix[i:i+mix_hop]**2)) for i in range(0,len(mix)-mix_hop,mix_hop)])
++    report['strongest_output_50ms_dbfs']=20*math.log10(max(float(mix_envelope.max()),1e-9))
++    if report['strongest_output_50ms_dbfs']<report['captures'][0]['engine_dbfs']+6: report['failures'].append('Strong thunder must remain dominant in final output')
++    if report['rain_gain']>=.36818182: report['failures'].append('Rain must be quieter than the rejected mix')
++    if report['strongest_thunder_50ms_dbfs']<report['captures'][0]['engine_dbfs']+6: report['failures'].append('Strong thunder must rise clearly above the engine')
++    with wave.open(str(OUT/'before/game/assets/audio/storm_thunder.wav')) as f:
++        old=np.frombuffer(f.readframes(f.getnframes()),dtype='<i2').astype(float)/32768
++    with wave.open(str(ROOT/'game/assets/audio/storm_thunder.wav')) as f:
++        new=np.frombuffer(f.readframes(f.getnframes()),dtype='<i2').astype(float)/32768
++    report['thunder_gain_increase_db']=db(new)-db(old)+20*math.log10(capture[0]['thunder_gain']/.65)
++    if report['thunder_gain_increase_db']<8: report['failures'].append('Thunder body must increase substantially')
++else:
++    if abs(report['rain_reduction_db']-20*math.log10(.45/.55))>.001: report['failures'].append('Rain reduction must match the preceding amount')
+ (OUT/'review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+ (OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Rain and thunder</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}audio{width:100%}</style><h1>Quieter rain and thunder</h1><p>Actual race presentation with engine and default music. The thunder follows one lightning strike.</p><audio controls src="strike-mix.wav"></audio><h2>Thunder alone at its game level</h2><audio controls src="strike-thunder.wav"></audio><p>Source: <a href="https://bigsoundbank.com/thunder-3-s3114.html">Thunder3, Joseph SARDIN and Axeline T., CC0</a>.</p>',encoding='utf-8')
+ print(json.dumps({k:v for k,v in report.items() if k!='preserved'},indent=2))
+diff --git a/game/assets/audio/storm_thunder_manifest.json b/game/assets/audio/storm_thunder_manifest.json
+--- a/game/assets/audio/storm_thunder_manifest.json
++++ b/game/assets/audio/storm_thunder_manifest.json
+@@ -5,14 +5,14 @@
+   "author": "Joseph SARDIN & Axeline T.",
+   "license": "CC0-1.0",
+   "source_sha256": "448d45edf4022a0ac979a076e997321abcef3807cc8f41dcae2be2e317360255",
+-  "sha256": "7ad33f2ef4b9ad3e38faac86c42feb683a6203abe058592cac8e18c52e0c3093",
++  "sha256": "eed0fce82f87b15743e806bc1d0a9fe4472254a46efb628dcf60260bce0159ad",
+   "source_start_seconds": 0.58,
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+   "seconds": 7.5,
+   "bytes": 661544,
+-  "edits": "sustained-onset7.5s excerpt; mono44.1kHz;45Hz-3.2kHz softening;15ms attack/1s release; RMS .18/peak cap .70",
+-  "rms_dbfs": -19.813572940879986,
+-  "peak_dbfs": -3.0980391997148637
++  "edits": "sustained-onset7.5s excerpt; mono44.1kHz;45Hz-3.2kHz softening; soft peak control for stronger body;15ms attack/1s release; RMS .22/peak cap .84",
++  "rms_dbfs": -13.151546383555877,
++  "peak_dbfs": -2.414354972411939
+ }
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -15,7 +15,7 @@
+ 
+ Only20-41s is decoded from the467.827-second MP3. Mono44.1kHz16-bit PCM,
+ DC removal, gentle rare-peak control, level matching and one-second cyclic
+-crossfade produce a20-second loop. No EQ or added rain layers. Existing0.36818182
++crossfade produce a20-second loop. No EQ or added rain layers. Existing0.28
+ Vehicle playback and pause/finish lifecycle retained. Rebuild:
+ scripts/build_storm_rain.py; bounded decoder: tests/decode_storm_rain_source.gd.
+ No runtime download, AI or external audio service. Earlier source assets and
+@@ -26,7 +26,7 @@
+ https://bigsoundbank.com/thunder-3-s3114.html
+ CC0-1.0: https://creativecommons.org/publicdomain/zero/1.0/
+ Outdoor single thunderclap without rain,7.5s onset-selected excerpt; mono44.1kHz
+-16-bit PCM/45Hz-3.2kHz softening/15ms attack/1s release/loudness master.
++16-bit PCM/45Hz-3.2kHz softening/15ms attack/1s release/soft peak control/stronger loudness master.
+ Source/derivative hashes: ../storm_thunder_manifest.json. Rebuild:
+-scripts/build_storm_thunder.py. Playback0.65 follows delayed lightning and
++scripts/build_storm_thunder.py. Playback1.0 follows delayed lightning and
+ Vehicle/master volume. Original synthetic clip retained outside exports.
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -2,7 +2,7 @@
+ 
+ Current state: the owner rejected wet rolling and moved it to the wishlist.
+ Storm asphalt rolling is disabled; the owner-supplied rain now plays as a
+-20-second loop at 0.36818182 gain with recorded delayed thunder. The
++20-second loop at 0.28 gain with strong recorded delayed thunder. The
+ implementation history below is superseded by the final deferral section.
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+@@ -450,3 +450,48 @@
+ `docs/evidence/rain-thunder-2026-10-10/`. No UI/camera/physics/backend change,
+ phone attachment check, device listening, Android export/install, full Validate
+ or deployment. Owner thunder realism/volume and device acceptance remain.
++
++## Strong thunder and lower rain, 2026-10-10
++
++The owner still finds thunder barely noticeable and requests a properly strong
++sound with quieter rain. SND30 raises the clap and rolling body substantially:
++soft source peak control lets the master reach0.22RMS rather than the earlier
++peak-constrained0.102; thunder gain0.65 to1.0. Combined measured/source gain
++increase is10.404dB. Recorded texture,7.5s duration, source provenance,
++delay/spacing/pitch, fade/pause/focus/mute and protected output ceilings remain.
++SND31 lowers rain0.36818182 to0.28 (another23.95%/-2.378dB), keeping the exact
++owner-supplied rain loop. Wet tires remain deferred. No new bus or dependency.
++
++Changed files: `game/track/storm_weather.gd`, `scripts/build_storm_thunder.py`,
++`game/assets/audio/{storm_thunder.wav,storm_thunder.wav.import,storm_thunder_manifest.json}`,
++ambience `NOTICE.txt`, `game/tests/capture_thunder_audio.gd`,
++`scripts/review_thunder_audio.py`, this page, `DEVELOPMENT_STATUS.md`,
++`docs/PHASE_0_PLAN.md`. Capture/review accepts a separate evidence directory and
++a stronger-volume contract; previous checks remain for historical captures.
++The stronger check additionally requires dominance in the final mixed output,
++not only a raw source reference. No earlier failing invariant is loosened.
++
++Actual commands:
++
++- `python scripts/build_storm_thunder.py`: final/repeat build exact SHA256
++  `eed0fce82f87b15743e806bc1d0a9fe4472254a46efb628dcf60260bce0159ad`;
++ 7.5s/661,544 bytes, assetRMS -13.152dBFS and peak -2.414dBFS.
++- Pinned `scripts/dev.ps1 Import`: exit0.
++- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`:40 checks,
++  zero failures, clean exit.
++- `TestScript -ScriptPath res://tests/capture_thunder_audio.gd -Graphical`
++  with `--evidence-dir=res://../docs/evidence/strong-thunder-2026-10-10`:
++ 19 checks, zero failures; one delayed strike with actual race presentation,
++  default engine/music, pause and Vehicle mute.
++- `python scripts/review_thunder_audio.py --evidence-dir
++  docs/evidence/strong-thunder-2026-10-10 --stronger`:zero failures.
++  Native thunder strongest50ms -8.155dBFS; final output strongest50ms
++ -12.108dBFS,8.015dB above the engine's -20.123dBFS reference. Rain -36.408dBFS;
++  output peak0.706/roughly-3dBFS, below ceilings. Paused PCM zero; mute leaves
++  only music within0.002dB RMS. Rain/47 vehicle WAV/mixer/wishlist hashes exact.
++
++Evidence/source checkpoint and [stronger thunder mix](evidence/strong-thunder-2026-10-10/review.html):
++`docs/evidence/strong-thunder-2026-10-10/`. No phone attachment check,
++device listening, Android export-install, full Validate, physics/camera/backend
++or deployment. Earlier two visual spray failures were not rerun in this
++volume-only correction. Owner loudness/realism and device acceptance remain.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND30-SND31/SND28-SND29/SND24/SND05/G01/R01/Q01/V06: owner requests properly strong thunder and quieter rain. Fuller recorded body/RMS0.22+gain1.0 gives10.404dB increase; same7.5s/source/delayed lightning, protected ceilings/lifecycle. Rain0.36818182-to0.28 (-23.95%/-2.378dB), original owner loop/47 vehicle WAVs/deferred wet mixer/wishlist exact. Offline buildeed0fce8/import/focused40/native19/stronger final-output review pass; strongest mixed50ms8.015dB above engine, peak0.706/paused0/mute-only music. Previous visual spray failures not rerun; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/preview/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (strong thunder).
++
+ 2026-10-10 HOPT03-HOPT05/HOPT02/RR06/TD06/TD08/B05/B07/R01/Q01: owner requests stored histograms with throttled/adaptive refresh. Durable per-version/car/population grids/frequencies/own times; verified data marks dirty, idle service worker refreshes due fields only, new default10drivers90s/1000drivers15min/100000drivers1h (configurable900s reference). Separate lap revision handles slower-race lap PBs; reset/visibility/retired data invalidates immediately, leases/fenced publication/backfill preserve records. Requests2warm SQL/zero history scans; local PGinitial medians2.35-2.76ms up to50000attempts/final4.659ms;100000-driver view-only median0.0132ms. Final worker/cacheSQLite40(6skip)/focused15/driver2/PG15(1SQLite skip)+service priority1/Ruff pass. Broad domain two failures reproduce pre-task baseline; assertions retained. Explicit race diagnostics keep prior behavior. Schema0022 depends existing0021; no running migration/deploy, player-record or UI changes, phone attachment/device test/export/full Validate. Source/files/commands/receipts/task-only checkpoint/remaining host-load-interval acceptance: docs/STORED_HISTOGRAMS_2026_10_10.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner bridge-dust fix installed; Vulkan appearance rejected and Compatibility restored. Ground/deck particle banks preserve lingering emission layer; creator-span volume/actual sandstone soffit clipping plus opaque-roof protection prevents ground dust crossing deck, keeps on-deck dust visible. MSAA2x,1.5MP/nativeHUD/camera/colour/canonical unchanged, dust presentation12. GPU89/desert87/nine roof-reference pixels+state/material witness/export72/21/48 pass. Native final ground/deck images inspected, deck4banks, paused0; ordinary drive19.987ms/p9524.43 (~50FPS). APK246963167/SHA25694FF619583F4E27F6417438643A1CA4B62101A699E56897CAE55F838EDF4001D installSuccess; marker absent/normal play restored/playerdata retained. Initial locked attempt/argument-array capture issue corrected without weakened checks. No fullValidate/replay/thermal/other-device/backend or production action. Validated16 creator spans/junctions covered; legacy export-excluded deck fixtures unchanged; owner prolonged/shadow acceptance remains. Files/commands/evidence/scoped checkpoint: docs/BRIDGE_DUST_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1456,3 +1456,8 @@
+ ## Quieter rain and recorded thunder, 2026-10-10
+ 
+ 2026-10-10 SND28-SND29/SND24-SND27/SND05/G01/R01/Q01/V06: owner asks another equal rain reduction and thunder sound. Rain0.45-to0.36818182 (-18.18%/-1.743dB); recorded CC0 BigSoundBank3114 clap/rolling-tail replaces quiet synthetic placeholder,7.5s/661544bytes/7ad33f2e/Vehicle gain0.65. Existing lightning delay1.2-2.8s/spacing/pitch/pause-focus retained; no wet tires reintroduced and47 vehicle/rain WAV hashes exact. Import/offline rebuild/focused40/native19/review pass; audible transient/one delayed cue/paused zero/mute-only music/headroom. Storm94 retains two pre-existing visual spray failures. No phone attachment/device listening/export-install/full Validate/camera/physics/backend/deploy. Source/licence/files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (thunder).
++
++
++## Stronger thunder and quieter rain, 2026-10-10
++
++2026-10-10 SND30-SND31/SND28-SND29/SND24/SND05/G01/R01/Q01/V06: owner requests properly strong thunder and quieter rain. Fuller recorded body/RMS0.22+gain1.0 gives10.404dB increase; same7.5s/source/delayed lightning, protected ceilings/lifecycle. Rain0.36818182-to0.28 (-23.95%/-2.378dB), original owner loop/47 vehicle WAVs/deferred wet mixer/wishlist exact. Offline buildeed0fce8/import/focused40/native19/stronger final-output review pass; strongest mixed50ms8.015dB above engine, peak0.706/paused0/mute-only music. Previous visual spray failures not rerun; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/preview/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (strong thunder).

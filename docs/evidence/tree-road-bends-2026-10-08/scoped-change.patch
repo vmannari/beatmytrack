@@ -1,0 +1,504 @@
+diff --git a/game/track/visual_road_join.gd b/game/track/visual_road_join.gd
+--- a/game/track/visual_road_join.gd
++++ b/game/track/visual_road_join.gd
+@@ -4,9 +4,9 @@
+ 
+ static func build(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> Dictionary:
+ 	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
+-	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+-	var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin,topology),cuts)
+-	polygon = fair_contour(polygon,cuts)
++	var shape: Dictionary = _base_shape(pieces,index,margin,topology)
++	var cuts: Array[Dictionary] = shape.cuts
++	var polygon: PackedVector2Array = shape.polygon
+ 	var replacements: Dictionary = {}
+ 	var source_cuts: Array[Dictionary] = cuts.duplicate(true)
+ 	for cut: Dictionary in cuts:
+@@ -21,8 +21,7 @@
+ 				other_polygon = contour
+ 				if Geometry2D.is_point_in_polygon(cut.point,contour): break
+ 		else:
+-			other_polygon = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin,topology),other_cuts)
+-			other_polygon = fair_contour(other_polygon,other_cuts)
++			other_polygon = _base_shape(pieces,other,margin,topology).polygon
+ 		var ends: Array[Vector2] = []
+ 		for i: int in range(polygon.size()):
+ 			var corner: Vector2 = polygon[i]
+@@ -66,7 +65,67 @@
+ 	for i: int in range(polygon.size()):
+ 		if replacements.has(i): rounded.append_array(replacements[i])
+ 		else: rounded.append(polygon[i])
+-	return {"polygon":rounded,"cuts":cuts}
++	shape.polygon = rounded
++	shape.contours[0] = rounded
++	return shape
++
++static func _base_shape(pieces: Array, index: int, margin: float, topology: Dictionary) -> Dictionary:
++	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
++	if not topology.has("visual_folded"): topology.visual_folded = {}
++	if not topology.visual_folded.has(index):
++		var outline: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,0.0,topology),cuts)
++		topology.visual_folded[index] = _crosses(outline)
++	var swept: bool = topology.visual_folded[index]
++	var contours: Array[PackedVector2Array] = []
++	if swept:
++		# Offset sides can run backwards when the inner radius is narrower than
++		# half the road. Draw only the exposed sweep, never those internal folds.
++		# This cache is local to the presentation build; canonical kerbs stay pinned.
++		if not topology.has("visual_sweeps"): topology.visual_sweeps = {}
++		if not topology.visual_sweeps.has(index):
++			topology.visual_sweeps[index] = SplineBorders.contours(RoadPieces.section_geometry(pieces,index,topology),cuts)
++		contours = SplineBorders.keep_join_planes(SplineBorders.offset(topology.visual_sweeps[index],margin),cuts,margin).duplicate()
++		_align_mouths(contours,cuts,RoadPieces.section_outline(pieces,index,margin,topology))
++	else:
++		var outline: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin,topology),cuts)
++		contours.append(fair_contour(outline,cuts))
++	return {"polygon":contours[0],"contours":contours,"cuts":cuts,"swept":swept}
++
++static func _align_mouths(contours: Array[PackedVector2Array], cuts: Array[Dictionary], outline: PackedVector2Array) -> void:
++	# The sampled sweep's round cap can be a few centimetres narrower than
++	# the exact shared cross-section. Both pieces must meet at identical tips.
++	var count: int = outline.size()/2
++	for cut: Dictionary in cuts:
++		var across: Vector2 = Vector2(cut.normal).orthogonal()
++		var a: Vector2 = outline[0 if cut.endpoint == 0 else count-1]
++		var b: Vector2 = outline[-1 if cut.endpoint == 0 else count]
++		if (a-b).dot(across) > 0.0:
++			var swap: Vector2 = a; a = b; b = swap
++		for contour: int in range(contours.size()):
++			var polygon: PackedVector2Array = contours[contour]
++			var left: int = -1
++			var right: int = -1
++			for i: int in range(polygon.size()):
++				var delta: Vector2 = polygon[i]-Vector2(cut.point)
++				if absf(delta.dot(cut.normal)) > 0.002 or absf(delta.dot(across)) > float(cut.span)*0.5+1.0: continue
++				if left < 0 or polygon[i].dot(across) < polygon[left].dot(across): left = i
++				if right < 0 or polygon[i].dot(across) > polygon[right].dot(across): right = i
++			if left >= 0 and right >= 0 and left != right:
++				polygon[left] = a; polygon[right] = b
++				contours[contour] = polygon
++
++static func _crosses(polygon: PackedVector2Array) -> bool:
++	for i: int in range(polygon.size()):
++		var a: Vector2 = polygon[i]
++		var b: Vector2 = polygon[(i+1)%polygon.size()]
++		for j: int in range(i+2,polygon.size()):
++			if i == 0 and j == polygon.size()-1: continue
++			var c: Vector2 = polygon[j]
++			var d: Vector2 = polygon[(j+1)%polygon.size()]
++			if a.min(b).x > c.max(d).x or c.min(d).x > a.max(b).x or a.min(b).y > c.max(d).y or c.min(d).y > a.max(b).y: continue
++			var hit: Variant = Geometry2D.segment_intersects_segment(a,b,c,d)
++			if hit is Vector2 and minf(minf(hit.distance_to(a),hit.distance_to(b)),minf(hit.distance_to(c),hit.distance_to(d))) > 0.001: return true
++	return false
+ 
+ static func _walk(polygon: PackedVector2Array, start: int, step: int, cuts: Array[Dictionary], limit: float) -> Dictionary:
+ 	var distance: float = 0.0
+@@ -117,41 +176,51 @@
+ 		if pieces[index].kind == "bridge": continue
+ 		var contours: Array[PackedVector2Array] = []
+ 		if pieces[index].kind == "spline": contours = RoadEdges.section_contours(pieces,index,0.0,topology)
+-		else: contours.append(RoadPieces.section_outline(pieces,index,0.0,topology))
++		else:
++			var shape: Dictionary = _base_shape(pieces,index,0.0,topology)
++			if shape.swept: contours = shape.contours
++			else: contours.append(RoadPieces.section_outline(pieces,index,0.0,topology))
+ 		for polygon: PackedVector2Array in contours:
+ 			var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 			for point: Vector2 in polygon: bounds = bounds.expand(point)
+-			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
++			var swept: bool = pieces[index].kind == "spline" or topology.get("visual_folded",{}).get(index,false)
++			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
+ 	var segments: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
+ 		if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 		if pieces[index].kind in ["bridge","spline"]: continue
+ 		var shape: Dictionary = build(pieces,index,-0.2,topology)
+-		var polygon: PackedVector2Array = shape.polygon
+ 		var cuts: Array[Dictionary] = shape.cuts
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+-		var distance: float = 0
+-		for edge: int in range(polygon.size()):
+-			if yield_budget.is_valid() and not await yield_budget.call(): return []
+-			var a: Vector2 = polygon[edge]
+-			var b: Vector2 = polygon[(edge+1)%polygon.size()]
+-			if RoadEdges._on_join_cut(a,b,cuts): continue
+-			var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts)
+-			var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
+-			var steps: int = maxi(1,ceili(a.distance_to(b)/0.2))
+-			for step: int in range(steps):
+-				var p: Vector2 = a.lerp(b,float(step)/steps)
+-				var q: Vector2 = a.lerp(b,float(step+1)/steps)
+-				var np: Vector2 = na.lerp(nb,float(step)/steps)
+-				var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
+-				var start: float = distance
+-				distance += (p+np*0.375).distance_to(q+nq*0.375)
+-				var middle: Vector2 = (p+q)*0.5
+-				var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
+-				if Geometry2D.is_point_in_polygon(middle+outward,polygon): outward = -outward
+-				if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces,topology): continue
+-				if RoadEdges._on_join_plane(a,b,cuts) or RoadEdges._inner_bend_distance(middle,points) < 0: continue
+-				segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
++		for polygon: PackedVector2Array in shape.contours:
++			var hole: bool = shape.swept and Geometry2D.is_polygon_clockwise(polygon)
++			var distance: float = 0
++			for edge: int in range(polygon.size()):
++				if yield_budget.is_valid() and not await yield_budget.call(): return []
++				var a: Vector2 = polygon[edge]
++				var b: Vector2 = polygon[(edge+1)%polygon.size()]
++				if RoadEdges._on_join_cut(a,b,cuts) or (shape.swept and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,shape.swept)
++				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,shape.swept)
++				if hole: na = -na; nb = -nb
++				if shape.swept:
++					na = SplineBorders.kerb_normal(polygon,edge,na)
++					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
++				var steps: int = maxi(1,ceili(a.distance_to(b)/0.2))
++				for step: int in range(steps):
++					var p: Vector2 = a.lerp(b,float(step)/steps)
++					var q: Vector2 = a.lerp(b,float(step+1)/steps)
++					var np: Vector2 = na.lerp(nb,float(step)/steps)
++					var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
++					var start: float = distance
++					distance += (p+np*0.375).distance_to(q+nq*0.375)
++					var middle: Vector2 = (p+q)*0.5
++					var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
++					if Geometry2D.is_point_in_polygon(middle+outward,polygon) != hole: outward = -outward
++					if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces,topology): continue
++					var curved: bool = RoadEdges._inner_bend_distance(middle,points) >= 0
++					if RoadEdges._on_join_plane(a,b,cuts) or not curved: continue
++					segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+ 	# Splines keep exactly the same swept contours, curvature classification
+ 	# and bounded kerb offsets used by their solitary/canonical renderer.
+ 	var has_spline: bool = false
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-115"
++const VERSION: String = "track-kit-116"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -290,10 +290,17 @@
+ 			if not is_inside_tree(): return
+ 			_slice_started = Time.get_ticks_usec()
+ 		if pieces[index].kind == "bridge": continue
+-		for polygon: PackedVector2Array in (RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else [RoadPieces.section_outline(pieces,index,0.0,topology)]):
++		var exposed: Array[PackedVector2Array] = []
++		if pieces[index].kind == "spline": exposed = RoadEdges.section_contours(pieces,index,0.0,topology)
++		else:
++			var shape: Dictionary = VisualRoadJoin._base_shape(pieces,index,0.0,topology)
++			if shape.swept: exposed = shape.contours
++			else: exposed.append(RoadPieces.section_outline(pieces,index,0.0,topology))
++		for polygon: PackedVector2Array in exposed:
+ 			var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 			for point: Vector2 in polygon: bounds = bounds.expand(point)
+-			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
++			var swept: bool = pieces[index].kind == "spline" or topology.get("visual_folded",{}).get(index,false)
++			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
+ 	for index: int in range(pieces.size()):
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+@@ -306,25 +313,26 @@
+ 		var axis_cache: Dictionary = {}
+ 		var road_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,0.0,topology)
+ 		var marking_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,-0.20,topology)
++		var swept: bool = piece.kind == "spline" or road_join.get("swept",false)
+ 		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology) if piece.kind == "spline" else marking_join.cuts
+ 		var road_contours: Array[PackedVector2Array] = []
+ 		if piece.kind == "spline": road_contours = RoadEdges.section_contours(pieces,index,0.0,topology)
+-		else: road_contours.append(road_join.polygon)
++		else: road_contours = road_join.contours
+ 		# A 0.36 m cover hides the maximum corner protrusion of a 0.5 m
+ 		# raster cell (sqrt(2)*0.25). The white line stays inside authored width.
+ 		var skirt_margin: float = 3.7 if theme_id == "desert" else 1.8
+-		var skirts: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,skirt_margin)) if piece.kind == "spline" else Geometry2D.offset_polygon(road_contours[0],skirt_margin,Geometry2D.JOIN_ROUND)
++		var skirts: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,skirt_margin)) if swept else Geometry2D.offset_polygon(road_contours[0],skirt_margin,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in skirts:
+ 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
+-		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if piece.kind == "spline" else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
++		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if swept else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in surfaces:
+ 			counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 		var dirt: bool = document.get("surface","asphalt") == "dirt"
+ 		var border_contours: Array[PackedVector2Array] = []
+ 		if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
+-		else: border_contours.append(marking_join.polygon)
++		else: border_contours = marking_join.contours
+ 		for polygon: PackedVector2Array in border_contours:
+-			var hole: bool = piece.kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
++			var hole: bool = swept and Geometry2D.is_polygon_clockwise(polygon)
+ 			for edge: int in range(polygon.size()):
+ 				if _menu_yield_due():
+ 					await get_tree().process_frame
+@@ -332,9 +340,9 @@
+ 					_slice_started = Time.get_ticks_usec()
+ 				var a: Vector2 = polygon[edge]
+ 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+-				if _on_join_cut(a,b,cuts) or (piece.kind == "spline" and RoadEdges._on_join_cap(a,b,cuts)): continue
+-				var normal_a: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,true) if piece.kind == "spline" else _roadside_miter(polygon,edge,cuts)
+-				var normal_b: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,true) if piece.kind == "spline" else _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
++				if _on_join_cut(a,b,cuts) or (swept and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var normal_a: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,true) if swept else _roadside_miter(polygon,edge,cuts)
++				var normal_b: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,true) if swept else _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
+ 				if hole: normal_a = -normal_a; normal_b = -normal_b
+ 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+ 				for step: int in range(steps):
+@@ -1360,8 +1368,13 @@
+ 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
+ 	var document: Dictionary = track.metadata.get("creator_document",{})
+ 	var triangles: Array[Dictionary] = track.kerbs.triangles
+-	# A solitary piece has no cosmetic join to fair; retain its canonical kerb.
+-	if document.get("pieces",[]).size() > 1 and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
++	var pieces: Array = document.get("pieces",[])
++	var fair: bool = pieces.size() > 1
++	if pieces.size() == 1 and pieces[0].kind not in ["spline","bridge"]:
++		fair = VisualRoadJoin._base_shape(pieces,0,0.0,RoadPieces.prepare_endpoints(pieces)).swept
++	# Ordinary solitary pieces retain their canonical kerb; folded ones need
++	# the same exposed cosmetic border as their road surface.
++	if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+ 		triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
+ 		if _menu_slices and not is_inside_tree(): return
+ 	if triangles.is_empty(): return
+diff --git a/game/tests/test_tree_road_bends.gd b/game/tests/test_tree_road_bends.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_tree_road_bends.gd
+@@ -0,0 +1,145 @@
++extends SceneTree
++## Actual retained owner track; presentation bends must have simple borders.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func crossings(polygon: PackedVector2Array) -> int:
++	var result: int = 0
++	for i: int in range(polygon.size()):
++		var a: Vector2 = polygon[i]
++		var b: Vector2 = polygon[(i+1)%polygon.size()]
++		for j: int in range(i+2,polygon.size()):
++			if i == 0 and j == polygon.size()-1: continue
++			var c: Vector2 = polygon[j]
++			var d: Vector2 = polygon[(j+1)%polygon.size()]
++			var hit: Variant = Geometry2D.segment_intersects_segment(a,b,c,d)
++			if hit is Vector2 and minf(minf(hit.distance_to(a),hit.distance_to(b)),minf(hit.distance_to(c),hit.distance_to(d))) > 0.001: result += 1
++	return result
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/to_the_trees.json"))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	print("TREE_CONTENT_HASH ",track.content_hash)
++	check(track.content_hash == "1617ca276e8e3de24c70b247faebcd29299b461b22183f4e253f155df246c0bf","actual track retains compiler22 canonical content identity")
++	var original: Dictionary = doc.duplicate(true)
++	var physical: Array = track.kerbs.triangles.duplicate(true)
++	var cells: PackedInt32Array = track.cells.duplicate()
++	var topology: Dictionary = RoadPieces.prepare_endpoints(doc.pieces)
++	var measured: Dictionary = RoadPieces.prepare_endpoints(doc.pieces)
++	var started: int = Time.get_ticks_usec()
++	for index: int in range(doc.pieces.size()):
++		if doc.pieces[index].kind == "bridge": continue
++		for margin: float in [0.0,-0.2]: VisualRoadJoin.build(doc.pieces,index,margin,measured)
++	print("TREE_BORDER_COLD_MS ",(Time.get_ticks_usec()-started)/1000.0)
++	started = Time.get_ticks_usec()
++	for index: int in range(doc.pieces.size()):
++		if doc.pieces[index].kind == "bridge": continue
++		for margin: float in [0.0,-0.2]: VisualRoadJoin.build(doc.pieces,index,margin,measured)
++	print("TREE_BORDER_WARM_MS ",(Time.get_ticks_usec()-started)/1000.0)
++	for index: int in range(doc.pieces.size()):
++		if doc.pieces[index].kind == "bridge": continue
++		for margin: float in [0.0,-0.2]:
++			var shape: Dictionary = VisualRoadJoin.build(doc.pieces,index,margin,topology)
++			var count: int = 0
++			for contour: PackedVector2Array in shape.contours: count += crossings(contour)
++			print("TREE_BEND piece=",index," kind=",doc.pieces[index].kind," margin=",margin," crossings=",count)
++			check(count == 0,"simple visual border for actual piece %d margin %.2f" % [index,margin])
++			if index == 2:
++				for endpoint: int in range(2):
++					var match: Array = RoadPieces._matches(topology,index,endpoint)[0]
++					var neighbor: Dictionary = VisualRoadJoin.build(doc.pieces,match[0],margin,topology)
++					var closest := PackedFloat32Array()
++					var cut: Dictionary = shape.cuts[endpoint]
++					for point: Vector2 in shape.polygon:
++						if absf((point-Vector2(cut.point)).dot(cut.normal)) > 0.001: continue
++						var distance: float = INF
++						for other: Vector2 in neighbor.polygon: distance = minf(distance,point.distance_to(other))
++						closest.append(distance)
++					print("TREE_JOIN endpoint=",endpoint," margin=",margin," differences=",closest)
++					check(closest.size() == 2,"folded bend retains both open mouth tips")
++					for distance: float in closest: check(distance < 0.0001,"folded bend and adjacent road share identical rounded tips")
++	for mirror: bool in [false,true]:
++		for heading: float in [0.0,43.0,197.0]:
++			var piece: Dictionary = doc.pieces[2].duplicate(true)
++			piece.flip = mirror; piece.heading = heading
++			for margin: float in [0.0,-0.2]:
++				var shape: Dictionary = VisualRoadJoin.build([piece],0,margin)
++				for polygon: PackedVector2Array in shape.contours:
++					check(crossings(polygon) == 0,"rotated/mirrored tight S border is simple")
++					check(not Geometry2D.triangulate_polygon(polygon).is_empty(),"rotated/mirrored tight S border triangulates")
++	check(doc == original,"presentation repair preserves authored road coordinates, objects and start")
++	await unchanged_meshes()
++	check(track.kerbs.triangles == physical and track.cells == cells,"cosmetic repair retains exact physical kerbs and surfaces")
++	if DisplayServer.get_name() == "headless":
++		print("TREE_ROAD_BENDS: %d checks, %d failures" % [checks,failures])
++		quit(1 if failures else 0); return
++	preload("res://track/road_mesh_disk_cache.gd").directory = ""
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.production_mode = true
++	root.add_child(game)
++	game.set_physics_process(false); game.paused = true; game.countdown_ticks = 0; game.race_cues.hide()
++	var phase: String = OS.get_environment("BMT_BEND_PHASE")
++	if phase.is_empty(): phase = "after"
++	var evidence: String = ProjectSettings.globalize_path("res://../docs/evidence/tree-road-bends-2026-10-08/"+phase)
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for target: Vector2 in [Vector2(32,-18),Vector2(0,12),Vector2(-44,-24)]:
++		game.sim.state.position = target; game.sim.state.heading = PI*0.5
++		game.previous_position = target; game.previous_heading = game.sim.state.heading
++		game.camera.follow(target,Vector2.ZERO,game.sim.state.heading,0.0,true)
++		for frame: int in range(8): await process_frame
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(evidence.path_join("bend-%d-%d.png" % [target.x,target.y])) == OK,"capture actual track bend")
++	root.size = Vector2i(960,540)
++	game.sim.state.position = Vector2(32,-18); game.previous_position = game.sim.state.position
++	game.camera.follow(Vector2(32,-18),Vector2.ZERO,game.sim.state.heading,0.0,true)
++	for frame: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join("bend-compact.png")) == OK,"capture compact landscape bend")
++	game.queue_free(); await process_frame
++	await process_frame
++	check(track.kerbs.triangles == physical and track.cells == cells,"actual race renderer preserves canonical kerbs and surfaces")
++	print("TREE_ROAD_BENDS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func mesh_signature(node: Node) -> Array:
++	var result: Array = []
++	if node is MeshInstance3D and node.mesh != null:
++		for surface: int in range(node.mesh.get_surface_count()): result.append([node.transform,node.mesh.surface_get_arrays(surface)])
++	for child: Node in node.get_children(): result.append_array(mesh_signature(child))
++	return result
++
++func unchanged_meshes() -> void:
++	var old_join := GDScript.new()
++	old_join.source_code = FileAccess.get_file_as_string("res://../docs/evidence/tree-road-bends-2026-10-08/before/game/track/visual_road_join.gd").replace("\r\n","\n").replace("class_name VisualRoadJoin\n","")
++	check(old_join.reload() == OK,"task-start join/kerb helper compiles")
++	var baseline := GDScript.new()
++	baseline.source_code = FileAccess.get_file_as_string("res://../docs/evidence/tree-road-bends-2026-10-08/before/game/track/native_track_visual.gd").replace("\r\n","\n").replace("class_name NativeTrackVisual\n","")
++	check(baseline.reload() == OK,"task-start renderer compiles")
++	for theme: String in ["pine","desert","winter","night_city"]:
++		var doc: Dictionary = TrackDocument.create_default(); doc.theme = theme
++		doc.pieces = [RoadPieces.create("straight",Vector2(-28,0)),RoadPieces.create("curve",Vector2.ZERO),RoadPieces.create("hairpin",Vector2(10,-20)),RoadPieces.create("bridge",Vector2(-20,30))]
++		var native: NativeTrack = TrackCompiler.compile(doc)
++		var prior: RefCounted = old_join.new()
++		for index: int in range(doc.pieces.size()-1):
++			for margin: float in [0.0,-0.2]:
++				var expected: Dictionary = prior.call("build",doc.pieces,index,margin)
++				var current: Dictionary = VisualRoadJoin.build(doc.pieces,index,margin)
++				check(current.polygon == expected.polygon and current.cuts == expected.cuts,"ordinary road join retains task-start shape")
++		check(await VisualRoadJoin.kerb_triangles(doc) == await prior.call("kerb_triangles",doc),"ordinary cosmetic kerbs retain task-start geometry")
++		var expected: Array = []
++		for previous: bool in [true,false]:
++			var visual: Node3D = baseline.new() if previous else NativeTrackVisual.new()
++			visual.set("cache_road_meshes",false); visual.set("theme_id",theme); visual.set("colors",TrackTheme.palette(theme))
++			root.add_child(visual)
++			await visual.call("_build_creator_roads",native)
++			if previous: expected = mesh_signature(visual)
++			else: check(mesh_signature(visual) == expected,"ordinary "+theme+" road meshes remain byte-identical")
++			visual.free()
+diff --git a/game/tests/test_tree_road_bends.gd.uid b/game/tests/test_tree_road_bends.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_tree_road_bends.gd.uid
+@@ -0,0 +1 @@
++uid://da411hvy0ssoy
+diff --git a/game/tests/fixtures/to_the_trees.json b/game/tests/fixtures/to_the_trees.json
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/to_the_trees.json
+@@ -0,0 +1 @@
++{"base_track":"","corners":["sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp"],"creator":"Beat my track","id":"track_96c6579ca32a84728d4af02d70fba115","layout":{},"name":"To the trees","objects":[{"kind":"barrier","position":[3.0,-20.0],"rotation":52.9766923159518},{"kind":"broadleaf","position":[19.0,-22.0],"rotation":0.0},{"kind":"broadleaf","position":[40.0,-15.0],"rotation":135.0},{"kind":"broadleaf","position":[42.0,-12.0],"rotation":0.0},{"kind":"broadleaf","position":[39.0,-11.0],"rotation":90.0},{"kind":"broadleaf","position":[41.0,-7.0],"rotation":0.0},{"kind":"broadleaf","position":[43.0,-9.0],"rotation":90.0},{"kind":"broadleaf","position":[36.0,-9.0],"rotation":45.0},{"kind":"slate","position":[0.0,-2.0],"rotation":45.0}],"paint":[],"pieces":[{"flip":true,"heading":0.0,"height":21.5,"kind":"s_bend","length":2.0,"position":[14.0,21.5],"radius":12.5,"width":10.0},{"angle":131.5,"curvature":0.3,"flip":true,"heading":1.20042911868331,"kind":"curve","length":0.0,"position":[35.6776695251465,0.0],"radius":12.2869251288506,"width":10.0},{"flip":true,"heading":232.976673419246,"height":27.2783347619173,"kind":"s_bend","length":2.0,"position":[45.3059883117676,-20.2312145233154],"radius":8.49629076761609,"width":10.5},{"flip":false,"heading":232.976673419246,"kind":"hairpin","length":12.5,"position":[3.50453662872314,-8.76468276977539],"radius":6.5,"width":10.5},{"angle":50.5,"curvature":0.3,"flip":false,"heading":52.9766734192461,"kind":"curve","length":0.0,"position":[3.50453662872314,-8.76468276977539],"radius":16.0,"width":10.5},{"angle":220.0,"curvature":-0.3,"flip":false,"heading":102.397774603517,"kind":"curve","length":0.0,"position":[6.28972768783569,4.59835052490234],"radius":17.7940828240226,"width":10.5},{"flip":false,"heading":0.465712820410566,"kind":"bridge","length":48.5091474864448,"position":[-34.5075454711914,21.1057033538818],"radius":16.0,"width":10.5},{"curvature":0.15,"flip":false,"heading":179.637087663879,"kind":"curve","length":0.0,"position":[-34.5075454711914,21.1057033538818],"radius":14.9663395059918,"width":10.5},{"angle":233.5,"curvature":-0.18,"flip":false,"heading":269.257166297677,"kind":"curve","length":0.0,"position":[-49.4481163024902,-26.7371196746826],"radius":17.133517215435,"width":10.5},{"flip":false,"heading":90.2089925298536,"kind":"straight","length":32.9718001891409,"position":[-49.4481163024902,-26.7371196746826],"radius":16.0,"width":10.5}],"points":[[14.0,21.5],[18.017557144165,21.0130424499512],[21.063648223877,18.3381404876709],[23.1763515472412,14.8424768447876],[24.727689743042,11.0585317611694],[26.2256507873535,7.25254011154175],[28.2201976776123,3.68618249893188],[31.0887756347656,0.807717025279999],[35.021785736084,0.0],[39.1125984191895,0.0895356312394142],[43.1846961975098,-0.225873410701752],[46.9826049804688,-1.68790411949158],[49.8717231750488,-4.53692054748535],[51.1628608703613,-8.38018321990967],[50.6616058349609,-12.4120025634766],[48.7757263183594,-16.0266704559326],[46.1928825378418,-19.1981964111328],[43.5381736755371,-22.2928485870361],[39.5211067199707,-22.3183994293213],[35.6197547912598,-21.1002731323242],[31.8540229797363,-19.5021800994873],[28.1687183380127,-17.7236213684082],[24.4332504272461,-16.0556011199951],[20.5689563751221,-14.7173633575439],[16.529634475708,-14.2473373413086],[13.6208229064941,-16.9409408569336],[11.1568441390991,-20.2079811096191],[8.69286632537842,-23.4750213623047],[6.21957540512085,-26.734619140625],[2.85008335113525,-28.9332485198975],[-1.16645002365112,-28.7141227722168],[-4.29017734527588,-26.1804637908936],[-5.31447553634644,-22.2897987365723],[-3.86382651329041,-18.5345478057861],[-1.39984750747681,-15.2675075531006],[1.06413102149963,-12.000467300415],[3.52863836288452,-8.73383331298828],[6.28634691238403,-5.71387672424316],[7.96414089202881,-2.0578396320343],[7.19353532791138,1.9227819442749],[5.95585536956787,5.81866598129272],[4.08622932434082,9.43869590759277],[1.17834460735321,12.2933959960938],[-2.46146869659424,14.1282644271851],[-6.4790472984314,14.8286170959473],[-10.5405006408691,14.4290523529053],[-14.4084978103638,13.1155319213867],[-17.9922256469727,11.1482372283936],[-21.2483959197998,8.6766996383667],[-24.0021018981934,5.66016054153442],[-25.9715003967285,2.086345911026],[-26.8997535705566,-1.88441979885101],[-26.6251907348633,-5.95133781433105],[-25.1199226379395,-9.7380952835083],[-22.5052471160889,-12.8627271652222],[-19.5315761566162,-15.6591730117798],[-17.4429702758789,-19.1614875793457],[-16.4220714569092,-23.1098251342773],[-16.5283279418945,-27.1876239776611],[-17.716438293457,-31.0910129547119],[-19.8509502410889,-34.5699272155762],[-22.7482318878174,-37.4468879699707],[-26.2108325958252,-39.6123161315918],[-30.0578098297119,-40.9829940795898],[-34.111743927002,-41.4678688049316],[-38.1641502380371,-40.9810028076172],[-41.9595069885254,-39.4832382202148],[-45.2192993164063,-37.0312309265137],[-47.6759643554688,-33.7758865356445],[-49.1162376403809,-29.9610443115234],[-49.4511947631836,-25.8932361602783],[-49.466121673584,-21.8012294769287],[-49.4810447692871,-17.7092227935791],[-49.4959716796875,-13.6172161102295],[-49.5108985900879,-9.5252103805542],[-49.5258255004883,-5.43320369720459],[-49.5407524108887,-1.34119725227356],[-49.5556755065918,2.75080919265747],[-49.5671806335449,6.8428168296814],[-49.5507316589355,10.9342756271362],[-48.837833404541,14.9489116668701],[-46.6904106140137,18.3911647796631],[-43.2182540893555,20.4901351928711],[-39.1941070556641,21.1479415893555],[-35.1027641296387,21.1120014190674],[-31.0108814239502,21.134126663208],[-26.9189834594727,21.1673851013184],[-22.8270854949951,21.200647354126],[-18.7351875305176,21.233907699585],[-14.6432886123657,21.2671680450439],[-10.5513906478882,21.3004283905029],[-6.45949172973633,21.3336887359619],[-2.36759352684021,21.3669509887695],[1.72430491447449,21.4002094268799],[5.81620311737061,21.4334697723389],[9.90810203552246,21.4667320251465]],"route_override":true,"schema":"creator-track-v5","start_line":{"heading":90.5751882160961,"position":[-49.5750465393066,8.0181827545166]},"surface":"asphalt","theme":"pine","width":10.0,"widths":[10.25,10.1518573760986,10.0008869171143,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0451688766479,10.2246980667114,10.2890625,10.4683055877686,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.5,10.3972883224487]}
+\ No newline at end of file
+diff --git a/docs/TREE_ROAD_BENDS.md b/docs/TREE_ROAD_BENDS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TREE_ROAD_BENDS.md
+@@ -0,0 +1,42 @@
++# To the trees: folded curve borders — 2026-10-08
++
++Owner report: the supplied race screenshot shows triangular white paint, shoulders and kerbs at two tight bends on **To the trees**. Requirements: R01, T01–T04, V03–V05, Q01; RB01 (simple exposed borders on tight ordinary road pieces), RB02 (continuous joined mouths).
++
++The exact cached original track reproduces the screenshot. Its third piece is a 10.5 m wide S-bend with radius 8.496 m and height 27.278 m. The changing curvature makes its inner offset double back: the old visual contour has **two proper self-intersections**, both at road margin 0 and marking margin −0.20 m. Local smoothing cannot remove those folds. The repaired view has **zero intersections**, removes the triangular paint/apron/kerb tips, and retains the existing kerb placement on inside bends.
++
++## Correction and contracts
++
++`VisualRoadJoin` detects proper crossings of ordinary piece outlines. Only folded pieces use the existing exposed swept-boundary builder, with genuine holes retained. Each build owns its contour/cache state. Joined mouths retain their exact shared cross-section before the existing cosmetic rounding; both adjacent pieces then share identical tips within 0.000004 m on the actual track. Road fill, edge markings, sandy shoulders and cosmetic kerbs follow the same simple contour. Very tight grass-facing kerb offsets use the existing bounded radius taper. Solitary folded pieces also use the cosmetic kerb repair.
++
++Ordinary uncrossed pieces retain their original construction. Four-biome tests compare exact road mesh arrays, original join shapes and original cosmetic kerb triangles against saved task-start sources. **track-kit-116** invalidates old baked presentation meshes. The fixture retains compiler22 content identity `1617ca276e8e3de24c70b247faebcd29299b461b22183f4e253f155df246c0bf`; physical kerb triangles, surface cells, authored coordinates/objects/start line, physics and rules remain unchanged. No player file or published revision is rewritten; this correction needs no backend rollout.
++
++## Actual verification
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, using `scripts/dev.ps1`, Windows Compatibility/OpenGL on RTX 3090. Tests use workspace-local `APPDATA=build/tree-bends-userdata` and isolated records/cache. Commands below were actually run with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Arguments | Actual result |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_tree_road_bends.gd -Graphical` | Final **96 checks, zero failures**: exact owner track, both road/marking borders, six rotated/mirrored tight bends, open matching joins, exact ordinary-road/kerb equivalence and canonical-data preservation; four captured views. |
++| `TestShoulders` | Union area 30 m²/10 triangles, **71 visual-join and 18 internal-contour checks**, zero failures. |
++| `TestRoadCache` | **66 checks, zero failures**; persistent cache round trips, invalidation and bounds. |
++| `TestPieces` | **377 checks, zero failures**; genuine five-lap runs with zero contacts and retained replay checks. |
++| `TestScript -ScriptPath res://tests/test_spline_joins.gd` | **124 checks, zero failures**; no cross-lane marking/apron triangles, physical kerbs preserved. |
++| `TestScript -ScriptPath res://tests/test_spline_borders.gd` | **1,107 checks, zero failures**; steep curves, variable widths, genuine holes and four legacy-biome comparisons. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **360 scripts, zero failures**. |
++| `Import` | Final exit 0; registers the new regression UID. |
++
++Final isolated contour-build measurement for all nine ground pieces at both margins: **63.993 ms cold / 46.601 ms with the local contour cache**, desktop only. This measures construction, not frame time or phone performance. The renderer's existing bounded memory/disk caches remain active in ordinary use.
++
++The initial reproduction returned **21 checks / 2 failures** and saved the matching before screenshots. An intermediate repair left 0.018–0.371 m differences at joined mouths; restoring exact shared endpoints removed them. A four-biome equivalence run caught incorrect hole classification on clockwise ordinary outlines; the final classification retains their original solid treatment. Early test-only cache-reference and packed-array type errors were corrected. An earlier timing label included diagnostic assertions; final measurements time construction only.
++
++Initial sandbox runs could not write the default user log/read the certificate store; subsequent approved native runs used isolated workspace data. Import and two app-dependent regressions were temporarily interrupted by a concurrently edited `track_browser.gd` with an undefined `test_histograms`. That other edit was completed independently; this task did not modify it, and final import/parser/spline suites pass. No failed invariant was weakened. Full Validate and historical road-build goldens were not run or claimed green.
++
++## Files, provenance and review
++
++Runtime: `game/track/visual_road_join.gd`, `game/track/native_track_visual.gd`. Regression: `game/tests/test_tree_road_bends.gd` and UID, `game/tests/fixtures/to_the_trees.json`; `scripts/dev.ps1` registers it in full Validate. Documentation: this file, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`. The fixture is a byte-for-byte copy of the owner's existing cached original creator document, SHA-256 `62388ecccfecaf6254ab1c34e9febdca9cf6366175cc636f6d3fac57b288f81e`; it contains no new track edits. `tests/*` remains export-excluded. No generated art or dependency was added.
++
++[Before](evidence/tree-road-bends-2026-10-08/before/bend-32--18.png), [after desktop](evidence/tree-road-bends-2026-10-08/after/bend-32--18.png), [after compact](evidence/tree-road-bends-2026-10-08/after/bend-compact.png) are actual native captures, inspected visually. The other two captured corners are retained in the same folders. Original sources, actual logs and the [task-only review patch](evidence/tree-road-bends-2026-10-08/scoped-change.patch) retain the evidence without staging unrelated working-tree changes.
++
++`python docs/evidence/tree-road-bends-2026-10-08/create_checkpoint.py` produces a nine-file scoped patch and normalized source hashes. It, `git apply --reverse --check docs/evidence/tree-road-bends-2026-10-08/scoped-change.patch` and the scoped `git diff --check` all exit 0. The Git index is untouched; concurrent work is excluded from this checkpoint.
++
++No phone attachment check, physical-device test, Android export/install, backend/production deployment or full Validate was performed. Restart the desktop app to load the repaired renderer and invalidate the old kit115 mesh cache. Owner visual acceptance, in-motion inspection of every bend and physical-phone performance remain outstanding.
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -163,6 +163,7 @@
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_road.gd') 'spline-road-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_borders.gd') 'spline-border-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tree_road_bends.gd') 'tree-road-bend-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_composition.gd') 'spline-composition-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_joins.gd') 'spline-join-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 R01/T01-T04/V03-V05/Q01/RB01-RB02: owner screenshot's To the trees folded S-bend reproduced with two proper road/marking crossings and repaired through presentation-only exposed contours, shared mouths and bounded cosmetic kerbs. Kit116 invalidates baked meshes; compiler22 identity, exact surfaces/physical kerbs, authored data and ordinary four-biome meshes/joins/kerbs preserved. Final graphical96/pieces377/cache66/joins124/borders1107/parser360 and shoulder71+18 checks pass; final Import exits0. Inspected native desktop/compact/before captures, actual logs and task-only review patch retained. Intermediate join/equivalence/test errors corrected; concurrent browser parser interruption resolved independently. No player-file rewrite, phone attachment check/device test/export/install/full Validate/backend action. Owner/in-motion/mobile acceptance remains. Actual files/commands/evidence/limits: docs/TREE_ROAD_BENDS.md.
++
+ 2026-10-08 SND08-SND10/SND04-SND07/G01/R01/Q01/V06: owner-requested collision, grass and sand audio revision implemented locally. Severity-selected mechanical/body hits replace door/trunk slams; four selected-car wheel contacts blend off-track materials. Fuller grass, recorded granular/rolling sand and damped underside-stone taps follow speed, drive demand, measured acceleration and slip; separate debris voices preserve crash tails. 45-clip bank9,399,550 bytes/35 unchanged hashes/21 bounded voices; public CC0 preview provenance retained. Final surface67/vehicle1438/desert25/loops38/capture14/App99/rewind57/handling88 checks pass; final parser/import and capture levels in retained evidence. Exact960-tick equivalence and historical handling replays retained; initial queued capture rejected/preserved and capture PCM-getter inefficiency corrected. Concurrent track-browser parse error caused a final-import retry, no unrelated source repair by this slice. DN2103 attached; no phone listening/performance/export/install/full Validate/backend or production action. Owner realism/mix and phone acceptance remain. Actual commands/files/limitations/scoped checkpoint: docs/SURFACE_IMPACT_AUDIO.md.
+ 
+ 2026-10-08 V01/V03-V05/Q01: owner-requested stronger/configurable speed zoom implemented locally: default 12%→30% extra linear world coverage, 0–50% slider in staged Camera Settings and immediate race pause settings, drag-release persistence and finite schema-2 validation. Existing 30–160km/h/easing/1.15x disabled baseline retained; physics0.53/rules20/records unchanged. Final camera1499/Settings278/records54/rewind57/shake7/App99/parser360 pass; 39 camera captures plus three Settings sizes inspected. Camera fixture retains 29-instance shutdown warning; initial sandbox/API/input-fixture/focus capture failures corrected and documented. Scoped task-only checkpoint preserves unrelated work. No phone attachment check/device test/export/install/full Validate/replay gate/backend action. Requirements/files/actual commands/evidence/acceptance: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 R01/T01-T04/V03-V05/Q01/RB01-RB02: owner screenshot's To the trees folded S-bend reproduced with two proper road/marking crossings and repaired through presentation-only exposed contours, shared mouths and bounded cosmetic kerbs. Kit116 invalidates baked meshes; compiler22 identity, exact surfaces/physical kerbs, authored data and ordinary four-biome meshes/joins/kerbs preserved. Final graphical96/pieces377/cache66/joins124/borders1107/parser360 and shoulder71+18 checks pass; final Import exits0. Inspected native desktop/compact/before captures, actual logs and task-only review patch retained. Intermediate join/equivalence/test errors corrected; concurrent browser parser interruption resolved independently. No player-file rewrite, phone attachment check/device test/export/install/full Validate/backend action. Owner/in-motion/mobile acceptance remains. Actual files/commands/evidence/limits: docs/TREE_ROAD_BENDS.md.
++
+ 2026-10-08 V01/V03-V05/Q01: stronger configurable speed zoom follows the owner's request: 30% default maximum pullback versus12%, 0–50% Camera/pause sliders with atomic saved strength and drag-release commits. Final camera1499/graphicalSettings278/records54/rewind57/shake7/App99/parser360 checks pass; 39 camera and three Settings-size captures inspected. Fixed baseline and canonical0.53/rules20/record keys retained, camera shutdown29-instance warning documented. No attachment/device/export/install/full Validate/replay gate/backend action; owner driving/mobile acceptance remains. Scoped patch, files, exact commands and initial corrected failures: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
+ 
+ 2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.

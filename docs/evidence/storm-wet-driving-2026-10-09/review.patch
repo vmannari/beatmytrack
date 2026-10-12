@@ -1,0 +1,214 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1327,3 +1327,5 @@
+ 2026-10-04 Q01: owner-requested open-change commit review grouped backend rivalry/test-driver services, desert rendering, Android AdMob/emulator support, connected client features, and consolidated requirements/status into separate Git checkpoints. Existing feature documents retain requirement IDs, changed files, commands, screenshots and acceptance limits. Fresh checks: `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry.py backend/tests/test_test_drivers.py backend/tests/test_pc_test_driver_rollout.py -q -k 'not postgres' --tb=short` passed 24 tests, with 9 deselected and one existing Starlette warning; `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd` passed 291 scripts with zero failures under normal desktop access. Initial sandbox runs failed on desktop log/certificate-store access; workspace APPDATA alone did not resolve certificate access. Source whitespace checks passed after removing extra EOF blank lines from session_rotation_lock.gd and bridge_elevation.gd. Saved patch/log/text evidence retains its original whitespace and is excluded from the staged source whitespace check. Git writes required normal access because the sandbox exposes .git as read-only. IDE metadata and temp_typography_audit.txt remain untracked. No full regression, export, deployment or device test was performed for this commit task; device attachment was not checked. Previously documented regression and human/device acceptance limits remain outstanding.
+ 
+ 2026-10-07 B01-B07/B19/B20/B23/Q01: reusable scripts/deploy-backend.ps1 and retained GCP updater added for existing beat-my-track staging; preview default, explicit -Apply, remote ownership/image/deletion-protection checks, fresh successful backup, empty-queue check, matching migration/services/jobs, native/storage/worker/catalog/HTTPS acceptance and partial-rollout receipt. Local Python and PowerShell previews pass; focused updater/staging tests35 pass/one existing deprecation warning. No live cloud build/push/deploy/migration, phone attachment check/device test/export or Git commit. Quiet-window/manual recovery and live acceptance remain. Files/commands/limits: docs/GOOGLE_BACKEND_DEPLOY_SCRIPT.md.
++
++2026-10-09 V01/V02/V04/V05/Q01: subtle Storm wet-asphalt feedback refines the existing bead-only tire spray with speed-dependent low fans and quieter front tires; 288 lazy particles/0.30s/no clouds. Canonical grip/rules/camera/road materials unchanged. Storm94/capture25/soil163/desert87/parser388 pass; eight frozen matched captures inspected at1280x720/960x540, no shader errors. Sandbox log/certificate/adb failures resolved with disposable workspace saves and approved local execution. Doctor finds authorized OnePlus Pad 2; no device test/export/install/full Validate/deployment. Owner motion and mobile acceptance remain; task-only patch preserves concurrent work. Actual files, commands, evidence and limits: docs/STORM_WET_DRIVING.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1338,3 +1338,5 @@
+ ## Visible wall contact and first-sample collision attack, 2026-10-08
+ 
+ 2026-10-08 SND14-SND15/SND05/SND08/SND11/G01/R01/Q01/V06: owner100-200ms wall delay reproduced as drawn-nose/canonical-circle gap, not3ms alone. Compact4m/s visible/sound62 vsphysical81 gives158.33ms old gap; new read-only mesh/solid onset25 five-car speed cases allzero tickgap, rotated/away/deep guards167 pass. Actual Game/render-disabled62/62/81 and exact canonical snapshots/handling/records retained; same-wall later cue deduplicated. Three impact files begin at full PCM peak0/no fade; direct protected Impacts bus follows Vehicle volume/mute and retained master. Native6 light/medium/hard captures42 pass, meaningful-to-halfpeak0.02083ms/route2.0417ms/driver estimate10ms separate; no zero-acoustic claim. 46 clips/10,266,428 bytes/43 other masters exact/22 voices; wall mean47.88us/p9591us desktop. Attack22/timing43/vehicle1442/surface67/desert-continuous28/App99/rewind57/parser382/loops39 pass; attack33 shutdown references retained. Initial unscaled/wrong-method/internal-face failures corrected without relaxed invariants. Android present but unauthorized; no device audio/Android export-install/full Validate/backend or production action. Owner actual-device/corner/bridge acceptance remains, task-only checkpoint preserves concurrent work. Files/commands/captures/limits: docs/COLLISION_ATTACK.md.
++
++2026-10-09 V01/V02/V04/V05/Q01: subtle Storm wet-asphalt feedback refines the existing bead-only tire spray with speed-dependent low fans and quieter front tires; 288 lazy particles/0.30s/no clouds. Canonical grip/rules/camera/road materials unchanged. Storm94/capture25/soil163/desert87/parser388 pass; eight frozen matched captures inspected at1280x720/960x540, no shader errors. Sandbox log/certificate/adb failures resolved with disposable workspace saves and approved local execution. Doctor finds authorized OnePlus Pad 2; no device test/export/install/full Validate/deployment. Owner motion and mobile acceptance remain; task-only patch preserves concurrent work. Actual files, commands, evidence and limits: docs/STORM_WET_DRIVING.md.
+--- a/game/vehicle/sand_dust.gd
++++ b/game/vehicle/sand_dust.gd
+@@ -4,6 +4,7 @@
+ ## never feeds back into the fixed-step vehicle simulation.
+ const PRESENTATION_VERSION: String = "desert-dust-11"
+ const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
++const WATER_PRESENTATION_VERSION: String = "wet-asphalt-spray-2"
+ 
+ const SAND_SURFACE: int = 2
+ const REAR_AXLE: float = -1.0
+@@ -196,13 +197,20 @@
+ 		last_strengths[wheel] = maxf(0.0,strengths.x)
+ 		var wheel_velocity: Vector2 = state.velocity + right * (state.yaw_rate * axle_values[wheel] * wheelbase * 0.5) - forward * (state.yaw_rate * side * track_width * 0.5)
+ 		if not water_drops.is_empty():
+-			var water_strength: float = 0.60*smoothstep(3.0,26.0,wheel_velocity.length()) if storm and kind == 9 else 0.0
++			var water_speed: float = smoothstep(2.0,24.0,wheel_velocity.length())
++			# A fine, low fan is readable in ordinary rolling; front wheels stay
++			# quieter so the car silhouette and approaching road remain clear.
++			var water_strength: float = (0.68 if wheel < 2 else 0.44)*water_speed if storm and kind == 9 else 0.0
+ 			_configure(water_drops[wheel],world_position+Vector3.UP*0.07,wheel_velocity,water_strength)
+ 			if water_strength > 0.012:
+-				var fan: Vector3 = VisualGeometry.world(-wheel_velocity.normalized()+right*side*0.18)+Vector3.UP*0.15
++				var fan: Vector3 = VisualGeometry.world(-wheel_velocity.normalized()+right*side*0.28)+Vector3.UP*0.25
+ 				var local_fan: Vector3 = (water_drops[wheel].basis.inverse()*fan).normalized()
+ 				var process: ParticleProcessMaterial = water_drops[wheel].process_material
+ 				if not process.direction.is_equal_approx(local_fan): process.direction = local_fan
++				var launch_min: float = lerpf(1.2,2.2,water_speed)
++				var launch_max: float = lerpf(2.8,4.4,water_speed)
++				if process.initial_velocity_min != launch_min: process.initial_velocity_min = launch_min
++				if process.initial_velocity_max != launch_max: process.initial_velocity_max = launch_max
+ 		if winter:
+ 			_sample_snow(wheel,contacts[wheel],world_position,wheel_velocity,kind,state,frame,track)
+ 		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)
+@@ -526,10 +534,10 @@
+ 	if not water_drops.is_empty(): return
+ 	for wheel: int in range(4):
+ 		# Water is short ballistic droplets, never an expanding smoke/dust puff.
+-		var drops := _emitter("WaterDrops%d" % wheel,56,0.24,Vector2(0.04,0.10),Color(0.80,0.88,0.92,0.48),MODE_WATER)
++		var drops := _emitter("WaterDrops%d" % wheel,72,0.30,Vector2(0.065,0.12),Color(0.80,0.88,0.92,0.42),MODE_WATER)
+ 		var process: ParticleProcessMaterial = drops.process_material
+-		process.direction = Vector3(0,0.15,-1.0).normalized()
+-		process.spread = 18.0
++		process.direction = Vector3(0,0.25,-1.0).normalized()
++		process.spread = 24.0
+ 		process.initial_velocity_min = 1.2
+ 		process.initial_velocity_max = 3.2
+ 		process.gravity = Vector3(0,-9.8,0)
+--- a/game/tests/test_storm.gd
++++ b/game/tests/test_storm.gd
+@@ -314,6 +314,17 @@
+ 	state.velocity = Vector2(0,5)
+ 	effect.sample(state,frame,track)
+ 	check(effect.water_drops[0].amount_ratio < fast,"spray increases with speed")
++	state.velocity = Vector2(0,18)
++	effect.sample(state,frame,track)
++	check(effect.water_drops[0].amount_ratio > effect.water_drops[2].amount_ratio,"front spray stays quieter than the rear wake")
++	var fast_launch: float = (effect.water_drops[0].process_material as ParticleProcessMaterial).initial_velocity_max
++	state.velocity = Vector2(0,5)
++	effect.sample(state,frame,track)
++	check((effect.water_drops[0].process_material as ParticleProcessMaterial).initial_velocity_max < fast_launch,"water fan travels farther at road speed")
++	state.velocity = Vector2(0,2)
++	effect.sample(state,frame,track)
++	check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"creeping car throws no distracting droplets")
++	state.velocity = Vector2(0,5)
+ 	for kind: int in [1,2,3,4,5,6,7]:
+ 		track.cells.fill(kind)
+ 		effect.sample(state,frame,track)
+--- /dev/null
++++ b/game/tests/capture_storm_wet_driving.gd
+@@ -0,0 +1,91 @@
++extends SceneTree
++## Controlled moving presentation, with matched frozen spray-on/off images.
++const OUTPUT: String = "res://../docs/evidence/storm-wet-driving-2026-10-09/"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	_run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func _run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var document: Dictionary = TrackDocument.create_blank()
++	document.theme = "storm"
++	var position := Vector2(-28,-18)
++	var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		document.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position
++		heading = pose.heading
++	document = RoadPieces.route_from_pieces(document).document
++	document.start_line = {"position":[0.0,-18.0],"heading":0.0}
++	document = JSON.parse_string(JSON.stringify(document))
++	check(TrackDocument.validate(document).is_empty(),"valid automatic-route Storm fixture")
++	var race: Node = load("res://core/game.tscn").instantiate()
++	race.initial_track = TrackCompiler.compile(document)
++	race.production_mode = true
++	root.add_child(race)
++	race.set_physics_process(false)
++	race.set_process(false)
++	race.paused = true
++	(race.race_cues as Control).hide()
++	for size: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = size
++		for speed: float in [7.0,18.0]:
++			var state := VehicleState.new()
++			state.heading = race.sim.state.heading
++			state.velocity = state.forward()*speed
++			var origin := Vector2(0,-18)
++			race.sim.state = state
++			race.sand_dust.clear()
++			for tick: int in range(96):
++				state.position = origin+state.forward()*speed*(float(tick-95)/120.0)
++				race.previous_position = state.position
++				race.previous_heading = state.heading
++				race.call("_process",1.0/120.0)
++				race.sand_dust.set_water_paused(false)
++				race.sand_dust.sample(state,DriveFrame.new(),race.native_track,race.bridge_presentation)
++				await create_timer(1.0/120.0).timeout
++				await RenderingServer.frame_post_draw
++			race.sand_dust.set_water_paused(true)
++			check(race.sand_dust.water_drops.all(func(e: GPUParticles3D) -> bool: return e.emitting),"all tires on wet road")
++			check(state.position == origin,"capture movement has a fixed final pose")
++			var label: String = "%dx%d-%dkmh" % [size.x,size.y,roundi(speed*3.6)]
++			var wet: Image = await _capture(label+"-spray")
++			for drops: GPUParticles3D in race.sand_dust.water_drops: drops.hide()
++			var dry: Image = await _capture(label+"-without-spray")
++			var changed: int = 0
++			var large: int = 0
++			for y: int in range(size.y):
++				for x: int in range(size.x):
++					var a: Color = wet.get_pixel(x,y)
++					var b: Color = dry.get_pixel(x,y)
++					var delta: float = maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b)))
++					if delta > 0.008: changed += 1
++					if delta > 0.25: large += 1
++			print("WET_SPRAY_PIXELS ",label," visible=",changed," high_contrast=",large)
++			check(changed > 12,"wet spray is visible at "+label)
++			check(changed < size.x*size.y/500 and large < 12,"spray remains compact and restrained at "+label)
++			for drops: GPUParticles3D in race.sand_dust.water_drops: drops.show()
++	race.queue_free()
++	await process_frame
++	await process_frame
++	await create_timer(0.15).timeout
++	print("WET_DRIVING_CAPTURE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _capture(label: String) -> Image:
++	for frame: int in range(3): await RenderingServer.frame_post_draw
++	var captured: Image = root.get_texture().get_image()
++	check(captured.save_png(ProjectSettings.globalize_path(OUTPUT+label+".png")) == OK,"saved "+label)
++	return captured
+--- /dev/null
++++ b/docs/STORM_WET_DRIVING.md
+@@ -0,0 +1,34 @@
++# Subtle Storm wet-asphalt driving effect — 2026-10-09
++
++Requirements: V01/V02/V04/V05/Q01; owner requests subtle wet-asphalt driving feedback in the Storm biome. This refines the existing droplet-only treatment in [STORM_TIRE_SPRAY.md](STORM_TIRE_SPRAY.md), preserving the earlier rejection of expanding tire clouds and bright road streaks.
++
++Four tire contacts throw a small backward/outward fan of water beads during ordinary rolling. Rear emission is stronger than front emission; density and launch speed rise smoothly with contact speed. Creeping at or below 2 m/s emits nothing. Each wheel checks actual Storm asphalt independently, including elevated asphalt; grass, sand, other biomes, jumps and rolls suppress new water emission. Existing pause, restart and rewind behavior remains in use. Canonical simulation, wet grip, rules, track identity, camera, road shaders and HUD are unchanged by this task.
++
++The existing filtered bead shader and lazy allocation are reused. Each emitter has 72 particles, a 0.30-second lifetime and 0.065 × 0.12 m beads with maximum alpha 0.42. Four emitters cap allocation at 288 particles, up from 224. Rear/front maximum emission ratios are 0.68/0.44; speed response spans 2–24 m/s. Launch range varies from 1.2–2.8 to 2.2–4.4 m/s, with gravity and no growth curve or shadows. No new bitmap asset, dependency, network call or UI text.
++
++Changed files:
++
++- `game/vehicle/sand_dust.gd`: versioned water presentation, density/launch response and restrained fan parameters.
++- `game/tests/test_storm.gd`: rear/front balance, speed-dependent launch and creeping suppression checks added to existing surface/direction/lifecycle/replay coverage.
++- `game/tests/capture_storm_wet_driving.gd`: isolated moving presentation capture, frozen spray-on/off comparisons at two speeds and resolutions.
++- `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this document and `docs/evidence/storm-wet-driving-2026-10-09/`: outcomes, source snapshots, logs, screenshots and task-only review patch.
++
++Actual commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` with pinned **4.7.2.stable.official.ed1daf0bf**. Tests used disposable workspace `APPDATA` directories under `build/storm-wet-driving-*`, preserving player files:
++
++| Action / arguments | Actual result |
++|---|---|
++| `-Action TestStorm` | 94 checks, zero failures; existing five-car exact wet replays, wheel surfaces, elevated road, reverse/outward direction and pause/clear checks retained. |
++| `-Action TestScript -ScriptPath res://tests/capture_storm_wet_driving.gd -Graphical` | 25 checks, zero failures; eight saved PNGs, no shader errors. |
++| `-Action TestSoil` | 163 checks, zero failures. |
++| `-Action TestDesert` | 87 checks, zero failures. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | 388 scripts, zero failures. |
++| `-Action Doctor` | Pinned executable/templates found; OnePlus Pad 2 OPD2403 `f0ba474a` attached and authorized. |
++| `git diff --check -- game/vehicle/sand_dust.gd game/tests/test_storm.gd` | Passed; existing CRLF conversion notices only. |
++
++Initial sandbox runs stopped on user-log permissions, then Windows certificate-store access. Workspace-isolated saves and approved execution outside the sandbox resolved those environmental failures. The initial sandbox Doctor could not create adb configuration; its approved read-only rerun succeeded. Escalated shell startup also printed an unrelated PowerShell profile execution-policy warning; subsequent commands use `login: false`. These unsuccessful attempts are retained in the evidence logs, not reported as passing tests.
++
++The capture harness moves a presentation state along a real compiled automatic-route Storm straight at 7 and 18 m/s, then freezes particle state for matched images with/without only water droplets. Race timing remains paused; the HUD's paused status is expected. It uses existing gameplay camera framing. Image comparison detects 34/349 changed pixels at 1280×720 and 18/225 at 960×540 for slow/fast driving. Only 0/7/0/0 pixels exceed 0.25 RGB difference; the effect remains localized rather than veiling the road. These counts support visibility in these captures, not device performance or a completed race.
++
++[Desktop driving](evidence/storm-wet-driving-2026-10-09/1280x720-65kmh-spray.png), [compact driving](evidence/storm-wet-driving-2026-10-09/960x540-65kmh-spray.png), [slow rolling](evidence/storm-wet-driving-2026-10-09/1280x720-25kmh-spray.png) and matched without-spray captures were inspected. The short bead wake is visible behind the tires; car and approaching road remain clear.
++
++No Android export, installation or physical-device test was performed. An attached tablet does not establish phone art/performance acceptance. Owner in-motion review, all-car/bridge visual review and mobile frame pacing/thermal acceptance remain. Full Validate and a full physics regression gate were not run; this task changes presentation only. The task-only patch preserves unrelated changes already present in these files and the workspace.

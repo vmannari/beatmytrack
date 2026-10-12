@@ -1,0 +1,607 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index ea979fb..a3ae3aa 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
++
+ 2026-10-11 CH02/CH09-CH11/CH14/B01/R01/Q01: owner long challenge Checking time. Read-only source nine200/28.39-66.29ms/three401/19.71-28.08ms; small DB query/no replay. Real client-adapter held-upload and already-renewed-read baseline21/4fail; exact sourceGET joins independent race credential path, preserving account/rotation/owner locks/exact-ticket query. Final27/0 (stub expired20.488ms), race26/expired19/refreshed26/recovery28/challenge161/App99 pass; category-only debug profile. Owner exact coroutine/transport latency unconfirmed; restart/retry acceptance. No player/race writes/server-physics-UI change/phone-or-attachment test/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/limits: docs/CHALLENGE_SOURCE_LATENCY.md.
+ 
+ 2026-10-11 WW20-WW23/V04/V05/G01/R01/Q01: owner rejects previous wind and supplies photographic blowing-snow reference. Revision6 long frayed21:1 density fingers/local bank lift/soft source onset/settlesby6m/scene-lit24mps; 49ground+36bank layers/two draws/530tri max/458actual/no newassets or physics. Finalheadless33/native47/MobileVulkan33/App99 pass; static741/directmoving779-780-768/normalAAinterior503-513-494 roof exact. One changed resolved boundary pixel proven mixed silhouette; normalAA restored for recorded120frame30FPS views. Lighting1849.082/unlit0/canonical exact/density4f8b0ee6 retained; desktop10-13us/noisy GPU not mobile proof. Initial source-border/road-loft candidates revised/failed broad-AA-mask evidence preserved. Reference only/no photo copied/no phone test-or-attachment/export-install/fullValidate/physics-regression/backend/deploy. Restart; owner visual acceptance pending. Files/commands/limits/scoped checkpoint: docs/WINTER_REFERENCE_FLOW.md.
+diff --git a/docs/CAR_WASH.md b/docs/CAR_WASH.md
+index 7e824b3..30fcdb3 100644
+--- a/docs/CAR_WASH.md
++++ b/docs/CAR_WASH.md
+@@ -8,9 +8,9 @@ Garage has a **Wash** action beside its existing view controls. Holding/dragging
+ 
+ ## Local persistence and cost
+ 
+-`vehicle_conditions` is an additive, validated settings field in the existing atomic local-records schema 2. Entries use cosmetic version 1 and contain bounded dirt/snow/wetness/mud/smudge values, a colour and an exact 4,096-byte wash volume encoded in Base64. Five cars use roughly 28 KB plus small scalar metadata. Existing saves lacking this optional field start clean; no player file is removed. Condition stays within the local guest/player profile. No new telemetry, request, backend endpoint, race-proof field, upload, ghost condition, reward, handling or score rule is introduced.
++`vehicle_conditions` is an additive, validated settings field in the existing atomic local-records schema 2. Entries use cosmetic version 1 and contain bounded dirt/snow/wetness/mud/smudge values, a colour and an exact 4,096-byte wash volume encoded in Base64. CW17–CW19 adds bounded slow dirt/snow, a second 4,096-byte wash volume and a small pending re-coating remainder, with original eight-field entries retained. Five cars now use roughly 56 KB plus small scalar metadata. Existing saves lacking this optional field start clean; no player file is removed. Condition stays within the local guest/player profile. No new telemetry, request, backend endpoint, race-proof field, upload, ghost condition, reward, handling or score rule is introduced. See [rims and twenty-times-slower coating](RIM_SLOW_WEATHERING.md) for the follow-up's exact rate, commands and captures.
+ 
+-The finish uses the existing opaque material and actual car geometry. Its 16-cubed wash volume is packed into a shared 256x16 R8 texture with two interpolated slice reads; there is no additional mesh/draw pass, screen read or runtime asset. Brush work visits only nearby voxels. Garage lazily caches model triangles for closest-hit ray picking. Local saves occur when a wash stroke ends, Done is pressed, snow finishes melting, Garage exits, a race finishes/retries/exits, or the app loses focus; active race checkpointing is every five seconds, active washing/melting every two seconds. Unchanged entries skip saves. Cached/outgoing Garage pages cannot overwrite newer race wear. Save failures retain unsaved presentation for retry and use the existing storage-error path.
++The finish uses the existing opaque material and actual car geometry. The primary and slow 16-cubed wash volumes are each packed into a shared 256x16 R8 texture, with two interpolated slice reads each; there is no additional mesh/draw pass, screen read or runtime asset. Brush work visits only nearby voxels. Garage lazily caches model triangles for closest-hit ray picking, now including the rims. Local saves occur when a wash stroke ends, Done is pressed, snow finishes melting, Garage exits, a race finishes/retries/exits, or the app loses focus; active race checkpointing is every five seconds, active washing/melting every two seconds. Unchanged entries skip saves. Cached/outgoing Garage pages cannot overwrite newer race wear. Save failures retain unsaved presentation for retry and use the existing storage-error path.
+ 
+ Changed runtime files: `game/vehicle/vehicle_condition.gd` (+UID), `vehicle_weathering.gd`, `vehicle_weathering.gdshader`, `game/ui/car_showroom.gd`, `garage_page.gd`, `game/core/game.gd`, `app.gd` (generalized existing Garage save-error wording), and `game/persistence/local_records.gd`. Updated `game/tests/test_vehicle_weathering.gd` changes only the superseded clean-on-retry/biome assertions; explicit diagnostic resets, contacts, tick/FPS and canonical checks remain. Added `game/tests/test_car_wash.gd` (+UID). Documentation: this file, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the weathering lifecycle follow-up.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 80ee91e..645a654 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1728,3 +1728,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Reference-led Winter powder flow, 2026-10-11
+ 
+ 2026-10-11 WW20-WW23/V04/V05/G01/R01/Q01: owner rejects previous wind and supplies photographic blowing-snow reference. Revision6 long frayed21:1 density fingers/local bank lift/soft source onset/settlesby6m/scene-lit24mps; 49ground+36bank layers/two draws/530tri max/458actual/no newassets or physics. Finalheadless33/native47/MobileVulkan33/App99 pass; static741/directmoving779-780-768/normalAAinterior503-513-494 roof exact. One changed resolved boundary pixel proven mixed silhouette; normalAA restored for recorded120frame30FPS views. Lighting1849.082/unlit0/canonical exact/density4f8b0ee6 retained; desktop10-13us/noisy GPU not mobile proof. Initial source-border/road-loft candidates revised/failed broad-AA-mask evidence preserved. Reference only/no photo copied/no phone test-or-attachment/export-install/fullValidate/physics-regression/backend/deploy. Restart; owner visual acceptance pending. Files/commands/limits/scoped checkpoint: docs/WINTER_REFERENCE_FLOW.md.
++
++
++## Rims and twenty-times-slower background dirt, 2026-10-11
++
++2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
+diff --git a/docs/RIM_SLOW_WEATHERING.md b/docs/RIM_SLOW_WEATHERING.md
+new file mode 100644
+index 0000000..8da5a8f
+--- /dev/null
++++ b/docs/RIM_SLOW_WEATHERING.md
+@@ -0,0 +1,48 @@
++# Dirty rims and twenty-times-slower background coating
++
++Owner request, 2026-10-11. CW17 adds dirt/snow to the rims of all five cars. CW18 adds light accumulation outside the main splash pattern at exactly **one twentieth** of its exposure rate. CW19 preserves the accepted local per-car persistence, snow melting and manual Garage washing (CW13–CW16), plus G01/R01/V06/Q01 separation and evidence.
++
++Rims now share the biome's existing dirt/snow colour and ordinary accumulation. Their authored radial mask covers the hub/spokes and fades before the tire tread. The grain moves with wheel spin/steering rather than sliding in world space. The existing dense sill/door and rear spray pattern remains the fast layer. Other painted body areas receive a lighter secondary film, including the bonnet and roof, without coating glass, lamp lenses, plate faces or tire tread. Current Winter upward-panel snow remains part of the original pattern.
++
++## Exact rate and persistence
++
++The slow layer has independent bounded dirt and snow accumulators. It uses the same movement/contact exposure as the existing pattern, multiplied by `1.0 / 20.0`, with the same exponential accumulation curve. It continues growing after the primary layer has saturated; it is not merely twenty-times-fainter colour or a value derived from the already saturated primary amount. At a controlled 20 m/s in Desert, 75 seconds produces approximately 0.858 primary dirt and 0.093 background dirt. After 1,500 seconds, the background amount reaches the same approximately 0.858. These are exposure amounts, not a claim that PBR pixel brightness changes in an exact 20:1 ratio.
++
++The new slow wash volume re-coats at the same one-twentieth rate, independently of the fast wash volume. A pending slow re-coating remainder is saved so repeated short races/restarts do not discard progress; a fresh wash clears pre-wash re-coating debt. Main and slow coatings both respond to the same manual brush. Existing washed body locations retain their previous volume bounds and mapping. Wheel hits are mapped into authored wheel-rest coordinates, keeping a cleaned patch attached to the rotating rim.
++
++Cosmetic version 1 entries gain `slow_dirt`, `slow_snow`, `slow_wash` and `slow_recoat`. Original eight-field entries remain valid and retain exact existing dirt/palette/wash bytes; they start with zero new background dirt/snow. The intermediate eleven-field form is also valid with zero pending remainder. Final entries contain twelve fields. No local-records schema/version bump, file deletion, backend field or competitive contract change. Two 4,096-byte R8 wash volumes per car use roughly 56 KB total Base64/scalar data for all five cars. This remains local-only, using the existing atomic saves.
++
++## Files and cost
++
++- `game/vehicle/vehicle_weathering.gd`: four wheel bindings, authored wash coordinates, independent slow accumulators/re-coating volumes, local snapshot/restore and wash debt reset.
++- `game/vehicle/vehicle_weathering.gdshader`: radial rim coverage, lighter complementary background dirt/snow and the second interpolated wash sampler. Same original noise, opaque finish and geometry; no extra mesh/pass or generated assets. The second volume adds two texture reads to affected fragments.
++- `game/vehicle/vehicle_condition.gd`: bounded optional slow fields/volume/remainder, preserving older local entries and rejecting malformed values.
++- `game/ui/car_showroom.gd`: existing wash picker includes wheels and maps hits through the cosmetic controller; slow snow also participates in Garage melting. No new action, label or player-facing implementation text.
++- `game/tests/test_rim_slow_weathering.gd` / `.uid`: all-car exposure ratios, spinning rim coordinates, both wash layers, old/new atomic save round trips and actual native captures/rim-wash pixels.
++- `docs/VEHICLE_WEATHERING.md`, `docs/CAR_WASH.md`, status/plan and this document: current contracts, commands and remaining acceptance.
++
++The existing small body-coordinate wash volume is retained for save compatibility, so wheel points at its lower edge use its clamped resolution. Brush radius remains 0.48 authored metres. No mesh, driving, wheel dimensions, physics, camera, five-lap contract, records/PB, upload or eligibility change. Shader/picking cost still needs phone measurement.
++
++## Actual commands and results
++
++All engine commands use pinned `4.7.2.stable.official.ed1daf0bf` through the launcher, with backend access disabled and isolated test records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_vehicle_weathering.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rim_slow_weathering.gd
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_rim_slow_weathering.gd -Graphical -TestArgument @('--capture')"
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_rim_slow_weathering.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument @('--capture')"
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRecords
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++python build/checkpoint_rim_slow_weathering.py
++```
++
++Import passes. Existing weathering passes 860 checks, wash/persistence 1,383 headless checks, records 54, and app 99, all zero failures. Final focused headless checks pass 195; final Compatibility and Mobile/Vulkan capture runs pass 249 each. They verify exactly 0.05 exposure ratio for all five cars in Desert/Grass/Winter, blocked/canonical isolation, rotating rim wash coordinates, both volumes, atomic restart/legacy compatibility, pending short-race progress, actual visible rim washing and pixel-identical material reset. No assertion was weakened. Initial visual review found half-coated Formula rims from the body-height film; their film weight is now independent of body height so the whole rim gathers dirt. Body wash bounds are deliberately preserved after review of legacy-mask compatibility.
++
++Evidence: [dirty Desert rims, 75 seconds](evidence/rim-slow-weathering-2026-10-11/compact-desert-75s.png), [background coat after 1,500 seconds](evidence/rim-slow-weathering-2026-10-11/compact-desert-1500s.png), [Grass mud](evidence/rim-slow-weathering-2026-10-11/compact-pine-75s.png), [front rim washed](evidence/rim-slow-weathering-2026-10-11/compact-pine-rim-washed.png), and equivalent all-car/biome views plus Mobile/Vulkan captures. These are actual shared model/material renders with controlled exposure, not completed races, timed footage or phone recordings.
++
++## Remaining acceptance and checkpoint
++
++The task-only checkpoint under `build/rim_slow_weathering/checkpoint-repo` preserves the main Git branch/index and unrelated working changes. Patch, hashes and actual logs are beside the evidence. **No phone test or attachment check, Android export/install, full Validate, physics regression/merge, backend operation or deployment.** Owner rim/background intensity, phone shader/picking performance and washing precision remain acceptance checks. Manual review: drive off-road, inspect the dirty rims in Garage, wash a rim and a body patch, change car/biome/restart, and check that the main pattern develops quickly while surrounding paint develops over roughly twenty-times-more exposure.
+diff --git a/docs/VEHICLE_WEATHERING.md b/docs/VEHICLE_WEATHERING.md
+index 2f320a2..12a07d4 100644
+--- a/docs/VEHICLE_WEATHERING.md
++++ b/docs/VEHICLE_WEATHERING.md
+@@ -94,6 +94,10 @@ Both native runs pass **664 checks / 0 failures**, including the existing all-fi
+ 
+ CW12 changes only the colour constant, test capture destination, this document and status/plan. The task-only checkpoint is under `build/grass_mud_color/checkpoint-repo`; main index/branch and unrelated changes are preserved. No new shader, assets, handling, backend, deployment, Android export/install or physical-device test. Phone appearance and owner preference for the darker mud remain acceptance checks.
+ 
++## Rims and slow background dirt (CW17–CW19), 2026-10-11
++
++All five cars' rims now gather biome dirt/snow, with grain and washed patches attached to wheel rotation. A lighter complementary body coat has independent persistent exposure at exactly one twentieth of the main pattern's rate, including independent slow re-coating of washed areas. Existing local condition and Garage washing are preserved; legacy masks retain their mapping. Glass, lenses, plates and tire tread remain excluded. See [RIM_SLOW_WEATHERING.md](RIM_SLOW_WEATHERING.md) for files, additive storage fields, exact checks, captures and remaining owner/device acceptance. No physics, score, backend or deployment change.
++
+ 
+ ## Persistent local dirt and Garage washing (CW13-CW16), 2026-10-11
+ 
+diff --git a/game/tests/test_rim_slow_weathering.gd b/game/tests/test_rim_slow_weathering.gd
+new file mode 100644
+index 0000000..5051f92
+--- /dev/null
++++ b/game/tests/test_rim_slow_weathering.gd
+@@ -0,0 +1,102 @@
++extends "res://tests/test_vehicle_weathering.gd"
++## Actual exposure, independent local persistence and spinning/washable rims.
++func _initialize() -> void: verify.call_deferred()
++
++func verify() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	var directory: String = "user://rim_slow_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		root.add_child(car)
++		for theme: String in ["desert", "pine", "winter"]:
++			var effect := VehicleWeathering.new()
++			effect.configure(car, theme, VehicleCatalog.config(id))
++			var wheels: Array = []
++			for binding: Dictionary in effect.bindings:
++				if binding.wheel: wheels.append(binding)
++			check(effect._wheel_frames.size() == 4 and wheels.size() >= 4, id + " four real rim sets")
++			var state := VehicleState.new()
++			state.velocity = Vector2(0, 20)
++			expose(effect, state, soil(theme, 1 if theme == "pine" else 0), 30.0)
++			var fast: float = effect.snow_amount if theme == "winter" else effect.dirt_amount
++			var slow: float = effect.slow_snow_amount if theme == "winter" else effect.slow_dirt_amount
++			check(fast > 0.1 and slow > 0.0 and absf(log(1.0-slow)/log(1.0-fast)-0.05) < 0.00000001, id + " " + theme + " exactly 1/20 exposure rate")
++			var snapshot: Array = state.snapshot().duplicate(true)
++			state.tick += 120
++			effect.present(state, soil(theme, 1), true)
++			check(state.snapshot().slice(0,9) == snapshot.slice(0,9) and (effect.slow_snow_amount if theme == "winter" else effect.slow_dirt_amount) == slow, "blocked exposure leaves slow layer and canonical motion exact")
++			var rim: Dictionary = wheels[0]
++			var transform: Transform3D = rim.wash_transform
++			var local := Vector3(0.05, 0.02, 0.01)
++			var clean_point: Vector3 = effect.wash_point(rim.node, local)
++			car.rolling_wheels[0].rotation.x += 1.3
++			check(effect.wash_point(rim.node, local).is_equal_approx(clean_point) and clean_point.is_equal_approx(transform*local), "rim wash coordinates follow the spinning mesh")
++			var point: Vector3 = car.wheel_rest_positions[0]
++			var primary_before: PackedByteArray = effect.wash_image.get_data()
++			var slow_before: PackedByteArray = effect.slow_wash_image.get_data()
++			effect.wash(point, 0.6)
++			check(effect.wash_image.get_data() != primary_before and effect.slow_wash_image.get_data() != slow_before, "rim washing clears both layers")
++			check(effect._slow_mask_travel == 0.0, "fresh washing clears pre-wash coating debt")
++			expose(effect, state, soil(theme, 1 if theme == "pine" else 0), 0.1)
++			check(effect._slow_mask_travel > 0.0, "short post-wash driving earns a pending slow remainder")
++			var saved: Dictionary = effect.snapshot()
++			check(VehicleCondition.valid_collection({id: saved}) and VehicleCondition.save(records, id, saved) == OK, "new local condition saves with both volumes")
++			var reopened := LocalRecords.new(records.path)
++			reopened.load_records()
++			var recovered: Dictionary = VehicleCondition.read(reopened, id)
++			check(recovered.slow_wash == saved.slow_wash and absf(float(recovered.slow_dirt)-saved.slow_dirt) < 1e-9 and absf(float(recovered.slow_snow)-saved.slow_snow) < 1e-9, "slow exposure and wash volume survive restart")
++			check(absf(float(recovered.slow_recoat)-saved.slow_recoat) < 1e-9, "pending slow re-coating survives short races and restart")
++			var legacy: Dictionary = saved.duplicate(true)
++			for field: String in ["slow_dirt", "slow_snow", "slow_wash", "slow_recoat"]: legacy.erase(field)
++			check(VehicleCondition.valid_collection({id: legacy}), "original eight-field local saves remain valid")
++			effect.restore(legacy)
++			check(effect.slow_dirt_amount == 0.0 and effect.slow_snow_amount == 0.0 and effect.snapshot().wash == legacy.wash, "legacy upgrade retains exact existing wash strokes without inventing slow dirt")
++			var invalid: Dictionary = saved.duplicate(true)
++			invalid.slow_dirt = INF
++			check(not VehicleCondition.valid_collection({id: invalid}), "reject nonfinite slow exposure")
++			effect.reset()
++		car.queue_free()
++		await process_frame
++	if "--capture" in OS.get_cmdline_user_args(): await previews()
++	print("RIM_SLOW_WEATHERING: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func previews() -> void:
++	output = "res://../docs/evidence/rim-slow-weathering-2026-10-11"
++	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280, 720)
++	for id: String in VehicleCatalog.IDS:
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++		root.add_child(view)
++		view.yaw = -1.15
++		view.elevation = 0.43
++		view._orbit()
++		for warm: int in range(60): await RenderingServer.frame_post_draw
++		await create_timer(1.0).timeout
++		var clean: Image = await save(id + "-clean")
++		for theme: String in ["desert", "pine", "winter"]:
++			view.weathering.configure(view.car, theme, VehicleCatalog.config(id))
++			var state := VehicleState.new()
++			state.velocity = Vector2(0, 20)
++			var track: NativeTrack = soil(theme, 1 if theme == "pine" else 0)
++			expose(view.weathering, state, track, 75.0)
++			var dirty: Image = await save(id + "-" + theme + "-75s")
++			if id == "compact" and theme == "pine":
++				var pixel: Vector2 = view.camera.unproject_position(view.car.global_transform * view.car.wheel_rest_positions[0])
++				check(view.wash_at(pixel, 0.8), "actual Garage picker washes the front rim")
++				var washed: Image = await save("compact-pine-rim-washed")
++				check(region_change(dirty, washed, Rect2i(Vector2i(pixel)-Vector2i(25,25),Vector2i(50,50))) > 0.015, "washing visibly removes rim dirt")
++			if id == "compact" and theme == "desert":
++				expose(view.weathering, state, track, 1425.0)
++				await save("compact-desert-1500s")
++			view.weathering.reset()
++			var restored: Image = await save(id + "-" + theme + "-reset")
++			check(clean.get_data() == restored.get_data(), id + " " + theme + " both layers/rims reset exactly")
++		view.queue_free()
++		await process_frame
+diff --git a/game/tests/test_rim_slow_weathering.gd.uid b/game/tests/test_rim_slow_weathering.gd.uid
+new file mode 100644
+index 0000000..61747c3
+--- /dev/null
++++ b/game/tests/test_rim_slow_weathering.gd.uid
+@@ -0,0 +1 @@
++uid://igr0haj575yg
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index 13a3f4e..0a4205e 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -199,10 +199,10 @@ func _process(delta: float) -> void:
+ 	if not is_visible_in_tree():
+ 		washing = false
+ 		return
+-	if weathering.snow_amount > 0.0:
++	if weathering.snow_amount > 0.0 or weathering.slow_snow_amount > 0.0:
+ 		weathering.melt(delta)
+ 		wash_elapsed += delta
+-		if wash_elapsed >= 2.0 or weathering.snow_amount == 0.0:
++		if wash_elapsed >= 2.0 or (weathering.snow_amount == 0.0 and weathering.slow_snow_amount == 0.0):
+ 			wash_elapsed = 0.0
+ 			condition_changed.emit()
+ 	if washing and wash_mode:
+@@ -231,7 +231,7 @@ func _cache_pick_meshes(node: Node3D) -> void:
+ 
+ func pick_body_point(location: Vector2) -> Variant:
+ 	if camera == null or size.x <= 0.0 or size.y <= 0.0 or not Rect2(Vector2.ZERO, size).has_point(location): return null
+-	if pick_meshes.is_empty(): _cache_pick_meshes(car.body)
++	if pick_meshes.is_empty(): _cache_pick_meshes(car)
+ 	var pixel: Vector2 = location * Vector2(showroom_viewport.size) / size
+ 	var origin: Vector3 = camera.project_ray_origin(pixel)
+ 	var direction: Vector3 = camera.project_ray_normal(pixel)
+@@ -251,7 +251,7 @@ func pick_body_point(location: Vector2) -> Variant:
+ 			var distance: float = origin.distance_squared_to(world)
+ 			if distance < nearest:
+ 				nearest = distance
+-				result = car.body.global_transform.affine_inverse() * world
++				result = weathering.wash_point(node, hit as Vector3)
+ 	return result
+ 
+ func wash_at(location: Vector2, seconds: float) -> bool:
+diff --git a/game/vehicle/vehicle_condition.gd b/game/vehicle/vehicle_condition.gd
+index 7fb2568..26300da 100644
+--- a/game/vehicle/vehicle_condition.gd
++++ b/game/vehicle/vehicle_condition.gd
+@@ -21,10 +21,16 @@ static func valid_collection(value: Variant) -> bool:
+ 	for id: Variant in value:
+ 		if id not in VehicleCatalog.IDS or not value[id] is Dictionary: return false
+ 		var entry: Dictionary = value[id]
+-		if entry.size() != 8 or entry.get("version") != 1: return false
+-		for field: String in ["dirt", "snow", "wetness", "mud", "smudge"]:
++		if entry.size() not in [8, 11, 12] or entry.get("version") != 1: return false
++		var fields: Array[String] = ["dirt", "snow", "wetness", "mud", "smudge"]
++		if entry.size() >= 11: fields.append_array(["slow_dirt", "slow_snow"])
++		for field: String in fields:
+ 			var number: Variant = entry.get(field)
+ 			if not (number is int or number is float) or not is_finite(float(number)) or float(number) < 0.0 or float(number) > 1.0: return false
+ 		if not entry.get("color") is String or not Color.html_is_valid(entry.color): return false
+ 		if not entry.get("wash") is String or entry.wash.length() > 5464 or Marshalls.base64_to_raw(entry.wash).size() != CELLS: return false
++		if entry.size() >= 11 and (not entry.get("slow_wash") is String or entry.slow_wash.length() > 5464 or Marshalls.base64_to_raw(entry.slow_wash).size() != CELLS): return false
++		if entry.size() == 12:
++			var debt: Variant = entry.get("slow_recoat")
++			if not (debt is int or debt is float) or not is_finite(float(debt)) or float(debt) < 0.0 or float(debt) > 0.02: return false
+ 	return true
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+index eb74a18..4b30c26 100644
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -4,10 +4,13 @@ extends RefCounted
+ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
+ const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
+ const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48}
++const SLOW_RATE: float = 1.0 / 20.0
+ static var toon_finish: Shader
+ var theme: String = ""
+ var dirt_amount: float = 0.0
+ var snow_amount: float = 0.0
++var slow_dirt_amount: float = 0.0
++var slow_snow_amount: float = 0.0
+ var amount: float:
+ 	get: return 1.0 - (1.0 - dirt_amount) * (1.0 - snow_amount)
+ var deposit_color: Color = COLORS.pine
+@@ -15,8 +18,13 @@ var mud_amount: float = 0.0
+ var smudge: float = 0.0
+ var wash_image: Image
+ var wash_texture: ImageTexture
++var slow_wash_image: Image
++var slow_wash_texture: ImageTexture
+ var bounds := AABB(Vector3(-2, 0, -4), Vector3(4, 3, 8))
+ var _mask_travel: float = 0.0
++var _slow_mask_travel: float = 0.0
++var _body: Node3D
++var _wheel_frames: Array[Dictionary] = []
+ var wetness: float = 0.0
+ var last_tick: int = -1
+ var bindings: Array[Dictionary] = []
+@@ -32,6 +40,8 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
+ 	reset()
+ 	bindings.clear()
+ 	materials.clear()
++	_wheel_frames.clear()
++	_body = car.body
+ 	theme = biome
+ 	contacts.configure(config)
+ 	axle_half = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
+@@ -44,25 +54,34 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
+ 	if car.accent_roof != null: paints.append(car.accent_roof)
+ 	for variant: Dictionary in car.paint_variants: paints.append(variant.material)
+ 	_bind(car.body, car.body.global_transform.affine_inverse(), paints, float(HEIGHTS.get(car.vehicle_id, 1.5)), {})
++	for index: int in range(car.rolling_wheels.size()):
++		var rotor: Node3D = car.rolling_wheels[index]
++		var rest := Transform3D(Basis.IDENTITY, car.wheel_rest_positions[index])
++		_wheel_frames.append({"rotor": rotor, "rest": rest})
++		_bind(rotor, rotor.global_transform.affine_inverse(), paints, float(HEIGHTS.get(car.vehicle_id, 1.5)), {}, true, rest)
+ 	var first: bool = true
+ 	for binding: Dictionary in bindings:
++		# Keep the established body-volume mapping for existing saved wash
++		# strokes. Rim points use the same bounded volume at the body edge.
++		if binding.wheel: continue
+ 		var node: MeshInstance3D = binding.node
+-		var box: AABB = (car.body.global_transform.affine_inverse() * node.global_transform) * node.mesh.get_aabb()
++		var box: AABB = (binding.wash_transform as Transform3D) * node.mesh.get_aabb()
+ 		bounds = box if first else bounds.merge(box)
+ 		first = false
+ 	bounds = bounds.grow(0.08)
+ 	restore(retained)
+ 
+-func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D], height: float, cache: Dictionary) -> void:
++func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D], height: float, cache: Dictionary, wheel: bool = false, wheel_rest: Transform3D = Transform3D.IDENTITY) -> void:
+ 	if node is MeshInstance3D and node.mesh != null:
+ 		for index: int in range(node.mesh.get_surface_count()):
+ 			var source: StandardMaterial3D = node.get_active_material(index) as StandardMaterial3D
+ 			if source == null: continue
+-			var rear_trim: bool = source not in paints
++			var rear_trim: bool = not wheel and source not in paints
+ 			# Bumpers can share a static batch with front trim. Only matte dark
+ 			# plastics qualify; the shader restricts their deposit to rear faces.
+ 			if rear_trim and (source.roughness < 0.7 or source.metallic > 0.2 or source.emission_enabled or source.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED or source.albedo_texture != null or maxf(source.albedo_color.r, maxf(source.albedo_color.g, source.albedo_color.b)) > 0.20): continue
+-			var transform: Transform3D = inverse * node.global_transform
++			var local_transform: Transform3D = inverse * node.global_transform
++			var transform: Transform3D = wheel_rest * local_transform if wheel else local_transform
+ 			var key: String = str(source.get_instance_id()) + str(transform)
+ 			if not cache.has(key):
+ 				var surface := ShaderMaterial.new()
+@@ -86,12 +105,14 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
+ 				surface.set_shader_parameter("wheel_half_span", wheel_half_span)
+ 				surface.set_shader_parameter("wheel_radius", wheel_radius)
+ 				surface.set_shader_parameter("rear_only", 1.0 if rear_trim else 0.0)
++				surface.set_shader_parameter("wheel_surface", 1.0 if wheel else 0.0)
++				surface.set_shader_parameter("mesh_to_wheel", local_transform if wheel else Transform3D.IDENTITY)
+ 				surface.set_shader_parameter("mesh_to_body", transform)
+ 				materials.append(surface)
+ 				cache[key] = surface
+-			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key], "source": source})
++			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key], "source": source, "wheel": wheel, "wash_transform": transform})
+ 	for child: Node in node.get_children():
+-		if child is Node3D: _bind(child, inverse, paints, height, cache)
++		if child is Node3D: _bind(child, inverse, paints, height, cache, wheel, wheel_rest)
+ 
+ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 	var ticks: int = state.tick - last_tick if last_tick >= 0 else 0
+@@ -114,8 +135,10 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 			wetness = 1.0 - (1.0 - wetness) * exp(-seconds / 18.0)
+ 	if theme == "winter":
+ 		snow_amount = 1.0 - (1.0 - snow_amount) * exp(-exposure)
++		slow_snow_amount = 1.0 - (1.0 - slow_snow_amount) * exp(-exposure * SLOW_RATE)
+ 	else:
+ 		melt(seconds)
++		slow_dirt_amount = 1.0 - (1.0 - slow_dirt_amount) * exp(-exposure * SLOW_RATE)
+ 		var added: float = (1.0 - dirt_amount) * (1.0 - exp(-exposure))
+ 		if added > 0.0:
+ 			deposit_color = deposit_color.lerp(COLORS.get(theme, COLORS.pine), added / maxf(dirt_amount + added, 0.00001))
+@@ -123,23 +146,31 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 			dirt_amount += added
+ 	# New road exposure gradually coats previously washed spots again.
+ 	_mask_travel += exposure
++	_slow_mask_travel += exposure * SLOW_RATE
+ 	if _mask_travel >= 0.02:
+ 		var bytes: PackedByteArray = wash_image.get_data()
+ 		for index: int in range(bytes.size()): bytes[index] = roundi(bytes[index] * exp(-_mask_travel * 4.0))
+ 		wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
+ 		wash_texture.update(wash_image)
+ 		_mask_travel = 0.0
++	if _slow_mask_travel >= 0.02:
++		var bytes: PackedByteArray = slow_wash_image.get_data()
++		for index: int in range(bytes.size()): bytes[index] = roundi(bytes[index] * exp(-_slow_mask_travel * 4.0))
++		slow_wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
++		slow_wash_texture.update(slow_wash_image)
++		_slow_mask_travel = 0.0
+ 	_update_finish()
+ 
+ func melt(seconds: float) -> void:
+ 	var before: float = snow_amount
+ 	snow_amount = maxf(0.0, snow_amount - maxf(seconds, 0.0) / 8.0)
++	slow_snow_amount = maxf(0.0, slow_snow_amount - maxf(seconds, 0.0) / 8.0)
+ 	if dirt_amount > 0.0:
+ 		smudge = clampf(smudge + (before - snow_amount) * 0.75, 0.0, 1.0)
+ 	_update_finish()
+ 
+ func _update_finish() -> void:
+-	if amount <= 0.00001 and wetness <= 0.00001:
++	if amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
+ 		if installed:
+ 			for binding: Dictionary in bindings:
+ 				if not is_instance_valid(binding.node): continue
+@@ -155,11 +186,14 @@ func _update_finish() -> void:
+ 	for material: ShaderMaterial in materials:
+ 		material.set_shader_parameter("amount", dirt_amount)
+ 		material.set_shader_parameter("snow", snow_amount)
++		material.set_shader_parameter("slow_amount", slow_dirt_amount)
++		material.set_shader_parameter("slow_snow", slow_snow_amount)
+ 		material.set_shader_parameter("deposit_color", deposit_color)
+ 		material.set_shader_parameter("mud", mud_amount)
+ 		material.set_shader_parameter("smudge", smudge)
+ 		material.set_shader_parameter("wetness", wetness)
+ 		material.set_shader_parameter("wash_volume", wash_texture)
++		material.set_shader_parameter("slow_wash_volume", slow_wash_texture)
+ 		material.set_shader_parameter("wash_min", bounds.position)
+ 		material.set_shader_parameter("wash_size", bounds.size)
+ 
+@@ -167,12 +201,15 @@ func snapshot() -> Dictionary:
+ 	if wash_image == null:
+ 		wash_image = Image.create(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8)
+ 		wash_image.fill(Color.BLACK)
+-	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data())}
++	if slow_wash_image == null: slow_wash_image = wash_image.duplicate() as Image
++	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "slow_dirt": slow_dirt_amount, "slow_snow": slow_snow_amount, "slow_recoat": _slow_mask_travel, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data()), "slow_wash": Marshalls.raw_to_base64(slow_wash_image.get_data())}
+ 
+ func restore(value: Dictionary) -> void:
+ 	if value.is_empty(): value = snapshot()
+ 	dirt_amount = float(value.get("dirt", 0.0))
+ 	snow_amount = float(value.get("snow", 0.0))
++	slow_dirt_amount = float(value.get("slow_dirt", 0.0))
++	slow_snow_amount = float(value.get("slow_snow", 0.0))
+ 	wetness = float(value.get("wetness", 0.0))
+ 	deposit_color = Color(str(value.get("color", COLORS.get(theme, COLORS.pine).to_html(false))))
+ 	mud_amount = float(value.get("mud", 0.0))
+@@ -183,7 +220,14 @@ func restore(value: Dictionary) -> void:
+ 		bytes.fill(0)
+ 	wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
+ 	wash_texture = ImageTexture.create_from_image(wash_image)
++	var slow_bytes: PackedByteArray = Marshalls.base64_to_raw(str(value.get("slow_wash", value.get("wash", ""))))
++	if slow_bytes.size() != VehicleCondition.CELLS:
++		slow_bytes.resize(VehicleCondition.CELLS)
++		slow_bytes.fill(0)
++	slow_wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, slow_bytes)
++	slow_wash_texture = ImageTexture.create_from_image(slow_wash_image)
+ 	_mask_travel = 0.0
++	_slow_mask_travel = float(value.get("slow_recoat", 0.0))
+ 	last_tick = -1
+ 	_update_finish()
+ 
+@@ -192,6 +236,8 @@ func wash(point: Vector3, seconds: float) -> void:
+ 	var radius: float = 0.48
+ 	var grid: int = VehicleCondition.GRID
+ 	var bytes: PackedByteArray = wash_image.get_data()
++	var slow_bytes: PackedByteArray = slow_wash_image.get_data()
++	var touched: bool = false
+ 	var lower: Vector3 = ((point - Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).floor().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
+ 	var upper: Vector3 = ((point + Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).ceil().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
+ 	for z: int in range(int(lower.z), int(upper.z) + 1):
+@@ -200,10 +246,25 @@ func wash(point: Vector3, seconds: float) -> void:
+ 				var centre: Vector3 = bounds.position + Vector3(float(x), float(y), float(z)) / float(grid - 1) * bounds.size
+ 				var distance: float = centre.distance_to(point)
+ 				if distance >= radius: continue
++				touched = true
+ 				var index: int = y * grid * grid + z * grid + x
+ 				bytes[index] = mini(255, bytes[index] + ceili(255.0 * seconds * 3.0 * (1.0 - distance / radius)))
++				slow_bytes[index] = mini(255, slow_bytes[index] + ceili(255.0 * seconds * 3.0 * (1.0 - distance / radius)))
++	if not touched: return
++	# Exposure earned before a fresh wash must not re-coat the new stroke.
++	_mask_travel = 0.0
++	_slow_mask_travel = 0.0
+ 	wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, bytes)
+ 	wash_texture.update(wash_image)
++	slow_wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, slow_bytes)
++	slow_wash_texture.update(slow_wash_image)
++
++func wash_point(node: MeshInstance3D, local_point: Vector3) -> Vector3:
++	for frame: Dictionary in _wheel_frames:
++		var rotor: Node3D = frame.rotor
++		if rotor.is_ancestor_of(node):
++			return (frame.rest as Transform3D) * (rotor.global_transform.affine_inverse() * node.global_transform) * local_point
++	return _body.global_transform.affine_inverse() * node.global_transform * local_point
+ 
+ func reset() -> void:
+ 	if installed:
+@@ -214,11 +275,17 @@ func reset() -> void:
+ 	installed = false
+ 	dirt_amount = 0.0
+ 	snow_amount = 0.0
++	slow_dirt_amount = 0.0
++	slow_snow_amount = 0.0
+ 	smudge = 0.0
+ 	mud_amount = 0.0
+ 	wash_image = null
+ 	wash_texture = null
++	slow_wash_image = null
++	slow_wash_texture = null
+ 	wetness = 0.0
++	_mask_travel = 0.0
++	_slow_mask_travel = 0.0
+ 	last_tick = -1
+ 
+ func refresh_paint() -> void:
+diff --git a/game/vehicle/vehicle_weathering.gdshader b/game/vehicle/vehicle_weathering.gdshader
+index 2f07a02..d1c1a34 100644
+--- a/game/vehicle/vehicle_weathering.gdshader
++++ b/game/vehicle/vehicle_weathering.gdshader
+@@ -12,9 +12,12 @@ uniform float paint_clearcoat_roughness = 0.3;
+ uniform float amount = 0.0;
+ uniform float wetness = 0.0;
+ uniform float snow = 0.0;
++uniform float slow_amount = 0.0;
++uniform float slow_snow = 0.0;
+ uniform float mud = 0.0;
+ uniform float smudge = 0.0;
+ uniform sampler2D wash_volume : filter_linear, repeat_disable;
++uniform sampler2D slow_wash_volume : filter_linear, repeat_disable;
+ uniform vec3 wash_min;
+ uniform vec3 wash_size = vec3(1.0);
+ uniform float roof_height = 1.5;
+@@ -22,9 +25,12 @@ uniform float axle_half = 1.28;
+ uniform float wheel_half_span = 0.83;
+ uniform float wheel_radius = 0.37;
+ uniform float rear_only = 0.0;
++uniform float wheel_surface = 0.0;
++uniform mat4 mesh_to_wheel;
+ uniform mat4 mesh_to_body;
+ varying vec3 body_point;
+ varying vec3 body_normal;
++varying vec3 wheel_point;
+ 
+ float weather_hash(vec3 p) {
+ 	p = fract(p * 0.1031);
+@@ -72,19 +78,21 @@ float road_specks(vec2 p) {
+ void vertex() {
+ 	body_point = (mesh_to_body * vec4(VERTEX, 1.0)).xyz;
+ 	body_normal = normalize(mat3(mesh_to_body) * NORMAL);
++	wheel_point = (mesh_to_wheel * vec4(VERTEX, 1.0)).xyz;
+ }
+ 
+-float wash_mask(vec3 point) {
++float wash_mask(vec3 point, sampler2D volume) {
+ 	vec3 p = clamp((point - wash_min) / wash_size, vec3(0.0), vec3(1.0)) * 15.0;
+ 	float slice = floor(p.z);
+ 	vec2 uv = vec2((slice * 16.0 + p.x + 0.5) / 256.0, (p.y + 0.5) / 16.0);
+ 	vec2 next_uv = vec2((min(slice + 1.0, 15.0) * 16.0 + p.x + 0.5) / 256.0, uv.y);
+-	return 1.0 - mix(texture(wash_volume, uv).r, texture(wash_volume, next_uv).r, fract(p.z));
++	return 1.0 - mix(texture(volume, uv).r, texture(volume, next_uv).r, fract(p.z));
+ }
+ 
+ void fragment() {
+ 	vec3 n = normalize(body_normal);
+-	float remaining = wash_mask(body_point);
++	float remaining = wash_mask(body_point, wash_volume);
++	float slow_remaining = wash_mask(body_point, slow_wash_volume);
+ 	float side = abs(n.x);
+ 	float upward = max(n.y, 0.0);
+ 	float mottling = weather_noise(body_point * vec3(18.0, 26.0, 18.0));
+@@ -111,19 +119,28 @@ void fragment() {
+ 	float side_band = near_wheels * (0.65 + side * 0.35) * road_film * 0.94;
+ 	float coverage = clamp(max(side_band, side_spray * 0.72) * upper_fade, 0.0, 1.0);
+ 	coverage = mix(max(coverage, rear_wake), rear_wake, rear_only);
++	// Wheel batches may share tire rubber and rim spokes. Coat only the inner
++	// radial area; authored wheel coordinates rotate the dirt with the rim.
++	float rim_coverage = 1.0 - smoothstep(wheel_radius * 0.67, wheel_radius * 0.81, length(wheel_point.yz));
++	coverage = mix(coverage, rim_coverage, wheel_surface);
++	road_film = mix(road_film, 0.85, wheel_surface);
+ 	float surface_wetness = wetness * mix(1.0, rear_face, rear_only);
+ 	float streaks = weather_noise(body_point * vec3(36.0, 2.0, 36.0));
+ 	float texture_weight = mix(mottling, streaks, max(surface_wetness * 0.45, smudge * 0.85));
+ 	float film = (0.24 + road_film * 0.68) * (0.68 + texture_weight * 0.40) * (1.0 + mud * 0.65);
+ 	float splashes = speckles * (0.42 + road_film * 0.34);
+ 	float deposit = clamp(amount * coverage * (film + splashes + smudge * streaks * 0.35) * remaining, 0.0, 0.94);
++	float slow_scope = mix(1.0, rear_face, rear_only) * (1.0 - wheel_surface);
++	float slow_deposit = slow_amount * (1.0 - coverage) * slow_scope * (0.42 + mottling * 0.20) * slow_remaining;
++	deposit = 1.0 - (1.0 - deposit) * (1.0 - slow_deposit);
+ 	// Dense grains in the lower film are darker than the loose upper dust;
+ 	// Winter retains its snowy palette while using the same deposition shape.
+ 	float grain_darkening = 0.32 * road_film;
+ 	float packed_lower = road_film * (0.20 + mud * 0.25);
+ 	vec3 residue = deposit_color.rgb * (0.87 + mottling * 0.18 - grain_darkening * speckles) * (1.0 - packed_lower);
+ 	ALBEDO = mix(paint_color.rgb * (1.0 - surface_wetness * 0.10), residue, deposit);
+-	float snow_coat = clamp(snow * max(coverage, upward * 0.38 * (1.0 - rear_only)) * (film + splashes) * remaining, 0.0, 0.94);
++	float snow_coat = clamp(snow * max(coverage, upward * 0.38 * (1.0 - rear_only) * (1.0 - wheel_surface)) * (film + splashes) * remaining, 0.0, 0.94);
++	snow_coat = 1.0 - (1.0 - snow_coat) * (1.0 - slow_snow * (1.0 - coverage) * slow_scope * 0.38 * slow_remaining);
+ 	ALBEDO = mix(ALBEDO, vec3(0.8627, 0.9098, 0.9294) * (0.87 + mottling * 0.18), snow_coat);
+ 	float icy = snow_coat * smoothstep(0.7, 0.9, speckles);
+ 	deposit = max(deposit, snow_coat);

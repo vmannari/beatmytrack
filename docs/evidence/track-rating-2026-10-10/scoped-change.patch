@@ -1,0 +1,503 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2909,6 +2909,12 @@
+ 				if cloud.changed.is_connected(update_status): cloud.changed.disconnect(update_status))
+ 	root_ui.modulate.a = 0.0
+ 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
++	if online_queued and track.metadata.has("cloud_version"):
++		var rating_prompt := preload("res://ui/track_rating_prompt.gd").new()
++		rating_prompt.cloud_client = online.client
++		rating_prompt.cloud_sync = cloud
++		rating_prompt.cloud_version = str(track.metadata.cloud_version)
++		root_ui.add_child(rating_prompt)
+ 	if online_queued: _save_result_upload(game,cloud_ticket,game.get("online_frames"),cloud_publish_version,game.get("online_rewinds"))
+ 
+ func _save_result_upload(completed_game: Node, ticket_data: Dictionary, frames: Array, publish_version: String, rewinds: Array) -> void:
+diff --git a/game/ui/track_rating.gd b/game/ui/track_rating.gd
+--- a/game/ui/track_rating.gd
++++ b/game/ui/track_rating.gd
+@@ -3,6 +3,7 @@
+ ## Personal track identity, independent of car, physics version and race records.
+ signal rated
+ signal save_failed
++signal eligibility_changed
+ var records: LocalRecords
+ var track_id: String
+ var stars: Array[Button] = []
+@@ -14,8 +15,16 @@
+ var cloud_sync: Node
+ var last_sync_status: String = ""
+ var vote_loading: bool = false
++var vote_saving: bool = false
+ var vote_key: String = ""
+ var pending_score: int = 0
++var vote_reload_pending: bool = false
++var cloud_scope: String = ""
++
++func _scope() -> String:
++	if cloud_client == null or not cloud_client.signed_in(): return ""
++	if not cloud_client.has_method("base_url"): return str(cloud_client.get_instance_id())
++	return str(cloud_client.base_url())+"|"+str(cloud_client.player.get("id",""))
+ 
+ func value() -> int:
+ 	if not cloud_version.is_empty(): return cloud_score
+@@ -24,7 +33,7 @@
+ func _ready() -> void:
+ 	name = "TrackRating"
+ 	add_theme_constant_override("separation",6)
+-	caption = MenuStyle.label("YOUR TRACK RATING",15,true)
++	caption = MenuStyle.label("Rate the track",15,true)
+ 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	add_child(caption)
+@@ -41,16 +50,23 @@
+ 		stars.append(button)
+ 	refresh()
+ 	if not cloud_version.is_empty():
++		cloud_scope = _scope()
+ 		if cloud_sync != null: cloud_sync.changed.connect(_sync_changed)
+ 		_load_cloud_vote()
+ 
++func _exit_tree() -> void:
++	if is_instance_valid(cloud_sync) and cloud_sync.changed.is_connected(_sync_changed):
++		cloud_sync.changed.disconnect(_sync_changed)
++
+ func _sync_changed() -> void:
+-	if str(cloud_sync.status) == last_sync_status: return
+ 	last_sync_status = str(cloud_sync.status)
+-	if locked and last_sync_status.begins_with("Race verified"): _load_cloud_vote()
++	if locked and not vote_saving and last_sync_status.begins_with("Race verified"):
++		if vote_loading: vote_reload_pending = true
++		else: _load_cloud_vote()
+ 
+ func _load_cloud_vote() -> void:
+-	if vote_loading: return
++	if vote_loading or vote_saving: return
++	if _scope() != cloud_scope: return
+ 	locked = true
+ 	refresh()
+ 	if cloud_client == null or not cloud_client.signed_in():
+@@ -58,15 +74,19 @@
+ 		return
+ 	vote_loading = true
+ 	var response: Dictionary = await cloud_client.request_api("/track-versions/"+cloud_version+"/rating",HTTPClient.METHOD_GET,{},"",true)
+-	if not is_inside_tree(): return
++	if not is_inside_tree() or _scope() != cloud_scope: return
+ 	vote_loading = false
+ 	if response.ok:
+ 		cloud_score = int(response.data.score)
+ 		locked = not bool(response.data.eligible)
+-		caption.text = "YOUR RATING" if not locked else "Verified race required · no self-rating"
++		caption.text = "Rate the track" if not locked else "Verified race required · no self-rating"
+ 	else:
+ 		caption.text = "Rating unavailable · reopen to retry"
+ 	refresh()
++	eligibility_changed.emit()
++	if vote_reload_pending:
++		vote_reload_pending = false
++		call_deferred("_load_cloud_vote")
+ 
+ func refresh() -> void:
+ 	if is_instance_valid(caption): caption.tooltip_text = caption.text
+@@ -78,7 +98,9 @@
+ 
+ func choose(score: int) -> void:
+ 	if locked or score < 1 or score > 5: return
++	if not cloud_version.is_empty() and _scope() != cloud_scope: return
+ 	if not cloud_version.is_empty():
++		vote_saving = true
+ 		locked = true
+ 		refresh()
+ 		caption.text = "Saving rating…"
+@@ -86,14 +108,17 @@
+ 			pending_score = score
+ 			vote_key = preload("res://backend/backend_client.gd").new_idempotency_key()
+ 		var response: Dictionary = await cloud_client.rate_track(cloud_version,score,vote_key)
+-		if not is_inside_tree(): return
++		if not is_inside_tree() or _scope() != cloud_scope: return
++		vote_saving = false
+ 		locked = false
+ 		if response.ok:
+ 			vote_key = ""
+ 			cloud_score = int(response.data.score)
+ 			caption.text = "RATING SAVED"
+ 			rated.emit()
+-		else: caption.text = "Rating not saved: "+str(response.error)
++		else:
++			caption.text = "Rating not saved: "+str(response.error)
++			save_failed.emit()
+ 		refresh()
+ 		return
+ 	var ratings: Dictionary = records.settings.get("track_ratings",{}).duplicate()
+@@ -104,6 +129,6 @@
+ 		refresh()
+ 		save_failed.emit()
+ 		return
+-	caption.text = "YOUR TRACK RATING"
++	caption.text = "Rate the track"
+ 	refresh()
+ 	rated.emit()
+diff --git a/game/ui/race_cues.gd b/game/ui/race_cues.gd
+--- a/game/ui/race_cues.gd
++++ b/game/ui/race_cues.gd
+@@ -116,7 +116,7 @@
+ 	var body := VBoxContainer.new()
+ 	body.add_theme_constant_override("separation",10)
+ 	rating_panel.add_child(body)
+-	var title := MenuStyle.label("RATE THIS TRACK",26)
++	var title := MenuStyle.label("Rate the track",26)
+ 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	title.add_theme_color_override("font_color",Color("f4e7c6"))
+ 	body.add_child(title)
+diff --git a/game/ui/track_rating_prompt.gd b/game/ui/track_rating_prompt.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/track_rating_prompt.gd
+@@ -0,0 +1,85 @@
++extends CanvasLayer
++## Optional post-finish prompt. Eligibility and the saved vote come from the server.
++var cloud_client: Node
++var cloud_sync: Node
++var cloud_version: String
++var row: TrackRating
++var overlay: Control
++var title: Label
++var skip: Button
++var offered: bool = false
++var dismissed: bool = false
++var scope: String
++var reveal_at: int
++
++func _ready() -> void:
++	name = "TrackRatingPrompt"
++	layer = 8
++	reveal_at = Time.get_ticks_msec()+750
++	overlay = Control.new()
++	MenuStyle.fill(overlay)
++	overlay.theme = MenuStyle.theme()
++	add_child(overlay)
++	overlay.hide()
++	var shade := ColorRect.new()
++	shade.color = Color(0.02,0.04,0.06,0.65)
++	MenuStyle.fill(shade)
++	overlay.add_child(shade)
++	var center := CenterContainer.new()
++	MenuStyle.fill(center)
++	overlay.add_child(center)
++	var panel := PanelContainer.new()
++	panel.custom_minimum_size.x = 380
++	panel.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.PANEL,24))
++	center.add_child(panel)
++	var body := VBoxContainer.new()
++	body.add_theme_constant_override("separation",16)
++	panel.add_child(body)
++	title = MenuStyle.label("Rate the track",28)
++	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	body.add_child(title)
++	row = TrackRating.new()
++	row.cloud_client = cloud_client
++	row.cloud_sync = cloud_sync
++	row.cloud_version = cloud_version
++	row.alignment = BoxContainer.ALIGNMENT_CENTER
++	row.eligibility_changed.connect(_eligibility_changed)
++	row.rated.connect(_rated)
++	row.save_failed.connect(func() -> void: row.caption.show())
++	# Build actions before the request, which can complete synchronously from cache.
++	skip = MenuStyle.button("Skip",_dismiss)
++	skip.name = "SkipRating"
++	body.add_child(skip)
++	body.add_child(row)
++	body.move_child(row,1)
++	row.caption.hide()
++	for star: Button in row.stars:
++		star.custom_minimum_size = Vector2(64,56)
++		star.add_theme_constant_override("icon_max_width",36)
++	scope = row.cloud_scope
++	if cloud_client.has_signal("identity_changed"):
++		cloud_client.identity_changed.connect(_dismiss)
++
++func _exit_tree() -> void:
++	if is_instance_valid(cloud_client) and cloud_client.has_signal("identity_changed") and cloud_client.identity_changed.is_connected(_dismiss):
++		cloud_client.identity_changed.disconnect(_dismiss)
++
++func _eligibility_changed() -> void:
++	if offered or dismissed or row.locked or row.value() != 0: return
++	offered = true
++	await get_tree().create_timer(maxf(0.0,(reveal_at-Time.get_ticks_msec())/1000.0)).timeout
++	if not is_inside_tree() or dismissed or row._scope() != scope or row.locked or row.value() != 0: return
++	overlay.show()
++
++func _rated() -> void:
++	row.caption.hide()
++	title.text = "You rated this track %d / 5" % row.value()
++	for star: Button in row.stars: star.disabled = true
++	skip.disabled = true
++	await get_tree().create_timer(0.7).timeout
++	if is_inside_tree(): _dismiss()
++
++func _dismiss() -> void:
++	dismissed = true
++	overlay.hide()
++	queue_free()
+diff --git a/game/tests/test_track_rating_prompt.gd b/game/tests/test_track_rating_prompt.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_track_rating_prompt.gd
+@@ -0,0 +1,182 @@
++extends SceneTree
++const Prompt = preload("res://ui/track_rating_prompt.gd")
++const Client = preload("res://backend/backend_client.gd")
++var checks: int = 0
++var failures: int = 0
++var capture_dir: String = ""
++
++class VoteClient extends Client:
++	var score: int = 0
++	var eligible: bool = false
++	var hold: bool = false
++	var fail_save: bool = false
++	var reads: int = 0
++	var keys: Array[String] = []
++	func signed_in() -> bool: return not player.is_empty()
++	func request_api(path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		reads += 1
++		var reply: Dictionary = {"ok":true,"data":{"score":score,"eligible":eligible}}
++		while hold: await get_tree().process_frame
++		if not path.ends_with("/rating"): return {"ok":false,"error":"unexpected route"}
++		return reply
++	func rate_track(_version: String, value: int, key: String) -> Dictionary:
++		keys.append(key)
++		await get_tree().process_frame
++		if fail_save: return {"ok":false,"error":"Unavailable"}
++		score = value
++		return {"ok":true,"data":{"score":score}}
++
++class Sync extends Node:
++	signal changed
++	var status: String = "Race verified"
++
++func _initialize() -> void: call_deferred("run")
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++func frames() -> void:
++	for i: int in range(5): await process_frame
++func prompt(client: Node, sync: Node) -> Node:
++	var node := Prompt.new()
++	node.cloud_client = client
++	node.cloud_sync = sync
++	node.cloud_version = "fictional-version"
++	root.add_child(node)
++	return node
++func capture(label: String) -> void:
++	if capture_dir.is_empty() or DisplayServer.get_name() == "headless": return
++	await frames()
++	await RenderingServer.frame_post_draw
++	DirAccess.make_dir_recursive_absolute(capture_dir)
++	check(root.get_texture().get_image().save_png(capture_dir.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--capture-rating="): capture_dir = argument.trim_prefix("--capture-rating=")
++	var client := VoteClient.new()
++	client.configure("http://127.0.0.1:18181")
++	client.player = {"id":"fictional-player"}
++	root.add_child(client)
++	var sync := Sync.new()
++	root.add_child(sync)
++	var background := ColorRect.new()
++	background.color = MenuStyle.INK
++	MenuStyle.fill(background)
++	root.add_child(background)
++	var results := RaceResults.new()
++	results.circuit = "Pine circuit"
++	results.vehicle_name = "Compact"
++	results.total = 69.0
++	results.clean = true
++	results.saved = true
++	results.laps.assign([14.0,13.8,13.7,13.9,13.6])
++	results.position = Vector2(32,16)
++	results.size = Vector2(1216,688)
++	root.add_child(results)
++	var first := prompt(client,sync)
++	await frames()
++	check(results.visible and not first.overlay.visible,"normal results available while first completion awaits verification")
++	check(first.row.locked,"server qualification gates rating")
++	# Status already said Race verified for an older job: the next emission must still refresh.
++	client.eligible = true
++	sync.changed.emit()
++	await create_timer(0.8).timeout
++	check(first.overlay.visible and not first.row.locked,"newly verified unrated cloud track opens prompt even with repeated status")
++	check(first.row.caption.text == "Rate the track" and first.title.text == "Rate the track","requested action caption")
++	await capture("cloud-rating-prompt-1280x720")
++	first.skip.pressed.emit()
++	await frames()
++	check(not is_instance_valid(first) and client.score == 0,"Skip leaves server vote unset")
++	var again := prompt(client,sync)
++	await create_timer(0.8).timeout
++	check(again.overlay.visible,"skipped cloud track is offered on a later race")
++	root.size = Vector2i(960,540)
++	await frames()
++	check(again.row.get_global_rect().end.x <= 960 and again.skip.get_global_rect().end.y <= 540,"prompt fits compact landscape")
++	await capture("cloud-rating-prompt-960x540")
++	root.size = Vector2i(1280,720)
++	client.fail_save = true
++	again.row.stars[3].pressed.emit()
++	await frames()
++	check(again.overlay.visible and again.row.caption.visible and not again.row.locked,"failed save stays actionable without confirming a vote")
++	client.fail_save = false
++	again.row.stars[3].pressed.emit()
++	var before_reads: int = client.reads
++	sync.changed.emit()
++	check(again.row.locked and client.reads == before_reads,"background verification cannot unlock a vote while it saves")
++	await frames()
++	check(client.score == 4 and again.title.text == "You rated this track 4 / 5","successful server rating confirms chosen stars")
++	check(client.keys.size() == 2 and client.keys[0] == client.keys[1] and not client.keys[0].is_empty(),"retry preserves idempotency key")
++	await capture("cloud-rating-saved-1280x720")
++	await create_timer(0.8).timeout
++	check(not is_instance_valid(again),"saved prompt dismisses after confirmation")
++	var rated := prompt(client,sync)
++	await create_timer(0.8).timeout
++	check(not rated.overlay.visible and rated.row.value() == 4,"existing cloud vote suppresses prompt independently of local ratings")
++	rated.queue_free()
++	await frames()
++	client.score = 0
++	client.eligible = false
++	var owner := prompt(client,sync)
++	await create_timer(0.8).timeout
++	check(not owner.overlay.visible,"ineligible/self-owned track does not prompt")
++	owner.queue_free()
++	await frames()
++	# Verification can finish while the first eligibility request is still returning false.
++	client.hold = true
++	var pending := prompt(client,sync)
++	client.eligible = true
++	sync.changed.emit()
++	client.hold = false
++	await create_timer(0.8).timeout
++	check(pending.overlay.visible,"verification during an eligibility read triggers a follow-up read")
++	pending.queue_free()
++	await frames()
++	client.hold = true
++	var switched := prompt(client,sync)
++	client.player = {"id":"another-fictional-player"}
++	client.identity_changed.emit()
++	client.hold = false
++	await frames()
++	check(not is_instance_valid(switched),"account switch closes pending prompt and discards stale response")
++	var away := prompt(client,sync)
++	away.queue_free()
++	await frames()
++	check(sync.changed.get_connections().is_empty(),"departed prompts disconnect verification listeners")
++	client.hold = false
++	var directory: String = "user://rating_prompt_test_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var store := LocalRecords.new(directory.path_join("records.json"))
++	var local_row := TrackRating.new()
++	local_row.records = store
++	local_row.track_id = "local-fixture"
++	root.add_child(local_row)
++	check(local_row.caption.text == "Rate the track","local inline rating uses requested caption")
++	local_row.choose(3)
++	check(local_row.value() == 3 and local_row.caption.text == "Rate the track","local vote persists with action caption")
++	local_row.queue_free()
++	results.hide()
++	var complete := RaceComplete.new()
++	complete.results = results
++	complete.rating_records = store
++	complete.rating_track_id = "local-fixture"
++	complete.facts = {"complete":true,"total":69.0,"previous":70.0,"previous_lap":14.0,"flying":13.6,"incident_free":true}
++	complete.position = Vector2(32,16)
++	complete.size = Vector2(1216,688)
++	complete.theme = MenuStyle.theme()
++	root.add_child(complete)
++	await frames()
++	var inline: TrackRating = complete.find_child("TrackRating",true,false)
++	check(inline.caption.text == "Rate the track" and inline.value() == 3,"actual Race Complete page shows action caption with stored stars")
++	await capture("race-complete-label-1280x720")
++	complete.queue_free()
++	results.queue_free()
++	background.queue_free()
++	sync.queue_free()
++	client.queue_free()
++	await frames()
++	print("TRACK_RATING_PROMPT_TESTS: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/docs/TRACK_RATING_PROMPT_2026_10_10.md b/docs/TRACK_RATING_PROMPT_2026_10_10.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_RATING_PROMPT_2026_10_10.md
+@@ -0,0 +1,48 @@
++# Track rating action and restored cloud prompt ? 2026-10-10
++
++## Requirements and behavior
++
++- RATE01: Replace ?Your rating? / ?Your track rating? with the requested **Rate the track** in the shared rating row; use the same title in the existing local finish prompt.
++- RATE02 / B04: A completed online race on an unrated immutable cloud version offers a skippable rating prompt once the server reports eligibility. Already rated, self-owned, ineligible and signed-out versions do not open it. Offline races and editor practice do not add cloud prompts. The existing local finish prompt remains.
++- RATE03 / R01: Normal PB/lap results become available immediately and upload/verification continue independently. The optional prompt belongs to the completed results view, survives Continue into Race Complete, and retires with navigation. Skip leaves the vote unset and permits an offer on a later race.
++- Q01 / V06: Preserve rating idempotency and server qualification, account/server fences, five ordinary laps and normal results first. No backend, physics, scoring, artificial/public population contract or deployment changes.
++
++The root cause was `App` deliberately setting `Game.rating_records` to null for cloud tracks, thereby excluding every cloud race from the local-only finish prompt. Keep that local/cloud separation and attach a separate server-aware prompt to completed online results. Use the existing rating GET/PUT API rather than locally persisting a cloud vote or bypassing verified-race/self-rating qualification.
++
++`TrackRating` now notifies its prompt when eligibility loads, rechecks when another verified upload emits the same status as the previous one, and remembers verification arriving during an unfinished eligibility request. Reads cannot unlock stars during a vote save. Repeated save attempts retain the existing idempotency key; stale account/server responses cannot update the row. Departed rows/prompts disconnect their sync/identity listeners.
++
++## Changed files
++
++- `game/ui/track_rating.gd`: action caption, eligibility signal, verified-event refresh and pending-read handling, save-state guard, account/server fencing, listener cleanup and cloud-save error notification.
++- `game/ui/race_cues.gd`: existing local prompt title.
++- `game/ui/track_rating_prompt.gd`: new compact menu-styled optional cloud prompt, delayed reveal, Skip, confirmation and identity/navigation cleanup.
++- `game/core/app.gd`: attach the cloud prompt only for a finished result eligible for its actual completed-ticket upload.
++- `game/tests/test_track_rating_prompt.gd`: isolated fictional-client lifecycle checks and direct UI captures. No live ratings or owner records are used.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the scoped evidence patch.
++
++## Actual verification
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`, through `scripts/dev.ps1`.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_track_rating_prompt.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -Graphical -TestArgument '--capture-rating=C:/Codes/Godot/Beat my track/docs/evidence/track-rating-2026-10-10/after'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++$env:BMT_RESULTS_EVIDENCE = 'C:/Codes/Godot/Beat my track/docs/evidence/track-rating-2026-10-10/results'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CaptureResults
++$env:BMT_RESULTS_EVIDENCE = 'C:/Codes/Godot/Beat my track/docs/evidence/track-rating-2026-10-10/baseline-results'
++powershell -NoProfile -ExecutionPolicy Bypass -File build/track-rating-baseline/scripts/dev.ps1 -Action CaptureResults -CommandTimeoutSeconds 60
++git diff --check -- game/ui/track_rating.gd game/ui/race_cues.gd game/core/app.gd
++```
++
++Final graphical focused check: **24 checks, zero failures**, including newly qualified first completion, repeated verified status, verification during the initial GET, Skip/reoffer, saved cloud score suppression, failed PUT/retry/same key, qualification/self-rating suppression, account switch, departed listeners, saving during background verification, compact landscape containment, local persistence and the real Race Complete inline row. App regression: **99 checks, zero failures**. Scoped whitespace check passed.
++
++Broader `CaptureResults` did **not** pass: eight failures (existing local confirmation timing, three lap-selection/three route-touch assertions, local recommendation count) followed by an out-of-bounds third recommendation card at `test_race_results.gd:328`. An isolated starting-code overlay under `build/track-rating-baseline` restored exactly the three changed existing scripts from the saved task baseline and reproduced the identical failures. The live working source was not swapped. Assertions were retained; this task does not claim a full results-suite pass.
++
++Initial direct PowerShell execution was blocked by execution policy; the explicit process invocation above resolved it. A restricted engine parse attempt failed opening its Windows user log; normal Windows engine access resolved it. The first focused run had one local-save fixture failure because its isolated folder was missing; creating that fixture folder corrected it. The first isolated-baseline junction command failed argument binding; a native PowerShell path-based command corrected it. No product invariant was changed for these corrections.
++
++## Evidence and remaining acceptance
++
++Inspected captures: [inline label](evidence/track-rating-2026-10-10/after/race-complete-label-1280x720.png), [cloud prompt](evidence/track-rating-2026-10-10/after/cloud-rating-prompt-1280x720.png), [compact prompt](evidence/track-rating-2026-10-10/after/cloud-rating-prompt-960x540.png), [saved vote](evidence/track-rating-2026-10-10/after/cloud-rating-saved-1280x720.png). Actual [logs](evidence/track-rating-2026-10-10/logs) and [task-only Git patch](evidence/track-rating-2026-10-10/scoped-change.patch) are retained.
++
++No phone attachment check or device test was performed. No APK export/install, full Validate, live rating writes, backend change or deployment was performed. Restart/rebuild the client to use the changes. Remaining acceptance: complete a previously unrated nonowned cloud track while signed in, observe delayed verification and Skip/retry on the actual connection, verify stars after reopening, and check the prompt on Android. If the player leaves the completed results before qualification arrives, no popup interrupts another screen; the inline row remains available when reopening that track. Server qualification still excludes artificial-only/public-ineligible completions and self-rating.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 RATE01-RATE03/B04/R01/Q01/V06: owner rating label correction and missing prompts. Shared caption/finish title now Rate the track; completed-ticket cloud races add optional server-qualified prompt over already available normal results, while local finish prompt remains. Server vote suppresses repeat; Skip permits later race, in-flight verification rechecks/repeated status retained, save retry key/account-origin fences/listener cleanup protected. Final native24/App99 pass; desktop1280x720/compact960x540 captures inspected. Broad CaptureResults retains eight failures plus recommendation out-of-bounds, identically reproduced in isolated starting-code overlay; not reported passing. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/live ratings. Task-only Git patch/files/actual commands/logs/remaining signed-in/device acceptance: docs/TRACK_RATING_PROMPT_2026_10_10.md.
++
+ 2026-10-10 HSTART01-HSTART02/HOPT02/RR06/R01/B07/Q01/V03/V05: owner startup Free Race histogram loads forever. Reproduced restored selection and promoted menu rendering Loading without issuing any comparison request. Visible detail now initializes once, promotion hydrates, missing snapshot recovers, synchronous replies re-read; preview/no-polling/error/guest/account gates and race actions retained. Baseline21/11fail; finalstartup26/unified150/speed30/loading39/discovery18/App99/parser449 and Import pass. Four captures saved/initial pair inspected; unrelated EngineAudioBlend registry and cleared-cache fixture issues corrected with assertions retained. No phone check/device/export-install/fullValidate/live requests/backend/deploy/player writes; client restart/rebuild and actual installed saved-session/device acceptance remain. Files/commands/evidence/scoped checkpoint: docs/STARTUP_HISTOGRAM_2026_10_10.md.
+ 
+ 2026-10-10 SND36/SND02-SND06/SND19/SND24-SND35/G01/R01/Q01/V06: owner all-loop audit covers85 assets (44PCM/41Ogg, incl inactive legacy rain). Native fractional-pitch PCM padding defect reproduced; shared mono/stereo cyclic guard fixes vehicle/tire/menu/rain/cicada factories. All30 engine banks sustained/coherent, 10 texture joins leveled/power-preserving/longer, tire quiet zero crossing replaces short fade with pinned zeros, same owner rain power join/legacy rain-only repair. Final85 audit0fail, guard208/vehicle1446/music1156/wet41/night25/App99/handling88/parser445 pass; native5cars repeated wraps/no gaps/clipping/paused0 and exact960-tick simulation.38audio changed/64 exact incl music/cicadas/all17oneshots/compact prior4; repeat102 hashes exact, bank31301752bytes/+17.6MiB acrosscars. No phone attachment/device listening-memory/export-install/fullValidate/backend/deploy; subjective/device acceptance open, restartlocal/Android unchanged. Files/commands/playable85-wrap+native+matched-wind evidence/scoped checkpoint: docs/ALL_AUDIO_LOOPS.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1514,3 +1514,8 @@
+ ## Short thunder and fresh cue playback, 2026-10-10
+ 
+ 2026-10-10 SND34/SND32/MUS35/SND33/SND05/G01/R01/Q01/V06: owner shortens overlapping thunder; same bass source now6s/main-clap start1.88s/1.2s cosine tail fade/529244bytes/b6c04a66. Every delayed cue starts fresh in two reusable voices, prior tail fades0.18s/no accumulation; pause-focus/exit retained, rain0.28/thunder1.0 unchanged. Final offline/import/focused41/verboseheadless20/nativeRapid21/raceCapture19/review/nativeMusic52 pass; rapid peak0.626, ordinary paused/muted output0, all5 music PCM0. Initial headless shutdown resources retained/clean verbose run; concurrent six compact masters preserved and VehicleLivery parse cleared by import, no edits to that work. Settings camera-touch/earlier spray failures remain; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (short tails).
++
++
++## Rating action and cloud finish prompt, 2026-10-10
++
++2026-10-10 RATE01-RATE03/B04/R01/Q01/V06: owner rating label correction and missing prompts. Shared caption/finish title now Rate the track; completed-ticket cloud races add optional server-qualified prompt over already available normal results, while local finish prompt remains. Server vote suppresses repeat; Skip permits later race, in-flight verification rechecks/repeated status retained, save retry key/account-origin fences/listener cleanup protected. Final native24/App99 pass; desktop1280x720/compact960x540 captures inspected. Broad CaptureResults retains eight failures plus recommendation out-of-bounds, identically reproduced in isolated starting-code overlay; not reported passing. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/live ratings. Task-only Git patch/files/actual commands/logs/remaining signed-in/device acceptance: docs/TRACK_RATING_PROMPT_2026_10_10.md.

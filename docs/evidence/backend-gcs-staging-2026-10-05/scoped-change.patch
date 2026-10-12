@@ -1,0 +1,1928 @@
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -23,6 +23,8 @@
+     max_job_attempts: int = 3
+     access_ttl_seconds: int = 900
+     refresh_ttl_seconds: int = 2592000
++    refresh_recovery_seconds: int = 120
++    transport_profile: str = "compact"
+     max_body_bytes: int = 8 * 1024 * 1024
+     rate_limit_per_minute: int = 600
+     auth_limit_per_minute: int = 30
+@@ -45,6 +47,8 @@
+     verifier_recycle_jobs: int = 100
+     allow_sync_track_validation: bool = False
+     object_backend: str = "local"
++    gcs_bucket: str = ""
++    gcs_prefix: str = "bmt/v1"
+     s3_endpoint: str = ""
+     s3_bucket: str = ""
+     s3_region: str = "us-east-1"
+@@ -69,6 +73,7 @@
+             "max_job_attempts",
+             "access_ttl_seconds",
+             "refresh_ttl_seconds",
++            "refresh_recovery_seconds",
+             "max_body_bytes",
+             "rate_limit_per_minute",
+             "auth_limit_per_minute",
+@@ -86,6 +91,8 @@
+                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
+         if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
+             raise ValueError("Invalid pool overflow or upload concurrency")
++        if self.refresh_recovery_seconds > 300 or self.transport_profile not in ("legacy", "compact"):
++            raise ValueError("Invalid recovery window or transport profile")
+         if self.readiness_cache_seconds > 5 or self.readiness_storage_cache_seconds > 60 or self.readiness_timeout_seconds > 5:
+             raise ValueError("Readiness cache/deadline exceeds the bounded probe allowance")
+         if self.max_body_bytes > 8 * 1024 * 1024:
+@@ -96,8 +103,15 @@
+             raise ValueError("Job lease must exceed twice the verifier timeout plus 25 seconds")
+         if self.environment not in ("production", "development", "test"):
+             raise ValueError("Invalid BMT_ENVIRONMENT")
+-        if self.object_backend not in ("local", "s3"):
++        if self.object_backend not in ("local", "s3", "gcs"):
+             raise ValueError("Invalid object backend")
++        if self.object_backend == "gcs":
++            import re
++            if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{1,61}[a-z0-9]", self.gcs_bucket):
++                raise ValueError("GCS requires an explicit bucket name")
++            if (not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", self.gcs_prefix)
++                    or len(self.gcs_prefix) > 256):
++                raise ValueError("Invalid GCS object prefix")
+         if self.object_backend == "s3":
+             from urllib.parse import urlsplit
+             parsed = urlsplit(self.s3_endpoint)
+--- a/backend/bmt_backend/storage.py
++++ b/backend/bmt_backend/storage.py
+@@ -1,4 +1,4 @@
+-"""Immutable content-addressed storage boundary; shared volume on NAS, S3 adapter later."""
++"""Immutable content-addressed storage boundary; local, S3 and native Google storage."""
+ 
+ import gzip
+ import hashlib
+@@ -158,6 +158,9 @@
+     if settings.object_backend == "s3":
+         from .s3_storage import S3BlobStore
+         store = S3BlobStore(settings)
++    elif settings.object_backend == "gcs":
++        from .gcs_storage import GCSBlobStore
++        store = GCSBlobStore(settings)
+     else:
+         store = LocalBlobStore(settings.object_dir)
+     return PinnedBlobStore(store, factory, max(600,settings.job_lease_seconds+60))
+--- a/backend/deploy/object_archive.py
++++ b/backend/deploy/object_archive.py
+@@ -20,10 +20,17 @@
+ 
+ 
+ def archive(root: Path) -> None:
+-    if os.environ.get("BMT_OBJECT_BACKEND", "local") == "s3":
++    provider = os.environ.get("BMT_OBJECT_BACKEND", "local")
++    if provider in ("s3", "gcs"):
+         from bmt_backend.config import Settings
+-        from bmt_backend.s3_storage import S3BlobStore
+-        archive_objects(S3BlobStore(Settings.from_env()))
++        settings = Settings.from_env()
++        if provider == "gcs":
++            from bmt_backend.gcs_storage import GCSBlobStore
++            store = GCSBlobStore(settings)
++        else:
++            from bmt_backend.s3_storage import S3BlobStore
++            store = S3BlobStore(settings)
++        archive_objects(store)
+         return
+     # An interrupted atomic publish can leave the temporary and final names linked.
+     # Serialize both as regular data; restoring archive link entries is forbidden.
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -12,6 +12,12 @@
+ menus also use the optional cloud and Weekly Rivalry integration.
+ 
+ Scalability repairs require migrations through `0014_storage_lifecycle` and matching API/worker artifacts. See [load profiles and gates](LOAD_TESTING.md) and [actual verification/acceptance](../docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md).
++Native Google Cloud Storage is available with `BMT_OBJECT_BACKEND=gcs`, an explicit
++bucket/prefix and application-default credentials. It retains immutable SHA256
++keys, conditional generation-safe publication/deletion, database pins and portable
++object archives. [GCP staging](deploy/gcp/README.md) prepares bounded, explicitly
++applied Cloud Run/worker/Cloud SQL resources; [actual verification and remaining
++live acceptance](../docs/BACKEND_GCS_STAGING_2026_10_05.md) records the tested scope.
+ 
+ Local API development (Python 3.10+; deployment image uses 3.12):
+ 
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-05 native GCS and GCP staging: the Google adapter uses existing google-auth/HTTP dependencies, runtime ADC and immutable generation preconditions. Provider archives accept GCS. The [staging runbook](gcp/README.md) targets the owner-supplied `beat-my-track` project with explicit application/migration identities, pinned image digests, bounded replicas/DB pools, expiry and owned cleanup. Local image/contract/SQL tests are verified; Google CLI/ADC are not configured, so live bucket/deployment acceptance and pricing review remain. No credits or existing services were used/changed. [Evidence and limits](../../docs/BACKEND_GCS_STAGING_2026_10_05.md).
++
+ 2026-10-05 readiness/replica failures: `/healthz` performs no dependency IO; `/readyz` coalesces requests with a two-second HTTP deadline, two-second success cache and 30-second on-demand deep-storage interval. API storage errors invalidate caches immediately. `BMT_READINESS_CACHE_SECONDS`, `BMT_READINESS_STORAGE_CACHE_SECONDS` and `BMT_READINESS_TIMEOUT_SECONDS` configure these bounded defaults. Keep external probe timeouts above the application's deadline. Synthetic separate-process tests cover shared sessions, concurrent retries/resource consumption, storage faults, killed/stale workers and SQL finalization recovery. No existing services were restarted/migrated. [Actual checks and limits](../../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
+ 
+ 2026-10-05 worker lifecycle: SIGTERM/SIGINT stop claims and mark draining, with a configurable five-second canonical finish grace, cooperative cancellation and verifier/pool cleanup including `--once`. Set `BMT_WORKER_SHUTDOWN_GRACE_SECONDS` below the platform termination allowance, reserving time for existing bounded database/object IO and cleanup. PC Compose grants 30 seconds; the NAS template retains 210 seconds. An unavailable heartbeat DB or SIGKILL relies on stale-heartbeat/lease expiry. This source change did not restart existing services. [Actual checks and acceptance](../../docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
+--- a/backend/deploy/.env.example
++++ b/backend/deploy/.env.example
+@@ -20,5 +20,10 @@
+ BMT_READINESS_STORAGE_CACHE_SECONDS=30
+ BMT_READINESS_TIMEOUT_SECONDS=2
+ BMT_RETENTION_DAYS=90
++# Cloud Run supplies ADC through its runtime service account; never ship key files.
++# These are optional outside the generated GCP staging environment.
++BMT_OBJECT_BACKEND=local
++BMT_GCS_BUCKET=
++BMT_GCS_PREFIX=bmt/v1
+ # Optional: BMT_BACKUP_MARKER_PATH must point to a read-only mounted COMPLETE
+ # marker from the latest successful backup. A Compose override must add the mount.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,9 @@
++2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 6-7 implemented locally. Native GCS uses lazy ADC, conditional immutable writes, integrity/acknowledgement checks, bounded IO, generation-safe deletion and portable archives. Owned GCP staging init/plan/deploy/smoke/cleanup/watch targets beat-my-track with pinned image/engine, separate migration/app identities/secrets, role restrictions, replica/pool bounds, proposed four-hour/EUR40 lease and explicit pricing/owner guards. Changed images require a fresh owned environment. Affected tests 98 passed/3 skipped, provider 25/1; packaged Linux smoke 1 pass. Separate local image builds pass engine/import/five-lap/rewind proof. Google CLI/ADC absent, so live GCS/IAM/deployment and pricing/credit-expiry review remain; no cloud credits/resources or live WSL data/services changed. Temporary PostgreSQL removed. No Android/device test; attachment not checked. Exact commands, files, review plans/patch and limitations: docs/BACKEND_GCS_STAGING_2026_10_05.md and backend/deploy/gcp/README.md. Concurrent work preserved.
++
++2026-10-05 V02/V04/V05/Q01: Desert shares Grass warm directional sunlight veil and sun colour/intensity, with clear skies. Pinned desktop CaptureDesert 104 checks pass; TestBiomes 107 checks/five creator New-selection failures retained. Screenshot inspected; scoped diff saved. No phone attachment check/device test/export or canonical/backend change. Files, commands, limitations and acceptance: docs/DESERT_SUNLIGHT.md.
++
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested track-editor performance/usability review completed. Ten findings: invisible autosave failure, synchronous large-map work, pending-preview loss, pinch committing movement, Surface/header overlap, missing Publish glyph, first-only issue navigation, phantom road-edge runs, rebuilt thumbnails and stale async workflow checks. Pinned desktop connected 96-piece opening 6.603 s, foreground save 1.221 s, later maximum frame interval 1.726 s; small approval 12.8-16.3 ms. Focused suites 312 checks pass; workflow 201 checks/two failures retained. Final disposable graphical observations exit 0, screenshots inspected. DN2103 attached; no phone editor test, export, runtime/schema/simulation fix, backend/service change or full Validate. Report, exact commands/logs, limitations and scoped review checkpoint: docs/TRACK_EDITOR_REVIEW_2026_10_05.md.
++
+ 2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,9 @@
++2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 6-7 implemented locally. Native GCS uses lazy ADC, conditional immutable writes, integrity/acknowledgement checks, bounded IO, generation-safe deletion and portable archives. Owned GCP staging init/plan/deploy/smoke/cleanup/watch targets beat-my-track with pinned image/engine, separate migration/app identities/secrets, role restrictions, replica/pool bounds, proposed four-hour/EUR40 lease and explicit pricing/owner guards. Changed images require a fresh owned environment. Affected tests 98 passed/3 skipped, provider 25/1; packaged Linux smoke 1 pass. Separate local image builds pass engine/import/five-lap/rewind proof. Google CLI/ADC absent, so live GCS/IAM/deployment and pricing/credit-expiry review remain; no cloud credits/resources or live WSL data/services changed. Temporary PostgreSQL removed. No Android/device test; attachment not checked. Exact commands, files, review plans/patch and limitations: docs/BACKEND_GCS_STAGING_2026_10_05.md and backend/deploy/gcp/README.md. Concurrent work preserved.
++
++2026-10-05 V02/V04/V05/Q01: Desert shares Grass warm directional sunlight veil and sun colour/intensity, with clear skies. Pinned desktop CaptureDesert 104 checks pass; TestBiomes 107 checks/five creator New-selection failures retained. Screenshot inspected; scoped diff saved. No phone attachment check/device test/export or canonical/backend change. Files, commands, limitations and acceptance: docs/DESERT_SUNLIGHT.md.
++
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested track-editor performance/usability review completed. Ten findings: invisible autosave failure, synchronous large-map work, pending-preview loss, pinch committing movement, Surface/header overlap, missing Publish glyph, first-only issue navigation, phantom road-edge runs, rebuilt thumbnails and stale async workflow checks. Pinned desktop connected 96-piece opening 6.603 s, foreground save 1.221 s, later maximum frame interval 1.726 s; small approval 12.8-16.3 ms. Focused suites 312 checks pass; workflow 201 checks/two failures retained. Final disposable graphical observations exit 0, screenshots inspected. DN2103 attached; no phone editor test, export, runtime/schema/simulation fix, backend/service change or full Validate. Report, exact commands/logs, limitations and scoped review checkpoint: docs/TRACK_EDITOR_REVIEW_2026_10_05.md.
++
+ 2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+--- /dev/null
++++ b/backend/bmt_backend/gcs_storage.py
+@@ -0,0 +1,187 @@
++"""Native GCS JSON API, ADC identities, conditional immutable writes and bounded IO."""
++import base64
++import gzip
++import hashlib
++import io
++import json
++import re
++import threading
++from datetime import datetime
++from urllib.parse import quote
++
++import google.auth
++import requests
++from google.auth.exceptions import GoogleAuthError
++from google.auth.transport.requests import Request as AuthRequest
++from urllib3.exceptions import HTTPError as StreamError
++
++from .storage import canonical_json
++
++LIMIT = 8 * 1024 * 1024
++STORED_LIMIT = LIMIT + 65536
++METADATA_LIMIT = 65536
++ORIGIN = "https://storage.googleapis.com"
++
++
++class GCSBlobStore:
++    def __init__(self, settings, *, credentials=None, transport=None):
++        if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{1,61}[a-z0-9]", settings.gcs_bucket):
++            raise ValueError("Invalid GCS bucket")
++        if (not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", settings.gcs_prefix)
++                or len(settings.gcs_prefix) > 256):
++            raise ValueError("Invalid GCS prefix")
++        self.bucket, self.prefix = settings.gcs_bucket, settings.gcs_prefix + "/"
++        self.credentials, self.transport = credentials, transport or requests.request
++        self.auth_lock = threading.Lock()
++        self.auth_request = None
++
++    def _authentication(self, *args, **kwargs):
++        if self.auth_request is None:
++            self.auth_request = AuthRequest()
++        kwargs["timeout"] = (3, 5)
++        return self.auth_request(*args, **kwargs)
++
++    def _headers(self, method, url, *, refresh=False):
++        headers = {"Accept-Encoding": "identity"}
++        if not self.auth_lock.acquire(timeout=3):
++            raise OSError("Object authentication busy")
++        try:
++            if self.credentials is None:
++                self.credentials, _ = google.auth.default(
++                    scopes=("https://www.googleapis.com/auth/devstorage.read_write",),
++                    request=self._authentication)
++            if refresh:
++                self.credentials.refresh(self._authentication)
++            self.credentials.before_request(self._authentication, method, url, headers)
++        except (GoogleAuthError, requests.RequestException, OSError, ValueError):
++            raise OSError("Object authentication unavailable") from None
++        finally:
++            self.auth_lock.release()
++        return headers
++
++    def _key(self, digest):
++        if not re.fullmatch(r"[0-9a-f]{64}", digest):
++            raise ValueError("Invalid object digest")
++        return self.prefix + digest[:2] + "/" + digest + ".json"
++
++    def _url(self, key="", *, upload=False):
++        base = ORIGIN + ("/upload" if upload else "") + "/storage/v1/b/" + self.bucket + "/o"
++        return base + ("/" + quote(key, safe="") if key else "")
++
++    def _request(self, method, key="", *, query=None, body=None, upload=False, limit=METADATA_LIMIT):
++        url = self._url(key, upload=upload)
++        for attempt in range(2):
++            headers = self._headers(method, url, refresh=attempt == 1)
++            if body is not None:
++                # Store gzip bytes without contentEncoding metadata: avoid provider transcoding.
++                headers["Content-Type"] = "application/gzip"
++            try:
++                with self.transport(method, url, params=query or {}, data=body, headers=headers,
++                        stream=True, timeout=(3, 10), allow_redirects=False) as response:
++                    data = response.raw.read(limit + 1, decode_content=False)
++                    if len(data) > limit:
++                        raise OSError("Object response exceeds limit")
++                    if response.status_code != 401 or attempt:
++                        return response.status_code, data
++            except (requests.RequestException, StreamError):
++                raise OSError("Object service unavailable") from None
++        raise OSError("Object authentication unavailable")
++
++    @staticmethod
++    def _metadata(body):
++        try:
++            value = json.loads(body)
++            if type(value) is dict:
++                return value
++        except (ValueError, UnicodeError, RecursionError):
++            pass
++        raise OSError("Invalid object metadata")
++
++    def put_json(self, data):
++        raw = canonical_json(data)
++        if len(raw) > LIMIT:
++            raise ValueError("Object exceeds limit")
++        digest = hashlib.sha256(raw).hexdigest()
++        key = self._key(digest)
++        body = gzip.compress(raw, compresslevel=3, mtime=0)
++        status, response = self._request("POST", upload=True, body=body,
++            query={"uploadType": "media", "name": key, "ifGenerationMatch": "0",
++                "fields": "name,generation,size,md5Hash"})
++        if status == 412:
++            self.get_json(digest)  # An existing immutable key still requires SHA256 integrity.
++            return digest
++        if status not in (200, 201):
++            raise OSError("Immutable object publication failed")
++        metadata = self._metadata(response)
++        expected_md5 = base64.b64encode(hashlib.md5(body, usedforsecurity=False).digest()).decode("ascii")
++        if (metadata.get("name") != key or not re.fullmatch(r"[1-9][0-9]*", str(metadata.get("generation", "")))
++                or metadata.get("size") != str(len(body)) or metadata.get("md5Hash") != expected_md5):
++            raise OSError("Object publication acknowledgement failed integrity")
++        return digest
++
++    def get_json(self, digest):
++        status, body = self._request("GET", self._key(digest), query={"alt": "media"}, limit=STORED_LIMIT)
++        if status != 200:
++            raise OSError("Stored object unavailable")
++        try:
++            if body.startswith(b"\x1f\x8b"):
++                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
++                    body = source.read(LIMIT + 1)
++            if len(body) > LIMIT or hashlib.sha256(body).hexdigest() != digest:
++                raise OSError("Object integrity check failed")
++            value = json.loads(body)
++            if type(value) is not dict:
++                raise ValueError("Not an object")
++            return value
++        except (ValueError, UnicodeError, EOFError, RecursionError):
++            raise OSError("Invalid stored object") from None
++
++    def delete(self, digest):
++        key = self._key(digest)
++        status, body = self._request("GET", key, query={"fields": "generation,name"})
++        if status == 404:
++            return
++        if status != 200:
++            raise OSError("Object metadata unavailable for deletion")
++        metadata = self._metadata(body)
++        generation = metadata.get("generation", "")
++        if metadata.get("name") != key or not re.fullmatch(r"[1-9][0-9]*", str(generation)):
++            raise OSError("Invalid object generation")
++        status, _ = self._request("DELETE", key, query={"ifGenerationMatch": generation})
++        if status not in (200, 204, 404):
++            raise OSError("Object deletion failed or generation changed")
++
++    def list_objects(self, cursor, limit):
++        if (type(limit) is not int or not 1 <= limit <= 1000 or
++                (cursor is not None and (type(cursor) is not dict or set(cursor) != {"token"}
++                    or type(cursor["token"]) is not str or not cursor["token"] or len(cursor["token"]) > 4096))):
++            raise ValueError("Invalid object cursor/limit")
++        query = {"prefix": self.prefix, "maxResults": str(limit),
++            "fields": "items(name,size,updated),nextPageToken"}
++        if cursor:
++            query["pageToken"] = cursor["token"]
++        status, body = self._request("GET", query=query, limit=1024 * 1024)
++        if status != 200:
++            raise OSError("Object listing failed")
++        metadata = self._metadata(body)
++        try:
++            items, token = metadata.get("items", []), metadata.get("nextPageToken")
++            if (type(items) is not list or len(items) > limit or
++                    (token is not None and (type(token) is not str or not token or len(token) > 4096
++                        or (cursor and token == cursor["token"])))):
++                raise ValueError("Invalid listing shape")
++            rows = []
++            for item in items:
++                if type(item) is not dict:
++                    raise ValueError("Invalid listing item")
++                match = re.fullmatch(re.escape(self.prefix) + r"([0-9a-f]{2})/([0-9a-f]{64})\.json", item.get("name", ""))
++                if not match or not match[2].startswith(match[1]):
++                    continue
++                size = int(item["size"])
++                stamp = datetime.fromisoformat(item["updated"].replace("Z", "+00:00"))
++                if not 0 <= size <= STORED_LIMIT or stamp.tzinfo is None:
++                    raise ValueError("Invalid listing size/time")
++                rows.append({"digest": match[2], "modified": int(stamp.timestamp()), "bytes": size})
++            return rows, {"token": token} if token else None
++        except (ValueError, TypeError, KeyError, AttributeError):
++            raise OSError("Invalid object listing") from None
+--- /dev/null
++++ b/backend/bmt_backend/cloud_setup.py
+@@ -0,0 +1,62 @@
++"""Explicit staging-only database ownership, migrations and least-privilege grants."""
++import os
++import re
++
++from sqlalchemy import inspect, text
++
++from .config import Settings
++from .db import make_engine
++from .migrate import upgrade
++
++
++def setup(engine, owner, app_role="bmt", schema="public"):
++    if not re.fullmatch(r"[0-9a-f]{32}", owner):
++        raise ValueError("Staging needs its explicit ownership identifier")
++    if not re.fullmatch(r"[a-z][a-z0-9_]{2,62}", app_role) or app_role in ("postgres", "cloudsqlsuperuser"):
++        raise ValueError("Invalid application database role")
++    if schema != "public" and not re.fullmatch(r"bmt_load_[0-9a-f]{32}", schema):
++        raise ValueError("Invalid staging schema")
++    if engine.dialect.name != "postgresql":
++        raise ValueError("Cloud staging requires PostgreSQL")
++    tables = inspect(engine).get_table_names(schema=schema)
++    guard = f'"{schema}".bmt_staging_guard'
++    with engine.begin() as connection:
++        if tables and "bmt_staging_guard" not in tables:
++            raise RuntimeError("Refusing to adopt a nonempty unowned database")
++        connection.execute(text(f"CREATE TABLE IF NOT EXISTS {guard} (id integer PRIMARY KEY CHECK (id=1), owner varchar(32) NOT NULL)"))
++        connection.execute(text(f"INSERT INTO {guard} (id,owner) VALUES (1,:owner) ON CONFLICT (id) DO NOTHING"), {"owner": owner})
++        actual = connection.execute(text(f"SELECT owner FROM {guard} WHERE id=1 FOR UPDATE")).scalar()
++        if actual != owner:
++            raise RuntimeError("Staging database ownership mismatch")
++    # Guard exists before upgrade, so an interrupted migration remains resumable.
++    upgrade(engine)
++    with engine.begin() as connection:
++        flags = connection.execute(text("SELECT rolsuper,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=:role"), {"role": app_role}).one_or_none()
++        if flags is None or any(flags):
++            raise RuntimeError("Refusing an inherently privileged application role")
++        # Cloud SQL's managed administrator is not a PostgreSQL superuser; do not
++        # attempt superuser-only attribute changes even when setting them false.
++        connection.execute(text(f'ALTER ROLE "{app_role}" NOCREATEDB NOCREATEROLE'))
++        if connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname='cloudsqlsuperuser'")).scalar():
++            connection.execute(text(f'REVOKE cloudsqlsuperuser FROM "{app_role}"'))
++        connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema}" TO "{app_role}"'))
++        connection.execute(text(f'GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{app_role}"'))
++        connection.execute(text(f'GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{app_role}"'))
++        connection.execute(text(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO "{app_role}"'))
++        connection.execute(text(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" GRANT USAGE,SELECT,UPDATE ON SEQUENCES TO "{app_role}"'))
++        connection.execute(text(f'REVOKE ALL ON {guard} FROM "{app_role}"'))
++
++
++def main():
++    settings = Settings.from_env()
++    owner = os.environ.get("BMT_STAGING_OWNER", "")
++    engine = make_engine(settings.database_url, settings)
++    try:
++        setup(engine, owner)
++    finally:
++        engine.dispose()
++    print("Owned staging schema migrated; application role restricted")
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/backend/bmt_backend/cloud_smoke.py
+@@ -0,0 +1,70 @@
++"""Staging job: real storage, schema and native fixture checks without player writes."""
++import hashlib
++import json
++import os
++import re
++import uuid
++from dataclasses import replace
++from pathlib import Path
++
++from sqlalchemy import text
++
++from .config import Settings
++from .db import make_engine
++from .gcs_storage import GCSBlobStore
++from .migrate import SCHEMA_HEAD
++from .storage import canonical_json
++from .verifier import GodotVerifier
++
++
++def check(settings, owner, fixture_path=Path("/opt/bmt/acceptance/verified_oval.json")):
++    if settings.object_backend != "gcs" or not re.fullmatch(r"[0-9a-f]{32}", owner):
++        raise ValueError("This diagnostic is restricted to explicitly owned GCS staging")
++    engine = make_engine(settings.database_url, settings)
++    verifier = GodotVerifier(settings)
++    store = GCSBlobStore(replace(settings, gcs_prefix="bmt-contract/" + owner + "/" + uuid.uuid4().hex))
++    keys = []
++    try:
++        with engine.connect() as connection:
++            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == SCHEMA_HEAD
++            role = connection.execute(text("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=current_user")).one()
++            if any(role):
++                raise RuntimeError("Application database role is overprivileged")
++            if (connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname='cloudsqlsuperuser'")).scalar()
++                    and connection.execute(text("SELECT pg_has_role(current_user,'cloudsqlsuperuser','MEMBER')")).scalar()):
++                raise RuntimeError("Application role inherits Cloud SQL administration")
++        fixture = json.loads(fixture_path.read_text())
++        result = verifier.verify_run(fixture["document"], fixture["replay"], fixture["vehicle_id"], capture_ghost=False)
++        # Same existing oval golden proof checked during image build; its saved
++        # format names expected_manifest and keeps per-lap expectations in the checker.
++        if (result["time_ticks"] != fixture["time_ticks"] or result["lap_ticks"] != [2634, 2532, 2531, 2530, 2530]
++                or result["manifest"] != fixture["expected_manifest"]):
++            raise RuntimeError("Canonical staging fixture differs from pinned proof")
++        values = [{"staging_contract": "track", "document": fixture["document"]},
++            {"staging_contract": "replay", "replay": fixture["replay"]}]
++        for value in values:
++            digest = hashlib.sha256(canonical_json(value)).hexdigest()
++            keys.append(digest)  # Include uncertain publication in cleanup.
++            if store.put_json(value) != digest or store.put_json(value) != digest or store.get_json(digest) != value:
++                raise RuntimeError("Staging storage contract failed")
++        rows, cursor = store.list_objects(None, 100)
++        if cursor or {row["digest"] for row in rows} != set(keys):
++            raise RuntimeError("Staging object listing differs from publications")
++        return {"status": "passed", "schema": SCHEMA_HEAD, "storage_objects": len(keys),
++            "canonical_ticks": result["time_ticks"], "player_writes": 0}
++    finally:
++        try:
++            for key in keys:
++                store.delete(key)
++        finally:
++            verifier.close()
++            engine.dispose()
++
++
++def main():
++    result = check(Settings.from_env(), os.environ.get("BMT_STAGING_OWNER", ""))
++    print(json.dumps(result))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/backend/deploy/gcp/staging.py
+@@ -0,0 +1,540 @@
++"""Reviewable, explicitly applied and ownership-fenced Google Cloud staging."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import math
++import os
++import re
++import secrets
++import shutil
++import subprocess
++import time
++import uuid
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++import requests
++from sqlalchemy.engine import URL, make_url
++
++ROOT = Path(__file__).resolve().parents[3]
++PIN = "8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e"
++SERVICES = ["run.googleapis.com", "sqladmin.googleapis.com", "secretmanager.googleapis.com",
++            "artifactregistry.googleapis.com", "storage.googleapis.com"]
++
++
++def utc():
++    return datetime.now(timezone.utc)
++
++
++def stamp(value):
++    return datetime.fromisoformat(value.replace("Z", "+00:00"))
++
++
++def write_json(path, value):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(path.suffix + ".pending")
++    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
++    temporary.replace(path)
++
++
++def validate(config, *, apply=False, now=None):
++    now = now or utc()
++    if config.get("format") != "bmt-gcp-staging-v1" or config.get("disposable") is not True:
++        raise ValueError("Use an explicitly disposable staging configuration")
++    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", config.get("project", "")):
++        raise ValueError("Supply an explicit Google Cloud project ID")
++    if not re.fullmatch(r"[0-9a-f]{32}", config.get("owner", "")):
++        raise ValueError("Invalid staging ownership ID")
++    if not re.fullmatch(r"[a-z]+-[a-z]+[0-9]", config.get("region", "")):
++        raise ValueError("Invalid region")
++    expiry = stamp(config["expires_at"])
++    if expiry.tzinfo is None or not now < expiry <= now + timedelta(hours=72):
++        raise ValueError("Staging expiry must be within the next 72 hours")
++    if type(config.get("public_api")) is not bool:
++        raise ValueError("Choose public_api explicitly; private IAM ingress is the default")
++    if type(config.get("api_max")) is not int or not 1 <= config["api_max"] <= 2:
++        raise ValueError("Initial staging allows at most two API replicas")
++    if type(config.get("worker_instances")) is not int or not 1 <= config["worker_instances"] <= 2:
++        raise ValueError("Initial staging allows one or two workers")
++    # Zero overflow, full revision overlap plus operations and spare DB connections.
++    budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * 2) + 6 + 10
++    if budget > 40:
++        raise ValueError("Replica/rollout pools exceed the 40-connection staging budget")
++    clients = config.get("google_client_ids", [])
++    if type(clients) is not list or any(not re.fullmatch(r"[0-9A-Za-z_-]+\.apps\.googleusercontent\.com", c) for c in clients):
++        raise ValueError("Invalid Google client ID list")
++    if config.get("google_web_client_id") and config["google_web_client_id"] not in clients:
++        raise ValueError("Web client ID must be in the accepted audience list")
++    if config["public_api"] and not clients:
++        raise ValueError("Public staging requires configured real Google sign-in audiences")
++    for name in ("gcloud", "docker"):
++        command = config.get(name)
++        if type(command) is not list or not command or any(type(part) is not str or not part or "\x00" in part for part in command):
++            raise ValueError("Tool commands must be explicit argument arrays")
++    if config.get("godot_sha256") != PIN:
++        raise ValueError("Use the independently verified engine hash from GODOT_PROVENANCE.md")
++    amount = config.get("budget_eur")
++    if type(amount) not in (int, float) or not 0 < amount <= 50:
++        raise ValueError("Initial staging budget must be positive and at most EUR 50")
++    if apply:
++        if config.get("example") or config.get("cost_reviewed") is not True:
++            raise ValueError("Apply requires a real project and a reviewed cost estimate")
++        rate = config.get("estimated_hourly_eur")
++        if type(rate) not in (int, float) or not 0 < rate < 100 or not math.isfinite(rate):
++            raise ValueError("Supply a current all-services hourly estimate")
++        checked = stamp(config.get("pricing_checked_at", ""))
++        if checked.tzinfo is None or not now - timedelta(days=7) <= checked <= now:
++            raise ValueError("Recheck provider pricing within seven days of apply")
++        if rate * (expiry - now).total_seconds() / 3600 > amount:
++            raise ValueError("Estimated remaining run exceeds the reviewed budget")
++    return config
++
++
++def names(config):
++    base = "bmt-stg-" + config["owner"][:8]
++    return {"api": base + "-api", "worker": base + "-worker", "migrate": base + "-migrate",
++        "smoke": base + "-smoke", "sql": base + "-db", "repo": base + "-images",
++        "bucket": "bmt-stg-" + config["project"][:23] + "-" + config["owner"][:8],
++        "app_secret": base + "-app-db", "admin_secret": base + "-admin-db",
++        "runtime": base + "-runtime", "migrator": base + "-migrator", "operator": base + "-operator"}
++
++
++def labels(config):
++    return {"bmt-environment": "staging", "bmt-owner": config["owner"],
++        "bmt-expires": str(int(stamp(config["expires_at"]).timestamp()))}
++
++
++def environment(config, role, public_url="https://staging.invalid"):
++    result = {"BMT_ENVIRONMENT": "production", "BMT_DEV_AUTH_ENABLED": "false", "BMT_TEST_DRIVERS_ENABLED": "false",
++        "BMT_OBJECT_BACKEND": "gcs", "BMT_GCS_BUCKET": names(config)["bucket"], "BMT_GCS_PREFIX": "bmt/v1",
++        "BMT_PUBLIC_BASE_URL": public_url, "BMT_GOOGLE_CLIENT_IDS": ",".join(config.get("google_client_ids", [])),
++        "BMT_GOOGLE_WEB_CLIENT_ID": config.get("google_web_client_id", ""), "BMT_DATABASE_POOL_SIZE": "4" if role == "api" else "2",
++        "BMT_DATABASE_POOL_OVERFLOW": "0", "BMT_DATABASE_POOL_TIMEOUT_SECONDS": "3",
++        "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
++        "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
++        "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
++    return result
++
++
++def command(config, *args):
++    return [*config["gcloud"], "--project=" + config["project"], *args, "--quiet"]
++
++
++def deployment_commands(config, image, directory):
++    n = names(config)
++    region, project = config["region"], config["project"]
++    sql = f"{project}:{region}:{n['sql']}"
++    label = ",".join(f"{k}={v}" for k, v in labels(config).items())
++    def account(role):
++        return n[role] + "@" + project + ".iam.gserviceaccount.com"
++    def common(role, identity, secret):
++        return ["--image=" + image, "--region=" + region, "--service-account=" + account(identity),
++            "--set-cloudsql-instances=" + sql, "--set-secrets=BMT_DATABASE_URL=" + n[secret] + ":1",
++            "--env-vars-file=" + str(directory / (role + "-env.json")), "--labels=" + label,
++            "--cpu=1", "--memory=" + ("1024Mi" if role == "api" else "768Mi")]
++    job = ["--command=python", "--tasks=1", "--parallelism=1", "--max-retries=0", "--task-timeout=300s"]
++    return {
++        "migrate": command(config, "run", "jobs", "deploy", n["migrate"], *common("migrate", "migrator", "admin_secret"),
++            *job, "--args=-m,bmt_backend.cloud_setup"),
++        "migrate_execute": command(config, "run", "jobs", "execute", n["migrate"], "--region=" + region, "--wait"),
++        "api": command(config, "run", "deploy", n["api"], *common("api", "runtime", "app_secret"),
++            "--port=8080", "--concurrency=16", "--min=0", "--max=" + str(config["api_max"]),
++            "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
++            "--startup-probe=httpGet.path=/readyz,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
++            "--liveness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
++        "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "runtime", "app_secret"),
++            "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.worker"),
++        "smoke": command(config, "run", "jobs", "deploy", n["smoke"], *common("smoke", "operator", "app_secret"),
++            *job, "--args=-m,bmt_backend.cloud_smoke"),
++        "smoke_execute": command(config, "run", "jobs", "execute", n["smoke"], "--region=" + region, "--wait"),
++    }
++
++
++def plan(config, directory):
++    validate(config)
++    n = names(config)
++    image = f"{config['region']}-docker.pkg.dev/{config['project']}/{n['repo']}/backend@sha256:<built-digest>"
++    result = {"format": config["format"], "project": config["project"], "owner": config["owner"],
++        "expires_at": config["expires_at"], "budget_eur": config["budget_eur"], "cost_reviewed": config.get("cost_reviewed", False),
++        "resources": n, "labels": labels(config), "database": {"version": "POSTGRES_17", "tier": "db-custom-1-3840",
++            "zonal": True, "max_connections": 40, "disk_gib": 10, "disk_autogrowth": False, "backups": False},
++        "visibility": "public with application auth" if config["public_api"] else "private Cloud Run IAM",
++        "commands": deployment_commands(config, image, directory),
++        "iam": {"runtime": ["project:cloudsql.client", "bucket:storage.objectCreator", "bucket:storage.objectViewer", "app-secret:secretAccessor"],
++            "migrator": ["project:cloudsql.client", "admin-secret:secretAccessor"],
++            "operator": ["project:cloudsql.client", "bucket:storage.objectUser", "app-secret:secretAccessor"]},
++        "notes": ["No resources created by plan/render", "Budget is a reviewed estimate, not a provider spend cap",
++            "Run cleanup/watch explicitly; a local watcher requires this computer to remain running",
++            "No live player data is imported", "Default HTTP server does not trust arbitrary forwarded headers"]}
++    for role in ("api", "worker", "migrate", "smoke"):
++        write_json(directory / (role + "-env.json"), environment(config, role))
++    write_json(directory / "plan.json", result)
++    return result
++
++
++def removal_commands(config):
++    n = names(config)
++    region = "--region=" + config["region"]
++    resources = [("worker", n["worker"]), ("api", n["api"]), ("job", n["smoke"]), ("job", n["migrate"]),
++        ("sql", n["sql"]), ("bucket", n["bucket"]), ("repo", n["repo"]),
++        ("secret", n["app_secret"]), ("secret", n["admin_secret"])]
++    resources += [("account", n[role] + "@" + config["project"] + ".iam.gserviceaccount.com")
++        for role in ("runtime", "migrator", "operator")]
++    result = []
++    for kind, name in resources:
++        args = {"worker": ["run", "worker-pools", "delete", name, region], "api": ["run", "services", "delete", name, region],
++            "job": ["run", "jobs", "delete", name, region], "sql": ["sql", "instances", "delete", name],
++            "bucket": ["storage", "rm", "--recursive", "gs://" + name],
++            "repo": ["artifacts", "repositories", "delete", name, "--location=" + config["region"]],
++            "secret": ["secrets", "delete", name], "account": ["iam", "service-accounts", "delete", name]}
++        result.append({"kind": kind, "name": name, "command": command(config, *args[kind])})
++    return result
++
++
++def resource_image(resource):
++    # Services/worker pools have one template; jobs also nest an execution/task template.
++    node = resource
++    for _ in range(8):
++        containers = node.get("containers")
++        if type(containers) is list:
++            return containers[0].get("image") if len(containers) == 1 else None
++        node = node.get("template") or node.get("spec")
++        if type(node) is not dict:
++            return None
++    return None
++
++
++class Runner:
++    def run(self, argv, *, input_data=None, allow_missing=False, cwd=None):
++        try:
++            result = subprocess.run(argv, input=input_data, capture_output=True, text=True, cwd=cwd,
++                timeout=1800, check=False)
++        except (OSError, subprocess.SubprocessError):
++            raise RuntimeError("Cloud/Docker command unavailable or timed out") from None
++        if result.returncode:
++            if allow_missing and re.search(r"NOT_FOUND|not found|does not exist|\b404\b", result.stderr, re.IGNORECASE):
++                return None
++            # Output can contain authentication or secret content; keep it private.
++            raise RuntimeError("Cloud/Docker command failed; inspect the named resource with the CLI")
++        return result.stdout.strip()
++
++    def request(self, method, url, *, headers=None, body=None):
++        try:
++            response = requests.request(method, url, headers=headers, json=body, timeout=(3, 30), allow_redirects=False)
++            if response.status_code not in (200, 201):
++                raise RuntimeError("Cloud API request failed")
++            return response.json()
++        except (requests.RequestException, ValueError):
++            raise RuntimeError("Cloud API request unavailable") from None
++
++
++class Staging:
++    def __init__(self, config, directory, runner=None):
++        self.c, self.directory, self.runner = config, directory.resolve(), runner or Runner()
++        self.n = names(config)
++
++    def call(self, *args, **kwargs):
++        return self.runner.run(command(self.c, *args), **kwargs)
++
++    def account(self, role):
++        return self.n[role] + "@" + self.c["project"] + ".iam.gserviceaccount.com"
++
++    def describe(self, kind, name):
++        region = "--region=" + self.c["region"]
++        args = {"sql": ["sql", "instances", "describe", name],
++            "bucket": ["storage", "buckets", "describe", "gs://" + name],
++            "repo": ["artifacts", "repositories", "describe", name, "--location=" + self.c["region"]],
++            "secret": ["secrets", "describe", name], "api": ["run", "services", "describe", name, region],
++            "worker": ["run", "worker-pools", "describe", name, region], "job": ["run", "jobs", "describe", name, region],
++            "account": ["iam", "service-accounts", "describe", name]}
++        value = self.call(*args[kind], "--format=json", allow_missing=True)
++        if value is None:
++            return None
++        resource = json.loads(value)
++        actual = resource.get("labels") or resource.get("metadata", {}).get("labels", {})
++        if kind == "sql":
++            actual = resource.get("settings", {}).get("userLabels", {})
++        if kind == "account":
++            owned = resource.get("description") == "Beat my track staging " + self.c["owner"]
++        else:
++            owned = actual.get("bmt-owner") == self.c["owner"] and actual.get("bmt-environment") == "staging"
++        if not owned:
++            raise RuntimeError("Refusing to adopt or delete an unowned cloud resource")
++        return resource
++
++    def ensure(self, kind, name, *args):
++        if self.describe(kind, name) is None:
++            self.call(*args)
++
++    def secret(self, name, payload):
++        self.ensure("secret", name, "secrets", "create", name, "--replication-policy=automatic",
++            "--labels=" + self.label_string())
++        existing = self.call("secrets", "versions", "describe", "1", "--secret=" + name, "--format=json", allow_missing=True)
++        if existing is None:
++            self.call("secrets", "versions", "add", name, "--data-file=-", input_data=payload)
++        value = self.call("secrets", "versions", "access", "1", "--secret=" + name)
++        expected = make_url(payload)
++        actual = make_url(value)
++        if actual.username != expected.username or actual.database != "bmt" or actual.query != expected.query or actual.host:
++            raise RuntimeError("Owned secret points outside the staging database")
++        return value
++
++    def label_string(self):
++        return ",".join(f"{k}={v}" for k, v in labels(self.c).items())
++
++    def preflight(self):
++        active = json.loads(self.call("auth", "list", "--filter=status:ACTIVE", "--format=json"))
++        if not active:
++            raise RuntimeError("Authenticate the Google Cloud CLI before applying staging")
++        project = json.loads(self.call("projects", "describe", self.c["project"], "--format=json"))
++        if project.get("projectId") != self.c["project"] or project.get("lifecycleState") != "ACTIVE":
++            raise RuntimeError("Explicit staging project is unavailable")
++        billing = json.loads(self.call("billing", "projects", "describe", self.c["project"], "--format=json"))
++        if billing.get("projectId") != self.c["project"] or billing.get("billingEnabled") is not True:
++            raise RuntimeError("Staging project billing/credits must be configured first")
++        self.call("run", "worker-pools", "deploy", "--help")  # Require the installed GA worker-pool interface.
++
++    def sql_user(self, name, password):
++        token = self.call("auth", "print-access-token")
++        base = f"https://sqladmin.googleapis.com/sql/v1beta4/projects/{self.c['project']}/instances/{self.n['sql']}"
++        response = self.runner.request("GET", base + "/users", headers={"Authorization": "Bearer " + token})
++        method = "PUT" if any(u.get("name") == name for u in response.get("items", [])) else "POST"
++        url = base + "/users" + ("?name=" + name if method == "PUT" else "")
++        operation = self.runner.request(method, url, headers={"Authorization": "Bearer " + token}, body={"name": name, "password": password})
++        if not re.fullmatch(r"[A-Za-z0-9_-]+", operation.get("name", "")):
++            raise RuntimeError("Cloud SQL returned no bounded operation ID")
++        self.call("sql", "operations", "wait", operation["name"], "--timeout=300")
++
++    def create_bucket(self):
++        if self.describe("bucket", self.n["bucket"]) is not None:
++            return
++        token = self.call("auth", "print-access-token")
++        # Labels are atomic in the API request; CLI bucket creation has no labels flag.
++        self.runner.request("POST", "https://storage.googleapis.com/storage/v1/b?project=" + self.c["project"],
++            headers={"Authorization": "Bearer " + token}, body={"name": self.n["bucket"], "location": self.c["region"],
++                "labels": labels(self.c), "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True},
++                    "publicAccessPrevention": "enforced"}, "softDeletePolicy": {"retentionDurationSeconds": "0"}})
++
++    def create_sql(self):
++        if self.describe("sql", self.n["sql"]) is not None:
++            return
++        token = self.call("auth", "print-access-token")
++        operation = self.runner.request("POST", f"https://sqladmin.googleapis.com/sql/v1beta4/projects/{self.c['project']}/instances",
++            headers={"Authorization": "Bearer " + token}, body={"name": self.n["sql"], "region": self.c["region"],
++                "databaseVersion": "POSTGRES_17", "settings": {"tier": "db-custom-1-3840", "edition": "ENTERPRISE",
++                    "availabilityType": "ZONAL", "dataDiskSizeGb": "10", "dataDiskType": "PD_SSD", "storageAutoResize": False,
++                    "databaseFlags": [{"name": "max_connections", "value": "40"}], "userLabels": labels(self.c),
++                    "connectorEnforcement": "REQUIRED", "ipConfiguration": {"ipv4Enabled": True, "authorizedNetworks": []},
++                    "backupConfiguration": {"enabled": False, "pointInTimeRecoveryEnabled": False},
++                    "finalBackupConfig": {"enabled": False}, "retainBackupsOnDelete": False, "deletionProtectionEnabled": False}})
++        if not re.fullmatch(r"[A-Za-z0-9_-]+", operation.get("name", "")):
++            raise RuntimeError("Cloud SQL returned no bounded creation operation ID")
++        self.call("sql", "operations", "wait", operation["name"], "--timeout=1800")
++
++    def provision(self):
++        self.call("services", "enable", *SERVICES)
++        for item in removal_commands(self.c):
++            self.describe(item["kind"], item["name"])  # Detect collisions before creating billed resources.
++        for role in ("runtime", "migrator", "operator"):
++            self.ensure("account", self.account(role), "iam", "service-accounts", "create", self.n[role],
++                "--description=Beat my track staging " + self.c["owner"])
++            self.call("projects", "add-iam-policy-binding", self.c["project"],
++                "--member=serviceAccount:" + self.account(role), "--role=roles/cloudsql.client", "--condition=None")
++        self.create_bucket()
++        for role, grants in (("runtime", ["roles/storage.objectCreator", "roles/storage.objectViewer"]),
++                             ("operator", ["roles/storage.objectUser"])):
++            for grant in grants:
++                self.call("storage", "buckets", "add-iam-policy-binding", "gs://" + self.n["bucket"],
++                    "--member=serviceAccount:" + self.account(role), "--role=" + grant)
++        self.ensure("repo", self.n["repo"], "artifacts", "repositories", "create", self.n["repo"],
++            "--repository-format=docker", "--location=" + self.c["region"], "--labels=" + self.label_string())
++        self.create_sql()
++        databases = json.loads(self.call("sql", "databases", "list", "--instance=" + self.n["sql"], "--format=json"))
++        if not any(d.get("name") == "bmt" for d in databases):
++            self.call("sql", "databases", "create", "bmt", "--instance=" + self.n["sql"])
++        host = f"/cloudsql/{self.c['project']}:{self.c['region']}:{self.n['sql']}"
++        for role, user in (("admin_secret", "postgres"), ("app_secret", "bmt")):
++            proposed = URL.create("postgresql+psycopg", username=user, password=secrets.token_hex(32),
++                database="bmt", query={"host": host}).render_as_string(hide_password=False)
++            uri = self.secret(self.n[role], proposed)
++            self.sql_user(user, make_url(uri).password)
++        for role, secret in (("runtime", "app_secret"), ("operator", "app_secret"), ("migrator", "admin_secret")):
++            self.call("secrets", "add-iam-policy-binding", self.n[secret],
++                "--member=serviceAccount:" + self.account(role), "--role=roles/secretmanager.secretAccessor")
++
++    def build(self):
++        executable = ROOT / "backend/deploy/vendor/godot"
++        if hashlib.sha256(executable.read_bytes()).hexdigest() != self.c["godot_sha256"]:
++            raise RuntimeError("Staged Linux engine differs from the independently verified pin")
++        self.describe("repo", self.n["repo"])
++        source = hashlib.sha256()
++        for directory in (ROOT / "backend/bmt_backend", ROOT / "game"):
++            for path in sorted(directory.rglob("*")):
++                if path.is_file() and not any(p in (".godot", "__pycache__", "build") for p in path.parts):
++                    source.update(path.relative_to(ROOT).as_posix().encode())
++                    source.update(path.read_bytes())
++        for name in ("backend/Dockerfile", "backend/Dockerfile.dockerignore", "backend/README.md", "backend/requirements.lock",
++                     "backend/pyproject.toml", "godot-version.txt", "backend/deploy/object_archive.py",
++                     "backend/deploy/check_godot.py", "backend/deploy/stage_verifier.py", "backend/tests/fixtures/verified_oval.json"):
++            source.update(name.encode())
++            source.update((ROOT / name).read_bytes())
++        receipt = self.directory / "image.json"
++        if receipt.exists():
++            prior = json.loads(receipt.read_text())
++            if prior.get("source_hash") == source.hexdigest():
++                return prior["image"]  # Deploy validates owned registry and immutable digest again.
++        registry = self.c["region"] + "-docker.pkg.dev"
++        image = f"{registry}/{self.c['project']}/{self.n['repo']}/backend:{source.hexdigest()[:24]}"
++        # Relative context/config paths work with native Docker and explicit WSL --cd commands.
++        self.runner.run([*self.c["docker"], "build", "--platform=linux/amd64", "--file=backend/Dockerfile",
++            "--build-arg=GODOT_SHA256=" + self.c["godot_sha256"], "--tag=" + image, "."], cwd=ROOT)
++        private = self.directory / "docker-private"
++        private.mkdir(exist_ok=False)
++        try:
++            token = self.call("auth", "print-access-token")
++            relative = os.path.relpath(private, ROOT).replace("\\", "/")
++            self.runner.run([*self.c["docker"], "--config=" + relative, "login", registry,
++                "--username=oauth2accesstoken", "--password-stdin"], input_data=token, cwd=ROOT)
++            self.runner.run([*self.c["docker"], "--config=" + relative, "push", image], cwd=ROOT)
++        finally:
++            # Only this freshly created credentials directory may be removed.
++            if private.resolve().parent != self.directory or private.is_symlink():
++                raise RuntimeError("Refusing unsafe temporary credentials cleanup")
++            shutil.rmtree(private)
++        result = json.loads(self.call("artifacts", "docker", "images", "describe", image, "--format=json"))
++        digest = result.get("image_summary", {}).get("digest", "")
++        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
++            raise RuntimeError("Registry returned no immutable image digest")
++        pinned = image.rsplit(":", 1)[0] + "@" + digest
++        write_json(receipt, {"source_hash": source.hexdigest(), "image": pinned})
++        return pinned
++
++    def deploy(self, image):
++        if not re.fullmatch(re.escape(self.c["region"] + "-docker.pkg.dev/" + self.c["project"] + "/" + self.n["repo"] + "/backend@sha256:") + r"[0-9a-f]{64}", image):
++            raise ValueError("Deploy requires the owned registry's immutable digest")
++        plan(self.c, self.directory)
++        commands = deployment_commands(self.c, image, self.directory)
++        for kind, resource in (("job", "migrate"), ("api", "api"), ("worker", "worker"), ("job", "smoke")):
++            existing = self.describe(kind, self.n[resource])  # Never overwrite an unrelated name.
++            if existing and resource_image(existing) != image:
++                raise RuntimeError("A changed staging image needs a fresh owner/environment; mixed-build rollout is refused")
++        for key in ("migrate", "migrate_execute", "api"):
++            self.runner.run(commands[key])
++        api = self.describe("api", self.n["api"])
++        uri = api.get("status", {}).get("url") or api.get("uri", "")
++        if not re.fullmatch(r"https://[a-z0-9.-]+\.run\.app", uri):
++            raise RuntimeError("Cloud Run returned an unexpected service URL")
++        for role in ("api", "worker", "smoke"):
++            write_json(self.directory / (role + "-env.json"), environment(self.c, role, uri))
++        self.runner.run(commands["api"])  # Same digest, now the real browser origin; no mixed protocol versions.
++        for key in ("worker", "smoke", "smoke_execute"):
++            self.runner.run(commands[key])
++        write_json(self.directory / "deployment.json", {"image": image, "url": uri, "owner": self.c["owner"]})
++        return uri
++
++    def smoke(self):
++        deployment = json.loads((self.directory / "deployment.json").read_text())
++        api = self.describe("api", self.n["api"])
++        if api is None or deployment["owner"] != self.c["owner"]:
++            raise RuntimeError("Staging service or local receipt is missing")
++        actual_url = api.get("status", {}).get("url") or api.get("uri", "")
++        if (deployment["url"] != actual_url or not re.fullmatch(r"https://[a-z0-9.-]+\.run\.app", actual_url)
++                or resource_image(api) != deployment["image"]):
++            raise RuntimeError("Local staging receipt differs from the owned service; token forwarding refused")
++        token = self.call("auth", "print-identity-token")
++        results = {}
++        for path in ("/healthz", "/readyz", "/v1/bootstrap"):
++            # X-Serverless-Authorization leaves application Authorization available for later real-account tests.
++            value = self.runner.request("GET", deployment["url"] + path,
++                headers={"X-Serverless-Authorization": "Bearer " + token})
++            results[path] = value
++        if results["/readyz"].get("status") != "ready" or results["/v1/bootstrap"].get("development_auth"):
++            raise RuntimeError("Staging health/auth separation failed")
++        write_json(self.directory / "smoke.json", results)
++        return results
++
++    def cleanup(self):
++        # Check ALL ownership first; a mismatch must cause no partial deletion.
++        present = [item for item in removal_commands(self.c) if self.describe(item["kind"], item["name"]) is not None]
++        deleted = []
++        for item in present:
++            kind, name = item["kind"], item["name"]
++            # Recheck immediately before mutation as well as the all-resource preflight.
++            if self.describe(kind, name) is None:
++                continue
++            if kind == "account":
++                self.call("projects", "remove-iam-policy-binding", self.c["project"],
++                    "--member=serviceAccount:" + name, "--role=roles/cloudsql.client", "--condition=None")
++            self.runner.run(item["command"])
++            deleted.append({"kind": kind, "name": name})
++        write_json(self.directory / "cleanup.json", {"owner": self.c["owner"], "deleted": deleted})
++        return deleted
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("action", choices=("init", "plan", "deploy", "smoke", "cleanup", "watch"))
++    parser.add_argument("--config", type=Path, default=ROOT / ".tools/gcp-staging/config.json")
++    parser.add_argument("--project")
++    parser.add_argument("--region", default="europe-west1")
++    parser.add_argument("--hours", type=int, default=4)
++    parser.add_argument("--apply", action="store_true")
++    parser.add_argument("--confirm-owner", default="")
++    args = parser.parse_args()
++    if args.action == "init":
++        if args.config.exists():
++            raise ValueError("Existing staging config was not overwritten")
++        if not 1 <= args.hours <= 72:
++            raise ValueError("Choose a one-to-72-hour staging lease")
++        config = {"format": "bmt-gcp-staging-v1", "project": args.project or "bmt-staging-example", "region": args.region,
++            "owner": uuid.uuid4().hex, "disposable": True, "example": args.project is None,
++            "expires_at": (utc() + timedelta(hours=args.hours)).isoformat(), "budget_eur": 40,
++            "cost_reviewed": False, "estimated_hourly_eur": None, "pricing_checked_at": None,
++            "api_max": 2, "worker_instances": 1, "public_api": False, "google_client_ids": [], "google_web_client_id": "",
++            "godot_sha256": PIN, "gcloud": ["gcloud"], "docker": ["docker"]}
++        validate(config)
++        write_json(args.config, config)
++        print("Staging configuration created; review project, tools, pricing, expiry and visibility before apply")
++        return
++    config = json.loads(args.config.read_text())
++    if args.action in ("plan", "deploy"):
++        validate(config, apply=args.apply)
++    elif args.action in ("smoke", "cleanup", "watch"):
++        # Expired staging must remain inspectable/removable. Retain all other structural validation.
++        validate(config, now=stamp(config["expires_at"]) - timedelta(seconds=1))
++    directory = args.config.parent / ("rendered-" + config["owner"])
++    if args.action in ("cleanup", "watch") and not args.apply:
++        preview = {"action": args.action, "project": config["project"], "owner": config["owner"],
++            "required_labels": labels(config), "expires_at": config["expires_at"], "removals": removal_commands(config)}
++        write_json(directory / "cleanup-plan.json", preview)
++        print(json.dumps(preview, indent=2))
++        return
++    if args.action == "plan" or not args.apply:
++        print(json.dumps(plan(config, directory), indent=2))
++        return
++    if args.confirm_owner != config["owner"]:
++        raise ValueError("Apply must confirm this exact reviewed staging owner ID")
++    if config.get("example"):
++        raise ValueError("Example configurations never apply cloud mutations")
++    staging = Staging(config, directory)
++    directory.mkdir(parents=True, exist_ok=True)
++    if args.action == "deploy":
++        staging.preflight()
++        staging.provision()
++        image = staging.build()
++        print(staging.deploy(image))
++        staging.smoke()
++    elif args.action == "smoke":
++        print(json.dumps(staging.smoke()))
++    elif args.action == "cleanup":
++        print(json.dumps(staging.cleanup()))
++    elif args.action == "watch":
++        while utc() < stamp(config["expires_at"]):
++            time.sleep(max(0, min(60, (stamp(config["expires_at"]) - utc()).total_seconds())))
++        print(json.dumps(staging.cleanup()))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/backend/deploy/gcp/README.md
+@@ -0,0 +1,76 @@
++# Google Cloud staging
++
++Owner target: `beat-my-track`; owner reports credits expire in about 80 days from October 5, 2026. Verify the exact expiry, eligible services and currency in Billing before an applied run. The prepared local configuration is ignored at `.tools/gcp-staging/config.json`. No live cloud resources have been created.
++
++`staging.py` provides `init`, `plan`, `deploy`, `smoke`, `cleanup` and `watch`. Commands are explicit argument arrays, always pin the project and default to a review plan. Mutations require `--apply` and the exact `--confirm-owner` identifier. Never use a production dataset with this disposable configuration.
++
++## Architecture and limits
++
++- One private Cloud Run API, scale-to-zero minimum and maximum two instances, one CPU/1 GiB and concurrency 16.
++- One manually scaled worker pool, one CPU/768 MiB per worker; one or two workers are permitted by the connection budget.
++- Cloud SQL PostgreSQL 17, Enterprise, zonal `db-custom-1-3840`, 10 GiB SSD without automatic growth, connector-only connections and 40 DB connections. Staging has no automated/final/retained backups; its data is explicitly disposable.
++- A private GCS bucket with uniform IAM and public access prevention. Soft delete is disabled for this temporary bucket so cleanup does not leave billable retained test objects.
++- Artifact Registry and Secret Manager. Root/app DB URLs are separate secrets pinned to version 1; passwords never enter process arguments, plans or logs. Cloud SQL user writes use authenticated JSON bodies. Secrets are reused on repeat runs.
++- Runtime identity receives Cloud SQL client, app-secret access and bucket create/read/list permissions. Migration identity receives Cloud SQL client and only the admin secret. Diagnostic identity receives the app secret and bucket object-user permission to remove its own generated diagnostic prefix. No downloaded service-account keys are used.
++
++Cloud SQL attachment uses the managed Unix socket in API, worker pool and jobs. The application role has table/sequence permissions but no create-role/create-database/replication/superuser privileges or access to the staging ownership guard. The migration job initializes an ownership guard before migrations, so interruption is resumable and a nonempty unrelated database cannot be adopted.
++
++API, worker and migration/smoke jobs use one registry image digest. Existing resources with a different image are rejected: create a fresh staging owner/environment for source changes, then remove the previous one. This intentionally avoids the unresolved mixed-protocol/worker-build rollout gaps; it is not a general production upgrade mechanism.
++
++## Prepare and review
++
++Use the existing backend Python environment. The following commands write only local files:
++
++```powershell
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py init --project beat-my-track --hours 4
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py plan
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py cleanup
++```
++
++The first command was already run in this workspace; it refuses to overwrite existing configuration. For a later session, create a different config path with `--config`, or review/update an unapplied configuration. The plan contains resource names, IAM grants, limits, expiry, image/secret bindings and deployment order; cleanup has its own exact removal preview. No resource is adopted or deleted without matching remote ownership labels/descriptions.
++
++The current config uses a four-hour lease and EUR 40 review budget. **These are proposed caps/estimates, not provider enforcement.** Set `cost_reviewed`, `estimated_hourly_eur` and `pricing_checked_at` only after checking all-service pricing. Apply rejects stale pricing, expired leases, sample configs and estimated cost beyond the budget. Maximum initial budget is EUR 50. Ordinary Google budget alerts do not enforce this script's budget. [Cloud Billing budgets](https://docs.cloud.google.com/billing/docs/how-to/budgets).
++
++Install a current Google Cloud CLI and authenticate the operator through Google's browser flow. This workspace currently has neither CLI nor ADC. No credentials should be pasted into chat or committed.
++
++```text
++gcloud auth login
++gcloud auth application-default login
++```
++
++For native Windows, set the config's `gcloud` command array to the installed executable/wrapper, e.g. `['cmd.exe','/d','/c','gcloud.cmd']`. Its `docker` array is already prepared to use Ubuntu WSL and this repository's Linux path. Run from the existing Windows backend environment; Docker's temporary authentication directory is workspace-relative and removed after push. For another host, review these arrays and paths first.
++
++Before mutations, preflight checks active CLI authentication, the exact active project, billing enabled and the installed GA worker-pool interface. The operator needs permission to enable service APIs and manage the named Cloud Run, Cloud SQL, GCS, registry, secret and service-account/IAM resources. Billing-link administration is not performed by this script.
++
++## Apply, test and remove
++
++Replace `OWNER_ID_FROM_CONFIG` with the full owner ID printed by the local plan. Start the cleanup watcher in a separate terminal before applying. It must remain running on a powered-on, authenticated machine; it is a local watcher, not a cloud-enforced spending cap or Cloud Scheduler deployment.
++
++```powershell
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py watch --apply --confirm-owner OWNER_ID_FROM_CONFIG
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py deploy --apply --confirm-owner OWNER_ID_FROM_CONFIG
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py smoke --apply --confirm-owner OWNER_ID_FROM_CONFIG
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py cleanup --apply --confirm-owner OWNER_ID_FROM_CONFIG
++```
++
++Deployment creates only labeled resources, builds/checks the exact Linux engine and recorded canonical fixture, pushes and resolves an immutable digest, completes migration first, deploys API/worker and runs the native/storage smoke job. Initial API deploy discovers its URL; a same-image update sets the real browser origin before workers start. HTTP checks verify liveness/readiness/bootstrap with the operator's identity token in `X-Serverless-Authorization`, preserving application bearer auth for later real-account tests. Smoke jobs never create players, PBs, rewards or memberships.
++
++On any failure, inspect the named stage and run the cleanup preview/command. Cleanup first checks ownership of every existing target, then rechecks before each delete. It removes API/worker/jobs before data/registry/secrets/accounts and removes its Cloud SQL IAM bindings. It never deletes the project, billing account, enabled APIs or differently owned resources. Partial cleanup is safely retryable. Review `cleanup.json`; a failed cloud command is not reported as completed.
++
++Private IAM ingress is the default. Browser/game account acceptance needs either authenticated proxy/headers or explicitly reviewed public staging with real Google client IDs. Public mode remains application-authenticated and has no development bypass. The HTTP server retains `--no-proxy-headers`: no wildcard proxy trust is introduced. Exact Cloud Run client-IP handling and public-edge abuse/rate behavior must be accepted before larger/public testing.
++
++## Real GCS contract acceptance
++
++The adapter has an opt-in real-provider test. Use operator ADC and a disposable bucket that the operator can create/read/list/delete objects in. Confirm its name explicitly:
++
++```powershell
++$env:BMT_TEST_GCS_BUCKET = 'OWNED_DISPOSABLE_BUCKET'
++$env:BMT_TEST_GCS_CONFIRM_BUCKET = $env:BMT_TEST_GCS_BUCKET
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_gcs_storage.py -q -k real_gcs_contract
++```
++
++It uses a unique `bmt-contract/<uuid>` prefix and deletes only its test hashes. All other provider tests use an isolated HTTP transport. The staging smoke job repeats native verification and real storage checks from Cloud Run using attached identities. Live GCS, real Google sign-in, provider restore/credential revocation, proxy/cellular and measured capacity remain unperformed until authentication and an applied run are available.
++
++## Primary interfaces
++
++The implementation follows [GCS conditional uploads](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert), [generation-conditioned deletion](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/delete), [Cloud SQL settings](https://docs.cloud.google.com/sql/docs/postgres/admin-api/rest/v1beta4/instances), [worker-pool deployment](https://docs.cloud.google.com/sdk/gcloud/reference/run/worker-pools/deploy) and [Cloud Run secret bindings](https://docs.cloud.google.com/run/docs/configuring/services/secrets). Bucket/SQL creation uses JSON API requests so ownership labels are atomic; the corresponding CLI create interfaces do not supply the needed labels uniformly.
+--- /dev/null
++++ b/backend/tests/test_gcs_storage.py
+@@ -0,0 +1,281 @@
++"""Native GCS contract transport; live acceptance is explicitly opt-in and isolated."""
++import base64
++import gzip
++import hashlib
++import importlib.util
++import io
++import json
++import os
++import sys
++import tarfile
++import uuid
++from pathlib import Path
++from types import SimpleNamespace
++from urllib.parse import unquote
++
++import pytest
++import requests
++from google.auth.exceptions import RefreshError
++from urllib3.exceptions import ReadTimeoutError
++
++from bmt_backend.config import Settings
++from bmt_backend.gcs_storage import LIMIT, ORIGIN, GCSBlobStore
++from bmt_backend.storage import LocalBlobStore, canonical_json, make_blob_store
++
++
++class Credentials:
++    def __init__(self):
++        self.refreshes = 0
++
++    def before_request(self, request, method, url, headers):
++        headers["Authorization"] = "Bearer isolated-fixture"
++
++    def refresh(self, request):
++        self.refreshes += 1
++
++
++class Raw(io.BytesIO):
++    def read(self, size=-1, decode_content=False):
++        assert decode_content is False
++        return super().read(size)
++
++
++class Response:
++    def __init__(self, status, body=b""):
++        self.status_code, self.raw = status, Raw(body)
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *args):
++        self.raw.close()
++
++
++class Peer:
++    def __init__(self):
++        self.objects = {}
++        self.calls = []
++        self.generation = 0
++
++    def __call__(self, method, url, **kwargs):
++        assert url.startswith(ORIGIN + "/")
++        assert kwargs["allow_redirects"] is False and kwargs["timeout"] == (3, 10)
++        assert kwargs["headers"]["Accept-Encoding"] == "identity"
++        self.calls.append((method, url, kwargs))
++        query = kwargs["params"]
++        if method == "POST":
++            assert query["ifGenerationMatch"] == "0" and "contentEncoding" not in query
++            key = query["name"]
++            if key in self.objects:
++                return Response(412)
++            self.generation += 1
++            data = kwargs["data"]
++            self.objects[key] = {"body": data, "generation": str(self.generation)}
++            return Response(200, json.dumps({"name": key, "generation": str(self.generation), "size": str(len(data)),
++                "md5Hash": base64.b64encode(hashlib.md5(data, usedforsecurity=False).digest()).decode()}).encode())
++        if url.endswith("/o"):
++            items = [{"name": key, "size": str(len(value["body"])), "updated": "2026-10-05T10:00:00.000Z"}
++                for key, value in self.objects.items() if key.startswith(query["prefix"])]
++            return Response(200, json.dumps({"items": items}).encode())
++        key = unquote(url.rsplit("/o/", 1)[1])
++        if key not in self.objects:
++            return Response(404)
++        value = self.objects[key]
++        if method == "DELETE":
++            assert query["ifGenerationMatch"] == value["generation"]
++            del self.objects[key]
++            return Response(204)
++        if query.get("alt") == "media":
++            return Response(200, value["body"])
++        return Response(200, json.dumps({"name": key, "generation": value["generation"]}).encode())
++
++
++def store(peer=None, credentials=None):
++    return GCSBlobStore(Settings(object_backend="gcs", gcs_bucket="bmt-fixture", gcs_prefix="bmt/v1"),
++        credentials=credentials or Credentials(), transport=peer or Peer())
++
++
++def test_immutable_publication_integrity_listing_and_generation_delete():
++    peer = Peer()
++    adapter = store(peer)
++    value = {"track": [[0, 1, 2]] * 1000, "unicode": "päivä"}
++    digest = adapter.put_json(value)
++    assert digest == hashlib.sha256(canonical_json(value)).hexdigest()
++    assert adapter.put_json(value) == digest
++    assert len(peer.objects) == 1 and adapter.get_json(digest) == value
++    rows, cursor = adapter.list_objects(None, 100)
++    assert cursor is None and rows[0]["digest"] == digest
++    assert rows[0]["bytes"] == len(next(iter(peer.objects.values()))["body"])
++    adapter.delete(digest)
++    adapter.delete(digest)
++    assert peer.objects == {}
++
++
++def test_existing_corrupt_object_never_establishes_publication_success():
++    peer = Peer()
++    adapter = store(peer)
++    value = {"safe": True}
++    digest = adapter.put_json(value)
++    peer.objects[adapter._key(digest)]["body"] = gzip.compress(b"different")
++    with pytest.raises(OSError, match="integrity"):
++        adapter.put_json(value)
++
++
++@pytest.mark.parametrize("field,value", [("size", "0"), ("md5Hash", "bad"), ("generation", "0"), ("name", "outside")])
++def test_publication_acknowledgement_is_checked(field, value):
++    peer = Peer()
++    def transport(*args, **kwargs):
++        response = peer(*args, **kwargs)
++        metadata = json.loads(response.raw.getvalue())
++        metadata[field] = value
++        return Response(200, json.dumps(metadata).encode())
++    with pytest.raises(OSError, match="acknowledgement"):
++        store(transport).put_json({"ack": True})
++
++
++@pytest.mark.parametrize("failure", [requests.Timeout(), ReadTimeoutError(None, "", "private transport details")])
++def test_stream_and_request_errors_are_normalized(failure):
++    def transport(*args, **kwargs):
++        raise failure
++    with pytest.raises(OSError, match="service unavailable"):
++        store(transport).get_json("a" * 64)
++
++
++def test_redirects_and_oversized_responses_never_follow_or_decode():
++    calls = []
++    def transport(*args, **kwargs):
++        calls.append(kwargs)
++        return Response(307, b"x" * 1025)
++    adapter = store(transport)
++    with pytest.raises(OSError, match="limit"):
++        adapter._request("GET", limit=1024)
++    assert len(calls) == 1 and calls[0]["allow_redirects"] is False
++    assert calls[0]["headers"]["Authorization"] == "Bearer isolated-fixture"
++
++
++def test_auth_refresh_is_bounded_and_credentials_never_fall_back_to_anonymous():
++    credentials, calls = Credentials(), []
++    def denied(*args, **kwargs):
++        calls.append(args)
++        return Response(401)
++    adapter = store(denied, credentials)
++    with pytest.raises(OSError):
++        adapter.get_json("b" * 64)
++    assert len(calls) == 2 and credentials.refreshes == 1
++    def unavailable(*args):
++        raise RefreshError("private credential content")
++    credentials.before_request = unavailable
++    with pytest.raises(OSError, match="authentication unavailable"):
++        adapter.get_json("c" * 64)
++    assert len(calls) == 2
++
++
++def test_adc_is_lazy_and_scope_is_explicit(monkeypatch):
++    calls = []
++    def adc(**kwargs):
++        calls.append(kwargs)
++        return Credentials(), "fixture-project"
++    monkeypatch.setattr("bmt_backend.gcs_storage.google.auth.default", adc)
++    adapter = GCSBlobStore(Settings(object_backend="gcs", gcs_bucket="bmt-fixture"), transport=Peer())
++    assert calls == []
++    adapter.put_json({"adc": True})
++    assert len(calls) == 1 and calls[0]["scopes"] == ("https://www.googleapis.com/auth/devstorage.read_write",)
++
++
++def test_listing_filters_prefix_shards_and_rejects_repeating_cursor():
++    digest = "a" * 64
++    metadata = {"items": [{"name": f"bmt/v1/aa/{digest}.json", "size": "12", "updated": "2026-10-05T00:00:00Z"},
++        {"name": "outside/ignored"}, {"name": f"bmt/v1/bb/{digest}.json"}], "nextPageToken": "page+/="}
++    adapter = store(lambda *args, **kwargs: Response(200, json.dumps(metadata).encode()))
++    rows, cursor = adapter.list_objects(None, 10)
++    assert len(rows) == 1 and cursor == {"token": "page+/="}
++    with pytest.raises(OSError, match="listing"):
++        adapter.list_objects(cursor, 10)
++    with pytest.raises(ValueError):
++        adapter.list_objects({"token": ""}, 10)
++    with pytest.raises(ValueError):
++        adapter.list_objects(None, True)
++
++
++def test_generation_change_blocks_delete():
++    calls = []
++    adapter = store()
++    digest = "a" * 64
++    def transport(method, url, **kwargs):
++        calls.append(method)
++        if method == "GET":
++            return Response(200, json.dumps({"name": adapter._key(digest), "generation": "123"}).encode())
++        assert kwargs["params"] == {"ifGenerationMatch": "123"}
++        return Response(412)
++    adapter.transport = transport
++    with pytest.raises(OSError, match="generation changed"):
++        adapter.delete(digest)
++    assert calls == ["GET", "DELETE"]
++
++
++def test_gzip_bomb_and_non_object_are_rejected():
++    payload = gzip.compress(b"x" * (LIMIT + 1))
++    with pytest.raises(OSError, match="integrity"):
++        store(lambda *args, **kwargs: Response(200, payload)).get_json("f" * 64)
++    body = b"[1,2,3]"
++    with pytest.raises(OSError, match="Invalid"):
++        store(lambda *args, **kwargs: Response(200, body)).get_json(hashlib.sha256(body).hexdigest())
++
++
++def test_provider_archive_restores_original_hash_and_document(tmp_path, monkeypatch):
++    adapter = store()
++    value = {"portable": [1, 2, 3] * 500}
++    digest = adapter.put_json(value)
++    spec = importlib.util.spec_from_file_location("gcs_archive_fixture", Path(__file__).parents[1] / "deploy/object_archive.py")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    output = io.BytesIO()
++    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=output))
++    module.archive_objects(adapter)
++    restored = LocalBlobStore(str(tmp_path / "restored"))
++    with tarfile.open(fileobj=io.BytesIO(output.getvalue())) as archive:
++        entry = archive.getmembers()[0]
++        assert entry.name == digest[:2] + "/" + digest + ".json"
++        target = restored._path(digest)
++        target.parent.mkdir()
++        target.write_bytes(archive.extractfile(entry).read())
++    assert restored.get_json(digest) == value
++
++
++def test_factory_preserves_database_publication_pins(auth_app, monkeypatch):
++    peer = Peer()
++    adapter = store(peer)
++    monkeypatch.setattr("bmt_backend.gcs_storage.GCSBlobStore", lambda settings: adapter)
++    wrapped = make_blob_store(Settings(object_backend="gcs", gcs_bucket="bmt-fixture"), auth_app.state.session_factory)
++    digest = wrapped.put_json({"pinned": True})
++    assert wrapped.get_json(digest) == {"pinned": True}
++    from bmt_backend.object_models import ObjectPin
++    with auth_app.state.session_factory() as session:
++        assert session.get(ObjectPin, digest).expires_at > 0
++
++
++@pytest.mark.parametrize("settings", [{"gcs_bucket": "bad/bucket"}, {"gcs_bucket": ""},
++    {"gcs_bucket": "bmt-fixture", "gcs_prefix": "../unsafe"}, {"gcs_bucket": "bmt-fixture", "gcs_prefix": "bmt//v1"}])
++def test_provider_configuration_is_explicit_and_scoped(settings):
++    with pytest.raises(ValueError):
++        Settings(object_backend="gcs", **settings)
++
++
++def test_real_gcs_contract_when_explicitly_configured():
++    bucket = os.environ.get("BMT_TEST_GCS_BUCKET", "")
++    if not bucket or os.environ.get("BMT_TEST_GCS_CONFIRM_BUCKET") != bucket:
++        pytest.skip("Live GCS needs explicit bucket confirmation and operator ADC; no account is contacted by default")
++    adapter = GCSBlobStore(Settings(object_backend="gcs", gcs_bucket=bucket, gcs_prefix="bmt-contract/" + uuid.uuid4().hex))
++    values = [{"fixture": "track", "shape": [[0, 0], [1, 1]]}, {"fixture": "replay", "frames": [[0, 255, 0]] * 1000},
++        {"fixture": "ghost", "poses": [[0, 0, 0, 0, 0, 0, 0], [60, 1, 1, 0, 0, 0, 0]]}]
++    keys = []
++    try:
++        for value in values:
++            key = adapter.put_json(value)
++            keys.append(key)
++            assert adapter.put_json(value) == key and adapter.get_json(key) == value
++        rows, cursor = adapter.list_objects(None, 100)
++        assert cursor is None and {r["digest"] for r in rows} == set(keys)
++    finally:
++        for key in keys:
++            adapter.delete(key)
+--- /dev/null
++++ b/backend/tests/test_gcp_staging.py
+@@ -0,0 +1,284 @@
++"""Cloud staging plans/ownership/credentials/order, without creating billed resources."""
++import importlib.util
++import json
++from copy import deepcopy
++from datetime import timedelta
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++path = Path(__file__).parents[1] / "deploy/gcp/staging.py"
++spec = importlib.util.spec_from_file_location("bmt_gcp_staging_tests", path)
++staging = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(staging)
++
++
++def config():
++    return {"format": "bmt-gcp-staging-v1", "project": "bmt-staging-fixture", "region": "europe-west1",
++        "owner": "a" * 32, "disposable": True, "example": False,
++        "expires_at": (staging.utc() + timedelta(hours=4)).isoformat(), "budget_eur": 40,
++        "cost_reviewed": True, "estimated_hourly_eur": 0.5, "pricing_checked_at": staging.utc().isoformat(),
++        "api_max": 2, "worker_instances": 1, "public_api": False, "google_client_ids": [], "google_web_client_id": "",
++        "godot_sha256": staging.PIN, "gcloud": ["fixture-gcloud"], "docker": ["fixture-docker"]}
++
++
++class Runner:
++    def __init__(self, c):
++        self.c, self.n = c, staging.names(c)
++        self.resources, self.versions, self.calls, self.users = {}, {}, [], {}
++        self.fail = None
++
++    def run(self, argv, *, input_data=None, allow_missing=False, cwd=None):
++        self.calls.append(list(argv))
++        if self.fail and self.fail in argv:
++            raise RuntimeError("Injected cloud command failure")
++        assert "--project=" + self.c["project"] in argv
++        args = argv[2:-1]
++        if "--help" in args:
++            return "Fixture CLI interface available"
++        if args[:2] == ["auth", "print-access-token"]:
++            return "sensitive-fixture-access"
++        if args[:2] == ["auth", "print-identity-token"]:
++            return "sensitive-fixture-identity"
++        if "describe" in args:
++            if args[:3] == ["secrets", "versions", "describe"]:
++                name = next(x.split("=", 1)[1] for x in args if x.startswith("--secret="))
++                return "{}" if name in self.versions else None
++            index = args.index("describe")
++            name = args[index + 1].removeprefix("gs://")
++            resource = self.resources.get(name)
++            if resource is None:
++                assert allow_missing
++                return None
++            return json.dumps(resource)
++        if args[:3] == ["secrets", "versions", "access"]:
++            name = next(x.split("=", 1)[1] for x in args if x.startswith("--secret="))
++            return self.versions[name]
++        if args[:3] == ["secrets", "versions", "add"]:
++            self.versions[args[3]] = input_data
++            return "{}"
++        if args[:3] == ["sql", "databases", "list"]:
++            return '[{"name":"bmt"}]'
++        if "create" in args:
++            name = args[args.index("create") + 1]
++            if args[:3] == ["iam", "service-accounts", "create"]:
++                email = name + "@" + self.c["project"] + ".iam.gserviceaccount.com"
++                self.resources[email] = {"description": "Beat my track staging " + self.c["owner"]}
++            elif args[:2] == ["secrets", "create"] or args[:3] == ["artifacts", "repositories", "create"]:
++                self.resources[name] = {"labels": staging.labels(self.c)}
++        if "deploy" in args:
++            name = args[args.index("deploy") + 1]
++            image = next(x.split("=", 1)[1] for x in args if x.startswith("--image="))
++            self.resources[name] = {"metadata": {"labels": staging.labels(self.c)},
++                "spec": {"template": {"spec": {"containers": [{"image": image}]}}},
++                "status": {"url": "https://bmt-fixture.run.app"}}
++        return "{}"
++
++    def request(self, method, url, *, headers=None, body=None):
++        # Keep HTTP passwords/tokens out of the recorded argument plan.
++        self.calls.append(["HTTP", method, url])
++        if "storage.googleapis.com/storage/v1/b?" in url:
++            self.resources[body["name"]] = {"labels": body["labels"]}
++            assert body["iamConfiguration"]["publicAccessPrevention"] == "enforced"
++            assert body["softDeletePolicy"] == {"retentionDurationSeconds": "0"}
++            return {}
++        if url.endswith("/instances"):
++            self.resources[body["name"]] = {"settings": body["settings"]}
++            assert body["settings"]["userLabels"] == staging.labels(self.c)
++            assert body["settings"]["connectorEnforcement"] == "REQUIRED"
++            return {"name": "creation-operation"}
++        if "/users" in url:
++            if method == "GET":
++                return {"items": [{"name": n} for n in self.users]}
++            self.users[body["name"]] = body["password"]
++            return {"name": "password-operation"}
++        if url.endswith("/readyz"):
++            return {"status": "ready", "schema": "fixture"}
++        if url.endswith("/v1/bootstrap"):
++            return {"development_auth": False}
++        return {"status": "ok"}
++
++
++def pinned(c):
++    n = staging.names(c)
++    return f"{c['region']}-docker.pkg.dev/{c['project']}/{n['repo']}/backend@sha256:" + "b" * 64
++
++
++def test_plan_is_concrete_private_bounded_and_has_no_credentials(tmp_path):
++    c = config()
++    result = staging.plan(c, tmp_path)
++    assert result["visibility"] == "private Cloud Run IAM" and result["database"]["max_connections"] == 40
++    for role in ("api", "worker", "migrate", "smoke"):
++        env = json.loads((tmp_path / (role + "-env.json")).read_text())
++        assert env["BMT_DEV_AUTH_ENABLED"] == env["BMT_TEST_DRIVERS_ENABLED"] == "false"
++        assert env["BMT_OBJECT_BACKEND"] == "gcs" and "BMT_DATABASE_URL" not in env
++    commands = result["commands"]
++    assert "--max=2" in commands["api"] and "--min=0" in commands["api"]
++    assert "--instances=1" in commands["worker"]
++    assert all("--project=" + c["project"] in argv for argv in commands.values())
++    assert all("@sha256:" in " ".join(commands[r]) for r in ("api", "worker", "migrate", "smoke"))
++    assert "latest" not in json.dumps(result)
++
++
++@pytest.mark.parametrize("field,value", [("api_max", 3), ("worker_instances", 3), ("budget_eur", 0),
++    ("disposable", False), ("public_api", True), ("cost_reviewed", False), ("example", True),
++    ("estimated_hourly_eur", 100), ("estimated_hourly_eur", float("nan"))])
++def test_apply_requires_safe_caps_and_reviewed_real_configuration(field, value):
++    c = config()
++    c[field] = value
++    with pytest.raises(ValueError):
++        staging.validate(c, apply=True)
++
++
++def test_expiry_and_pricing_are_checked_before_apply():
++    c = config()
++    assert staging.validate(c, apply=True) is c
++    c["expires_at"] = (staging.utc() + timedelta(hours=73)).isoformat()
++    with pytest.raises(ValueError):
++        staging.validate(c)
++    c = config()
++    c["pricing_checked_at"] = (staging.utc() - timedelta(days=8)).isoformat()
++    with pytest.raises(ValueError):
++        staging.validate(c, apply=True)
++
++
++def test_provision_is_idempotent_and_secret_values_never_enter_arguments(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    service.provision()
++    passwords = deepcopy(runner.users)
++    service.provision()
++    assert runner.users == passwords and len(runner.versions) == 2
++    serialized = json.dumps(runner.calls)
++    assert all(value not in serialized for value in passwords.values())
++    assert "sensitive-fixture-access" not in serialized
++    assert "--password=" not in serialized
++    assert runner.resources[service.n["bucket"]]["labels"]["bmt-owner"] == c["owner"]
++
++
++def test_unowned_name_blocks_all_billed_creation_before_provision(tmp_path):
++    c = config()
++    runner = Runner(c)
++    runner.resources[staging.names(c)["bucket"]] = {"labels": {"bmt-owner": "someone-else"}}
++    with pytest.raises(RuntimeError, match="unowned"):
++        staging.Staging(c, tmp_path, runner).provision()
++    assert not any("create" in call or call[0] == "HTTP" for call in runner.calls)
++
++
++def test_bootstrap_precedes_api_and_same_digest_is_used_everywhere(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    image = pinned(c)
++    assert service.deploy(image) == "https://bmt-fixture.run.app"
++    calls = [call for call in runner.calls if "deploy" in call or "execute" in call]
++    assert calls[0][4:6] == ["deploy", service.n["migrate"]]
++    assert calls[1][4:6] == ["execute", service.n["migrate"]]
++    assert calls[2][3:5] == ["deploy", service.n["api"]]
++    for call in calls:
++        if "deploy" in call:
++            assert "--image=" + image in call
++    assert json.loads((tmp_path / "deployment.json").read_text())["image"] == image
++    assert json.loads((tmp_path / "api-env.json").read_text())["BMT_PUBLIC_BASE_URL"] == "https://bmt-fixture.run.app"
++
++
++def test_changed_image_and_unowned_service_are_rejected_before_deploy(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    runner.resources[service.n["worker"]] = {"labels": staging.labels(c),
++        "template": {"containers": [{"image": pinned(c).replace("b" * 64, "c" * 64)}]}}
++    with pytest.raises(RuntimeError, match="fresh owner"):
++        service.deploy(pinned(c))
++    assert not any("deploy" in call for call in runner.calls)
++
++
++def test_cleanup_preflights_every_resource_and_refuses_partial_deletion(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    runner.resources[service.n["api"]] = {"labels": staging.labels(c)}
++    runner.resources[service.n["sql"]] = {"settings": {"userLabels": {"bmt-owner": "different-owner"}}}
++    with pytest.raises(RuntimeError, match="unowned"):
++        service.cleanup()
++    assert not any("delete" in call or "rm" in call for call in runner.calls)
++
++
++def test_cleanup_is_exact_owned_and_repeatable(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    for item in staging.removal_commands(c):
++        kind, name = item["kind"], item["name"]
++        runner.resources[name] = ({"description": "Beat my track staging " + c["owner"]} if kind == "account" else
++            {"settings": {"userLabels": staging.labels(c)}} if kind == "sql" else {"labels": staging.labels(c)})
++    original = runner.run
++    def run(argv, **kwargs):
++        result = original(argv, **kwargs)
++        if "delete" in argv or "rm" in argv:
++            marker = "delete" if "delete" in argv else "rm"
++            name = argv[argv.index(marker) + 1]
++            if name == "--recursive":
++                name = argv[argv.index(marker) + 2].removeprefix("gs://")
++            runner.resources.pop(name, None)
++        return result
++    runner.run = run
++    deleted = service.cleanup()
++    assert len(deleted) == 12 and service.cleanup() == []
++    assert not any(call[2:4] == ["projects", "delete"] for call in runner.calls)
++    assert len([call for call in runner.calls if "remove-iam-policy-binding" in call]) == 3
++
++
++def test_smoke_never_forwards_token_to_tampered_receipt(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    service.deploy(pinned(c))
++    receipt = json.loads((tmp_path / "deployment.json").read_text())
++    receipt["url"] = "https://attacker.example"
++    staging.write_json(tmp_path / "deployment.json", receipt)
++    count = len(runner.calls)
++    with pytest.raises(RuntimeError, match="token forwarding refused"):
++        service.smoke()
++    assert not any("print-identity-token" in call or call[0] == "HTTP" for call in runner.calls[count:])
++
++
++def test_command_errors_do_not_echo_secrets(monkeypatch):
++    monkeypatch.setattr(staging.subprocess, "run", lambda *args, **kwargs:
++        SimpleNamespace(returncode=1, stderr="sensitive credential details", stdout="sensitive-token"))
++    with pytest.raises(RuntimeError) as error:
++        staging.Runner().run(["fixture-tool"])
++    assert "sensitive" not in str(error.value)
++
++
++def test_nested_job_templates_and_redeployment_keep_the_same_digest(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    service.deploy(pinned(c))
++    job = runner.resources[service.n["migrate"]]
++    task = job["spec"]["template"]
++    job["spec"]["template"] = {"spec": {"template": task}}
++    assert staging.resource_image(job) == pinned(c)
++    assert service.deploy(pinned(c)) == "https://bmt-fixture.run.app"
++
++
++def test_preflight_requires_active_account_explicit_project_and_billing(tmp_path):
++    c = config()
++    runner = Runner(c)
++    original = runner.run
++    def run(argv, **kwargs):
++        if "list" in argv and "auth" in argv:
++            return '[{"status":"ACTIVE"}]'
++        if "describe" in argv and "billing" in argv:
++            return json.dumps({"projectId": c["project"], "billingEnabled": True})
++        if "describe" in argv and "projects" in argv:
++            return json.dumps({"projectId": c["project"], "lifecycleState": "ACTIVE"})
++        return original(argv, **kwargs)
++    runner.run = run
++    staging.Staging(c, tmp_path, runner).preflight()
++    runner.run = lambda *args, **kwargs: '[]'
++    with pytest.raises(RuntimeError, match="Authenticate"):
++        staging.Staging(c, tmp_path, runner).preflight()
+--- /dev/null
++++ b/backend/tests/test_cloud_setup.py
+@@ -0,0 +1,121 @@
++"""Staging SQL ownership and grants against an explicitly disposable PostgreSQL DB."""
++import os
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, inspect, text
++from sqlalchemy.engine import make_url
++from sqlalchemy.exc import DBAPIError
++
++from bmt_backend import cloud_setup, cloud_smoke
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++from bmt_backend.migrate import SCHEMA_HEAD
++
++pytestmark = pytest.mark.postgres
++
++
++@pytest.fixture
++def database():
++    url = os.environ.get("BMT_GCP_SETUP_TEST_DATABASE_URL")
++    if not url:
++        pytest.skip("Explicit disposable database required for staging role/DDL tests")
++    schema, role = "bmt_load_" + uuid.uuid4().hex, "bmt_role_" + uuid.uuid4().hex[:16]
++    admin = create_engine(url, hide_parameters=True, connect_args={"connect_timeout": 3})
++    with admin.begin() as connection:
++        connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
++        connection.exec_driver_sql(f'CREATE ROLE "{role}" LOGIN CREATEDB CREATEROLE')
++    engine = make_engine(url, Settings(database_url=url), schema=schema)
++    try:
++        yield engine, schema, role, url
++    finally:
++        engine.dispose()
++        with admin.begin() as connection:
++            connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
++            connection.exec_driver_sql(f'DROP OWNED BY "{role}"')
++            connection.exec_driver_sql(f'DROP ROLE "{role}"')
++        admin.dispose()
++
++
++def test_owned_setup_is_repeatable_and_application_role_has_no_ddl_or_guard_access(database):
++    engine, schema, role, url = database
++    owner = uuid.uuid4().hex
++    cloud_setup.setup(engine, owner, role, schema)
++    cloud_setup.setup(engine, owner, role, schema)
++    application = create_engine(make_url(url).set(username=role), hide_parameters=True,
++        connect_args={"connect_timeout": 3, "options": "-c search_path=" + schema})
++    try:
++        with application.connect() as connection:
++            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == SCHEMA_HEAD
++            assert not any(connection.execute(text("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=current_user")).one())
++            connection.execute(text("SELECT id FROM players LIMIT 1"))
++        with pytest.raises(DBAPIError), application.begin() as connection:
++            connection.execute(text("SELECT * FROM bmt_staging_guard"))
++        with pytest.raises(DBAPIError), application.begin() as connection:
++            connection.execute(text("CREATE TABLE forbidden (id integer)"))
++    finally:
++        application.dispose()
++
++
++def test_different_owner_cannot_adopt_initialized_database(database):
++    engine, schema, role, _ = database
++    owner = uuid.uuid4().hex
++    cloud_setup.setup(engine, owner, role, schema)
++    before = set(inspect(engine).get_table_names(schema=schema))
++    with pytest.raises(RuntimeError, match="ownership"):
++        cloud_setup.setup(engine, uuid.uuid4().hex, role, schema)
++    assert set(inspect(engine).get_table_names(schema=schema)) == before
++
++
++def test_unowned_nonempty_schema_is_never_migrated(database):
++    engine, schema, role, _ = database
++    with engine.begin() as connection:
++        connection.execute(text("CREATE TABLE existing_player_data (id integer)"))
++    with pytest.raises(RuntimeError, match="unowned"):
++        cloud_setup.setup(engine, uuid.uuid4().hex, role, schema)
++    assert inspect(engine).get_table_names(schema=schema) == ["existing_player_data"]
++
++
++def test_failed_first_migration_leaves_a_guard_for_safe_retry(database, monkeypatch):
++    engine, schema, role, _ = database
++    owner = uuid.uuid4().hex
++    original = cloud_setup.upgrade
++    def failed(engine):
++        raise RuntimeError("Injected migration interruption")
++    monkeypatch.setattr(cloud_setup, "upgrade", failed)
++    with pytest.raises(RuntimeError, match="interruption"):
++        cloud_setup.setup(engine, owner, role, schema)
++    assert inspect(engine).get_table_names(schema=schema) == ["bmt_staging_guard"]
++    monkeypatch.setattr(cloud_setup, "upgrade", original)
++    cloud_setup.setup(engine, owner, role, schema)
++    with engine.connect() as connection:
++        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == SCHEMA_HEAD
++
++
++@pytest.mark.godot
++def test_staging_smoke_uses_native_proof_and_no_player_writes(database, monkeypatch):
++    from test_gcs_storage import Credentials, Peer
++
++    from bmt_backend.gcs_storage import GCSBlobStore
++    engine, schema, role, url = database
++    owner = uuid.uuid4().hex
++    cloud_setup.setup(engine, owner, role, schema)
++    application = create_engine(make_url(url).set(username=role), hide_parameters=True,
++        connect_args={"connect_timeout": 3, "options": "-c search_path=" + schema})
++    binary = Path(os.environ.get("BMT_GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"))
++    if not binary.is_file():
++        application.dispose()
++        pytest.skip("This native probe requires the exact pinned engine")
++    project = os.environ.get("BMT_GAME_PROJECT") or str(Path(__file__).parents[2] / "game")
++    settings = Settings(database_url=url, object_backend="gcs", gcs_bucket="bmt-fixture",
++        godot_bin=str(binary), game_project=project)
++    peer = Peer()
++    monkeypatch.setattr(cloud_smoke, "make_engine", lambda *args: application)
++    monkeypatch.setattr(cloud_smoke, "GCSBlobStore", lambda config: GCSBlobStore(config, credentials=Credentials(), transport=peer))
++    result = cloud_smoke.check(settings, owner, Path(__file__).parent / "fixtures/verified_oval.json")
++    assert result["status"] == "passed" and result["canonical_ticks"] == 12757 and result["player_writes"] == 0
++    assert peer.objects == {}
++    with engine.connect() as connection:
++        assert connection.execute(text("SELECT count(*) FROM players")).scalar() == 0
++        assert connection.execute(text("SELECT count(*) FROM runs")).scalar() == 0
+--- /dev/null
++++ b/docs/BACKEND_GCS_STAGING_2026_10_05.md
+@@ -0,0 +1,76 @@
++# Native Google storage and repeatable staging — 2026-10-05
++
++Owner authorized backlog items 6–7: native Google Cloud Storage, repeatable staging deployment and cleanup. Requirements B01–B07/B19/B20/B23/RW05–RW07/Q01. Owner supplied project `beat-my-track` and reports credit expiry in about 80 days. That interval is approximate; no precise billing expiry or current price estimate is inferred.
++
++Implementation/tooling is complete locally. **Live Google-provider/deployment acceptance is not performed:** Google Cloud CLI is absent on Windows PATH and Ubuntu WSL; no local ADC environment/user file was found. No billed resources, image push, Google identities or credits were used. Existing WSL services/player data remain untouched. Source changes preserve previous lifecycle/readiness/scalability work.
++
++## Storage implementation
++
++`gcs_storage.py` uses the installed `google-auth`, `requests` and pinned HTTP dependencies; no new runtime package/API vendor is added. ADC discovery is lazy. Attached Cloud Run service-account identity or an operator's ADC provides short-lived credentials; no key files, credentials or release secrets are committed.
++
++Native JSON API publications use gzip bytes, canonical SHA256 keys and `ifGenerationMatch=0`. A duplicate verifies the existing SHA256 document. Successful acknowledgement checks exact name, positive generation, compressed size and transport MD5. Content encoding metadata is omitted and identity download encoding requested to avoid unwanted provider decompression; bounded gzip decoding then verifies the canonical digest. Deletion first reads the generation and conditions deletion on that generation. Listings are prefix/shard scoped, bounded and reject malformed/repeating cursors.
++
++Provider requests have connect/read limits and never follow redirects. Request/stream/credential errors become generic storage errors without echoing credentials. Refresh after 401 occurs at most once; callers cannot fall back to anonymous access. Auth refresh/discovery is serialized with a bounded lock wait. Provider/auth-library retry behavior remains outside canonical simulation; real ADC/latency acceptance remains pending.
++
++`make_blob_store` keeps publication/read database pins around GCS. `object_archive.py` accepts GCS and streams the existing portable gzip-object archive format. Local and S3 defaults remain available. Provider tests cover existing-object corruption, malformed acknowledgements, bounded response/decoded sizes, generation mismatch, token refresh, scope/lazy ADC, pagination, pin retention and archive round-trip to a new local store.
++
++## Staging implementation
++
++The [runbook](../backend/deploy/gcp/README.md) and `staging.py` prepare/apply/remove explicitly disposable resources. Local prepared configuration is ignored under `.tools/gcp-staging`; project-specific [deployment plan](evidence/backend-gcs-staging-2026-10-05/staging-plan.json) and [cleanup preview](evidence/backend-gcs-staging-2026-10-05/cleanup-plan.json) are reviewable evidence. Plans contain no passwords or tokens.
++
++Initial proposed caps: four-hour lease, EUR 40 review budget, maximum two API replicas and one worker. Config allows only bounded replicas, positive budgets at most EUR 50, expiry within 72 hours, recent reviewed pricing and a 40-connection budget including revision overlap/operations/reserve. These are script guards/estimates, **not provider spending enforcement**. Pricing fields deliberately remain unset until the operator checks current regional/service costs.
++
++Default API ingress is private Cloud Run IAM. Development authentication/test-driver flags are false. Public staging requires explicit config and real Google audiences. Managed Cloud SQL sockets attach to API/worker/jobs; migration/app secrets and identities are separate. Runtime has create/read/list object rights; the operator diagnostic identity has deletion rights. All image consumers use one registry digest. A source/image change requires a fresh owned staging environment; arbitrary mixed-build rolling upgrades are refused rather than assuming the unrelated exception-review issues are repaired.
++
++Cloud SQL/bucket creation uses atomic ownership labels in JSON API requests. All names are derived from the deployment owner. Preflight checks CLI identity, project, billing and GA worker-pool support. Provisioning reuses owned secret version 1/passwords on repeats; secrets/passwords do not enter arguments or ordinary output. A SQL ownership guard exists before migration, preserving interruption recovery and refusing adoption of nonempty/differently owned databases. Application privileges are restricted and the ownership guard is inaccessible to the app role.
++
++Cleanup checks **all** ownership before deleting anything, rechecks each target, removes compute before data and removes its project-level Cloud SQL IAM bindings. It never deletes the project/billing account, disables shared APIs or touches differently owned resources. A local expiry watcher is included but requires a powered-on authenticated host; no cloud-side scheduler/spend cap has been provisioned.
++
++`cloud_smoke.py` checks schema/app privileges, the existing native golden manifest/ticks/laps and real immutable-object operations under a unique diagnostic prefix, then deletes only its test hashes. It creates no players, PBs, rewards or memberships. Operator HTTP smoke uses `X-Serverless-Authorization`; a mismatched service URL/image receipt cannot receive that token. Proxy trust remains disabled rather than introducing a wildcard; public-edge/client-IP and real Google browser acceptance remain separate checks.
++
++## Changed files
++
++Runtime: `backend/bmt_backend/{config.py,storage.py,gcs_storage.py,cloud_setup.py,cloud_smoke.py}`. Deployment: `backend/deploy/{object_archive.py,.env.example,README.md,gcp/staging.py,gcp/README.md}`; `backend/README.md`. Tests: `backend/tests/{test_gcs_storage.py,test_gcp_staging.py,test_cloud_setup.py}`. Status/docs: `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this report and [scoped evidence/checkpoint](evidence/backend-gcs-staging-2026-10-05/README.md). No game/simulation, schemas/golden physics fixtures or UI source changed. Cloud bootstrap's ownership table is operational staging metadata, not a game contract migration.
++
++## Actual verification
++
++Test batches overlap and must not be summed.
++
++- Provider/native-GCS/S3 batch: **25 passed, 1 skipped**. The skip is the intentionally opt-in real GCS contract; no external account is contacted by default.
++- Initial orchestration batch: **19 passed**. Later added nested-job/redeployment and preflight checks; the final combined affected batch covers them.
++- Final affected cloud/provider/storage/readiness/scalability batch: **98 passed, 3 skipped**. Skips: unconfigured real GCS acceptance and two existing inapplicable SQLite/PostgreSQL cases. Generated schemas/app roles used a separate disposable PostgreSQL container; no private existing test environment was rewritten.
++- Native Windows staging smoke passes with actual pinned canonical verification, real PostgreSQL application permissions and isolated GCS HTTP transport. Asserts 12,757 ticks, exact five-lap proof/full expected manifest, zero player/Run writes and removal of diagnostic objects.
++- Separate local image `bmt-gcs-staging:20261005-local` built/rebuilt successfully. Exact Linux SHA/version check, curated project import, 12,757-tick five-lap fixture and ten-second rewind regression pass. The final smoke-module revision is in the rebuilt image. No image was pushed and no running image/container was replaced.
++- Packaged Linux smoke checker in that image: **1 passed**, using only the disposable PostgreSQL container and isolated GCS transport. Runtime package/environment, exact Linux verifier and app privileges are exercised. An initial mounted-test-path fallback failed and was corrected; assertion strength retained.
++- Ruff, scoped whitespace and reverse patch validation pass. Local `init`, `plan`, `cleanup` preview and `--help` commands succeed for the actual target; UTF-8 JSON artifacts parse. Cleanup preview performs no cloud calls.
++
++Initial checks caught a mock CLI `--help` being mistaken for deploy, and smoke assumptions about fixture fields. The existing golden format is `expected_manifest` and has per-lap expectations in the build checker; smoke now uses that format and the same exact lap proof. The first image was rebuilt after the fix. No failing canonical invariant was removed/relaxed.
++
++The temporary database was stopped/removed. Final existing WSL status remained API healthy/up 14 hours, worker up 14 hours, database healthy/up 32 hours. No NAS/cloud rollout, full new physics regression, Android build/device test or real provider/Google OAuth acceptance was performed; phone attachment was not checked. Backend-only changes require no UI screenshots.
++
++## Actual commands
++
++Existing `.tools/backend-venv/Scripts/python.exe` and Ubuntu Docker were used. Private config/preview generation never called Cloud APIs. Process/database/image tests ran with approved normal desktop access.
++
++```powershell
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py init --project beat-my-track --hours 4
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py plan
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py cleanup
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py --help
++$env:BMT_GCP_SETUP_TEST_DATABASE_URL = 'postgresql+psycopg://postgres@127.0.0.1:32770/bmt_tests'
++$env:BMT_TEST_DATABASE_URL = $env:BMT_GCP_SETUP_TEST_DATABASE_URL
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_cloud_setup.py backend/tests/test_gcp_staging.py backend/tests/test_gcs_storage.py backend/tests/test_s3_storage.py backend/tests/test_storage.py backend/tests/test_readiness.py backend/tests/test_scalability.py -q --tb=short --junitxml=docs/evidence/backend-gcs-staging-2026-10-05/regression.xml
++& .tools/backend-venv/Scripts/python.exe -m ruff check backend/bmt_backend/gcs_storage.py backend/bmt_backend/cloud_setup.py backend/bmt_backend/cloud_smoke.py backend/deploy/gcp/staging.py backend/tests/test_gcs_storage.py backend/tests/test_gcp_staging.py backend/tests/test_cloud_setup.py
++wsl.exe -d Ubuntu -- docker run --detach --rm --name bmt-gcs-staging-pg-20261005 --network bridge -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=bmt_tests -p 127.0.0.1::5432 postgres:17-bookworm
++wsl.exe -d Ubuntu -- docker port bmt-gcs-staging-pg-20261005 5432/tcp
++wsl.exe -d Ubuntu -- docker build --platform linux/amd64 --file backend/Dockerfile --build-arg GODOT_SHA256=8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e --tag bmt-gcs-staging:20261005-local .
++wsl.exe -d Ubuntu -- docker run --rm --network container:bmt-gcs-staging-pg-20261005 --entrypoint python -e BMT_GCP_SETUP_TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5432/bmt_tests --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/backend/tests,target=/acceptance-tests,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/docs/evidence/backend-gcs-staging-2026-10-05,target=/evidence' bmt-gcs-staging:20261005-local -m pytest /acceptance-tests/test_cloud_setup.py -q -k staging_smoke -p no:cacheprovider --tb=short --junitxml=/evidence/linux-smoke.xml
++wsl.exe -d Ubuntu -- docker stop bmt-gcs-staging-pg-20261005
++wsl.exe -d Ubuntu -- docker ps --filter label=com.docker.compose.project=bmt-pc-dev --format '{{.Names}} | {{.Status}}'
++```
++
++## Remaining live acceptance
++
++Install/authenticate the Google Cloud CLI and operator ADC, verify the exact remaining credits/expiry/eligible services and regional pricing, review private/public access and Google client IDs, then use the existing plan with a current lease/estimate. Only an explicit applied run can prove GCS/IAM generation semantics, provider round-trip/restore/revocation, Cloud SQL sockets/managed-role grants and actual Cloud Run/worker deployment/cleanup. Credits have not been consumed by this task.
++
++The runbook documents those commands and scopes. This tool is for a disposable staging environment, not production rollout or automatic cloud spending enforcement. Public/cellular/proxy capacity, real account sign-in, provider stalls and production monitoring/backups remain acceptance work; the earlier unrelated exception-review issues remain open.
+--- /dev/null
++++ b/docs/evidence/backend-gcs-staging-2026-10-05/README.md
+@@ -0,0 +1,13 @@
++# GCS/staging checkpoint evidence
++
++See [requirements, changed files, actual commands/outcomes and acceptance limits](../../BACKEND_GCS_STAGING_2026_10_05.md).
++
++- `providers.xml`: 25 passed/one intentionally unconfigured live GCS skip.
++- `staging.xml`: initial offline orchestration batch, 19 passed.
++- `cloud-tests.xml`: earlier combined batch, one golden-format smoke failure later corrected; failure retained.
++- `regression.xml`: final affected batch, 98 passed/three skips, including corrected native Windows smoke and ownership/grants.
++- `linux-smoke.xml`: packaged Linux staging smoke passed; real native engine/SQL with an isolated storage transport, not Google Cloud.
++- `staging-plan.json`, `cleanup-plan.json`: actual target's reviewable UTF-8 previews. No secrets, tokens or cloud calls.
++- `scoped-change.patch`, `source-hashes.json`, `checkpoint.py`: slice-only review checkpoint against saved task baselines, preserving earlier dirty work.
++
++Batches overlap. Live GCS/Cloud Run/Cloud SQL acceptance is explicitly unperformed without CLI/ADC and pricing review. No live player data/credentials or cloud resources belong to this evidence. The ignored local staging config has a short proposed lease; refresh it before a later applied session.
+--- /dev/null
++++ b/docs/evidence/backend-gcs-staging-2026-10-05/checkpoint.py
+@@ -0,0 +1,30 @@
++"""Create a source/docs review patch from this slice's saved starting files."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++files = {}
++for name in ("backend/bmt_backend/config.py", "backend/bmt_backend/storage.py", "backend/deploy/object_archive.py",
++             "backend/README.md", "backend/deploy/README.md", "backend/deploy/.env.example",
++             "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"):
++    files[name] = evidence / ("before-" + name.replace("/", "__"))
++for name in ("backend/bmt_backend/gcs_storage.py", "backend/bmt_backend/cloud_setup.py", "backend/bmt_backend/cloud_smoke.py",
++             "backend/deploy/gcp/staging.py", "backend/deploy/gcp/README.md", "backend/tests/test_gcs_storage.py",
++             "backend/tests/test_gcp_staging.py", "backend/tests/test_cloud_setup.py", "docs/BACKEND_GCS_STAGING_2026_10_05.md",
++             "docs/evidence/backend-gcs-staging-2026-10-05/README.md",
++             "docs/evidence/backend-gcs-staging-2026-10-05/checkpoint.py"):
++    files[name] = None
++patch, hashes = [], {}
++for name, baseline in files.items():
++    old = baseline.read_bytes() if baseline else b""
++    new = (root / name).read_bytes()
++    hashes[name] = {"before": hashlib.sha256(old).hexdigest() if baseline else None,
++                   "after": hashlib.sha256(new).hexdigest()}
++    patch.extend(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
++        new.decode("utf-8").splitlines(keepends=True),
++        fromfile="a/" + name if baseline else "/dev/null", tofile="b/" + name))
++(evidence / "scoped-change.patch").write_text("".join(patch), encoding="utf-8", newline="")
++(evidence / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")

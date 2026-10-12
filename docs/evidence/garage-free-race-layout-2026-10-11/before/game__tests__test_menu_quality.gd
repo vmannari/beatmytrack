@@ -1,0 +1,175 @@
+extends SceneTree
+## Isolated behavior regressions and repeatable menu CPU measurements.
+var checks: int = 0
+var failures: int = 0
+var directory: String
+
+func _initialize() -> void: call_deferred("run")
+
+func check(value: bool, label: String) -> void:
+	checks += 1
+	if not value:
+		failures += 1
+		print("FAIL: ", label)
+
+func run() -> void:
+	OS.set_environment("BMT_API_URL", "")
+	directory = "user://menu_quality_" + TrackLibrary.unique_id()
+	var app := ProbeApp.new()
+	app.library = TrackLibrary.new(directory)
+	app.records = LocalRecords.new(directory.path_join("records.json"))
+	app.cloud_root_override = directory.path_join("cloud")
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	var document: Dictionary = TrackDocument.create_default()
+	for index: int in range(40):
+		app.cloud.entries.append({"track_id":"quality-%02d" % index,"version_id":"version-%02d" % index,"content_hash":"hash-%02d" % index,"name":"Quality %02d" % index,"creator":"Fixture","creator_id":"fixture","points":document.points,"theme":"pine","rating_count":0,"rating_average":null})
+	app.race_area_mode = "free"
+	app._show_screen("tracks")
+	await create_timer(0.7).timeout
+	var browser: TrackBrowser = app.menu_body.find_child("TrackBrowser", true, false)
+	var card: TrackTile = browser.grid.get_child(0)
+	var card_id: int = card.get_instance_id()
+	var hero_id: int = browser.hero.find_child("HeroTrackTitle", true, false).get_instance_id()
+	var began: int = Time.get_ticks_usec()
+	for iteration: int in range(30): app.cloud.changed.emit()
+	print("MENU_QUALITY_STATUS_30_MS ", (Time.get_ticks_usec() - began) / 1000.0)
+	check(browser.grid.get_child(0).get_instance_id() == card_id, "unchanged cloud status retains cards")
+	check(browser.hero.find_child("HeroTrackTitle", true, false).get_instance_id() == hero_id, "unchanged detail retains hero controls")
+	browser.gallery.settle_cards(1)
+	var motion: Tween = browser.gallery.snap_tween
+	app.cloud.changed.emit()
+	check(motion.is_running(), "status update preserves an active carousel snap")
+	await create_timer(0.3).timeout
+	check(browser.gallery.scroll_horizontal == browser.tile_stride, "status update still settles on the intended full card")
+	browser.gallery.scroll_horizontal = 0
+	browser._favorite_id(str(browser.matches[0].id))
+	check((browser.grid.get_child(0) as TrackTile).favorite, "favorite updates a retained card")
+	app.cloud.entries[0].name = "Updated quality title"
+	app.cloud.changed.emit()
+	check(browser.matches.any(func(entry: Dictionary) -> bool: return entry.name == "Updated quality title"), "changed cloud metadata reaches the carousel")
+	var warm_garage: Control = app.menu_neighbors[2].body
+	var selector: Button = warm_garage.find_child("GarageCar_compact",true,false)
+	check(selector.get_mouse_filter_with_override() == Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() == Control.FOCUS_NONE, "warmed page descendants reject mouse and keyboard focus")
+	var next_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	next_track.identity = "quality_new_selection"
+	next_track.metadata.title = "New selected circuit"
+	app.selected_track = next_track
+	app._commit_menu_neighbor(2)
+	await create_timer(0.4).timeout
+	var garage_race: Button = _race_button(warm_garage)
+	check(selector.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() != Control.FOCUS_NONE, "promotion restores descendant input preferences")
+	garage_race.pressed.emit()
+	check(app.raced_track == next_track, "cached Garage races the current selected track")
+	check(_contains_text(warm_garage, "NEW SELECTED CIRCUIT"), "cached Garage displays the current selected circuit")
+	var shell: Control = app.root_ui
+	var warmed_race: Control = app.menu_neighbors[-2].body
+	app._open_race_area()
+	check(app.root_ui == shell and app.menu_body == warmed_race, "Race tab promotes cached controls and keeps the header")
+	await create_timer(0.4).timeout
+	app.root_ui.find_child("Tab_garage",true,false).pressed.emit()
+	check(app.root_ui == shell and app.menu_body == warm_garage, "Garage tab promotes cached controls across two page positions")
+	await create_timer(0.4).timeout
+	app._new_document()
+	check(app.root_ui == shell and app.screen == "biome", "Create tab keeps the warmed menu shell")
+	await create_timer(0.4).timeout
+	app._preview_creation_biome("winter")
+	await create_timer(0.7).timeout
+	app._new_document()
+	check(app.document.theme == "pine" and app.content.get_meta("biome_theme") == "pine", "new draft resets the cached biome choice")
+	check(app.menu_body.find_child("Biome_pine",true,false).get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE, "reset biome controls remain reachable after cached-page refresh")
+	app.queue_free()
+	await process_frame
+	# Selection and draw measurements require no network or owner data.
+	var local := TrackBrowser.new()
+	local.library = TrackLibrary.new(directory)
+	local.records = LocalRecords.new(directory.path_join("unused.json"))
+	local.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	local.builtin_ids = BuiltinTracks.ids()
+	local.state = {}
+	local.size = Vector2(1280, 620)
+	root.add_child(local)
+	while local.loading: await process_frame
+	var entry: Dictionary = local.catalog.entries[0]
+	local.catalog.remember_track(entry, local.selected_track)
+	var selections: Array[int] = [0]
+	local.track_selected.connect(func(_track: NativeTrack) -> void: selections[0] += 1)
+	var title_id: int = local.hero.find_child("HeroTrackTitle", true, false).get_instance_id()
+	began = Time.get_ticks_usec()
+	for iteration: int in range(30): local._select(entry)
+	print("MENU_QUALITY_SAME_SELECTION_30_MS ", (Time.get_ticks_usec() - began) / 1000.0)
+	check(local.hero.find_child("HeroTrackTitle", true, false).get_instance_id() == title_id, "reselecting the ready track retains hero controls")
+	check(selections[0] == 0, "reselecting the ready track emits no redundant selection")
+	local._favorite_id(str(entry.id))
+	check(local.hero.find_child("HeroFavorite",true,false).tooltip_text == "Remove favorite", "carousel favorite updates the matching hero star")
+	local.state = {"search":"missing track"}
+	local._refresh()
+	local._refresh()
+	check(local.grid.get_child_count() == 1, "repeated empty search keeps one empty-state message")
+	local.state = {}
+	local._refresh()
+	local.gallery.scroll_horizontal = local.tile_stride
+	local.state.race_history = "unraced"
+	local._refresh()
+	check(local.gallery.scroll_horizontal == 0, "changed race-history filter resets carousel position")
+	local.queue_free()
+	await process_frame
+	var callbacks := CallbackBrowser.new()
+	callbacks.library = TrackLibrary.new(directory)
+	callbacks.records = LocalRecords.new(directory.path_join("unused.json"))
+	callbacks.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	callbacks.state = {}
+	callbacks.size = Vector2(1280,620)
+	root.add_child(callbacks)
+	while callbacks.loading: await process_frame
+	for index: int in range(20):
+		callbacks.catalog.entries.append({"id":"callback_%d" % index,"name":"Fixture %02d" % index,"creator":"Fixture","theme":"pine","source":"builtin","points":document.points})
+	callbacks._refresh()
+	var retained_card: TrackTile = callbacks.grid.get_child(0)
+	var revised: Dictionary = callbacks.catalog.entries[0].duplicate(true)
+	revised.name = "Fixture 05 revised"
+	callbacks.catalog.entries[0] = revised
+	callbacks._refresh()
+	await process_frame
+	await process_frame
+	check(is_instance_valid(retained_card) and retained_card.get_parent() == callbacks.grid, "catalog reorder retains an overlapping track card")
+	retained_card.pressed.emit()
+	check(callbacks.observed_entry.name == revised.name, "retained card selects its updated publication metadata")
+	callbacks.gallery.size.x = callbacks.tile_stride
+	retained_card.focus_entered.emit()
+	check(callbacks.gallery.scroll_horizontal == int(retained_card.get_meta("catalog_index"))*callbacks.tile_stride, "retained card focus uses its updated catalog position: %d / %d" % [callbacks.gallery.scroll_horizontal,int(retained_card.get_meta("catalog_index"))*callbacks.tile_stride])
+	callbacks.queue_free()
+	await process_frame
+	_remove_fixture(directory)
+	print("MENU_QUALITY: %d checks, %d failures" % [checks, failures])
+	quit(1 if failures else 0)
+
+func _race_button(node: Node) -> Button:
+	for child: Node in node.get_children():
+		if child is Button and child.text.begins_with("RACE"): return child
+		var found: Button = _race_button(child)
+		if found != null: return found
+	return null
+
+func _contains_text(node: Node, fragment: String) -> bool:
+	if node is MenuFeature and fragment in node.heading: return true
+	if (node is Label or node is Button) and fragment in node.text: return true
+	for child: Node in node.get_children():
+		if _contains_text(child, fragment): return true
+	return false
+
+func _remove_fixture(path: String) -> void:
+	var folder := DirAccess.open(path)
+	if folder == null: return
+	for name: String in folder.get_directories(): _remove_fixture(path.path_join(name))
+	for name: String in folder.get_files(): DirAccess.remove_absolute(path.path_join(name))
+	DirAccess.remove_absolute(path)
+
+class ProbeApp extends "res://core/app.gd":
+	var raced_track: NativeTrack
+	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}) -> void:
+		raced_track = track
+
+class CallbackBrowser extends TrackBrowser:
+	var observed_entry: Dictionary
+	func _select(entry: Dictionary) -> void: observed_entry = entry

@@ -1,0 +1,86 @@
+diff --git a/game/ui/rewind_panel.gd b/game/ui/rewind_panel.gd
+--- a/game/ui/rewind_panel.gd
++++ b/game/ui/rewind_panel.gd
+@@ -62,14 +62,13 @@
+ 		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 	func _draw() -> void:
+ 		var c: Vector2 = size*0.5
+-		var ink := Color("ffd15c")
+-		if disabled: ink.a = 0.3
++		var ink := Color("788186") if disabled else Color("ffd15c")
+ 		draw_arc(c,30,0,TAU,64,ink,3,true)
+ 		draw_colored_polygon(PackedVector2Array([c+Vector2(-6,-11),c+Vector2(11,0),c+Vector2(-6,11)]),ink)
+-		if ad_free: return
++		if disabled or ad_free: return
+ 		var badge_center: Vector2 = c+Vector2(22,23)
+ 		if use_ad:
+-			draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false,Color(1,1,1,0.35 if disabled else 1.0))
++			draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false)
+ 		else:
+ 			var caption: String = str(count)
+ 			var width: float = RaceHUDStyle.DISPLAY.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,20).x
+@@ -182,7 +181,7 @@
+ 	confirm.custom_minimum_size = Vector2(116,64)
+ 	confirm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	confirm.tooltip_text = "Resume from selected position"
+-	for state: String in ["normal","hover","pressed"]: confirm.add_theme_stylebox_override(state,StyleBoxEmpty.new())
++	for state: String in ["normal","hover","pressed","disabled","focus"]: confirm.add_theme_stylebox_override(state,StyleBoxEmpty.new())
+ 	confirm.pressed.connect(func() -> void: confirmed.emit())
+ 	confirm.disabled = true
+ 	timeline_row.add_child(confirm)
+diff --git a/game/ui/rewind_hud_button.gd b/game/ui/rewind_hud_button.gd
+--- a/game/ui/rewind_hud_button.gd
++++ b/game/ui/rewind_hud_button.gd
+@@ -11,6 +11,7 @@
+ 
+ func _init() -> void:
+ 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++	add_theme_stylebox_override("disabled",StyleBoxEmpty.new())
+ 	custom_minimum_size = Vector2(60,60)
+ 	tooltip_text = "Rewind up to 10 seconds"
+ 
+@@ -24,17 +25,16 @@
+ 	queue_redraw()
+ 
+ func _draw() -> void:
+-	var ink := Color("eef6fb")
+-	if disabled: ink.a = 0.32
++	var ink := Color("788186") if disabled else Color("eef6fb")
+ 	draw_texture_rect(REWIND_ICON,Rect2(size*0.5-Vector2(26,26),Vector2(52,52)),false,ink)
+-	if free_rewinds: return
++	if disabled or free_rewinds: return
+ 	var badge_center := Vector2(size.x-7,size.y-5)
+ 	if use_ad:
+ 		# The artwork has its own readable video/AD outline; no extra badge ring.
+-		draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false,Color(1,1,1,0.32 if disabled else 1.0))
++		draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false)
+ 	else:
+ 		var badge_fill := Color("172129")
+-		badge_fill.a = 0.9 if not disabled else 0.72
++		badge_fill.a = 0.9
+ 		draw_circle(badge_center,13,badge_fill)
+ 		draw_arc(badge_center,13,0,TAU,32,ink,1.5,true)
+ 		var label := str(banked)
+diff --git a/game/tests/test_rewind.gd b/game/tests/test_rewind.gd
+--- a/game/tests/test_rewind.gd
++++ b/game/tests/test_rewind.gd
+@@ -60,6 +60,11 @@
+ 	game.online_rewinds = [{},{},{}]
+ 	game.call("_process",0.1)
+ 	check(game.hud.rewind_button.disabled,"race HUD disables rewind after all three race uses")
++	if not capture_path.is_empty():
++		game.hud.rewind_button.show_resource({"balance":0,"ad_preview_available":true},3)
++		await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-disabled.png") == OK,"disabled race-HUD rewind screenshot saved")
+ 	game.online_rewinds.clear()
+ 	game.call("_process",0.1)
+ 	if not capture_path.is_empty():
+@@ -94,6 +99,7 @@
+ 	check(game.rewind_choices[0].tick >= 2800,"timeline never goes beyond ten seconds")
+ 	check(game.sim.state.snapshot() == original,"rewind opens at the exact current position")
+ 	if not capture_path.is_empty():
++		game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},0)
+ 		await process_frame
+ 		await process_frame
+ 		await RenderingServer.frame_post_draw

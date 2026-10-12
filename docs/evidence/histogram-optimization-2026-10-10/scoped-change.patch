@@ -1,0 +1,321 @@
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -24,8 +24,6 @@
+ var lap_time_caption: Label
+ var comparison_scope: String = "all"
+ var last_comparison: Dictionary = {}
+-var refresh_again: bool = false
+-var comparison_refresh: Timer
+ const COMPARISON_BINS: int = 16
+ var vehicle_id: String = "compact"
+ var facts: Dictionary
+@@ -236,13 +234,9 @@
+ 		rating.cloud_sync = cloud_sync
+ 		body.add_child(rating)
+ 	if not cloud_version.is_empty():
+-		comparison_refresh = Timer.new()
+-		comparison_refresh.one_shot = true
+-		comparison_refresh.wait_time = 0.25
+-		comparison_refresh.timeout.connect(_refresh_rank)
+-		add_child(comparison_refresh)
++		# Load this results view once. Upload polling and verification completion
++		# must never refresh an already displayed histogram.
+ 		call_deferred("_refresh_rank")
+-		if cloud_sync != null: cloud_sync.changed.connect(_queue_comparison_refresh)
+ 
+ static func _local_distribution(values: Array[float], marker: float) -> Dictionary:
+ 	if values.is_empty(): return {}
+@@ -342,12 +336,6 @@
+ 		previous_edge = high
+ 	return count == int(data.get("population",-1)) and (bins.is_empty() or (data.get("minimum_ticks") != null and data.get("maximum_ticks") != null))
+ 
+-func _queue_comparison_refresh() -> void:
+-	if standings_busy:
+-		refresh_again = true
+-	elif is_instance_valid(comparison_refresh):
+-		comparison_refresh.start()
+-
+ static func _section(parent: Control, padding: int) -> VBoxContainer:
+ 	var body: VBoxContainer = RaceResults._card(parent,padding)
+ 	(body.get_parent() as PanelContainer).add_theme_stylebox_override("panel",RaceResults._panel_style(padding))
+@@ -355,9 +343,7 @@
+ 
+ func _refresh_rank() -> void:
+ 	if not is_instance_valid(global_rank) or cloud_client == null: return
+-	if standings_busy:
+-		refresh_again = true
+-		return
++	if standings_busy: return
+ 	if not cloud_client.signed_in():
+ 		_comparison_unavailable("Sign in to compare")
+ 		return
+@@ -372,9 +358,6 @@
+ 	if not is_inside_tree(): return
+ 	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
+ 	standings_busy = false
+-	if refresh_again:
+-		refresh_again = false
+-		_queue_comparison_refresh()
+ 
+ static func _frame_query(histogram: Dictionary, metric: String) -> String:
+ 	var bins: Array = histogram.get("bins",[])
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -37,6 +37,7 @@
+ var _selection_serial: int = 0
+ var _working_serial: int = 0
+ var _cloud_detail_pending: Dictionary = {}
++var _comparison_selection: String = ""
+ var rng := RandomNumberGenerator.new()
+ var cloud: Node
+ var cloud_status: Label
+@@ -481,7 +482,9 @@
+ func _select(entry: Dictionary) -> void:
+ 	var cached: NativeTrack = catalog.cached_track(entry)
+ 	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null:
+-		if not page_preview and cloud != null and cached.metadata.has("cloud_version"):
++		# The selected track's comparison is a snapshot, not a refresh action.
++		# A newly opened page still hydrates its initially selected track once.
++		if not page_preview and cloud != null and cached.metadata.has("cloud_version") and _comparison_selection != _comparison_selection_key(cached):
+ 			_load_cloud_detail(cached)
+ 		return
+ 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
+@@ -606,12 +609,16 @@
+ 	if cloud != null and track.metadata.has("cloud_version"):
+ 		_load_cloud_detail(track)
+ 
++func _comparison_selection_key(track: NativeTrack) -> String:
++	return "%d:%s:%d" % [track.get_instance_id(),VehicleCatalog.selected,_selection_serial]
++
+ func _load_cloud_detail(track: NativeTrack) -> void:
+ 	var serial: int = _selection_serial
+ 	var vehicle: String = VehicleCatalog.selected
+ 	var key: String = records.key_for(track,HandlingSelection.config())
+-	var request_key: String = "%d:%s:%d" % [track.get_instance_id(),vehicle,serial]
++	var request_key: String = _comparison_selection_key(track)
+ 	if _cloud_detail_pending.has(request_key): return
++	_comparison_selection = request_key
+ 	_cloud_detail_pending[request_key] = true
+ 	cloud.client.cancel_public_reads(get_instance_id())
+ 	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -24,6 +24,8 @@
+ 
+ class Cloud extends Node:
+ 	signal changed
++	var status: String = ""
++	var refreshing: bool = false
+ 	var client: Node
+ 	var discovery_pages: Node
+ 	var entries: Array[Dictionary] = []
+@@ -47,7 +49,7 @@
+ 	browser.theme = MenuStyle.theme()
+ 	browser.library = TrackLibrary.new("user://unified_histogram_fixture/drafts")
+ 	browser.catalog = TrackCatalog.new(browser.library)
+-	browser.catalog.entries.append({"id":track.identity,"version_id":"unified-silmukka-fixture","source":"cloud","name":"Silmukka","creator":"Beat my track","theme":"pine"})
++	browser.catalog.entries.append({"id":track.identity,"version_id":"unified-silmukka-fixture","source":"cloud","name":"Silmukka","creator":"Beat my track","theme":"pine","points":TrackDocument.create_default().points})
+ 	browser.records = LocalRecords.new("user://unified_histogram_fixture/records.json")
+ 	browser.records.records[browser.records.key_for(track,HandlingSelection.config())] = {"race_ms":86130,"flying_ms":15881}
+ 	browser.cloud = cloud
+@@ -101,6 +103,16 @@
+ 	await settle()
+ 	check(browser.discovery.record_snapshot(key) == before,"identical discovery data stays stable")
+ 	check(client.paths[-1].contains("bins=16") and client.paths[-1].contains("race_from_ticks="),"discovery preserves the displayed grid during refresh")
++	browser.catalog.indexed_revision = browser.library.revision
++	browser.catalog.remember_track(browser.catalog.entries[0],track)
++	var selection_requests: int = client.paths.size()
++	var selected_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
++	for repeat: int in range(3):
++		browser._select(browser.catalog.entries[0])
++		browser.discovery.changed.emit()
++		await settle()
++	check(client.paths.size() == selection_requests,"same track selection and discovery signals never refresh histograms")
++	check(browser.find_child("RaceDistribution",true,false) == selected_chart,"unchanged discovery events preserve the displayed chart instance")
+ 	check(client.paths.all(func(path: String) -> bool: return not path.contains("/histogram") and not path.contains("test_population")),"discovery never queries split histogram sources")
+ 	var chart: Control = browser.find_child("RaceDistribution",true,false)
+ 	check(chart != null and chart.size.y >= 90,"removed captions leave usable chart height")
+@@ -124,6 +136,9 @@
+ 	client.paths.clear()
+ 	browser.catalog.indexed_revision = browser.library.revision
+ 	browser.catalog.remember_track(browser.catalog.entries[0],track)
++	# A reopened browser begins with no selection request, even if its retained
++	# selected track and comparison cache were prepared by the previous page.
++	browser._comparison_selection = ""
+ 	browser._select(browser.catalog.entries[0])
+ 	await settle()
+ 	check(client.paths.any(func(path: String) -> bool: return path.contains("/results-comparison")),"reopening the cached selected track hydrates its histograms without a player record")
+@@ -145,6 +160,7 @@
+ 		client.hold = true
+ 		var previous_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+ 		var previous_snapshot: Dictionary = previous_chart.snapshot.duplicate(true)
++		var requests_before_selection: int = client.paths.size()
+ 		browser._finish_selection({"track":unraced,"draft":{}})
+ 		await settle()
+ 		var loading_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+@@ -157,6 +173,7 @@
+ 		await screenshot("track-%d-waiting" % index)
+ 		client.hold = false
+ 		await settle()
++		check(client.paths.size() == requests_before_selection+2,"new track selection makes one leaderboard and one comparison request")
+ 		check_no_time_charts(browser,unraced)
+ 		check(not browser._detail_loading,"ready comparison releases the pending track reveal")
+ 		await screenshot("track-%d-ready" % index)
+--- /dev/null
++++ b/game/tests/profile_histogram_refresh.gd
+@@ -0,0 +1,82 @@
++extends SceneTree
++## Read-only mock-network review. No gameplay, uploads, user saves or server writes.
++class ProbeClient extends Node:
++	var requests: int = 0
++	var packet: Dictionary = {}
++	var player: Dictionary = {"id":"review-probe"}
++	var _capabilities: Dictionary = {}
++	var hold: bool = false
++	func base_url() -> String: return "http://127.0.0.1:9"
++	func signed_in() -> bool: return true
++	func request_api(_path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		requests += 1
++		while hold: await get_tree().process_frame
++		return {"ok":true,"data":packet,"error":""}
++
++var cloud: Node
++var client: ProbeClient
++var page: RaceComplete
++var draws: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	var file: String = "res://../docs/evidence/histogram-grid-2026-10-09/verified-silmukka-histograms.json"
++	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(file))
++	client = ProbeClient.new()
++	client.packet = data.packet
++	client.hold = true
++	root.add_child(client)
++	cloud = preload("res://backend/cloud_tracks.gd").new()
++	cloud.client = client
++	cloud.root_override = "res://../build/histogram-review-2026-10-10/client-empty-outbox"
++	root.add_child(cloud)
++	var result := RaceResults.new()
++	result.circuit = "Review fixture"
++	result.total = 86.184
++	result.best = 86.130
++	result.laps = [19.828,16.959,16.808,16.350,16.239]
++	result.clean = true
++	page = RaceComplete.new()
++	page.results = result
++	page.facts = {"flying":15.881}
++	page.cloud_version = "review-only-fixture"
++	page.cloud_client = client
++	page.cloud_sync = cloud
++	root.add_child(page)
++	page.race_chart.draw.connect(func() -> void: draws += 1)
++	await create_timer(0.1).timeout
++	for iteration: int in range(3): await cloud.flush_outbox()
++	client.hold = false
++	await create_timer(0.5).timeout
++	var initial: int = client.requests
++	var initial_draws: int = draws
++	var race_before: Dictionary = page.race_chart.snapshot.duplicate(true)
++	var lap_before: Dictionary = page.lap_chart.snapshot.duplicate(true)
++	client.packet = client.packet.duplicate(true)
++	for metric: String in ["race","best_lap"]:
++		client.packet[metric].bins[0].count += 1
++		client.packet[metric].population += 1
++	for iteration: int in range(6):
++		await cloud.flush_outbox()
++		await create_timer(1.0).timeout
++	var idle: int = client.requests-initial
++	var idle_draws: int = draws-initial_draws
++	page.hide()
++	var hidden_start: int = client.requests
++	for iteration: int in range(3):
++		await cloud.flush_outbox()
++		await create_timer(1.0).timeout
++	var report: Dictionary = {"idle_polls":6,"comparison_requests_during_idle":idle,
++		"chart_draws_during_idle":idle_draws,"hidden_polls":3,"comparison_requests_while_hidden":client.requests-hidden_start,
++		"initial_requests":initial,"race_snapshot_frozen":page.race_chart.snapshot == race_before,
++		"lap_snapshot_frozen":page.lap_chart.snapshot == lap_before}
++	var passed: bool = initial == 1 and idle == 0 and idle_draws == 0 and client.requests == hidden_start and report.race_snapshot_frozen and report.lap_snapshot_frozen
++	print("HISTOGRAM_REFRESH_PROBE "+JSON.stringify(report))
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--report="):
++			var output := FileAccess.open(arg.trim_prefix("--report="),FileAccess.WRITE)
++			output.store_string(JSON.stringify(report));output.close()
++	page.queue_free();cloud.queue_free();client.queue_free();result.free()
++	await process_frame
++	quit(0 if passed else 1)
+--- /dev/null
++++ b/game/tests/profile_histogram_refresh.gd.uid
+@@ -0,0 +1 @@
++uid://cw0ijmgqivqno
+--- /dev/null
++++ b/docs/HISTOGRAM_OPTIMIZATION_2026_10_10.md
+@@ -0,0 +1,50 @@
++# Histogram review and selection-driven refresh, 2026-10-10
++
++Requirements: HOPT01 (measure histogram work), HOPT02 (no automatic refresh without track selection), RR06 (unified race/lap comparisons), TD06/TD08 (driver deduplication and public isolation), R01/Q01 (scoped implementation and measured evidence).
++
++The owner requests lightweight histograms that stay fixed until a new track is selected, and explicitly confirms that post-race results should load once when opened. Discovery now loads the initially selected track once, then requests comparisons when another track is selected. Clicking the already selected track does not refresh its comparison. A new page still hydrates its initial selection; returning from another track is a new selection. Results initialize once when opened and retain that comparison through upload polling and verification completion. This preserves exact current-result placement without polling, retry timers or completion-triggered refreshes.
++
++## Findings and implemented change
++
++`CloudTracks.flush_outbox()` emits `changed` even with an empty outbox. The app polls it every second. `RaceComplete` subscribed to that broad signal and scheduled another comparison GET, including while hidden. The actual empty-outbox probe measured six redundant GETs in six idle polls, zero chart redraws, and another three GETs in three hidden polls. Equal-packet checks protected drawing but did not save server computation.
++
++`game/ui/race_complete.gd` removes the signal subscription, debounce timer and deferred follow-up machinery. `game/ui/track_browser.gd` remembers the selection request and suppresses a second read for the same selected track while preserving first-load hydration. General cloud notifications and upload processing remain available to their existing consumers. There is no per-frame histogram construction; the sixteen-bar renderer already draws on demand.
++
++`game/tests/profile_histogram_refresh.gd` exercises the real CloudTracks empty-outbox path with a mock network, including events while the first request is pending. It then changes the offered server packet, polls six times, hides the page and polls three more times. The final report proves one initial request, zero idle/hidden requests, zero idle redraws, and unchanged race/lap snapshots. `game/tests/test_unified_histograms.gd` adds same-selection/discovery-signal coverage and verifies one comparison request per new selection. Its mock now supplies the route and cloud status fields required by the newly exercised carousel path.
++
++## Backend work and next optimization
++
++The unified endpoint uses an incremental frequency projection for race PBs, but reconstructs each driver's best flying lap from all verified attempts. One request executes eleven SQL statements, four reading lap history. It deduplicates drivers across the comparable public/development boards. Candidate markers do not add a population sample, and exact placement is computed separately from the bins.
++
++Measured locally with PostgreSQL 17, synthetic isolated records and ANALYZE after seeding; five endpoint calls per case, including the first call. These are endpoint calculation timings including local SQL, not live-host measurements or whole HTTP latency:
++
++| Drivers | Verified attempts | Median calculation |
++| ---: | ---: | ---: |
++| 100 | 100 | 28.90 ms |
++| 100 | 5,000 | 70.64 ms |
++| 1,000 | 1,000 | 44.22 ms |
++| 1,000 | 50,000 | 291.26 ms |
++
++The next useful backend change is a durable per-driver best-flying-lap projection, maintained when runs are verified, with a lap or combined revision. Aggregate comparable race/lap populations once per revision and apply individual candidate markers/placement separately. Cache keys must include pinned rules, car, population visibility, bin count and frame bounds; reset cutoffs, disabled players and deduplication still apply. Avoid rebuilding the same best-lap subquery four times.
++
++**The existing `Board.stats_revision` is insufficient for caching lap comparisons.** The probe adds a slower overall race with a faster flying lap: the histogram changes but the race PB and board revision do not. A cache or freshness check based only on that revision would serve stale laps. No backend runtime, schema, cache or deployment was changed by this task.
++
++The disposable PostgreSQL runner uses an existing local image, an owned container and generated isolated schemas. It checks ownership before stopping its container, which was removed successfully. Fresh-table runs without ANALYZE were discarded as performance conclusions; final analyzed samples are retained. No external API or player records were modified. Probe source receipts are saved alongside the reports; their original execution directory is `build/histogram-review-2026-10-10`.
++
++## Actual verification and evidence
++
++All native commands use pinned Godot 4.7.2 stable ed1daf0bf through `scripts/dev.ps1`, with normal Windows certificate-store access. The graphical test used isolated APPDATA `build/histogram-review-2026-10-10` and BMT_RESULTS_EVIDENCE `docs/evidence/histogram-optimization-2026-10-10`.
++
++- `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_histogram_refresh.gd -TestArgument @('--report=C:/Codes/Godot/Beat my track/build/histogram-review-2026-10-10/client-report.json')`: passed, one initialization and zero later comparison requests. [Before](evidence/histogram-optimization-2026-10-10/client-before.json), [after](evidence/histogram-optimization-2026-10-10/client-after.json), [native log](evidence/histogram-optimization-2026-10-10/refresh-regression.log).
++- `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical -CommandTimeoutSeconds 90`: **148 checks, zero failures**, three window sizes and pending/new selection captures. [Log](evidence/histogram-optimization-2026-10-10/unified-graphical.log), [inspected desktop capture](evidence/histogram-optimization-2026-10-10/discovery-1280x720.png).
++- `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_results_histograms.gd -CommandTimeoutSeconds 90`: **37 checks, zero failures**, exact counts, independent result/PB markers, pinned domains and atomic race/lap packets. [Log](evidence/histogram-optimization-2026-10-10/results-histograms.log).
++- `scripts/dev.ps1 -Action TestApp -CommandTimeoutSeconds 90`: **99 checks, zero failures**. [Log](evidence/histogram-optimization-2026-10-10/app-tests.log).
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py -k 'sqlite and (histogram or results_comparison)' -q --tb=short --junitxml=build/histogram-review-2026-10-10/contracts.xml` with PYTHONPATH=backend: **5 passed, 1 skipped, 52 deselected**. The skip explicitly requires PostgreSQL repeatable-read concurrency. [Receipt](evidence/histogram-optimization-2026-10-10/contracts.xml).
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_test_drivers.py -k 'histogram or unified_comparison' -q --tb=short --junitxml=build/histogram-review-2026-10-10/driver-contracts.xml`: **2 passed, 13 deselected**, artificial lap reset/all-driver comparison and private board isolation.
++- `.tools/backend-venv/Scripts/python.exe build/histogram-review-2026-10-10/owned_pg_probe.py`: final owned PostgreSQL benchmark exit **0**, owned container removed. [Samples and revision counterexample](evidence/histogram-optimization-2026-10-10/postgres-report.json), [log](evidence/histogram-optimization-2026-10-10/postgres-probe.log).
++
++Initial graphical fixture failures exposed missing route `points`, cloud `status` and `refreshing`; those mock fields were added without relaxing assertions. One optional backend test launch used the system Python without pytest; rerun with the existing backend virtual environment passed. Earlier benchmark setup rejected an invalid environment/schema prefix; valid disposable development settings and the required owned schema prefix were used without weakening guards.
++
++No phone attachment check or device test was performed. No Android export/install, full Validate, production deployment or backend update. Remaining acceptance: owner review in the populated live menu and on a physical device; benchmark and implement the durable lap projection separately if desired. The displayed comparison intentionally remains a snapshot until a new selection/view initialization.
++
++Changed runtime files: `game/ui/race_complete.gd`, `game/ui/track_browser.gd`. Tests: `game/tests/profile_histogram_refresh.gd` and its engine UID, `game/tests/test_unified_histograms.gd`. This report, evidence, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md retain outcomes. The task-only patch records this slice against the existing dirty workspace without committing other work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 HOPT01-HOPT02/RR06/TD06/TD08/R01/Q01: histogram review removes results outbox-driven timer/requeue and same-selected-track discovery refresh; initial selection hydrates once, results initialize once per opened view. Real empty-outbox probe6idle/3hidden GETs becomes0/0, both snapshots fixed even with changed offered packets/pending events. Native graphical148/results37/App99 and backendSQLite5(1skip)/driver2 pass; owned analyzed PG17 endpoint11queries/4lap-history reads, 1000drivers median44.22ms at1000attempts vs291.26ms at50000. Lap-only improvement leaves existing board revision unchanged; naive revision cache unsafe, durable lap projection recommended. Owned DB removed/no server runtime-schema-deploy/player-record changes. Captures inspected; no phone attachment/device test/export-install/full Validate. Owner confirms results load once when opened. Files, commands, receipts, scoped checkpoint and acceptance: docs/HISTOGRAM_OPTIMIZATION_2026_10_10.md.
++
+ 2026-10-10 SND26/SND24-SND25/SND05/G01/R01/Q01/V06: owner-provided Dragon Studio rain MP3 now supplies storm background; only20-41s of467.827s decoded,1s cyclic crossfade gives20s/1764044bytes/3bed8b7e loop. Gentle rare-peak control matches prior RMS/0.55 gain, no EQ/added layers; original untouched/source-excerpt/old assets retained, filename attribution/licence metadata explicit. Final offline rebuild/import/focused39/native33/source+native loop/mix reviews pass; one actual wrap/no gaps/paused zero/default music present, rain10.061dB below engine. First quiet peak-capped candidate retained; rejected same-path patch changed no files. All47 vehicle WAVs/wet mixer/gain/wishlist hashes exact. No phone attachment/device listening/APK export-install/full Validate/backend/deploy. Files/commands/audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (owner loop).
+ 
+ 2026-10-10 B01/B07/R01/Q01: owner supplies Android OAuth ID; existing login deployment authorization used for config-only correction. Exact supplied Android client added to development API-worker/migrate-smoke-catalog; Web client and image61b0accb retained/all five audited. Private deployment/rendered env updated; live readiness200/challenge201/invalidtoken401/Webclient-preserved pass. Prior signed crypto11 verifies knownAndroid presenter acceptance and unknown rejection. No image/schema/reseed/player-write/APK/install/phone-attachment/new-device-login/fullregression action; actual user Google retry remains pending. Commands/receipts/scoped checkpoint/remaining acceptance: docs/NATIVE_GOOGLE_SIGN_IN.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 HOPT01-HOPT02/RR06/TD06/TD08/R01/Q01: histogram review removes results outbox-driven timer/requeue and same-selected-track discovery refresh; initial selection hydrates once, results initialize once per opened view. Real empty-outbox probe6idle/3hidden GETs becomes0/0, both snapshots fixed even with changed offered packets/pending events. Native graphical148/results37/App99 and backendSQLite5(1skip)/driver2 pass; owned analyzed PG17 endpoint11queries/4lap-history reads, 1000drivers median44.22ms at1000attempts vs291.26ms at50000. Lap-only improvement leaves existing board revision unchanged; naive revision cache unsafe, durable lap projection recommended. Owned DB removed/no server runtime-schema-deploy/player-record changes. Captures inspected; no phone attachment/device test/export-install/full Validate. Owner confirms results load once when opened. Files, commands, receipts, scoped checkpoint and acceptance: docs/HISTOGRAM_OPTIMIZATION_2026_10_10.md.
++
+ 2026-10-09 VF05-VF09/B05/B07/Q01/R01/WR07-WR08/CH09: owner explicitly approves backend update. Exact-parent development rollout61b0accb rebases over native-Google190ef673/histogramda0ab3da; all unrelated backend files/histogram ASTs/112 packaged game files except named verifier/generator changes preserved. Fresh successful backup1791576838378/old queue empty; API-worker/migrate-smoke-catalog images updated, no migration/reseed/resource resize/score reset/production action. Live capabilitytrajectory-v1/ready0020/compatible worker; deployed12757-tick five-lap check2.231035ms/zero acceptance engine calls, storage2objects cleanup/results route retained. Static geometry28tracks/19.729s/zero player-score writes; oneCPUrebase median1.108/p951.421ms. Initial TLS read retries/exact smoke-context refusal/concurrent parent refusal reconciled and retested. No new player race or device complete-race acceptance; restart active client for new capabilities. Actual commands/receipts/scoped checkpoint/remaining load-device acceptance: docs/TRAJECTORY_VERIFICATION.md (Approved development deployment).
+ 
+ 2026-10-09 V03/V04/V05/Q01/R01: owner-authorized Android Mobile/Vulkan trial installed; desktop Compatibility retained. Actual OnePlus Pad2 renderer mobile/driver vulkan/Adreno750/MSAA2x/shadows true/paused0, desert medians19.974/19.992ms p9522.979/22.671ms (~50FPS) versus prior GL p9524.57/24.92. Native dust smooth in captured driving view; initial shader-loading image not a pass. Desktop graphical Vulkan camera1499 and frozen state/material witness pass; export72/21/48. Final APK246693145/SHA256FAE29FF633629D62612EBC9E70177100796BDB48A7264372C941B1F7C0F158EC installSuccess/normalLaunch. Initial keyguard blocker resolved: final Pine median19.775/p9528.416 mobile/vulkan/MSAA2x/paused0; visual-only under-bridge witness confirms dust leakage persists while car is occluded. Mixed pacing/unchanged1024 shadow map, trial left installed for owner review; bridge constraints/shadow-quality acceptance remain, no claimed clipping fix/fullValidate/thermal/other-device or production deployment. Debug readiness/visual-only bridge tool prepared; player data preserved. Commands/files/evidence/rollback/scoped checkpoint: docs/TABLET_VULKAN_2026_10_09.md.

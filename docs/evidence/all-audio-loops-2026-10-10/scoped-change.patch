@@ -1,0 +1,2109 @@
+diff --git a/game/platform/pcm_audio_loop.gd b/game/platform/pcm_audio_loop.gd
+new file mode 100644
+--- /dev/null
++++ b/game/platform/pcm_audio_loop.gd
+@@ -0,0 +1,18 @@
++class_name PcmAudioLoop
++extends RefCounted
++## Prepare a lossless full-file loop with its cyclic interpolation frame.
++
++static func prepare(source: AudioStreamWAV) -> AudioStreamWAV:
++	assert(source.format==AudioStreamWAV.FORMAT_16_BITS,"Loop masters must be lossless 16-bit PCM")
++	var stream: AudioStreamWAV = source.duplicate() as AudioStreamWAV
++	var frame_bytes: int = 4 if stream.stereo else 2
++	var pcm: PackedByteArray = stream.data
++	assert(pcm.size()>=frame_bytes and pcm.size()%frame_bytes==0,"Complete PCM frames required")
++	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
++	stream.loop_begin = 0
++	stream.loop_end = pcm.size()/frame_bytes
++	# Fractional pitch interpolates into this frame before the cursor wraps.
++	# Resource padding is silence and would produce a short click/dip instead.
++	pcm.append_array(pcm.slice(0,frame_bytes))
++	stream.data = pcm
++	return stream
+diff --git a/game/platform/pcm_audio_loop.gd.uid b/game/platform/pcm_audio_loop.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/platform/pcm_audio_loop.gd.uid
+@@ -0,0 +1 @@
++uid://cwpsu2a5tkife
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -76,11 +76,8 @@
+ 
+ func _stream(clip: String, looping: bool) -> AudioStreamWAV:
+ 	if streams.has(clip): return streams[clip] as AudioStreamWAV
+-	var sample: AudioStreamWAV = (load(BANK+clip+".wav") as AudioStreamWAV).duplicate() as AudioStreamWAV
+-	if looping:
+-		sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-		sample.loop_begin = 0
+-		sample.loop_end = sample.data.size()/2 # Bank is authored mono, 16-bit PCM.
++	var source: AudioStreamWAV = load(BANK+clip+".wav") as AudioStreamWAV
++	var sample: AudioStreamWAV = PcmAudioLoop.prepare(source) if looping else source.duplicate() as AudioStreamWAV
+ 	streams[clip] = sample
+ 	return sample
+ 
+@@ -229,9 +226,9 @@
+ 	if model.shift_remaining>0.0: engine_level *= 0.56
+ 	engine_envelope = lerpf(engine_envelope,engine_level,1.0-exp(-dt*22.0))
+ 	for i: int in range(3):
+-		# Compact recordings share a calibrated pulse rate. Allow the full 2.5x
+-		# anchor overlap so the fading lower loop doesn't flatten before the next.
+-		var pitch: float = clampf(model.rpm/model.anchors[i],0.4,2.55) if model.vehicle_id=="compact" else clampf(model.rpm/model.anchors[i],0.55,1.85)
++		# All sustained banks share an order/RPM ratio within their vehicle.
++		# Cover every neighboring-anchor overlap without flattening a live layer.
++		var pitch: float = clampf(model.rpm/model.anchors[i],0.35,2.85)
+ 		engine_load[i].pitch_scale = pitch
+ 		engine_coast[i].pitch_scale = pitch
+ 		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(load_blend)*engine_envelope))
+diff --git a/game/vehicle/tire_audio.gd b/game/vehicle/tire_audio.gd
+--- a/game/vehicle/tire_audio.gd
++++ b/game/vehicle/tire_audio.gd
+@@ -23,8 +23,4 @@
+ 	pitch_scale = 0.85 + 0.3 * clampf(state.velocity.length() / 46.0, 0.0, 1.0)
+ 
+ static func make_scrub() -> AudioStreamWAV:
+-	var sample: AudioStreamWAV = preload("res://assets/audio/vehicles/tire.wav").duplicate() as AudioStreamWAV
+-	sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-	sample.loop_begin = 0
+-	sample.loop_end = sample.data.size()/2
+-	return sample
++	return PcmAudioLoop.prepare(preload("res://assets/audio/vehicles/tire.wav"))
+diff --git a/game/soundtrack/audio_world.gd b/game/soundtrack/audio_world.gd
+--- a/game/soundtrack/audio_world.gd
++++ b/game/soundtrack/audio_world.gd
+@@ -84,17 +84,7 @@
+ 
+ 
+ func _menu_loop() -> AudioStreamWAV:
+-	var stream: AudioStreamWAV = load(BANK + "menu_theme.wav").duplicate()
+-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-	stream.loop_begin = 0
+-	var pcm: PackedByteArray = stream.data
+-	var frames: int = pcm.size() / 4 # stereo16-bit PCM frames
+-	# WAV mixing may read the endpoint inclusively before wrapping its offset.
+-	# Supply the next cyclic frame rather than the resource's zero padding.
+-	pcm.append_array(pcm.slice(0, 4))
+-	stream.data = pcm
+-	stream.loop_end = frames
+-	return stream
++	return PcmAudioLoop.prepare(load(BANK + "menu_theme.wav") as AudioStreamWAV)
+ 
+ 
+ func apply_settings(settings: Dictionary) -> void:
+diff --git a/game/track/night_ambience.gd b/game/track/night_ambience.gd
+--- a/game/track/night_ambience.gd
++++ b/game/track/night_ambience.gd
+@@ -22,14 +22,7 @@
+ 	player.name = "Cicadas"
+ 	player.bus = "Vehicle"
+ 	player.volume_linear = 0.0
+-	var stream: AudioStreamWAV = preload("res://assets/audio/ambience/night_cicadas.wav").duplicate()
+-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-	stream.loop_begin = 0
+-	var pcm: PackedByteArray = stream.data
+-	stream.loop_end = pcm.size() / 2 # Mono 16-bit PCM.
+-	# Supply the cyclic endpoint for the WAV mixer's inclusive sample read.
+-	pcm.append_array(pcm.slice(0, 2))
+-	stream.data = pcm
++	var stream: AudioStreamWAV = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/night_cicadas.wav"))
+ 	player.stream = stream
+ 	add_child(player)
+ 
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -66,13 +66,7 @@
+ 	rain_audio.name = "BackgroundRain"
+ 	rain_audio.bus = "Vehicle"
+ 	rain_audio.volume_linear = 0.0
+-	var rain_stream: AudioStreamWAV = preload("res://assets/audio/ambience/storm_rain_recorded.wav").duplicate()
+-	rain_stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-	rain_stream.loop_begin = 0
+-	var rain_pcm: PackedByteArray = rain_stream.data
+-	rain_stream.loop_end = rain_pcm.size()/2
+-	rain_pcm.append_array(rain_pcm.slice(0,2))
+-	rain_stream.data = rain_pcm
++	var rain_stream: AudioStreamWAV = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/storm_rain_recorded.wav"))
+ 	rain_audio.stream = rain_stream
+ 	add_child(rain_audio)
+ 	thunder_audio = AudioStreamPlayer.new()
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -21,6 +21,8 @@
+ sources += json.loads((SOURCE / "surface_source_manifest.json").read_text(encoding="utf-8"))
+ source_map = {item["filename"]: item for item in sources}
+ outputs = []
++from audio_loop_mastering import crossfade, level_texture, engine_sustain, coherent_orders
++TEXTURES = {"road","tire","wind","water","wet_road","sand_roll","sand","loose","grass","sand_debris"}
+ 
+ 
+ def read(name):
+@@ -86,11 +88,7 @@
+ 
+ 
+ def loop(values):
+-    overlap = min(round(.10*RATE),len(values)//6)
+-    ramp = .5-.5*np.cos(np.linspace(0,math.pi,overlap))
+-    joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
+-    # End of overlap continues into the head; the other boundary continues from the tail.
+-    return np.concatenate([values[overlap:-overlap],joined])
++    return crossfade(values,RATE)
+ 
+ 
+ def transpose(values, factor):
+@@ -107,16 +105,22 @@
+     if looping:
+         if engine_order is None:
+             values = loop(values)
++            if name in TEXTURES:
++                values = filter_audio(level_texture(values,RATE))
++                values -= values.mean()
+         else:
+             from compact_audio_mastering import seam_loop
+             # Final EQ sees the completed periodic waveform, not an open cut.
+             values = filter_audio(values if loop_ready else seam_loop(values, RATE, engine_order))
+             values -= values.mean()
+         if name == "tire":
+-            # Retain the existing tire seam invariant with an inaudible 2 ms taper.
+-            taper = round(.002*RATE)
+-            values[:taper] *= np.linspace(0,1,taper)
+-            values[-taper:] *= np.linspace(1,0,taper)
++            # Keep the pinned zero-endpoint contract at a natural quiet crossing,
++            # rather than inserting a repeated 4-ms fade-to-silence into the bed.
++            crossings = np.flatnonzero(values[:-1]*values[1:]<=0)+1
++            if not len(crossings): raise ValueError("Tire texture has no zero crossing")
++            boundary = crossings[np.argmin(abs(values[crossings])+abs(values[crossings-1]))]
++            values = np.roll(values,-int(boundary))
++            values[0] = values[-1] = 0.0
+     else:
+         attack = 0 if impact else min(round(.003*RATE), len(values)//3)
+         release = min(round(.06*RATE), len(values)//3)
+@@ -147,6 +151,8 @@
+     else:
+         import_path.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding="utf-8")
+     outputs.append({"file":target.name,"sources":used,"loop":looping,"seconds":len(values)/RATE,"rms_dbfs":20*math.log10(max(np.sqrt(np.mean(values*values)),1e-9)),"peak_dbfs":20*math.log10(max(np.max(np.abs(values)),1e-9)),"seam_step":float(abs(values[0]-values[-1])) if looping else None,"sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
++    if engine_order is not None: outputs[-1]["engine_order_hz"] = engine_order
++    if name in TEXTURES: outputs[-1]["continuous_texture"] = True
+ 
+ 
+ truck_low = "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
+@@ -163,17 +169,25 @@
+     manifest = json.loads((OUT / "manifest.json").read_text(encoding="utf-8"))
+     replaced = {item["file"] for item in outputs}
+     manifest["outputs"] = [next(new for new in outputs if new["file"] == item["file"]) if item["file"] in replaced else item for item in manifest["outputs"]]
+-    manifest["compact_revision"] = "engine-3-stable-sustain"
++    manifest["compact_revision"] = "engine-4-stable-idle"
+     (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+     print(json.dumps({"compact_clips":len(outputs),"bytes":sum((OUT / item["file"]).stat().st_size for item in outputs)},indent=2))
+     raise SystemExit(0)
+ for car, layers in profiles.items():
++    voiced_layers = []
+     for index, (source,pitch,warmth) in enumerate(layers):
+         values = transpose(filter_audio(steady(read(source)),high=min(9000,19000/pitch)),pitch)
+         values = filter_audio(values,low=45 if car in ["formula","kart"] else 35,high=8500,warmth=warmth)
+-        # Low-load banks reduce intake/exhaust bark without an abrupt pitch change.
+-        write(f"{car}_{index}_load",values,[source])
+-        write(f"{car}_{index}_coast",filter_audio(values,high=2800,warmth=.15),[source],rms=.11)
++        voiced_layers.append(values)
++    anchors = {"pickup":(950,2400,4400),"classic":(1250,3200,6500),"formula":(2100,5800,11000),"kart":(1800,4700,9300)}[car]
++    orders = coherent_orders(voiced_layers[1],RATE,anchors)
++    for index,values in enumerate(voiced_layers):
++        source = layers[index][0]
++        sustained, details = engine_sustain(values,RATE,orders[index])
++        write(f"{car}_{index}_load",sustained,[source],engine_order=orders[index],loop_ready=True)
++        outputs[-1]["cycle_average"] = details
++        write(f"{car}_{index}_coast",filter_audio(sustained,high=2800,warmth=.15),[source],rms=.11,engine_order=orders[index],loop_ready=True)
++        outputs[-1]["cycle_average"] = details
+ 
+ surface_sources = {
+     "road":("Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav",800,6500),
+@@ -182,7 +196,7 @@
+     "tire":("tires_squal_loop.wav",450,8500),
+ }
+ for name,(source,low,high) in surface_sources.items():
+-    write(name,filter_audio(steady(read(source)),low=low,high=high),[source],rms=.11)
++    write(name,filter_audio(steady(read(source),12.5),low=low,high=high),[source],rms=.11)
+ # Desert spray is granular ground foley, with the vehicle's low tonal bands removed.
+ source = "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav"
+ write("sand",filter_audio(steady(read(source)),low=1400,high=10500),[source],rms=.10)
+@@ -202,7 +216,7 @@
+ write("chassis",steady(read(source),.32),[source],looping=False,rms=.16)
+ # Original restrained wind/spray beds supplement recorded mechanical assets.
+ rng = np.random.default_rng(6102026)
+-noise = rng.normal(0,.1,RATE*4)
++noise = rng.normal(0,.1,RATE*12)
+ write("wind",filter_audio(noise,low=90,high=1600),[],rms=.07)
+ write("water",filter_audio(noise,low=500,high=6500),[],rms=.09)
+ # Continuous wet tire hiss with recorded rolling texture underneath. No rain
+@@ -220,6 +234,6 @@
+ render(read, steady, filter_audio, transpose, write, RATE)
+ replaced = {item["file"] for item in outputs}
+ outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
+-manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","compact_revision":"engine-3-stable-sustain","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++manifest = {"schema":"vehicle-audio-bank-v1","revision":"all-loops-8","compact_revision":"engine-4-stable-idle","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+ (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+ print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/scripts/compact_audio_mastering.py b/scripts/compact_audio_mastering.py
+--- a/scripts/compact_audio_mastering.py
++++ b/scripts/compact_audio_mastering.py
+@@ -79,13 +79,7 @@
+         voiced = filter_audio(transpose(recorded, factor), low=25, high=high, warmth=warmth)
+         seconds = (3.2 if index == 0 else 6.4) / factor
+         loaded = steady(voiced, seconds=seconds, start=.25 / factor)
+-        if index > 0:
+-            sustained = locked_loop(loaded, 44100, target_order)
+-            write(f"compact_{index}_load", sustained, [source], engine_order=target_order, loop_ready=True)
+-            coasting = filter_audio(sustained, low=25, high=2400, warmth=.12)
+-            write(f"compact_{index}_coast", coasting, [source], rms=.11, engine_order=target_order, loop_ready=True)
+-            continue
+-        write(f"compact_{index}_load", loaded, [source], engine_order=target_order)
+-        # Preserve the same engine order on lift-off; reduce bright exhaust detail.
+-        coasting = filter_audio(voiced, low=25, high=2400, warmth=.12)
+-        write(f"compact_{index}_coast", steady(coasting, seconds=seconds, start=.25 / factor), [source], rms=.11, engine_order=target_order)
++        sustained = locked_loop(loaded, 44100, target_order)
++        write(f"compact_{index}_load", sustained, [source], engine_order=target_order, loop_ready=True)
++        coasting = filter_audio(sustained, low=25, high=2400, warmth=.12)
++        write(f"compact_{index}_coast", coasting, [source], rms=.11, engine_order=target_order, loop_ready=True)
+diff --git a/scripts/audio_loop_mastering.py b/scripts/audio_loop_mastering.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/audio_loop_mastering.py
+@@ -0,0 +1,96 @@
++"""Offline cyclic mastering for steady engines and continuous surface textures."""
++import math
++import numpy as np
++
++
++def dominant_order(values, rate):
++    frequencies = np.fft.rfftfreq(len(values), 1 / rate)
++    spectrum = abs(np.fft.rfft(values * np.hanning(len(values))))
++    indexes = np.flatnonzero((frequencies > 24) & (frequencies < 1600))
++    index = indexes[np.argmax(spectrum[indexes])]
++    correction = .5 * (spectrum[index-1] - spectrum[index+1]) / (spectrum[index-1] - 2*spectrum[index] + spectrum[index+1])
++    return float((index + correction) * rate / len(values))
++
++
++def recorded_cycle(values, rate, order):
++    frequencies = np.fft.fftfreq(len(values), 1 / rate)
++    band = (frequencies > order * .85) & (frequencies < order * 1.15)
++    analytic = np.fft.ifft(np.where(band, np.fft.fft(values)*2, 0))
++    phase = np.unwrap(np.angle(analytic)) / (2*np.pi)
++    grid = np.arange(1024) / 1024
++    # Old engine masters contain acceleration/stop transients. Collect only
++    # complete forward-moving cycles with plausible duration and audible energy.
++    boundaries = np.r_[0, np.flatnonzero(np.diff(phase)<=0)+1, len(phase)]
++    cycles = []
++    floor = np.sqrt(np.mean(values**2)) * .25
++    for start, end in zip(boundaries[:-1], boundaries[1:]):
++        if end-start < rate/order: continue
++        region = phase[start:end]
++        for number in np.arange(np.ceil(region[0]), np.floor(region[-1])):
++            begin = int(np.searchsorted(region, number))
++            finish = int(np.searchsorted(region, number+1))
++            duration = (finish-begin) / rate
++            if not .75/order < duration < 1.3/order: continue
++            waveform = np.interp(number+grid, region, values[start:end])
++            if np.sqrt(np.mean(waveform**2)) < floor: continue
++            cycles.append(waveform)
++    if len(cycles)<30:
++        raise ValueError(f"Only {len(cycles)} usable recorded engine cycles")
++    return np.mean(cycles, axis=0), len(cycles)
++
++
++def engine_sustain(values, rate, target, seconds=8):
++    source_order = dominant_order(values, rate)
++    cycle, count = recorded_cycle(values, rate, source_order)
++    frames = round(seconds*rate)
++    if abs(target*seconds-round(target*seconds))>1e-8:
++        raise ValueError("Engine sustain must contain whole firing cycles")
++    grid = np.arange(len(cycle))/len(cycle)
++    tonal = np.interp(np.arange(frames,dtype=float)*target/rate%1, np.r_[grid,1], np.r_[cycle,cycle[0]])
++    # Preserve broad mechanical/air colour without replaying narrow wandering
++    # tones or isolated source attacks. Original deterministic offline noise.
++    hz = np.fft.rfftfreq(len(values),1/rate)
++    power = abs(np.fft.rfft(values))**2
++    edges = np.arange(0,rate/2+100,100)
++    density = np.array([np.mean(power[(hz>=low)&(hz<high)]) for low,high in zip(edges[:-1],edges[1:])])
++    output_hz = np.fft.rfftfreq(frames,1/rate)
++    shape = np.sqrt(np.interp(output_hz,(edges[:-1]+edges[1:])/2,density))
++    shape *= 1-np.exp(-(output_hz/max(400,target*2))**4)
++    # Keep the fundamental band purely recorded-cycle tone. Noise in this
++    # band can reintroduce low-rate phase modulation at a strong engine order.
++    shape[(output_hz>target*.85)&(output_hz<target*1.15)] = 0
++    rng = np.random.default_rng(11102026+round(target*1000))
++    noise = np.fft.irfft(np.fft.rfft(rng.normal(0,1,frames))*shape,n=frames)
++    noise *= .16*np.sqrt(np.mean(tonal**2))/max(np.sqrt(np.mean(noise**2)),1e-12)
++    return tonal+noise, {"source_order_hz":source_order,"target_order_hz":target,"averaged_cycles":count}
++
++
++def crossfade(values, rate, seconds=.5):
++    overlap = min(round(seconds*rate),len(values)//6)
++    head, tail = values[:overlap],values[-overlap:]
++    correlation = float(np.clip(np.dot(head,tail)/max(np.linalg.norm(head)*np.linalg.norm(tail),1e-12),-.85,.99))
++    ramp = .5-.5*np.cos(np.linspace(0,np.pi,overlap))
++    normalizer = np.sqrt((1-ramp)**2+ramp**2+2*correlation*ramp*(1-ramp))
++    joined = (tail*(1-ramp)+head*ramp)/normalizer
++    return np.r_[values[overlap:-overlap],joined]
++
++
++def level_texture(values, rate):
++    # Circular 100-ms energy shaping removes repeated coarse clumps, while
++    # retaining short waveform detail. Runtime movement still sets intensity.
++    window = round(.1*rate)
++    half = window//2
++    padded = np.r_[values[-half:],values,values[:window-half]]
++    cumulative = np.r_[0,np.cumsum(padded**2)]
++    rms = np.sqrt(np.maximum((cumulative[window:]-cumulative[:-window])[:len(values)]/window,1e-12))
++    target = float(np.median(rms))
++    gain = np.clip(target/np.maximum(rms,target*.2),.3,3.0)
++    return values*gain
++
++
++def coherent_orders(mid_values, rate, anchors):
++    # Quantize one common order/RPM ratio so all three eight-second banks have
++    # whole cycles and agree during a live neighboring-layer crossfade.
++    divisor = math.gcd(*anchors)
++    quantum = round(dominant_order(mid_values,rate)/anchors[1]*divisor*8)
++    return [anchor*quantum/(divisor*8) for anchor in anchors]
+diff --git a/scripts/surface_audio_mastering.py b/scripts/surface_audio_mastering.py
+--- a/scripts/surface_audio_mastering.py
++++ b/scripts/surface_audio_mastering.py
+@@ -1,5 +1,6 @@
+ """Granular rolling/spray and body-impact design from pinned CC0 recordings."""
+ import numpy as np
++from audio_loop_mastering import crossfade
+ 
+ 
+ def render(read, steady, filter_audio, transpose, write, rate):
+@@ -20,15 +21,16 @@
+     grass = "Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav"
+     # Match the granular tire noise and chassis rumble independently. Remove
+     # engine harmonics from the dirty-ground master, retain gravel transients.
+-    rolling = unit(filter_audio(steady(read(gravel), 5.8), low=85, high=1400))
++    rolling = unit(filter_audio(steady(read(gravel), 16.5), low=85, high=1400))
+     write("sand_roll", rolling, [gravel], rms=.13)
+-    spray = unit(filter_audio(steady(read(gravel), 5.8), low=1050, high=8800))
++    spray = unit(filter_audio(steady(read(gravel), 16.5), low=1050, high=8800))
+     dirt = unit(filter_audio(steady(read(dirty), 5.8), low=1900, high=8500))
+     # Avoid a bright constant hiss; blend granular recorded driving with the
+     # sand swish, no footfall pulse and no synthesized oscillator.
+-    size = min(len(spray), len(dirt))
++    dirt = np.resize(crossfade(dirt,rate),len(spray))
++    size = len(spray)
+     write("sand", spray[:size] * .82 + dirt[:size] * .18, [gravel, dirty], rms=.14)
+-    write("loose", filter_audio(steady(read(gravel), 5.8), low=180, high=6800), [gravel], rms=.14)
++    write("loose", filter_audio(steady(read(gravel), 16.5), low=180, high=6800), [gravel], rms=.14)
+     write("grass", filter_audio(steady(read(grass), 5.8), low=180, high=5800), [grass], rms=.14)
+     # Individual stone contacts: separate attacks from a real stone-on-surface
+     # recording. High-pass plus short damped tails evokes underside metal taps.
+@@ -50,7 +52,7 @@
+     # overlapping short stone grains offline; never schedule sparse impacts
+     # or hundreds of AudioStreamPlayers in the game.
+     rng = np.random.default_rng(8102026)
+-    count = rate * 10
++    count = rate * 18
+     cloud = np.zeros(count, dtype=np.float64)
+     grains = []
+     for offset in selected:
+@@ -76,7 +78,7 @@
+     target = float(np.median(envelope))
+     gain = np.clip(target/np.maximum(envelope,target*.35),.45,2.0)
+     cloud *= np.interp(np.arange(count),np.arange(len(gain))*hop+hop*.5,gain)
+-    granular = filter_audio(steady(read(gravel),10.0),low=800,high=4800)
++    granular = filter_audio(steady(read(gravel),18.0),low=800,high=4800)
+     granular = granular[:count]
+     cloud /= max(np.sqrt(np.mean(cloud**2)),1e-8)
+     granular /= max(np.sqrt(np.mean(granular**2)),1e-8)
+diff --git a/scripts/build_storm_rain.py b/scripts/build_storm_rain.py
+--- a/scripts/build_storm_rain.py
++++ b/scripts/build_storm_rain.py
+@@ -4,6 +4,7 @@
+ import json
+ import wave
+ import numpy as np
++from audio_loop_mastering import crossfade
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ SOURCE = ROOT / "build/storm_rain_sources"
+@@ -36,10 +37,7 @@
+     # quiet. Gentle peak control retains the flow while matching the old level.
+     knee = max(np.sqrt(np.mean(values**2))*4.0,1e-8)
+     values = np.tanh(values/knee)*knee
+-    overlap = RATE
+-    ramp = .5-.5*np.cos(np.linspace(0,np.pi,overlap))
+-    joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
+-    values = np.concatenate([values[overlap:-overlap],joined])
++    values = crossfade(values,RATE,seconds=1.0)
+     values -= values.mean()
+     values *= min(.055/max(np.sqrt(np.mean(values**2)),1e-8),.30/max(np.max(np.abs(values)),1e-8))
+     pcm = np.rint(values*32767).astype('<i2')
+@@ -55,7 +53,7 @@
+         source_sha256=hashlib.sha256(data).hexdigest(),decoded_sha256=meta['sha256'],quality='owner MP3 decoded by pinned Godot4.7.2',sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+         source_seconds=meta['source_seconds'],source_start_seconds=20,source_excerpt_seconds=21,
+         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
+-        edits='20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s cosine cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers',
++        edits='20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s correlation-aware power-preserving cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers',
+         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+     (OUT/'storm_rain_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+     print(json.dumps(manifest,indent=2))
+diff --git a/scripts/generate_storm_audio.py b/scripts/generate_storm_audio.py
+--- a/scripts/generate_storm_audio.py
++++ b/scripts/generate_storm_audio.py
+@@ -1,9 +1,12 @@
+-"""Original storm ambience. Offline generation; no third-party assets/dependencies."""
++"""Original storm ambience. NumPy is a build-only cyclic mastering tool."""
+ from pathlib import Path
+ import math
+ import random
+ import struct
+ import wave
++import argparse
++import numpy as np
++from audio_loop_mastering import crossfade
+ 
+ RATE = 22050
+ OUT = Path(__file__).resolve().parents[1] / "game/assets/audio"
+@@ -26,20 +29,24 @@
+             envelope *= min(1, (duration - t) / 0.6)
+             value = (slow * 3.4 + mid * 0.35 + math.sin(t * math.tau * 47) * 0.09) * envelope
+         else:
+-            # Low-level continuous hiss with soft attacks at the loop seam.
+-            envelope = min(1, t / 0.025, (duration - t) / 0.025)
+-            value = (mid * 0.8 + noise * 0.18) * envelope
++            value = mid * 0.8 + noise * 0.18
+         value = math.tanh(value) * 0.7
+         peak = max(peak, abs(value))
+         data.extend(struct.pack('<h', round(value * 32767)))
++    if not thunder:
++        values = crossfade(np.frombuffer(data,dtype='<i2').astype(float)/32768,RATE)
++        data = np.rint(values*32767).astype('<i2').tobytes()
+     with wave.open(str(OUT / name), 'wb') as f:
+         f.setnchannels(1)
+         f.setsampwidth(2)
+         f.setframerate(RATE)
+         f.writeframes(data)
+-    print(name, 'seconds=', duration, 'peak=', round(peak, 4))
++    print(name, 'seconds=', len(data)/(RATE*2), 'peak=', round(peak, 4))
+ 
+ 
+ if __name__ == '__main__':
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--rain-only',action='store_true',help='Repair the retained rain loop without regenerating thunder')
++    args = parser.parse_args()
+     write('storm_rain.wav', 6.0, False)
+-    write('storm_thunder.wav', 4.5, True)
++    if not args.rain_only: write('storm_thunder.wav', 4.5, True)
+diff --git a/scripts/review_audio_loops.py b/scripts/review_audio_loops.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_audio_loops.py
+@@ -0,0 +1,152 @@
++"""Complete PCM/Ogg loop inventory, waveform/phase audit and wrap listening pack."""
++from pathlib import Path
++import argparse
++import hashlib
++import json
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/all-audio-loops-2026-10-10"
++DECODE = ROOT / "build/audio_loop_audit"
++
++
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate, channels = handle.getframerate(), handle.getnchannels()
++        assert handle.getsampwidth()==2
++        x = np.frombuffer(handle.readframes(handle.getnframes()),"<i2").astype(float)/32768
++    return x.reshape(-1,channels),rate
++
++
++def measure(x,rate):
++    width = round(.04*rate)
++    levels = np.array([np.sqrt(np.mean(block**2)) for block in np.array_split(x,max(1,len(x)//width))])
++    median = float(np.median(levels))
++    seam = float(np.max(abs(x[0]-x[-1])))
++    derivative = float(np.quantile(abs(np.diff(x,axis=0)),.9995))
++    return {"seconds":len(x)/rate,"channels":x.shape[1],"peak":float(np.max(abs(x))),
++            "rms":float(np.sqrt(np.mean(x**2))),"minimum_40ms_relative_db":float(20*np.log10(max(min(levels),1e-12)/max(median,1e-12))),
++            "maximum_40ms_relative_db":float(20*np.log10(max(levels)/max(median,1e-12))),
++            "seam_step":seam,"reference_step":derivative,"seam_ratio":seam/max(derivative,1e-12),
++            "dropout_windows":int(np.sum(levels<max(.0003,median*.04)))}
++
++
++def phase_span(x,rate,target):
++    mono=x.mean(axis=1)
++    hz=np.fft.fftfreq(len(mono),1/rate)
++    band=(hz>target*.9)&(hz<target*1.1)
++    z=np.fft.ifft(np.where(band,np.fft.fft(mono)*2,0))
++    phase=np.unwrap(np.angle(z))
++    rates=np.gradient(phase)*rate/(2*np.pi)
++    window=round(.02*rate)
++    cumulative=np.r_[0,np.cumsum(rates)]
++    smooth=(cumulative[window:]-cumulative[:-window])/window
++    low,high=np.percentile(smooth,[5,95])
++    return {"median_hz":float(np.median(smooth)),"p5_hz":float(low),"p95_hz":float(high),"span_hz":float(high-low)}
++
++
++def write(path,x,rate):
++    pcm=np.rint(np.clip(x,-.999,.999)*32767).astype("<i2")
++    with wave.open(str(path),"wb") as handle:
++        handle.setnchannels(x.shape[1]);handle.setsampwidth(2);handle.setframerate(rate);handle.writeframes(pcm.tobytes())
++
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--listening",action="store_true")
++    args=parser.parse_args()
++    OUT.mkdir(parents=True,exist_ok=True)
++    baseline=json.loads((OUT/"before-audio-hashes.json").read_text())
++    bank=ROOT/"game/assets/audio/vehicles"
++    manifest=json.loads((bank/"manifest.json").read_text())
++    entries=[];failures=[]
++    for item in manifest["outputs"]:
++        if not item["loop"]:continue
++        entries.append({"file":"game/assets/audio/vehicles/"+item["file"],"kind":"engine" if "engine_order_hz" in item else "texture",
++                        "target_order_hz":item.get("engine_order_hz"),"enabled":item["file"]!="wet_road.wav","shipping":True})
++    for filename,kind in [("ambience/night_cicadas.wav","ambience"),("ambience/storm_rain_recorded.wav","ambience"),("locked_in_v1/menu_theme.wav","music")]:
++        entries.append({"file":"game/assets/audio/"+filename,"kind":kind,"shipping":True,"enabled":True})
++    entries.append({"file":"game/assets/audio/storm_rain.wav","kind":"ambience","shipping":True,"enabled":False,"retained_legacy":True})
++    for entry in entries:
++        p=ROOT/entry["file"];x,rate=read(p);stats=measure(x,rate)
++        entry.update(stats,rate=rate,sha256=hashlib.sha256(p.read_bytes()).hexdigest())
++        old=OUT/"before"/entry["file"]
++        if old.exists():
++            a,r=read(old);entry["before"]=measure(a,r)
++        if stats["seam_step"]>stats["reference_step"]*1.5+3/32768:failures.append(entry["file"]+": discontinuous source seam")
++        if entry["kind"]!="music" and stats["dropout_windows"]:failures.append(entry["file"]+": sustained-loop dropout")
++        if stats["peak"]>=.9:failures.append(entry["file"]+": inadequate headroom")
++        if entry["kind"]=="engine":
++            entry["phase"]=phase_span(x,rate,entry["target_order_hz"])
++            if entry["phase"]["span_hz"]>.3:failures.append(entry["file"]+": repeating pitch variation")
++            if min(abs(entry["phase"]["median_hz"]-entry["target_order_hz"]),1)>.05:failures.append(entry["file"]+": incoherent playback order")
++            if stats["minimum_40ms_relative_db"] < -1.1:failures.append(entry["file"]+": repeating engine envelope dip")
++        if args.listening:
++            label=p.stem
++            # Tail/head and one full repeat expose source seams and recurrent events.
++            context=min(round(2*rate),len(x)//2)
++            excerpt=np.r_[x[-context:],x[:context],x[-context:],x[:context]]
++            write(OUT/("after-"+label+"-wrap.wav"),excerpt,rate)
++            if old.exists():
++                a,r=read(old);context=min(round(2*r),len(a)//2)
++                write(OUT/("before-"+label+"-wrap.wav"),np.r_[a[-context:],a[:context],a[-context:],a[:context]],r)
++    oggs=json.loads((DECODE/"decoded.json").read_text())
++    for item in oggs:
++        x=np.fromfile(DECODE/item["decoded"],dtype="<f4").reshape(-1,2).astype(float)
++        count=round(item["length"]*item["rate"])
++        body=x[:count];stats=measure(body,item["rate"])
++        actual_seam=float(np.max(abs(x[count]-x[count-1])))
++        stats["native_wrap_step"]=actual_seam
++        if actual_seam>stats["reference_step"]*1.5+.003:failures.append(item["file"]+": encoded native wrap discontinuity")
++        if not np.all(np.isfinite(x)) or stats["peak"]>=.99:failures.append(item["file"]+": nonfinite/clipped decode")
++        entry={"file":"game/"+item["file"],"kind":"music","shipping":item["shipping"],"enabled":False,"sha256":item["sha256"],"rate":item["rate"],**stats}
++        entries.append(entry)
++        if args.listening:
++            context=round(2*item["rate"])
++            # Engine decode already contains the real wrap; include its suffix.
++            write(OUT/("music-"+Path(item["decoded"]).stem+"-wrap.wav"),x[count-context:count+round(.25*item["rate"])],item["rate"])
++    assert len(entries)==85 and len({e["file"] for e in entries})==85
++    changed=[]
++    for filename,old_hash in baseline.items():
++        new_hash=hashlib.sha256((ROOT/filename).read_bytes()).hexdigest()
++        if new_hash!=old_hash:changed.append(filename)
++    loop_paths={e["file"] for e in entries}
++    assert all(p in loop_paths for p in changed),"Do not alter one-shots"
++    assert not any("locked_in_v1" in p or "score_v1" in p or "night_cicadas" in p for p in changed)
++    native=[]
++    if (OUT/"native-mixes.json").exists():
++        capture=json.loads((OUT/"native-mixes.json").read_text())
++        assert capture["failures"]==0 and len(capture["reports"])==5
++        for item in capture["reports"]:
++            values,rate=read(OUT/(item["car"]+"-native-mix.wav"))
++            assert len(values)/rate>26.5 and .02<np.max(abs(values))<.9
++            assert np.max(abs(values[-rate//2:]))==0
++            region=values[round(.5*rate):round(25.5*rate)]
++            stats=measure(region,rate)
++            assert stats["dropout_windows"]==0 and item["shifts"]==0
++            assert min(item["wraps"][i] for i in [1,2,4,5])>=2
++            native.append({**item,**stats,"paused_tail_peak":0})
++    report={"loop_count":len(entries),"pcm_loops":44,"ogg_loops":41,"shipping_loops":sum(e["shipping"] for e in entries),
++            "disabled_shipping_music":30,"retained_export_excluded_music":11,"changed_audio":changed,
++            "unchanged_audio":len(baseline)-len(changed),"entries":entries,"native_mixes":native,"failures":failures}
++    (OUT/"audit.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++    if args.listening:
++        cards=[]
++        for kind in ["engine","texture","ambience","music"]:
++            cards.append(f'<h2>{kind.capitalize()}</h2>')
++            for e in entries:
++                if e["kind"]!=kind:continue
++                p=Path(e["file"]);label=p.stem
++                after="after-"+label+"-wrap.wav" if p.suffix==".wav" else "music-"+p.parent.name+"_"+label+"-wrap.wav"
++                old="before-"+label+"-wrap.wav"
++                controls=f'<p>Before</p><audio controls preload="none" src="{old}"></audio>' if (OUT/old).exists() else ""
++                cards.append(f'<article><h3>{p.parent.name}/{label}</h3>{controls}<p>Current wrap</p><audio controls preload="none" src="{after}"></audio></article>')
++        native_cards=''.join(f'<article><h3>{item["car"].capitalize()} native mix</h3><audio controls preload="none" src="{item["car"]}-native-mix.wav"></audio></article>' for item in native)
++        page='''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>All audio loop audit</title><style>body{background:#101b27;color:#eee5d6;font:16px/1.5 system-ui;margin:0}main{max-width:900px;margin:40px auto;padding:24px}article{padding:16px;border:1px solid #405466;border-radius:10px;margin:16px 0}h2,h3{color:#ffd667}audio{width:100%}small{color:#b4bfcc}</style><main><h1>Complete loop review</h1><p>85 looping assets, including retained legacy rain. PCM excerpts cross the wrap twice. Music excerpts use the pinned decoder’s actual wrap. Natural texture and subjective sound quality still require listening; music remains disabled during races.</p><p><a href="wind-level-matched/index.html">Level-matched wind comparison</a></p><h2>Native vehicle mixes</h2>'''+native_cards+"".join(cards)+'''<small>Vehicle/rolling masters: Nox Sound Design, Joseph SARDIN and DenisChardonnet (CC0); authored recorded-cycle sustains and original offline noise. Tire squeal: audible-edge/Tom Haigh, loop edit qubodup, CC BY 3.0; resampled, filtered, leveled, crossfaded. Cicadas: Clarisse, CC0. Rain: owner-supplied Dragon Studio filename attribution, original licence metadata unavailable. Music provenance and full source/derivative credits remain in each asset bank's NOTICE/manifest. No subjective listening or device acceptance is claimed.</small></main><script>document.querySelectorAll('audio').forEach(p=>p.addEventListener('play',()=>document.querySelectorAll('audio').forEach(q=>{if(p!==q)q.pause()})))</script></html>'''
++        (OUT/"audition.html").write_text(page,encoding="utf-8")
++    print(json.dumps({"loops":len(entries),"changed_audio":len(changed),"unchanged_audio":report["unchanged_audio"],"failures":failures},indent=2))
++    return int(bool(failures))
++
++
++if __name__=="__main__":raise SystemExit(main())
+diff --git a/game/tests/audit_audio_loops.gd b/game/tests/audit_audio_loops.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_audio_loops.gd
+@@ -0,0 +1,67 @@
++extends SceneTree
++## Offline pinned-engine loop decoder and sample-accurate PCM boundary witness.
++const OUTPUT: String = "res://../build/audio_loop_audit"
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var reports: Array[Dictionary] = []
++	for guarded: bool in [false,true]:
++		for pitch: float in [0.73,1.0,1.85]:
++			var sample := AudioStreamWAV.new()
++			sample.format = AudioStreamWAV.FORMAT_16_BITS
++			sample.mix_rate = AudioServer.get_mix_rate()
++			var pcm := PackedByteArray()
++			pcm.resize(997*2)
++			for frame: int in range(997): pcm.encode_s16(frame*2,8192)
++			sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
++			sample.loop_begin = 0
++			sample.loop_end = 997
++			if guarded: pcm.append_array(pcm.slice(0,2))
++			sample.data = pcm
++			var playback: AudioStreamPlayback = sample.instantiate_playback()
++			playback.start()
++			var mixed: PackedVector2Array = playback.mix_audio(pitch,20000)
++			var minimum: float = 1.0
++			var glitches: int = 0
++			for index: int in range(500,mixed.size()):
++				minimum = minf(minimum,mixed[index].x)
++				if mixed[index].x<0.249: glitches += 1
++			reports.append({"guard":guarded,"pitch":pitch,"minimum":minimum,"glitch_samples":glitches})
++			print("PCM_BOUNDARY: ",reports[-1])
++	var file := FileAccess.open(OUTPUT.path_join("endpoint-probe.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(reports,"\t"))
++	file.close()
++	if OS.get_cmdline_user_args().has("--probe-only"):
++		quit(0)
++		return
++	var decoded: Array[Dictionary] = []
++	for family: String in ["locked_in_v1","score_v1"]:
++		var folder: String = "res://assets/audio/"+family
++		for filename: String in DirAccess.get_files_at(folder):
++			if not filename.ends_with(".ogg"): continue
++			var source: String = folder.path_join(filename)
++			var stream: AudioStreamOggVorbis = (load(source) as AudioStreamOggVorbis).duplicate() as AudioStreamOggVorbis
++			stream.loop = true
++			stream.loop_offset = 0
++			var playback: AudioStreamPlayback = stream.instantiate_playback()
++			playback.start()
++			var samples: PackedVector2Array = playback.mix_audio(1.0,ceili((stream.get_length()+0.25)*AudioServer.get_mix_rate()))
++			var bytes: PackedByteArray = samples.to_byte_array()
++			if bytes.size()!=samples.size()*8:
++				push_error("Packed vector size differs from float32 stereo")
++				quit(1)
++				return
++			var label: String = family+"_"+filename.trim_suffix(".ogg")
++			file = FileAccess.open(OUTPUT.path_join(label+".f32"),FileAccess.WRITE)
++			file.store_buffer(bytes)
++			file.close()
++			decoded.append({"file":source.trim_prefix("res://"),"decoded":label+".f32","rate":AudioServer.get_mix_rate(),"length":stream.get_length(),"frames":samples.size(),"sha256":FileAccess.get_sha256(source),"shipping":family=="locked_in_v1","enabled":false})
++			print("LOOP_DECODE: ",label)
++	file = FileAccess.open(OUTPUT.path_join("decoded.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(decoded,"\t"))
++	file.close()
++	print("LOOP_AUDIT_DECODE: ",decoded.size()," Ogg loops")
++	quit(0)
+diff --git a/game/tests/audit_audio_loops.gd.uid b/game/tests/audit_audio_loops.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_audio_loops.gd.uid
+@@ -0,0 +1 @@
++uid://dqogbtdv68i7u
+diff --git a/game/tests/test_audio_loops.gd b/game/tests/test_audio_loops.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_audio_loops.gd
+@@ -0,0 +1,75 @@
++extends SceneTree
++## A real interpolation regression, complete runtime PCM inventory and decode bounds.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func verify(source: AudioStreamWAV, prepared: AudioStreamWAV, label: String) -> void:
++	var frame_bytes: int = 4 if source.stereo else 2
++	var original: PackedByteArray = source.data
++	check(prepared.loop_mode==AudioStreamWAV.LOOP_FORWARD and prepared.loop_begin==0,"full cyclic mode: "+label)
++	check(prepared.loop_end==original.size()/frame_bytes,"exact source frame count: "+label)
++	check(prepared.data.size()==original.size()+frame_bytes,"one interpolation frame: "+label)
++	check(prepared.data.slice(0,original.size())==original and prepared.data.slice(original.size())==original.slice(0,frame_bytes),"unchanged waveform plus exact cyclic endpoint: "+label)
++
++func run() -> void:
++	for stereo: bool in [false,true]:
++		var source := AudioStreamWAV.new()
++		source.format = AudioStreamWAV.FORMAT_16_BITS
++		source.mix_rate = AudioServer.get_mix_rate()
++		source.stereo = stereo
++		var frame_bytes: int = 4 if stereo else 2
++		var pcm := PackedByteArray()
++		pcm.resize(997*frame_bytes)
++		for frame: int in range(997):
++			pcm.encode_s16(frame*frame_bytes,8192)
++			if stereo: pcm.encode_s16(frame*frame_bytes+2,-8192)
++		source.data = pcm
++		var prepared: AudioStreamWAV = PcmAudioLoop.prepare(source)
++		verify(source,prepared,"constant stereo="+str(stereo))
++		check(source.data==pcm and source.loop_mode==AudioStreamWAV.LOOP_DISABLED,"preparation leaves original resource intact")
++		for pitch: float in [0.35,0.73,1.0,1.85,2.85]:
++			var playback: AudioStreamPlayback = prepared.instantiate_playback()
++			playback.start()
++			var mixed: PackedVector2Array = playback.mix_audio(pitch,20000)
++			var maximum_error: float = 0.0
++			for frame: int in range(500,mixed.size()):
++				maximum_error = maxf(maximum_error,absf(mixed[frame].x-0.25))
++				maximum_error = maxf(maximum_error,absf(mixed[frame].y-(-0.25 if stereo else 0.25)))
++			check(maximum_error<0.00005,"no sample-level wrap dip at pitch %.2f/stereo=%s"%[pitch,stereo])
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(VehicleAudio.BANK+"manifest.json"))
++	var loops: int = 0
++	for clip: Dictionary in manifest.outputs:
++		var source: AudioStreamWAV = load(VehicleAudio.BANK+str(clip.file))
++		if bool(clip.loop):
++			loops += 1
++			verify(source,audio._stream(str(clip.file).trim_suffix(".wav"),true),str(clip.file))
++		else:
++			check(source.loop_mode==AudioStreamWAV.LOOP_DISABLED,"incident is still a one-shot: "+str(clip.file))
++	check(loops==40,"all forty vehicle looping masters covered, including deferred wet asset")
++	verify(load("res://assets/audio/vehicles/tire.wav"),TireAudio.make_scrub(),"legacy tire diagnostic")
++	var legacy_rain: AudioStreamWAV = load("res://assets/audio/storm_rain.wav")
++	verify(legacy_rain,PcmAudioLoop.prepare(legacy_rain),"retained inactive rain")
++	var world: GameSoundtrack = root.get_node("AudioWorld")
++	verify(load(world.BANK+"menu_theme.wav"),world._menu_loop(),"menu stereo")
++	var night := NightAmbience.new()
++	root.add_child(night)
++	night.configure("night_city")
++	verify(load("res://assets/audio/ambience/night_cicadas.wav"),night.player.stream,"night ambience")
++	var storm := StormWeather.new()
++	root.add_child(storm)
++	verify(load("res://assets/audio/ambience/storm_rain_recorded.wav"),storm.rain_audio.stream,"storm rain")
++	audio.free()
++	night.free()
++	storm.free()
++	print("AUDIO_LOOP_REGRESSION: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/test_audio_loops.gd.uid b/game/tests/test_audio_loops.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_audio_loops.gd.uid
+@@ -0,0 +1 @@
++uid://bjaft7mv43lbr
+diff --git a/game/tests/capture_audio_loop_mix.gd b/game/tests/capture_audio_loop_mix.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_audio_loop_mix.gd
+@@ -0,0 +1,67 @@
++extends SceneTree
++## Sustained actual vehicle presentation through the native mixer; no race writes.
++const OUTPUT: String = "res://../docs/evidence/all-audio-loops-2026-10-10"
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var bus: int = AudioServer.get_bus_index("Engine")
++	var recorder := AudioEffectRecord.new()
++	recorder.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,recorder)
++	var reports: Array[Dictionary] = []
++	for id: String in VehicleCatalog.IDS:
++		var audio := VehicleAudio.new()
++		root.add_child(audio)
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		audio.configure(id,config)
++		var rpm: float = sqrt(audio.model.anchors.y*audio.model.anchors.z)
++		audio.model.rpm = rpm
++		audio.model.gear = 1 if id=="kart" else 3
++		audio.model.load_amount = 0.65
++		var top: float = config.maximum_speed*(1.04 if id=="kart" else 0.71)
++		var speed: float = (rpm-audio.model.idle_rpm)/(audio.model.redline_rpm-audio.model.idle_rpm)*top
++		var state := VehicleState.new()
++		state.velocity = Vector2(0,speed)
++		var elapsed: float = 0.0
++		var clock_us: int = Time.get_ticks_usec()
++		var wraps: Array[int] = [0,0,0,0,0,0]
++		var positions: Array[float] = [0,0,0,0,0,0]
++		recorder.set_recording_active(true)
++		while elapsed<27.0:
++			await process_frame
++			var now: int = Time.get_ticks_usec()
++			var dt: float = float(now-clock_us)/1000000.0
++			clock_us = now
++			elapsed += dt
++			state.tick += 1
++			var canonical: Array = state.snapshot()
++			audio.present(state,DriveFrame.sample(0,0.65,0),null,dt,elapsed>=26.0)
++			if state.snapshot()!=canonical: failures += 1
++			var players: Array[AudioStreamPlayer] = audio.engine_load+audio.engine_coast
++			for index: int in range(players.size()):
++				var position: float = players[index].get_playback_position()
++				if position+0.1<positions[index]: wraps[index] += 1
++				positions[index] = position
++		recorder.set_recording_active(false)
++		var recording: AudioStreamWAV = recorder.get_recording()
++		if recording==null or recording.get_length()<26.5: failures += 1
++		elif recording.save_to_wav(OUTPUT.path_join(id+"-native-mix.wav"))!=OK: failures += 1
++		# Both audible neighboring layers crossed multiple real boundaries.
++		for index: int in [1,2,4,5]:
++			if wraps[index]<2: failures += 1
++		reports.append({"car":id,"rpm":audio.model.rpm,"shifts":audio.model.shifts,"wraps":wraps})
++		if audio.model.shifts!=0: failures += 1
++		audio.free()
++		print("NATIVE_LOOP_MIX: ",reports[-1])
++	AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	var file := FileAccess.open(OUTPUT.path_join("native-mixes.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"reports":reports,"failures":failures},"\t"))
++	file.close()
++	print("ALL_NATIVE_LOOP_MIXES: failures=",failures)
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_audio_loop_mix.gd.uid b/game/tests/capture_audio_loop_mix.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_audio_loop_mix.gd.uid
+@@ -0,0 +1 @@
++uid://bnul23fp4r7g6
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -1,6 +1,7 @@
+ {
+   "schema": "vehicle-audio-bank-v1",
+-  "revision": "wet-road-7",
++  "revision": "all-loops-8",
++  "compact_revision": "engine-4-stable-idle",
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+@@ -221,11 +222,12 @@
+         "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.4404535147392292,
++      "seconds": 8.0,
+       "rms_dbfs": -17.077439286435236,
+-      "peak_dbfs": -2.4147626938587936,
+-      "seam_step": 0.014754454548217853,
+-      "sha256": "d8e58eb73264be5df2808a76848b4796dcf625646a688b19be613f2751bc2d4d"
++      "peak_dbfs": -8.453884251128516,
++      "seam_step": 0.000155551235651738,
++      "sha256": "fbd7f675b2339250f81a93a4cd073f7153bcff47ddd2aab1cb037aee3009ab74",
++      "engine_order_hz": 40.0
+     },
+     {
+       "file": "compact_0_coast.wav",
+@@ -233,11 +235,12 @@
+         "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.4404308390022678,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -4.736334719954992,
+-      "seam_step": 0.010713671526217317,
+-      "sha256": "4bd1498437940d58259e8638b3ef1e1c5bc552465edee459e7261c35109440b1"
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -10.817639078249808,
++      "seam_step": 0.0005497607113863559,
++      "sha256": "739886067f9f404282292fa80193d9933af7277dd9d817ef2d5b39b4beee2b23",
++      "engine_order_hz": 40.0
+     },
+     {
+       "file": "compact_1_load.wav",
+@@ -249,7 +252,8 @@
+       "rms_dbfs": -17.077439286435236,
+       "peak_dbfs": -10.03080058099928,
+       "seam_step": 0.010999889466284551,
+-      "sha256": "14bc34e17b6262a9e131016c36ab84af1032007ddbea9e11e8032004750c36c4"
++      "sha256": "14bc34e17b6262a9e131016c36ab84af1032007ddbea9e11e8032004750c36c4",
++      "engine_order_hz": 100.0
+     },
+     {
+       "file": "compact_1_coast.wav",
+@@ -261,7 +265,8 @@
+       "rms_dbfs": -19.1721462968355,
+       "peak_dbfs": -12.506999878303555,
+       "seam_step": 0.0034257092156517177,
+-      "sha256": "6e0a386868fb7f12e458510b3a8f1f85482452337260f040396f2faadb58baeb"
++      "sha256": "6e0a386868fb7f12e458510b3a8f1f85482452337260f040396f2faadb58baeb",
++      "engine_order_hz": 100.0
+     },
+     {
+       "file": "compact_2_load.wav",
+@@ -273,7 +278,8 @@
+       "rms_dbfs": -17.07743928643524,
+       "peak_dbfs": -9.761449627332642,
+       "seam_step": 0.0009079649374523768,
+-      "sha256": "6dda1893b14ead69fb7e1edf3178139334ddf660a45cd7bd359663e1103512b7"
++      "sha256": "6dda1893b14ead69fb7e1edf3178139334ddf660a45cd7bd359663e1103512b7",
++      "engine_order_hz": 200.0
+     },
+     {
+       "file": "compact_2_coast.wav",
+@@ -285,7 +291,8 @@
+       "rms_dbfs": -19.172146296835496,
+       "peak_dbfs": -12.791962618823703,
+       "seam_step": 0.00020982265825306157,
+-      "sha256": "ad696b4a7e78652718c530f01b722128db397efb4951dbbd3522f67b128e423b"
++      "sha256": "ad696b4a7e78652718c530f01b722128db397efb4951dbbd3522f67b128e423b",
++      "engine_order_hz": 200.0
+     },
+     {
+       "file": "pickup_0_load.wav",
+@@ -293,299 +300,444 @@
+         "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.4555328798185942,
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -10.744269789841802,
++      "seam_step": 0.001510092856428863,
++      "sha256": "d283ac93e623e086d25a876774aa357563be2272ab5f01804fcdfe48ab1ddf54",
++      "engine_order_hz": 47.5,
++      "cycle_average": {
++        "source_order_hz": 105.5091013185499,
++        "target_order_hz": 47.5,
++        "averaged_cycles": 369
++      }
++    },
++    {
++      "file": "pickup_0_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.132183474833457,
++      "seam_step": 0.0009015074879143437,
++      "sha256": "517f09d7de831922dc332b9ecd73313307d8f7bfd3f69605d9f33c90a87a8c87",
++      "engine_order_hz": 47.5,
++      "cycle_average": {
++        "source_order_hz": 105.5091013185499,
++        "target_order_hz": 47.5,
++        "averaged_cycles": 369
++      }
++    },
++    {
++      "file": "pickup_1_load.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.077439286435236,
+-      "peak_dbfs": -5.231139880355073,
+-      "seam_step": 0.006819266363508908,
+-      "sha256": "a6d3afb169e843fb9502864a6fe59bb064ebddc20fc57ca843cb59cbe8e8e734"
+-    },
+-    {
+-      "file": "pickup_0_coast.wav",
+-      "sources": [
+-        "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.4555328798185942,
++      "peak_dbfs": -10.351396672566878,
++      "seam_step": 0.0015876306257738837,
++      "sha256": "8aa9ac186c0bb7076578751c6a8ea34441b180e9e1e665a244b0f2ebef22674c",
++      "engine_order_hz": 120.0,
++      "cycle_average": {
++        "source_order_hz": 118.52076798004853,
++        "target_order_hz": 120.0,
++        "averaged_cycles": 454
++      }
++    },
++    {
++      "file": "pickup_1_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -12.78208872464942,
++      "seam_step": 0.0005642701852675569,
++      "sha256": "3699a76f0469c11ba5a8f1047f4c96455da58d94650350da12d9e3185e83355a",
++      "engine_order_hz": 120.0,
++      "cycle_average": {
++        "source_order_hz": 118.52076798004853,
++        "target_order_hz": 120.0,
++        "averaged_cycles": 454
++      }
++    },
++    {
++      "file": "pickup_2_load.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -10.598226425279538,
++      "seam_step": 0.005641925481703586,
++      "sha256": "b7c87ef96945743e4703391908c05906620c56c6d483005f9b294e941f874e55",
++      "engine_order_hz": 220.0,
++      "cycle_average": {
++        "source_order_hz": 202.18216276873468,
++        "target_order_hz": 220.0,
++        "averaged_cycles": 454
++      }
++    },
++    {
++      "file": "pickup_2_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -19.172146296835496,
+-      "peak_dbfs": -7.489507082480939,
+-      "seam_step": 0.003049403266277631,
+-      "sha256": "463d0dea6d0edf8a6fd54156cf976083d46d811017bdf14e501d6c5b7cb9a3b8"
+-    },
+-    {
+-      "file": "pickup_1_load.wav",
+-      "sources": [
+-        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.6646938775510205,
++      "peak_dbfs": -13.194675797313185,
++      "seam_step": 0.0006388061319917426,
++      "sha256": "c5a722428e032d6a50197b169ae98d0d5c09fc12bc25993ed250376159573fb9",
++      "engine_order_hz": 220.0,
++      "cycle_average": {
++        "source_order_hz": 202.18216276873468,
++        "target_order_hz": 220.0,
++        "averaged_cycles": 454
++      }
++    },
++    {
++      "file": "classic_0_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -3.9332733438682084,
+-      "seam_step": 0.006588660613428769,
+-      "sha256": "740a994648a0f6585d3985ad76018798fb43a2ff475dc537b88601f421182be5"
+-    },
+-    {
+-      "file": "pickup_1_coast.wav",
+-      "sources": [
+-        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.6646938775510205,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -6.134491409467538,
+-      "seam_step": 0.00013078741219761658,
+-      "sha256": "83bd91af574ca2c051a23d3e971f70a15224ab9905ad2b13fac58ae1394ac67b"
+-    },
+-    {
+-      "file": "pickup_2_load.wav",
+-      "sources": [
+-        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 2.106893424036281,
++      "peak_dbfs": -11.008628269289204,
++      "seam_step": 0.0006439549269577904,
++      "sha256": "93a4a5fda9e328aed27a168aca330b64b8c128115ddee06c82e39e2d20699ec8",
++      "engine_order_hz": 78.125,
++      "cycle_average": {
++        "source_order_hz": 129.20338650494767,
++        "target_order_hz": 78.125,
++        "averaged_cycles": 380
++      }
++    },
++    {
++      "file": "classic_0_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.272637007377421,
++      "seam_step": 0.00020662491649106607,
++      "sha256": "730f5cbf657d124140b1debf4256616bc7338007ab8cb8b2d91b099d54fcb14d",
++      "engine_order_hz": 78.125,
++      "cycle_average": {
++        "source_order_hz": 129.20338650494767,
++        "target_order_hz": 78.125,
++        "averaged_cycles": 380
++      }
++    },
++    {
++      "file": "classic_1_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -10.965580032274147,
++      "seam_step": 0.0010592382346620854,
++      "sha256": "c3bb38fa422854229b8900c268761e02eeee999809e0667593acb564978af40b",
++      "engine_order_hz": 200.0,
++      "cycle_average": {
++        "source_order_hz": 200.26539683525112,
++        "target_order_hz": 200.0,
++        "averaged_cycles": 377
++      }
++    },
++    {
++      "file": "classic_1_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -13.341959908625679,
++      "seam_step": 0.0003114496551098328,
++      "sha256": "6a1225f1b0bdcb9b92a35c3ca30e2429f3632b876d67d12a6f64e0028f16428d",
++      "engine_order_hz": 200.0,
++      "cycle_average": {
++        "source_order_hz": 200.26539683525112,
++        "target_order_hz": 200.0,
++        "averaged_cycles": 377
++      }
++    },
++    {
++      "file": "classic_2_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -11.13179423520635,
++      "seam_step": 0.001969190996661402,
++      "sha256": "d0d1da08c61dcb3d1bf589fdfdb5dbdc8933bff185b0141bb3077b8d696bab98",
++      "engine_order_hz": 406.25,
++      "cycle_average": {
++        "source_order_hz": 297.168799186614,
++        "target_order_hz": 406.25,
++        "averaged_cycles": 377
++      }
++    },
++    {
++      "file": "classic_2_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.244445092567986,
++      "seam_step": 0.0029360735321408427,
++      "sha256": "4b6db36ea8ae048040d92ff761009614343413856a0965f93402bd976fd1b1dc",
++      "engine_order_hz": 406.25,
++      "cycle_average": {
++        "source_order_hz": 297.168799186614,
++        "target_order_hz": 406.25,
++        "averaged_cycles": 377
++      }
++    },
++    {
++      "file": "formula_0_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -10.791096262012434,
++      "seam_step": 0.0006061391644904546,
++      "sha256": "622693b89068c7558a14f98c83540fa598ab251de5b939e81af77078aa3d5e64",
++      "engine_order_hz": 68.25,
++      "cycle_average": {
++        "source_order_hz": 118.99174803188889,
++        "target_order_hz": 68.25,
++        "averaged_cycles": 252
++      }
++    },
++    {
++      "file": "formula_0_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -13.198924907758647,
++      "seam_step": 0.0008164592310971608,
++      "sha256": "79aba26a3c66f36e5b865bd92192ba3ed2755df42afcfba6c8357b1c4309436f",
++      "engine_order_hz": 68.25,
++      "cycle_average": {
++        "source_order_hz": 118.99174803188889,
++        "target_order_hz": 68.25,
++        "averaged_cycles": 252
++      }
++    },
++    {
++      "file": "formula_1_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.077439286435236,
+-      "peak_dbfs": -4.2146624984165655,
+-      "seam_step": 0.012622216414165874,
+-      "sha256": "54ed2e5f707f6e50894baef6d44819de5634419615bf59b51e7025d800c27cb6"
+-    },
+-    {
+-      "file": "pickup_2_coast.wav",
+-      "sources": [
+-        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 2.106893424036281,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -6.502278431788104,
+-      "seam_step": 0.006699951002196131,
+-      "sha256": "bb7c9b654513b51b5f1dbe6386fa463cf91130efc956d829a213e60ed38376a7"
+-    },
+-    {
+-      "file": "classic_0_load.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.0999773242630386,
++      "peak_dbfs": -10.685179850304598,
++      "seam_step": 9.975764652223051e-05,
++      "sha256": "22ccc1facd6715150263e24321643219c2df7320e369d429e8b1adcea5d38a00",
++      "engine_order_hz": 188.5,
++      "cycle_average": {
++        "source_order_hz": 188.40384592531237,
++        "target_order_hz": 188.5,
++        "averaged_cycles": 253
++      }
++    },
++    {
++      "file": "formula_1_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.481327943015732,
++      "seam_step": 0.0009612346482823497,
++      "sha256": "a080958669a2704bb8d00be6513a636eb79041dca6c5822a0c3f2d020308e5e6",
++      "engine_order_hz": 188.5,
++      "cycle_average": {
++        "source_order_hz": 188.40384592531237,
++        "target_order_hz": 188.5,
++        "averaged_cycles": 253
++      }
++    },
++    {
++      "file": "formula_2_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -17.077439286435236,
++      "peak_dbfs": -10.682961412195898,
++      "seam_step": 0.0008971712745873828,
++      "sha256": "5a59187c8ef879bd85c4781f472aeb5024dba3fb5369c7304761737810dd34ff",
++      "engine_order_hz": 357.5,
++      "cycle_average": {
++        "source_order_hz": 287.56378140009423,
++        "target_order_hz": 357.5,
++        "averaged_cycles": 253
++      }
++    },
++    {
++      "file": "formula_2_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -12.897668114662482,
++      "seam_step": 0.001857378972790008,
++      "sha256": "a3fdd913bf32cf90d6c0264644aa095e6f2827eeee02b2e976429ff801db6fb6",
++      "engine_order_hz": 357.5,
++      "cycle_average": {
++        "source_order_hz": 287.56378140009423,
++        "target_order_hz": 357.5,
++        "averaged_cycles": 253
++      }
++    },
++    {
++      "file": "kart_0_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -6.243985463785747,
+-      "seam_step": 0.0013875535681632523,
+-      "sha256": "31a5f1cf2d54d99d65ae98de4486a3c9abdba37d2ec632be1a81c0a07a811a81"
+-    },
+-    {
+-      "file": "classic_0_coast.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.0999773242630386,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -8.198549735018434,
+-      "seam_step": 7.061428360330413e-05,
+-      "sha256": "cf79792a67deb7016d290e39fb9f9f55c75f51ec0a081c7cc82fba377df0198f"
+-    },
+-    {
+-      "file": "classic_1_load.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.9645124716553288,
++      "peak_dbfs": -11.046065645435387,
++      "seam_step": 0.003214637344932575,
++      "sha256": "2cd94a20bee8008271224966aa5360dc6bb8fbacf6825e6d8cdb13a468e5e881",
++      "engine_order_hz": 67.5,
++      "cycle_average": {
++        "source_order_hz": 111.59719508254861,
++        "target_order_hz": 67.5,
++        "averaged_cycles": 362
++      }
++    },
++    {
++      "file": "kart_0_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.884325945854245,
++      "seam_step": 0.00012542689473543644,
++      "sha256": "987cd3384ef539714afdff9cce463a52640e4f31bb618383ba87780097297cd7",
++      "engine_order_hz": 67.5,
++      "cycle_average": {
++        "source_order_hz": 111.59719508254861,
++        "target_order_hz": 67.5,
++        "averaged_cycles": 362
++      }
++    },
++    {
++      "file": "kart_1_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -6.43614152500863,
+-      "seam_step": 0.0031638062787838345,
+-      "sha256": "818a382d221a1fe7dd26986648de81ee84e7ea8e1e636bc293939ca67459a02c"
+-    },
+-    {
+-      "file": "classic_1_coast.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.9645124716553288,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -8.406791859694444,
+-      "seam_step": 0.003606739673974964,
+-      "sha256": "bf7dce34083dfb57150cdfd55c770467112146add4c4b570e1f8e995b9785bc9"
+-    },
+-    {
+-      "file": "classic_2_load.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.2913151927437643,
++      "peak_dbfs": -11.069704777619629,
++      "seam_step": 0.007795870868989585,
++      "sha256": "0d87f4c829d3d8882a4bc5220071a701ccc54141d13ca5f712bd65059cf59aab",
++      "engine_order_hz": 176.25,
++      "cycle_average": {
++        "source_order_hz": 178.5554615519238,
++        "target_order_hz": 176.25,
++        "averaged_cycles": 361
++      }
++    },
++    {
++      "file": "kart_1_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.656568047508147,
++      "seam_step": 0.0017499501140135765,
++      "sha256": "f0276e62c696036727181c3299037ce99c8a43679c8783c140609c30cc3374b4",
++      "engine_order_hz": 176.25,
++      "cycle_average": {
++        "source_order_hz": 178.5554615519238,
++        "target_order_hz": 176.25,
++        "averaged_cycles": 361
++      }
++    },
++    {
++      "file": "kart_2_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
+       "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -6.545248226230861,
+-      "seam_step": 0.0015329899415907344,
+-      "sha256": "a00f1c9f4ca016c92676c1c89b07b12fb27fdc65a1c7b96f7b7068178a3de8fb"
+-    },
+-    {
+-      "file": "classic_2_coast.wav",
+-      "sources": [
+-        "0534.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.2913151927437643,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -8.487849129307785,
+-      "seam_step": 1.5421456069211747e-05,
+-      "sha256": "9a3fc7e4de3aa7c7874c94951bff21765fd7d6608c8833c3f37bc7aabe42a2e7"
+-    },
+-    {
+-      "file": "formula_0_load.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 2.4025850340136055,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -3.9956881094096612,
+-      "seam_step": 0.007160935104244287,
+-      "sha256": "b4a6b5f72dc990a6b7161b6ed611b73594d217ee7d02b9e921f9378ed7600a97"
+-    },
+-    {
+-      "file": "formula_0_coast.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 2.4025850340136055,
++      "peak_dbfs": -11.07098990883608,
++      "seam_step": 0.003512177928738397,
++      "sha256": "9400cb5a6094be8da035712b2009f77ad6dee2f6423193419ee42e42e9c6a82e",
++      "engine_order_hz": 348.75,
++      "cycle_average": {
++        "source_order_hz": 251.09389135134376,
++        "target_order_hz": 348.75,
++        "averaged_cycles": 362
++      }
++    },
++    {
++      "file": "kart_2_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -13.941416550743151,
++      "seam_step": 0.0008034040865768088,
++      "sha256": "4621a8484ded063ba277815353cade6e634e9cc65c9ad833a76ce1b98fcbd3fa",
++      "engine_order_hz": 348.75,
++      "cycle_average": {
++        "source_order_hz": 251.09389135134376,
++        "target_order_hz": 348.75,
++        "averaged_cycles": 362
++      }
++    },
++    {
++      "file": "road.wav",
++      "sources": [
++        "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 12.0,
+       "rms_dbfs": -19.172146296835496,
+-      "peak_dbfs": -6.457474493173635,
+-      "seam_step": 0.002982274658424433,
+-      "sha256": "2eb4da1f4eaf1ce2b87aa951f2ac9dc20fd9bd63f67a0b4d29734142c45a4719"
+-    },
+-    {
+-      "file": "formula_1_load.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.4805895691609978,
+-      "rms_dbfs": -17.077439286435236,
+-      "peak_dbfs": -3.989125311857991,
+-      "seam_step": 0.006591999047031578,
+-      "sha256": "d8fb0a581c57cc21472971cfc3891d2bc659342620b455047215c77e8065496b"
+-    },
+-    {
+-      "file": "formula_1_coast.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.4805895691609978,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.0179546819696315,
+-      "seam_step": 0.0013529278941114484,
+-      "sha256": "69507db1d538db7b4462f38e2e867b7bf42c8dfaa4060cd3c4fd408abda86b2a"
+-    },
+-    {
+-      "file": "formula_2_load.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 0.9355555555555556,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -3.9368732529486437,
+-      "seam_step": 0.0009932444381612893,
+-      "sha256": "bc5caaf0284b7ec04e537c41d2acac55705b4be630be9ed6d33b5d50063f18a4"
+-    },
+-    {
+-      "file": "formula_2_coast.wav",
+-      "sources": [
+-        "0290.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 0.9355555555555556,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -6.699185654614666,
+-      "seam_step": 0.0005846246787061943,
+-      "sha256": "ee461c113a3861dd3dc7356b5614b56c3691d63d51ec1735767099b96f8954a2"
+-    },
+-    {
+-      "file": "kart_0_load.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.0999773242630386,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -4.8347314476872345,
+-      "seam_step": 0.0162083199243577,
+-      "sha256": "e6954f7ab2427530e18c20312852ed5b85b90b9c681b64435e79afb485ffe576"
+-    },
+-    {
+-      "file": "kart_0_coast.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.0999773242630386,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.579688820656568,
+-      "seam_step": 3.1479560625574665e-06,
+-      "sha256": "d16962cc5603bf0565797c3c3b611e09197c4965bc96b86f7d963461b90e4bae"
+-    },
+-    {
+-      "file": "kart_1_load.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.9,
+-      "rms_dbfs": -17.077439286435236,
+-      "peak_dbfs": -5.216391736183895,
+-      "seam_step": 0.009013058992688533,
+-      "sha256": "a84d4f411b14f268b8b478aedc19378c196bb162faa19fe7b66a5e0536c7ae8e"
+-    },
+-    {
+-      "file": "kart_1_coast.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.9,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.561284224084551,
+-      "seam_step": 0.004271191906293631,
+-      "sha256": "0d820bb68956d602076a51bc071f38f557152243318d87473191918f28368d24"
+-    },
+-    {
+-      "file": "kart_2_load.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.3222222222222222,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -5.302480812911687,
+-      "seam_step": 0.00011949701455521433,
+-      "sha256": "8f6fd5c4f81ce299fa97e2a7ea5ef8b7d8334e641e7c6dcefb8b7193297e6f22"
+-    },
+-    {
+-      "file": "kart_2_coast.wav",
+-      "sources": [
+-        "0281.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.3222222222222222,
+-      "rms_dbfs": -19.172146296835496,
+-      "peak_dbfs": -7.480204971386223,
+-      "seam_step": 0.0012105237893456633,
+-      "sha256": "8a6f29f1349e7844c5a87e145e0a47405404f608c6587867e0007eac9f458d62"
+-    },
+-    {
+-      "file": "road.wav",
+-      "sources": [
+-        "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 3.1,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.18445174156968,
+-      "seam_step": 0.0071055741535066,
+-      "sha256": "ff9daa99465e6a05140a51a24f2e9d55ca9474f738d614c898ff4d8a9b2d1ca6"
++      "peak_dbfs": -6.156153005225179,
++      "seam_step": 0.012108951067446302,
++      "sha256": "1e016ce4498ab2658a87065209ea1ce7b521a4d313ea3e14a171bd022cfd55f1",
++      "continuous_texture": true
+     },
+     {
+       "file": "tire.wav",
+@@ -593,31 +745,34 @@
+         "tires_squal_loop.wav"
+       ],
+       "loop": true,
+-      "seconds": 2.65,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.296569962845309,
++      "seconds": 2.2916780045351475,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -7.964306826664005,
+       "seam_step": 0.0,
+-      "sha256": "d417a93e73dba42b8b18e899de82c15a0f9920224bfb7d3ff683884291d321d9"
++      "sha256": "03445eee55e5f4f78c17d3de42b866cfe324ecc18b731892378fb036ab36617a",
++      "continuous_texture": true
+     },
+     {
+       "file": "wind.wav",
+       "sources": [],
+       "loop": true,
+-      "seconds": 3.9,
+-      "rms_dbfs": -23.09803919971486,
+-      "peak_dbfs": -10.471202189972633,
+-      "seam_step": 0.009651594258706316,
+-      "sha256": "836296bf3bdd6331d025c131f70e86eec679098f3166986143754743301f8136"
++      "seconds": 11.5,
++      "rms_dbfs": -23.098039199714865,
++      "peak_dbfs": -10.15178992780159,
++      "seam_step": 0.002965908351109138,
++      "sha256": "1b907bf8009e383ac99169c3a84f0cc9b35a122921469cc63967069d5b6989c5",
++      "continuous_texture": true
+     },
+     {
+       "file": "water.wav",
+       "sources": [],
+       "loop": true,
+-      "seconds": 3.9,
+-      "rms_dbfs": -20.915149811213503,
+-      "peak_dbfs": -7.288722209485838,
+-      "seam_step": 0.054619297483772165,
+-      "sha256": "b48a51956c09649f705751cffd638a6361efacded7bbdb986b9e0f4ba2aef507"
++      "seconds": 11.5,
++      "rms_dbfs": -20.9151498112135,
++      "peak_dbfs": -6.293000923919507,
++      "seam_step": 0.012289146348566815,
++      "sha256": "e86b8f71b486068755b1fe72b8035969d25981301f5d68f7aac9e4d8c79ce517",
++      "continuous_texture": true
+     },
+     {
+       "file": "wet_road.wav",
+@@ -625,11 +780,12 @@
+         "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav"
+       ],
+       "loop": true,
+-      "seconds": 5.9,
++      "seconds": 5.5,
+       "rms_dbfs": -17.721132953863265,
+-      "peak_dbfs": -4.708356098982343,
+-      "seam_step": 0.0654426392123542,
+-      "sha256": "045eca8b451ebfc11f728aa5bdddefd1b59f1958631aff4306936745adaad687"
++      "peak_dbfs": -5.570349584266662,
++      "seam_step": 0.020365805694802702,
++      "sha256": "a570a581037db84ee32d3025cfc435d5d92d619ffcfd51841c4e82fea04d135d",
++      "continuous_texture": true
+     },
+     {
+       "file": "sand_roll.wav",
+@@ -637,11 +793,12 @@
+         "gravel_drive_cc0.wav"
+       ],
+       "loop": true,
+-      "seconds": 5.7,
+-      "rms_dbfs": -21.501880115304512,
++      "seconds": 16.0,
++      "rms_dbfs": -21.39775903394397,
+       "peak_dbfs": -1.5144142787623671,
+-      "seam_step": 0.043533334909670374,
+-      "sha256": "dc84b3bf64e96c59ca1cb7a532bbbf11f630984d23ee0544a8b9b80cca522eb7"
++      "seam_step": 0.0031132033372486545,
++      "sha256": "2acda38f38664ef6f051a513e41715ee59d2234db48e736095088a279f2c311f",
++      "continuous_texture": true
+     },
+     {
+       "file": "sand.wav",
+@@ -650,11 +807,12 @@
+         "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav"
+       ],
+       "loop": true,
+-      "seconds": 5.6479818594104305,
+-      "rms_dbfs": -23.669551626980343,
+-      "peak_dbfs": -1.5144142787623682,
+-      "seam_step": 0.005747081464164,
+-      "sha256": "bae8823f8dc8efd9216485b5d7a2c84cc19627eebb343c5790e89f0052a36f88"
++      "seconds": 16.0,
++      "rms_dbfs": -23.926077421271774,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.00014909632131861195,
++      "sha256": "a77c077f94812f8d022761c0f532be837ce5bd092c7a1d26baee5acfc23fca37",
++      "continuous_texture": true
+     },
+     {
+       "file": "loose.wav",
+@@ -662,11 +820,12 @@
+         "gravel_drive_cc0.wav"
+       ],
+       "loop": true,
+-      "seconds": 5.7,
+-      "rms_dbfs": -23.897994221423183,
++      "seconds": 16.0,
++      "rms_dbfs": -21.861248990935223,
+       "peak_dbfs": -1.5144142787623671,
+-      "seam_step": 0.029741102501685934,
+-      "sha256": "cc540438eba090bf229d24743926c0c6cd6a517dab1d56a669f5b0d32d427173"
++      "seam_step": 0.004720041243063494,
++      "sha256": "08431b5956919d76bc0c95a39f1a7cc034ab762e7efee29c86363d2497774f67",
++      "continuous_texture": true
+     },
+     {
+       "file": "grass.wav",
+@@ -674,11 +833,12 @@
+         "Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav"
+       ],
+       "loop": true,
+-      "seconds": 5.649954648526077,
+-      "rms_dbfs": -19.097784462842675,
+-      "peak_dbfs": -1.5144142787623671,
+-      "seam_step": 0.0304073661662177,
+-      "sha256": "e46f82570636476aeab7d5d3caaea7a045ff94a73bd61bfa79b53e2b67827229"
++      "seconds": 5.249954648526077,
++      "rms_dbfs": -17.077439286435236,
++      "peak_dbfs": -1.6768761470668059,
++      "seam_step": 0.007813213385197505,
++      "sha256": "34934e6a4663e340b2b90fc1bc5d246ef6eac963f856e0be7524de559d6ad383",
++      "continuous_texture": true
+     },
+     {
+       "file": "grit_0.wav",
+@@ -723,11 +883,12 @@
+         "gravel_drive_cc0.wav"
+       ],
+       "loop": true,
+-      "seconds": 9.9,
+-      "rms_dbfs": -21.05173702348147,
+-      "peak_dbfs": -1.514414278762366,
+-      "seam_step": 0.003942994439774432,
+-      "sha256": "459690c3e98297f5e372442ef2dc25658240e97a770b7caaca9ae8f8a4dfb1bd"
++      "seconds": 17.5,
++      "rms_dbfs": -21.67480586511681,
++      "peak_dbfs": -1.5144142787623682,
++      "seam_step": 0.012384138184235852,
++      "sha256": "52cc556fc14f86e77cc04bed0b4d0bb20c4463d0c26e2386fb8b68e8e40e5169",
++      "continuous_texture": true
+     },
+     {
+       "file": "chassis.wav",
+@@ -779,6 +940,5 @@
+       "seam_step": null,
+       "sha256": "7c2278b0420e171ab6b51a7611377f8d600b188dcf1b777ba3f87f4c00cdc4b9"
+     }
+-  ],
+-  "compact_revision": "engine-3-stable-sustain"
++  ]
+ }
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -100,3 +100,18 @@
+ This authored recorded/synthetic derivative removes the previous short
+ recording's repeating pitch drift. The low/idle pair and other 41 WAVs are
+ unchanged. No runtime synthesis, source purchase or new third-party licence.
++
++Complete loop revision 8, 2026-10-10: all five engine families now sustain
++averaged recorded firing cycles at coherent neighboring RPM orders, with a
++restrained original offline mechanical/air noise bed. Eight-second whole-cycle
++PCM retains each cleared source's pulse colour without replaying rev/stop
++transients. The compact's previous mid/high sustains remain byte-identical;
++its idle pair is sustained in the same way. Other engine timbres are revoiced
++and require listening acceptance; no exact real-engine reproduction is claimed.
++Surface/wind/water derivatives use correlation-aware power-preserving joins
++and circular envelope control. Road, wind and gravel sections are longer.
++The tire's pinned zero endpoints now lie at a natural quiet crossing, replacing
++the short repeated fade-to-silence; audible-edge/qubodup CC BY 3.0 attribution
++and the modification notice above still apply. All one-shot PCM remains exact.
++Runtime loops supply one cyclic interpolation frame beyond the loop endpoint
++to prevent fractional-pitch interpolation into resource silence padding.
+diff --git a/game/assets/audio/ambience/storm_rain_manifest.json b/game/assets/audio/ambience/storm_rain_manifest.json
+--- a/game/assets/audio/ambience/storm_rain_manifest.json
++++ b/game/assets/audio/ambience/storm_rain_manifest.json
+@@ -7,7 +7,7 @@
+   "source_sha256": "1142dde3666dad8d65e163eaca9292edcb7710afa4b81a9b7cbb93dab1a10e0c",
+   "decoded_sha256": "940366d7ab39a8d5d26006699cb9234ace216cf2046577ae636b0ef2e1b6a1ec",
+   "quality": "owner MP3 decoded by pinned Godot4.7.2",
+-  "sha256": "3bed8b7e81b1a278c55dc1eb39a8b8dd4b890fa252e6bc08372513f730a15dcc",
++  "sha256": "d4ab84e177803e396b20d1feb21b4e1213354dc661ab66bc2949def38d052f9f",
+   "source_seconds": 467.826934814453,
+   "source_start_seconds": 20,
+   "source_excerpt_seconds": 21,
+@@ -16,7 +16,7 @@
+   "bits": 16,
+   "seconds": 20.0,
+   "bytes": 1764044,
+-  "edits": "20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s cosine cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers",
+-  "rms_dbfs": -25.19274621011512,
+-  "peak_dbfs": -12.329963923527119
++  "edits": "20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s correlation-aware power-preserving cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers",
++  "rms_dbfs": -25.192746210115118,
++  "peak_dbfs": -11.991400352786268
+ }
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -33,3 +33,8 @@
+ Playback1.0/delayed lightning/Vehicle volume retained. Each new cue starts
+ a fresh voice while the previous rumble fades out over0.18s, with two voices. Old source masters/licences
+ remain historical evidence outside exports. No added layers or runtime service.
++All-loop audit, 2026-10-10: the owner's rain excerpt retains the same20-41s
++source region, gentle peak control, RMS target and playback gain. Its one-second
++join now preserves correlated/uncorrelated power instead of creating a cyclic
++linear-fade dip; no EQ or added layers. Filename attribution and missing original
++licence metadata remain unchanged. The40s Clarisse CC0 cicada WAV is unchanged.
+diff --git a/game/assets/audio/storm_rain.wav.import b/game/assets/audio/storm_rain.wav.import
+--- a/game/assets/audio/storm_rain.wav.import
++++ b/game/assets/audio/storm_rain.wav.import
+@@ -21,4 +21,4 @@
+ edit/loop_mode=0
+ edit/loop_begin=0
+ edit/loop_end=-1
+-compress/mode=2
++compress/mode=0
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND36/SND02-SND06/SND19/SND24-SND35/G01/R01/Q01/V06: owner all-loop audit covers85 assets (44PCM/41Ogg, incl inactive legacy rain). Native fractional-pitch PCM padding defect reproduced; shared mono/stereo cyclic guard fixes vehicle/tire/menu/rain/cicada factories. All30 engine banks sustained/coherent, 10 texture joins leveled/power-preserving/longer, tire quiet zero crossing replaces short fade with pinned zeros, same owner rain power join/legacy rain-only repair. Final85 audit0fail, guard208/vehicle1446/music1156/wet41/night25/App99/handling88/parser445 pass; native5cars repeated wraps/no gaps/clipping/paused0 and exact960-tick simulation.38audio changed/64 exact incl music/cicadas/all17oneshots/compact prior4; repeat102 hashes exact, bank31301752bytes/+17.6MiB acrosscars. No phone attachment/device listening-memory/export-install/fullValidate/backend/deploy; subjective/device acceptance open, restartlocal/Android unchanged. Files/commands/playable85-wrap+native+matched-wind evidence/scoped checkpoint: docs/ALL_AUDIO_LOOPS.md.
++
+ 2026-10-10 SC06/HOPT06/SC05/B05/B07/R01/Q01/TD06/TD08: owner approves next backend slice and PB-only histograms. Durable independent flyinglapPB/source FK, DB conditional minima and actual-PB lap revisions replace scheduled attempt scans; equal/slower races keep revisions/generation unchanged. Bounded200-attempt reset/cursor/source-fenced backfill yields between jobs; source-aware retention preserves fasterlap19 in slower race125. Existing all-car physical-track artificial reset scope retained/older-version cutoffs aligned, real/private lap history preserved. OwnedPG1000drivers1/50/500attempts legacy12.224/104.653/895.406ms vsbothPBfields10.966/11.028/14.020ms/zerohistory;100000driver fullrefresh1.752s/payload8.23MB/cold262ms; nonPB DBfinalization15.943-to4.339ms (not verification/HTTP guarantee). BroadSQLite146(5skip)/PG78, final exact-imageSQLite39(1skip)/PG32/Ruff pass; migration/backfill/downgrade, concurrent minima, reset/correction/crash/priority/retention covered. Fresh live read confirms d16a4a17/schema0023/Ready; local2c616d31 schema0024 overlay7backendfiles preserves114canonical/otherbackend. No upload/deploy/live prune/race writes/UI/physics/APK/device/phone check/fullValidate; measured live-data backfill/parity and explicit deployment approval remain. Source/commands/receipts/scoped checkpoints/rollback boundary: docs/LAP_PERSONAL_BESTS_2026_10_10.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner reports newly emitted dust crossing car. Final presentation16 uses actual mesh support groups for body/four animated wheels, projected after camera with two-world-pixel AA margin; fresh1.1s protected/fade-to1.6s, old9s trail retained. GPU60 checks/five headings/spawn-to-steering changes:18827 identified body samples,16477 contaminated control/zero fresh-on/16477 old; snapshots exact. Bridge121/roof241/desert87/quick export72-21-48 pass. Native Pad2 A/B12s off19.938/p9526.125 vs on19.959/p9524.005 (~50FPS), gl/opengl3/MSAA2x/shadows/1.5MP/paused0; model outline20-21edges inspected, no initial box void. APK250537838/SHA25667CA8BC1B7491E335A363914392CD7B0AE5CCE530B0ECF1028E1BF257557B3A3 installedSuccess, markers absent/normalPID11906/playerdata retained. Intermediate box/native rectangular edge, typed mat4, focus-overlay, camera-snap, AA-edge and concurrent cache startup issues corrected without weaker assertions; cache/livery/audio/menu work retained and excluded from car patch. No fullValidate/physics/backend/production/timed-complete/thermal60FPS claim; owner slow/old-plume/ramp/other-view acceptance remains. Actual files/commands/captures/scoped checkpoint: docs/DUST_CAR_OCCLUSION_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND36/SND02-SND06/SND19/SND24-SND35/G01/R01/Q01/V06: owner all-loop audit covers85 assets (44PCM/41Ogg, incl inactive legacy rain). Native fractional-pitch PCM padding defect reproduced; shared mono/stereo cyclic guard fixes vehicle/tire/menu/rain/cicada factories. All30 engine banks sustained/coherent, 10 texture joins leveled/power-preserving/longer, tire quiet zero crossing replaces short fade with pinned zeros, same owner rain power join/legacy rain-only repair. Final85 audit0fail, guard208/vehicle1446/music1156/wet41/night25/App99/handling88/parser445 pass; native5cars repeated wraps/no gaps/clipping/paused0 and exact960-tick simulation.38audio changed/64 exact incl music/cicadas/all17oneshots/compact prior4; repeat102 hashes exact, bank31301752bytes/+17.6MiB acrosscars. No phone attachment/device listening-memory/export-install/fullValidate/backend/deploy; subjective/device acceptance open, restartlocal/Android unchanged. Files/commands/playable85-wrap+native+matched-wind evidence/scoped checkpoint: docs/ALL_AUDIO_LOOPS.md.
++
+ 2026-10-10 SC06/HOPT06/SC05/B05/B07/R01/Q01/TD06/TD08: owner approves next backend slice and PB-only histograms. Durable independent flyinglapPB/source FK, DB conditional minima and actual-PB lap revisions replace scheduled attempt scans; equal/slower races keep revisions/generation unchanged. Bounded200-attempt reset/cursor/source-fenced backfill yields between jobs; source-aware retention preserves fasterlap19 in slower race125. Existing all-car physical-track artificial reset scope retained/older-version cutoffs aligned, real/private lap history preserved. OwnedPG1000drivers1/50/500attempts legacy12.224/104.653/895.406ms vsbothPBfields10.966/11.028/14.020ms/zerohistory;100000driver fullrefresh1.752s/payload8.23MB/cold262ms; nonPB DBfinalization15.943-to4.339ms (not verification/HTTP guarantee). BroadSQLite146(5skip)/PG78, final exact-imageSQLite39(1skip)/PG32/Ruff pass; migration/backfill/downgrade, concurrent minima, reset/correction/crash/priority/retention covered. Fresh live read confirms d16a4a17/schema0023/Ready; local2c616d31 schema0024 overlay7backendfiles preserves114canonical/otherbackend. No upload/deploy/live prune/race writes/UI/physics/APK/device/phone check/fullValidate; measured live-data backfill/parity and explicit deployment approval remain. Source/commands/receipts/scoped checkpoints/rollback boundary: docs/LAP_PERSONAL_BESTS_2026_10_10.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner reports newly emitted dust crossing car. Final presentation16 uses actual mesh support groups for body/four animated wheels, projected after camera with two-world-pixel AA margin; fresh1.1s protected/fade-to1.6s, old9s trail retained. GPU60 checks/five headings/spawn-to-steering changes:18827 identified body samples,16477 contaminated control/zero fresh-on/16477 old; snapshots exact. Bridge121/roof241/desert87/quick export72-21-48 pass. Native Pad2 A/B12s off19.938/p9526.125 vs on19.959/p9524.005 (~50FPS), gl/opengl3/MSAA2x/shadows/1.5MP/paused0; model outline20-21edges inspected, no initial box void. APK250537838/SHA25667CA8BC1B7491E335A363914392CD7B0AE5CCE530B0ECF1028E1BF257557B3A3 installedSuccess, markers absent/normalPID11906/playerdata retained. Intermediate box/native rectangular edge, typed mat4, focus-overlay, camera-snap, AA-edge and concurrent cache startup issues corrected without weaker assertions; cache/livery/audio/menu work retained and excluded from car patch. No fullValidate/physics/backend/production/timed-complete/thermal60FPS claim; owner slow/old-plume/ramp/other-view acceptance remains. Actual files/commands/captures/scoped checkpoint: docs/DUST_CAR_OCCLUSION_2026_10_10.md.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -166,3 +166,5 @@
+ Compact loop revision 2 (2026-10-10): the same six Nox CC0 engine derivatives use full-recording filtering before cuts, phase-aligned head/tail joins, final periodic filtering and longer mid/high source regions. All other 41 vehicle WAV hashes remain exact. Shipping manifest/NOTICE pin derivative hashes and describe changes; no new source/licence. Actual native comparisons and unresolved owner artefact/device acceptance: `docs/COMPACT_AUDIO_LOOPS.md`.
+ 
+ Compact sustain revision 3 (2026-10-10): four mid/high derivatives average phase-aligned cycles from the same pinned Nox CC0 recording, with a restrained original offline noise texture shaped by the recorded residual spectrum. Exact100/200Hz firing orders and whole-cycle8s buffers remove the previous short recorded pitch pattern. These are authored recorded/synthetic derivatives, not unmodified recordings; original notice/source licences retained. Idle/other43 WAVs exact; no new third-party source/runtime synthesis/service. Actual native blends, memory delta and unconfirmed owner platform/listening acceptance: `docs/COMPACT_AUDIO_SUSTAIN.md`.
++
++Complete audio-loop audit (2026-10-10): 85 retained loops checked; 38 audio derivatives change. All engine families use averaged recorded cycles with original offline shaped noise; continuous textures use correlation-aware power joins, leveling and longer sections. Same source/licence ledger retained, including audible-edge/qubodup tire CC BY 3.0; quiet tire crossing preserves zero endpoints. Owner Dragon Studio rain keeps its original filename attribution/unknown licence metadata and excerpt/gain; only power join changes. Retained synthetic rain repaired separately without changing thunder. All music/cicadas/17oneshots/compact prior4 sustain hashes exact. Runtime cyclic interpolation guards cover PCM loops. Actual source/native/byte proofs, memory delta and remaining human/device acceptance: `docs/ALL_AUDIO_LOOPS.md`.
+diff --git a/docs/ALL_AUDIO_LOOPS.md b/docs/ALL_AUDIO_LOOPS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/ALL_AUDIO_LOOPS.md
+@@ -0,0 +1,135 @@
++# Complete looping-audio audit — 2026-10-10
++
++Owner request: recurring artefacts remain; review **all** looping tracks and make
++them properly loopable. **SND36** covers complete inventory, source seams,
++sustained envelopes/pitch and native playback boundaries. **SND02–SND06,
++SND19/SND24–SND35/G01/R01/Q01/V06** preserve provenance, local lifecycle,
++headroom, simulation separation and actual verification/device limits.
++
++The audit covers **85 unique assets**: 40 vehicle loops, recorded rain, cicadas,
++the stereo menu loop, one retained inactive synthetic rain loop, 30 retained
++shipping biome Ogg loops and 11 export-excluded historical Ogg loops. There are
++44 PCM and 41 Ogg loops; 74 are shipping candidates. Biome music stays disabled
++during driving, the rejected wet-road voice stays deferred and the legacy rain
++stays inactive. No audio files were deleted or reenabled.
++
++The main defect is shared playback setup. WAV loops supplied no cyclic frame
++beyond the final source frame; fractional-pitch interpolation could dip into
++resource padding at every wrap, even with a clean source seam. A constant-level
++native mixer witness reproduces the defect. In the full audit run, unguarded
++0.73/1.0/1.85 pitch tests have 36/20/40 glitch samples; every guarded test has
++**zero**. An earlier run differs at unity pitch but also fails at fractional
++pitch: the bug is not diagnosed solely by inspecting the source WAV.
++
++`PcmAudioLoop.prepare` now supplies an exact cyclic mono/stereo frame, keeps the
++original frame count as the loop endpoint and leaves the source resource intact.
++Vehicle, legacy tire diagnostic, menu, rain and cicada factories use this shared
++setup. Existing menu/rain/cicada guards are preserved through consolidation.
++The regression checks mono/stereo at 0.35/0.73/1.0/1.85/2.85 pitch, plus every
++PCM source/factory. One-shots retain nonlooping behavior.
++
++Source fixes address the independent defects revealed by the audit:
++
++- All five engine families use eight-second whole-cycle sustained recorded
++  pulses. The four other cars' old files repeated rev/stop transients and large
++  level changes. Only valid complete forward-moving source cycles contribute;
++  a restrained original offline noise bed retains broad mechanical/air colour.
++  Its fundamental band is excluded to avoid reintroducing slow phase modulation.
++  The compact idle pair is now sustained too; its previous four mid/high WAVs
++  remain byte-identical. Other cars are revoiced and require ear acceptance.
++- Each vehicle's three orders share one ratio to its existing sound-model RPM
++  anchors, so neighboring layers agree. A 0.35–2.85 pitch range covers every live
++  anchor overlap; the previous cap flattened a fading lower layer. This changes
++  audio presentation only, never physical gearing, power, grip or timing.
++- Surface/wind/water use correlation-aware power-preserving joins and circular
++  energy shaping. Road is 12 s; wind/water 11.5 s; granular rolling/spray/loose
++  material 16 s; debris 17.5 s. Natural short granular detail remains.
++- Tire endpoints remain **exactly zero** at a natural quiet crossing. The old
++  pair of 2 ms tapers is removed, avoiding a repeated fade-to-silence while
++  preserving the existing handling diagnostic invariant.
++- The same owner rain 20–41 s excerpt, RMS target, peak cap and playback gain
++  remain; its one-second overlap now preserves power. No EQ/layers are added.
++  The retained synthetic rain loses its short seam fade and uses lossless import.
++  Its generator is invoked with `--rain-only`, preserving the thunder one-shot.
++
++All 30 engine source-envelope minima are better than **-0.914 dB** relative to
++their median over 40 ms windows, compared with a worst original **-18.144 dB**.
++The maximum final 20 ms engine-order 5th–95th-percentile span is **0.014179 Hz**.
++Every source seam/native Ogg wrap passes the derivative continuity bound.
++All sustained nonmusical loops pass the dropout/headroom checks; music rests and
++musical phrase variation are not flattened or falsely classified as failures.
++The final 85-entry audit has **zero failures**.
++
++[Review all source wraps, native vehicle mixes and the matched wind comparison](evidence/all-audio-loops-2026-10-10/audition.html).
++[Full numerical audit](evidence/all-audio-loops-2026-10-10/audit.json).
++Five native engine-bus captures use actual vehicle presentation with 65% load,
++equal-power neighboring RPM layers, 26 seconds of sustained playback and one
++paused second. Each observes wraps `[9,4,2,9,4,2]`; the audible mid/high load/coast
++layers cross at least two boundaries. No shifts, state mutation, measured dropout
++or clipping occur. Peaks are 0.232–0.287; every final half-second is exactly silent.
++These are controlled states, not completed races or acoustic microphone captures.
++
++**38 audio files change; 64 remain byte-identical**, including all music, cicadas,
++all 17 one-shots and the compact's previous four mid/high sustains. The vehicle
++bank is 31,301,752 bytes versus 12,853,390 before (~17.6 MiB more across all cars).
++Only the selected six engine loops and existing surface voices load for a race;
++no new voice, runtime synthesis, provider, dependency or network request is added.
++NumPy/FFmpeg are existing offline tools. More PCM memory/storage and changed
++noncompact timbres remain material device/listening acceptance items.
++
++Changed files: `game/platform/pcm_audio_loop.gd` and UID;
++`game/vehicle/{vehicle_audio,tire_audio}.gd`;
++`game/soundtrack/audio_world.gd`;
++`game/track/{storm_weather,night_ambience}.gd`;
++`scripts/{build_vehicle_audio,compact_audio_mastering,surface_audio_mastering,
++audio_loop_mastering,build_storm_rain,generate_storm_audio,review_audio_loops}.py`;
++changed WAVs/imports, vehicle/rain manifests and notices;
++`game/tests/{audit_audio_loops,test_audio_loops,capture_audio_loop_mix}.gd`/UIDs;
++this document, `licenses/ASSETS.md`, `DEVELOPMENT_STATUS.md`,
++`docs/PHASE_0_PLAN.md` and evidence. No physics/camera/race contracts change.
++
++Actual commands use pinned `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`:
++
++| Command | Actual result |
++| --- | --- |
++| `… dev.ps1 TestScript -ScriptPath res://tests/audit_audio_loops.gd -TestArgument '--probe-only'` | Reproduces unguarded sample dips; cyclic guards remove them. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/audit_audio_loops.gd` | All 41 retained Ogg loops decoded across their actual wraps; no gameplay activation. |
++| `python scripts/build_vehicle_audio.py` | 47 mastered files; 36 changed looping WAVs, all seven vehicle one-shots exact. |
++| `python scripts/build_storm_rain.py` | Owner rain crossfade corrected; same source/excerpt/gain/RMS. |
++| `python scripts/generate_storm_audio.py --rain-only` | Repairs only the retained legacy rain; thunder hash exact. |
++| `… dev.ps1 Import` | Final imports pass; PCM is lossless, including legacy rain. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_audio_loops.gd` | Final **208 checks, zero failures**. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | Final **1,446 checks, zero failures**, including exact 960-tick simulation equivalence. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_soundtrack.gd` | **1,156 checks, zero failures**; menu timing/guard and disabled driving music retained. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_wet_road_audio.gd` | **41 checks, zero failures**. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_night_ambience.gd` | **25 checks, zero failures**. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/capture_audio_loop_mix.gd -Graphical` | All five actual vehicle mixes, repeated wraps and state snapshots; zero failures. |
++| `… dev.ps1 TestApp` | **99 checks, zero failures**; isolated app/race/results/records flow. |
++| `… dev.ps1 TestHandling` | **88 checks, zero failures**, including tire zero endpoints and exact historical diagnostic replays. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | **445 scripts, zero failures** at the recorded run. |
++| `python scripts/review_audio_loops.py --listening` | Final **85 loops, zero failures**, five native capture checks and complete source-wrap listening evidence. |
++| Repeat all three offline builders and compare audio SHA-256 | Final **102/102 media hashes identical**; sources preserved. |
++| Existing music skill `scripts/review_pack.py` via local Ubuntu FFmpeg | Peak-safe constant-gain wind A/B pack, common -20 LUFS/-1 dBTP ceiling; no limiting or source edits. |
++| Scoped `git diff --check` and reverse-check of task patch | Exit 0; review checkpoint valid without modifying the shared index. |
++
++Intermediate audit flags for classic high load/coast (noise leaking into the
++fundamental band) were corrected without relaxing the 0.3 Hz variation bound.
++The inventory grew from 84 to 85 when the retained legacy rain was included.
++The first restricted WSL query was denied; the permitted default PATH lacked
++FFmpeg. The existing `~/.local/share/bmt-music-tools/ffmpeg` resolved that;
++an inline path-quoting failure and Windows CRLF helper error were corrected with
++a file-based LF entry point. Final review-pack processing passes. Receipts and
++source snapshots are retained; no dependency was downloaded or installed.
++
++The technical music review follows
++[`bmt-adaptive-music`](../.agents/skills/bmt-adaptive-music/SKILL.md)'s Technical
++workflow, preserving rejected/retained material and not claiming subjective
++listening, artistic approval or production readiness. No visible UI changed;
++playable audio is the presentation evidence. No phone attachment check, device
++listening/memory/performance test, Android export/install, full Validate, backend
++operation or deployment was performed. Restart the local game to load new
++resources; installed Android builds remain unchanged. Remaining acceptance:
++owner listens during actual driving across surfaces/cars and long sustained
++slides, pause/focus/retry/rewind, then confirms speakers/headphones/Bluetooth and
++device memory/performance. Natural texture and real contact/gear events can still
++repeat; digital correctness is not a guarantee of subjective sound quality.

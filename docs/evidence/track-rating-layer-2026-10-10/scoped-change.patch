@@ -1,0 +1,181 @@
+diff --git a/docs/TRACK_RATING_PROMPT_2026_10_10.md b/docs/TRACK_RATING_PROMPT_2026_10_10.md
+--- a/docs/TRACK_RATING_PROMPT_2026_10_10.md
++++ b/docs/TRACK_RATING_PROMPT_2026_10_10.md
+@@ -46,3 +46,23 @@
+ Inspected captures: [inline label](evidence/track-rating-2026-10-10/after/race-complete-label-1280x720.png), [cloud prompt](evidence/track-rating-2026-10-10/after/cloud-rating-prompt-1280x720.png), [compact prompt](evidence/track-rating-2026-10-10/after/cloud-rating-prompt-960x540.png), [saved vote](evidence/track-rating-2026-10-10/after/cloud-rating-saved-1280x720.png). Actual [logs](evidence/track-rating-2026-10-10/logs) and [task-only Git patch](evidence/track-rating-2026-10-10/scoped-change.patch) are retained.
+ 
+ No phone attachment check or device test was performed. No APK export/install, full Validate, live rating writes, backend change or deployment was performed. Restart/rebuild the client to use the changes. Remaining acceptance: complete a previously unrated nonowned cloud track while signed in, observe delayed verification and Skip/retry on the actual connection, verify stars after reopening, and check the prompt on Android. If the player leaves the completed results before qualification arrives, no popup interrupts another screen; the inline row remains available when reopening that track. Server qualification still excludes artificial-only/public-ineligible completions and self-rating.
++
++
++## Hidden prompt correction after the Ajorata report (RATE04)
++
++The previous implementation still contained a rendering defect. `TrackRatingPrompt.layer = 8` put the modal below the actual `App.menu_layer.layer = 20`. Canvas layers do not inherit their parents' drawing order; the normal results' opaque backdrop completely covered the prompt and its menu also intercepted input. The original focused fixture put results directly on the root canvas and therefore did not exercise this condition. Its 24 passing checks were insufficient to establish visibility in the actual application hierarchy.
++
++Corrected `game/ui/track_rating_prompt.gd` to derive a layer above its ancestor menu canvases (21 for the current app) rather than use an unrelated hardcoded value. `game/tests/test_track_rating_prompt.gd` now places its opaque results under the same layer-20 menu hierarchy. It checks the actual rendered panel pixel and drives Skip and the fourth rating star through native pointer events, as well as retaining the existing qualification, persistence, scope and lifecycle assertions. No eligibility, backend, uploads, race or scoring rules were altered.
++
++Actual commands, pinned Godot 4.7.2 through the project entry point:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -Graphical -TestArgument '--capture-rating=C:/Codes/Godot/Beat my track/docs/evidence/track-rating-layer-2026-10-10/before-capture'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -Graphical -TestArgument '--capture-rating=C:/Codes/Godot/Beat my track/docs/evidence/track-rating-layer-2026-10-10/after'
++git diff --check -- game/ui/track_rating_prompt.gd game/tests/test_track_rating_prompt.gd
++git apply --check --reverse docs/evidence/track-rating-layer-2026-10-10/scoped-change.patch
++```
++
++Before the layer correction, the strengthened fixture produced **26 checks / 3 failures**: wrong modal layer, missing modal panel in the rendered image and the intercepted Skip click. After the correction, the final native run produced **26 checks / zero failures**, including actual fourth-star selection and save confirmation. Inspected [hidden prompt before](evidence/track-rating-layer-2026-10-10/before-capture/cloud-rating-prompt-1280x720.png), [visible prompt after](evidence/track-rating-layer-2026-10-10/after/cloud-rating-prompt-1280x720.png), [compact landscape](evidence/track-rating-layer-2026-10-10/after/cloud-rating-prompt-960x540.png) and [saved vote](evidence/track-rating-layer-2026-10-10/after/cloud-rating-saved-1280x720.png). Actual [logs](evidence/track-rating-layer-2026-10-10/logs) and a [follow-up-only Git patch](evidence/track-rating-layer-2026-10-10/scoped-change.patch) are retained. No failing assertion was removed.
++
++No live Ajorata race/rating or account data was read/written, no phone attachment check or device test was performed, and no APK export/install, backend change, deployment or full Validate was performed. The prior app99 pass and reproduced broader results-fixture failures were not rerun for this two-file presentation correction. Restart the desktop client or rebuild the installed client to load the correction; actual signed-in Ajorata and Android acceptance remain.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 RATE04/RATE01-RATE03/B04/R01/Q01/V06: owner Ajorata still not prompted; reproduced prompt CanvasLayer8 behind actual opaque menuCanvas20 and blocked pointer input. Prompt derives layer above all owning ancestor canvases (App21). Corrected native fixture uses actual menu20, checks rendered panel pixel and pointer clicks on Skip/fourth star. Before26/3fail; final26/0fail, desktop1280x720/compact960x540 before/after inspected. Prior focused24 fixture lacked menu layering; claim corrected without weaker assertions. Two script files/qualification/upload/scoring unchanged otherwise. No phone attachment check/device/live Ajorata rating write/APK export-install/backend/deploy/fullValidate or repeated broad suite; restarting/rebuilding actual client and device acceptance remain. Actual commands/logs/task-only Git patch: docs/TRACK_RATING_PROMPT_2026_10_10.md (Hidden prompt correction).
++
+ 2026-10-10 RATE01-RATE03/B04/R01/Q01/V06: owner rating label correction and missing prompts. Shared caption/finish title now Rate the track; completed-ticket cloud races add optional server-qualified prompt over already available normal results, while local finish prompt remains. Server vote suppresses repeat; Skip permits later race, in-flight verification rechecks/repeated status retained, save retry key/account-origin fences/listener cleanup protected. Final native24/App99 pass; desktop1280x720/compact960x540 captures inspected. Broad CaptureResults retains eight failures plus recommendation out-of-bounds, identically reproduced in isolated starting-code overlay; not reported passing. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/live ratings. Task-only Git patch/files/actual commands/logs/remaining signed-in/device acceptance: docs/TRACK_RATING_PROMPT_2026_10_10.md.
+ 
+ 2026-10-10 HSTART01-HSTART02/HOPT02/RR06/R01/B07/Q01/V03/V05: owner startup Free Race histogram loads forever. Reproduced restored selection and promoted menu rendering Loading without issuing any comparison request. Visible detail now initializes once, promotion hydrates, missing snapshot recovers, synchronous replies re-read; preview/no-polling/error/guest/account gates and race actions retained. Baseline21/11fail; finalstartup26/unified150/speed30/loading39/discovery18/App99/parser449 and Import pass. Four captures saved/initial pair inspected; unrelated EngineAudioBlend registry and cleared-cache fixture issues corrected with assertions retained. No phone check/device/export-install/fullValidate/live requests/backend/deploy/player writes; client restart/rebuild and actual installed saved-session/device acceptance remain. Files/commands/evidence/scoped checkpoint: docs/STARTUP_HISTOGRAM_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1519,3 +1519,8 @@
+ ## Rating action and cloud finish prompt, 2026-10-10
+ 
+ 2026-10-10 RATE01-RATE03/B04/R01/Q01/V06: owner rating label correction and missing prompts. Shared caption/finish title now Rate the track; completed-ticket cloud races add optional server-qualified prompt over already available normal results, while local finish prompt remains. Server vote suppresses repeat; Skip permits later race, in-flight verification rechecks/repeated status retained, save retry key/account-origin fences/listener cleanup protected. Final native24/App99 pass; desktop1280x720/compact960x540 captures inspected. Broad CaptureResults retains eight failures plus recommendation out-of-bounds, identically reproduced in isolated starting-code overlay; not reported passing. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/live ratings. Task-only Git patch/files/actual commands/logs/remaining signed-in/device acceptance: docs/TRACK_RATING_PROMPT_2026_10_10.md.
++
++
++## Hidden rating prompt correction, 2026-10-10
++
++2026-10-10 RATE04/RATE01-RATE03/B04/R01/Q01/V06: owner Ajorata still not prompted; reproduced prompt CanvasLayer8 behind actual opaque menuCanvas20 and blocked pointer input. Prompt derives layer above all owning ancestor canvases (App21). Corrected native fixture uses actual menu20, checks rendered panel pixel and pointer clicks on Skip/fourth star. Before26/3fail; final26/0fail, desktop1280x720/compact960x540 before/after inspected. Prior focused24 fixture lacked menu layering; claim corrected without weaker assertions. Two script files/qualification/upload/scoring unchanged otherwise. No phone attachment check/device/live Ajorata rating write/APK export-install/backend/deploy/fullValidate or repeated broad suite; restarting/rebuilding actual client and device acceptance remain. Actual commands/logs/task-only Git patch: docs/TRACK_RATING_PROMPT_2026_10_10.md (Hidden prompt correction).
+diff --git a/game/ui/track_rating_prompt.gd b/game/ui/track_rating_prompt.gd
+--- a/game/ui/track_rating_prompt.gd
++++ b/game/ui/track_rating_prompt.gd
+@@ -14,7 +14,13 @@
+ 
+ func _ready() -> void:
+ 	name = "TrackRatingPrompt"
+-	layer = 8
++	# CanvasLayer nesting does not inherit drawing order. Stay above the menu
++	# canvas that owns this completed result, including its opaque backdrop.
++	layer = 1
++	var ancestor: Node = get_parent()
++	while ancestor != null:
++		if ancestor is CanvasLayer: layer = maxi(layer,(ancestor as CanvasLayer).layer+1)
++		ancestor = ancestor.get_parent()
+ 	reveal_at = Time.get_ticks_msec()+750
+ 	overlay = Control.new()
+ 	MenuStyle.fill(overlay)
+diff --git a/game/tests/test_track_rating_prompt.gd b/game/tests/test_track_rating_prompt.gd
+--- a/game/tests/test_track_rating_prompt.gd
++++ b/game/tests/test_track_rating_prompt.gd
+@@ -4,6 +4,8 @@
+ var checks: int = 0
+ var failures: int = 0
+ var capture_dir: String = ""
++var menu: CanvasLayer
++var menu_root: Control
+ 
+ class VoteClient extends Client:
+ 	var score: int = 0
+@@ -38,12 +40,22 @@
+ 		print("FAIL: "+message)
+ func frames() -> void:
+ 	for i: int in range(5): await process_frame
++func click(button: Button) -> void:
++	var down := InputEventMouseButton.new()
++	down.position = button.get_global_rect().get_center()
++	down.button_index = MOUSE_BUTTON_LEFT
++	down.pressed = true
++	root.push_input(down,true)
++	var up := InputEventMouseButton.new()
++	up.position = down.position
++	up.button_index = MOUSE_BUTTON_LEFT
++	root.push_input(up,true)
+ func prompt(client: Node, sync: Node) -> Node:
+ 	var node := Prompt.new()
+ 	node.cloud_client = client
+ 	node.cloud_sync = sync
+ 	node.cloud_version = "fictional-version"
+-	root.add_child(node)
++	menu_root.add_child(node)
+ 	return node
+ func capture(label: String) -> void:
+ 	if capture_dir.is_empty() or DisplayServer.get_name() == "headless": return
+@@ -62,10 +74,17 @@
+ 	root.add_child(client)
+ 	var sync := Sync.new()
+ 	root.add_child(sync)
++	# Match App's opaque results canvas. A prompt below this layer is invisible.
++	menu = CanvasLayer.new()
++	menu.layer = 20
++	root.add_child(menu)
++	menu_root = Control.new()
++	MenuStyle.fill(menu_root)
++	menu.add_child(menu_root)
+ 	var background := ColorRect.new()
+ 	background.color = MenuStyle.INK
+ 	MenuStyle.fill(background)
+-	root.add_child(background)
++	menu_root.add_child(background)
+ 	var results := RaceResults.new()
+ 	results.circuit = "Pine circuit"
+ 	results.vehicle_name = "Compact"
+@@ -75,7 +94,7 @@
+ 	results.laps.assign([14.0,13.8,13.7,13.9,13.6])
+ 	results.position = Vector2(32,16)
+ 	results.size = Vector2(1216,688)
+-	root.add_child(results)
++	menu_root.add_child(results)
+ 	var first := prompt(client,sync)
+ 	await frames()
+ 	check(results.visible and not first.overlay.visible,"normal results available while first completion awaits verification")
+@@ -86,8 +105,14 @@
+ 	await create_timer(0.8).timeout
+ 	check(first.overlay.visible and not first.row.locked,"newly verified unrated cloud track opens prompt even with repeated status")
+ 	check(first.row.caption.text == "Rate the track" and first.title.text == "Rate the track","requested action caption")
++	check(first.layer > menu.layer,"rating modal is above the actual application menu canvas")
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		var sample: Vector2 = first.title.get_global_rect().position-Vector2(12,10)
++		var pixel: Color = root.get_texture().get_image().get_pixelv(Vector2i(sample))
++		check(absf(pixel.r-MenuStyle.PANEL.r) < 0.03 and absf(pixel.g-MenuStyle.PANEL.g) < 0.03 and absf(pixel.b-MenuStyle.PANEL.b) < 0.03,"rendered modal panel covers opaque results instead of hiding underneath")
+ 	await capture("cloud-rating-prompt-1280x720")
+-	first.skip.pressed.emit()
++	click(first.skip)
+ 	await frames()
+ 	check(not is_instance_valid(first) and client.score == 0,"Skip leaves server vote unset")
+ 	var again := prompt(client,sync)
+@@ -103,7 +128,7 @@
+ 	await frames()
+ 	check(again.overlay.visible and again.row.caption.visible and not again.row.locked,"failed save stays actionable without confirming a vote")
+ 	client.fail_save = false
+-	again.row.stars[3].pressed.emit()
++	click(again.row.stars[3])
+ 	var before_reads: int = client.reads
+ 	sync.changed.emit()
+ 	check(again.row.locked and client.reads == before_reads,"background verification cannot unlock a vote while it saves")
+@@ -153,7 +178,7 @@
+ 	var local_row := TrackRating.new()
+ 	local_row.records = store
+ 	local_row.track_id = "local-fixture"
+-	root.add_child(local_row)
++	menu_root.add_child(local_row)
+ 	check(local_row.caption.text == "Rate the track","local inline rating uses requested caption")
+ 	local_row.choose(3)
+ 	check(local_row.value() == 3 and local_row.caption.text == "Rate the track","local vote persists with action caption")
+@@ -167,7 +192,7 @@
+ 	complete.position = Vector2(32,16)
+ 	complete.size = Vector2(1216,688)
+ 	complete.theme = MenuStyle.theme()
+-	root.add_child(complete)
++	menu_root.add_child(complete)
+ 	await frames()
+ 	var inline: TrackRating = complete.find_child("TrackRating",true,false)
+ 	check(inline.caption.text == "Rate the track" and inline.value() == 3,"actual Race Complete page shows action caption with stored stars")
+@@ -177,6 +202,7 @@
+ 	background.queue_free()
+ 	sync.queue_free()
+ 	client.queue_free()
++	menu.queue_free()
+ 	await frames()
+ 	print("TRACK_RATING_PROMPT_TESTS: ",checks," checks, ",failures," failures")
+ 	quit(1 if failures else 0)

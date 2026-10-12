@@ -1,0 +1,291 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -222,8 +222,11 @@
+ 		surface_model.has_speed = false
+ 		return
+ 	var dt: float = minf(maxf(delta,0.0),0.1)
++	var previous_gear: int = model.gear
+ 	var changed: bool = model.advance(state,frame,dt)
+-	if changed and not countdown and not was_silent: _event("chassis",0.12,1.32)
++	# Smooth acceleration already has the engine's RPM drop and shift cut.
++	# Reserve the body thud for downshifts, including impact deceleration.
++	if changed and model.gear<previous_gear and not countdown and not was_silent: _event("chassis",0.12,1.32)
+ 	var weights: Vector3 = EngineAudioBlend.rpm_gains(model.weights())
+ 	var load_blend: float = clampf(model.load_amount,0.08,1.0)
+ 	var load_gains: Vector2 = EngineAudioBlend.load_gains(load_blend)
+diff --git a/game/tests/test_acceleration_knock.gd b/game/tests/test_acceleration_knock.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_acceleration_knock.gd
+@@ -0,0 +1,119 @@
++extends SceneTree
++## Synthetic presentation states isolate shift cues from actual road contacts.
++const OUTPUT: String = "res://../docs/evidence/acceleration-knock-2026-10-10"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func expect(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_warning(message)
++
++func observed_script(path: String) -> GDScript:
++	var source: String = FileAccess.get_file_as_string(path)
++	source = source.substr(source.find("\n")+1)
++	source = source.replace("extends Node\n", "extends Node\nvar knock_trace: Array[Dictionary] = []\n")
++	var signature: String = "func _event(clip: String, amplitude: float, pitch: float = 1.0, debris: bool = false) -> void:\n"
++	source = source.replace(signature, signature+"\tknock_trace.append({\"clip\":clip,\"pitch\":pitch,\"amplitude\":amplitude,\"tick\":last_tick,\"gear\":model.gear})\n")
++	var script := GDScript.new()
++	script.source_code = source
++	expect(script.reload()==OK,"Observed audio script compiles")
++	return script
++
++func make_audio(script: GDScript, car: String) -> Node:
++	var audio: Node = script.new()
++	# The native Windows body adapter bypasses Godot's recorder. Use the existing
++	# fallback for this diagnostic only; production routing remains unchanged.
++	audio.set("use_windows_impacts",false)
++	root.add_child(audio)
++	audio.call("configure",car,VehicleCatalog.config(car))
++	return audio
++
++func run() -> void:
++	var prior: GDScript = observed_script(OUTPUT.path_join("before/game/vehicle/vehicle_audio.gd"))
++	var current: GDScript = observed_script("res://vehicle/vehicle_audio.gd")
++	if failures>0:
++		quit(1)
++		return
++	var baseline_only: bool = OS.get_cmdline_user_args().has("--baseline")
++	var reports: Array[Dictionary] = []
++	for variant: String in ["before"] if baseline_only else ["before","after"]:
++		for car: String in ["compact","pickup","classic","formula","kart"]:
++			for fixture: String in ["stationary","acceleration"]:
++				var audio: Node = make_audio(prior if variant=="before" else current,car)
++				var state := VehicleState.new()
++				var model: VehicleAudioModel = audio.get("model")
++				var positive_shift: bool = false
++				for tick: int in range(80):
++					state.tick = tick
++					state.velocity = Vector2(0,0 if fixture=="stationary" else 46.0*clampf((tick/10.0-1.0)/6.0,0,1))
++					var snapshot: Array = state.snapshot()
++					audio.call("present",state,DriveFrame.sample(0,1 if tick>=10 else 0,0),null,0.1,false)
++					positive_shift = positive_shift or model.shift_remaining>0.0
++					expect(state.snapshot()==snapshot,"Audio preserves canonical state")
++				var trace: Array = audio.get("knock_trace")
++				var expected_body: bool = variant=="before" and fixture=="acceleration" and car!="kart"
++				expect((not trace.is_empty())==expected_body,"Only baseline geared acceleration emits body thuds: "+variant+" "+car+" "+fixture)
++				if fixture=="acceleration" and car!="kart":
++					expect(model.shifts>0 and positive_shift,"Engine RPM shift/cut remains active")
++				var report: Dictionary = {"variant":variant,"car":car,"fixture":fixture,"shifts":model.shifts,"events":trace.duplicate(true)}
++				# Deceleration should retain the body cue; it accompanies impact deceleration.
++				if fixture=="acceleration" and car!="kart":
++					trace.clear()
++					for tick: int in range(80,160):
++						state.tick = tick
++						state.velocity = Vector2(0,46.0*(1.0-(tick-80)/80.0))
++						audio.call("present",state,DriveFrame.sample(0,0,0),null,0.1,false)
++					expect(not trace.is_empty(),"Downshift body cue retained")
++					report["downshift_events"] = trace.duplicate(true)
++				reports.append(report)
++				audio.free()
++				await process_frame # Flush freed voices before creating the next bank.
++	var file := FileAccess.open(OUTPUT.path_join("baseline.json" if baseline_only else "regression.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"reports":reports},"\t"))
++	file.close()
++	if not baseline_only and DisplayServer.get_name()!="headless":
++		await capture(prior,current)
++	print("ACCELERATION_KNOCK: ",checks," checks, ",failures," failures")
++	quit(1 if failures>0 else 0)
++
++func capture(prior: GDScript, current: GDScript) -> void:
++	var bus: int = AudioServer.get_bus_index("Master")
++	var recorder := AudioEffectRecord.new()
++	recorder.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,recorder)
++	var reports: Array[Dictionary] = []
++	for variant: String in ["before","after"]:
++		for fixture: String in ["stationary","acceleration"]:
++			var audio: Node = make_audio(prior if variant=="before" else current,"compact")
++			var state := VehicleState.new()
++			await create_timer(0.5).timeout
++			var last_us: int = Time.get_ticks_usec()
++			var elapsed: float = 0.0
++			var telemetry: Array[Dictionary] = []
++			recorder.set_recording_active(true)
++			while elapsed<9.0:
++				await process_frame
++				var now_us: int = Time.get_ticks_usec()
++				var dt: float = float(now_us-last_us)/1000000.0
++				last_us = now_us
++				elapsed += dt
++				state.tick += 1
++				state.velocity = Vector2(0,0 if fixture=="stationary" else 24.0*clampf((elapsed-1.0)/6.0,0,1))
++				audio.call("present",state,DriveFrame.sample(0,1 if elapsed>=1.0 else 0,0),null,dt,elapsed>=8.0)
++				var model: VehicleAudioModel = audio.get("model")
++				telemetry.append({"seconds":elapsed,"tick":state.tick,"speed":state.velocity.length(),"gear":model.gear,"rpm":model.rpm})
++			recorder.set_recording_active(false)
++			var wav: AudioStreamWAV = recorder.get_recording()
++			expect(wav!=null and wav.get_length()>8.5,"Valid native capture duration")
++			if wav!=null: expect(wav.save_to_wav(OUTPUT.path_join(variant+"-"+fixture+".wav"))==OK,"Save native capture")
++			reports.append({"variant":variant,"fixture":fixture,"events":audio.get("knock_trace"),"telemetry":telemetry})
++			audio.free()
++			print("ACCELERATION_CAPTURE: ",variant," ",fixture)
++	AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	var file := FileAccess.open(OUTPUT.path_join("native-capture.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"reports":reports,"body_route":"Godot fallback, diagnostic only","failures":failures},"\t"))
++	file.close()
+diff --git a/scripts/review_acceleration_knock.py b/scripts/review_acceleration_knock.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_acceleration_knock.py
+@@ -0,0 +1,54 @@
++"""Review the native acceleration diagnostic without changing recorded assets."""
++import hashlib
++import json
++from pathlib import Path
++import struct
++import wave
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/acceleration-knock-2026-10-10"
++capture = json.loads((OUT / "native-capture.json").read_text(encoding="utf-8"))
++regression = json.loads((OUT / "regression.json").read_text(encoding="utf-8"))
++assert capture["failures"] == regression["failures"] == 0
++review = []
++for report in capture["reports"]:
++    name = f'{report["variant"]}-{report["fixture"]}.wav'
++    with wave.open(str(OUT / name)) as wav:
++        assert wav.getsampwidth() == 2
++        rate, channels = wav.getframerate(), wav.getnchannels()
++        data = wav.readframes(wav.getnframes())
++    pcm = struct.unpack(f"<{len(data) // 2}h", data)
++    peak = max(abs(x) for x in pcm)
++    clipping = sum(abs(x) >= 32767 for x in pcm)
++    tail_peak = max(abs(x) for x in pcm[-rate * channels // 2:])
++    assert len(pcm) / channels / rate > 8.5 and 0 < peak < 32767
++    assert clipping == tail_peak == 0
++    events = report["events"]
++    expected = report["variant"] == "before" and report["fixture"] == "acceleration"
++    assert bool(events) == expected
++    assert all(event["clip"] == "chassis" and event["pitch"] == 1.32 for event in events)
++    times = [next(t["seconds"] for t in report["telemetry"] if t["tick"] > e["tick"]) for e in events]
++    review.append({"file": name, "seconds": len(pcm) / channels / rate,
++                   "peak": peak / 32768, "clipped_samples": clipping,
++                   "paused_tail_peak": tail_peak, "body_events": len(events),
++                   "body_event_seconds": times})
++hashes = json.loads((OUT / "before-vehicle-wav-hashes.json").read_text(encoding="utf-8-sig"))
++for path, expected in hashes.items():
++    source = ROOT / "game/assets/audio/vehicles" / path
++    assert hashlib.sha256(source.read_bytes()).hexdigest().lower() == expected.lower(), path
++result = {"captures": review, "vehicle_sources_unchanged": len(hashes),
++          "regression_checks": regression["checks"], "failures": 0,
++          "limitations": "Synthetic driving presentation; diagnostic Godot body fallback. Exact owner/device sound unconfirmed."}
++(OUT / "review.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++rows = []
++for fixture in ["stationary", "acceleration"]:
++    rows.append(f"<h2>{fixture.capitalize()}</h2>")
++    for variant in ["before", "after"]:
++        rows.append(f'<p>{variant.capitalize()}</p><audio controls preload="none" src="{variant}-{fixture}.wav"></audio>')
++(OUT / "audition.html").write_text(
++    '<!doctype html><meta charset="utf-8"><title>Acceleration knock comparison</title>'
++    '<style>body{font:18px system-ui;max-width:720px;margin:40px auto;background:#121925;color:#f4f5f6}audio{width:100%}</style>'
++    '<h1>Acceleration knock comparison</h1><p>Throttle starts at 1 second. Smooth acceleration reaches 24 m/s at 7 seconds. '
++    'Pause at 8 seconds. Body cues use the existing Godot fallback for recording.</p>'
++    + "".join(rows), encoding="utf-8")
++print(json.dumps(result, indent=2))
+diff --git a/docs/ACCELERATION_KNOCK.md b/docs/ACCELERATION_KNOCK.md
+new file mode 100644
+--- /dev/null
++++ b/docs/ACCELERATION_KNOCK.md
+@@ -0,0 +1,69 @@
++# Acceleration body-cue correction, 2026-10-10
++
++Requirements: **SND38** (remove the faint added knock during smooth acceleration),
++SND02-SND06 (retain engine, surface and physical-contact sound), G01/R01/Q01
++(presentation-only change, lifecycle and measured verification).
++
++`VehicleAudio.present()` played `chassis.wav` at gain 0.12/pitch 1.32 on every
++virtual gear change. This recording is body-movement foley, so the first upshift
++adds a separate thud during otherwise smooth acceleration. The compact first
++upshift is just above 12.696 m/s; this does not explain a knock occurring while
++stationary immediately at pedal onset.
++
++The runtime now retains the body cue only for downshifts. The virtual drivetrain,
++RPM drop, 120 ms shift cut and engine blending remain unchanged. Collision,
++kerb and landing paths are untouched. No audio asset or native adapter changes.
++All **47 vehicle WAV files** match their starting SHA-256 hashes.
++
++[Before/after listening comparison](evidence/acceleration-knock-2026-10-10/audition.html)
++and [numerical/event review](evidence/acceleration-knock-2026-10-10/review.json).
++The four native recordings start throttle at 1 second, ramp smoothly to 24 m/s
++at 7 seconds where applicable, and pause at 8 seconds. The old compact emits
++two chassis events at approximately **4.175 and 6.292 seconds**; the corrected
++acceleration emits **zero**. Both stationary-throttle cases emit zero body cues.
++All recordings exceed 8.5 seconds, have zero clipped samples and a digitally
++silent final half-second. These are synthetic presentation states rather than
++a physical race or microphone capture. The diagnostic selects the existing
++Godot body fallback because the native Windows body adapter bypasses the
++Godot recorder; shipping routing remains unchanged.
++
++The deterministic comparison covers compact, pickup, classic, Formula and kart,
++stationary throttle and smooth acceleration, with positive downshift controls.
++It verifies unchanged canonical snapshots and that geared cars still shift and
++apply their engine shift cut. The direct-hit integration test separately verifies
++that actual physical impact deceleration retains the accompanying chassis cue.
++
++Changed files: `game/vehicle/vehicle_audio.gd`;
++new `game/tests/test_acceleration_knock.gd`;
++new `scripts/review_acceleration_knock.py`; this document,
++`DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and task evidence.
++The shared dirty index is preserved. A task-only Git-format source patch and
++SHA-256 inventory provide the review checkpoint.
++
++Actual commands, pinned `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`:
++
++| Command | Actual outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_acceleration_knock.gd -TestArgument '--baseline'` | Initial trace reproduces compact four upshift thuds and no stationary cues; process stalled at shutdown and was stopped, so not accepted as a completed test. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_acceleration_knock.gd -Graphical` | Final **1,646 checks, zero failures**, exit 0, four native captures. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_direct_hit_body_audio.gd` | **5 checks, zero failures**, exit 0; actual impact and following downshift cue retained. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1,446 checks, zero failures**, exit 0; exact simulation separation and race/retry lifecycle. |
++| `python scripts/review_acceleration_knock.py` | Event, source hash, native duration, clipping and pause checks pass. |
++
++Logs are copied into the evidence directory. The initial fixture accumulated
++many synthetic audio updates without yielding and stalled; only its two owned
++processes were stopped after checking their command lines. The final fixture
++uses bounded 100 ms deterministic steps and yields between banks; native captures
++use actual frame deltas. An initial duplicate compact alias was corrected to
++`classic`; the final comparison uses all five actual car IDs. The first review
++attempt used the wrong hash-ledger path prefix; corrected without replacing any
++original hashes or weakening the asset assertion.
++
++No visible UI changed. No phone attachment check, device listening test, Android
++export/install, full Validate, backend operation or deployment was performed.
++Restart the local game to load the correction; installed Android builds remain
++unchanged. Remaining acceptance: owner listening on the actual affected client,
++and determining whether the reported faint knock corresponds to this first
++upshift or happens immediately at stationary throttle onset. These captures
++establish removal of the added upshift body cue, not identification of every
++audible artefact on the owner's device.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND38/SND02-SND06/G01/R01/Q01: owner faint acceleration knock. Every virtual upshift added chassis foley0.12/pitch1.32; body cue now downshift-only, RPM/cut and physical contacts retained. Final all-five-car comparison/native four clips1646, direct physical hit5 and vehicle1446 pass; baseline native acceleration2body events/after0, stationary0both, clipping0/pausedtail0/all47WAV hashes exact. Diagnostic fallback only; original overqueued fixture owned processes stopped, actual classic ID/path review corrected. No phone check/device listening/export-install/fullValidate/backend/deploy; exact owner trigger still unconfirmed, restartlocal/Android unchanged. Files/commands/audio/task-only checkpoint: docs/ACCELERATION_KNOCK.md.
++
+ 2026-10-10 RATE05-RATE07/RATE01/B04/R01/Q01/V06: owner restores rating under race-view Race complete and removes rating wait/feedback. Existing finish panel reused for cloud/local; score prefetched during actual start/retry, selected cloud choice ephemeral under service and sent once after server qualification without delaying normal results. No spinner/confirmation/error UI or vote outbox; failed local save rolls back stars, failed cloud vote remains server-unrated/next finish reoffers. Prior results popup removed; account/origin/self-rating/verified-write guards and durable/idempotent race uploads/five laps retained. Native actual3five-lap finishes32 checks/App99/restart17 pass, desktop1280x720/compact960x540 and immediate-results captures inspected. Updated local-results fixture resets per-attempt result guard as real retry does; broad CaptureResults now only prior recommendation failure/out-of-bounds329, not full pass. Initial reserved Node.owner, missing fixture challenge adapter and freed typed reference corrected. Concurrent discovery-warming line preserved/excluded. No phone attachment check/device/APK export-install/fullValidate/backend/deploy/live rating writes. Files/commands/logs/task-only Git checkpoint and actual installed/signed-in acceptance: docs/INSTANT_FINISH_RATING_2026_10_10.md.
+ 
+ 2026-10-10 RLOAD05-RLOAD06/B01/B05/B07/R01/Q01: owner Over and Under then Blind Spot stuck Connecting race. Reproduced suspended-draw baseline8/1fail and expired-ticket-held-upload15/3fail. Bounded2s draw/45s overlay recovery, loading-instance continuation fences and separate35s credential queue preserve upload ownership/account/keys/five laps; frozen partial scene removed. Concurrent rating reserved owner/incomplete optional reply corrected with other work retained. Final expired19/priority26/recovery28/bridge18/loading83/App99/restart17/application compile pass; restart47 shutdown refs retained. PublicHTTP200389-905ms/Godot477ms/read-only; exact owner coroutine not captured/shared logs, main-thread freeze cannot be interrupted by timer. Broad parser retains concurrent removed-prompt fixture failure. No phone check/device/export-install/fullValidate/backend/deploy/player writes; restart client and actual signed-in/device acceptance remain. Files/commands/capture/scoped checkpoint: docs/RACE_LOADING_STALL_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND38/SND02-SND06/G01/R01/Q01: owner faint acceleration knock. Every virtual upshift added chassis foley0.12/pitch1.32; body cue now downshift-only, RPM/cut and physical contacts retained. Final all-five-car comparison/native four clips1646, direct physical hit5 and vehicle1446 pass; baseline native acceleration2body events/after0, stationary0both, clipping0/pausedtail0/all47WAV hashes exact. Diagnostic fallback only; original overqueued fixture owned processes stopped, actual classic ID/path review corrected. No phone check/device listening/export-install/fullValidate/backend/deploy; exact owner trigger still unconfirmed, restartlocal/Android unchanged. Files/commands/audio/task-only checkpoint: docs/ACCELERATION_KNOCK.md.
++
+ 2026-10-10 RLOAD05-RLOAD06/B01/B05/B07/R01/Q01: owner Over and Under then Blind Spot stuck Connecting race. Reproduced suspended-draw baseline8/1fail and expired-ticket-held-upload15/3fail. Bounded2s draw/45s overlay recovery, loading-instance continuation fences and separate35s credential queue preserve upload ownership/account/keys/five laps; frozen partial scene removed. Concurrent rating reserved owner/incomplete optional reply corrected with other work retained. Final expired19/priority26/recovery28/bridge18/loading83/App99/restart17/application compile pass; restart47 shutdown refs retained. PublicHTTP200389-905ms/Godot477ms/read-only; exact owner coroutine not captured/shared logs, main-thread freeze cannot be interrupted by timer. Broad parser retains concurrent removed-prompt fixture failure. No phone check/device/export-install/fullValidate/backend/deploy/player writes; restart client and actual signed-in/device acceptance remain. Files/commands/capture/scoped checkpoint: docs/RACE_LOADING_STALL_2026_10_10.md.
+ 
+ 2026-10-10 GS01-GS04/GL01-GL06/G01/V06/R01/Q01: owner approves first Compact/studio art slice. Shared smooth UV coachwork/arches/crownedhood/rolledroof, satin paint/metals/tread and livery-following details; seamless studio, cached radiance, prepared24-plane soft mesh-shadow, larger Compact/menu4xAA. Fourteen exact-source native meshes230924bytes; final41384triangles/54batched/33050UV; build observed753.115ms source vs130.159-170.085 baked, RTX3090 studio CPUmedian0.695/GPU0.191ms (not phone/whole-app claim). Studio38/livery115/view59/batch35/suspension59/handling88/lights81/App99/Import pass; nativeapp3/studio6/race10 captures. Final parser462 pass after transient concurrent rating-edit failures; unowned files preserved. TabletOPD2403 attached/no phone/device/export-install/fullValidate/backend/deploy. Original asset provenance/commands/scoped binary+text checkpoint/owner visual-bar acceptance: docs/GARAGE_STUDIO.md.

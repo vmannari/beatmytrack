@@ -1,0 +1,810 @@
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -18,6 +18,14 @@
+ var lap_chart: TrackDistribution
+ var lap_context: Label
+ var lap_population: Label
++var race_best_caption: Label
++var lap_best_caption: Label
++var race_time_caption: Label
++var lap_time_caption: Label
++var comparison_scope: String = ""
++var last_comparison: Dictionary = {}
++var refresh_again: bool = false
++var comparison_refresh: Timer
+ const COMPARISON_BINS: int = 8
+ var vehicle_id: String = "compact"
+ var facts: Dictionary
+@@ -145,7 +153,21 @@
+ 	var body: VBoxContainer = _section(parent,16)
+ 	body.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	body.add_theme_constant_override("separation",8)
+-	body.add_child(MenuStyle.label("W H E R E  Y O U  S T A N D",23))
++	var heading := HBoxContainer.new()
++	var title := MenuStyle.label("W H E R E  Y O U  S T A N D",23)
++	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	title.clip_text = true
++	heading.add_child(title)
++	var legend := Control.new()
++	legend.custom_minimum_size = Vector2(116,28)
++	legend.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	legend.draw.connect(func() -> void:
++		legend.draw_colored_polygon(PackedVector2Array([Vector2(2,9),Vector2(10,9),Vector2(6,16)]),MenuStyle.ACCENT)
++		legend.draw_string(MenuStyle.BODY,Vector2(17,18),"RACE",HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.ACCENT)
++		legend.draw_circle(Vector2(78,13),3.5,Color("b8e3f4"))
++		legend.draw_string(MenuStyle.BODY,Vector2(88,18),"PB",HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("b8e3f4")))
++	heading.add_child(legend)
++	body.add_child(heading)
+ 	body.add_child(HSeparator.new())
+ 	var columns := HBoxContainer.new()
+ 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -157,10 +179,26 @@
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		card.add_theme_constant_override("separation",2)
+ 		columns.add_child(card)
+-		card.add_child(MenuStyle.label(kind,22,true))
++		var card_heading := HBoxContainer.new()
++		var caption := MenuStyle.label(kind,22,true)
++		caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		card_heading.add_child(caption)
++		var position_label := MenuStyle.label("",16)
++		position_label.custom_minimum_size = Vector2(94,28)
++		position_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++		position_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
++		card_heading.add_child(position_label)
++		card.add_child(card_heading)
+ 		var value: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
+-		card.add_child(MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34))
+-		var prior: float = results.previous if kind == "RACE TIME" else float(facts.get("previous_lap",0))
++		var times := HBoxContainer.new()
++		var current_time := MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34)
++		current_time.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		times.add_child(current_time)
++		var best_caption := MenuStyle.label("",13,true)
++		best_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		best_caption.add_theme_color_override("font_color",Color("b8e3f4"))
++		times.add_child(best_caption)
++		card.add_child(times)
+ 		var context := MenuStyle.label("",14,true)
+ 		context.clip_text = true
+ 		card.add_child(context)
+@@ -168,36 +206,26 @@
+ 		var chart := TrackDistribution.new()
+ 		chart.custom_minimum_size = Vector2(180,130)
+ 		chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		var values: Array[float] = []
+ 		if kind == "RACE TIME":
+ 			race_chart = chart
+ 			race_context = context
+-			if results.total > 0: values.append(results.total)
+-			if prior > 0: values.append(prior)
+-			context.text = "This race + previous PB" if prior > 0 else "First recorded race"
++			global_rank = position_label
++			race_best_caption = best_caption
++			race_time_caption = current_time
+ 		else:
+ 			lap_chart = chart
+ 			lap_context = context
+-			for index: int in range(1,results.laps.size()):
+-				if results.result.laps[index].valid: values.append(results.laps[index])
+-			context.text = "This race / %d flying laps" % values.size()
+-		chart.snapshot = _local_distribution(values,value)
++			lap_population = position_label
++			lap_best_caption = best_caption
++			lap_time_caption = current_time
++		chart.snapshot = {}
+ 		chart.snapshot.markers = _comparison_markers(kind)
+-		chart.snapshot.marker_label = "THIS RACE" if kind == "RACE TIME" else "BEST LAP"
+-		chart.snapshot.empty_text = "No completed race time" if kind == "RACE TIME" else "No valid flying laps"
+-		chart.snapshot.empty_detail = "Finish a timed race to compare"
++		chart.snapshot.empty_text = "Loading comparison" if not cloud_version.is_empty() and cloud_client != null else "No comparison records"
++		chart.snapshot.empty_detail = "Other drivers' best times"
++		_update_best_caption(best_caption,chart.snapshot.markers)
+ 		chart.tooltip_text = context.text
+ 		card.add_child(chart)
+-		if kind == "RACE TIME":
+-			global_rank = MenuStyle.label("Your race times",13,true)
+-			global_status = MenuStyle.label("Your times on this track",12,true)
+-			global_status.clip_text = true
+-			card.add_child(global_rank)
+-			card.add_child(global_status)
+-			global_status.hide()
+-		else:
+-			lap_population = MenuStyle.label("Your flying laps / %d samples" % values.size(),13,true)
+-			card.add_child(lap_population)
++	global_status = race_context
+ 	body.add_child(HSeparator.new())
+ 	if rating_records != null and not results.editor:
+ 		var rating := TrackRating.new()
+@@ -208,8 +236,14 @@
+ 		rating.cloud_sync = cloud_sync
+ 		body.add_child(rating)
+ 	if not cloud_version.is_empty():
++		comparison_scope = "development" if cloud_client != null and cloud_client.test_drivers_available() else "public"
++		comparison_refresh = Timer.new()
++		comparison_refresh.one_shot = true
++		comparison_refresh.wait_time = 0.25
++		comparison_refresh.timeout.connect(_refresh_rank)
++		add_child(comparison_refresh)
+ 		call_deferred("_refresh_rank")
+-		if cloud_sync != null: cloud_sync.changed.connect(_refresh_rank)
++		if cloud_sync != null: cloud_sync.changed.connect(_queue_comparison_refresh)
+ 
+ static func _local_distribution(values: Array[float], marker: float) -> Dictionary:
+ 	if values.is_empty(): return {}
+@@ -239,6 +273,8 @@
+ 	return markers
+ 
+ func _show_distribution(chart: TrackDistribution, data: Dictionary, context: Label, own_ticks: int = -1) -> void:
++	var value: float = results.total if chart == race_chart else float(facts.get("flying",0))
++	(race_time_caption if chart == race_chart else lap_time_caption).text = MenuStyle.time_text(value) if value > 0 else "\u2014"
+ 	var counts: Array[int] = []
+ 	var edges: Array[float] = []
+ 	var own_bin: int = -1
+@@ -247,9 +283,10 @@
+ 		counts.append(int(bin.count))
+ 		edges.append(float(bin.from_ticks)*1000.0/VehicleSimulation.TICK_RATE)
+ 		if own_ticks >= int(bin.from_ticks) and own_ticks < int(bin.to_ticks_exclusive): own_bin = index
+-	edges.append(float(data.bins[-1].to_ticks_exclusive)*1000.0/VehicleSimulation.TICK_RATE)
+-	var markers: Array = chart.snapshot.get("markers",[])
+-	if chart == race_chart and own_ticks > 0:
++	if not data.bins.is_empty(): edges.append(float(data.bins[-1].to_ticks_exclusive)*1000.0/VehicleSimulation.TICK_RATE)
++	var markers: Array = _comparison_markers("RACE TIME" if chart == race_chart else "BEST LAP")
++	own_ticks = int(data.own_best_ticks) if data.get("own_best_ticks") != null else own_ticks
++	if own_ticks > 0:
+ 		var verified_ms: float = own_ticks*1000.0/VehicleSimulation.TICK_RATE
+ 		var found: bool = false
+ 		for marker: Dictionary in markers:
+@@ -257,12 +294,61 @@
+ 				marker.value_ms = mini(int(marker.value_ms),roundi(verified_ms))
+ 				found = true
+ 		if not found: markers.append({"value_ms":roundi(verified_ms),"label":"YOUR BEST","color":Color("b8e3f4")})
+-	chart.snapshot = {"bins":counts,"min_ms":float(data.minimum_ticks)*1000.0/VehicleSimulation.TICK_RATE,"max_ms":float(data.maximum_ticks)*1000.0/VehicleSimulation.TICK_RATE,"player_bin":own_bin,"edges_ms":edges,"markers":markers}
++	if int(data.get("opponent_count",1)) == 0: counts.clear()
++	var minimum: float = float(data.minimum_ticks) if data.get("minimum_ticks") != null else 0.0
++	var maximum: float = float(data.maximum_ticks) if data.get("maximum_ticks") != null else 0.0
++	chart.snapshot = {"bins":counts,"min_ms":minimum*1000.0/VehicleSimulation.TICK_RATE,"max_ms":maximum*1000.0/VehicleSimulation.TICK_RATE,"player_bin":own_bin,"edges_ms":edges,"markers":markers,"empty_text":"No comparison records","empty_detail":"Other drivers' best times"}
+ 	chart.queue_redraw()
+ 	var comparison: String = "driver best laps" if chart == lap_chart else "personal bests"
+ 	context.text = "%d verified %s / %s" % [int(data.population),"test drivers" if data.get("test_population",false) else "players",comparison]
+ 	chart.tooltip_text = context.text
+-	if chart == lap_chart: lap_population.text = context.text
++	var position_label: Label = global_rank if chart == race_chart else lap_population
++	position_label.text = _position_text(data.get("comparison"))
++	position_label.tooltip_text = context.text
++	_update_best_caption(race_best_caption if chart == race_chart else lap_best_caption,markers)
++
++static func _position_text(comparison: Variant) -> String:
++	if not comparison is Dictionary or int(comparison.get("population",0)) < 2: return ""
++	var position: int = int(comparison.get("position",0))
++	if position <= 0: return ""
++	return "POSITION %d" % position if position <= 10 else "TOP %d%%" % clampi(int(comparison.get("top_percent",100)),1,100)
++
++func _update_best_caption(caption: Label, markers: Array) -> void:
++	caption.text = ""
++	for marker: Dictionary in markers:
++		if marker.label == "YOUR BEST": caption.text = "PB "+MenuStyle.time_text(float(marker.value_ms)/1000.0)
++
++func _apply_comparison(data: Dictionary) -> bool:
++	if data.get("population_scope","") != comparison_scope or not data.get("race") is Dictionary or not data.get("best_lap") is Dictionary: return false
++	if not _valid_distribution(data.race,"race",str(data.get("board_id",""))) or not _valid_distribution(data.best_lap,"best_lap",str(data.get("board_id",""))): return false
++	if data == last_comparison: return true
++	# Both charts are committed in this synchronous callback. No intermediate
++	# local/public/test frame can be drawn while the network request is pending.
++	_show_distribution(race_chart,data.race,race_context)
++	_show_distribution(lap_chart,data.best_lap,lap_context)
++	last_comparison = data.duplicate(true)
++	return true
++
++static func _valid_distribution(data: Dictionary, metric: String, board: String) -> bool:
++	if board.is_empty() or data.get("metric","") != metric or str(data.get("board_id","")) != board or not data.get("bins") is Array: return false
++	var bins: Array = data.bins
++	if bins.size() > COMPARISON_BINS: return false
++	var count: int = 0
++	var previous_edge: int = -1
++	for bin: Variant in bins:
++		if not bin is Dictionary: return false
++		var low: int = int(bin.get("from_ticks",0))
++		var high: int = int(bin.get("to_ticks_exclusive",0))
++		if low <= 0 or high <= low or int(bin.get("count",-1)) < 0 or (previous_edge >= 0 and previous_edge != low): return false
++		count += int(bin.count)
++		previous_edge = high
++	return count == int(data.get("population",-1)) and (bins.is_empty() or (data.get("minimum_ticks") != null and data.get("maximum_ticks") != null))
++
++func _queue_comparison_refresh() -> void:
++	if standings_busy:
++		refresh_again = true
++	elif is_instance_valid(comparison_refresh):
++		comparison_refresh.start()
+ 
+ static func _section(parent: Control, padding: int) -> VBoxContainer:
+ 	var body: VBoxContainer = RaceResults._card(parent,padding)
+@@ -270,50 +356,36 @@
+ 	return body
+ 
+ func _refresh_rank() -> void:
+-	if standings_busy or not is_instance_valid(global_rank) or cloud_client == null: return
++	if not is_instance_valid(global_rank) or cloud_client == null: return
++	if standings_busy:
++		refresh_again = true
++		return
+ 	if not cloud_client.signed_in():
+-		global_rank.text = "OFFLINE RESULT"
+-		global_status.text = "Sign in before racing to enter the leaderboard."
++		_comparison_unavailable("Sign in to compare")
+ 		return
++	if comparison_scope.is_empty(): comparison_scope = "development" if cloud_client.test_drivers_available() else "public"
+ 	standings_busy = true
+-	var response: Dictionary = await cloud_client.request_api("/track-versions/"+cloud_version+"/leaderboard?vehicle_id="+vehicle_id.uri_encode())
++	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d&test_population=%s" % [COMPARISON_BINS,"true" if comparison_scope == "development" else "false"]
++	if results.total > 0: path += "&race_ticks=%d" % roundi(results.total*VehicleSimulation.TICK_RATE)
++	var flying: float = float(facts.get("flying",0))
++	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
++	var response: Dictionary = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+ 	if not is_inside_tree(): return
+-	if response.ok and int(response.data.population) > 0:
+-		var board: String = str(response.data.board_id)
+-		var histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=%d" % COMPARISON_BINS)
+-		if not is_inside_tree(): return
+-		response = await cloud_client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree(): return
+-		if histogram.ok and not histogram.data.bins.is_empty():
+-			var own_ticks: int = int(response.data.player.time_ticks) if response.ok and response.data.player != null else -1
+-			_show_distribution(race_chart,histogram.data,race_context,own_ticks)
+-		var lap_histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=%d&metric=best_lap" % COMPARISON_BINS)
+-		if not is_inside_tree(): return
+-		if lap_histogram.ok and lap_histogram.data.get("metric","") == "best_lap" and int(lap_histogram.data.population) > 0:
+-			_show_distribution(lap_chart,lap_histogram.data,lap_context)
+-		if response.ok and response.data.player != null:
+-			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
+-			global_rank.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-			global_status.text = "Your verified PB"
+-			if response.data.get("faster_than_percent") != null:
+-				global_status.text += " / faster than %.1f%%" % float(response.data.faster_than_percent)
+-		else:
+-			global_rank.text = "AWAITING VERIFIED SCORE"
+-			global_status.text = "Uploads retry while signed in."
+-	else:
+-		global_rank.text = "UNRANKED"
+-		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
+-	if cloud_client.test_drivers_available():
+-		var test_path: String = "/dev/test-drivers/track-versions/"+cloud_version+"/histogram?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d" % COMPARISON_BINS
+-		var test_histogram: Dictionary = await cloud_client.request_api(test_path,HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree(): return
+-		if test_histogram.ok and int(test_histogram.data.population) > 0:
+-			_show_distribution(race_chart,test_histogram.data,race_context)
+-		var test_laps: Dictionary = await cloud_client.request_api(test_path+"&metric=best_lap",HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree(): return
+-		if test_laps.ok and test_laps.data.get("metric","") == "best_lap" and int(test_laps.data.population) > 0:
+-			_show_distribution(lap_chart,test_laps.data,lap_context)
++	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
+ 	standings_busy = false
++	if refresh_again:
++		refresh_again = false
++		_queue_comparison_refresh()
++
++func _comparison_unavailable(message: String) -> void:
++	# A transient error keeps the last complete, correctly scoped comparison.
++	if not last_comparison.is_empty(): return
++	for chart: TrackDistribution in [race_chart,lap_chart]:
++		chart.snapshot.empty_text = message
++		chart.snapshot.empty_detail = "Other drivers' best times"
++		chart.queue_redraw()
++	global_rank.text = ""
++	lap_population.text = ""
+ 
+ func _recommendations() -> void:
+ 	var panel: VBoxContainer = RaceResults._card(self,0)
+diff --git a/game/ui/track_distribution.gd b/game/ui/track_distribution.gd
+--- a/game/ui/track_distribution.gd
++++ b/game/ui/track_distribution.gd
+@@ -62,33 +62,41 @@
+ 	var edges: Array = geometry.edges
+ 	var markers: Array = snapshot.get("markers",[])
+ 	var baseline: float = size.y-24
+-	var top: float = 52
++	var top: float = 10
+ 	var maximum: float = 1.0
+ 	for index: int in range(window.x,window.y+1): maximum = maxf(maximum,float(bins[index]))
++	for fraction: float in [0.25,0.5,0.75,1.0]:
++		var y: float = baseline-(baseline-top)*fraction
++		draw_line(Vector2(8,y),Vector2(size.x-8,y),Color(MenuStyle.BORDER,0.25),1)
+ 	var current: float = float(markers[0].value_ms) if not markers.is_empty() else -1.0
+ 	for index: int in range(window.x,window.y+1):
+ 		var left: float = _time_x(float(edges[index]),geometry.low,geometry.high,size.x)
+ 		var right: float = _time_x(float(edges[index+1]),geometry.low,geometry.high,size.x)
+ 		var height: float = maxf(0,float(bins[index]))/maximum*maxf(1,baseline-top)
+-		var color: Color = MenuStyle.ACCENT if current >= float(edges[index]) and current < float(edges[index+1]) else bar_color
+-		draw_rect(Rect2(left+1.5,baseline-height,maxf(1,right-left-3),height),color)
++		var color: Color = Color("6c92a7") if current >= float(edges[index]) and current < float(edges[index+1]) else Color("41667b")
++		var gap: float = minf(5,(right-left)*0.08)
++		if height > 0:
++			var style := StyleBoxFlat.new()
++			style.bg_color = color
++			style.corner_radius_top_left = 3
++			style.corner_radius_top_right = 3
++			draw_style_box(style,Rect2(left+gap*0.5,baseline-height,maxf(1,right-left-gap),height))
+ 	draw_line(Vector2(8,baseline),Vector2(size.x-8,baseline),MenuStyle.BORDER)
+-	var tied: bool = markers.size() == 2 and roundi(float(markers[0].value_ms)) == roundi(float(markers[1].value_ms))
++	var close: bool = markers.size() == 2 and absf(float(geometry.marker_x[0])-float(geometry.marker_x[1])) < 8
+ 	for index: int in range(markers.size()):
+-		if tied and index > 0: continue
+ 		var marker: Dictionary = markers[index]
+ 		var x: float = float(geometry.marker_x[index])
+ 		var color: Color = marker.get("color",MenuStyle.ACCENT)
+-		var caption: String = ("THIS RACE / YOUR BEST" if tied else str(marker.label))+"  "+MenuStyle.time_text(float(marker.value_ms)/1000.0)
+-		var label_width: float = MenuStyle.BODY.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
+-		draw_string(MenuStyle.BODY,Vector2(clampf(x-label_width*0.5,4,maxf(4,size.x-label_width-4)),14+index*18),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,12,color)
+ 		if index == 0:
+-			draw_line(Vector2(x,top-7),Vector2(x,baseline),color,2.5,true)
+-			draw_colored_polygon(PackedVector2Array([Vector2(x-5,top-10),Vector2(x+5,top-10),Vector2(x,top-3)]),color)
++			draw_line(Vector2(x,top+4),Vector2(x,baseline),color,2,true)
++			draw_colored_polygon(PackedVector2Array([Vector2(x-5,top-5),Vector2(x+5,top-5),Vector2(x,top+3)]),color)
+ 		else:
+-			draw_dashed_line(Vector2(x,top-7),Vector2(x,baseline),color,2.0,5,true)
+-			draw_circle(Vector2(x,top-6),4,color,true,-1,true)
+-		draw_circle(Vector2(x,baseline),3.5,color,true,-1,true)
++			draw_dashed_line(Vector2(x,top+4),Vector2(x,baseline),Color(color,0.85),1.5,5,true)
++			draw_circle(Vector2(x,baseline if close else top-1),4,color,true,-1,true)
++		if int(geometry.outside[index]) != 0:
++			var direction: float = float(geometry.outside[index])
++			var y: float = baseline-8 if close and index == 1 else top+12
++			draw_polyline(PackedVector2Array([Vector2(x-direction*4,y-4),Vector2(x+direction*1,y),Vector2(x-direction*4,y+4)]),color,1.5,true)
+ 	var low_text: String = ("< " if window.x > 0 else "")+MenuStyle.time_text(float(geometry.low)/1000.0)
+ 	var high_text: String = MenuStyle.time_text(float(geometry.high)/1000.0)+(" >" if window.y < bins.size()-1 else "")
+ 	draw_string(MenuStyle.BODY,Vector2(8,size.y-3),low_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
+@@ -104,22 +112,24 @@
+ 		for index: int in range(bins.size()+1):
+ 			edges.append(lerpf(float(data.get("min_ms",0)),float(data.get("max_ms",0)),float(index)/maxi(1,bins.size())))
+ 	var markers: Array = data.get("markers",[])
+-	for marker: Dictionary in markers:
+-		for index: int in range(bins.size()):
+-			if float(marker.value_ms) >= float(edges[index]) and float(marker.value_ms) < float(edges[index+1]):
+-				window.x = mini(window.x,index)
+-				window.y = maxi(window.y,index)
+ 	var low: float = float(edges[window.x])
+ 	var high: float = float(edges[window.y+1])
+-	for marker: Dictionary in markers:
+-		low = minf(low,float(marker.value_ms))
+-		high = maxf(high,float(marker.value_ms))
+-	var padding: float = maxf(1,(high-low)*0.025)
++	# Frame the comparison field, keeping a distant personal time from reducing
++	# all population bars to a narrow cluster. Edge chevrons identify outside times.
++	if high-low < 1000:
++		var center: float = (low+high)*0.5
++		low = maxf(0,center-500)
++		high = center+500
++	var padding: float = (high-low)*0.025
+ 	low = maxf(0,low-padding)
+ 	high += padding
+ 	var marker_x: Array[float] = []
+-	for marker: Dictionary in markers: marker_x.append(_time_x(float(marker.value_ms),low,high,width))
+-	return {"window":window,"low":low,"high":high,"edges":edges,"marker_x":marker_x}
++	var outside: Array[int] = []
++	for marker: Dictionary in markers:
++		var value: float = float(marker.value_ms)
++		outside.append(-1 if value < low else (1 if value > high else 0))
++		marker_x.append(clampf(_time_x(value,low,high,width),13,width-13))
++	return {"window":window,"low":low,"high":high,"edges":edges,"marker_x":marker_x,"outside":outside}
+ 
+ static func _time_x(value: float, low: float, high: float, width: float) -> float:
+ 	return 8+(width-16)*clampf((value-low)/maxf(1,high-low),0,1)
+diff --git a/game/tests/test_race_results.gd b/game/tests/test_race_results.gd
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -9,10 +9,19 @@
+ 	var own: Variant = {"rank":2,"time_ticks":120}
+ 	var tests_available: bool = false
+ 	var paths: Array[String] = []
++	var hold: bool = false
++	var fail: bool = false
++	var position: int = 2
+ 	func signed_in() -> bool: return true
+ 	func test_drivers_available() -> bool: return tests_available
+ 	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
+ 		paths.append(path)
++		while hold: await get_tree().process_frame
++		if fail: return {"ok":false,"status":503,"data":{}}
++		if path.contains("/results-comparison"):
++			var race: Dictionary = {"board_id":"test-board","metric":"race","population":100,"minimum_ticks":100,"maximum_ticks":140,"own_best_ticks":120 if own != null else null,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":25},{"from_ticks":120,"to_ticks_exclusive":140,"count":45},{"from_ticks":140,"to_ticks_exclusive":160,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
++			var lap: Dictionary = {"board_id":"test-board","metric":"best_lap","population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
++			return {"ok":true,"data":{"board_id":"test-board","population_scope":"development" if path.contains("test_population=true") else "public","race":race,"best_lap":lap}}
+ 		if path.contains("/histogram"):
+ 			if path.contains("metric=best_lap"):
+ 				return {"ok":true,"data":{"metric":"best_lap","test_population":path.contains("/dev/"),"population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}]}}
+@@ -429,23 +438,23 @@
+ 	root.add_child(page)
+ 	page.cloud_version = "test-version"
+ 	await page._refresh_rank()
+-	check(page.race_chart.snapshot.bins == [1,1,1], "verified histogram uses exact server counts")
+-	check(page.race_chart.snapshot.player_bin == 1, "verified player on bin boundary uses exclusive upper edge")
++	check(page.race_chart.snapshot.bins == [25,45,30], "verified histogram uses exact server counts")
+ 	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
+-	check(page.global_rank.text == "RANK 2 OF 3" and page.race_context.text.contains("3 verified players"), "rank and histogram context identify the real population")
+-	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text.contains("100 verified players"), "best-lap chart loads every driver's PB rather than this race's flying laps")
++	check(page.global_rank.text == "POSITION 2" and page.race_context.text.contains("100 verified players"), "position and histogram context use the same comparison field")
++	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text == "POSITION 2", "best-lap chart loads every driver's PB rather than this race's flying laps")
+ 	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=8")), "results requests wider race-time bins")
+ 	check(page.race_chart.snapshot.markers.size() == 2 and page.race_chart.snapshot.markers[0].value_ms == 55000, "server comparison retains this race and the local personal-best markers")
+ 	check(page.race_chart.snapshot.markers[1].value_ms == 1000, "verified personal best from another device updates the best marker")
+ 	var geometry: Dictionary = TrackDistribution.comparison_geometry(page.race_chart.snapshot,400)
+-	check(geometry.high > 55000 and geometry.marker_x[0] > 8 and geometry.marker_x[0] < 392, "current race outside the server range remains visible at its real time")
++	check(geometry.outside[0] == 1 and geometry.marker_x[0] > 8 and geometry.marker_x[0] < 392, "current race outside the field has a visible edge marker")
+ 	client.own = null
+ 	await page._refresh_rank()
+-	check(page.race_chart.snapshot.player_bin == -1 and page.global_rank.text == "AWAITING VERIFIED SCORE", "pending upload shows distribution without inventing player placement")
++	check(page.race_chart.snapshot.bins == [25,45,30] and page.global_rank.text == "POSITION 2", "pending upload compares the current result with the same field")
+ 	client.tests_available = true
++	page.comparison_scope = "development"
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.markers.size() == 2, "test population replacement retains both personal markers")
+-	check(page.lap_population.text.contains("100 verified test drivers") and page.lap_chart.snapshot.bins == [25,45,30], "development comparison includes all verified test-driver best laps")
++	check(page.lap_context.text.contains("100 verified players") and page.lap_chart.snapshot.bins == [25,45,30], "development comparison includes all verified test-driver best laps")
+ 	check(page.lap_chart.snapshot.edges_ms.size() == 4, "test lap histogram retains the exact server bin edges")
+ 	page.results.previous = 52.0
+ 	page.results.best = 52.0
+@@ -453,8 +462,39 @@
+ 	check(separate[0].value_ms == 55000 and separate[1].value_ms == 52000, "slower current race and faster personal best have independent markers")
+ 	var tail_snapshot: Dictionary = {"bins":[10,20,30,25,15],"min_ms":97000.0,"max_ms":110000.0,"markers":separate}
+ 	geometry = TrackDistribution.comparison_geometry(tail_snapshot,400)
+-	check(geometry.marker_x[1] < geometry.marker_x[0] and geometry.low < 52000, "both faster markers extend the domain without changing population counts")
++	check(geometry.outside == [-1,-1] and geometry.low > 90000, "faster personal markers do not squeeze the comparison bars")
+ 	check(tail_snapshot.bins == [10,20,30,25,15], "markers never add samples to the driver population")
++	var race_before: Dictionary = page.race_chart.snapshot.duplicate(true)
++	var lap_before: Dictionary = page.lap_chart.snapshot.duplicate(true)
++	client.hold = true
++	page.call_deferred("_refresh_rank")
++	await settle()
++	check(page.standings_busy and page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"pending network refresh never switches to a local or public chart")
++	client.hold = false
++	await settle()
++	check(page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"identical refresh leaves both chart domains and counts stable")
++	client.fail = true
++	await page._refresh_rank()
++	check(page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"transient failure preserves the complete last comparison")
++	client.fail = false
++	client.position = 20
++	await page._refresh_rank()
++	check(page.global_rank.text == "TOP 20%" and page.lap_population.text == "TOP 20%","outside the top ten shows percentile for each metric")
++	check(client.paths.all(func(path: String) -> bool: return path.contains("/results-comparison")),"all result refreshes use one atomic endpoint")
++	var invalid: Dictionary = page.last_comparison.duplicate(true)
++	invalid.best_lap.board_id = "unrelated-board"
++	race_before = page.race_chart.snapshot.duplicate(true)
++	lap_before = page.lap_chart.snapshot.duplicate(true)
++	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"mixed-board packet is rejected before either chart changes")
++	invalid = page.last_comparison.duplicate(true)
++	invalid.population_scope = "public"
++	check(not page._apply_comparison(invalid),"refresh cannot silently switch away from the chosen development population")
++	invalid = page.last_comparison.duplicate(true)
++	invalid.best_lap.bins[0].count = 999
++	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before,"incomplete or contradictory lap counts cannot partially replace the race chart")
++	check(RaceComplete._position_text({"position":10,"population":100,"top_percent":10}) == "POSITION 10","top-ten boundary displays position")
++	check(RaceComplete._position_text({"position":11,"population":10000,"top_percent":1}) == "TOP 1%","top-one-percent remains possible outside the top ten")
++	check(RaceComplete._position_text({"position":1,"population":1,"top_percent":100}).is_empty(),"solo population never displays rank one of one")
+ 	page.free()
+ 	client.free()
+ 	source.free()
+diff --git a/game/tests/test_results_histograms.gd b/game/tests/test_results_histograms.gd
+--- a/game/tests/test_results_histograms.gd
++++ b/game/tests/test_results_histograms.gd
+@@ -55,9 +55,8 @@
+ 		if track == null: continue
+ 		page.recommendations.append({"name":entry.name,"entry":entry,"route":track.route,"laps":5,"estimated_seconds":110,"reason":"Different scenery / New challenge","category":"different_biome"})
+ 	margin.add_child(page)
+-	page._show_distribution(page.race_chart,data.race,page.race_context)
+-	page._show_distribution(page.lap_chart,data.best_lap,page.lap_context)
+-	page.global_rank.text = "YOUR PERSONAL BEST  "+MenuStyle.time_text(source.best)
++	page.comparison_scope = "development"
++	check(page._apply_comparison(data.packet),"capture applies both metrics and positions from the same packet")
+ 	await create_timer(1.8).timeout
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+@@ -68,9 +67,14 @@
+ 	root.size = Vector2i(1280,720)
+ 	source.previous = 0
+ 	source.best = 83.407
+-	page.global_rank.text = "YOUR PERSONAL BEST  "+MenuStyle.time_text(source.best)
+ 	page.race_chart.snapshot.markers = page._comparison_markers("RACE TIME")
++	page._update_best_caption(page.race_best_caption,page.race_chart.snapshot.markers)
+ 	page.race_chart.queue_redraw()
+ 	await screenshot("new-personal-best-1280x720")
++	source.total = float(data.midfield.race_seconds)
++	source.best = source.total
++	page.facts.flying = float(data.midfield.lap_seconds)
++	page._apply_comparison(data.midfield)
++	await screenshot("percentile-1280x720")
+ 	shell.free()
+ 	source.free()
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -7,7 +7,7 @@
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import Integer, cast, func, or_, select, text, tuple_
++from sqlalchemy import Integer, case, cast, func, or_, select, text, tuple_
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
+@@ -492,6 +492,11 @@
+ 
+ 
+ def best_lap_frequencies(board_id, session, *, test_population=False):
++    bests = best_lap_times(board_id, session, test_population=test_population)
++    return select(bests.c.time_ticks, func.count().label("count")).group_by(bests.c.time_ticks).subquery()
++
++
++def best_lap_times(board_id, session, *, test_population=False):
+     """One best verified flying lap per active driver, across comparable attempts."""
+     laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
+     shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
+@@ -516,8 +521,69 @@
+                                   for entry in row.details.get("tracks", []))), default=0)
+             if cutoff:
+                 statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
+-    bests = statement.group_by(Run.player_id).subquery()
+-    return select(bests.c.time_ticks, func.count().label("count")).group_by(bests.c.time_ticks).subquery()
++    return statement.group_by(Run.player_id).subquery()
++
++
++def comparison_position(entries, session, ticks, own_ticks):
++    if ticks is None:
++        return None
++    total, faster = session.execute(select(
++        func.coalesce(func.sum(entries.c.count), 0),
++        func.coalesce(func.sum(case((entries.c.time_ticks < ticks, entries.c.count), else_=0)), 0)
++    )).one()
++    # Compare the result with other drivers, replacing the player's existing
++    # contribution rather than counting them twice when this race is slower.
++    opponents = int(total) - int(own_ticks is not None)
++    if opponents <= 0:
++        return None
++    faster = int(faster) - int(own_ticks is not None and own_ticks < ticks)
++    position, population = faster + 1, opponents + 1
++    return {"position": position, "population": population,
++            "top_percent": max(1, math.ceil(position * 100 / population)),
++            "candidate_ticks": ticks}
++
++
++@router.get("/track-versions/{version_id}/results-comparison")
++def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
++                       bins: int = Query(8, ge=1, le=100), test_population: bool = False,
++                       race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES)):
++    """Both charts and exact placements from one population/database snapshot."""
++    if test_population:
++        from .test_population import require_enabled
++        require_enabled(request)
++    version = published_version(session, version_id)
++    pinned = board_manifest(version, vehicle_id)
++    public_id = digest({"version_id": version.id, **pinned})
++    if test_population:
++        pinned = {**pinned, "test_population": True}
++    board_id = digest({"version_id": version.id, **pinned})
++    field = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
++    race_entries = select(BoardTimeCount.time_ticks, field.label("count")).where(
++        BoardTimeCount.board_id == board_id, field > 0).subquery()
++    laps = best_lap_times(board_id, session, test_population=test_population)
++    lap_entries = select(laps.c.time_ticks, func.count().label("count")).group_by(laps.c.time_ticks).subquery()
++    race_own = session.scalar(select(PersonalBest.time_ticks).where(
++        PersonalBest.board_id == board_id, PersonalBest.player_id == player.id))
++    lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
++    race_best, lap_best = race_own, lap_own
++    if test_population and public_id != board_id:
++        public_race = session.scalar(select(PersonalBest.time_ticks).where(
++            PersonalBest.board_id == public_id, PersonalBest.player_id == player.id))
++        public_laps = best_lap_times(public_id, session)
++        public_lap = session.scalar(select(public_laps.c.time_ticks).where(public_laps.c.player_id == player.id))
++        race_best = min(t for t in (race_best, public_race) if t is not None) if race_best is not None or public_race is not None else None
++        lap_best = min(t for t in (lap_best, public_lap) if t is not None) if lap_best is not None or public_lap is not None else None
++    race = histogram_query(board_id, session, bins, test_population=test_population)
++    lap = histogram_query(board_id, session, bins, test_population=test_population, metric="best_lap")
++    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_best, race_own)
++    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_best, lap_own)
++    race["own_best_ticks"], lap["own_best_ticks"] = race_best, lap_best
++    race["opponent_count"] = race["population"] - int(race_own is not None)
++    lap["opponent_count"] = lap["population"] - int(lap_own is not None)
++    board = session.get(Board, board_id)
++    return {"board_id": board_id, "population_scope": "development" if test_population else "public",
++            "stats_revision": board.stats_revision if board else 0, "race": race, "best_lap": lap}
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+diff --git a/backend/tests/test_domains.py b/backend/tests/test_domains.py
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -326,6 +326,45 @@
+     assert data["population"] == 2 and data["minimum_ticks"] == 24
+ 
+ 
++def test_results_comparison_uses_one_population_and_replaces_own_result(domain):
++    version, _ = public_course(domain)
++    path = f"/v1/track-versions/{version['version_id']}/results-comparison"
++    params = {"vehicle_id":"compact", "race_ticks":350, "lap_ticks":70}
++    assert domain.client.get(path, params=params).status_code == 401
++    solo = domain.client.get(path, params=params, headers=headers(domain)).json()
++    assert solo["race"]["comparison"] is None and solo["best_lap"]["comparison"] is None
++    race(domain, version, "Alice", frames=20)
++    race(domain, version, "Bob", frames=30)
++    response = domain.client.get(path, params=params, headers=headers(domain))
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data["population_scope"] == "public"
++    for metric in ("race", "best_lap"):
++        assert data[metric]["board_id"] == data["board_id"]
++        assert sum(b["count"] for b in data[metric]["bins"]) == data[metric]["population"] == 3
++        assert data[metric]["comparison"]["position"] == 3  # Existing faster self-PB excluded.
++        assert data[metric]["comparison"]["population"] == 3
++    assert data["race"]["own_best_ticks"] == 300
++    assert data["best_lap"]["own_best_ticks"] == 60
++    assert domain.client.get(path, params={**params,"race_ticks":0}, headers=headers(domain)).status_code == 422
++
++
++def test_results_comparison_has_exact_top_percentile_with_ties(domain):
++    from bmt_backend.runs import comparison_position
++    from bmt_backend.track_models import BoardTimeCount
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        session.add(BoardTimeCount(board_id=board,time_ticks=100,public_count=10,all_count=10))
++        session.add(BoardTimeCount(board_id=board,time_ticks=200,public_count=989,all_count=989))
++        session.commit()
++        entries = select(BoardTimeCount.time_ticks,BoardTimeCount.public_count.label("count")).where(
++            BoardTimeCount.board_id == board).subquery()
++        compare = comparison_position(entries,session,200,300)
++        assert compare == {"position":11,"population":1000,"top_percent":2,"candidate_ticks":200}
++        compare = comparison_position(entries,session,100,None)
++        assert compare["position"] == 1 and compare["population"] == 1001 and compare["top_percent"] == 1
++
++
+ def test_pb_ties_histogram_neighbours_and_ghost_share_population(domain):
+     version, board = public_course(domain)
+     alice = race(domain, version, "Alice", frames=20)
+diff --git a/backend/tests/test_test_drivers.py b/backend/tests/test_test_drivers.py
+--- a/backend/tests/test_test_drivers.py
++++ b/backend/tests/test_test_drivers.py
+@@ -451,8 +451,19 @@
+     assert data["minimum_ticks"] == 2000 and data["maximum_ticks"] == 2099
+     assert len(data["bins"]) <= 8
+     assert drivers.client.get(f"/v1/boards/{board_id}/histogram?metric=best_lap").status_code == 404
++    comparison_route = f"/v1/track-versions/{version_id}/results-comparison?vehicle_id=compact&test_population=true&race_ticks=9500&lap_ticks=1900"
++    assert drivers.client.get(comparison_route).status_code == 401
++    response = drivers.client.get(comparison_route,headers=auth(drivers.login))
++    assert response.status_code == 200,response.text
++    comparison = response.json()
++    assert comparison["population_scope"] == "development"
++    for metric in ("race","best_lap"):
++        assert comparison[metric]["board_id"] == comparison["board_id"]
++        assert comparison[metric]["comparison"]["position"] == 1
++        assert comparison[metric]["comparison"]["population"] == 101
+     drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
+     assert drivers.client.get(route, headers=auth(drivers.login)).status_code == 404
++    assert drivers.client.get(comparison_route,headers=auth(drivers.login)).status_code == 404
+ 
+ 
+ def test_test_histogram_uses_verified_test_counts_and_stays_private(drivers):
+diff --git a/docs/schemas/time-histogram-v1.schema.json b/docs/schemas/time-histogram-v1.schema.json
+--- a/docs/schemas/time-histogram-v1.schema.json
++++ b/docs/schemas/time-histogram-v1.schema.json
+@@ -12,6 +12,19 @@
+     "test_population": {"type": "boolean"},
+     "label": {"type": "string"},
+     "vehicle_id": {"type": "string"},
++    "opponent_count": {"type": "integer", "minimum": 0},
++    "own_best_ticks": {"type": ["integer", "null"], "minimum": 1},
++    "comparison": {
++      "type": ["object", "null"],
++      "required": ["position", "population", "top_percent", "candidate_ticks"],
++      "properties": {
++        "position": {"type": "integer", "minimum": 1},
++        "population": {"type": "integer", "minimum": 2},
++        "top_percent": {"type": "integer", "minimum": 1, "maximum": 100},
++        "candidate_ticks": {"type": "integer", "minimum": 1}
++      },
++      "additionalProperties": false
++    },
+     "bins": {
+       "type": "array",
+       "maxItems": 100,
+diff --git a/docs/RESULTS_HISTOGRAMS.md b/docs/RESULTS_HISTOGRAMS.md
+--- a/docs/RESULTS_HISTOGRAMS.md
++++ b/docs/RESULTS_HISTOGRAMS.md
+@@ -1,4 +1,6 @@
+ # Results histogram correction — 2026-10-08
++
++The owner's subsequent stability/layout/ranking correction supersedes this first presentation. See [STABLE_RESULTS_COMPARISON.md](STABLE_RESULTS_COMPARISON.md) for the current implementation, exact single-population endpoint, compact markers and actual checks. The deployment approval described below remains pending.
+ 
+ Owner request: use wider race-time bins, clearly show the just-completed race and the player's best, and include all test drivers' best laps in the lap comparison.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-corrected results comparisons implemented locally: single atomic same-population endpoint, no public/test/local refresh switching, same-response exact positions1-10 then top percentile, compact PB/header legend and full-height bars. No four-local-lap fallback; retained100-driver lap bests/standing-start/reset/public isolation preserved. Final graphical48/App99/parser355 and SQLite/ownedPG11 pass/one skip, lint/diff pass; delayed/failed/identical/mixed packet stability and solo/ties proven. Five actual-field captures inspected/task-only patch retained. Prior broad-results/rules409 failures documented, no weakening. No phone check/device/export/install/full Validate/cloud change. Matching two-module overlay refreshed locally; prior automatic code-egress/development-upload rejection still requires explicit owner approval. Files/commands/evidence/limits: docs/STABLE_RESULTS_COMPARISON.md.
++
+ 2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-requested results histogram correction implemented locally: eight bins, exact current-race/own-PB markers and one verified flying-lap best per driver across comparable attempts. Standing starts/public artificial identities/unverified runs/retired test records excluded; exact edges/counts retained. Final graphical36/App99/parser351 pass; histogram SQL7 pass/1 skip, broad backend143 pass/5 skip/two existing rules-upgrade409 failures, task-start baseline reproduced. Broad results recommendation/timing fixture remains failing. Inspected100-real-driver desktop/compact/wide and tied-marker captures; task-only checkpoint preserves unrelated work. No phone check/device/export/install/full Validate/cloud state change. Development overlay prepared; automatic approval review rejected image build/push because exact repository-code egress/rollout authorization is absent; owner approval pending. Files/commands/evidence/limits: docs/RESULTS_HISTOGRAMS.md.
+ 
+ 2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1274,3 +1274,6 @@
+ 
+ 
+ 2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: results histograms use eight bins, two retained timed markers and all-driver verified flying-lap bests. Graphical36/App99/parser351 pass; SQLite/ownedPG histogram7 pass/one skip; broad143 pass/5 skip/two baseline rules409 failures, old broad-results fixture remains failing. Actual100-driver captures inspected/scoped checkpoint retained. No phone check/device/export/install/full Validate/cloud change. Two-module development rollout prepared; image build/push rejected by automatic approval review pending explicit code-egress/development-rollout approval. Details: docs/RESULTS_HISTOGRAMS.md.
++
++
++2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-corrected stable atomic results comparison and compact chart design implemented locally. Same-field exact top-ten position/percentile, true other-driver lap bests, no four-lap fallback; graphical48/App99/parser355/SQLite+ownedPG11 pass/one skip and lint/diff pass. Inspected captures/task-only patch; old broad failures retained. No phone check/device/export/install/full Validate/cloud change; previous automatic repository-code upload rejection remains pending owner approval for the existing development backend. Details: docs/STABLE_RESULTS_COMPARISON.md.
+diff --git a/docs/STABLE_RESULTS_COMPARISON.md b/docs/STABLE_RESULTS_COMPARISON.md
+--- /dev/null
++++ b/docs/STABLE_RESULTS_COMPARISON.md
+@@ -0,0 +1,49 @@
++# Stable results comparisons — 2026-10-08
++
++Requirements: R01/R03, V03/V05, RR05/RR06, B05, TD06/TD08 and Q01. The owner rejects the jumping comparison, the rank from a different population, stacked marker captions and the local four-lap fallback. The latest request supersedes the presentation in [RESULTS_HISTOGRAMS.md](RESULTS_HISTOGRAMS.md).
++
++## Cause and final behavior
++
++The previous refresh serially assigned the public race distribution, fetched its around-me rank, then replaced only the race chart with development data. Every upload/rating sync could briefly draw the public distribution again. The unshipped `best_lap` API left the lap chart displaying only this race's four flying laps. The public rank could say `RANK 1 OF 1` beside 100 development-driver bars.
++
++Results now uses **one authenticated endpoint and one selected population** for both metrics. The client validates board/scope/metric/edges/counts for the entire response before committing either chart synchronously. Equal responses do not redraw or reframe the plots. Pending reads, failures and malformed/mixed responses preserve the last complete comparison. Sync bursts are debounced and a refresh arriving during an outstanding read gets a bounded follow-up. A population is selected when the page opens; upload refreshes do not silently switch between public and development data.
++
++The main race time and fastest flying lap remain prominent. The PB is a compact time on that same row. A single small race-triangle/PB-circle legend shares the existing title row. There are **no stacked THIS RACE/YOUR BEST caption rows and no flying-lap/sample footer**. Bars have restrained rounded tops, narrower gaps and faint reference grid lines. The population's central time domain stays independent of personal outliers; chevrons identify a personal time outside that domain. Close markers use the top triangle for this result and bottom circle for PB, while the exact times remain readable above. Original rendering for chart callers without Results markers is retained.
++
++Each metric shows **POSITION 1 through POSITION 10**, then **TOP N%**. These are exact comparisons against the same field as its histogram, computed from server tick frequencies rather than estimated from bins. The completed race is compared with drivers' race PBs; this race's best flying lap is compared with each driver's shortest verified flying lap across comparable attempts. The player's old contribution is replaced when calculating placement, preventing a slower race from counting the same player twice. Ties use competition position. Percentages round upward to the smallest whole top-percent threshold; a position outside ten can be TOP 1% in a sufficiently large field. With no opponents, there is no position/percentile and the chart shows no peer comparison.
++
++There is no local current/previous-race or four-lap distribution fallback. Before the first successful response, an honest loading/unavailable/empty comparison state retains the two actual result times and known PBs. This prevents a missing older backend from masquerading as the requested player comparison.
++
++## Backend contract
++
++`GET /v1/track-versions/{version_id}/results-comparison?vehicle_id=compact&bins=8&test_population=true|false&race_ticks=...&lap_ticks=...` returns `board_id`, `population_scope`, `stats_revision`, `race` and `best_lap`. Both histograms carry their exact bins, metric, field population, `own_best_ticks`, `opponent_count` and nullable `comparison` (`position`, comparison `population`, `top_percent`, `candidate_ticks`). The display-only candidate parameters are bounded canonical tick values; they never create or modify a verified score. Existing publication, vehicle, rules, disabled-player, development-session and test-population gates apply. Public comparisons exclude artificial identities.
++
++All metrics and placements execute within the existing PostgreSQL repeatable-read boundary (one SQLite request transaction in local tests). Lap aggregation retains standing-start exclusion, active PB membership, non-PB verified attempts and the applicable development-record reset boundary. Real PBs can update the personal marker from another device. The development field may compare a real player with its artificial entrants without exposing those identities in public rankings. No migration, physics/replay change, dependency or player-file rewrite was introduced.
++
++Schemas: [results-comparison-v1.schema.json](schemas/results-comparison-v1.schema.json), [time-histogram-v1.schema.json](schemas/time-histogram-v1.schema.json).
++
++## Changed files and actual checks
++
++Source: `game/ui/race_complete.gd`, `game/ui/track_distribution.gd`, `backend/bmt_backend/runs.py`. Tests: `game/tests/test_race_results.gd`, `test_results_histograms.gd`; `backend/tests/test_domains.py`, `test_test_drivers.py`. Schemas, these two comparison documents, development status/phase plan and dated evidence complete the review package.
++
++Commands used pinned Godot **4.7.2 stable ed1daf0bf** through `scripts/dev.ps1`, with `APPDATA=build/stable-results-user` for isolated records. The graphical run also set `BMT_RESULTS_EVIDENCE` to the dated evidence directory. Runtime checks used approved Windows certificate access.
++
++| Actual command | Actual result |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical` | **48 checks, zero failures**, final; verifies pending/identical/failed refresh stability, one endpoint, both metrics, mixed-board/scope/count rejection, exact markers, top-ten/percentile/solo behavior and five captures. |
++| `TestApp` | **99 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **355 scripts, zero failures**. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py -q -k 'histogram or results_comparison' --tb=short --show-capture=no --junitxml=docs/evidence/stable-results-histograms-2026-10-08/backend-tests.xml` | **11 passed, 1 skipped, 59 deselected**, SQLite and owned PostgreSQL 17. [Actual XML](evidence/stable-results-histograms-2026-10-08/backend-tests.xml). |
++| `ruff check` for the changed backend source/tests; scoped `git diff --check` | Passed. An unused local test variable found on the first lint pass was corrected. |
++
++The PostgreSQL fixture was the task-owned, labeled, loopback-only container on port 55448 (one CPU, 512 MiB), removed afterward. Existing local services/databases were preserved. The earlier broad results fixture and baseline rules-upgrade 409 failures remain documented in the preceding report; they were not weakened or reported passing. Full physics regression/full `Validate` was not run for this presentation/read-only API change.
++
++## Evidence and acceptance
++
++[Desktop](evidence/stable-results-histograms-2026-10-08/comparison-1280x720.png), [compact](evidence/stable-results-histograms-2026-10-08/comparison-960x540.png), [wide](evidence/stable-results-histograms-2026-10-08/comparison-1600x720.png), [coincident PB](evidence/stable-results-histograms-2026-10-08/new-personal-best-1280x720.png) and [percentile state](evidence/stable-results-histograms-2026-10-08/percentile-1280x720.png) were captured and inspected. All 100 comparison-driver times/laps come from the actual retained Silmukka reseed CSV. Player times are isolated illustrative fixtures; the percentile fixture uses a recorded field time and an exact count over the unbinned driver values. No screenshot fixture was uploaded. The empty isolated catalog accounts for absent recommendation cards.
++
++[Task-only patch](evidence/stable-results-histograms-2026-10-08/stable-results-comparison.patch) records the current correction against turn-start snapshots while preserving unrelated working-tree changes. No mixed-workspace commit was made.
++
++**The matching development backend rollout still needs the owner's explicit approval.** The previous automatic approval review rejected building/pushing repository code to the existing Artifact Registry destination. This correction does not reinterpret the user's UI feedback as approval or retry that rejected upload. The unbuilt two-module overlay was refreshed **locally, with no network calls**, to include the new atomic endpoint and exact-placement functions. [Prepared overlay receipt](evidence/stable-results-histograms-2026-10-08/development-overlay-prepared.json). It retains exact source/image/ownership guards, requires unchanged packaged canonical files and a fresh successful SQL backup, and performs no migration or reseed. No cloud image/service/record changed in this turn.
++
++Until the approved update reaches the existing development API/worker, the new endpoint is unavailable and the client shows its truthful comparison-unavailable state instead of alternating charts or using four local laps. After approval: build/prove/backup/deploy/smoke and verify the live field. Owner visual acceptance is pending. Phone attachment was not checked; no physical-device test or Android export/install was performed.
+diff --git a/docs/schemas/results-comparison-v1.schema.json b/docs/schemas/results-comparison-v1.schema.json
+--- /dev/null
++++ b/docs/schemas/results-comparison-v1.schema.json
+@@ -0,0 +1,15 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Atomic results comparison",
++  "type": "object",
++  "required": ["board_id", "population_scope", "stats_revision", "race", "best_lap"],
++  "properties": {
++    "board_id": {"type": "string", "minLength": 1},
++    "population_scope": {"enum": ["public", "development"]},
++    "stats_revision": {"type": "integer", "minimum": 0},
++    "race": {"$ref": "time-histogram-v1.schema.json"},
++    "best_lap": {"$ref": "time-histogram-v1.schema.json"}
++  },
++  "additionalProperties": false,
++  "description": "One database snapshot and pinned board for both charts. Exact candidate placement uses other drivers' verified personal bests, replacing a retained self entry. Candidate ticks are display-only and never write records. No opponents means null comparison. Top ten display position; remaining positions display the upward-rounded top-percent threshold."
++}

@@ -1,0 +1,1190 @@
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -24,6 +24,8 @@
+     new_id,
+     now,
+ )
++from .verifier import VerifierStopping
++from .worker_lifecycle import aborting, run_worker, stopping
+ 
+ logger = logging.getLogger("bmt.worker")
+ 
+@@ -34,6 +36,8 @@
+ 
+ def process_one(app) -> bool:
+     """Claim at most one job; keep the expensive verifier outside DB transactions."""
++    if stopping(app):
++        return False
+     settings = app.state.settings
+     worker_id = getattr(app.state, "worker_id", None)
+     if worker_id is None:
+@@ -43,6 +47,8 @@
+         build = build_contract(manifest)
+     except RuntimeError:
+         build = {"status":"unavailable"}
++    if stopping(app):
++        return False
+     heartbeat(app, worker_id, phase="claiming", build=build)
+     from .track_validation import process_one as validate_one
+     # Alternate queues, keeping creator saves and race proofs from starving each other.
+@@ -69,6 +75,8 @@
+         if run is None:
+             session.rollback()
+             return validate_one(app)
++        if stopping(app):
++            return False
+         if run.attempts >= maximum_attempts:
+             run.status, run.failure_code, run.finished_at = "failed", "verifier_unavailable", now()
+             run.lease_token = None
+@@ -86,8 +94,12 @@
+         needs_ghost = not creator_test and session.get(RivalryTicket, run.ticket_id) is not None
+         expected_manifest = current_manifest(version.manifest)
+         pinned_manifest = dict(board.manifest)
++        if stopping(app):
++            session.rollback()
++            return False
+         session.commit()
+-    heartbeat(app, worker_id, phase="verifying")
++    queue_wait = max(0, now() - run.created_at)
++    heartbeat(app, worker_id, phase="verifying", last_queue_wait_seconds=queue_wait)
+ 
+     result, failure, rejected, permanent, ghost_hash = None, None, False, False, None
+     started = time.monotonic()
+@@ -123,19 +135,24 @@
+         if needs_ghost and result.get("ghost"):
+             # Durability and fsync must not hold Run/Group/PB/queue locks.
+             ghost_hash = app.state.blobs.put_json(result["ghost"])
++    except VerifierStopping:
++        # Keep the durable lease; a replacement can recover it after expiry.
++        return True
+     except BuildMismatch:
+         failure, permanent = "build_mismatch", True
+-        logger.error("verification_build_mismatch", extra={"run_id": run_id, "failure_code": failure})
++        logger.error("verification_build_mismatch", extra={"run_id": run_id, "worker_id": worker_id, "failure_code": failure})
+     except ValueError:
+         failure, rejected = "invalid_replay", True
+     except Exception as exc:
+-        logger.exception("verification_infrastructure_error", extra={"run_id": run_id, "failure_code": "manifest_mismatch" if str(exc) == "Verifier manifest differs from pinned track manifest" else "verifier_unavailable"})
++        logger.exception("verification_infrastructure_error", extra={"run_id": run_id, "worker_id": worker_id, "failure_code": "manifest_mismatch" if str(exc) == "Verifier manifest differs from pinned track manifest" else "verifier_unavailable"})
+         failure = "verifier_unavailable"
+ 
++    if aborting(app):
++        return True
+     with app.state.session_factory() as session:
+         run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+         if run.status != "verifying" or run.lease_token != token or run.lease_until <= now():
+-            logger.warning("verification_lease_lost", extra={"run_id": run_id})
++            logger.warning("verification_lease_lost", extra={"run_id": run_id, "worker_id": worker_id})
+             return True
+         if failure:
+             terminal = permanent or rejected or run.attempts >= maximum_attempts
+@@ -144,6 +161,8 @@
+             run.lease_until = 0 if terminal else now() + min(60, 2**run.attempts)
+             run.finished_at = now() if terminal else None
+             session.commit()
++            logger.info("verification_unsuccessful", extra={"run_id": run_id, "worker_id": worker_id,
++                "failure_code": failure, "verification_seconds": round(time.monotonic()-started, 4)})
+             return True
+         # Serialize PB projections with account restriction/test-identity changes.
+         # Both writers lock Player before touching board visibility counters.
+@@ -193,6 +212,7 @@
+             )
+         session.commit()
+         logger.info("verification_complete", extra={"run_id": run_id, "time_ticks": result["time_ticks"],
++            "worker_id": worker_id, "queue_wait_seconds": queue_wait,
+             "verification_seconds":round(time.monotonic()-started,4)})
+     heartbeat(app,worker_id,phase="idle",last_verification_seconds=round(time.monotonic()-started,4))
+     return True
+@@ -205,20 +225,7 @@
+     from .app import create_app
+ 
+     app = create_app()
+-    while True:
+-        try:
+-            worked = process_one(app)
+-        except Exception:
+-            # DB finalization can fail after canonical verification. Rollback
+-            # leaves the fenced lease recoverable by this or another worker.
+-            logger.exception("worker_iteration_failed")
+-            worked = False
+-            if args.once:
+-                raise
+-        if args.once:
+-            return
+-        if not worked:
+-            time.sleep(1)
++    run_worker(app, process_one, once=args.once)
+ 
+ 
+ if __name__ == "__main__":
+--- a/backend/bmt_backend/operations.py
++++ b/backend/bmt_backend/operations.py
+@@ -3,6 +3,8 @@
+ from pathlib import Path
+ 
+ from sqlalchemy import func, select
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
+ from .contracts import build_contract, current_manifest
+ from .track_models import OperationState, Run, TrackValidation, now
+@@ -10,11 +12,19 @@
+ 
+ def heartbeat(app, worker_id: str, **details):
+     with app.state.session_factory() as session:
+-        state = session.get(OperationState, "worker:" + worker_id)
+-        if state is None:
+-            state = OperationState(id="worker:" + worker_id)
+-            session.add(state)
+-        state.updated_at, state.details = now(), {**(state.details or {}), **details}
++        insert = pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
++        session.execute(insert(OperationState).values(id="worker:" + worker_id, updated_at=now(), details={})
++            .on_conflict_do_nothing(index_elements=[OperationState.id]))
++        state = session.scalar(select(OperationState).where(OperationState.id == "worker:" + worker_id).with_for_update())
++        previous = state.details or {}
++        lifecycle = details.get("lifecycle", previous.get("lifecycle", "running"))
++        control = getattr(app.state, "worker_control", None)
++        if previous.get("lifecycle") == "stopped":
++            lifecycle = "stopped"
++        elif lifecycle != "stopped" and (previous.get("lifecycle") == "draining" or
++                (control and (control.requested_at is not None or control.stop.is_set()))):
++            lifecycle = "draining"
++        state.updated_at, state.details = now(), {**previous, **details, "lifecycle": lifecycle}
+         session.commit()
+ 
+ 
+@@ -22,10 +32,17 @@
+     with app.state.session_factory() as session:
+         current = now()
+         depth, oldest = session.execute(select(func.count(), func.min(Run.created_at)).where(Run.status.in_(("queued", "verifying")))).one()
+-        workers = session.scalars(select(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at >= current - app.state.settings.worker_stale_seconds)).all()
++        recent_workers = session.scalars(select(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at >= current - app.state.settings.worker_stale_seconds)).all()
++        workers = [w for w in recent_workers if w.details.get("lifecycle", "running") == "running"]
+         completions = session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "verified"))
+         failures = dict(session.execute(select(Run.failure_code, func.count()).where(Run.finished_at >= current - 300, Run.failure_code.is_not(None)).group_by(Run.failure_code)).all())
+         arrivals = session.scalar(select(func.count()).select_from(Run).where(Run.created_at >= current - 300))
++        failed, rejected, latency_avg, latency_max = (
++            session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "failed")),
++            session.scalar(select(func.count()).select_from(Run).where(Run.finished_at >= current - 300, Run.status == "rejected")),
++            *session.execute(select(func.avg(Run.finished_at - Run.created_at), func.max(Run.finished_at - Run.created_at))
++                .where(Run.finished_at >= current - 300, Run.status == "verified")).one(),
++        )
+         validations, validation_oldest = session.execute(select(func.count(), func.min(TrackValidation.created_at)).where(TrackValidation.status.in_(("queued", "validating")))).one()
+         total_depth = depth + validations
+         guard = session.get(OperationState,"object-maintenance")
+@@ -51,13 +68,22 @@
+                              and isinstance(expected["vehicles"], dict) and bool(expected["vehicles"]))
+             except RuntimeError:
+                 pass
+-        usable = supported and bool(expected) and any(w.details.get("build", {}) == expected for w in workers)
++        available = [w for w in workers if supported and expected and w.details.get("build", {}) == expected]
++        usable = bool(available)
+         status = "ready" if usable else "api_contract_mismatch" if expected and not supported else "worker_build_mismatch" if expected else "verifier_unavailable" if workers else "worker_unavailable"
+         return {"status":status, "expected_build":expected, "queue_depth": total_depth,
+                 "pending_races":depth,
+                 "queue_capacity": app.state.settings.max_queued_runs,
+                 "oldest_age_seconds": max(0, current - oldest) if oldest else 0,
+                 "active_workers": len(workers), "verified_last_5_minutes": completions,
++                "available_workers": len(available),
++                "draining_workers": sum(w.details.get("lifecycle") == "draining" for w in recent_workers),
++                "stopped_workers": sum(w.details.get("lifecycle") == "stopped" for w in recent_workers),
++                "verified_per_second_last_5_minutes": round(completions / 300, 4),
++                "failed_last_5_minutes": failed, "rejected_last_5_minutes": rejected,
++                "infrastructure_failure_rate_last_5_minutes": round(failed / (completions + failed), 4) if completions + failed else None,
++                "completion_latency_seconds_last_5_minutes": {"mean": round(float(latency_avg), 3) if latency_avg is not None else None, "max": latency_max},
++                "worker_queue_wait_seconds": {w.id.removeprefix("worker:"): w.details.get("last_queue_wait_seconds") for w in workers},
+                 "arrivals_last_5_minutes":arrivals, "pending_track_validations":validations,
+                 "worker_builds":[w.details.get("build", {}) for w in workers],
+                 "failures_last_5_minutes": failures,
+--- a/backend/bmt_backend/observability.py
++++ b/backend/bmt_backend/observability.py
+@@ -14,7 +14,8 @@
+         if not isinstance(value, dict):
+             value = {"event": message}
+         value["level"] = record.levelname.lower()
+-        for field in ("run_id", "time_ticks", "failure_code"):
++        for field in ("run_id", "time_ticks", "failure_code", "worker_id",
++                      "verification_seconds", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
+             if hasattr(record, field):
+                 value[field] = getattr(record, field)
+         # Record only exception type: arbitrary exception text can include submitted data.
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -29,6 +29,7 @@
+     write_limit_per_minute: int = 90
+     max_queued_runs: int = 128
+     worker_stale_seconds: int = 300
++    worker_shutdown_grace_seconds: int = 5
+     retention_days: int = 90
+     backup_marker_path: str = ""
+     database_pool_size: int = 4
+@@ -71,6 +72,7 @@
+             "write_limit_per_minute",
+             "max_queued_runs",
+             "worker_stale_seconds",
++            "worker_shutdown_grace_seconds",
+             "retention_days",
+             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
+             "upload_concurrency", "edge_limit_per_minute", "verifier_recycle_jobs",
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -33,6 +33,10 @@
+ 
+ class VerifierUnavailable(RuntimeError):
+     """The trusted verifier could not execute; never publish a result."""
++
++
++class VerifierStopping(VerifierUnavailable):
++    """Cooperative shutdown leaves the owning durable job recoverable."""
+ 
+ 
+ def _json_bytes(value: Any, limit: int) -> bytes:
+@@ -122,7 +126,50 @@
+         self._log = None
+         self._jobs = 0
+         self.engine_pid = None
++        self._stop = threading.Event()
+         atexit.register(self.close)
++
++    def request_stop(self):
++        self._stop.set()
++
++    def _check_stopping(self):
++        if self._stop.is_set():
++            raise VerifierStopping("Canonical verifier is stopping")
++
++    @staticmethod
++    def _kill_process(process):
++        if process.poll() is None:
++            if __import__("os").name == "nt":
++                try:
++                    result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                        capture_output=True, timeout=2, check=False)
++                    if result.returncode and process.poll() is None:
++                        process.kill()
++                except (OSError, subprocess.TimeoutExpired):
++                    if process.poll() is None:
++                        process.kill()
++            else:
++                process.kill()
++        process.wait(timeout=10)
++
++    def _run_process(self, command, *, timeout, **options):
++        self._check_stopping()
++        with subprocess.Popen(command, **options) as process:
++            deadline = time.monotonic() + timeout
++            try:
++                while True:
++                    self._check_stopping()
++                    remaining = deadline - time.monotonic()
++                    if remaining <= 0:
++                        raise subprocess.TimeoutExpired(command, timeout)
++                    try:
++                        stdout, stderr = process.communicate(timeout=min(0.1, remaining))
++                        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
++                    except subprocess.TimeoutExpired:
++                        pass
++            except BaseException:
++                self._kill_process(process)
++                raise
+ 
+     def close(self):
+         if self._service is not None:
+@@ -131,14 +178,7 @@
+                 try:
+                     self._service.wait(timeout=2)
+                 except subprocess.TimeoutExpired:
+-                    if __import__("os").name == "nt":
+-                        # Godot's Windows console launcher has a child engine.
+-                        # Killing only the launcher leaks an engine and its log.
+-                        subprocess.run(["taskkill", "/PID", str(self._service.pid), "/T", "/F"],
+-                            capture_output=True, timeout=10, check=False)
+-                    else:
+-                        self._service.kill()
+-                    self._service.wait(timeout=10)
++                    self._kill_process(self._service)
+             self._service = None
+             self.engine_pid = None
+         if self._log is not None:
+@@ -149,6 +189,7 @@
+             self._directory = None
+ 
+     def _invoke_service(self, payload):
++        self._check_stopping()
+         request = _json_bytes(payload, MAX_REQUEST_BYTES)
+         self._check_engine()
+         try:
+@@ -171,6 +212,7 @@
+             pending.replace(folder / "ready")
+             deadline = time.monotonic() + self.timeout
+             while not output.is_file():
++                self._check_stopping()
+                 if self._service.poll() is not None or time.monotonic() >= deadline:
+                     raise VerifierUnavailable("Persistent verifier exited or timed out")
+                 if (folder / "engine.log").stat().st_size > 65536:
+@@ -201,11 +243,13 @@
+             raise VerifierUnavailable("Canonical verification could not complete") from exc
+ 
+     def _check_engine(self) -> None:
++        self._check_stopping()
+         if self._engine_checked:
+             return
+         try:
+             pinned = (self.project.parent / "godot-version.txt").read_text(encoding="utf-8-sig").strip()
+-            result = subprocess.run([self.binary, "--version"], capture_output=True, timeout=10, check=False)
++            result = self._run_process([self.binary, "--version"], stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE, timeout=10)
+         except (OSError, subprocess.SubprocessError) as exc:
+             raise VerifierUnavailable("Pinned Godot verifier is unavailable") from exc
+         if result.returncode != 0 or result.stdout.decode("utf-8", "replace").strip() != pinned:
+@@ -213,6 +257,7 @@
+         self._engine_checked = True
+ 
+     def _invoke(self, payload: dict) -> dict:
++        self._check_stopping()
+         # Shared by all adapter instances within one API/worker process. Reject
+         # overload immediately rather than accumulating costly engine children.
+         if not _ENGINE_SLOT.acquire(blocking=False):
+@@ -244,13 +289,12 @@
+             ]
+             try:
+                 with (directory / "engine.log").open("wb") as log:
+-                    process = subprocess.run(
++                    process = self._run_process(
+                         command,
+                         stdin=subprocess.DEVNULL,
+                         stdout=log,
+                         stderr=subprocess.STDOUT,
+                         timeout=self.timeout,
+-                        check=False,
+                     )
+                 log_path = directory / "engine.log"
+                 if log_path.stat().st_size > 65536:
+--- a/backend/bmt_backend/track_validation.py
++++ b/backend/bmt_backend/track_validation.py
+@@ -4,9 +4,13 @@
+ 
+ from .queueing import record_claim
+ from .track_models import QueuePlayer, Track, TrackValidation, TrackVersion, new_id, now
++from .verifier import VerifierStopping
++from .worker_lifecycle import aborting, stopping
+ 
+ 
+ def process_one(app) -> bool:
++    if stopping(app):
++        return False
+     settings = app.state.settings
+     token = new_id()
+     with app.state.session_factory() as session:
+@@ -17,6 +21,8 @@
+         ).order_by(func.coalesce(QueuePlayer.last_claim_at, 0), TrackValidation.created_at, TrackValidation.version_id)
+             .with_for_update(skip_locked=True, of=TrackValidation).limit(1))
+         if job is None:
++            return False
++        if stopping(app):
+             return False
+         if job.attempts >= settings.max_job_attempts:
+             job.status, job.failure_code = "failed", "validator_unavailable"
+@@ -30,16 +36,23 @@
+         job.lease_until = now() + settings.job_lease_seconds
+         job.attempts += 1
+         version_id, content_hash = version.id, version.content_hash
++        if stopping(app):
++            session.rollback()
++            return False
+         session.commit()
+     manifest, failure, detail = None, None, None
+     try:
+         manifest = app.state.verifier.validate_track(app.state.blobs.get_json(content_hash))
+         if manifest.get("laps") != 5 or manifest.get("tick_rate") != 120 or not manifest.get("track_content_hash"):
+             raise RuntimeError("Unsupported canonical validation manifest")
++    except VerifierStopping:
++        return True
+     except ValueError as error:
+         failure, detail = "invalid_document", str(error)[:500]
+     except Exception:  # noqa: BLE001 - persist a bounded retry for any infrastructure failure
+         failure, detail = "validator_unavailable", "Track validation is temporarily unavailable; your draft is saved."
++    if aborting(app):
++        return True
+     with app.state.session_factory() as session:
+         job = session.scalar(select(TrackValidation).where(TrackValidation.version_id == version_id).with_for_update())
+         if job.status != "validating" or job.lease_token != token or job.lease_until <= now():
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -156,7 +156,7 @@
+         SimpleNamespace(godot_bin="wrong", game_project=ROOT / "game", verifier_timeout_seconds=1)
+     )
+     monkeypatch.setattr(
+-        subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=b"4.0.stable")
++        verifier, "_run_process", lambda *a, **k: SimpleNamespace(returncode=0, stdout=b"4.0.stable")
+     )
+     with pytest.raises(VerifierUnavailable, match="godot-version"):
+         verifier.manifest()
+@@ -200,7 +200,7 @@
+         Path(output).write_text('{"ok":true,"result":{"time_ticks":1}}')
+         return SimpleNamespace(returncode=0)
+ 
+-    monkeypatch.setattr(subprocess, "run", bad_process)
++    monkeypatch.setattr(verifier, "_run_process", bad_process)
+     with pytest.raises(VerifierUnavailable, match="engine error"):
+         verifier.manifest()
+ 
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -40,6 +40,13 @@
+ The API's `/docs` and `/openapi.json` describe the exact request/response contract;
+ `/healthz` is process liveness and `/readyz` checks database/schema/storage readiness.
+ Readiness does not prove that Google login or the external verifier is configured.
++Workers handle SIGTERM/SIGINT, stop claiming jobs, allow five seconds to finish
++(`BMT_WORKER_SHUTDOWN_GRACE_SECONDS`), then cooperatively cancel verification.
++Interrupted leases retain their evidence and recover after expiry within existing
++retry limits. `--once` also closes the verifier and database pool. Competition
++health excludes draining/stopped workers and exposes five-minute processing,
++failure and completion-latency measurements. See [lifecycle verification and
++limits](../docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
+ Missing Google client IDs disable Google sign-in. Missing/wrong Godot prevents valid
+ track/record verification; no claimed client time becomes a verified record.
+ 
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-05 worker lifecycle: SIGTERM/SIGINT stop claims and mark draining, with a configurable five-second canonical finish grace, cooperative cancellation and verifier/pool cleanup including `--once`. Set `BMT_WORKER_SHUTDOWN_GRACE_SECONDS` below the platform termination allowance, reserving time for existing bounded database/object IO and cleanup. PC Compose grants 30 seconds; the NAS template retains 210 seconds. An unavailable heartbeat DB or SIGKILL relies on stale-heartbeat/lease expiry. This source change did not restart existing services. [Actual checks and acceptance](../../docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
++
+ 2026-10-05 scalability repairs: current head is `0014_storage_lifecycle`. Online retention uses publication/read pins; the default backup pauses only GC and streams immutable objects while writers continue. Explicit `BMT_BACKUP_MODE=offline` retains the stopped-writer path. Role pool budgets and optional S3 configuration are documented in [the repair report](../../docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md) and [load tooling](../LOAD_TESTING.md). No existing service was migrated or deployed.
+ 
+ 2026-10-04 artificial test drivers require migration `0012_test_drivers` and matching API/worker/verifier artifacts. They are explicitly gated by `BMT_TEST_DRIVERS_ENABLED=true` plus development authentication. Production configuration rejects this flag. The local PC launcher accepts `BackendStart -TestDrivers`; fill/fleet/tick/watch tools run through normal verified race uploads into isolated test boards and groups. No existing service or production rollout was performed. See [setup, actual verification and limits](../../docs/TEST_DRIVERS.md).
+--- a/backend/deploy/compose.yaml
++++ b/backend/deploy/compose.yaml
+@@ -105,6 +105,7 @@
+     environment:
+       <<: *environment
+       BMT_DATABASE_POOL_SIZE: "2"
++      BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+     command: [python, -m, bmt_backend.worker]
+     restart: unless-stopped
+     depends_on:
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -62,6 +62,10 @@
+       retries: 20
+   worker:
+     <<: *runtime
++    stop_grace_period: 30s
++    environment:
++      <<: *environment
++      BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+     restart: unless-stopped
+     command: [python, -m, bmt_backend.worker]
+     depends_on:
+--- a/backend/deploy/.env.example
++++ b/backend/deploy/.env.example
+@@ -15,6 +15,7 @@
+ # Tune only after measuring the deployed workload.
+ BMT_MAX_QUEUED_RUNS=128
+ BMT_WORKER_STALE_SECONDS=300
++BMT_WORKER_SHUTDOWN_GRACE_SECONDS=5
+ BMT_RETENTION_DAYS=90
+ # Optional: BMT_BACKUP_MARKER_PATH must point to a read-only mounted COMPLETE
+ # marker from the latest successful backup. A Compose override must add the mount.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested P1/P2 backend repairs and isolated capacity tooling implemented. Short queue/membership locks, exact incremental projections, reusable fenced canonical workers, bounded pools/uploads, compressed negotiated transport, conditional/batched polling, threaded durable client IO and nonblocking ghosts/results; coordinated online retention/backup and optional private object adapter. Migrations 0013/0014 require a backed-up matching API/worker rollout; existing services/data untouched. Broad desktop suite 284 passed/2 skipped, PostgreSQL 112/6, later affected checks 89/1 and PG race checks 69/5, final native protocol 5 pass; batches overlap. Persistent engine 2, CLI/provider/archive 12 plus 7 subtests, parser 292 and client 12 checks pass. Disposable 2-CPU PostgreSQL lab: 1k/10k/100k registered-player reads max p95 156/172/188 ms with API peak RSS about 105 MiB; 15 new canonical attempts verified and queue drained. Strict tie/join/overload failures retained; explicit provisional endpoint presets documented. Online synthetic dump/object restore preserves exact historical PB after live replacement and GC. No NAS deployment or change-specific attached DN2103 build/performance check; target sustained load, proxy/cellular, provider/Compose-wrapper and device acceptance remain. Scoped patch preserves concurrent menu work. Files, actual commands, reports and acceptance: docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md and backend/LOAD_TESTING.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested P1/P2 backend repairs and isolated capacity tooling implemented. Short queue/membership locks, exact incremental projections, reusable fenced canonical workers, bounded pools/uploads, compressed negotiated transport, conditional/batched polling, threaded durable client IO and nonblocking ghosts/results; coordinated online retention/backup and optional private object adapter. Migrations 0013/0014 require a backed-up matching API/worker rollout; existing services/data untouched. Broad desktop suite 284 passed/2 skipped, PostgreSQL 112/6, later affected checks 89/1 and PG race checks 69/5, final native protocol 5 pass; batches overlap. Persistent engine 2, CLI/provider/archive 12 plus 7 subtests, parser 292 and client 12 checks pass. Disposable 2-CPU PostgreSQL lab: 1k/10k/100k registered-player reads max p95 156/172/188 ms with API peak RSS about 105 MiB; 15 new canonical attempts verified and queue drained. Strict tie/join/overload failures retained; explicit provisional endpoint presets documented. Online synthetic dump/object restore preserves exact historical PB after live replacement and GC. No NAS deployment or change-specific attached DN2103 build/performance check; target sustained load, proxy/cellular, provider/Compose-wrapper and device acceptance remain. Scoped patch preserves concurrent menu work. Files, actual commands, reports and acceptance: docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md and backend/LOAD_TESTING.md.
+--- /dev/null
++++ b/backend/bmt_backend/worker_lifecycle.py
+@@ -0,0 +1,118 @@
++"""Signal-safe stop requests and cooperative, bounded verifier draining."""
++import logging
++import signal
++import threading
++import time
++
++from .operations import heartbeat
++from .track_models import new_id
++
++logger = logging.getLogger("bmt.worker")
++
++
++class WorkerControl:
++    def __init__(self):
++        self.stop = threading.Event()
++        self.abort = threading.Event()
++        self.requested_at = None
++        self.stop_signal = None
++
++    def request_stop(self, signum=None, _frame=None):
++        # No database access, subprocess cleanup or logging in a signal handler.
++        if self.requested_at is None:
++            self.requested_at = time.monotonic()
++            self.stop_signal = signum
++
++
++def stopping(app):
++    control = getattr(app.state, "worker_control", None)
++    return bool(control and (control.requested_at is not None or control.stop.is_set()))
++
++
++def aborting(app):
++    control = getattr(app.state, "worker_control", None)
++    return bool(control and control.abort.is_set())
++
++
++def run_worker(app, process_job, *, once=False, control=None, install_signals=True):
++    control = control or WorkerControl()
++    app.state.worker_control = control
++    app.state.worker_id = new_id()
++    worker_id = app.state.worker_id
++    finished = threading.Event()
++    errors = []
++    previous = {}
++    timer = None
++
++    def abort():
++        control.abort.set()
++        # The adapter's request_stop only sets an event; its owning thread cleans up.
++        if hasattr(app.state.verifier, "request_stop"):
++            app.state.verifier.request_stop()
++
++    def work():
++        try:
++            while not stopping(app):
++                try:
++                    worked = process_job(app)
++                except Exception:
++                    logger.exception("worker_iteration_failed", extra={"worker_id": worker_id})
++                    if once:
++                        raise
++                    worked = False
++                if once:
++                    return
++                if not worked:
++                    control.stop.wait(1)
++        except BaseException as error:  # noqa: BLE001 - transport fatal job-thread errors to the supervisor
++            errors.append(error)
++        finally:
++            finished.set()
++
++    thread = threading.Thread(target=work, name="bmt-worker-jobs")
++    try:
++        if install_signals:
++            for signum in (signal.SIGTERM, signal.SIGINT):
++                previous[signum] = signal.getsignal(signum)
++                signal.signal(signum, control.request_stop)
++        thread.start()
++        while not finished.wait(0.05):
++            if stopping(app) and timer is None:
++                control.stop.set()
++                started = control.requested_at or time.monotonic()
++                remaining = max(0, started + app.state.settings.worker_shutdown_grace_seconds - time.monotonic())
++                # Cancellation must not wait for a slow/unavailable heartbeat database.
++                timer = threading.Timer(remaining, abort)
++                timer.start()
++                logger.info("worker_draining", extra={"worker_id": worker_id, "stop_signal": control.stop_signal})
++                try:
++                    heartbeat(app, worker_id, lifecycle="draining")
++                except Exception:
++                    logger.exception("worker_drain_heartbeat_failed", extra={"worker_id": worker_id})
++    finally:
++        control.stop.set()
++        if thread.is_alive():
++            abort()
++            thread.join()
++        if timer is not None:
++            timer.cancel()
++            timer.join()
++        try:
++            heartbeat(app, worker_id, lifecycle="stopped")
++        except Exception:
++            logger.exception("worker_stop_heartbeat_failed", extra={"worker_id": worker_id})
++        try:
++            if hasattr(app.state.verifier, "close"):
++                app.state.verifier.close()
++        except Exception:
++            logger.exception("worker_verifier_cleanup_failed", extra={"worker_id": worker_id})
++        finally:
++            try:
++                app.state.engine.dispose()
++            finally:
++                for signum, handler in previous.items():
++                    signal.signal(signum, handler)
++        logger.info("worker_stopped", extra={"worker_id": worker_id,
++            "shutdown_seconds": round(time.monotonic() - control.requested_at, 4) if control.requested_at else 0})
++    if errors:
++        raise errors[0]
+--- /dev/null
++++ b/backend/tests/test_worker_lifecycle.py
+@@ -0,0 +1,341 @@
++"""Restart correctness, operational visibility and safe diagnostic contracts."""
++import json
++import logging
++import os
++import signal
++import subprocess
++import sys
++import threading
++import time
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import select
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, submit, ticket
++
++from bmt_backend.contracts import build_contract
++from bmt_backend.observability import JsonFormatter
++from bmt_backend.operations import competition_health, heartbeat
++from bmt_backend.track_models import OperationState, PersonalBest, QueueCapacity, Run, now
++from bmt_backend.verifier import GodotVerifier, VerifierStopping
++from bmt_backend.worker import process_one
++from bmt_backend.worker_lifecycle import WorkerControl, run_worker
++
++domain = domain_fixture
++
++
++def test_diagnostics_preserve_operational_fields_without_payloads():
++    record = logging.LogRecord("bmt.worker", logging.INFO, "", 0, "verification_complete", (), None)
++    record.worker_id, record.run_id = "worker-id", "run-id"
++    record.verification_seconds, record.queue_wait_seconds = 1.2345, 8
++    record.shutdown_seconds, record.stop_signal = 2.1, signal.SIGTERM
++    record.access_token, record.replay, record.player_id = "private-token", {"private": "inputs"}, "private-player"
++    value = json.loads(JsonFormatter().format(record))
++    assert value["verification_seconds"] == 1.2345 and value["worker_id"] == "worker-id"
++    assert value["queue_wait_seconds"] == 8 and value["shutdown_seconds"] == 2.1
++    assert "private" not in json.dumps(value)
++    try:
++        raise RuntimeError("private exception text")
++    except RuntimeError:
++        record.exc_info = sys.exc_info()
++    value = json.loads(JsonFormatter().format(record))
++    assert value["exception_type"] == "RuntimeError" and "private" not in json.dumps(value)
++
++
++@pytest.mark.parametrize("fails", [False, True])
++def test_once_cleans_verifier_and_pool_even_on_failure(auth_app, monkeypatch, fails):
++    calls = []
++    monkeypatch.setattr(auth_app.state.verifier, "close", lambda: calls.append("close"))
++    dispose = auth_app.state.engine.dispose
++    monkeypatch.setattr(auth_app.state.engine, "dispose", lambda: (calls.append("dispose"), dispose()))
++    previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
++    def job(app):
++        heartbeat(app, app.state.worker_id, build={"fixture": True})
++        if fails:
++            raise RuntimeError("job failed")
++        return False
++    if fails:
++        with pytest.raises(RuntimeError, match="job failed"):
++            run_worker(auth_app, job, once=True)
++    else:
++        run_worker(auth_app, job, once=True)
++    assert calls == ["close", "dispose"]
++    assert all(signal.getsignal(s) == handler for s, handler in previous.items())
++    with auth_app.state.session_factory() as session:
++        state = session.get(OperationState, "worker:" + auth_app.state.worker_id)
++        assert state.details["lifecycle"] == "stopped"
++
++
++def test_cleanup_failure_still_disposes_database(auth_app, monkeypatch):
++    disposed = []
++    def broken_close():
++        raise OSError("cleanup fault")
++    monkeypatch.setattr(auth_app.state.verifier, "close", broken_close)
++    monkeypatch.setattr(auth_app.state.engine, "dispose", lambda: disposed.append(True))
++    run_worker(auth_app, lambda app: False, once=True)
++    assert disposed == [True]
++
++
++def test_idle_shutdown_wakes_without_poll_delay(auth_app):
++    control = WorkerControl()
++    calls = []
++    def job(app):
++        calls.append(True)
++        control.request_stop()
++        return False
++    started = time.monotonic()
++    run_worker(auth_app, job, control=control)
++    assert len(calls) == 1 and time.monotonic() - started < 0.8
++
++
++def test_draining_cannot_be_revived_by_a_finishing_job(domain):
++    build = build_contract(domain.app.state.verifier.manifest())
++    heartbeat(domain.app, "worker", build=build, phase="verifying")
++    assert competition_health(domain.app)["available_workers"] == 1
++    heartbeat(domain.app, "worker", lifecycle="draining")
++    heartbeat(domain.app, "worker", phase="idle", lifecycle="running")
++    health = competition_health(domain.app)
++    assert health["active_workers"] == health["available_workers"] == 0
++    assert health["draining_workers"] == 1 and health["status"] == "worker_unavailable"
++    assert domain.client.get("/healthz").status_code == 200
++    heartbeat(domain.app, "worker", lifecycle="stopped")
++    heartbeat(domain.app, "worker", build=build, lifecycle="running")
++    assert competition_health(domain.app)["stopped_workers"] == 1
++    heartbeat(domain.app, "replacement", build=build)
++    health = competition_health(domain.app)
++    assert health["available_workers"] == 1 and health["status"] == "ready"
++
++
++def test_concurrent_first_heartbeats_preserve_build_and_drain(auth_app):
++    barrier = threading.Barrier(2)
++    def publish(details):
++        barrier.wait(timeout=3)
++        heartbeat(auth_app, "concurrent", **details)
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        first = pool.submit(publish, {"build": {"fixture": True}})
++        second = pool.submit(publish, {"lifecycle": "draining"})
++        first.result(timeout=5)
++        second.result(timeout=5)
++    with auth_app.state.session_factory() as session:
++        state = session.get(OperationState, "worker:concurrent")
++        assert state.details == {"build": {"fixture": True}, "lifecycle": "draining"}
++
++
++def test_stopped_control_prevents_race_and_validation_claims(domain):
++    from bmt_backend.track_validation import process_one as validate_one
++    version, _ = public_course(domain)
++    run = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    control = domain.app.state.worker_control = WorkerControl()
++    control.request_stop()
++    assert not process_one(domain.app) and not validate_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(Run, run["run_id"])
++        assert row.status == "queued" and row.attempts == 0
++
++
++def test_interrupted_verification_is_recoverable_without_duplicate_pb(domain, monkeypatch):
++    version, _ = public_course(domain)
++    run = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    original = domain.app.state.verifier.verify_run
++    def stopping(*args, **kwargs):
++        raise VerifierStopping("shutdown")
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", stopping)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(Run, run["run_id"])
++        assert row.status == "verifying" and row.lease_token and row.failure_code is None
++        assert session.get(QueueCapacity, 1).pending == 1
++        assert session.scalar(select(PersonalBest).where(PersonalBest.player_id == domain.players["Alice"])) is None
++        row.lease_until = 0  # Simulate lease expiry; no wall-clock sleep or live player data.
++        session.commit()
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", original)
++    assert process_one(domain.app)
++    assert not process_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(Run, run["run_id"])
++        assert row.status == "verified" and row.attempts == 2
++        assert session.get(QueueCapacity, 1).pending == 0
++        assert len(session.scalars(select(PersonalBest).where(PersonalBest.player_id == row.player_id)).all()) == 1
++
++
++def test_health_reports_actual_processing_and_end_to_end_latency(domain):
++    version, _ = public_course(domain)
++    first = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    assert process_one(domain.app)
++    second = submit(domain, ticket(domain, version, "Bob"), "Bob")
++    third = submit(domain, ticket(domain, version, "Carol"), "Carol")
++    stamp = now()
++    with domain.factory() as session:
++        for old in session.scalars(select(Run).where(Run.status == "verified", Run.id != first["run_id"])):
++            old.finished_at = stamp - 301  # Keep the creator proof outside this five-minute metric window.
++        verified = session.get(Run, first["run_id"])
++        verified.created_at, verified.finished_at = stamp - 10, stamp
++        failed = session.get(Run, second["run_id"])
++        failed.status, failed.finished_at, failed.failure_code = "failed", stamp, "verifier_unavailable"
++        rejected = session.get(Run, third["run_id"])
++        rejected.status, rejected.finished_at, rejected.failure_code = "rejected", stamp, "invalid_replay"
++        session.commit()
++    health = competition_health(domain.app)
++    assert health["verified_per_second_last_5_minutes"] == round(1 / 300, 4)
++    assert health["failed_last_5_minutes"] == health["rejected_last_5_minutes"] == 1
++    assert health["infrastructure_failure_rate_last_5_minutes"] == 0.5
++    assert health["completion_latency_seconds_last_5_minutes"] == {"mean": 10, "max": 10}
++
++
++def test_interrupted_validation_keeps_draft_and_recovers(domain, monkeypatch):
++    from test_track_lifecycle import save
++
++    from bmt_backend.track_models import TrackValidation, TrackVersion
++    from bmt_backend.track_validation import process_one as validate_one
++    version, _ = save(domain)
++    original = domain.app.state.verifier.validate_track
++    def cancelled(document):
++        raise VerifierStopping("shutdown")
++    monkeypatch.setattr(domain.app.state.verifier, "validate_track", cancelled)
++    assert validate_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(TrackValidation, version["version_id"])
++        assert row.status == "validating" and row.lease_token and row.failure_code is None
++        assert session.get(TrackVersion, row.version_id).content_hash
++        row.lease_until = 0
++        session.commit()
++    monkeypatch.setattr(domain.app.state.verifier, "validate_track", original)
++    assert validate_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(TrackValidation, version["version_id"])
++        assert row.status == "validated" and row.attempts == 2
++        assert session.get(QueueCapacity, 1).pending == 0
++
++
++def test_interrupted_rivalry_cannot_duplicate_points(domain, monkeypatch):
++    from test_rivalry import join, rivalry_ticket, seed
++
++    from bmt_backend.rivalry_models import RivalryBest, RivalryTicket
++    seed(domain)
++    group = join(domain)
++    issued = rivalry_ticket(domain, group["group_id"])
++    run = submit(domain, issued, "Alice")
++    original = domain.app.state.verifier.verify_run
++    def cancelled(*args, **kwargs):
++        raise VerifierStopping("shutdown")
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", cancelled)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        row = session.get(Run, run["run_id"])
++        assert row.status == "verifying"
++        assert session.scalar(select(RivalryBest).where(RivalryBest.group_id == group["group_id"])) is None
++        assert session.get(RivalryTicket, row.ticket_id).outcome is None
++        row.lease_until = 0
++        session.commit()
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", original)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        bests = session.scalars(select(RivalryBest).where(RivalryBest.group_id == group["group_id"])).all()
++        assert len(bests) == 1 and bests[0].run_id == run["run_id"]
++        outcome = session.get(RivalryTicket, issued["ticket_id"]).outcome
++        assert outcome["points_delta"] > 0
++    standings = domain.client.get(f"/v1/rivalry/{group['group_id']}", headers=headers(domain, "Alice")).json()["standings"]
++    points = next(row["points"] for row in standings if row["name"] == "Alice")
++    assert not process_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(RivalryTicket, issued["ticket_id"]).outcome == outcome
++    standings = domain.client.get(f"/v1/rivalry/{group['group_id']}", headers=headers(domain, "Alice")).json()["standings"]
++    assert next(row["points"] for row in standings if row["name"] == "Alice") == points
++
++
++def test_grace_deadline_cancels_busy_verifier_and_excludes_draining_worker(auth_app, monkeypatch):
++    control = WorkerControl()
++    cancelled = threading.Event()
++    observed = []
++    auth_app.state.settings = replace(auth_app.state.settings, worker_shutdown_grace_seconds=1)
++    monkeypatch.setattr(auth_app.state.verifier, "request_stop", cancelled.set, raising=False)
++    def job(app):
++        heartbeat(app, app.state.worker_id, build={"fixture": True})
++        control.request_stop()
++        assert cancelled.wait(3)
++        with app.state.session_factory() as session:
++            observed.append(session.get(OperationState, "worker:" + app.state.worker_id).details["lifecycle"])
++        return True
++    started = time.monotonic()
++    run_worker(auth_app, job, control=control)
++    assert observed == ["draining"] and control.abort.is_set()
++    assert 0.9 <= time.monotonic() - started < 3
++
++
++def test_verifier_stop_cancels_active_child_and_rejects_new_work(tmp_path):
++    verifier = GodotVerifier(SimpleNamespace(godot_bin="", game_project=tmp_path,
++        verifier_timeout_seconds=90, persistent_verifier=False))
++    marker = tmp_path / "child-pid"
++    result = []
++    def work():
++        try:
++            verifier._run_process([sys.executable, "-c",
++                "import pathlib,os,time;pathlib.Path(__import__('sys').argv[1]).write_text(str(os.getpid()));time.sleep(60)",
++                str(marker)], timeout=90, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        except VerifierStopping:
++            result.append("stopped")
++    thread = threading.Thread(target=work)
++    thread.start()
++    try:
++        deadline = time.monotonic() + 5
++        while not marker.exists() and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert marker.exists()
++        verifier.request_stop()
++        thread.join(timeout=5)
++        assert not thread.is_alive() and result == ["stopped"]
++        with pytest.raises(VerifierStopping):
++            verifier.validate_track({"shape": "oval"})
++    finally:
++        verifier.request_stop()
++        thread.join(timeout=5)
++        verifier.close()
++
++
++@pytest.mark.skipif(os.name == "nt", reason="Windows process termination does not deliver POSIX SIGTERM")
++@pytest.mark.parametrize("mode,stop_signal", [("graceful", signal.SIGTERM), ("cancel", signal.SIGTERM),
++    ("kill", None), ("cancel", signal.SIGINT)])
++def test_real_signals_and_kill_recovery(tmp_path, mode, stop_signal):
++    harness = Path(__file__).with_name("worker_signal_probe.py")
++    def wait_for(name):
++        deadline = time.monotonic() + 15
++        while not (tmp_path / name).exists() and process.poll() is None and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert (tmp_path / name).exists(), f"Probe failed to reach {name}"
++    with (tmp_path / "probe.log").open("wb") as log:
++        process = subprocess.Popen([sys.executable, str(harness), str(tmp_path), mode], stdout=log, stderr=log)
++        try:
++            wait_for("entered")
++            started = time.monotonic()
++            if mode == "kill":
++                process.kill()
++                process.wait(timeout=5)
++            else:
++                process.send_signal(stop_signal)
++                wait_for("draining")
++                if mode == "graceful":
++                    (tmp_path / "release").touch()
++                assert process.wait(timeout=5) == 0
++                assert time.monotonic() - started < 5
++                report = json.loads((tmp_path / "report.json").read_text())
++                setup = json.loads((tmp_path / "setup.json").read_text())
++                assert report["runs"][setup["second"]]["status"] == "queued"
++                assert report["verifier_closed"] and report["health"]["available_workers"] == 0
++                assert report["health"]["stopped_workers"] == 2  # Setup proof worker plus supervised worker.
++                first = report["runs"][setup["first"]]
++                assert first["status"] == ("verified" if mode == "graceful" else "verifying")
++                assert report["pb_count"] == (2 if mode == "graceful" else 1)
++        finally:
++            if process.poll() is None:
++                process.kill()
++            process.wait(timeout=5)
++        if mode != "graceful":
++            recovered = subprocess.run([sys.executable, str(harness), str(tmp_path), "recover"],
++                stdout=log, stderr=log, timeout=15, check=False)
++            assert recovered.returncode == 0
++            report = json.loads((tmp_path / "report.json").read_text())
++            assert report["pb_count"] == 3 and report["pending"] == 0
+--- /dev/null
++++ b/backend/tests/worker_signal_probe.py
+@@ -0,0 +1,105 @@
++"""Disposable process harness for real POSIX termination and lease recovery."""
++import json
++import sys
++import threading
++from pathlib import Path
++from types import SimpleNamespace
++
++from fastapi import Request
++from fastapi.testclient import TestClient
++from sqlalchemy import select
++from test_domains import FakeVerifier, public_course, submit, ticket
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import upgrade
++from bmt_backend.operations import competition_health, heartbeat
++from bmt_backend.security import current_player
++from bmt_backend.track_models import OperationState, PersonalBest, QueueCapacity, Run, now
++from bmt_backend.verifier import VerifierStopping
++from bmt_backend.worker import process_one
++from bmt_backend.worker_lifecycle import run_worker
++
++
++def probe(folder, mode):
++    folder = Path(folder)
++    folder.mkdir(parents=True, exist_ok=True)
++
++    class ProbeVerifier(FakeVerifier):
++        armed = False
++        def __init__(self):
++            self.abort = threading.Event()
++            self.closed = False
++
++        def request_stop(self):
++            self.abort.set()
++
++        def close(self):
++            self.closed = True
++
++        def verify_run(self, *args, **kwargs):
++            if self.armed:
++                (folder / "entered").touch()
++                while not (folder / "release").exists():
++                    if self.abort.wait(0.02):
++                        raise VerifierStopping("probe shutdown")
++                    with app.state.session_factory() as session:
++                        state = session.get(OperationState, "worker:" + app.state.worker_id)
++                        if state and state.details.get("lifecycle") == "draining":
++                            (folder / "draining").touch()
++            return super().verify_run(*args, **kwargs)
++
++    verifier = ProbeVerifier()
++    app = create_app(Settings(environment="test", allow_sync_track_validation=True,
++        database_url=f"sqlite:///{(folder / 'db.sqlite').as_posix()}", object_dir=str(folder / "objects"),
++        worker_shutdown_grace_seconds=1, rate_limit_per_minute=10000, write_limit_per_minute=10000),
++        verifier=verifier)
++    upgrade(app.state.engine)
++    if mode == "recover":
++        with app.state.session_factory() as session:
++            for row in session.scalars(select(Run).where(Run.status == "verifying")):
++                row.lease_until = 0  # Explicitly simulate expiry in this disposable database.
++            session.commit()
++        assert process_one(app)
++        assert process_one(app)  # The second originally queued race can now proceed too.
++        assert not process_one(app)
++    else:
++        players = {}
++        with app.state.session_factory() as session:
++            for name in ("Creator", "Alice", "Bob", "Carol"):
++                player = Player(display_name=name)
++                session.add(player)
++                session.flush()
++                players[name] = player.id
++            session.commit()
++        def player(request: Request):
++            with app.state.session_factory() as session:
++                value = session.get(Player, request.headers["x-test-player"])
++                session.expunge(value)
++                return value
++        app.dependency_overrides[current_player] = player
++        with TestClient(app) as client:
++            domain = SimpleNamespace(app=app, client=client, factory=app.state.session_factory, players=players)
++            version, _ = public_course(domain)
++            first = submit(domain, ticket(domain, version, "Alice"), "Alice")
++            second = submit(domain, ticket(domain, version, "Bob"), "Bob")
++        with app.state.session_factory() as session:
++            session.get(Run, first["run_id"]).created_at = now() - 2
++            session.get(Run, second["run_id"]).created_at = now() - 1
++            session.commit()
++        (folder / "setup.json").write_text(json.dumps({"first": first["run_id"], "second": second["run_id"]}))
++        heartbeat(app, app.state.worker_id, lifecycle="stopped")  # Retire the inline creator-proof setup worker.
++        verifier.armed = True
++        run_worker(app, process_one)
++    with app.state.session_factory() as session:
++        rows = session.scalars(select(Run).order_by(Run.created_at, Run.id)).all()
++        report = {"runs": {r.id: {"status": r.status, "attempts": r.attempts, "lease_token": r.lease_token} for r in rows},
++            "pb_count": len(session.scalars(select(PersonalBest)).all()),
++            "pending": session.get(QueueCapacity, 1).pending, "verifier_closed": verifier.closed,
++            "health": competition_health(app)}
++    (folder / "report.json").write_text(json.dumps(report))
++
++
++if __name__ == "__main__":
++    probe(*sys.argv[1:])
+--- /dev/null
++++ b/docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md
+@@ -0,0 +1,59 @@
++# Worker shutdown, diagnostics and availability — 2026-10-05
++
++Owner authorized items 1–3 of the code backlog: worker shutdown, diagnostic logging and accurate worker availability/progress. Requirements: B01–B07/B19/B20/B23, WR03–WR08, RW05–RW07 and Q01. This is a source/test checkpoint. Existing WSL services and player data were not restarted, migrated or deployed; no NAS/cloud resources were provisioned.
++
++## Implemented behavior
++
++- `worker_lifecycle.py` supervises one sequential job thread. SIGTERM/SIGINT handlers only record a stop request and monotonic timestamp; database calls, event wakeups and cleanup run outside the handler. Race and track-validation claim paths check stop requests before admission commits. Idle waits wake promptly. Repeated signals do not extend the grace period.
++- `BMT_WORKER_SHUTDOWN_GRACE_SECONDS` defaults to five seconds. During grace, a claimed job may complete normally. At the deadline, a cancellation event stops persistent-engine polling or transient/version subprocess execution. The owning job thread handles subprocess cleanup. Cancellation leaves the existing fenced race/validation lease and evidence intact; it does not classify inputs as invalid or publish unverified results. Existing lease expiry and attempt limits apply. A final-attempt interruption can still require the existing manual retry; this slice does not reset attempt budgets or change recovery policy.
++- Verifier and SQLAlchemy pool cleanup also run for `--once`, failed iterations and verifier-cleanup failures. Previous signal handlers are restored. Transient child execution is cancellable; Windows cleanup terminates the launcher/child tree with a bounded native fallback. Canonical simulation, engine/rules/physics contracts, scoring and receipts are unchanged.
++- Heartbeats carry `running`, `draining` or `stopped` lifecycle independently of job phase. Atomic initial publication and locked merging preserve build identity under concurrent publication; draining/stopped states cannot be revived by an idle/job heartbeat. Health excludes draining/stopped workers immediately after successful notification. A matching live worker establishes availability; merely having a different build does not.
++- JSON logs retain allowed worker/run IDs, verification duration, queue wait, shutdown duration and signal number. Success and failure diagnostics use constant event names; exception text, credentials, player IDs and replay bodies remain excluded from extra fields.
++- Competition health adds matching available, draining and recently stopped counts; five-minute successful verification throughput, terminal infrastructure failures/rejections and failure fraction; mean/max verified end-to-end completion latency; and each active worker's last queue wait at claim. Rates use a fixed 300-second window; failure fraction is `failed / (verified + failed)` with null when there is no denominator. Rejected inputs are reported separately. Completion latency is submission-to-finish, including queue/retry time; queue wait is age since original submission at the most recent claim. These are measured observations, not a capacity promise or a percentile histogram. Existing track-validation counts/queue age and API liveness remain separate.
++- Production Compose exposes the grace setting; PC Compose provides a 30-second termination allowance and exposes the same setting. NAS Compose retains its existing 210-second allowance. No runtime service restart was performed.
++
++## Changed files
++
++Runtime: `backend/bmt_backend/{worker.py,worker_lifecycle.py,verifier.py,track_validation.py,operations.py,observability.py,config.py}`. Deployment: `backend/deploy/{compose.yaml,compose.pc.yaml,.env.example,README.md}` and `backend/README.md`. Tests: `backend/tests/{test_worker_lifecycle.py,worker_signal_probe.py,test_verifier.py}`. Project status: `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and this report. No schema or gameplay/UI changes; no screenshots are needed for this JSON/logging slice.
++
++## Actual verification
++
++Evidence: [test reports and scoped checkpoint](evidence/backend-worker-lifecycle-2026-10-05/README.md). Batches overlap and must not be summed.
++
++- Final affected regression batch: **212 passed, 12 skipped** across disposable SQLite and PostgreSQL. Skips include POSIX signal cases on Windows and existing inapplicable SQLite/PostgreSQL or unavailable retained-fixture cases. Tests cover queue fencing/projections, creator lifecycle, moderation/health, idempotency and interrupted race/validation/rivalry recovery.
++- Final lifecycle/verifier batch: **57 passed, 4 skipped, 20 deselected** (`not postgres and not godot`); the four skips are POSIX signal cases on Windows. Includes cleanup, concurrent initial heartbeats, diagnostic redaction, timer cancellation, retained leases and recovery without duplicate PBs/rivalry points, plus corrected verifier fault injection.
++- Real Linux process signals in a network-isolated disposable container: **4 passed**. SIGTERM completes a released job within grace; SIGTERM and SIGINT cancel a blocked job after a one-second test grace; SIGKILL retains durable evidence. Replacement processes recover after explicitly simulated lease expiry. Each case asserts no second claim after draining and exact PB/queue outcomes. Signal completion cases must exit within five seconds. This uses controlled verifiers and SQLite; it is not a deployed Cloud Run timing measurement.
++- Pinned native Godot batch (`4.7.2.stable.official.ed1daf0bf`): initial **57 passed, 2 failed**. Both failures were fault-injection hooks still patching `subprocess.run` after execution moved into the cancellable wrapper. They now patch that boundary while preserving wrong-engine/script-error fail-closed assertions; the final lifecycle/verifier batch passes both. Persistent-engine isolation/recycling, canonical rewind/launch and retained native replay checks passed in the native batch.
++- Earlier focused run: initial **9 passed, 2 failed** (creator proof included in metric window; sandbox child-termination restrictions). The metric fixture now explicitly places the setup proof outside its measured window; native subprocess tests pass with desktop process access. Initial Linux harness counted a setup worker as still active and then asserted one stopped worker; it now explicitly retires setup and asserts both stopped workers. Assertions for actual availability, result uniqueness and recovery were retained.
++- The previously configured PostgreSQL test URL was unreachable. An initial batch was interrupted; a single setup check confirmed connection timeout. No production database was contacted or changed. A fresh PostgreSQL 17 container on a random loopback-only port supplied generated test schemas; final tests passed and the container was stopped/removed. The private existing test environment file was not rewritten.
++- Ruff and scoped whitespace validation pass. Both Compose files parse successfully with inherited database configuration, worker command and configurable grace intact. The scoped patch is reverse-checked against the final working tree. Unrelated dirty work remains preserved.
++
++## Actual commands
++
++Commands ran from the repository root using `.tools/backend-venv/Scripts/python.exe`; existing Python dependencies were reused. Desktop subprocess/database batches used approved normal process access. The PostgreSQL override below existed only in the test process.
++
++```powershell
++$env:BMT_TEST_DATABASE_URL = 'postgresql+psycopg://postgres@127.0.0.1:32768/bmt_tests'
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_worker_lifecycle.py backend/tests/test_review_followups.py backend/tests/test_review_reliability.py backend/tests/test_scalability.py backend/tests/test_domains.py backend/tests/test_track_lifecycle.py backend/tests/test_admin.py -q --tb=short --junitxml=docs/evidence/backend-worker-lifecycle-2026-10-05/final-regression.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_worker_lifecycle.py backend/tests/test_verifier.py -q -k 'not postgres and not godot' --tb=short --junitxml=docs/evidence/backend-worker-lifecycle-2026-10-05/final-lifecycle.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_persistent_verifier.py backend/tests/test_verifier.py -q --junitxml=docs/evidence/backend-worker-lifecycle-2026-10-05/verifier.xml
++& .tools/backend-venv/Scripts/python.exe -m ruff check backend/bmt_backend/worker*.py backend/bmt_backend/operations.py backend/bmt_backend/observability.py backend/bmt_backend/verifier.py backend/bmt_backend/track_validation.py backend/bmt_backend/config.py backend/tests/test_worker_lifecycle.py backend/tests/worker_signal_probe.py backend/tests/test_verifier.py
++```
++
++Linux signal tests used the existing image with current Python/tests bind-mounted read-only, no network, no live volumes and disposable `/tmp` data:
++
++```powershell
++wsl.exe -d Ubuntu -- docker run --rm --network none --entrypoint python -e PYTHONPATH=/app --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/backend,target=/app,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/docs/evidence/backend-worker-lifecycle-2026-10-05,target=/evidence' bmt-backend:local -m pytest /app/tests/test_worker_lifecycle.py -q -k real_signals -p no:cacheprovider --junitxml=/evidence/linux-signals.xml
++wsl.exe -d Ubuntu -- docker run --detach --rm --name bmt-worker-lifecycle-pg-20261005 --network bridge -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=bmt_tests -p 127.0.0.1::5432 postgres:17-bookworm
++wsl.exe -d Ubuntu -- docker port bmt-worker-lifecycle-pg-20261005 5432/tcp
++wsl.exe -d Ubuntu -- docker stop bmt-worker-lifecycle-pg-20261005
++wsl.exe -d Ubuntu -- docker ps --filter label=com.docker.compose.project=bmt-pc-dev --format '{{.Names}} | {{.Status}}'
++```
++
++Final status: original API healthy/up 12 hours, worker up 12 hours, database healthy/up 30 hours. The temporary PostgreSQL container is gone.
++
++## Remaining acceptance
++
++The grace bounds canonical finish time before cancellation; total shutdown also includes existing bounded SQL/object IO and cleanup. A blocked or unavailable heartbeat database delays or prevents drain notification, so stale-heartbeat expiry remains the fallback. SIGKILL cannot execute cleanup or notify health; existing lease expiry and fencing preserve authority. Worst-case real provider/database stalls within Cloud Run's termination allowance, attached native Godot termination on the target Linux host, and mixed-build rollout/claim routing still require separate deployment acceptance. This does not repair the other findings in the exception review or implement backlog items 4–7.
++
++No phone/device test, Android build, NAS/cloud deployment or full gameplay physics regression was performed; device attachment was not checked. No engine/simulation source changed. Existing API/worker services must be rebuilt/restarted together through the established entry point in a separately authorized rollout, with the existing scalability schema requirements respected.
+--- /dev/null
++++ b/docs/evidence/backend-worker-lifecycle-2026-10-05/README.md
+@@ -0,0 +1,13 @@
++# Worker lifecycle checkpoint evidence
++
++See [requirements, behavior, exact commands and limitations](../../BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
++
++- `final-regression.xml`: final affected SQLite/PostgreSQL batch, 212 passed/12 skipped.
++- `final-lifecycle.xml`: final lifecycle/verifier batch, 57 passed/4 skipped.
++- `linux-signals.xml`: four real Linux signal/crash-recovery cases passed.
++- `verifier.xml`: initial native batch, 57 passed/two obsolete injection-hook failures; corrected cases pass in `final-lifecycle.xml`.
++- `focused.xml`, `regression.xml`, `postgres.xml`, `recovery.xml`: earlier focused/affected batches, overlapping the final batches. Their results are not additive.
++- `scoped-change.patch` compares only this slice with its saved starting files, preserving earlier dirty changes in those files. Reverse validation uses `git apply --reverse --check`.
++- `source-hashes.json` records starting and final SHA-256 hashes for the scoped source/docs files. `checkpoint.py` reproduces checkpoint creation from saved task baselines while they exist.
++
++Tests used synthetic data and disposable databases/containers. No credentials, live player records or external cloud data belong in this evidence directory. No presentation change or device capture is part of this backend slice.
+--- /dev/null
++++ b/docs/evidence/backend-worker-lifecycle-2026-10-05/checkpoint.py
+@@ -0,0 +1,32 @@
++"""Create a slice-only review patch from captured task baselines, without staging."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++files = {}
++for name in ("worker.py", "operations.py", "observability.py", "config.py", "verifier.py", "track_validation.py"):
++    files["backend/bmt_backend/" + name] = evidence / ("before-" + name)
++files["backend/tests/test_verifier.py"] = evidence / "before-test_verifier.py"
++for name in ("backend/README.md", "backend/deploy/README.md", "backend/deploy/compose.yaml",
++             "backend/deploy/compose.pc.yaml", "backend/deploy/.env.example", "DEVELOPMENT_STATUS.md",
++             "docs/PHASE_0_PLAN.md"):
++    files[name] = evidence / ("before-" + name.replace("/", "__"))
++for name in ("backend/bmt_backend/worker_lifecycle.py", "backend/tests/test_worker_lifecycle.py",
++             "backend/tests/worker_signal_probe.py", "docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md",
++             "docs/evidence/backend-worker-lifecycle-2026-10-05/README.md",
++             "docs/evidence/backend-worker-lifecycle-2026-10-05/checkpoint.py"):
++    files[name] = None
++patch, hashes = [], {}
++for name, baseline in files.items():
++    old = baseline.read_bytes() if baseline else b""
++    new = (root / name).read_bytes()
++    hashes[name] = {"before": hashlib.sha256(old).hexdigest() if baseline else None,
++                   "after": hashlib.sha256(new).hexdigest()}
++    patch.extend(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
++        new.decode("utf-8").splitlines(keepends=True),
++        fromfile="a/" + name if baseline else "/dev/null", tofile="b/" + name))
++(evidence / "scoped-change.patch").write_text("".join(patch), encoding="utf-8", newline="")
++(evidence / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")

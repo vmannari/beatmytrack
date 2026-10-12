@@ -1,0 +1,423 @@
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -142,8 +142,8 @@
+         "api": command(config, "run", "deploy", n["api"], *common("api", "runtime", "app_secret"),
+             "--port=8080", "--concurrency=16", "--min=0", "--max=" + str(config["api_max"]),
+             "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
+-            "--startup-probe=httpGet.path=/readyz,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
+-            "--liveness-probe=httpGet.path=/healthz,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
++            "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
++            "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
+         "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "runtime", "app_secret"),
+             "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.worker"),
+         "smoke": command(config, "run", "jobs", "deploy", n["smoke"], *common("smoke", "operator", "app_secret"),
+@@ -214,7 +214,7 @@
+         except (OSError, subprocess.SubprocessError):
+             raise RuntimeError("Cloud/Docker command unavailable or timed out") from None
+         if result.returncode:
+-            if allow_missing and re.search(r"NOT_FOUND|not found|does not exist|\b404\b", result.stderr, re.IGNORECASE):
++            if allow_missing and re.search(r"NOT_FOUND|not found|does not exist|\b404\b|Cannot find (?:worker pool|service|job)\b", result.stderr, re.IGNORECASE):
+                 return None
+             # Output can contain authentication or secret content; keep it private.
+             raise RuntimeError("Cloud/Docker command failed; inspect the named resource with the CLI")
+@@ -368,7 +368,8 @@
+         executable = ROOT / "backend/deploy/vendor/godot"
+         if hashlib.sha256(executable.read_bytes()).hexdigest() != self.c["godot_sha256"]:
+             raise RuntimeError("Staged Linux engine differs from the independently verified pin")
+-        self.describe("repo", self.n["repo"])
++        if self.describe("repo", self.n["repo"]) is None:
++            raise RuntimeError("Owned staging registry is missing; complete provisioning before building")
+         source = hashlib.sha256()
+         for directory in (ROOT / "backend/bmt_backend", ROOT / "game"):
+             for path in sorted(directory.rglob("*")):
+@@ -445,12 +446,14 @@
+             raise RuntimeError("Local staging receipt differs from the owned service; token forwarding refused")
+         token = self.call("auth", "print-identity-token")
+         results = {}
+-        for path in ("/healthz", "/readyz", "/v1/bootstrap"):
++        for path in ("/health", "/ready", "/v1/bootstrap"):
+             # X-Serverless-Authorization leaves application Authorization available for later real-account tests.
+             value = self.runner.request("GET", deployment["url"] + path,
+                 headers={"X-Serverless-Authorization": "Bearer " + token})
+             results[path] = value
+-        if results["/readyz"].get("status") != "ready" or results["/v1/bootstrap"].get("development_auth"):
++        if (results["/health"].get("status") != "ok" or results["/ready"].get("status") != "ready"
++                or results["/v1/bootstrap"].get("development_auth") is not False
++                or results["/v1/bootstrap"].get("test_drivers") is not False):
+             raise RuntimeError("Staging health/auth separation failed")
+         write_json(self.directory / "smoke.json", results)
+         return results
+--- a/backend/tests/test_gcp_staging.py
++++ b/backend/tests/test_gcp_staging.py
+@@ -93,10 +93,12 @@
+                 return {"items": [{"name": n} for n in self.users]}
+             self.users[body["name"]] = body["password"]
+             return {"name": "password-operation"}
+-        if url.endswith("/readyz"):
++        if url.endswith("/healthz"):
++            raise RuntimeError("Cloud frontend reserved URL")
++        if url.endswith("/ready"):
+             return {"status": "ready", "schema": "fixture"}
+         if url.endswith("/v1/bootstrap"):
+-            return {"development_auth": False}
++            return {"development_auth": False, "test_drivers": False}
+         return {"status": "ok"}
+ 
+ 
+@@ -245,6 +247,24 @@
+     assert not any("print-identity-token" in call or call[0] == "HTTP" for call in runner.calls[count:])
+ 
+ 
++def test_smoke_uses_cloud_routable_paths_and_rejects_auth_bypasses(tmp_path):
++    c = config()
++    runner = Runner(c)
++    service = staging.Staging(c, tmp_path, runner)
++    service.deploy(pinned(c))
++    result = service.smoke()
++    assert result["/health"] == {"status": "ok"}
++    assert "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3" in staging.deployment_commands(c, pinned(c), tmp_path)["api"]
++    original = runner.request
++    def request(method, url, **kwargs):
++        if url.endswith("/v1/bootstrap"):
++            return {"development_auth": False, "test_drivers": True}
++        return original(method, url, **kwargs)
++    runner.request = request
++    with pytest.raises(RuntimeError, match="health/auth separation"):
++        service.smoke()
++
++
+ def test_command_errors_do_not_echo_secrets(monkeypatch):
+     monkeypatch.setattr(staging.subprocess, "run", lambda *args, **kwargs:
+         SimpleNamespace(returncode=1, stderr="sensitive credential details", stdout="sensitive-token"))
+@@ -282,3 +302,25 @@
+     runner.run = lambda *args, **kwargs: '[]'
+     with pytest.raises(RuntimeError, match="Authenticate"):
+         staging.Staging(c, tmp_path, runner).preflight()
++
++
++def test_current_cli_missing_worker_is_distinct_from_permission_failure(monkeypatch):
++    monkeypatch.setattr(staging.subprocess, "run", lambda *args, **kwargs:
++        SimpleNamespace(returncode=1, stderr="ERROR: Cannot find worker pool [owned-name]", stdout=""))
++    assert staging.Runner().run(["fixture"], allow_missing=True) is None
++    monkeypatch.setattr(staging.subprocess, "run", lambda *args, **kwargs:
++        SimpleNamespace(returncode=1, stderr="PERMISSION_DENIED: account cannot access worker pool", stdout=""))
++    with pytest.raises(RuntimeError):
++        staging.Runner().run(["fixture"], allow_missing=True)
++
++
++def test_missing_registry_prevents_build_and_push(tmp_path, monkeypatch):
++    c = config()
++    engine = b"isolated-engine-fixture"
++    c["godot_sha256"] = staging.hashlib.sha256(engine).hexdigest()
++    original = Path.read_bytes
++    monkeypatch.setattr(Path, "read_bytes", lambda path: engine if path == staging.ROOT / "backend/deploy/vendor/godot" else original(path))
++    runner = Runner(c)
++    with pytest.raises(RuntimeError, match="complete provisioning"):
++        staging.Staging(c, tmp_path, runner).build()
++    assert not any("fixture-docker" in argv or "print-access-token" in argv for argv in runner.calls)
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -77,11 +77,14 @@
+         app.state.readiness.invalidate(storage=True)
+         return JSONResponse({"detail":"STORAGE_UNAVAILABLE","request_id":request.state.request_id},status_code=503)
+ 
+-    @app.get("/healthz", tags=["operations"])
++    # Cloud Run reserves some paths ending in z at its public frontend.
++    @app.get("/health", tags=["operations"])
++    @app.get("/healthz", tags=["operations"], include_in_schema=False)
+     async def health():
+         return {"status": "ok"}
+ 
+-    @app.get("/readyz", tags=["operations"])
++    @app.get("/ready", tags=["operations"])
++    @app.get("/readyz", tags=["operations"], include_in_schema=False)
+     async def ready():
+         try:
+             return await app.state.readiness.check()
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -204,7 +204,7 @@
+         try:
+             method = scope["method"]
+             headers = dict(scope["headers"])
+-            health = scope["path"] in ("/healthz", "/readyz")
++            health = scope["path"] in ("/health", "/ready", "/healthz", "/readyz")
+             if health and method != "GET":
+                 return await error(405, "METHOD_NOT_ALLOWED")
+             if health and (headers.get(b"content-length", b"0") != b"0" or b"transfer-encoding" in headers):
+--- a/backend/tests/test_readiness.py
++++ b/backend/tests/test_readiness.py
+@@ -46,15 +46,28 @@
+         event.remove(auth_app.state.engine, "before_cursor_execute", sql)
+ 
+ 
+-def test_liveness_does_not_touch_dependencies(auth_app, monkeypatch):
++@pytest.mark.parametrize("path", ["/health", "/healthz"])
++def test_liveness_does_not_touch_dependencies(auth_app, monkeypatch, path):
+     def forbidden(*args, **kwargs):
+         pytest.fail("Liveness accessed a dependency")
+     monkeypatch.setattr(auth_app.state.engine, "connect", forbidden)
+     monkeypatch.setattr(auth_app.state.blobs, "put_json", forbidden)
+     async def exercise():
+         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
+-            result = await client.get("/healthz")
++            result = await client.get(path)
+             assert result.status_code == 200 and result.json() == {"status": "ok"}
++    asyncio.run(exercise())
++
++
++def test_cloud_readiness_alias_preserves_dependency_failure(auth_app, monkeypatch):
++    async def unavailable():
++        raise DependencyFailure("DEPENDENCY_UNAVAILABLE")
++    monkeypatch.setattr(auth_app.state.readiness, "check", unavailable)
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            for path in ("/ready", "/readyz"):
++                result = await client.get(path)
++                assert result.status_code == 503 and result.json()["detail"] == "DEPENDENCY_UNAVAILABLE"
+     asyncio.run(exercise())
+ 
+ 
+--- a/backend/deploy/gcp/README.md
++++ b/backend/deploy/gcp/README.md
+@@ -1,6 +1,6 @@
+ # Google Cloud staging
+ 
+-Owner target: `beat-my-track`; owner reports credits expire in about 80 days from October 5, 2026. Verify the exact expiry, eligible services and currency in Billing before an applied run. The prepared local configuration is ignored at `.tools/gcp-staging/config.json`. No live cloud resources have been created.
++Owner target: `beat-my-track`; owner reports credits expire in about 80 days from October 5, 2026. The owner-authorized staging deployment is now live in `europe-west1`; see [actual deployment, checks and remaining PC/Google acceptance](../../../docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md). The live configuration is ignored at `.tools/gcp-staging/config.json`. Exact remaining credit balance/expiry is still owner-reported, not verified through billing APIs.
+ 
+ `staging.py` provides `init`, `plan`, `deploy`, `smoke`, `cleanup` and `watch`. Commands are explicit argument arrays, always pin the project and default to a review plan. Mutations require `--apply` and the exact `--confirm-owner` identifier. Never use a production dataset with this disposable configuration.
+ 
+@@ -31,7 +31,7 @@
+ 
+ The current config uses a four-hour lease and EUR 40 review budget. **These are proposed caps/estimates, not provider enforcement.** Set `cost_reviewed`, `estimated_hourly_eur` and `pricing_checked_at` only after checking all-service pricing. Apply rejects stale pricing, expired leases, sample configs and estimated cost beyond the budget. Maximum initial budget is EUR 50. Ordinary Google budget alerts do not enforce this script's budget. [Cloud Billing budgets](https://docs.cloud.google.com/billing/docs/how-to/budgets).
+ 
+-Install a current Google Cloud CLI and authenticate the operator through Google's browser flow. This workspace currently has neither CLI nor ADC. No credentials should be pasted into chat or committed.
++Install a current Google Cloud CLI and authenticate the operator through Google's browser flow. This workspace now has CLI 587.0.0 and an authenticated operator. Local ADC is absent; deployed containers obtain ADC through their attached identities. Local real-provider tests separately require operator ADC. No credentials should be pasted into chat or committed.
+ 
+ ```text
+ gcloud auth login
+@@ -53,7 +53,9 @@
+ & .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/staging.py cleanup --apply --confirm-owner OWNER_ID_FROM_CONFIG
+ ```
+ 
+-Deployment creates only labeled resources, builds/checks the exact Linux engine and recorded canonical fixture, pushes and resolves an immutable digest, completes migration first, deploys API/worker and runs the native/storage smoke job. Initial API deploy discovers its URL; a same-image update sets the real browser origin before workers start. HTTP checks verify liveness/readiness/bootstrap with the operator's identity token in `X-Serverless-Authorization`, preserving application bearer auth for later real-account tests. Smoke jobs never create players, PBs, rewards or memberships.
++Deployment creates only labeled resources, builds/checks the exact Linux engine and recorded canonical fixture, pushes and resolves an immutable digest, completes migration first, deploys API/worker and runs the native/storage smoke job. Initial API deploy discovers its URL; a same-image update sets the real browser origin before workers start. HTTP checks verify `/health`, `/ready` and `/v1/bootstrap` with the operator's identity token in `X-Serverless-Authorization`, preserving application bearer auth for later real-account tests. Cloud Run reserves some paths ending in `z`; `/healthz` was intercepted in the actual deployment. Existing `/healthz` and `/readyz` remain aliases for local/NAS probes. [Cloud Run reserved paths](https://docs.cloud.google.com/run/docs/known-issues#reserved-url-paths). Smoke jobs never create players, PBs, rewards or memberships.
++
++Provisioning must finish before building/pushing. The build command now refuses an absent registry. If a newly created service account is temporarily unavailable to the IAM policy API, inspect the error and resume the same owned provisioning operation after propagation; ownership checks and existing secret versions remain enforced.
+ 
+ On any failure, inspect the named stage and run the cleanup preview/command. Cleanup first checks ownership of every existing target, then rechecks before each delete. It removes API/worker/jobs before data/registry/secrets/accounts and removes its Cloud SQL IAM bindings. It never deletes the project, billing account, enabled APIs or differently owned resources. Partial cleanup is safely retryable. Review `cleanup.json`; a failed cloud command is not reported as completed.
+ 
+@@ -69,7 +71,7 @@
+ & .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_gcs_storage.py -q -k real_gcs_contract
+ ```
+ 
+-It uses a unique `bmt-contract/<uuid>` prefix and deletes only its test hashes. All other provider tests use an isolated HTTP transport. The staging smoke job repeats native verification and real storage checks from Cloud Run using attached identities. Live GCS, real Google sign-in, provider restore/credential revocation, proxy/cellular and measured capacity remain unperformed until authentication and an applied run are available.
++It uses a unique `bmt-contract/<uuid>` prefix and deletes only its test hashes. All other provider tests use an isolated HTTP transport. The staging smoke job repeats native verification and real storage checks from Cloud Run using attached identities; the actual deployed job passed. Real interactive Google sign-in, provider restore/credential revocation, proxy/cellular and measured capacity remain separate acceptance checks.
+ 
+ ## Primary interfaces
+ 
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -567,6 +567,7 @@
+ static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
+ 	if not data is Dictionary: return false
+ 	var endpoint: String = path.get_slice("?",0)
++	if endpoint == "/auth/google/browser/cancel": return method == HTTPClient.METHOD_POST and data.is_empty()
+ 	if endpoint == "/auth/google/browser/prepare": return _text(data.get("client_id")) and _text(data.get("nonce"))
+ 	if endpoint == "/auth/google/browser/complete": return data.get("status") == "complete"
+ 	if endpoint == "/auth/google/browser/start": return _text(data.get("poll_token")) and data.get("browser_url") is String and data.browser_url.length() < 4096
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized GCP staging applied to beat-my-track/europe-west1 after CLI login. Linked existing EUR billing, created EUR10 project budget alert, pinned API/worker/Cloud SQL/private GCS/registry/secrets, restricted DB role and real native/storage smoke (12757 ticks/two deleted objects/zero player writes). Fresh matching worker and empty queue confirmed. Cloud Run reserved health path fixed with IO-free /health and /ready aliases; current CLI missing-worker response and missing-registry guard corrected. Actual client cancel-204 contract fixed. Final Linux game HTTPS diagnostic 21 checks and native recovery 28 pass; local affected batches 41/24/44/20 pass (overlap, six unavailable local provider/PG skips). First stage removed (12 resources). Cleanup watcher/fallback target Oct6 02:15/02:20 Helsinki; alert/estimates are not spending caps. PC game remains on WSL pending exact-host Avast approval/exclusion; OAuth origin registration and real Google/device login unverified. No Android export/device test or attachment check, data import, NAS/production rollout or capacity/restore acceptance. Actual commands, failures, files, receipts and scoped patch: docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 R01/R03/T01-T04/V03-V05/Q01: remaining editor P1/P2 findings and Results retry defect fixed. Visible recovery/original-save state and correct Retry; retained road/surface/run previews with Save/Discard/Cancel; pinch restores geometry and undo/redo; nonoverlapping Surface row, defined Publish glyph, cyclic actionable issues and real road-edge paths. Retry now resets per-attempt Results guard; all five PB assertions restored. Full pinned Validate passes (303 parses, App 99, workflow 245, review 51 headless, performance/equivalence 1215); final graphical review 59 and CaptureApp 113 pass with inspected screenshots. Original goldens/physics/schema unchanged; inherited cleanup warnings retained. Doctor finds DN2103; no export/install/device exercise or backend deployment. Concurrent/performance work preserved in scoped checkpoint. Files, actual commands, failures corrected and acceptance: docs/EDITOR_ISSUE_FIXES_2026_10_05.md.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested exception P1/P2 repairs implemented for future cloud production. Completed recordings survive menu/game navigation with bounded save ownership; lossless same-key transport fallback and capability floor; pinned worker claim filtering and bounded unsupported capacity; typed responses; private bounded same-operation refresh recovery without plaintext DB credentials; durable resource journal, idempotent unsubmitted-attempt closure/refunds, bounded expiry recovery; original missing-Run reconciliation, monotonic/server-time keys and jittered retries; validated identity budgets, explicit canonical exceptions and surviving finalization proof. Migration 0015 requires backed-up matching rollout; existing services/data untouched. Broad backend 360 passed/10 skipped; PG 62/6 and final compatibility/replica 41/3; final authority/readiness/retention 81/2, SQLite concurrent refresh 1 pass; batches overlap. Native HTTP final 7 and account 1 pass; recovery 28, graphical 29, AdMob 44, parser 302 checks pass. Recovery screenshot inspected. Initial fixture/protocol classification and transient parallel editor parse failure corrected without weakening invariants. No production/cloud/provider/phone rollout or device test; attachment not checked. Source delta preserves parallel editor/GCS/readiness/lifecycle changes. Actual commands, policies, limitations and review checkpoint: docs/BACKEND_EXCEPTION_FIXES_2026_10_05.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized GCP staging applied to beat-my-track/europe-west1 after CLI login. Linked existing EUR billing, created EUR10 project budget alert, pinned API/worker/Cloud SQL/private GCS/registry/secrets, restricted DB role and real native/storage smoke (12757 ticks/two deleted objects/zero player writes). Fresh matching worker and empty queue confirmed. Cloud Run reserved health path fixed with IO-free /health and /ready aliases; current CLI missing-worker response and missing-registry guard corrected. Actual client cancel-204 contract fixed. Final Linux game HTTPS diagnostic 21 checks and native recovery 28 pass; local affected batches 41/24/44/20 pass (overlap, six unavailable local provider/PG skips). First stage removed (12 resources). Cleanup watcher/fallback target Oct6 02:15/02:20 Helsinki; alert/estimates are not spending caps. PC game remains on WSL pending exact-host Avast approval/exclusion; OAuth origin registration and real Google/device login unverified. No Android export/device test or attachment check, data import, NAS/production rollout or capacity/restore acceptance. Actual commands, failures, files, receipts and scoped patch: docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 R01/R03/T01-T04/V03-V05/Q01: remaining editor P1/P2 findings and Results retry defect fixed. Visible recovery/original-save state and correct Retry; retained road/surface/run previews with Save/Discard/Cancel; pinch restores geometry and undo/redo; nonoverlapping Surface row, defined Publish glyph, cyclic actionable issues and real road-edge paths. Retry now resets per-attempt Results guard; all five PB assertions restored. Full pinned Validate passes (303 parses, App 99, workflow 245, review 51 headless, performance/equivalence 1215); final graphical review 59 and CaptureApp 113 pass with inspected screenshots. Original goldens/physics/schema unchanged; inherited cleanup warnings retained. Doctor finds DN2103; no export/install/device exercise or backend deployment. Concurrent/performance work preserved in scoped checkpoint. Files, actual commands, failures corrected and acceptance: docs/EDITOR_ISSUE_FIXES_2026_10_05.md.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested exception P1/P2 repairs implemented for future cloud production. Completed recordings survive menu/game navigation with bounded save ownership; lossless same-key transport fallback and capability floor; pinned worker claim filtering and bounded unsupported capacity; typed responses; private bounded same-operation refresh recovery without plaintext DB credentials; durable resource journal, idempotent unsubmitted-attempt closure/refunds, bounded expiry recovery; original missing-Run reconciliation, monotonic/server-time keys and jittered retries; validated identity budgets, explicit canonical exceptions and surviving finalization proof. Migration 0015 requires backed-up matching rollout; existing services/data untouched. Broad backend 360 passed/10 skipped; PG 62/6 and final compatibility/replica 41/3; final authority/readiness/retention 81/2, SQLite concurrent refresh 1 pass; batches overlap. Native HTTP final 7 and account 1 pass; recovery 28, graphical 29, AdMob 44, parser 302 checks pass. Recovery screenshot inspected. Initial fixture/protocol classification and transient parallel editor parse failure corrected without weakening invariants. No production/cloud/provider/phone rollout or device test; attachment not checked. Source delta preserves parallel editor/GCS/readiness/lifecycle changes. Actual commands, policies, limitations and review checkpoint: docs/BACKEND_EXCEPTION_FIXES_2026_10_05.md.
+--- a/docs/BACKEND_GCS_STAGING_2026_10_05.md
++++ b/docs/BACKEND_GCS_STAGING_2026_10_05.md
+@@ -1,4 +1,6 @@
+ # Native Google storage and repeatable staging — 2026-10-05
++
++Applied follow-up: the owner subsequently completed CLI login and authorized deployment. [Actual cloud deployment and remaining PC/Google acceptance](BACKEND_GCP_DEPLOYMENT_2026_10_05.md) supersede the unperformed-live status below; the local implementation record remains historical.
+ 
+ Owner authorized backlog items 6–7: native Google Cloud Storage, repeatable staging deployment and cleanup. Requirements B01–B07/B19/B20/B23/RW05–RW07/Q01. Owner supplied project `beat-my-track` and reports credit expiry in about 80 days. That interval is approximate; no precise billing expiry or current price estimate is inferred.
+ 
+--- /dev/null
++++ b/game/tests/test_cloud_staging.gd
+@@ -0,0 +1,68 @@
++extends SceneTree
++## Opt-in live staging diagnostic. No player/session/PB writes or saved tokens.
++var checks: int = 0
++var failures: int = 0
++var client: Node
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		push_error(label)
++
++func run() -> void:
++	var url: String = OS.get_environment("BMT_STAGING_API_URL")
++	if not url.begins_with("https://bmt-stg-") or not url.ends_with(".run.app"):
++		push_error("Set BMT_STAGING_API_URL to the owned disposable Cloud Run staging origin.")
++		quit(1)
++		return
++	client = preload("res://backend/backend_client.gd").new()
++	root.add_child(client)
++	check(client.valid_response("/auth/google/browser/cancel", HTTPClient.METHOD_POST, {}), "empty browser cancellation contract accepted")
++	check(not client.valid_response("/auth/google/browser/cancel", HTTPClient.METHOD_POST, {"access_token":"invalid"}), "malformed browser cancellation rejected")
++	check(not client.valid_response("/auth/google/browser/cancel", HTTPClient.METHOD_GET, {}), "cancellation requires POST")
++	check(client.configure(url) == OK, "staging URL accepted")
++	for path: String in ["/health", "/ready"]:
++		var request := HTTPRequest.new()
++		root.add_child(request)
++		request.timeout = 30.0
++		var started: Error = request.request(url + path)
++		check(started == OK, "health request starts")
++		if started == OK:
++			var response: Array = await request.request_completed
++			check(int(response[0]) == HTTPRequest.RESULT_SUCCESS and int(response[1]) == 200, "TLS health check succeeds: " + path)
++		request.queue_free()
++	var bootstrap: Dictionary = await client.request_api("/bootstrap")
++	check(bool(bootstrap.ok), "real game HTTPS bootstrap succeeds")
++	if not bootstrap.ok:
++		print("Cloud staging: %d checks, %d failures; bootstrap error %s" % [checks, failures, str(bootstrap.get("error", "unknown"))])
++		quit(1)
++		return
++	check(bootstrap.data.service == "beat-my-track" and bootstrap.data.api_version == "v1", "correct cloud service")
++	check(bootstrap.data.development_auth == false and bootstrap.data.test_drivers == false, "development bypasses disabled")
++	check(bootstrap.data.google_configured == true and bootstrap.data.google_browser_configured == true, "real Google audiences configured")
++	var catalog: Dictionary = await client.request_api("/tracks")
++	check(bool(catalog.ok), "guest discovery succeeds")
++	var me: Dictionary = await client.request_api("/me")
++	check(not bool(me.ok) and int(me.get("status", 0)) == 401, "private profile requires real authentication")
++	var developer: Dictionary = await client.developer_login("staging-diagnostic-invalid-key")
++	check(not bool(developer.ok) and int(developer.get("status", 0)) == 404, "development login rejected")
++	var started: Dictionary = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST)
++	check(bool(started.ok), "Google browser handoff starts")
++	if started.ok:
++		var browser_url: String = str(started.data.browser_url)
++		check(browser_url.begins_with(url + "/v1/auth/google/browser#"), "handoff uses the actual cloud origin")
++		var prepared: Dictionary = await client.request_api("/auth/google/browser/prepare", HTTPClient.METHOD_POST, {"token":browser_url.get_slice("#", 1)})
++		check(bool(prepared.ok), "browser receives its challenge")
++		var pending: Dictionary = await client.request_api("/auth/google/browser/poll", HTTPClient.METHOD_POST, {"token":started.data.poll_token})
++		check(bool(pending.ok) and str(pending.data.get("status", "")) == "pending", "handoff remains pending without Google proof")
++		var cancelled: Dictionary = await client.request_api("/auth/google/browser/cancel", HTTPClient.METHOD_POST, {"token":started.data.poll_token})
++		check(bool(cancelled.ok), "unused handoff is cancelled")
++	check(not client.signed_in(), "diagnostic never creates a player session")
++	print("Cloud staging: %d checks, %d failures" % [checks, failures])
++	client.queue_free()
++	await process_frame
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md
+@@ -0,0 +1,78 @@
++# Google Cloud staging deployment — 2026-10-05
++
++Requirements B01–B07/B19/B20/B23/WR03–WR08/RW05–RW07/Q01. The owner completed Google CLI login and explicitly requested the remaining staging deployment. This is an applied staging follow-up to [the storage/deployment implementation](BACKEND_GCS_STAGING_2026_10_05.md), not a production rollout.
++
++The API, worker, PostgreSQL, private GCS, registry and secrets are deployed in project `beat-my-track`, region `europe-west1`. API: https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app. The API is publicly reachable with application authentication; real Google audiences are configured, development authentication and artificial test drivers are disabled. No existing WSL player data was imported or deleted. Existing local services remain available.
++
++API and worker use one immutable digest: `sha256:bec69858e2a6d2494d96a0169076f8e2f497c84f9d36e0ebb5dd02a8c0fdbca0`. Godot is exactly `4.7.2.stable.official.ed1daf0bf`, pinned Linux SHA256 `8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e`. The applied schema is `0015_exception_recovery`.
++
++## Live checks and limits
++
++- Migration and real native/GCS diagnostic jobs completed successfully. Golden native verification reproduced **12,757 ticks**, the expected manifest and lap ticks `[2634, 2532, 2531, 2530, 2530]`. Two private immutable objects passed publication, duplicate, read and listing checks and were deleted. Diagnostic player writes: **zero**.
++- Corrected `/health`, `/ready` and `/v1/bootstrap` checks returned success over verified HTTPS. Cloud Run API and worker conditions are Ready. Public invocation was confirmed by the service's explicit `allUsers` invoker binding; authenticated game endpoints still require real account proof.
++- A separate read-only execution checked the actual worker heartbeat and exact canonical build compatibility: status ready, one active/available worker and zero queue depth. It created no races or accounts. See [worker health](evidence/gcp-staging-deployment-2026-10-05/worker-health.json).
++- The real game client in an isolated Linux project/container passed **21 checks, zero failures** against the public API with ordinary TLS trust: health, readiness, bootstrap, guest discovery, unauthenticated profile rejection, development-login rejection and Google browser start/prepare/pending/cancel. It creates no authenticated identity and does not validate an interactive Google login.
++- Maximum two API instances, minimum zero, concurrency 16, one CPU/1 GiB per API. One manually scaled worker, one CPU/768 MiB. Cloud SQL PostgreSQL 17, Enterprise zonal `db-custom-1-3840`, 10 GiB SSD, no disk autogrowth, connector enforcement and 40 DB connections. App pools have zero overflow. Staging data has no automatic/final/retained SQL backups and is disposable.
++- Separate migration/runtime/diagnostic identities use attached ADC. Admin/app DB secrets are separate and version-pinned; no service-account keys were downloaded. The real app-role privilege check passed. The bucket has uniform access, public access prevention and no soft-delete retention.
++
++## Cost and cleanup
++
++CLI 587.0.0 is installed under the user's Google Cloud SDK directory. The project initially had billing disabled despite an existing open EUR billing account. The authorized project was linked to that account; its display name is My Billing Account. No account upgrade or service commitment was performed. Current remaining credits and exact expiry are not available from the public catalog/budget API; the owner's approximately €300/80-day report remains the source.
++
++Regional prices were checked in the authenticated Cloud Billing SKU catalog in EUR, supplemented by the primary pricing documentation. [Recorded rate review](evidence/gcp-staging-deployment-2026-10-05/pricing-review.json). A conservative €1/hour envelope yields about €4 for the original four-hour lease, ignoring free-tier savings and including small job/registry/storage/network overhead. This is an estimate, not a provider cap. The local configuration also retains a €40 review guard.
++
++An actual **€10 gross project-only monthly budget alert** was created, with 50/80/100% thresholds and credits excluded from the budget calculation. It is an alert, not spending enforcement. Other project budgets and billing accounts were not changed.
++
++The lease expires **2026-10-05 23:15:08 UTC / October 6 02:15:08 Helsinki**. A hidden local cleanup watcher is running. Limited-user Windows task `BMT-staging-cleanup-e7a444ab` is a fallback at 02:20 Helsinki, with StartWhenAvailable, WakeToRun and three five-minute retries. It loads a frozen owner/config, refuses deletion before expiry and invokes the same remote ownership checks. These require an authenticated Windows host; they are not a cloud-enforced spending cap. Keep the PC powered on/connected through cleanup, or run explicit cleanup sooner. Remote ownership is checked before any deletion; the project and billing account remain.
++
++The first private stage (`aef88b56…`) was removed after diagnosing the reserved health path. All 12 owned compute/data/registry/secret/account resources were removed successfully; [actual cleanup receipt](evidence/gcp-staging-deployment-2026-10-05/first-environment-cleanup.json). Shared project/APIs/billing and differently owned resources were retained. The replacement stage has owner `e7a444abdf684b7cbd228d9e7948c65e` and the same original deadline.
++
++## Changes made during deployment
++
++Cloud Run's frontend returned a Google HTML 404 for `/healthz` while `/readyz` and bootstrap succeeded and internal liveness probes reported 200. Its documented reserved-path behavior motivated `/health` and `/ready` aliases, retaining older local/NAS paths. Both new paths receive the existing middleware operations exemption; a test initially caught database access through the new liveness alias, and the middleware was corrected without weakening that check. [Cloud Run reserved paths](https://docs.cloud.google.com/run/docs/known-issues#reserved-url-paths).
++
++The current CLI's missing-worker response (`Cannot find worker pool`) is recognized only during an explicitly allowed missing-resource inspection. Permission failures remain fatal. The build refuses a missing owned registry before Docker/auth/push. The first replacement push raced unfinished provisioning and failed with repository not found; after provisioning completed, the cached build/push passed. One new-account IAM binding needed an idempotent provisioning retry after propagation. Both interruptions are retained as failed attempts, not reported as first-pass success.
++
++Actual game-client testing found that a valid empty 204 Google browser-cancel response was rejected as a malformed auth-token response. `valid_response` now accepts an empty dictionary only for POST on that specific cancellation endpoint and continues rejecting a malformed body/wrong method. The test repeats real handoff cancellation against Cloud Run.
++
++Changed source: `backend/bmt_backend/{app.py,middleware.py}`, `backend/deploy/gcp/{staging.py,README.md}`, `backend/tests/{test_gcp_staging.py,test_readiness.py}`, `game/backend/backend_client.gd`, `game/tests/test_cloud_staging.gd`. Documentation/evidence: this report, development/phase status and `docs/evidence/gcp-staging-deployment-2026-10-05/`. Ignored `.tools/gcp-staging` contains operator configuration, public local CA bundles, build receipts, diagnostic drivers and cleanup helpers; credential payloads are not committed. Canonical simulation and golden fixtures were not changed in this deployment slice. Concurrent source/art/editor work is preserved.
++
++## Actual commands and outcomes
++
++Commands were run from the repository root. The ignored diagnostic driver imports the shipped `staging.py` and uses explicit project-scoped CLI arrays; passwords/tokens use stdin/JSON bodies, never command arguments. It records operation names and sanitized errors. Native SDK execution used bundled Python plus `lib/gcloud.py`; local TLS verified against a bundle of already Windows-trusted public roots because Avast intercepts Google HTTPS. No verification was disabled or system trust added.
++
++```powershell
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/run-live.py provision
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/run-live.py build
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/run-live.py deploy
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/run-live.py smoke
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/worker-check.py
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/collect-evidence.py
++& .tools/backend-venv/Scripts/python.exe .tools/gcp-staging/run-live.py cleanup .tools/gcp-staging/config.first-live.json
++```
++
++Provision/build/deploy/smoke passed for the replacement. The first read-only worker-check execution used a nonexistent diagnostic dictionary field and failed; corrected assertions on status/available_workers/queue_depth passed. Latest successful worker execution is `bmt-stg-e7a444ab-smoke-r7lrh`. The actual native/storage execution was `bmt-stg-e7a444ab-smoke-c79fw`; later worker diagnostics override arguments for one execution only and do not change the job template.
++
++Affected local batches, which overlap and must not be summed:
++
++- Initial CLI missing-resource fix: 22 passed.
++- First cloud-alias batch: 40 passed/one real liveness dependency failure. Final alias/readiness/orchestration batch: **41 passed**.
++- Final orchestration after the missing-registry guard: **24 passed**.
++- Authentication/browser regression: **44 passed**.
++- Storage/setup regression: **20 passed, six skipped** (five local PostgreSQL cases lacking their temporary DSN and the operator-ADC opt-in provider case). The real Cloud SQL/GCS job passed separately.
++- `scripts/dev.ps1 -Action CheckScript -ScriptPath res://tests/test_cloud_staging.gd`: passed with the pinned engine after allowing its normal application log; the initial sandbox attempt could not write that log.
++- `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_backend_exception_recovery.gd`: **28 checks, zero failures**.
++- Windows `TestScript` live API attempt: **failed** on TLS handshake `-9984`. See pending PC acceptance below.
++- Initial Linux client attempt against the full Windows game project: Windows-only music-extension errors plus one handoff cancellation failure. The minimal, read-only Linux client project excludes the music extension; after the cancellation fix, the final container run exited zero with **21 checks, zero failures**. It used the pinned deployment image and standard CA validation, with no player/session files.
++
++Public receipts, XML results, source baselines and the scoped Git diff are in [evidence](evidence/gcp-staging-deployment-2026-10-05/README.md). `git diff --check` on the affected tracked files and `git apply --reverse --check` on that scoped patch both exit zero; Git only reports existing CRLF-to-LF normalization warnings. The cleanup watcher/fallback and existing PC URL were rechecked before handoff. Private billing IDs/tokens/passwords are excluded.
++
++## Remaining PC and Google acceptance
++
++The Windows game's current backend configuration remains on WSL while its staging TLS decision is pending. A certificate inspection proved Avast Web/Mail Shield issues the local replacement `*.a.run.app` certificate; the existing Windows-trusted root was exported as a public-only ignored proposal. Godot's default trust rejects that replacement. Linux normal trust succeeds. No debug CA has been applied to the game.
++
++The owner was asked to either allow that already trusted CA only for this exact staging host in local Windows debug builds, or exclude the host from Avast scanning. Existing [AGENTS.md](../AGENTS.md) approval says "restricted to Google ad/resource domains"; it does not cover this new backend hostname. A host-scoped proposal keeps TLS/common-name verification enabled and stores the public certificate/config outside Git/release assets. Approval remains required before applying it or switching the PC game to the failing endpoint.
++
++Add `https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app` to the existing Web OAuth client's Authorized JavaScript origins in [Google Auth Platform](https://console.cloud.google.com/auth/clients?project=beat-my-track), retaining localhost. No OAuth secret is needed. This owner-managed registration and a real browser login are not proven by successful start/prepare/pending/cancel tests.
++
++No Android export/install or physical-device test was performed; phone attachment was not checked. No measured cloud load/capacity, real-Google race submission, NAS migration, data import, production rollout or backup/restore acceptance is claimed. Staging discovery is initially empty and does not inherit WSL identities/tracks/PBs. For a source change, create a fresh owned staging environment; do not rebuild/redeploy this owner as a mixed-image rollout. The copied runtime snapshot passed the canonical golden proof; later diagnostic/client-only files do not alter its immutable image.
+--- /dev/null
++++ b/docs/evidence/gcp-staging-deployment-2026-10-05/README.md
+@@ -0,0 +1,14 @@
++# Applied Google staging evidence
++
++See [requirements, changes, commands, actual outcomes and acceptance](../../BACKEND_GCP_DEPLOYMENT_2026_10_05.md).
++
++- `deployment.json`, `cloud-status.json`, `http-smoke.json`: actual service/image/conditions and cloud HTTP proof. Provider environment flags named production select secure behavior; this is disposable staging.
++- `worker-health.json`: actual matching worker build, fresh heartbeat and empty queue from the restricted app-role diagnostic.
++- `first-environment-cleanup.json`: successful deletion of the previous owned environment's 12 resources.
++- `pricing-review.json`, `plan.json`: current EUR SKU review and prepared plan. Budget alerts and local lease checks are not provider spending caps.
++- `certificate.json`, `proposed-debug-ca.json`: verified local TLS issuer and exported public-root metadata; game trust remains unapplied pending owner approval.
++- `cleanup-task.json`: actual limited-user fallback settings/deadline; the main Python watcher was confirmed running. `linux-client.log`, `native-recovery.log` and `windows-client-tls-failure.log` retain the observed native outcomes.
++- XML: `staging-cli.xml` 22 pass, `cloud-paths.xml` retained 40 pass/one liveness failure, `cloud-paths-final.xml` 41 pass, `staging-final.xml` 24 pass, `auth-regression.xml` 44 pass, `storage-setup-regression.xml` 20 pass/six explicitly unavailable local integrations. Batches overlap.
++- `before-*`: task baselines, including earlier concurrent work. `scoped-change.patch` and source hashes capture only this deployment slice; no broad staging of the shared dirty tree.
++
++No passwords, billing account IDs, service-account key files, game refresh/access credentials or private player data belong in this evidence. Ignored operator receipts retain private account/budget details. The cloud smoke used attached ADC and actual private GCS/Cloud SQL; the Windows client TLS attempt failed, while the corrected Linux game client passed 21 checks with standard trust. Real interactive Google/Windows/device acceptance remains explicitly pending.

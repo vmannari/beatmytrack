@@ -1,0 +1,1942 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -34,6 +34,8 @@
+ var impact_count: int = 0
+ var countdown_active: bool = false
+ var sand_frequency: float = 0.94
++var contact_enabled: bool = false
++var visible_contact := VisibleContactAudio.new()
+ 
+ func _ready() -> void:
+ 	name = "VehicleAudio"
+@@ -69,9 +71,11 @@
+ 	streams[clip] = sample
+ 	return sample
+ 
+-func configure(id: String, config: HandlingConfig) -> void:
++func configure(id: String, config: HandlingConfig, car: Node3D = null) -> void:
+ 	model.configure(id,config.maximum_speed)
+ 	surface_model.configure(config)
++	if car!=null: visible_contact.configure(car)
++	else: visible_contact.outline = PackedVector2Array()
+ 	# Only the selected vehicle's six engine loops are retained by this race.
+ 	for i: int in range(3):
+ 		engine_load[i].stream = _stream(model.vehicle_id+"_%d_load"%i,true)
+@@ -83,6 +87,8 @@
+ 	surface_model.reset()
+ 	impact_cooldown = 0.0
+ 	countdown_active = false
++	contact_enabled = false
++	visible_contact.reset()
+ 	sand_frequency = 0.94
+ 	chassis_cooldown = 0.0
+ 	event_index = 0
+@@ -115,11 +121,31 @@
+ 		player.play()
+ 	for player: AudioStreamPlayer in events+debris_events: player.stop()
+ 
++func begin_physics_feedback() -> void:
++	# Caller passed live pause/countdown/rewind gates and is taking a real tick.
++	# Avoid suppression by the previous render's paused/countdown latch.
++	contact_enabled = active
++
++func resolved_contact(state: VehicleState, track: NativeTrack, incoming: Vector2) -> void:
++	if not active or not contact_enabled: return
++	var visual_impulse: Vector2 = visible_contact.sample(state,track,incoming)
++	if state.collision_impulse!=Vector2.ZERO:
++		if not visible_contact.duplicate_physical(state.collision_impulse):
++			var before: int = impact_count
++			collision(state.collision_impulse)
++			visible_contact.sounded = visible_contact.touching and impact_count>before
++			if visible_contact.sounded and visible_contact.normal==Vector2.ZERO:
++				visible_contact.normal = state.collision_impulse.normalized()
++	elif visual_impulse!=Vector2.ZERO:
++		var before: int = impact_count
++		collision(visual_impulse)
++		visible_contact.sounded = impact_count>before
++
+ func collision(impulse: Vector2) -> void:
+ 	# Game calls this directly after its canonical step resolves a contact.
+ 	# Start playback here; render/presentation work must not delay the attack.
+ 	var strength: float = impulse.length()
+-	if not active or was_silent or countdown_active or strength<=1.2 or impact_cooldown>0.0: return
++	if not active or not contact_enabled or strength<=1.2 or impact_cooldown>0.0: return
+ 	var severity: float = smoothstep(1.2,22.0,strength)
+ 	impact_index = 0 if strength<5.0 else (1 if strength<13.0 else 2)
+ 	_event(IMPACTS[impact_index],lerpf(0.18,0.9,severity),[1.04,0.96,1.01,0.92][impact_count%4])
+@@ -136,6 +162,8 @@
+ 	if debris: debris_index = (debris_index+1)%debris_events.size()
+ 	else: event_index = (event_index+1)%events.size()
+ 	player.stream = _stream(clip,false)
++	player.bus = "Impacts" if clip in IMPACTS else "Vehicle"
++	player.stream_paused = false
+ 	player.pitch_scale = pitch
+ 	player.volume_db = linear_to_db(maxf(0.0001,amplitude))
+ 	player.play()
+@@ -145,6 +173,7 @@
+ 	if not active: return
+ 	if last_tick>state.tick: reset() # Restored rewind state cannot replay impact/landing events.
+ 	countdown_active = countdown
++	contact_enabled = not silent and not countdown
+ 	for player: AudioStreamPlayer in engine_load+engine_coast+events+debris_events: player.stream_paused = silent
+ 	for layer: String in layers: (layers[layer] as AudioStreamPlayer).stream_paused = silent
+ 	if silent:
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -104,14 +104,22 @@
+ var profile_props_us: int = 0
+ var profile_camera_us: int = 0
+ var profile_hud_us: int = 0
++var profile_audio_us: int = 0
++var profile_contact_us: int = 0
++var profile_music_us: int = 0
++var profile_water_us: int = 0
++var profile_history_us: int = 0
+ var profile_skip_telemetry: bool = false
+ var _render_viewport: Viewport
+ var _base_render_scale: float = 1.0
++var _presentation_has_water: bool = false
++const MOBILE_WORLD_PIXEL_BUDGET: float = 1500000.0
+ 
+ 
+ func _ready() -> void:
+ 	_render_viewport = get_viewport()
+ 	_base_render_scale = _render_viewport.scaling_3d_scale
++	_render_viewport.size_changed.connect(_refresh_render_scale)
+ 	if Engine.physics_ticks_per_second != VehicleSimulation.TICK_RATE:
+ 		push_error("Project physics rate must match the canonical 120 Hz step.")
+ 		get_tree().quit(1)
+@@ -175,7 +183,7 @@
+ 	world.add_child(sand_dust)
+ 	vehicle_audio = VehicleAudio.new()
+ 	add_child(vehicle_audio)
+-	vehicle_audio.configure(vehicle_id,handling)
++	vehicle_audio.configure(vehicle_id,handling,car)
+ 	camera = FollowCamera.new()
+ 	if preference_records != null:
+ 		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
+@@ -282,7 +290,12 @@
+ 		if not rewind_history.entries.is_empty() and int(rewind_history.entries[0].tick) == 0:
+ 			rewind_history.entries[0].state = RewindHistory.properties(sim.state)
+ 	if production_mode and (not editor_test or not practice_validation.finished) and online_frames.size() < 216000: online_frames.append(frame.packed())
++	vehicle_audio.begin_physics_feedback()
++	var incoming_contact_velocity: Vector2 = sim.state.velocity
+ 	sim.step(frame, yard)
++	var contact_start: int = Time.get_ticks_usec() if profile_enabled else 0
++	vehicle_audio.resolved_contact(sim.state,native_track,incoming_contact_velocity)
++	if profile_enabled: profile_contact_us += Time.get_ticks_usec() - contact_start
+ 	if production_mode and not editor_test and sim.state.tick < 180:
+ 		countdown_label.text = sim.state.launch_result.to_upper()
+ 		countdown_label.modulate.a = 1.0 - smoothstep(120.0,180.0,float(sim.state.tick))
+@@ -292,7 +305,6 @@
+ 		camera.add_collision_impact(resolved_impact)
+ 		car.add_collision_impact(sim.state,resolved_impact)
+ 		impact_cracks.show_impact(resolved_impact)
+-		vehicle_audio.collision(resolved_impact)
+ 		GameSoundtrack.instance().notify_collision(self,resolved_impact.length())
+ 	if sim.state.scrape_strength > 0.0:
+ 		car.add_scrape(sim.state)
+@@ -314,8 +326,10 @@
+ 			lap_telemetry.observe_incidents(track_session, native_track, sim.state, handling)
+ 			lap_telemetry.observe(track_session, native_track, sim.state.position, sim.state.velocity.length(), attempt_practice)
+ 		if profile_enabled: profile_telemetry_us += Time.get_ticks_usec() - profile_start
++		var history_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 		if production_mode: rewind_history.capture(sim.state,track_session,false,lap_telemetry,impact_cracks.side_damage)
+ 		if ghost_store != null: ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling)
++		if profile_enabled: profile_history_us += Time.get_ticks_usec() - history_start
+ 		if production_mode and track_session.finished:
+ 			_begin_finish()
+ 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
+@@ -394,11 +408,17 @@
+ 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
+ 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
+ 	_present_personal_ghost(weight)
+-	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
++	var water_start: int = Time.get_ticks_usec() if profile_enabled else 0
++	var water_depth: float = native_track.water_depth(point) if native_track != null and _presentation_has_water else 0.0
++	if profile_enabled: profile_water_us += Time.get_ticks_usec() - water_start
+ 	car.present(point, heading, presented.state, frame)
+ 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
++	var audio_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0)
++	if profile_enabled: profile_audio_us += Time.get_ticks_usec() - audio_start
++	var music_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	GameSoundtrack.instance().present_race(self,sim.state,native_track,handling,track_session,paused,countdown_ticks>0,finish_sim!=null,{"personal":music_personal_ghosts,"rival":ghost_bests.get("race",{}) if bool(get_meta("soundtrack_rivalry",false)) else {}})
++	if profile_enabled: profile_music_us += Time.get_ticks_usec() - music_start
+ 	car.rotation.x = 0.0
+ 	if native_track != null:
+ 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
+@@ -722,9 +742,8 @@
+ 
+ 
+ func _build_ground(world: Node3D) -> void:
+-	if _render_viewport != null:
+-		var theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+-		_render_viewport.scaling_3d_scale = render_scale_for(theme,_base_render_scale,OS.has_feature("mobile"))
++	_presentation_has_water = native_track != null and (native_track.cells.has(3) or native_track.cells.has(6))
++	_refresh_render_scale()
+ 	if native_track != null:
+ 		var visual := NativeTrackVisual.new()
+ 		bridge_presentation = BridgePresentation.new(native_track)
+@@ -739,9 +758,22 @@
+ 		track_ground = visual
+ 
+ 
+-static func render_scale_for(theme: String, base_scale: float, mobile: bool) -> float:
++func _refresh_render_scale() -> void:
++	if not is_instance_valid(_render_viewport): return
++	var theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
++	var pixels: Vector2i = _render_viewport.get_window().size
++	var scale: float = render_scale_for(theme,_base_render_scale,OS.has_feature("mobile"),pixels)
++	if not is_equal_approx(_render_viewport.scaling_3d_scale,scale): _render_viewport.scaling_3d_scale = scale
++
++
++static func render_scale_for(theme: String, base_scale: float, mobile: bool, pixels: Vector2i = Vector2i.ZERO) -> float:
+ 	# Point-lit night scenes need extra fill-rate headroom; Canvas UI stays native.
+-	return minf(base_scale,0.55) if mobile and theme == "night_city" else base_scale
++	var scale: float = minf(base_scale,0.55) if mobile and theme == "night_city" else base_scale
++	# A percentage alone lets large tablets render several times the phone budget.
++	# Bound only the 3D buffer; neither projection nor the native Canvas is resized.
++	if mobile and pixels.x > 0 and pixels.y > 0:
++		scale = minf(scale,sqrt(MOBILE_WORLD_PIXEL_BUDGET/(float(pixels.x)*float(pixels.y))))
++	return scale
+ 
+ 
+ func _exit_tree() -> void:
+diff --git a/game/default_bus_layout.tres b/game/default_bus_layout.tres
+--- a/game/default_bus_layout.tres
++++ b/game/default_bus_layout.tres
+@@ -14,6 +14,11 @@
+ [sub_resource type="AudioEffectHardLimiter" id="VehicleLimit"]
+ resource_name = "Vehicle ceiling"
+ ceiling_db = -2.0
++
++[sub_resource type="AudioEffectLimiter" id="ImpactLimit"]
++resource_name = "Immediate impact ceiling"
++ceiling_db = -2.0
++threshold_db = -2.0
+ 
+ [resource]
+ bus/0/effect/0/effect = SubResource("MasterLimit")
+@@ -52,3 +57,11 @@
+ bus/5/bypass_fx = false
+ bus/5/volume_db = 0.0
+ bus/5/send = &"Master"
++bus/6/name = &"Impacts"
++bus/6/solo = false
++bus/6/mute = false
++bus/6/bypass_fx = false
++bus/6/volume_db = 0.0
++bus/6/send = &"Master"
++bus/6/effect/0/effect = SubResource("ImpactLimit")
++bus/6/effect/0/enabled = true
+diff --git a/game/soundtrack/audio_world.gd b/game/soundtrack/audio_world.gd
+--- a/game/soundtrack/audio_world.gd
++++ b/game/soundtrack/audio_world.gd
+@@ -98,7 +98,7 @@
+ 
+ 
+ func apply_settings(settings: Dictionary) -> void:
+-	for item: Array in [["Music", "music_volume"], ["Vehicle", "vehicle_volume"], ["Interface", "interface_volume"]]:
++	for item: Array in [["Music", "music_volume"], ["Vehicle", "vehicle_volume"], ["Impacts", "vehicle_volume"], ["Interface", "interface_volume"]]:
+ 		var level: float = preference(settings, item[1])
+ 		var index: int = AudioServer.get_bus_index(item[0])
+ 		if index < 0: continue
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -95,6 +95,10 @@
+ def write(name, values, used, looping=True, rms=.14):
+     values = filter_audio(values)
+     values -= values.mean()
++    impact = name.startswith("impact_")
++    if impact:
++        # Contact PCM starts at its strongest transient: no quiet pre-roll.
++        values = values[int(np.argmax(np.abs(values))):].copy()
+     if looping:
+         values = loop(values)
+         if name == "tire":
+@@ -103,7 +107,7 @@
+             values[:taper] *= np.linspace(0,1,taper)
+             values[-taper:] *= np.linspace(1,0,taper)
+     else:
+-        attack = min(round(.003*RATE), len(values)//3)
++        attack = 0 if impact else min(round(.003*RATE), len(values)//3)
+         release = min(round(.06*RATE), len(values)//3)
+         values[:attack] *= np.linspace(0,1,attack)
+         values[-release:] *= np.linspace(1,0,release)
+@@ -190,6 +194,6 @@
+ render(read, steady, filter_audio, transpose, write, RATE)
+ replaced = {item["file"] for item in outputs}
+ outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
+-manifest = {"schema":"vehicle-audio-bank-v1","revision":"desert-tone-balance-5","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++manifest = {"schema":"vehicle-audio-bank-v1","revision":"collision-direct-6","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+ (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+ print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/game/tests/test_effect_timing.gd b/game/tests/test_effect_timing.gd
+--- a/game/tests/test_effect_timing.gd
++++ b/game/tests/test_effect_timing.gd
+@@ -70,6 +70,8 @@
+ 				peak = value
+ 				peak_frame = offset/2
+ 		check(peak>100 and float(peak_frame)/sample.mix_rate<1.0/120.0,"main contact transient is inside 8.33ms: "+clip)
++		if clip in VehicleAudio.IMPACTS:
++			check(absi(pcm.decode_s16(0))>=int(float(peak)*.99),"collision PCM begins at full transient with no silence/fade: "+clip)
+ 	audio.free()
+ 	await process_frame
+ 	await process_frame
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -1,6 +1,6 @@
+ {
+   "schema": "vehicle-audio-bank-v1",
+-  "revision": "desert-tone-balance-5",
++  "revision": "collision-direct-6",
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+@@ -735,11 +735,11 @@
+         "collision_cc0.wav"
+       ],
+       "loop": false,
+-      "seconds": 0.22,
+-      "rms_dbfs": -20.226842016775084,
++      "seconds": 0.21603174603174602,
++      "rms_dbfs": -20.529781198966628,
+       "peak_dbfs": -1.5144142787623671,
+       "seam_step": null,
+-      "sha256": "a098a08827a18c4a588db2c7301224a104dcc36f700e67b8c6b7367680d5e073"
++      "sha256": "36dd4bd256ff0330d8ac5edbc15f7fbab8dd07ebbcf446cbbbf7a3a7be493812"
+     },
+     {
+       "file": "impact_1.wav",
+@@ -748,11 +748,11 @@
+         "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav"
+       ],
+       "loop": false,
+-      "seconds": 0.2143764172335601,
+-      "rms_dbfs": -19.039783595431473,
++      "seconds": 0.21038548752834468,
++      "rms_dbfs": -19.326884922466775,
+       "peak_dbfs": -1.5144142787623671,
+       "seam_step": null,
+-      "sha256": "6969e1fd88354f42558310417a122314fa717c58f4cb961bb482f17c4f8c00c0"
++      "sha256": "24706b1aec40bed5690d211a0b3909d3321f96cc8823fc7a26b4985fd499e533"
+     },
+     {
+       "file": "impact_2.wav",
+@@ -761,11 +761,11 @@
+         "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav"
+       ],
+       "loop": false,
+-      "seconds": 0.24863945578231292,
+-      "rms_dbfs": -18.39750722147597,
++      "seconds": 0.2446485260770975,
++      "rms_dbfs": -18.606096918942246,
+       "peak_dbfs": -1.5144142787623671,
+       "seam_step": null,
+-      "sha256": "4e3d590fce2ffe68c2d75c729aca79e04b1c579b252fae462af228e657dbadea"
++      "sha256": "7c2278b0420e171ab6b51a7611377f8d600b188dcf1b777ba3f87f4c00cdc4b9"
+     }
+   ]
+ }
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -63,6 +63,10 @@
+ envelope. Speed shifts pitch slightly; all desert ground layers are quieter
+ than the engine, with intensity changes for power/slip. Prior 45 masters remain
+ exact; the rejected candidate and actual mix are preserved in task evidence.
++Collision-direct revision 6 (2026-10-08) trims only impact_0/1/2 to their
++strongest starting transient and removes the collision-only 3 ms fade-in.
++Their first PCM frame is now the peak, with no quiet lead-in. Original
++qubodup/Nox source attribution remains; other 43 clip hashes are unchanged.
+ Wind and water noise beds are original offline sound design.
+ Source/derivative filenames and SHA-256 values: manifest.json.
+ All sources are local build inputs. The game makes no audio-generation/API calls.
+diff --git a/docs/EFFECT_TIMING.md b/docs/EFFECT_TIMING.md
+--- a/docs/EFFECT_TIMING.md
++++ b/docs/EFFECT_TIMING.md
+@@ -5,6 +5,13 @@
+ play contact feedback as soon as the post-simulation observer receives it, keep
+ contact attacks short, preserve cooldown/pause/countdown/rewind guards and the
+ canonical simulation.
++
++The later owner report identifies a 100-200 ms wall gap. It was reproduced as
++the drawn bumper touching before the canonical circular collider. The current
++fix also cues visible solid contact, removes the collision source lead-in and
++uses a protected direct impact bus. [Actual wall comparison, final onset and checks](COLLISION_ATTACK.md)
++supersede this page's claim that direct canonical-observer dispatch alone resolved
++the visible wall case. Driving forces and records remain unchanged.
+ 
+ Two actionable delays were found. `Game` already calls
+ `vehicle_audio.collision()` immediately after `sim.step()` produces the contact
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 SND14-SND15/SND05/SND08/SND11/G01/R01/Q01/V06: owner100-200ms wall delay reproduced as drawn-nose/canonical-circle gap, not3ms alone. Compact4m/s visible/sound62 vsphysical81 gives158.33ms old gap; new read-only mesh/solid onset25 five-car speed cases allzero tickgap, rotated/away/deep guards167 pass. Actual Game/render-disabled62/62/81 and exact canonical snapshots/handling/records retained; same-wall later cue deduplicated. Three impact files begin at full PCM peak0/no fade; direct protected Impacts bus follows Vehicle volume/mute and retained master. Native6 light/medium/hard captures42 pass, meaningful-to-halfpeak0.02083ms/route2.0417ms/driver estimate10ms separate; no zero-acoustic claim. 46 clips/10,266,428 bytes/43 other masters exact/22 voices; wall mean47.88us/p9591us desktop. Attack22/timing43/vehicle1442/surface67/desert-continuous28/App99/rewind57/parser382/loops39 pass; attack33 shutdown references retained. Initial unscaled/wrong-method/internal-face failures corrected without relaxed invariants. Android present but unauthorized; no device audio/Android export-install/full Validate/backend or production action. Owner actual-device/corner/bridge acceptance remains, task-only checkpoint preserves concurrent work. Files/commands/captures/limits: docs/COLLISION_ATTACK.md.
++
+ 2026-10-08 B01-B07/B14/B16/B21/B23/B28/STORE04-STORE07/PUR01-PUR08/RW05-RW07/Q01: owner-approved player support and audited development purchases implemented/deployed to retained staging. Paginated cross-domain history, exact previews/idempotent atomic audits, pending settlement/simulated slots/monthly expiry/reset, shared UTC dates/all90 bars/drilldowns and null-safe expanded health. Artificial drivers remain ordinary included admin data; public isolation preserved. Final SQLite/ownedPG113 pass/5 skip, Edge10 workflow checks and live read-only assets/support/90-day/GCS checks pass; native replay/storage/schema smoke passes. Fresh successful backup1791486884403;112 packaged game files exact, schema0019/no migration, no live purchase/data reset. Development API/worker simulation enabled, stricter job configuration retained. Legacy-schema fixture repaired without relaxed assertions; initial fixture/browser/build failures corrected/logged. Scoped patch preserves concurrent work. No phone attachment check/device test/Android export/full Validate/production action. Requirements/files/commands/evidence/acceptance: docs/BACKEND_UI.md (Player support and audited development controls).
+ 
+ 2026-10-08 MUS34/MUS20-MUS33/Q01: owner rejects clear-theme cue as beginner piano and requests theory/racing-background research. Fourteen primary composer/theory/original-study sources reviewed with access/evidence limits; Ori/Trackmania/Forza cases inform concrete groove/phrase/atmosphere/performance brief and short-race timing. Code audit finds foreground piano targets11.285dB over kit/9.702dB over guitar, fixed gains and prior theme filtering/unverified generation. Study metadata records rejection; music/runtime/control bytes preserved. Source-register/link/hash/reverse-patch/whitespace checks recorded, no acoustic quality inference/new audio. Research phase complete; overarching composition/artist/device acceptance unfinished. No phone attachment/device test/export/install/full Validate/purchase/backend/deployment. Files/actual sources/commands/limits/checkpoint: docs/MUSIC_THEORY_RESEARCH.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1327,3 +1327,8 @@
+ ## Music theory and racing-background research, 2026-10-08
+ 
+ 2026-10-08 MUS34/MUS20-MUS33/Q01: latest piano study artistically rejected;14 primary composer/theory/study sources researched and contextual limits retained. Concrete groove-led rock/soft atmospheric pulse/motif/voice-leading/phrase/performance brief preserves confidence and60s payoff; code/level audit distinguishes music-function failures from prior technical passes. Rejection/state/docs only, no audio/runtime change or new generation. Source/link/hash/scoped checkpoint checks retained; research complete, soundtrack/artist/device acceptance unfinished. No phone attachment/device test/export/install/full Validate/purchase/backend/deployment. Exact sources/commands/files/limits: docs/MUSIC_THEORY_RESEARCH.md.
++
++
++## Visible wall contact and first-sample collision attack, 2026-10-08
++
++2026-10-08 SND14-SND15/SND05/SND08/SND11/G01/R01/Q01/V06: owner100-200ms wall delay reproduced as drawn-nose/canonical-circle gap, not3ms alone. Compact4m/s visible/sound62 vsphysical81 gives158.33ms old gap; new read-only mesh/solid onset25 five-car speed cases allzero tickgap, rotated/away/deep guards167 pass. Actual Game/render-disabled62/62/81 and exact canonical snapshots/handling/records retained; same-wall later cue deduplicated. Three impact files begin at full PCM peak0/no fade; direct protected Impacts bus follows Vehicle volume/mute and retained master. Native6 light/medium/hard captures42 pass, meaningful-to-halfpeak0.02083ms/route2.0417ms/driver estimate10ms separate; no zero-acoustic claim. 46 clips/10,266,428 bytes/43 other masters exact/22 voices; wall mean47.88us/p9591us desktop. Attack22/timing43/vehicle1442/surface67/desert-continuous28/App99/rewind57/parser382/loops39 pass; attack33 shutdown references retained. Initial unscaled/wrong-method/internal-face failures corrected without relaxed invariants. Android present but unauthorized; no device audio/Android export-install/full Validate/backend or production action. Owner actual-device/corner/bridge acceptance remains, task-only checkpoint preserves concurrent work. Files/commands/captures/limits: docs/COLLISION_ATTACK.md.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -1,4 +1,13 @@
+ # Asset provenance
++
++Collision attack revision6 (2026-10-08): only the three cleared qubodup/Nox
++impact derivatives are trimmed to their starting strongest transient; their
++collision-only fade-in is removed. No new source/license/service. All other43
++vehicle clip hashes, including the revised desert bed, remain exact. New
++visible-contact audio outline is derived read-only from the existing fictional
++car meshes; it does not edit their geometry or canonical driving shape. Exact
++source/derivative pins, recorded onset and actual wall comparison:
++`docs/COLLISION_ATTACK.md` and shipping bank manifest/NOTICE.
+ 
+ Continuous desert audio (2026-10-08): new `sand_debris.wav` is a9.9s original offline arrangement of existing CC0 KALeigh0218 stone contacts and cognito perceptu granular driving. Final tone/balance revision5 makes recorded driving dominant75% with25% damped grains, softer4.4kHz spectrum and leveled envelope. One loop has modest speed-driven pitch and stays below engine; no runtime grain scheduling/synthesis/new source/service. All45 prior master hashes exact. Rejected candidates, actual paired mix and source/derivative pins retained; shipping credits/manifest current. Requirements/commands/physical-device limits: `docs/DESERT_CONTINUOUS_AUDIO.md`.
+ 
+diff --git a/game/vehicle/visible_contact_audio.gd b/game/vehicle/visible_contact_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/visible_contact_audio.gd
+@@ -0,0 +1,82 @@
++class_name VisibleContactAudio
++extends RefCounted
++## Presentation contact only. The canonical circle/forces/records are untouched.
++var outline := PackedVector2Array()
++var touching: bool = false
++var sounded: bool = false
++var normal := Vector2.ZERO
++const MAX_PROBES: int = 128
++
++func configure(car: Node3D) -> void:
++	var points := PackedVector2Array()
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	for node: Node in car.find_children("*","MeshInstance3D",true,false):
++		var part: MeshInstance3D = node as MeshInstance3D
++		if part.mesh==null: continue
++		var transform: Transform3D = inverse*part.global_transform
++		for surface: int in range(part.mesh.get_surface_count()):
++			var arrays: Array = part.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			for vertex: Vector3 in vertices:
++				var local: Vector3 = transform*vertex
++				points.append(Vector2(local.x*car.scale.x,-local.z*car.scale.z))
++	outline = Geometry2D.convex_hull(points) if points.size()>2 else PackedVector2Array()
++	reset()
++
++func reset() -> void:
++	touching = false
++	sounded = false
++	normal = Vector2.ZERO
++
++func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vector2:
++	if track==null or outline.size()<3 or state.jump_height>0.0 or state.roll_ticks>0:
++		reset()
++		return Vector2.ZERO
++	var found: bool = false
++	var count: int = 0
++	var contact_point := Vector2.ZERO
++	var forward: Vector2 = state.forward()
++	var right: Vector2 = state.right()
++	for index: int in range(outline.size()-1):
++		var a: Vector2 = outline[index]
++		var b: Vector2 = outline[index+1]
++		var steps: int = maxi(1,ceili(a.distance_to(b)/maxf(.10,track.cell_size*.5)))
++		for step: int in range(steps+1):
++			count += 1
++			if count>MAX_PROBES: break
++			var local: Vector2 = a.lerp(b,float(step)/steps)
++			var point: Vector2 = state.position+right*local.x+forward*local.y
++			if track.cell_at(point,state.track_elevated)==4:
++				found = true
++				contact_point = point
++				break
++		if found or count>MAX_PROBES: break
++	if not found:
++		reset()
++		return Vector2.ZERO
++	var first: bool = not touching
++	touching = true
++	if first:
++		# An occupied cell's nearest rectangle edge can be an internal edge.
++		# Use only faces with clear neighboring material for audible incidence.
++		var x: int = floori((contact_point.x+track.half_extent.x)/track.cell_size)
++		var y: int = floori((track.half_extent.y-contact_point.y)/track.cell_size)
++		var center := Vector2((float(x)+.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(float(y)+.5)*track.cell_size)
++		var best: float = -INF
++		normal = Vector2.ZERO
++		for direction: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN]:
++			if track.cell_at(center+direction*track.cell_size,state.track_elevated)==4: continue
++			var facing: float = -incoming.dot(direction)
++			if facing>best:
++				best = facing
++				normal = direction
++		# No exposed face means no trustworthy visual-only impact normal.
++		# Let the canonical observer handle deep/startup overlap instead.
++	var inward: float = maxf(0.0,-incoming.dot(normal))
++	if first and inward>1.2 and inward/maxf(incoming.length(),.001)>.35:
++		# A genuine current mesh/solid intersection, not predicted future impact.
++		return normal*inward
++	return Vector2.ZERO
++
++func duplicate_physical(impulse: Vector2) -> bool:
++	return touching and sounded and impulse.normalized().dot(normal)>.65
+diff --git a/game/vehicle/visible_contact_audio.gd.uid b/game/vehicle/visible_contact_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/visible_contact_audio.gd.uid
+@@ -0,0 +1 @@
++uid://ddv1kivmj3eo4
+diff --git a/scripts/review_collision_attack.py b/scripts/review_collision_attack.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_collision_attack.py
+@@ -0,0 +1,46 @@
++"""Report the reproduced wall gap separately from native PCM attack/DSP timing."""
++from pathlib import Path
++import hashlib
++import json
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/collision-attack-2026-10-08"
++old = json.loads((OUT / "before/game/assets/audio/vehicles/manifest.json").read_text())
++now = json.loads((ROOT / "game/assets/audio/vehicles/manifest.json").read_text())
++old_hashes = {x["file"]:x["sha256"] for x in old["outputs"]}
++changed = [x["file"] for x in now["outputs"] if x["sha256"]!=old_hashes[x["file"]]]
++assert changed==["impact_0.wav","impact_1.wav","impact_2.wav"],changed
++attacks = []
++for name in changed:
++    target = ROOT / "game/assets/audio/vehicles" / name
++    with wave.open(str(target)) as handle:
++        rate = handle.getframerate()
++        x = np.frombuffer(handle.readframes(handle.getnframes()),dtype="<i2").astype(np.int32)
++    peak = int(np.max(np.abs(x)))
++    assert abs(int(x[0]))>=peak*.99
++    attacks.append(dict(file=name,first_sample=int(x[0]),peak=peak,peak_frame=int(np.argmax(np.abs(x))),sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
++walls = json.loads((OUT / "wall-contact-comparison.json").read_text())
++pcm = json.loads((OUT / "capture-timing.json").read_text())
++assert len(walls)==25 and all(row["new_gap_ms"]==0 for row in walls)
++assert len(pcm)==6 and all(abs(row["route_delay_ms"])<3 for row in pcm)
++assert all(row["output_strong_ms"]-row["output_onset_ms"]<.5 for row in pcm)
++summary = dict(changed_assets=changed,unchanged_assets=len(now["outputs"])-len(changed),
++               source_attacks=attacks,wall_cases=len(walls),all_wall_cues_same_tick=True,
++               compact_4mps=next(x for x in walls if x["car"]=="compact" and x["speed"]==4),
++               native_output_route_ms=float(np.median([row["route_delay_ms"] for row in pcm])),
++               native_strong_attack_after_onset_ms=float(np.median([row["output_strong_ms"]-row["output_onset_ms"] for row in pcm])),
++               driver_reported_latency_ms=pcm[0]["driver_latency_ms"],
++               bank_bytes=sum((ROOT / "game/assets/audio/vehicles" / row["file"]).stat().st_size for row in now["outputs"]))
++(OUT / "review.json").write_text(json.dumps(summary,indent=2)+"\n",encoding="utf-8")
++page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wall collision audio - Beat my track</title><style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:860px;margin:40px auto;padding:0 24px}h2,a{color:#ffd667}article{padding:22px;margin:18px 0;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p,small{color:#b3bec5}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:10px;border-bottom:1px solid #344450}</style><main><h1>Wall collision onset</h1><p>The reproduced large gap came from the rendered bumper reaching the wall before the circular driving collider. At 4 m/s, compact visible touch was tick62, while the physical response was tick81:158ms. The sound now starts at tick62; the existing physical response stays at tick81. The later same-wall cue is deduplicated.</p><table><tr><th>Compact speed</th><th>Old geometry gap</th><th>New cue gap</th></tr>'''
++for row in walls:
++    if row["car"]=="compact":
++        page += f'<tr><td>{row["speed"]*3.6:.0f} km/h</td><td>{row["old_gap_ms"]:.1f} ms</td><td>{row["new_gap_ms"]:.1f} ms</td></tr>'
++page += '</table><p>All25 forward cases/five cars align at visible touch. Actual Game callback: sound and visible touch both62, response81. No canonical handling/input/record change. The three collision files now begin at their strongest transient, with no leading silence or fade-in.</p>'
++for index,title in enumerate(["Light contact","Medium contact","Hard contact"]):
++    page += f'<article><h2>{title}</h2><audio controls preload="metadata" src="impact-{index}-output.wav"></audio><p>Actual protected desktop master output. First meaningful signal reaches half its peak within one48kHz sample; the retained final-output limiter adds about2.04ms.</p></article>'
++page += '<small>Digital/source/dispatch evidence does not measure speaker/Bluetooth latency. WASAPI reports about10ms output latency. Device/owner listening remains open. Existing cleared qubodup/Nox source credits remain in the bank NOTICE/manifest; only the three impact derivatives changed.</small></main></html>'
++(OUT / "audition.html").write_text(page,encoding="utf-8")
++print(json.dumps(summary,indent=2))
+diff --git a/docs/COLLISION_ATTACK.md b/docs/COLLISION_ATTACK.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COLLISION_ATTACK.md
+@@ -0,0 +1,107 @@
++# Visible wall contact and immediate impact attack - 2026-10-08
++
++The owner reports a noticeable **100-200 ms** delay when driving into a wall and
++requires immediate collision audio with no brief silence. SND14-SND15 refine
++SND08/SND11 and preserve SND05, G01/R01/Q01/V06.
++
++The larger delay was reproduced before audio playback: the compact's drawn nose
++extends **1.98352 m** forward while its accepted circular collider has radius
++**1.364 m**. At an initial 4 m/s, visible wall contact occurs on tick **62**, while
++canonical response occurs on tick **81**: **158.33 ms** later. The earlier direct
++canonical callback/4 ms attack correction did not address that geometric gap.
++
++The new read-only `VisibleContactAudio` derives a convex planar outline from the
++selected vehicle's actual mesh vertices and existing scale, once per race. A
++bounded perimeter/material check observes current intersection with solid cell4
++on the correct driving layer. Meaningful inward contact cues sound on that
++visible-contact tick. Exposed neighboring faces provide incidence; shallow
++brushes, separation, deep unknown overlaps, airborne/rolled geometry and absent
++track/outline do not invent a hard impact. The later same-wall canonical cue is
++deduplicated. Physics still supplies its ordinary actual collision response and
++all handling/recoil/scrape, input logs, timing, track identities and records remain
++exact. No predicted future collision is played. Dynamic loose props retain their
++canonical observer path; this visual observer covers mapped solid geometry.
++
++The Game callback arms feedback only after its live pause/countdown/rewind gates,
++then resolves sound immediately after the canonical step and before visual UI
++work. First live ticks no longer depend on the preceding render's silent latch;
++the selected voice explicitly unpauses before play. Standalone/silent/reset
++guards remain. Tiny-contact/cooldown gates still apply.
++
++The three impact WAVs start at their **strongest first PCM sample** (each -27524,
++peak27524), with no leading zero frame, pre-roll or 3 ms fade-in. They are the only
++changed masters: **43** other hashes, including the accepted softer desert bed,
++remain exact. Bank revision `collision-direct-6` has 46 clips/10,266,428 WAV bytes,
++1,054 fewer than task start. No new external source/API/native dependency.
++
++`Impacts` uses the existing built-in limiter without lookahead at **-2 dBFS**,
++unity makeup (`threshold==ceiling`), then the retained -1 dBFS Master hard limiter.
++This skips the normal Vehicle dynamics/lookahead for impacts; other vehicle and
++music routing remains. `vehicle_volume` and Vehicle mute control both paths.
++The existing 22 voice bound and peak protection are retained.
++
++## Actual evidence
++
++[Listen and view the wall comparison](evidence/collision-attack-2026-10-08/audition.html).
++The real Game physics callback, with rendering deliberately disabled, now starts
++sound on **tick62**, matching visible contact; physical response stays **tick81**
++and does not produce a duplicate. All 25 forward cases (five cars x five speeds)
++show zero physics-tick gap from mesh contact. Twenty-five rotated approaches and
++backing-away/deep-overlap guards also pass. Exact plain/mixed canonical snapshots
++are compared in the wall tests; no physical invariant is weakened.
++
++Six real desktop PCM captures (light/medium/hard x two) show the meaningful attack
++reaches half its peak within **one 48 kHz sample (0.02083 ms)** of onset. Raw-to-final
++path adds **2.0417 ms**, the retained master protection. The WASAPI driver reports
++about 10 ms output latency separately. These are digital timing measurements,
++not a speaker/Bluetooth/microphone measurement or a zero-acoustic-latency claim.
++No visible product UI/geometry change; audio and recorded contact ticks provide
++the presentation evidence.
++
++## Commands and outcomes
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File
++scripts/dev.ps1` and `4.7.2.stable.official.ed1daf0bf`.
++
++| Command / suffix | Actual result |
++| --- | --- |
++| `python scripts/build_vehicle_audio.py` | 46 clips; three impact derivatives change; 43 other hashes exact; maximum asset peak -1.514 dBFS. |
++| `Import` | Exit0 with the new direct bus, clips and visible-contact class. |
++| `TestScript -ScriptPath res://tests/probe_wall_audio_gap.gd` | Reproduced compact geometry gap208.33/158.33/125/58.33/25ms at3/4/5/10/25m/s. Initial wrong model-method call and unscaled local-bounds attempt corrected; final values include existing88% scale. |
++| `TestScript -ScriptPath res://tests/test_visible_wall_audio.gd` | **167 checks, zero failures**: five cars/speeds, rotated walls, no duplicate cue, no backing/deep guessed hit, exact canonical snapshots and actual Game callback62/62/81. Desktop1491-observation mean47.88us/p9591us; no phone profile. |
++| `TestScript -ScriptPath res://tests/test_collision_attack.gd` | **22 checks, zero failures**; first live tick/fresh/pause/countdown readiness, source frame0, direct route, ceiling and volume/mute parity. Initial headless33 ObjectDB shutdown references retained in log; no claim of proven runtime leak/clean shutdown for that fixture. |
++| `TestScript -ScriptPath res://tests/capture_collision_attack.gd -Graphical` | **42 checks, zero failures**; six native protected PCM captures, first meaningful-to-strong signal within0.5ms, route delay<3ms and retained final ceiling. |
++| `TestScript -ScriptPath res://tests/test_effect_timing.gd` | **43 checks, zero failures**, strengthened with three first-sample/full-transient assertions. |
++| `TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1442 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_surface_impact_audio.gd` | **67 checks, zero failures**; surface/acceleration/lifecycle/exact960-tick equivalence. |
++| `TestScript -ScriptPath res://tests/test_continuous_desert_audio.gd` | **28 checks, zero failures**; continuous quieter/slight-tone desert retained. |
++| `TestApp` / `TestRewind` | **99 /57 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **382 scripts, zero failures** at this run. |
++| `python scripts/test_vehicle_audio_continuity.py --report docs/evidence/collision-attack-2026-10-08/loop-continuity.json` | **39 loops, zero failures**. |
++| `python scripts/review_collision_attack.py` / `python -m py_compile scripts/build_vehicle_audio.py scripts/review_collision_attack.py` | Exact frame0/changed-hash set,25 geometry cases/six PCM bounds/listening artifact and Python compile pass. |
++| `Doctor` | Android device present but **unauthorized**; no device audio test/install. |
++| `git diff --check -- DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md licenses/ASSETS.md game/core/game.gd game/soundtrack/audio_world.gd` | Exit0; existing CRLF normalization notices retained. |
++| `python docs/evidence/collision-attack-2026-10-08/make_checkpoint.py` | 45 pinned files/38 retained logs; task-only reverse patch check exits0. |
++
++The first wall observer selected internal rectangle edges as normals:44 alignment
++failures exposed that defect. `failed-first-wall-observer.json` and actual logs
++are retained. Selecting only exposed faces fixed it; no alignment/physics check
++was relaxed. Only actual emitted cues mark an episode sounded. Initial patch
++header mismatch was corrected against the existing editor-serialized resource;
++the resource UID/concurrent work is preserved.
++
++Files: `game/vehicle/vehicle_audio.gd`, new `visible_contact_audio.gd`/UID,
++`game/core/game.gd`, `game/default_bus_layout.tres`, `game/soundtrack/audio_world.gd`,
++`scripts/build_vehicle_audio.py`, three impact WAVs/manifest/notice, strengthened
++`test_effect_timing.gd`, new wall/onset/probe/capture scripts/UIDs and
++`scripts/review_collision_attack.py`; this note, prior timing link, status/phase/
++provenance and task-only review patch/hash inventory. Canonical simulation and
++car geometry are not edited. Restart the updated desktop build; an Android APK
++must include these sources before device listening can assess the fix.
++
++Owner real-track/corner/bridge listening, physical output path and phone
++performance remain open. No authorized device audio measurement, Android
++export/install, full Validate, backend/production deployment or purchase is
++performed in this audio task. The accepted physical circle may still visibly
++overlap the drawn body before its recoil; this slice aligns sound and preserves
++that handling contract. Scoped checkpoint leaves the shared Git index alone.
+diff --git a/game/tests/probe_wall_audio_gap.gd b/game/tests/probe_wall_audio_gap.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_wall_audio_gap.gd
+@@ -0,0 +1,37 @@
++extends "res://tests/analyze_shallow_collisions.gd"
++## Distinguish rendered nose/canonical contact/observer dispatch in an actual wall case.
++
++func run() -> void:
++	var wall: NativeTrack = make_wall(Vector2(0,-1),0.5)
++	var car := CarVisual.new()
++	root.add_child(car)
++	var bounds := AABB()
++	var has_bounds: bool = false
++	for node: Node in car.find_children("*","MeshInstance3D",true,false):
++		var mesh: MeshInstance3D = node as MeshInstance3D
++		if mesh.mesh==null: continue
++		var box: AABB = car.global_transform.affine_inverse()*mesh.global_transform*mesh.mesh.get_aabb()
++		bounds = bounds.merge(box) if has_bounds else box
++		has_bounds = true
++	var front: float = -bounds.position.z*car.scale.z
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var rows: Array[Dictionary] = []
++	for speed: float in [3.0,4.0,5.0,10.0,25.0]:
++		var sim := VehicleSimulation.new(config)
++		sim.reset(Vector2(0,-3.0),0)
++		sim.state.velocity = Vector2(0,speed)
++		var visible_tick: int = -1
++		var collision_tick: int = -1
++		var velocity_at_touch: float = 0.0
++		for tick: int in range(240):
++			sim.step(DriveFrame.new(),wall)
++			if visible_tick<0 and sim.state.position.y+front>=0.0:
++				visible_tick = sim.state.tick
++				velocity_at_touch = sim.state.velocity.length()
++			if sim.state.collision_impulse!=Vector2.ZERO:
++				collision_tick = sim.state.tick
++				break
++		rows.append({"initial_speed":speed,"front_extent_m":front,"collision_radius_m":config.collision_radius,"visible_tick":visible_tick,"canonical_tick":collision_tick,"speed_at_visible_touch":velocity_at_touch,"gap_ms":float(collision_tick-visible_tick)/120.0*1000.0})
++	car.free()
++	print("WALL_AUDIO_GAP: ",JSON.stringify(rows))
++	quit()
+diff --git a/game/tests/probe_wall_audio_gap.gd.uid b/game/tests/probe_wall_audio_gap.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_wall_audio_gap.gd.uid
+@@ -0,0 +1 @@
++uid://cjtccqknbh36h
+diff --git a/game/tests/test_visible_wall_audio.gd b/game/tests/test_visible_wall_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_visible_wall_audio.gd
+@@ -0,0 +1,138 @@
++extends "res://tests/analyze_shallow_collisions.gd"
++## The visual-wall delay is measurable independently of audio hardware.
++var wall_checks: int = 0
++var wall_failures: int = 0
++
++func expect(ok: bool, message: String) -> void:
++	wall_checks += 1
++	if not ok:
++		wall_failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var rows: Array[Dictionary] = []
++	var cost_us: Array[int] = []
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		root.add_child(car)
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		var audio := VehicleAudio.new()
++		root.add_child(audio)
++		audio.configure(id,config,car)
++		expect(audio.visible_contact.outline.size()>=4,"real mesh supplies the footprint: "+id)
++		var front: float = 0.0
++		for point: Vector2 in audio.visible_contact.outline: front = maxf(front,point.y)
++		var guard_wall: NativeTrack = make_wall(Vector2(0,-1),.5)
++		var guard := VehicleState.new()
++		guard.position = Vector2(0,-front+.02)
++		guard.velocity = Vector2(0,-4)
++		audio.reset()
++		audio.begin_physics_feedback()
++		audio.resolved_contact(guard,guard_wall,guard.velocity)
++		expect(audio.impact_count==0,"backing out of visible wall contact cannot invent a crash: "+id)
++		guard.position = Vector2(0,2)
++		audio.reset()
++		audio.begin_physics_feedback()
++		audio.resolved_contact(guard,guard_wall,guard.velocity)
++		expect(audio.impact_count==0,"deep startup overlap has no guessed impact: "+id)
++		for speed: float in [3.0,4.0,5.0,10.0,25.0]:
++			var wall: NativeTrack = make_wall(Vector2(0,-1),.5)
++			var sim := VehicleSimulation.new(config)
++			var plain := VehicleSimulation.new(config)
++			var start := Vector2(0,-maxf(4.0,front+1.0))
++			sim.reset(start,0)
++			plain.reset(start,0)
++			sim.state.velocity = Vector2(0,speed)
++			plain.state.velocity = Vector2(0,speed)
++			audio.reset()
++			var visible: int = -1
++			var heard: int = -1
++			var canonical: int = -1
++			var snapshot_at_hit: Array = []
++			for tick: int in range(360):
++				var incoming: Vector2 = sim.state.velocity
++				sim.step(DriveFrame.new(),wall)
++				plain.step(DriveFrame.new(),wall)
++				if visible<0 and sim.state.position.y+front>=0.0: visible = sim.state.tick
++				audio.begin_physics_feedback()
++				var start_us: int = Time.get_ticks_usec()
++				audio.resolved_contact(sim.state,wall,incoming)
++				cost_us.append(Time.get_ticks_usec()-start_us)
++				if heard<0 and audio.impact_count>0: heard = sim.state.tick
++				if canonical<0 and sim.state.collision_impulse!=Vector2.ZERO:
++					canonical = sim.state.tick
++					snapshot_at_hit = sim.state.snapshot()
++				if canonical>=0: break
++			var geometry_leads: bool = front>config.collision_radius+.05
++			expect(canonical>=0 and heard>=0,"actual wall/feedback present: %s %.1f"%[id,speed])
++			if geometry_leads:
++				var aligned: bool = absi(heard-visible)<=1
++				expect(aligned,"sound begins with visible bumper contact: %s %.1f ticks %d/%d"%[id,speed,visible,heard])
++			expect(audio.impact_count==1,"later circle response cannot duplicate the same wall cue: "+id)
++			expect(sim.state.snapshot()==plain.state.snapshot() and snapshot_at_hit==plain.state.snapshot(),"body-footprint audio never changes canonical wall resolution: "+id)
++			rows.append({"car":id,"speed":speed,"front_m":front,"radius_m":config.collision_radius,"visible_tick":visible,"sound_tick":heard,"canonical_tick":canonical,"old_gap_ms":float(canonical-visible)/120.0*1000.0,"new_gap_ms":float(heard-visible)/120.0*1000.0})
++		for angle: float in [PI*.5,-PI*.5,PI,PI*.25,-PI*.25]:
++			var forward := Vector2(sin(angle),cos(angle))
++			var wall: NativeTrack = make_wall(-forward,.5)
++			var sim := VehicleSimulation.new(config)
++			sim.reset(-forward*maxf(4.0,front+1),angle)
++			sim.state.velocity = forward*4
++			audio.reset()
++			var first_overlap: int = -1
++			var first_sound: int = -1
++			for tick: int in range(240):
++				var incoming: Vector2 = sim.state.velocity
++				sim.step(DriveFrame.new(),wall)
++				audio.begin_physics_feedback()
++				audio.resolved_contact(sim.state,wall,incoming)
++				if first_overlap<0 and audio.visible_contact.touching: first_overlap = sim.state.tick
++				if first_sound<0 and audio.impact_count>0: first_sound = sim.state.tick
++				if sim.state.collision_impulse!=Vector2.ZERO: break
++			expect(first_overlap>0 and first_sound==first_overlap,"rotated wall touch sounds immediately: %s angle%.2f"%[id,angle])
++			expect(audio.impact_count==1,"rotated wall episode remains a single cue: "+id)
++		car.free()
++		audio.free()
++	# Execute the actual composition-root callback with rendering disabled.
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.vehicle_id = "compact"
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	root.add_child(game)
++	game.set_process(false)
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	game.production_mode = false
++	var real_wall: NativeTrack = make_wall(Vector2(0,-1),.5)
++	game.native_track = real_wall
++	game.yard = real_wall
++	game.sim.reset(Vector2(0,-4),0)
++	game.sim.state.velocity = Vector2(0,4)
++	game.vehicle_audio.reset()
++	var front: float = 0.0
++	for point: Vector2 in game.vehicle_audio.visible_contact.outline: front = maxf(front,point.y)
++	var first_visual: int = -1
++	var first_audio: int = -1
++	var first_physical: int = -1
++	for tick: int in range(240):
++		game._physics_process(VehicleSimulation.STEP)
++		if first_visual<0 and game.sim.state.position.y+front>=0: first_visual = game.sim.state.tick
++		if first_audio<0 and game.vehicle_audio.impact_count>0: first_audio = game.sim.state.tick
++		if game.sim.state.collision_impulse!=Vector2.ZERO:
++			first_physical = game.sim.state.tick
++			break
++	expect(first_audio==first_visual and first_audio>0,"real Game callback sounds on the visible wall-contact tick without a render")
++	expect(first_physical>first_audio and game.vehicle_audio.impact_count==1,"real Game keeps physical response and suppresses delayed duplicate audio")
++	print("REAL_GAME_WALL_AUDIO: ",JSON.stringify({"visual_tick":first_visual,"audio_tick":first_audio,"physical_tick":first_physical}))
++	game.free()
++	await create_timer(.2).timeout
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/collision-attack-2026-10-08"))
++	var report: FileAccess = FileAccess.open("res://../docs/evidence/collision-attack-2026-10-08/wall-contact-comparison.json",FileAccess.WRITE)
++	report.store_string(JSON.stringify(rows,"\t"))
++	report.close()
++	cost_us.sort()
++	var sum_us: int = 0
++	for value: int in cost_us: sum_us += value
++	print("WALL_AUDIO_COST_US: ",JSON.stringify({"samples":cost_us.size(),"mean":float(sum_us)/cost_us.size(),"p95":cost_us[mini(cost_us.size()-1,int(cost_us.size()*.95))]}))
++	print("VISIBLE_WALL_ROWS: ",JSON.stringify(rows))
++	print("VISIBLE_WALL_AUDIO: %d checks, %d failures"%[wall_checks,wall_failures])
++	quit(1 if wall_failures>0 else 0)
+diff --git a/game/tests/test_visible_wall_audio.gd.uid b/game/tests/test_visible_wall_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_visible_wall_audio.gd.uid
+@@ -0,0 +1 @@
++uid://cd1idhy4ga2ol
+diff --git a/game/tests/test_collision_attack.gd b/game/tests/test_collision_attack.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_collision_attack.gd
+@@ -0,0 +1,50 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",VehicleCatalog.config("compact"))
++	var state := VehicleState.new()
++	var frame := DriveFrame.new()
++	for context: String in ["fresh","after-pause","after-countdown"]:
++		audio.reset()
++		if context!="fresh": audio.present(state,frame,null,.016,context=="after-pause",context=="after-countdown")
++		audio.collision(Vector2(20,0))
++		check(audio.impact_count==0,"no cue without a running physics/presentation context: "+context)
++		audio.begin_physics_feedback()
++		audio.collision(Vector2(20,0))
++		check(audio.impact_count==1 and audio.events[0].playing,"first actual live collision starts before render: "+context)
++		check(not audio.events[0].stream_paused,"old render pause cannot hold the live cue: "+context)
++		check(audio.events[0].bus=="Impacts","contact takes the direct protected path: "+context)
++	for clip: String in VehicleAudio.IMPACTS:
++		var sample: AudioStreamWAV = load(VehicleAudio.BANK+clip+".wav")
++		var pcm: PackedByteArray = sample.data
++		var peak: int = 0
++		for i: int in range(0,pcm.size(),2): peak = maxi(peak,absi(pcm.decode_s16(i)))
++		check(absi(pcm.decode_s16(0))>=int(float(peak)*.99),"first PCM sample is the impact transient: "+clip)
++		check(pcm.decode_s16(0)!=0,"no leading zero/silence frame: "+clip)
++	var impact_bus: int = AudioServer.get_bus_index("Impacts")
++	check(impact_bus>=0 and AudioServer.get_bus_send(impact_bus)=="Master","direct route uses the common output ceiling")
++	var limiter: AudioEffect = AudioServer.get_bus_effect(impact_bus,0)
++	check(limiter is AudioEffectLimiter and is_equal_approx(float(limiter.get("ceiling_db")),-2.0) and is_equal_approx(float(limiter.get("threshold_db")),-2.0),"instant contact ceiling retains -2dB and adds no makeup gain")
++	var world: GameSoundtrack = GameSoundtrack.instance()
++	world.apply_settings({"vehicle_volume":0.0})
++	check(AudioServer.is_bus_mute(impact_bus) and AudioServer.is_bus_mute(AudioServer.get_bus_index("Vehicle")),"Vehicle mute also mutes direct collisions")
++	world.apply_settings({"vehicle_volume":.3})
++	check(is_equal_approx(AudioServer.get_bus_volume_db(impact_bus),AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Vehicle"))),"direct collisions follow Vehicle volume exactly")
++	world.apply_settings({})
++	audio.free()
++	await create_timer(.15).timeout
++	print("COLLISION_ATTACK_TESTS: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/test_collision_attack.gd.uid b/game/tests/test_collision_attack.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_collision_attack.gd.uid
+@@ -0,0 +1 @@
++uid://bj3iw2mmliyn1
+diff --git a/game/tests/capture_collision_attack.gd b/game/tests/capture_collision_attack.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_collision_attack.gd
+@@ -0,0 +1,77 @@
++extends SceneTree
++## Native impact/raw/master comparison. Full-transient onset and peak protection.
++const OUT: String = "res://../docs/evidence/collision-attack-2026-10-08"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var impact_bus: int = AudioServer.get_bus_index("Impacts")
++	var raw := AudioEffectRecord.new()
++	var output := AudioEffectRecord.new()
++	raw.format = AudioStreamWAV.FORMAT_16_BITS
++	output.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(impact_bus,raw,0)
++	AudioServer.add_bus_effect(0,output)
++	AudioServer.set_bus_mute(AudioServer.get_bus_index("Engine"),true)
++	var rows: Array[Dictionary] = []
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",VehicleCatalog.config("compact"))
++	for trial: int in range(6):
++		audio.reset()
++		await create_timer(.15).timeout
++		raw.set_recording_active(true)
++		output.set_recording_active(true)
++		await create_timer(.12).timeout
++		audio.begin_physics_feedback()
++		var strength: float = [2.5,9.0,20.0][trial%3]
++		audio.collision(Vector2(strength,0))
++		check(audio.impact_count==1,"contact starts before the first presentation callback")
++		await create_timer(.8).timeout
++		raw.set_recording_active(false)
++		output.set_recording_active(false)
++		var row: Dictionary = {"trial":trial,"strength":strength,"driver_latency_ms":AudioServer.get_output_latency()*1000.0}
++		for label: String in ["raw","output"]:
++			var sample: AudioStreamWAV = (raw if label=="raw" else output).get_recording()
++			check(sample.save_to_wav(OUT.path_join("impact-%d-%s.wav"%[trial,label]))==OK,"saved "+label+" PCM")
++			var pcm: PackedByteArray = sample.data
++			var peak: int = 0
++			for offset: int in range(0,pcm.size(),4): peak = maxi(peak,absi(pcm.decode_s16(offset)))
++			var first: int = -1
++			var strong: int = -1
++			for offset: int in range(0,pcm.size(),4):
++				var value: int = absi(pcm.decode_s16(offset))
++				if first<0 and value>40: first = offset/4
++				if strong<0 and value>int(float(peak)*.5): strong = offset/4
++			row[label+"_onset_ms"] = float(first)/sample.mix_rate*1000.0
++			row[label+"_strong_ms"] = float(strong)/sample.mix_rate*1000.0
++			row[label+"_peak"] = peak
++			check(first>=0 and float(strong-first)/sample.mix_rate<.0005,"no audible fade-in before the strong contact: "+label)
++			if label=="output": check(peak<29000,"final output stays inside retained ceiling")
++		row.route_delay_ms = row.output_onset_ms-row.raw_onset_ms
++		check(absf(float(row.route_delay_ms))<3.0,"direct contact route has only the retained master lookahead")
++		rows.append(row)
++	var report: FileAccess = FileAccess.open(OUT.path_join("capture-timing.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(rows,"\t"))
++	report.close()
++	print("COLLISION_ATTACK_CAPTURE: ",JSON.stringify(rows))
++	audio.free()
++	AudioServer.set_bus_mute(AudioServer.get_bus_index("Engine"),false)
++	AudioServer.remove_bus_effect(impact_bus,0)
++	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
++	await create_timer(.15).timeout
++	print("COLLISION_ATTACK_CAPTURE_CHECKS: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_collision_attack.gd.uid b/game/tests/capture_collision_attack.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_collision_attack.gd.uid
+@@ -0,0 +1 @@
++uid://dftm3kvrdub51
+diff --git a/docs/evidence/collision-attack-2026-10-08/audition.html b/docs/evidence/collision-attack-2026-10-08/audition.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/audition.html
+@@ -0,0 +1 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wall collision audio - Beat my track</title><style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:860px;margin:40px auto;padding:0 24px}h2,a{color:#ffd667}article{padding:22px;margin:18px 0;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p,small{color:#b3bec5}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:10px;border-bottom:1px solid #344450}</style><main><h1>Wall collision onset</h1><p>The reproduced large gap came from the rendered bumper reaching the wall before the circular driving collider. At 4 m/s, compact visible touch was tick62, while the physical response was tick81:158ms. The sound now starts at tick62; the existing physical response stays at tick81. The later same-wall cue is deduplicated.</p><table><tr><th>Compact speed</th><th>Old geometry gap</th><th>New cue gap</th></tr><tr><td>11 km/h</td><td>216.7 ms</td><td>0.0 ms</td></tr><tr><td>14 km/h</td><td>158.3 ms</td><td>0.0 ms</td></tr><tr><td>18 km/h</td><td>125.0 ms</td><td>0.0 ms</td></tr><tr><td>36 km/h</td><td>58.3 ms</td><td>0.0 ms</td></tr><tr><td>90 km/h</td><td>25.0 ms</td><td>0.0 ms</td></tr></table><p>All25 forward cases/five cars align at visible touch. Actual Game callback: sound and visible touch both62, response81. No canonical handling/input/record change. The three collision files now begin at their strongest transient, with no leading silence or fade-in.</p><article><h2>Light contact</h2><audio controls preload="metadata" src="impact-0-output.wav"></audio><p>Actual protected desktop master output. First meaningful signal reaches half its peak within one48kHz sample; the retained final-output limiter adds about2.04ms.</p></article><article><h2>Medium contact</h2><audio controls preload="metadata" src="impact-1-output.wav"></audio><p>Actual protected desktop master output. First meaningful signal reaches half its peak within one48kHz sample; the retained final-output limiter adds about2.04ms.</p></article><article><h2>Hard contact</h2><audio controls preload="metadata" src="impact-2-output.wav"></audio><p>Actual protected desktop master output. First meaningful signal reaches half its peak within one48kHz sample; the retained final-output limiter adds about2.04ms.</p></article><small>Digital/source/dispatch evidence does not measure speaker/Bluetooth latency. WASAPI reports about10ms output latency. Device/owner listening remains open. Existing cleared qubodup/Nox source credits remain in the bank NOTICE/manifest; only the three impact derivatives changed.</small></main></html>
+\ No newline at end of file
+diff --git a/docs/evidence/collision-attack-2026-10-08/review.json b/docs/evidence/collision-attack-2026-10-08/review.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/review.json
+@@ -0,0 +1,48 @@
++{
++  "changed_assets": [
++    "impact_0.wav",
++    "impact_1.wav",
++    "impact_2.wav"
++  ],
++  "unchanged_assets": 43,
++  "source_attacks": [
++    {
++      "file": "impact_0.wav",
++      "first_sample": -27524,
++      "peak": 27524,
++      "peak_frame": 0,
++      "sha256": "36dd4bd256ff0330d8ac5edbc15f7fbab8dd07ebbcf446cbbbf7a3a7be493812"
++    },
++    {
++      "file": "impact_1.wav",
++      "first_sample": -27524,
++      "peak": 27524,
++      "peak_frame": 0,
++      "sha256": "24706b1aec40bed5690d211a0b3909d3321f96cc8823fc7a26b4985fd499e533"
++    },
++    {
++      "file": "impact_2.wav",
++      "first_sample": -27524,
++      "peak": 27524,
++      "peak_frame": 0,
++      "sha256": "7c2278b0420e171ab6b51a7611377f8d600b188dcf1b777ba3f87f4c00cdc4b9"
++    }
++  ],
++  "wall_cases": 25,
++  "all_wall_cues_same_tick": true,
++  "compact_4mps": {
++    "canonical_tick": 81,
++    "car": "compact",
++    "front_m": 1.98351991176605,
++    "new_gap_ms": 0.0,
++    "old_gap_ms": 158.333333333333,
++    "radius_m": 1.364,
++    "sound_tick": 62,
++    "speed": 4.0,
++    "visible_tick": 62
++  },
++  "native_output_route_ms": 2.04166666666666,
++  "native_strong_attack_after_onset_ms": 0.020833333333996507,
++  "driver_reported_latency_ms": 9.99999977648258,
++  "bank_bytes": 10266428
++}
+diff --git a/docs/evidence/collision-attack-2026-10-08/capture-timing.json b/docs/evidence/collision-attack-2026-10-08/capture-timing.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/capture-timing.json
+@@ -0,0 +1,74 @@
++[
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 120.729166666667,
++		"output_peak": 5217,
++		"output_strong_ms": 120.75,
++		"raw_onset_ms": 118.6875,
++		"raw_peak": 5217,
++		"raw_strong_ms": 118.708333333333,
++		"route_delay_ms": 2.04166666666667,
++		"strength": 2.5,
++		"trial": 0
++	},
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 131.395833333333,
++		"output_peak": 10785,
++		"output_strong_ms": 131.416666666667,
++		"raw_onset_ms": 129.354166666667,
++		"raw_peak": 10785,
++		"raw_strong_ms": 129.375,
++		"route_delay_ms": 2.04166666666666,
++		"strength": 9.0,
++		"trial": 1
++	},
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 131.395833333333,
++		"output_peak": 23033,
++		"output_strong_ms": 131.416666666667,
++		"raw_onset_ms": 129.354166666667,
++		"raw_peak": 23033,
++		"raw_strong_ms": 129.375,
++		"route_delay_ms": 2.04166666666666,
++		"strength": 20.0,
++		"trial": 2
++	},
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 120.729166666667,
++		"output_peak": 5217,
++		"output_strong_ms": 120.75,
++		"raw_onset_ms": 118.6875,
++		"raw_peak": 5217,
++		"raw_strong_ms": 118.708333333333,
++		"route_delay_ms": 2.04166666666667,
++		"strength": 2.5,
++		"trial": 3
++	},
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 131.395833333333,
++		"output_peak": 10785,
++		"output_strong_ms": 131.416666666667,
++		"raw_onset_ms": 129.354166666667,
++		"raw_peak": 10785,
++		"raw_strong_ms": 129.375,
++		"route_delay_ms": 2.04166666666666,
++		"strength": 9.0,
++		"trial": 4
++	},
++	{
++		"driver_latency_ms": 9.99999977648258,
++		"output_onset_ms": 131.395833333333,
++		"output_peak": 23033,
++		"output_strong_ms": 131.416666666667,
++		"raw_onset_ms": 129.354166666667,
++		"raw_peak": 23033,
++		"raw_strong_ms": 129.375,
++		"route_delay_ms": 2.04166666666666,
++		"strength": 20.0,
++		"trial": 5
++	}
++]
+\ No newline at end of file
+diff --git a/docs/evidence/collision-attack-2026-10-08/wall-contact-comparison.json b/docs/evidence/collision-attack-2026-10-08/wall-contact-comparison.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/wall-contact-comparison.json
+@@ -0,0 +1,277 @@
++[
++	{
++		"canonical_tick": 109,
++		"car": "compact",
++		"front_m": 1.98351991176605,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 216.666666666667,
++		"radius_m": 1.364,
++		"sound_tick": 83,
++		"speed": 3.0,
++		"visible_tick": 83
++	},
++	{
++		"canonical_tick": 81,
++		"car": "compact",
++		"front_m": 1.98351991176605,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 158.333333333333,
++		"radius_m": 1.364,
++		"sound_tick": 62,
++		"speed": 4.0,
++		"visible_tick": 62
++	},
++	{
++		"canonical_tick": 64,
++		"car": "compact",
++		"front_m": 1.98351991176605,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 125.0,
++		"radius_m": 1.364,
++		"sound_tick": 49,
++		"speed": 5.0,
++		"visible_tick": 49
++	},
++	{
++		"canonical_tick": 32,
++		"car": "compact",
++		"front_m": 1.98351991176605,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 58.3333333333333,
++		"radius_m": 1.364,
++		"sound_tick": 25,
++		"speed": 10.0,
++		"visible_tick": 25
++	},
++	{
++		"canonical_tick": 13,
++		"car": "compact",
++		"front_m": 1.98351991176605,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 25.0,
++		"radius_m": 1.364,
++		"sound_tick": 10,
++		"speed": 25.0,
++		"visible_tick": 10
++	},
++	{
++		"canonical_tick": 93,
++		"car": "pickup",
++		"front_m": 2.41560006141663,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 241.666666666667,
++		"radius_m": 1.72,
++		"sound_tick": 64,
++		"speed": 3.0,
++		"visible_tick": 64
++	},
++	{
++		"canonical_tick": 69,
++		"car": "pickup",
++		"front_m": 2.41560006141663,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 175.0,
++		"radius_m": 1.72,
++		"sound_tick": 48,
++		"speed": 4.0,
++		"visible_tick": 48
++	},
++	{
++		"canonical_tick": 55,
++		"car": "pickup",
++		"front_m": 2.41560006141663,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 133.333333333333,
++		"radius_m": 1.72,
++		"sound_tick": 39,
++		"speed": 5.0,
++		"visible_tick": 39
++	},
++	{
++		"canonical_tick": 28,
++		"car": "pickup",
++		"front_m": 2.41560006141663,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 66.6666666666667,
++		"radius_m": 1.72,
++		"sound_tick": 20,
++		"speed": 10.0,
++		"visible_tick": 20
++	},
++	{
++		"canonical_tick": 11,
++		"car": "pickup",
++		"front_m": 2.41560006141663,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 25.0,
++		"radius_m": 1.72,
++		"sound_tick": 8,
++		"speed": 25.0,
++		"visible_tick": 8
++	},
++	{
++		"canonical_tick": 109,
++		"car": "classic",
++		"front_m": 1.87659990787506,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 183.333333333333,
++		"radius_m": 1.36,
++		"sound_tick": 87,
++		"speed": 3.0,
++		"visible_tick": 87
++	},
++	{
++		"canonical_tick": 81,
++		"car": "classic",
++		"front_m": 1.87659990787506,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 133.333333333333,
++		"radius_m": 1.36,
++		"sound_tick": 65,
++		"speed": 4.0,
++		"visible_tick": 65
++	},
++	{
++		"canonical_tick": 64,
++		"car": "classic",
++		"front_m": 1.87659990787506,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 100.0,
++		"radius_m": 1.36,
++		"sound_tick": 52,
++		"speed": 5.0,
++		"visible_tick": 52
++	},
++	{
++		"canonical_tick": 32,
++		"car": "classic",
++		"front_m": 1.87659990787506,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 50.0,
++		"radius_m": 1.36,
++		"sound_tick": 26,
++		"speed": 10.0,
++		"visible_tick": 26
++	},
++	{
++		"canonical_tick": 13,
++		"car": "classic",
++		"front_m": 1.87659990787506,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 16.6666666666667,
++		"radius_m": 1.36,
++		"sound_tick": 11,
++		"speed": 25.0,
++		"visible_tick": 11
++	},
++	{
++		"canonical_tick": 110,
++		"car": "formula",
++		"front_m": 2.01079988479614,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 225.0,
++		"radius_m": 1.4,
++		"sound_tick": 83,
++		"speed": 3.0,
++		"visible_tick": 83
++	},
++	{
++		"canonical_tick": 81,
++		"car": "formula",
++		"front_m": 2.01079988479614,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 158.333333333333,
++		"radius_m": 1.4,
++		"sound_tick": 62,
++		"speed": 4.0,
++		"visible_tick": 62
++	},
++	{
++		"canonical_tick": 64,
++		"car": "formula",
++		"front_m": 2.01079988479614,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 125.0,
++		"radius_m": 1.4,
++		"sound_tick": 49,
++		"speed": 5.0,
++		"visible_tick": 49
++	},
++	{
++		"canonical_tick": 32,
++		"car": "formula",
++		"front_m": 2.01079988479614,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 66.6666666666667,
++		"radius_m": 1.4,
++		"sound_tick": 24,
++		"speed": 10.0,
++		"visible_tick": 24
++	},
++	{
++		"canonical_tick": 13,
++		"car": "formula",
++		"front_m": 2.01079988479614,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 25.0,
++		"radius_m": 1.4,
++		"sound_tick": 10,
++		"speed": 25.0,
++		"visible_tick": 10
++	},
++	{
++		"canonical_tick": 123,
++		"car": "kart",
++		"front_m": 1.20560014247894,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 58.3333333333333,
++		"radius_m": 1.05,
++		"sound_tick": 116,
++		"speed": 3.0,
++		"visible_tick": 116
++	},
++	{
++		"canonical_tick": 91,
++		"car": "kart",
++		"front_m": 1.20560014247894,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 41.6666666666667,
++		"radius_m": 1.05,
++		"sound_tick": 86,
++		"speed": 4.0,
++		"visible_tick": 86
++	},
++	{
++		"canonical_tick": 72,
++		"car": "kart",
++		"front_m": 1.20560014247894,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 25.0,
++		"radius_m": 1.05,
++		"sound_tick": 69,
++		"speed": 5.0,
++		"visible_tick": 69
++	},
++	{
++		"canonical_tick": 36,
++		"car": "kart",
++		"front_m": 1.20560014247894,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 16.6666666666667,
++		"radius_m": 1.05,
++		"sound_tick": 34,
++		"speed": 10.0,
++		"visible_tick": 34
++	},
++	{
++		"canonical_tick": 15,
++		"car": "kart",
++		"front_m": 1.20560014247894,
++		"new_gap_ms": 0.0,
++		"old_gap_ms": 8.33333333333333,
++		"radius_m": 1.05,
++		"sound_tick": 14,
++		"speed": 25.0,
++		"visible_tick": 14
++	}
++]
+\ No newline at end of file
+diff --git a/docs/evidence/collision-attack-2026-10-08/loop-continuity.json b/docs/evidence/collision-attack-2026-10-08/loop-continuity.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/loop-continuity.json
+@@ -0,0 +1,435 @@
++{
++  "bank": [
++    {
++      "file": "compact_0_load.wav",
++      "rms_min": 0.08867701248063467,
++      "rms_median": 0.1308160211145388,
++      "floor": 0.0052326408445815525,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.028411865234375,
++      "reference_step": 0.04694497680664078
++    },
++    {
++      "file": "compact_0_coast.wav",
++      "rms_min": 0.06914020480632754,
++      "rms_median": 0.10276858111691728,
++      "floor": 0.004110743244676691,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.62701416015625,
++      "seam_step": 0.020721435546875,
++      "reference_step": 0.030576766967773672
++    },
++    {
++      "file": "compact_1_load.wav",
++      "rms_min": 0.09231117683527203,
++      "rms_median": 0.14044023942254577,
++      "floor": 0.005617609576901831,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.46893310546875,
++      "seam_step": 0.00286865234375,
++      "reference_step": 0.03579730224609401
++    },
++    {
++      "file": "compact_1_coast.wav",
++      "rms_min": 0.07324166594713914,
++      "rms_median": 0.11033074980997708,
++      "floor": 0.004413229992399083,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.338043212890625,
++      "seam_step": 0.0091552734375,
++      "reference_step": 0.02166766357421901
++    },
++    {
++      "file": "compact_2_load.wav",
++      "rms_min": 0.09233044062476997,
++      "rms_median": 0.13957114527400158,
++      "floor": 0.005582845810960063,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.51837158203125,
++      "seam_step": 0.002166748046875,
++      "reference_step": 0.14697540283203514
++    },
++    {
++      "file": "compact_2_coast.wav",
++      "rms_min": 0.07079241778766401,
++      "rms_median": 0.10974583000064478,
++      "floor": 0.004389833200025791,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.43048095703125,
++      "seam_step": 0.00408935546875,
++      "reference_step": 0.05954034423828203
++    },
++    {
++      "file": "pickup_0_load.wav",
++      "rms_min": 0.0682511088700233,
++      "rms_median": 0.13686039199498184,
++      "floor": 0.005474415679799274,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.54754638671875,
++      "seam_step": 0.006805419921875,
++      "reference_step": 0.01763916015625
++    },
++    {
++      "file": "pickup_0_coast.wav",
++      "rms_min": 0.052617912999667726,
++      "rms_median": 0.10752232328587642,
++      "floor": 0.004300892931435057,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.42218017578125,
++      "seam_step": 0.0030517578125,
++      "reference_step": 0.01177978515625
++    },
++    {
++      "file": "pickup_1_load.wav",
++      "rms_min": 0.06689664280570229,
++      "rms_median": 0.1350556033779221,
++      "floor": 0.0054022241351168844,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.63580322265625,
++      "seam_step": 0.006591796875,
++      "reference_step": 0.02893659973144569
++    },
++    {
++      "file": "pickup_1_coast.wav",
++      "rms_min": 0.051672603782687475,
++      "rms_median": 0.10595255303214249,
++      "floor": 0.0042381021212857,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.49346923828125,
++      "seam_step": 0.0001220703125,
++      "reference_step": 0.017626449584962067
++    },
++    {
++      "file": "pickup_2_load.wav",
++      "rms_min": 0.07091717822755758,
++      "rms_median": 0.13723001395667322,
++      "floor": 0.005489200558266929,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.61553955078125,
++      "seam_step": 0.01263427734375,
++      "reference_step": 0.04931542968750602
++    },
++    {
++      "file": "pickup_2_coast.wav",
++      "rms_min": 0.053675280568006155,
++      "rms_median": 0.10782766939187045,
++      "floor": 0.004313106775674818,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.472991943359375,
++      "seam_step": 0.006683349609375,
++      "reference_step": 0.027315917968750547
++    },
++    {
++      "file": "classic_0_load.wav",
++      "rms_min": 0.02077474313298082,
++      "rms_median": 0.12161960586598264,
++      "floor": 0.004864784234639306,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4873046875,
++      "seam_step": 0.00140380859375,
++      "reference_step": 0.01607197570800789
++    },
++    {
++      "file": "classic_0_coast.wav",
++      "rms_min": 0.016112024838479965,
++      "rms_median": 0.09528836223909143,
++      "floor": 0.003811534489563657,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.38909912109375,
++      "seam_step": 6.103515625e-05,
++      "reference_step": 0.01171875
++    },
++    {
++      "file": "classic_1_load.wav",
++      "rms_min": 0.027714533037444755,
++      "rms_median": 0.12767563999896447,
++      "floor": 0.005107025599958579,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.47662353515625,
++      "seam_step": 0.003173828125,
++      "reference_step": 0.0235595703125
++    },
++    {
++      "file": "classic_1_coast.wav",
++      "rms_min": 0.021156085410584197,
++      "rms_median": 0.10053244712643206,
++      "floor": 0.004021297885057283,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.3798828125,
++      "seam_step": 0.00360107421875,
++      "reference_step": 0.0172119140625
++    },
++    {
++      "file": "classic_2_load.wav",
++      "rms_min": 0.033000732505771395,
++      "rms_median": 0.13181760963801203,
++      "floor": 0.0052727043855204814,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.470672607421875,
++      "seam_step": 0.001556396484375,
++      "reference_step": 0.03529441833496105
++    },
++    {
++      "file": "classic_2_coast.wav",
++      "rms_min": 0.025714762915011628,
++      "rms_median": 0.10417055366153388,
++      "floor": 0.004166822146461356,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.3763427734375,
++      "seam_step": 3.0517578125e-05,
++      "reference_step": 0.02556098937988316
++    },
++    {
++      "file": "formula_0_load.wav",
++      "rms_min": 0.00881500888324068,
++      "rms_median": 0.1109866426295885,
++      "floor": 0.00443946570518354,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.6312255859375,
++      "seam_step": 0.00714111328125,
++      "reference_step": 0.09235278320312634
++    },
++    {
++      "file": "formula_0_coast.wav",
++      "rms_min": 0.007065316092446806,
++      "rms_median": 0.08792373143512139,
++      "floor": 0.003516949257404856,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4754638671875,
++      "seam_step": 0.002960205078125,
++      "reference_step": 0.0473037109375003
++    },
++    {
++      "file": "formula_1_load.wav",
++      "rms_min": 0.01173172010070506,
++      "rms_median": 0.11155297520736202,
++      "floor": 0.004462119008294481,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.6317138671875,
++      "seam_step": 0.006591796875,
++      "reference_step": 0.1284965820312589
++    },
++    {
++      "file": "formula_1_coast.wav",
++      "rms_min": 0.009011076345723384,
++      "rms_median": 0.0891037682742222,
++      "floor": 0.003564150730968888,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.44573974609375,
++      "seam_step": 0.001373291015625,
++      "reference_step": 0.057755737304689525
++    },
++    {
++      "file": "formula_2_load.wav",
++      "rms_min": 0.02293473551079373,
++      "rms_median": 0.11279246473502616,
++      "floor": 0.004511698589401047,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.635528564453125,
++      "seam_step": 0.001007080078125,
++      "reference_step": 0.15945141601562796
++    },
++    {
++      "file": "formula_2_coast.wav",
++      "rms_min": 0.0186830126018077,
++      "rms_median": 0.09014232100384485,
++      "floor": 0.0036056928401537944,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.462432861328125,
++      "seam_step": 0.000579833984375,
++      "reference_step": 0.06455175781250055
++    },
++    {
++      "file": "kart_0_load.wav",
++      "rms_min": 0.061569405095356584,
++      "rms_median": 0.13297625409837138,
++      "floor": 0.005319050163934856,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.5731201171875,
++      "seam_step": 0.016204833984375,
++      "reference_step": 0.07283467102050789
++    },
++    {
++      "file": "kart_0_coast.wav",
++      "rms_min": 0.04727432807777834,
++      "rms_median": 0.10313272473536603,
++      "floor": 0.004125308989414641,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.4178466796875,
++      "seam_step": 0.0,
++      "reference_step": 0.029436828613281563
++    },
++    {
++      "file": "kart_1_load.wav",
++      "rms_min": 0.06987227831147048,
++      "rms_median": 0.13501555039320365,
++      "floor": 0.005400622015728146,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.548492431640625,
++      "seam_step": 0.009033203125,
++      "reference_step": 0.09327185058593734
++    },
++    {
++      "file": "kart_1_coast.wav",
++      "rms_min": 0.05590047142488343,
++      "rms_median": 0.10553971077501104,
++      "floor": 0.004221588431000441,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.418731689453125,
++      "seam_step": 0.0042724609375,
++      "reference_step": 0.03796710205078124
++    },
++    {
++      "file": "kart_2_load.wav",
++      "rms_min": 0.06831281158638486,
++      "rms_median": 0.13472708398227645,
++      "floor": 0.005389083359291058,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.543060302734375,
++      "seam_step": 0.0001220703125,
++      "reference_step": 0.09918676757812683
++    },
++    {
++      "file": "kart_2_coast.wav",
++      "rms_min": 0.05333672026769595,
++      "rms_median": 0.10483472677638132,
++      "floor": 0.004193389071055253,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.422637939453125,
++      "seam_step": 0.001190185546875,
++      "reference_step": 0.04716607666015671
++    },
++    {
++      "file": "road.wav",
++      "rms_min": 0.07143030802840468,
++      "rms_median": 0.10870677836815643,
++      "floor": 0.004348271134726257,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.437286376953125,
++      "seam_step": 0.007080078125,
++      "reference_step": 0.05073992919921899
++    },
++    {
++      "file": "tire.wav",
++      "rms_min": 0.06769392569932695,
++      "rms_median": 0.10801923995759116,
++      "floor": 0.0043207695983036466,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.431671142578125,
++      "seam_step": 0.0,
++      "reference_step": 0.084869384765625
++    },
++    {
++      "file": "wind.wav",
++      "rms_min": 0.0477922658842437,
++      "rms_median": 0.06937802572643446,
++      "floor": 0.0027751210290573787,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.299530029296875,
++      "seam_step": 0.0096435546875,
++      "reference_step": 0.027557373046875
++    },
++    {
++      "file": "water.wav",
++      "rms_min": 0.06209480158898277,
++      "rms_median": 0.08992369580167696,
++      "floor": 0.0035969478320670785,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.43206787109375,
++      "seam_step": 0.05462646484375,
++      "reference_step": 0.14044207763671945
++    },
++    {
++      "file": "sand_roll.wav",
++      "rms_min": 0.030292812492967815,
++      "rms_median": 0.07543653605090524,
++      "floor": 0.0030174614420362096,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.04351806640625,
++      "reference_step": 0.047276611328131324
++    },
++    {
++      "file": "sand.wav",
++      "rms_min": 0.031814606667581374,
++      "rms_median": 0.056701368873152136,
++      "floor": 0.0022680547549260854,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.005767822265625,
++      "reference_step": 0.14452957153321133
++    },
++    {
++      "file": "loose.wav",
++      "rms_min": 0.025563551581625942,
++      "rms_median": 0.05646490434145492,
++      "floor": 0.002258596173658197,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.02972412109375,
++      "reference_step": 0.09010400390625506
++    },
++    {
++      "file": "grass.wav",
++      "rms_min": 0.07776241023623785,
++      "rms_median": 0.10846375471065325,
++      "floor": 0.004338550188426131,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.0303955078125,
++      "reference_step": 0.0728759765625
++    },
++    {
++      "file": "sand_debris.wav",
++      "rms_min": 0.045922699952221306,
++      "rms_median": 0.08712485909441545,
++      "floor": 0.003484994363776618,
++      "dropout_windows": 0,
++      "maximum_dropout_ms": 0,
++      "peak": 0.8399658203125,
++      "seam_step": 0.003936767578125,
++      "reference_step": 0.104400634765625
++    }
++  ],
++  "captures": [],
++  "failures": []
++}
+diff --git a/docs/evidence/collision-attack-2026-10-08/make_checkpoint.py b/docs/evidence/collision-attack-2026-10-08/make_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/collision-attack-2026-10-08/make_checkpoint.py
+@@ -0,0 +1,58 @@
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import shutil
++import subprocess
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++BEFORE = OUT / "before"
++modified = [
++    "game/vehicle/vehicle_audio.gd","game/core/game.gd","game/default_bus_layout.tres",
++    "game/soundtrack/audio_world.gd","scripts/build_vehicle_audio.py","game/tests/test_effect_timing.gd",
++    "game/assets/audio/vehicles/manifest.json","game/assets/audio/vehicles/NOTICE.txt",
++    "docs/EFFECT_TIMING.md","DEVELOPMENT_STATUS.md","docs/PHASE_0_PLAN.md","licenses/ASSETS.md",
++]
++new = ["game/vehicle/visible_contact_audio.gd","game/vehicle/visible_contact_audio.gd.uid","scripts/review_collision_attack.py","docs/COLLISION_ATTACK.md"]
++for name in ["probe_wall_audio_gap","test_visible_wall_audio","test_collision_attack","capture_collision_attack"]:
++    new += ["game/tests/"+name+".gd","game/tests/"+name+".gd.uid"]
++new += [(OUT/file).relative_to(ROOT).as_posix() for file in ["audition.html","review.json","capture-timing.json","wall-contact-comparison.json","loop-continuity.json","make_checkpoint.py"]]
++patch = []
++inventory = []
++def pin(path):
++    target = ROOT/path
++    inventory.append(dict(path=path,bytes=target.stat().st_size,sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
++for path in modified+new:
++    old = (BEFORE/path).read_text(encoding="utf-8") if path in modified else ""
++    now = (ROOT/path).read_text(encoding="utf-8")
++    if old!=now:
++        patch.append("diff --git a/"+path+" b/"+path+"\n")
++        if not old: patch.append("new file mode 100644\n")
++        for line in difflib.unified_diff(old.splitlines(keepends=True),now.splitlines(keepends=True),fromfile="a/"+path if old else "/dev/null",tofile="b/"+path):
++            patch.append(line if line.endswith("\n") else line+"\n\\ No newline at end of file\n")
++    pin(path)
++for i in range(3):
++    pin("game/assets/audio/vehicles/impact_"+str(i)+".wav")
++for path in sorted(OUT.glob("*.wav")): pin(path.relative_to(ROOT).as_posix())
++logs = OUT / "logs"
++logs.mkdir(exist_ok=True)
++captured = []
++oldest = (BEFORE / "game/assets/audio/vehicles/manifest.json").stat().st_mtime
++needles = ["WALL_AUDIO","COLLISION_ATTACK","EFFECT_TIMING_TESTS: 43","VEHICLE_AUDIO: 1442","SURFACE_IMPACT_AUDIO: 67","CONTINUOUS_DESERT_AUDIO: 28","SCRIPT_PARSE: 382","APP_TESTS: 99","Rewind: 57","List of devices attached","probe_wall_audio_gap"]
++for path in (ROOT / "build/logs").glob("*/*.log"):
++    if path.stat().st_mtime<oldest: continue
++    data = path.read_text(encoding="utf-8",errors="replace")
++    if any(x in data for x in needles) or path.parent.name.startswith("Import-"):
++        target = logs/(path.parent.name+"-"+path.name)
++        shutil.copy2(path,target)
++        captured.append(target.name)
++(OUT / "scoped-change.patch").write_text("".join(patch),encoding="utf-8")
++(OUT / "source-hashes.json").write_text(json.dumps(dict(scope="SND14-SND15 visible wall contact and instant first-sample attack",files=inventory,logs=captured,
++    baseline="Task-start sources; current shared documentation minus only this task's additions",
++    binary_assets="Changed WAVs and native PCM are local pinned artifacts, not embedded in the patch",git="Task-only review patch; shared index/commits unchanged"),indent=2)+"\n",encoding="utf-8")
++result = subprocess.run(["git","apply","--reverse","--check","--ignore-whitespace",str(OUT/"scoped-change.patch")],cwd=ROOT,capture_output=True,text=True)
++print("COLLISION_ATTACK_CHECKPOINT:",len(inventory),"files;",len(captured),"logs; reverse-check",result.returncode)
++if result.returncode:
++    print(result.stdout,result.stderr)
++    raise SystemExit(result.returncode)

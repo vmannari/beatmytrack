@@ -1,0 +1,1278 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -199,3 +199,8 @@
+ ## Vertical Race modes and populated Rivalry entry (2026-10-09)
+ 
+ The owner requests a vertical carousel effect when changing Race mode pages and removes the empty Rivalry flash on first load. Follow the left rail's Weekly Rivalry/Free Race/Challenges order; keep the rail/top navigation stationary and primary menu/track carousel gestures horizontal. Preload authenticated membership and retain the current page until initial rivalry data or an actionable failure is ready; never fabricate entries or show an empty rivalry before the first response. Preserve five laps, normal results first, best-only scores, development gates and public isolation. See docs/RACE_MODE_CAROUSEL.md for implementation, actual checks, screenshots and device/latency acceptance.
++
++
++## Challenge creation page and tries override (2026-10-09)
++
++The owner supplies a full menu Create challenge reference, replacing the centered creation sheet, and authorizes optional1/3/5/unlimited tries per driver (unlimited default). Keep two settings/preview columns below existing top navigation, original scenery/actual route, fixed exact post-race track/car/result, and outside Back/Cancel/Create & share actions. Server-issued starts reserve tries, including restarts/abandoned races; idempotent retries never consume another. Preserve five laps, normal results first, best-only scoring, free unlimited ordinary racing, internal development gates and public isolation. See docs/CHALLENGE_PAGE.md for migration0021, files, commands, evidence and remaining owner/device/deployment acceptance. Production deployment still requires explicit authorization.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; owned SQLite/PG58(two skips) and final Import/headless122 pass; receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
++
+ 2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
+ 
+ 2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: missing results histograms diagnosed live: Underpass compact has100 verified artificial PBs, but client results-comparison endpoint404/absent OpenAPI. Exact-live-parent local three-module overlay built/imported; all112 canonical files byte-identical/no migration. Smoke API-contract guard plus tests added; SQLite9 and exact-packaged-module9/graphicalhist49/Ruff/scoped whitespace pass. Initial socket/certificate/WSL access, developer USERNAME_TAKEN and build import-path failures recorded/corrected. Earlier automatic approval rejection requires explicit development upload/rollout approval; no retry/cloud-service-image-schema/reseed/player-record/production change. Existing artificial diagnostic session only; no phone attachment/device test/export-install/PG/full Validate. Files/commands/evidence/scoped checkpoint/acceptance: docs/RESULTS_ENDPOINT_2026_10_09.md.
+--- a/backend/bmt_backend/challenge_models.py
++++ b/backend/bmt_backend/challenge_models.py
+@@ -20,6 +20,7 @@
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+     ends_at: Mapped[int] = mapped_column(Integer)
+     member_count: Mapped[int] = mapped_column(Integer, default=1)
++    attempt_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+     cancelled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+ 
+ 
+@@ -29,6 +30,7 @@
+     challenge_id: Mapped[str] = mapped_column(ForeignKey("challenges.id"), primary_key=True)
+     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+     joined_at: Mapped[int] = mapped_column(Integer, default=now)
++    attempts_used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+     time_ticks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+ 
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -53,11 +53,14 @@
+     vehicle_id: str = Field(min_length=1, max_length=80)
+     mode: Literal["beat", "group"] = "beat"
+     duration_seconds: Literal[86400, 259200, 604800] = 604800
++    attempt_limit: int | None = Field(default=None, strict=True)
+     source_run_id: str | None = Field(default=None, min_length=36, max_length=36)
+     source_ticket_id: str | None = Field(default=None, min_length=36, max_length=36)
+ 
+     @model_validator(mode="after")
+     def one_source(self):
++        if self.attempt_limit not in (None, 1, 3, 5):
++            raise ValueError("Choose 1, 3, 5 or unlimited tries")
+         if self.source_run_id and self.source_ticket_id:
+             raise ValueError("Choose one result reference")
+         return self
+@@ -145,11 +148,16 @@
+         .where(ChallengeTicket.challenge_id == challenge.id, Run.status.in_(("queued", "verifying"))).limit(1))
+     state = "cancelled" if challenge.cancelled else "active" if current < challenge.ends_at else "settling" if pending else "complete"
+     target = session.get(Run, challenge.target_run_id) if challenge.target_run_id else None
++    member = session.get(ChallengeMember, (challenge.id, player_id)) if player_id else None
++    attempts_used = member.attempts_used if member else 0
+     return {"id": challenge.id, "code": challenge.code, "mode": challenge.mode, "state": state,
+             "creator_id": creator.id, "creator": creator.display_name, "self_id": player_id,
+             "joined": any(row["id"] == player_id for row in rows), "vehicle_id": board.vehicle_id,
+             "created_at": challenge.created_at, "ends_at": challenge.ends_at, "server_now": current,
+             "remaining_seconds": max(0, challenge.ends_at-current), "manifest": board.manifest,
++            "attempt_limit": challenge.attempt_limit,
++            "attempts_used": attempts_used,
++            "attempts_remaining": max(0, challenge.attempt_limit-attempts_used) if challenge.attempt_limit is not None else None,
+             "target_ticks": challenge.target_ticks,
+             "target_ms": round(challenge.target_ticks*1000/board.manifest["tick_rate"]) if challenge.target_ticks else None,
+             "target_id": target.player_id if target else None, "standings": rows,
+@@ -222,10 +230,12 @@
+         source = source_for(session, board, player.id, source.id)
+     challenge = Challenge(code=secrets.token_hex(8).upper(), creator_id=player.id, board_id=board.id,
+         mode=payload.mode, target_run_id=source.id if source else None,
+-        target_ticks=source.time_ticks if source and payload.mode == "beat" else None, ends_at=now()+payload.duration_seconds)
++        target_ticks=source.time_ticks if source and payload.mode == "beat" else None,
++        attempt_limit=payload.attempt_limit, ends_at=now()+payload.duration_seconds)
+     session.add(challenge)
+     session.flush()
+     session.add(ChallengeMember(challenge_id=challenge.id, player_id=player.id,
++                               attempts_used=1 if source else 0,
+                                run_id=source.id if source else None, time_ticks=source.time_ticks if source else None))
+     session.flush()
+     return commit_response(session, player.id, scope, key, body, snapshot(session, request, challenge, player.id))
+@@ -234,7 +244,8 @@
+ @router.post("/challenges", status_code=201)
+ def create(payload: Create, request: Request, session: DB, player: Auth, key: Key):
+     real_player(player)
+-    body = payload.model_dump()
++    # Unlimited is the existing contract, including persisted pre-migration keys.
++    body = payload.model_dump(exclude={"attempt_limit"} if payload.attempt_limit is None else set())
+     old = replay_response(session, player.id, "challenge_create", key, body)
+     return old if old is not None else create_record(session, request, player, payload, key, "challenge_create", body)
+ 
+@@ -310,6 +321,10 @@
+     if old is not None:
+         return old
+     challenge = available(session, code, lock=True)
++    # Another request with the same key may have committed while this one waited.
++    old = replay_response(session, player.id, scope, key, {})
++    if old is not None:
++        return old
+     if session.get(ChallengeMember, (challenge.id, player.id)) is None:
+         raise HTTPException(403, "Join this challenge first")
+     if challenge.cancelled or now() >= challenge.ends_at:
+@@ -318,11 +333,20 @@
+         raise HTTPException(409, "Share this challenge to invite an opponent")
+     board = session.get(Board, challenge.board_id)
+     compatible(request, board.manifest)
++    reservation = update(ChallengeMember).where(ChallengeMember.challenge_id == challenge.id,
++                                               ChallengeMember.player_id == player.id)
++    if challenge.attempt_limit is not None:
++        reservation = reservation.where(ChallengeMember.attempts_used < challenge.attempt_limit)
++    if not session.execute(reservation.values(attempts_used=ChallengeMember.attempts_used+1)).rowcount:
++        raise HTTPException(409, "No tries remaining")
++    member = session.get(ChallengeMember, (challenge.id, player.id))
+     issued = RunTicket(player_id=player.id, board_id=board.id, expires_at=min(now()+7200, challenge.ends_at))
+     session.add(issued)
+     session.flush()
+     session.add(ChallengeTicket(ticket_id=issued.id, challenge_id=challenge.id))
+-    return commit_response(session, player.id, scope, key, {}, {**_ticket_payload(issued, board), "challenge_code": code})
++    return commit_response(session, player.id, scope, key, {}, {**_ticket_payload(issued, board), "challenge_code": code,
++        "attempt_limit": challenge.attempt_limit, "attempts_used": member.attempts_used,
++        "attempts_remaining": max(0, challenge.attempt_limit-member.attempts_used) if challenge.attempt_limit is not None else None})
+ 
+ 
+ def accept_verified(session, run):
+@@ -414,7 +438,7 @@
+         raise HTTPException(409, "Beat the leading time before rematching")
+     board = session.get(Board, challenge.board_id)
+     created = Create(version_id=board.version_id, vehicle_id=board.vehicle_id, source_run_id=member.run_id,
+-                     mode="beat", duration_seconds=payload.duration_seconds)
++                     mode="beat", duration_seconds=payload.duration_seconds, attempt_limit=challenge.attempt_limit)
+     return create_record(session, request, player, created, key, scope, body)
+ 
+ 
+@@ -426,6 +450,7 @@
+     target = f'{value["target_ms"]/1000:.3f} s' if value["target_ms"] else "Group challenge"
+     state = "Invitation open" if value["state"] == "active" else value["state"].capitalize()
+     vehicle = html.escape(value["vehicle_id"].replace("_", " ").title())
++    tries = f"{value['attempt_limit']} tries per driver" if value["attempt_limit"] is not None else "Unlimited tries"
+     return HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} — Beat my track</title>
+ <meta property="og:title" content="{name} challenges you on {title}">
+@@ -435,6 +460,6 @@
+ a{{display:block;padding:16px;background:#ffd348;color:#080f16;text-decoration:none;border-radius:5px;margin-top:24px}}
+ code{{font-size:18px;user-select:all}}.time{{font-size:48px;font-weight:700;margin:24px 0}}</style>
+ <main><small>BEAT MY TRACK · {state}</small><h1>{title}</h1><p>{name} challenges you</p><p class="time">{target}</p>
+-<p>Five laps · {vehicle}</p><a href="beatmytrack://challenge/{code}">Open Beat my track</a>
++<p>Five laps · {vehicle} ? {tries}</p><a href="beatmytrack://challenge/{code}">Open Beat my track</a>
+ <p><small>Race → Challenges → Enter code</small><br><code>{code}</code></p></main></html>''',
+                         headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex", "Referrer-Policy": "no-referrer"})
+--- a/backend/bmt_backend/migrations/versions/0021_challenge_attempts.py
++++ b/backend/bmt_backend/migrations/versions/0021_challenge_attempts.py
+@@ -0,0 +1,26 @@
++"""Optional per-driver challenge attempt limits; existing challenges stay unlimited."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0021_challenge_attempts"
++down_revision = "0020_challenges"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.add_column("challenges", sa.Column("attempt_limit", sa.Integer(), nullable=True))
++    op.add_column("challenge_members", sa.Column("attempts_used", sa.Integer(), nullable=False, server_default="0"))
++    # Backfill prior starts and seeded creator finishes without changing unlimited contracts.
++    op.execute("UPDATE challenge_members SET attempts_used = "
++               "(SELECT COUNT(*) FROM challenge_tickets JOIN run_tickets ON run_tickets.id = challenge_tickets.ticket_id "
++               "WHERE challenge_tickets.challenge_id = challenge_members.challenge_id "
++               "AND run_tickets.player_id = challenge_members.player_id) + "
++               "CASE WHEN EXISTS (SELECT 1 FROM challenges WHERE challenges.id = challenge_members.challenge_id "
++               "AND challenges.creator_id = challenge_members.player_id AND challenges.target_run_id IS NOT NULL) "
++               "THEN 1 ELSE 0 END")
++
++
++def downgrade():
++    op.drop_column("challenge_members", "attempts_used")
++    op.drop_column("challenges", "attempt_limit")
+--- a/backend/tests/test_challenges.py
++++ b/backend/tests/test_challenges.py
+@@ -41,8 +41,10 @@
+     return run["run_id"]
+ 
+ 
+-def create(domain, version, player="Alice", mode="beat", run_id=None, key=None):
++def create(domain, version, player="Alice", mode="beat", run_id=None, key=None, attempt_limit=None):
+     body = {"version_id": version, "vehicle_id": "compact", "mode": mode}
++    if attempt_limit is not None:
++        body["attempt_limit"] = attempt_limit
+     if run_id:
+         body["source_run_id"] = run_id
+     response = domain.client.post("/v1/challenges", json=body, headers=headers(domain, player, key))
+@@ -379,3 +381,128 @@
+     assert all(response.status_code == 200 for response in results)
+     with d.factory() as session:
+         assert session.get(Challenge, group["id"]).member_count == 2
++
++
++def test_attempt_limit_reserves_starts_and_retries_are_idempotent(challenge_domain):
++    d = challenge_domain
++    version = setup(d)
++    normal_run(d, version)
++    value = create(d, version, attempt_limit=3)
++    assert value["attempt_limit"] == 3 and value["attempts_used"] == 1
++    joined = join(d, value["code"])
++    assert joined["attempts_remaining"] == 3
++    path = f"/v1/challenges/{value['code']}/tickets"
++    first = d.client.post(path, headers=headers(d, "Bob", "same-start-key"))
++    assert first.status_code == 201
++    assert first.json()["attempts_remaining"] == 2
++    repeated = d.client.post(path, headers=headers(d, "Bob", "same-start-key"))
++    assert repeated.status_code == 201 and repeated.json() == first.json()
++    # An abandoned start counts; a rejected upload does not refund it either.
++    second = d.client.post(path, headers=headers(d, "Bob"))
++    bad = submit(d, second.json(), "Bob", frames=20, steering=-127)
++    assert process_one(d.app)
++    third = d.client.post(path, headers=headers(d, "Bob"))
++    assert third.status_code == 201 and third.json()["attempts_remaining"] == 0
++    denied = d.client.post(path, headers=headers(d, "Bob"))
++    assert denied.status_code == 409 and denied.json()["detail"] == "No tries remaining"
++    # Retrying an issued start still works after the limit is exhausted.
++    assert d.client.post(path, headers=headers(d, "Bob", "same-start-key")).json() == first.json()
++    submitted = submit(d, third.json(), "Bob", frames=10)
++    assert process_one(d.app)
++    result = d.client.get(f"/v1/challenge-results/{third.json()['ticket_id']}", headers=headers(d, "Bob")).json()
++    assert result["status"] == "verified" and result["outcome"]["counted"]
++    assert result["challenge"]["attempts_used"] == 3
++    assert result["challenge"]["attempts_remaining"] == 0
++    assert "3 tries per driver" in d.client.get(f"/c/{value['code']}").text
++    rematch = d.client.post(f"/v1/challenges/{value['code']}/rematch", json={}, headers=headers(d, "Bob"))
++    assert rematch.status_code == 201 and rematch.json()["attempt_limit"] == 3
++
++
++def test_group_source_counts_once_and_unlimited_remains_unlimited(challenge_domain):
++    d = challenge_domain
++    version = setup(d)
++    source = normal_run(d, version)
++    seeded = create(d, version, mode="group", run_id=source, attempt_limit=1)
++    assert seeded["attempts_used"] == 1 and seeded["attempts_remaining"] == 0
++    assert d.client.post(f"/v1/challenges/{seeded['code']}/tickets", headers=headers(d, "Alice")).status_code == 409
++    empty = create(d, version, mode="group", attempt_limit=1)
++    assert empty["attempts_used"] == 0 and empty["attempts_remaining"] == 1
++    attempt(d, empty["code"], player="Alice", frames=20)
++    assert d.client.post(f"/v1/challenges/{empty['code']}/tickets", headers=headers(d, "Alice")).status_code == 409
++    unlimited = create(d, version, mode="group")
++    assert unlimited["attempt_limit"] is None and unlimited["attempts_remaining"] is None
++    for _ in range(6):
++        assert d.client.post(f"/v1/challenges/{unlimited['code']}/tickets", headers=headers(d, "Alice")).status_code == 201
++    view = d.client.get(f"/v1/challenges/{unlimited['code']}/me", headers=headers(d, "Alice")).json()
++    assert view["attempts_used"] == 6 and view["attempts_remaining"] is None
++
++
++@pytest.mark.parametrize("limit", [0, -1, 2, 4, 6, True, "3", 3.0])
++def test_invalid_attempt_limits_rejected(challenge_domain, limit):
++    d = challenge_domain
++    version = setup(d)
++    response = d.client.post("/v1/challenges", json={"version_id":version,"vehicle_id":"compact","mode":"group","attempt_limit":limit}, headers=headers(d,"Alice"))
++    assert response.status_code == 422
++
++
++def test_concurrent_final_try_and_same_key(challenge_domain):
++    d = challenge_domain
++    if not d.postgres:
++        pytest.skip("SQLite test pool shares one connection; row concurrency runs on owned PostgreSQL")
++    version = setup(d)
++    value = create(d, version, mode="group", attempt_limit=1)
++    join(d, value["code"])
++    path = f"/v1/challenges/{value['code']}/tickets"
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        answers = list(pool.map(lambda _: d.client.post(path, headers=headers(d,"Bob","concurrent-start")), range(4)))
++    assert all(answer.status_code == 201 for answer in answers)
++    assert len({answer.json()["ticket_id"] for answer in answers}) == 1
++    join(d, value["code"], player="Carol")
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        answers = list(pool.map(lambda _: d.client.post(path, headers=headers(d,"Carol")), range(4)))
++    assert sorted(answer.status_code for answer in answers) == [201,409,409,409]
++    view = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Carol")).json()
++    assert view["attempts_used"] == 1 and view["attempts_remaining"] == 0
++
++
++def test_additive_attempt_migration_preserves_existing_challenges(challenge_domain):
++    from alembic import command
++    from bmt_backend.migrate import configuration
++    d = challenge_domain
++    version = setup(d)
++    source = normal_run(d, version)
++    value = create(d, version, mode="group", run_id=source)
++    join(d, value["code"])
++    attempt(d, value["code"], player="Alice", frames=20)
++    attempt(d, value["code"], player="Bob", frames=10)
++    before = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Alice")).json()
++    # Exercise the actual additive transition over an existing schema0020 field.
++    command.downgrade(configuration(d.app.state.engine), "0020_challenges")
++    command.upgrade(configuration(d.app.state.engine), "head")
++    after = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Alice")).json()
++    assert after["attempt_limit"] is None and after["attempts_remaining"] is None
++    assert after["attempts_used"] == 2
++    assert after["standings"] == before["standings"] and after["target_id"] == before["target_id"]
++    other = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Bob")).json()
++    assert other["attempts_used"] == 1 and other["attempt_limit"] is None
++
++
++def test_unlimited_creation_retries_keep_pre_migration_identity(challenge_domain):
++    from bmt_backend.track_models import IdempotencyRecord, digest
++    d = challenge_domain
++    version = setup(d)
++    normal_run(d, version)
++    key = "existing-unlimited-create"
++    value = create(d, version, key=key)
++    with d.factory() as session:
++        record = session.get(IdempotencyRecord, (d.players["Alice"], "challenge_create", key))
++        record.request_hash = digest({"version_id":version,"vehicle_id":"compact","mode":"beat","duration_seconds":604800,
++                                      "source_run_id":None,"source_ticket_id":None})
++        record.response = {name:item for name,item in value.items() if name not in ("attempt_limit","attempts_used","attempts_remaining")}
++        old_response = dict(record.response)
++        session.commit()
++    response = d.client.post("/v1/challenges", json={"version_id":version,"vehicle_id":"compact","attempt_limit":None}, headers=headers(d,"Alice",key))
++    assert response.status_code == 201 and response.json() == old_response
++    assert d.client.post("/v1/challenges", json={"version_id":version,"vehicle_id":"compact","attempt_limit":3}, headers=headers(d,"Alice",key)).status_code == 409
++    with d.factory() as session:
++        assert len(session.scalars(select(Challenge)).all()) == 1
+--- a/docs/CHALLENGE_PAGE.md
++++ b/docs/CHALLENGE_PAGE.md
+@@ -0,0 +1,60 @@
++# Challenge creation page and attempt limits ? 2026-10-09
++
++The owner supplied a two-column Create challenge draft and requested optional limits on tries. Creation now occupies the main menu below its existing navigation, with settings on the left and the original scenic art, actual route and live summary on the right. Back/Cancel and Create & share stay outside the cards. All six setting rows fit the default desktop, compact and wide landscape layouts; opening track search or the tries explanation uses the bounded settings scroll.
++
++## Requirements
++
++| ID | Implemented behavior |
++| --- | --- |
++| CH14 / V03?V05 / R01 | Embedded two-column creation page replaces the centered CanvasLayer sheet. Existing original scenery, vehicle artwork, typography and yellow controls are reused; car/share glyphs extend the original vector icon set. |
++| CH15 / B01?B07 | Optional 1, 3, 5 or unlimited tries per driver; unlimited remains the default. Server ticket issuance atomically reserves a try. Abandoned/restarted/rejected races consume their reserved tries; reconnect/upload retries do not reserve another. Exhausted participants can inspect/share results, but cannot start another challenge race. |
++| CH16 / Q01 | Additive schema0021 keeps old challenges unlimited, backfills their starts/source finishes and preserves standings. Existing default creation idempotency hashes are retained. Parallel same-key starts share one ticket; competing requests cannot exceed the limit. Explicit rematches retain the chosen limit and create fresh counters. |
++| CH09?CH11 / CH02?CH04 | Post-race creation still fixes the exact completed ticket, track and car, including a slower-than-PB finish. Pending/error states never substitute a PB or offer another drive. Cancel restores the same normal summary. Source-race return retains duration and tries. A seeded creator finish counts as one try; a Group created without a source starts at zero. |
++| R01 / R05 / TD06?TD08 | Five pinned laps, normal results first, best-only standings, free ordinary racing, internal authentication gates and artificial/public isolation remain. |
++
++No unverified custom target, public/community visibility, 14-day duration or new social feature was inferred from the illustrative draft. Existing verified targets and 24-hour/3-day/7-day durations remain. General creation keeps track/car selection and optional track/creator search; finished-result creation keeps those values fixed.
++
++## Changed files
++
++- `game/ui/challenge_create.gd`: page layout, preview/summary, tries choices and help, selected-limit submission.
++- `game/core/app.gd`: menu integration, completed-summary retention/return and source-race settings.
++- `game/ui/challenges_page.gd`, `game/backend/challenges_client.gd`: remaining tries, exhausted race gate, response validation and ticket counter updates.
++- `game/ui/menu_icon.gd`: original car/share SVG glyphs.
++- `backend/bmt_backend/challenges.py`, `challenge_models.py`, `migrations/versions/0021_challenge_attempts.py`: optional contract, atomic reservations, snapshots, rematches, browser invitation and additive migration.
++- `game/tests/test_challenges.gd`, `test_challenges_http.gd`, `backend/tests/test_challenges.py`: native layouts, actual HTTP races, attempt/idempotency/concurrency/migration coverage.
++- `docs/schemas/challenge-create-v1.schema.json`, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this document and task evidence.
++
++## Actual verification
++
++All native checks use `scripts/dev.ps1` and pinned Godot4.7.2.stable.official.ed1daf0bf. Actual HTTP runs use an isolated local service, test identities and recorded five-lap races, rather than retained player data.
++
++| Actual command | Outcome |
++| --- | --- |
++| `scripts/dev.ps1 CheckScript -ScriptPath res://core/app.gd` | Passed. First restricted attempt could not open the Windows user log; local-access parser passed. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_challenges.gd -Graphical` | 140 checks, zero failures at1280?720,960?540,1600?720; 18 captures. Exact result/pending/service-error behavior, page integration, all default rows visible and exhausted race controls covered. |
++| `scripts/dev.ps1 TestApp` | 99 checks, zero failures. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_challenges_http.py -q -s --tb=short` with `BMT_CAPTURE_CLOUD` | Final two native flows pass48/49 checks. A real faster PB is verified before the slower source finish; Cancel restores the same summary; exact source, race-first duration/tries, guest try, recipient ghost/race, normal results, retry, rematch and group scoring pass. |
++| `.tools/backend-venv/Scripts/python.exe .tools/challenge_page_postgres.py` | Owned disposable SQLite/PostgreSQL runner; final receipt below. Row concurrency and actual schema0020?0021 over existing standings included; the owned container is removed. |
++| `scripts/dev.ps1 Doctor` | OnePlus Pad2 OPD2403/f0ba474a attached and authorized. No change-specific Android test/install/export was performed. |
++
++[Menu checks](evidence/challenge-page-2026-10-09/menus.log), [application checks](evidence/challenge-page-2026-10-09/app.log), [native HTTP log](evidence/challenge-page-2026-10-09/http-final.log), [database log](evidence/challenge-page-2026-10-09/postgres.log) and [device receipt](evidence/challenge-page-2026-10-09/doctor.log) retain actual outcomes.
++
++Initial test-only issues were corrected without relaxing assertions: wrong `steer` argument (fixture uses `steering`), a statically impossible type check, duplicate default page content, early layout assertions before the engine's layout pass and the browser preview's missing tries text. An earlier native flow passed while its historical inputs-only prior-PB upload was rejected by concurrent verifier work; the final fixture records and verifies an actual app PB before asserting the slower finish. Concurrent optional-ghost storage work briefly caused two broader database fixture failures, then its own fixture correction restored the full suite. Earlier database failure evidence is retained. A later concurrent `NightAmbience` class required an importer refresh; final parser/test receipt below. Driving physics/verifier behavior and unrelated work were preserved.
++
++## Evidence and acceptance
++
++- [General creation page, desktop](evidence/challenge-page-2026-10-09/screenshots/menu-create-1280x720.png)
++- [General creation page, compact](evidence/challenge-page-2026-10-09/screenshots/menu-create-960x540.png)
++- [Exact completed-result creation](evidence/challenge-page-2026-10-09/http-final/create-from-results.png)
++- [Race-first creation return](evidence/challenge-page-2026-10-09/http-final/create-after-seed.png)
++
++Fixture names/times are test evidence only. The approved original scenic art is reused; the supplied draft is not a shipping asset. Desktop image inspection does not establish phone touch, safe-area or performance acceptance.
++
++Remaining acceptance: owner presentation/feel, tablet touch/search/help/keyboard, actual authenticated finite-try races on the intended development service, and migration/API/worker rollout together. No retained backend/production deployment, player-data reset, purchase, physics merge, full Validate or APK export/install occurred. At the server boundary a try is reserved when a start ticket is granted; a subsequently failed local start remains reserved. Ordinary Free Race stays unlimited.
++
++The task-only Git checkpoint receipt is recorded below. It preserves the existing branch/index and concurrent work; it is a review checkpoint, not a deployment or merge.
++
++
++Final receipts: owned SQLite/PostgreSQL **58 passed, two SQLite row-concurrency skips**, including migration preservation, final-start races, same-key concurrency and old default creation keys. The final pinned importer completed and headless challenge recheck passed **122** checks; the graphical140-check captures remain unchanged. [Final headless log](evidence/challenge-page-2026-10-09/menus-final-headless.log). No required acceptance invariant was removed.
++
++Review checkpoint: `refs/codex/challenge-page-2026-10-09`; inspect with `git diff refs/codex/challenge-page-2026-10-09^ refs/codex/challenge-page-2026-10-09`. The scoped snapshot parent includes concurrent ghost-storage changes, so this diff concerns creation/tries only. Receipt: `docs/evidence/challenge-page-2026-10-09/checkpoint.json`.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1379,3 +1379,8 @@
+ ## Storm wet-asphalt tire rolling, 2026-10-09
+ 
+ 2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
++
++
++## Challenge creation page and attempt limits, 2026-10-09
++
++2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; owned SQLite/PG58(two skips) and final Import/headless122 pass; receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
+--- a/docs/schemas/challenge-create-v1.schema.json
++++ b/docs/schemas/challenge-create-v1.schema.json
+@@ -10,6 +10,7 @@
+     "vehicle_id": {"enum": ["compact", "pickup", "classic", "formula", "kart"]},
+     "mode": {"enum": ["beat", "group"], "default": "beat"},
+     "duration_seconds": {"enum": [86400, 259200, 604800], "default": 604800},
++    "attempt_limit": {"enum": [null, 1, 3, 5], "default": null},
+     "source_run_id": {"type": ["string", "null"], "minLength": 36, "maxLength": 36},
+     "source_ticket_id": {"type": ["string", "null"], "minLength": 36, "maxLength": 36}
+   },
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -60,6 +60,14 @@
+ 	if not value.manifest is Dictionary or int(value.manifest.get("laps",0)) != 5 or not value.manifest.get("tick_rate") is float and not value.manifest.get("tick_rate") is int or int(value.manifest.tick_rate) <= 0: return false
+ 	if not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
+ 	if value.mode == "beat" and (not preload("res://backend/backend_client.gd")._whole(value.get("target_ticks"),1,216000) or not preload("res://backend/backend_client.gd")._whole(value.get("target_ms"),1)): return false
++	if value.has("attempt_limit") or value.has("attempts_used") or value.has("attempts_remaining"):
++		if not value.has_all(["attempt_limit","attempts_used","attempts_remaining"]): return false
++		var limit: Variant = value.attempt_limit
++		if limit != null and (not preload("res://backend/backend_client.gd")._whole(limit,1,5) or int(limit) not in [1,3,5]): return false
++		if not preload("res://backend/backend_client.gd")._whole(value.attempts_used): return false
++		if limit == null:
++			if value.attempts_remaining != null: return false
++		elif not preload("res://backend/backend_client.gd")._whole(value.attempts_remaining,0,int(limit)) or int(value.attempts_used)+int(value.attempts_remaining) != int(limit): return false
+ 	var seen: Dictionary = {}
+ 	for row: Variant in value.standings:
+ 		if not row is Dictionary or not row.has_all(["id","name","ticks","ms","rank","run_id"]) or seen.has(str(row.id)): return false
+@@ -186,6 +194,8 @@
+ 		error = "Race invitation expired. Try again for a fresh start."
+ 		changed.emit()
+ 		return {}
++	for field: String in ["attempt_limit","attempts_used","attempts_remaining"]:
++		if response.data.has(field): selected[field] = response.data[field]
+ 	return response.data
+ 
+ func ghost() -> Dictionary:
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -102,6 +102,8 @@
+ var cloud_publish_version: String = ""
+ var cloud_starting: bool = false
+ var _result_game_id: int = 0
++var _challenge_return_ui: Control
++var _challenge_return_screen: String = ""
+ var _navigation_generation: int = 0
+ var _profile_draft_recovery: Dictionary = {}
+ var rivalry: Node
+@@ -126,6 +128,7 @@
+ var challenge_refresh_ticks: int = 0
+ 
+ func _exit_tree() -> void:
++	if is_instance_valid(_challenge_return_ui): _challenge_return_ui.queue_free()
+ 	_finish_preview_thread()
+ 
+ func _finish_preview_thread() -> void:
+@@ -288,16 +291,19 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	if next != "challenge_create" and is_instance_valid(_challenge_return_ui):
++		_challenge_return_ui.queue_free()
++		_challenge_return_ui = null
+ 	if screen == "rivalry" and is_instance_valid(content): _remember_rivalry_standings(content)
+ 	_close_race_loading()
+-	if challenge_racing and challenge_result_view and next != "challenges" and is_instance_valid(game):
++	if challenge_racing and challenge_result_view and next not in ["challenges","challenge_create"] and is_instance_valid(game):
+ 		remove_child(game)
+ 		game.queue_free()
+ 		game = null
+ 		challenge_racing = false
+ 		challenge_result_view = false
+ 	if not is_instance_valid(game): GameSoundtrack.instance().show_menu()
+-	if rivalry_racing and rivalry_section in ["race_results", "result"] and next != "rivalry" and is_instance_valid(game):
++	if rivalry_racing and rivalry_section in ["race_results", "result"] and next not in ["rivalry","challenge_create"] and is_instance_valid(game):
+ 		remove_child(game)
+ 		game.queue_free()
+ 		game = null
+@@ -432,7 +438,7 @@
+ 	nav.add_child(tabs)
+ 	for item: Array in [["tracks","RACE"],["create","CREATE"],["garage","GARAGE"],["store","STORE"]]:
+ 		var id: String = item[0]
+-		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _navigate_menu_page.bind(id), screen == id or (id == "tracks" and screen in ["rivalry","challenges"]) or (id == "create" and screen in ["biome","drafts"]))
++		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _navigate_menu_page.bind(id), screen == id or (id == "tracks" and screen in ["rivalry","challenges","challenge_create"]) or (id == "create" and screen in ["biome","drafts"]))
+ 		button.name = "Tab_" + id
+ 		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+ 		button.custom_minimum_size.y = 64
+@@ -511,6 +517,7 @@
+ 		"tracks": _tracks()
+ 		"rivalry": _rivalry()
+ 		"challenges": _challenges()
++		"challenge_create": pass
+ 		"create": _editor()
+ 		"garage": _garage()
+ 		"settings": _settings()
+@@ -1244,7 +1251,7 @@
+ 	dialog.confirmed.connect(func() -> void: challenges.cancel())
+ 	dialog.popup_centered()
+ 
+-func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800, finished: Dictionary = {}) -> void:
++func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800, finished: Dictionary = {}, attempt_limit: int = 0) -> void:
+ 	if not online.client.signed_in():
+ 		_open_account()
+ 		return
+@@ -1255,6 +1262,7 @@
+ 	dialog.initial_vehicle = VehicleCatalog.selected if vehicle.is_empty() else vehicle
+ 	dialog.initial_ticket = ticket_id
+ 	dialog.initial_duration = duration_seconds
++	dialog.initial_attempt_limit = attempt_limit
+ 	if not ticket_id.is_empty():
+ 		if finished.is_empty() and is_instance_valid(game) and game.get("track_session").finished:
+ 			finished = _challenge_finished_context(game.get("native_track"),game.get("track_session").race_time_seconds(),game.get("track_session").completed_laps,ticket_id,str(game.get("vehicle_id")))
+@@ -1275,9 +1283,27 @@
+ 		_open_challenges()
+ 		_share_challenge()
+ 	dialog.race_to_set_requested.connect(_race_for_challenge)
+-	root_ui.add_child(dialog)
+-	dialog.canceled.connect(dialog.queue_free)
+-	dialog.popup_centered(Vector2i(560,420))
++	if not ticket_id.is_empty() and is_instance_valid(game) and not is_instance_valid(content):
++		_challenge_return_ui = root_ui
++		_challenge_return_screen = screen
++		menu_layer.remove_child(root_ui)
++		root_ui = null
++	_show_screen("challenge_create")
++	content.add_child(dialog)
++	dialog.canceled.connect(_close_challenge_create)
++	dialog.popup_centered()
++
++func _close_challenge_create() -> void:
++	if is_instance_valid(_challenge_return_ui):
++		menu_layer.remove_child(root_ui)
++		root_ui.queue_free()
++		root_ui = _challenge_return_ui
++		_challenge_return_ui = null
++		screen = _challenge_return_screen
++		content = null
++		menu_layer.add_child(root_ui)
++		return
++	_open_challenges()
+ 
+ func _challenge_finished_context(track: NativeTrack, total: float, laps: int, ticket_id: String, vehicle: String) -> Dictionary:
+ 	var version: String = str(track.metadata.get("cloud_version",""))
+@@ -1292,7 +1318,7 @@
+ 		entry = {"version_id":version,"track_id":str(track.metadata.get("cloud_track_id","")),"content_hash":track.content_hash,"name":track_title(track),"creator":str(track.metadata.get("cloud_creator","")),"theme":str(track.metadata.get("theme","pine")),"points":points}
+ 	return {"entry":entry,"ticket_id":ticket_id,"vehicle_id":vehicle,"total":total,"laps":laps,"scope":challenges.scope()}
+ 
+-func _race_for_challenge(metadata: Dictionary, vehicle: String, duration_seconds: int = 604800) -> void:
++func _race_for_challenge(metadata: Dictionary, vehicle: String, duration_seconds: int = 604800, attempt_limit: int = 0) -> void:
+ 	var original: String = challenges.scope()
+ 	var navigation: int = _navigation_generation
+ 	var entry: Dictionary = cloud.entry_from_metadata(metadata)
+@@ -1307,7 +1333,7 @@
+ 	_clear_challenge_game()
+ 	VehicleCatalog.selected = vehicle
+ 	selected_track = track
+-	challenge_seed = {"version_id":str(metadata.version_id),"vehicle_id":vehicle,"duration_seconds":duration_seconds}
++	challenge_seed = {"version_id":str(metadata.version_id),"vehicle_id":vehicle,"duration_seconds":duration_seconds,"attempt_limit":attempt_limit}
+ 	await _start_race(track,false)
+ 
+ func _start_challenge_race() -> void:
+@@ -2975,7 +3001,7 @@
+ 			game.queue_free()
+ 			game = null
+ 		_open_challenges()
+-		_create_challenge_dialog(str(seed.version_id),str(seed.vehicle_id),str(seed.get("ticket_id","")),int(seed.get("duration_seconds",604800)),seed.get("finished",{}))
++		_create_challenge_dialog(str(seed.version_id),str(seed.vehicle_id),str(seed.get("ticket_id","")),int(seed.get("duration_seconds",604800)),seed.get("finished",{}),int(seed.get("attempt_limit",0)))
+ 		return
+ 	if rivalry_racing:
+ 		rivalry_section = "result"
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -67,6 +67,14 @@
+ 			"unknown_car": bad.vehicle_id = "external"
+ 			"joined": bad.joined = false
+ 		check(not ChallengesClient.valid_snapshot(bad),"invalid server snapshot rejected: "+mutation)
++	for limit: Variant in [null,1,3,5]:
++		var limited: Dictionary = sample.duplicate(true)
++		limited.attempt_limit = limit
++		limited.attempts_used = 1
++		limited.attempts_remaining = null if limit == null else int(limit)-1
++		check(ChallengesClient.valid_snapshot(limited),"valid remaining tries are accepted")
++		limited.attempts_remaining = 9
++		check(not ChallengesClient.valid_snapshot(limited),"inconsistent remaining tries are rejected")
+ 	await _adapter_tests(sample)
+ 	await _finished_sheet_tests(sample)
+ 	await _page_tests()
+@@ -152,6 +160,7 @@
+ 		sheet.initial_ticket = ticket
+ 		sheet.result_context = {"entry":sample.entry.duplicate(true),"vehicle_id":"compact","ticket_id":ticket,"total":88.110,"laps":5,"scope":adapter.scope()}
+ 		root.add_child(sheet)
++		MenuStyle.fill(sheet)
+ 		sheet.popup_centered()
+ 		while sheet._checking: await process_frame
+ 		await process_frame
+@@ -167,10 +176,14 @@
+ 		check(not sheet.get_ok_button().disabled and sheet._time.text == MenuStyle.time_text(88.110),"verification enables creation for this completed race")
+ 		var rect: Rect2 = sheet._panel.get_global_rect()
+ 		check(rect.position.x >= 0 and rect.position.y >= 0 and rect.end.x <= root.get_visible_rect().size.x+1 and rect.end.y <= root.get_visible_rect().size.y+1,"custom sheet stays within the viewport")
+-		await _capture("finished-sheet",dimensions)
++		check(sheet.get_parent() == root,"creation is an embedded menu control")
++		sheet._choose_attempt_limit(3)
++		check(sheet._summary_tries.text == "3","summary reflects selected tries")
++		await _capture("finished-page",dimensions)
+ 		client.answer = {"ok":true,"data":sample}
+ 		await sheet._create()
+ 		check(client.last_payload.get("source_ticket_id") == ticket and not client.last_payload.has("source_run_id"),"creation submits the exact finished ticket and never a PB fallback")
++		check(client.last_payload.get("attempt_limit") == 3,"selected tries are submitted with the exact result")
+ 		sheet.queue_free()
+ 		await process_frame
+ 	adapter.queue_free()
+@@ -223,6 +236,33 @@
+ 		scroll.scroll_vertical = int(scroll.get_v_scroll_bar().max_value)
+ 		await process_frame
+ 		await _capture("group-bottom",dimensions)
++		app.challenges.selected.attempt_limit = 3
++		app.challenges.selected.attempts_used = 3
++		app.challenges.selected.attempts_remaining = 0
++		app._challenges()
++		await process_frame
++		page = app.root_ui.find_child("ChallengesPage",true,false)
++		check((page.find_child("ChallengeRace",true,false) as Button).disabled,"exhausted challenge disables a new race")
++		app._create_challenge_dialog()
++		await process_frame
++		await process_frame
++		var create: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
++		check(create != null and app.screen == "challenge_create" and create.get_parent() == app.content,"general creation occupies the menu page")
++		check(app.root_ui.find_child("MenuHeader",true,false) != null,"creation keeps the original top navigation")
++		create._source = {"status":"verified","run_id":"fixture","ms":88110}
++		create._checking = false
++		create._choose_attempt_limit(3)
++		create._update()
++		await process_frame
++		await process_frame
++		_bounds(create,"ChallengeCreateActions",dimensions)
++		_bounds(create,"ChallengeCreatePanel",dimensions)
++		var choices_scroll: ScrollContainer = create.find_child("ChallengeSettingsScroll",true,false)
++		check(choices_scroll.get_v_scroll_bar().max_value <= choices_scroll.size.y+1,"all default setting rows are immediately visible")
++		await _capture("menu-create",dimensions)
++		create.close()
++		await process_frame
++		check(app.screen == "challenges","Cancel returns to Challenges")
+ 		app.challenge_result_view = true
+ 		app.challenges.result_state = "upload_pending"
+ 		app._challenges()
+--- a/game/tests/test_challenges_http.gd
++++ b/game/tests/test_challenges_http.gd
+@@ -52,12 +52,17 @@
+ 	var seed_flow: bool = OS.get_environment("BMT_CHALLENGE_SEED_FLOW") == "true"
+ 	# Establish a faster verified PB first: the challenge must still use the slower finish below.
+ 	if not seed_flow:
+-		var prior_ticket: Dictionary = await app.online.client.race_ticket(str(metadata.version_id),"compact",app.online.client.new_operation_key())
+-		var prior_upload: Dictionary = await app.online.client.submit_run(str(prior_ticket.data.ticket_id),fixture.replay.frames,app.online.client.new_operation_key())
++		await app._start_race(track,false)
++		var prior_ticket: String = str(app.cloud_ticket.get("ticket_id",""))
++		_drive(app.game,fixture.replay.frames)
++		app._results()
++		var prior_status: Dictionary = {}
+ 		for _poll: int in range(60):
+-			var prior_status: Dictionary = await app.online.client.request_api("/runs/"+str(prior_upload.data.run_id),HTTPClient.METHOD_GET,{},"",true)
+-			if prior_status.get("ok",false) and prior_status.data.get("status") == "verified": break
++			prior_status = await app.challenges.source(str(metadata.version_id),"compact",prior_ticket)
++			if prior_status.get("status") == "verified": break
+ 			await create_timer(0.15).timeout
++		check(prior_status.get("status") == "verified","a real recorded faster PB is verified before the slower source race")
++		app._clear_challenge_game()
+ 	if seed_flow:
+ 		app.cloud.entries.assign([metadata])
+ 		app._open_challenges()
+@@ -67,6 +72,7 @@
+ 		while draft._checking: await process_frame
+ 		check(draft.get_ok_button().disabled and draft._race.visible,"new creator is offered a race instead of an invented target")
+ 		draft._choose_duration(86400)
++		draft._choose_attempt_limit(3)
+ 		draft._race.pressed.emit()
+ 		while app.game == null: await process_frame
+ 	else: await app._start_race(track,false)
+@@ -101,7 +107,15 @@
+ 		await process_frame
+ 	check(form != null and not form.get_ok_button().disabled,"creation form preselects the just-finished verified time")
+ 	check(form.locked_result() and form._track == null and form._vehicle == null and form._search == null and not form._race.visible,"finished-race creation is fixed and contains no rerace or unrelated selectors")
+-	if seed_flow: check(app.root_ui.find_child("ChallengesPage",true,false) != null,"returning creation form has the live Challenges menu underneath")
++	check(app.screen == "challenge_create" and app.root_ui.find_child("MenuHeader",true,false) != null,"creation occupies the main menu under its original navigation")
++	if not seed_flow:
++		var saved_summary: RaceResults = app._challenge_return_ui.find_child("RaceResults",true,false)
++		form.close()
++		check(app.root_ui.find_child("RaceResults",true,false) == saved_summary,"Cancel restores the same completed summary without reracing or recording twice")
++		(saved_summary.find_child("CreateResultChallenge",true,false) as Button).pressed.emit()
++		form = app.root_ui.find_child("ChallengeCreate",true,false)
++		while form._checking: await process_frame
++		form._choose_attempt_limit(3)
+ 	await capture("create",app)
+ 	await capture("create-after-seed" if seed_flow else "create-from-results",app)
+ 	form.confirmed.emit()
+@@ -113,6 +127,7 @@
+ 		return
+ 	var invitation: Dictionary = app.challenges.selected.duplicate(true)
+ 	var code: String = str(invitation.code)
++	check(invitation.attempt_limit == 3,"selected attempt limit survives creation and the race-first return")
+ 	check(int(invitation.target_ticks) > int(fixture.time_ticks),"target pins the creator's actual slower run")
+ 	if seed_flow: check(int(invitation.ends_at)-int(invitation.created_at) == 86400,"race-to-set flow preserves the chosen 24-hour duration")
+ 	await capture("sent",app)
+@@ -210,6 +225,8 @@
+ func _drive(game: Node, frames: Array) -> void:
+ 	game.set_physics_process(false)
+ 	game.countdown_ticks = 0
++	game.launch_countdown_seen = false
++	game.launch_early = false
+ 	var driver := ReplayInput.new()
+ 	driver.frames = frames
+ 	game.driver = driver
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -1,7 +1,7 @@
+ class_name ChallengeCreate
+-extends CanvasLayer
++extends VBoxContainer
+ ## A result stays bound to its completed ticket while verification finishes.
+-signal race_to_set_requested(entry: Dictionary, vehicle_id: String, duration_seconds: int)
++signal race_to_set_requested(entry: Dictionary, vehicle_id: String, duration_seconds: int, attempt_limit: int)
+ signal confirmed
+ signal canceled
+ var adapter: ChallengesClient
+@@ -10,6 +10,19 @@
+ var initial_vehicle: String = ""
+ var initial_ticket: String = ""
+ var initial_duration: int = 604800
++var initial_attempt_limit: int = 0
++var attempt_limit: int = 0
++var _attempt_buttons: Array[Button] = []
++var _preview_art: TextureRect
++var _preview_route: LapRouteView
++var _preview_title: Label
++var _preview_creator: Label
++var _car_art: TextureRect
++var _summary_car: Label
++var _summary_time: Label
++var _summary_tries: Label
++var _summary_duration: Label
++var _tries_note: Label
+ var result_context: Dictionary = {}
+ var created_callback: Callable
+ var mode: int = 0
+@@ -33,97 +46,187 @@
+ var _searching: bool = false
+ var _mode_buttons: Array[Button] = []
+ var _duration_buttons: Array[Button] = []
+-var _overlay: Control
+ var _panel: PanelContainer
+ var _close_button: Button
+ var _source_scope: String = ""
+-var _motion: Tween
+ 
+ func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
+ 
+ func _ready() -> void:
+ 	name = "ChallengeCreate"
+-	layer = 50
++	theme = MenuStyle.theme()
+ 	process_mode = Node.PROCESS_MODE_ALWAYS
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",12)
+ 	_source_scope = str(result_context.get("scope",adapter.scope()))
+ 	duration = initial_duration
+-	_overlay = Control.new()
+-	_overlay.theme = MenuStyle.theme()
+-	MenuStyle.fill(_overlay)
+-	add_child(_overlay)
+-	var dim := ColorRect.new()
+-	dim.color = Color(0.005,0.013,0.02,0.78)
+-	MenuStyle.fill(dim)
+-	_overlay.add_child(dim)
+-	dim.gui_input.connect(func(event: InputEvent) -> void:
+-		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT: close())
++	attempt_limit = initial_attempt_limit
++	_base_entries = entries.duplicate(true)
++	var header := HBoxContainer.new()
++	add_child(header)
++	_close_button = MenuStyle.button("Back",close)
++	_close_button.name = "CloseChallengeCreate"
++	_close_button.custom_minimum_size = Vector2(90,52)
++	header.add_child(_close_button)
++	var glyph := _icon("target",32)
++	glyph.modulate = MenuStyle.ACCENT
++	header.add_child(glyph)
++	header.add_child(MenuStyle.label("CREATE CHALLENGE",34))
++	var columns := HBoxContainer.new()
++	columns.name = "ChallengeCreateColumns"
++	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	columns.add_theme_constant_override("separation",18)
++	add_child(columns)
++	var scroll := ScrollContainer.new()
++	scroll.name = "ChallengeSettingsScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	scroll.size_flags_stretch_ratio = 1.35
++	columns.add_child(scroll)
++	var gutter := MarginContainer.new()
++	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	gutter.add_theme_constant_override("margin_right",10)
++	scroll.add_child(gutter)
++	var fields := VBoxContainer.new()
++	fields.add_theme_constant_override("separation",8)
++	gutter.add_child(fields)
++	var track_row := _field(fields,"TRACK","compass")
++	if locked_result():
++		var identity := VBoxContainer.new()
++		identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		track_row.add_child(identity)
++		identity.add_child(MenuStyle.label(str(_entry().get("name","")),24))
++		identity.add_child(MenuStyle.label(str(_entry().get("creator","")),16,true))
++	else:
++		var choices := VBoxContainer.new()
++		choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		track_row.add_child(choices)
++		_track = OptionButton.new()
++		_track.name = "ChallengeTrackChoice"
++		_track.custom_minimum_size.y = 52
++		choices.add_child(_track)
++		for index: int in range(entries.size()):
++			_track.add_item(str(entries[index].name),index)
++			if str(entries[index].version_id) == initial_version: _track.select(index)
++		_search = LineEdit.new()
++		_search.placeholder_text = "Find a track or creator"
++		_search.max_length = 80
++		_search.custom_minimum_size.y = 48
++		_search.hide()
++		choices.add_child(_search)
++		var find := MenuStyle.button("",func() -> void:
++			_search.visible = not _search.visible
++			if _search.visible: _search.grab_focus())
++		find.icon = MenuIcon.texture("search")
++		find.tooltip_text = "Find a track or creator"
++		find.custom_minimum_size = Vector2(52,52)
++		track_row.add_child(find)
++		_search_timer = Timer.new()
++		_search_timer.wait_time = 0.35
++		_search_timer.one_shot = true
++		_search_timer.timeout.connect(_find_tracks)
++		add_child(_search_timer)
++		_search.text_changed.connect(func(_text: String) -> void:
++			_search_serial += 1
++			_serial += 1
++			_searching = true
++			_update()
++			_search_timer.start())
++		_track.item_selected.connect(func(_i: int) -> void: _check_source())
++	var modes := _field(fields,"TYPE","friends")
++	for index: int in range(2):
++		var choice := _segment(modes,["Beat my time","Group challenge"][index],_choose_mode.bind(index))
++		choice.name = ["ChallengeBeat","ChallengeGroup"][index]
++		_mode_buttons.append(choice)
++	var car := _field(fields,"CAR","car")
++	_car_art = TextureRect.new()
++	_car_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	_car_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	_car_art.custom_minimum_size = Vector2(96,52)
++	car.add_child(_car_art)
++	if locked_result():
++		car.add_child(MenuStyle.label(VehicleCatalog.title(initial_vehicle),22))
++	else:
++		_vehicle = OptionButton.new()
++		_vehicle.custom_minimum_size.y = 52
++		_vehicle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		car.add_child(_vehicle)
++		for title: String in VehicleCatalog.NAMES: _vehicle.add_item(title)
++		_vehicle.select(VehicleCatalog.IDS.find(VehicleCatalog.valid_id(initial_vehicle)))
++		_vehicle.item_selected.connect(func(_i: int) -> void: _check_source())
++	var target := _field(fields,"TARGET","target")
++	var time_box := VBoxContainer.new()
++	time_box.add_theme_constant_override("separation",0)
++	target.add_child(time_box)
++	_time = MenuStyle.label("",28)
++	_time.name = "ChallengeFinishedTime"
++	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	time_box.add_child(_time)
++	time_box.add_child(MenuStyle.label("This finish" if locked_result() else "My best time",15,true))
++	var tries := _field(fields,"TRIES","restart")
++	tries.tooltip_text = "Each started race uses one try, including abandoned races. Upload retries do not use another."
++	for value: int in [1,3,5,0]:
++		var choice := _segment(tries,"Unlimited" if value == 0 else str(value),_choose_attempt_limit.bind(value))
++		choice.name = "ChallengeTries_"+str(value)
++		choice.tooltip_text = tries.tooltip_text
++		_attempt_buttons.append(choice)
++	_tries_note = MenuStyle.label("Each started race uses a try, including restarts and abandoned races.",15,true)
++	_tries_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	_tries_note.hide()
++	fields.add_child(_tries_note)
++	var help := MenuStyle.button("",func() -> void: _tries_note.visible = not _tries_note.visible)
++	help.icon = MenuIcon.texture("help")
++	help.tooltip_text = "How tries are counted"
++	help.custom_minimum_size = Vector2(52,52)
++	tries.add_child(help)
++	var durations := _field(fields,"DURATION","clock")
++	for index: int in range(3):
++		var seconds: int = [86400,259200,604800][index]
++		var choice := _segment(durations,["24 hours","3 days","7 days"][index],_choose_duration.bind(seconds))
++		choice.name = "ChallengeDuration_"+str(seconds)
++		_duration_buttons.append(choice)
+ 	_panel = PanelContainer.new()
+ 	_panel.name = "ChallengeCreatePanel"
+-	var style := MenuStyle.card(22)
+-	style.bg_color = Color("0b1823")
+-	style.border_color = Color("355264")
+-	style.shadow_size = 22
+-	style.shadow_color = Color(0,0,0,0.55)
+-	_panel.add_theme_stylebox_override("panel",style)
+-	_overlay.add_child(_panel)
+-	var body := VBoxContainer.new()
+-	body.add_theme_constant_override("separation",12)
+-	_panel.add_child(body)
+-	var header := HBoxContainer.new()
+-	body.add_child(header)
+-	var glyph := TextureRect.new()
+-	glyph.texture = MenuIcon.texture("target")
+-	glyph.modulate = MenuStyle.ACCENT
+-	glyph.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-	glyph.custom_minimum_size = Vector2(30,30)
+-	header.add_child(glyph)
+-	var heading := MenuStyle.label("CREATE CHALLENGE",30)
+-	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	header.add_child(heading)
+-	_close_button = MenuStyle.button("",close)
+-	_close_button.name = "CloseChallengeCreate"
+-	_close_button.icon = MenuIcon.texture("close")
+-	_close_button.tooltip_text = "Close"
+-	_close_button.custom_minimum_size = Vector2(52,52)
+-	_close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
+-	header.add_child(_close_button)
+-	var scroll := ScrollContainer.new()
+-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	body.add_child(scroll)
+-	var gutter := MarginContainer.new()
+-	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	gutter.add_theme_constant_override("margin_right",12)
+-	scroll.add_child(gutter)
+-	var fields := VBoxContainer.new()
+-	fields.add_theme_constant_override("separation",12)
+-	gutter.add_child(fields)
+-	_base_entries = entries.duplicate(true)
+-	if locked_result(): _result_hero(fields)
+-	else: _track_choices(fields)
+-	var modes := HBoxContainer.new()
+-	fields.add_child(modes)
+-	for index: int in range(2):
+-		var choice := MenuStyle.button(["Beat my time","Group challenge"][index],_choose_mode.bind(index))
+-		choice.name = ["ChallengeBeat","ChallengeGroup"][index]
+-		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		choice.custom_minimum_size.y = 52
+-		modes.add_child(choice)
+-		_mode_buttons.append(choice)
+-	fields.add_child(MenuStyle.label("DURATION",14,true))
+-	var durations := HBoxContainer.new()
+-	fields.add_child(durations)
+-	for index: int in range(3):
+-		var seconds: int = [86400,259200,604800][index]
+-		var choice := MenuStyle.button(["24 hours","3 days","7 days"][index],_choose_duration.bind(seconds))
+-		choice.name = "ChallengeDuration_"+str(seconds)
+-		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		choice.custom_minimum_size.y = 52
+-		durations.add_child(choice)
+-		_duration_buttons.append(choice)
++	_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_panel.add_theme_stylebox_override("panel",MenuStyle.card(12))
++	columns.add_child(_panel)
++	var preview := VBoxContainer.new()
++	preview.add_theme_constant_override("separation",8)
++	_panel.add_child(preview)
++	var hero := PanelContainer.new()
++	hero.name = "ChallengeFinishedRace"
++	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	hero.custom_minimum_size.y = 110
++	hero.clip_contents = true
++	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),12))
++	preview.add_child(hero)
++	_preview_art = TextureRect.new()
++	_preview_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	_preview_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	hero.add_child(_preview_art)
++	var identity := VBoxContainer.new()
++	hero.add_child(identity)
++	_preview_title = MenuStyle.label("",28)
++	_preview_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	_preview_title.add_theme_color_override("font_shadow_color",Color.BLACK)
++	_preview_title.add_theme_constant_override("shadow_offset_x",2)
++	_preview_title.add_theme_constant_override("shadow_offset_y",2)
++	identity.add_child(_preview_title)
++	_preview_creator = MenuStyle.label("",16)
++	identity.add_child(_preview_creator)
++	_preview_route = LapRouteView.new()
++	_preview_route.name = "ChallengeFinishedRoute"
++	_preview_route.miniature = true
++	_preview_route.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	identity.add_child(_preview_route)
++	_summary_car = _summary(preview,"Car","car")
++	_summary_time = _summary(preview,"Target","target")
++	_summary_tries = _summary(preview,"Tries per driver","restart")
++	_summary_duration = _summary(preview,"Duration","clock")
+ 	var status := HBoxContainer.new()
+-	body.add_child(status)
++	add_child(status)
+ 	_notice = MenuStyle.label("",17,true)
+ 	_notice.name = "ChallengeSourceStatus"
+ 	_notice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -133,94 +236,99 @@
+ 	_retry.name = "RetryChallengeSource"
+ 	_retry.custom_minimum_size.y = 52
+ 	status.add_child(_retry)
++	var actions := HBoxContainer.new()
++	actions.name = "ChallengeCreateActions"
++	add_child(actions)
++	var cancel := MenuStyle.button("Cancel",close)
++	cancel.custom_minimum_size = Vector2(140,56)
++	actions.add_child(cancel)
++	var space := Control.new()
++	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	actions.add_child(space)
+ 	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
+ 	_race.name = "RaceToSetChallenge"
+-	_race.custom_minimum_size.y = 56
+-	body.add_child(_race)
++	_race.custom_minimum_size = Vector2(260,56)
++	actions.add_child(_race)
+ 	_create_button = MenuStyle.button("Create & share",func() -> void: confirmed.emit(),true)
++	_create_button.icon = MenuIcon.texture("share")
+ 	_create_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
+ 	_create_button.name = "ConfirmChallengeCreate"
+-	_create_button.custom_minimum_size.y = 56
+-	body.add_child(_create_button)
++	_create_button.custom_minimum_size = Vector2(260,56)
++	actions.add_child(_create_button)
+ 	confirmed.connect(_create)
+-	_overlay.resized.connect(_layout)
+-	_layout.call_deferred()
+ 	_check_source()
+ 
+-func _result_hero(parent: Control) -> void:
++func _icon(glyph: String, extent: int = 24) -> TextureRect:
++	var icon := TextureRect.new()
++	icon.texture = MenuIcon.texture(glyph)
++	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	icon.custom_minimum_size = Vector2(extent,extent)
++	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	return icon
++
++func _field(parent: Control, caption: String, glyph: String) -> HBoxContainer:
++	var panel := PanelContainer.new()
++	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1e2bee"),6))
++	parent.add_child(panel)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",8)
++	panel.add_child(row)
++	row.add_child(_icon(glyph))
++	var label := MenuStyle.label(caption,16,true)
++	label.custom_minimum_size.x = 68
++	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	row.add_child(label)
++	var choices := HBoxContainer.new()
++	choices.add_theme_constant_override("separation",6)
++	choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(choices)
++	return choices
++
++func _segment(parent: Control, caption: String, action: Callable) -> Button:
++	var button := MenuStyle.button(caption,action)
++	button.add_theme_font_size_override("font_size",20)
++	button.custom_minimum_size.y = 52
++	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	parent.add_child(button)
++	return button
++
++func _summary(parent: Control, caption: String, glyph: String) -> Label:
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",8)
++	parent.add_child(row)
++	row.add_child(_icon(glyph,22))
++	var label := MenuStyle.label(caption,16,true)
++	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(label)
++	var value := MenuStyle.label("",18)
++	value.name = "ChallengeSummary_"+caption.replace(" ","")
++	row.add_child(value)
++	return value
++
++func _choose_attempt_limit(value: int) -> void:
++	attempt_limit = value
++	_update()
++
++func _refresh_preview() -> void:
++	if _preview_art == null: return
+ 	var entry: Dictionary = _entry()
+-	var hero := PanelContainer.new()
+-	hero.name = "ChallengeFinishedRace"
+-	hero.custom_minimum_size.y = 126
+-	hero.clip_contents = true
+-	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),0))
+-	parent.add_child(hero)
+-	var art := TextureRect.new()
+-	art.texture = TrackTile.scenery_texture(str(entry.get("theme","pine")))
+-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-	art.modulate = Color(0.45,0.53,0.58)
+-	hero.add_child(art)
+-	var margin := MarginContainer.new()
+-	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,12)
+-	hero.add_child(margin)
+-	var row := HBoxContainer.new()
+-	margin.add_child(row)
+-	var identity := VBoxContainer.new()
+-	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	identity.add_theme_constant_override("separation",0)
+-	row.add_child(identity)
+-	var title := MenuStyle.label(str(entry.get("name",result_context.get("title",""))),23)
+-	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	identity.add_child(title)
+-	var total: float = float(result_context.get("total",0.0))
+-	_time = MenuStyle.label(MenuStyle.time_text(total) if total > 0.0 else "—",58)
+-	_time.name = "ChallengeFinishedTime"
+-	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	identity.add_child(_time)
+-	identity.add_child(MenuStyle.label("%d laps · %s" % [int(result_context.get("laps",5)),VehicleCatalog.title(initial_vehicle)],15))
+-	var route := LapRouteView.new()
+-	route.name = "ChallengeFinishedRoute"
+-	route.miniature = true
+-	route.custom_minimum_size.x = 130
+-	for point: Array in entry.get("points",[]): route.route.append(Vector2(point[0],point[1]))
+-	row.add_child(route)
+-
+-func _track_choices(parent: Control) -> void:
+-	_track = _choice(parent,"Track",[])
+-	for index: int in range(entries.size()):
+-		_track.add_item(str(entries[index].name),index)
+-		if str(entries[index].version_id) == initial_version: _track.select(index)
+-	_search = LineEdit.new()
+-	_search.placeholder_text = "Find a track or creator"
+-	_search.max_length = 80
+-	_search.custom_minimum_size.y = 48
+-	parent.add_child(_search)
+-	_search_timer = Timer.new()
+-	_search_timer.wait_time = 0.35
+-	_search_timer.one_shot = true
+-	_search_timer.timeout.connect(_find_tracks)
+-	add_child(_search_timer)
+-	_search.text_changed.connect(func(_text: String) -> void:
+-		_search_serial += 1
+-		_serial += 1
+-		_search_timer.start())
+-	_vehicle = _choice(parent,"Car",VehicleCatalog.NAMES)
+-	_vehicle.select(VehicleCatalog.IDS.find(VehicleCatalog.valid_id(initial_vehicle)))
+-	_track.item_selected.connect(func(_i: int) -> void: _check_source())
+-	_vehicle.item_selected.connect(func(_i: int) -> void: _check_source())
+-
+-func _choice(parent: Control, caption: String, choices: Array) -> OptionButton:
+-	var row := VBoxContainer.new()
+-	row.add_theme_constant_override("separation",4)
+-	parent.add_child(row)
+-	row.add_child(MenuStyle.label(caption.to_upper(),14,true))
+-	var choice := OptionButton.new()
+-	choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	choice.custom_minimum_size.y = 52
+-	for item: Variant in choices: choice.add_item(str(item))
+-	row.add_child(choice)
+-	return choice
++	_preview_art.texture = TrackTile.scenery_texture(str(entry.get("theme","pine")))
++	_preview_art.modulate = Color(0.72,0.78,0.82)
++	_preview_title.text = str(entry.get("name","Choose a track"))
++	_preview_creator.text = str(entry.get("creator",""))
++	_preview_route.route.clear()
++	for point: Array in entry.get("points",[]): _preview_route.route.append(Vector2(point[0],point[1]))
++	_preview_route._fit()
++	_car_art.texture = VehicleCatalog.artwork(_vehicle_id())
++	_summary_car.text = VehicleCatalog.title(_vehicle_id())
++	var total: float = float(result_context.get("total",0.0)) if locked_result() else 0.0
++	if _source.get("status") == "verified": total = float(_source.get("ms",0))/1000.0
++	_time.text = MenuStyle.time_text(total) if total > 0.0 else "?"
++	_time.get_parent().get_child(1).text = "This finish" if locked_result() else "My best time" if mode == 0 else "Fastest time wins"
++	_summary_time.text = _time.text if mode == 0 else "Fastest time wins"
++	_summary_tries.text = "Unlimited" if attempt_limit == 0 else str(attempt_limit)
++	_summary_duration.text = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
+ 
+ func _entry() -> Dictionary:
+ 	if locked_result():
+@@ -241,22 +349,9 @@
+ 	duration = seconds
+ 	_update()
+ 
+-func _layout() -> void:
+-	if _panel == null: return
+-	var viewport: Vector2 = _overlay.size
+-	var width: float = minf(560.0,viewport.x-40.0)
+-	var height: float = minf(508.0 if locked_result() else 552.0,viewport.y-40.0)
+-	_panel.size = Vector2(width,height)
+-	_panel.position = (viewport-_panel.size)*0.5
+-
+ func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void:
+ 	show()
+ 	set_process_input(true)
+-	if _overlay != null:
+-		_overlay.modulate.a = 0.0
+-		_motion = create_tween()
+-		_motion.tween_property(_overlay,"modulate:a",1.0,0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+-		_layout.call_deferred()
+ 
+ func get_ok_button() -> Button: return _create_button
+ 
+@@ -277,6 +372,7 @@
+ 	_serial += 1
+ 	var serial: int = _serial
+ 	_source = {}
++	_checking = false
+ 	var entry: Dictionary = _entry()
+ 	if entry.is_empty():
+ 		_update()
+@@ -310,7 +406,11 @@
+ 	_retry.visible = _source.get("status") == "unavailable" and not _checking and not _submitting
+ 	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Verifying result…" if locked_result() and (_checking or pending) else "Checking time…" if _checking else str(_source.get("error","")) if _source.has("error") else "This result was not verified." if locked_result() and not verified else "Choose a published track." if not has_entry else ""
+ 	_notice.visible = not _notice.text.is_empty()
+-	if _time != null and verified: _time.text = MenuStyle.time_text(float(_source.ms)/1000.0)
++	_refresh_preview()
++	if _track != null: _track.disabled = _submitting
++	if _vehicle != null: _vehicle.disabled = _submitting
++	if _search != null: _search.editable = not _submitting
++	for index: int in range(_attempt_buttons.size()): _selection(_attempt_buttons[index],[1,3,5,0][index] == attempt_limit)
+ 	for index: int in range(_mode_buttons.size()): _selection(_mode_buttons[index],index == mode)
+ 	for index: int in range(_duration_buttons.size()): _selection(_duration_buttons[index],[86400,259200,604800][index] == duration)
+ 
+@@ -328,6 +428,7 @@
+ 	_update()
+ 	var entry: Dictionary = _entry()
+ 	var payload: Dictionary = {"version_id":str(entry.version_id),"vehicle_id":_vehicle_id(),"mode":"group" if mode == 1 else "beat","duration_seconds":duration}
++	if attempt_limit > 0: payload.attempt_limit = attempt_limit
+ 	if locked_result():
+ 		if initial_ticket.is_empty():
+ 			_submitting = false
+@@ -350,7 +451,7 @@
+ func _race_to_set() -> void:
+ 	if locked_result() or _entry().is_empty(): return
+ 	hide()
+-	race_to_set_requested.emit(_entry(),_vehicle_id(),duration)
++	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit)
+ 
+ func _find_tracks() -> void:
+ 	if locked_result(): return
+--- a/game/ui/challenges_page.gd
++++ b/game/ui/challenges_page.gd
+@@ -203,6 +203,9 @@
+ 	time_box.add_child(clock)
+ 	time_box.add_child(MenuStyle.label("Target time" if selected.mode == "beat" else "Leading time",16))
+ 	column.add_child(MenuStyle.label("5 laps · "+VehicleCatalog.title(str(selected.vehicle_id)),16,true))
++	var exhausted: bool = selected.get("attempts_remaining") != null and int(selected.attempts_remaining) <= 0
++	if selected.get("attempt_limit") != null:
++		column.add_child(MenuStyle.label("No tries remaining" if exhausted else "%d of %d tries remaining" % [int(selected.attempts_remaining),int(selected.attempt_limit)],16,true))
+ 	if result_view:
+ 		var feedback: String = "Verifying"
+ 		if result_state == "verified" and outcome.get("counted",false):
+@@ -258,7 +261,7 @@
+ 	var race := _action(actions,"Race again" if result_view else "Race" if selected.joined else "Join & race" if signed_in else "Try track",func() -> void: race_requested.emit(),true)
+ 	race.name = "ChallengeRace"
+ 	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	race.disabled = busy or selected.state != "active" or (selected.mode == "beat" and selected.creator_id == selected.self_id)
++	race.disabled = busy or exhausted or selected.state != "active" or (selected.mode == "beat" and selected.creator_id == selected.self_id)
+ 
+ func _update_clock() -> void:
+ 	if _clock == null: return
+--- a/game/ui/menu_icon.gd
++++ b/game/ui/menu_icon.gd
+@@ -15,6 +15,8 @@
+ 		cache[kind] = biome_texture
+ 		return biome_texture
+ 	var paths: Dictionary = {
++		"car":"<path d='m4 11 2-6h12l2 6M3 11h18v7H3Zm2 7v3m14-3v3M6 14h2m8 0h2'/>",
++		"share":"<circle cx='18' cy='4' r='3'/><circle cx='5' cy='12' r='3'/><circle cx='18' cy='20' r='3'/><path d='m8 10 7-4m-7 8 7 4'/>",
+ 		"controller":"<path d='M7 7h10c3 0 5 12 3 13-2 1-4-4-5-4H9c-1 0-3 5-5 4C2 19 4 7 7 7Z'/><path d='M8 10v5m-2.5-2.5h5M16 11h.1M18 14h.1'/>",
+ 		"phone":"<rect x='6' y='2' width='12' height='20' rx='2'/><path d='M10 5h4M11 19h2'/>",
+ 		"headphones":"<path d='M4 13V11a8 8 0 0 1 16 0v2'/><rect x='3' y='12' width='4' height='9' rx='2'/><rect x='17' y='12' width='4' height='9' rx='2'/>",

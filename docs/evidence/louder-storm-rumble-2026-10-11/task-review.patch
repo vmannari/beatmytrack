@@ -1,0 +1,168 @@
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+index dafbf5f8..e395603d 100644
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -6,15 +6,15 @@ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last kn
+ const FLASH_PEAK_MAX: float = 0.90
+ const FLASH_LIGHT_ENERGY: float = 20.0
+ const FLASH_OVERLAY_ALPHA: float = 0.55
+-const MIN_INTERVAL: float = 9.0
+-const MAX_INTERVAL: float = 16.0
++const MIN_INTERVAL: float = 13.5
++const MAX_INTERVAL: float = 24.0
+ const RAIN_LEVEL: float = 0.28
+ const THUNDER_LEVEL: float = 1.0
+-const RUMBLE_LEVEL: float = 0.10
++const RUMBLE_LEVEL: float = 0.30
+ const THUNDER_REPLACE_FADE_SECONDS: float = 0.18
+ const RAIN_FADE_SECONDS: float = 0.75
+ var elapsed: float = 0.0
+-var until_lightning: float = 6.0
++var until_lightning: float = 9.0
+ var until_thunder: float = -1.0
+ var flash_age: float = FLASH_DURATION
+ var flash_profile := PackedVector2Array()
+diff --git a/game/tests/test_storm.gd b/game/tests/test_storm.gd
+index ea165574..30e8cac0 100644
+--- a/game/tests/test_storm.gd
++++ b/game/tests/test_storm.gd
+@@ -169,7 +169,7 @@ func _run() -> void:
+ 	weather.until_lightning = 0.01
+ 	weather.advance(0.02,false)
+ 	check(weather.strikes == 1 and weather.thunder_count == 0 and weather.until_thunder >= 1.2,"lightning precedes delayed thunder")
+-	check(weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0,"occasional lightning spacing")
++	check(weather.until_lightning >= 13.5 and weather.until_lightning <= 24.0,"owner-requested 50% longer lightning spacing")
+ 	weather.advance(0.16,false)
+ 	check(light.light_energy > weather.base_light_energy+8.0 and weather.flash_strength() <= weather.FLASH_PEAK_MAX,"strong irregular lightning raises world illumination")
+ 	var elapsed: float = weather.elapsed
+@@ -227,8 +227,8 @@ func _run() -> void:
+ 		var previous_strikes: int = weather.strikes
+ 		weather.advance(0.1,false)
+ 		if weather.strikes != previous_strikes:
+-			intervals_ok = intervals_ok and weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0
+-	check(intervals_ok and weather.strikes >= 20 and weather.strikes <= 37,"five-minute storm retains occasional separate strikes")
++			intervals_ok = intervals_ok and weather.until_lightning >= 13.5 and weather.until_lightning <= 24.0
++	check(intervals_ok and weather.strikes >= 13 and weather.strikes <= 25,"five-minute storm retains separate strikes at 50% longer intervals")
+ 	check(weather.thunder_count >= weather.strikes-1,"each lightning event receives thunder")
+ 	# Changing the active biome removes visual/audio nodes and resets the light rig.
+ 	race.native_track.metadata.theme = "pine"
+diff --git a/scripts/review_thunder_audio.py b/scripts/review_thunder_audio.py
+index 134f18ae..2951549b 100644
+--- a/scripts/review_thunder_audio.py
++++ b/scripts/review_thunder_audio.py
+@@ -13,6 +13,7 @@ parser.add_argument('--evidence-dir',type=Path,default=ROOT/'docs/evidence/rain-
+ parser.add_argument('--stronger',action='store_true')
+ parser.add_argument('--owner-bass',action='store_true')
+ parser.add_argument('--background-rumble',action='store_true')
++parser.add_argument('--louder-rumble',action='store_true')
+ args=parser.parse_args()
+ OUT=args.evidence_dir
+ def read(path):
+@@ -90,7 +91,13 @@ if args.background_rumble:
+         peak=float(np.max(np.abs(bed))),quietest_200ms_dbfs=20*math.log10(max(float(energy.min()),1e-9)),
+         below_strong_thunder_db=db(arrays['strike','thunder'][0])-db(bed))
+     if len(bed)/rate<18 or energy.min()<.001: report['failures'].append('Distant rumble must remain continuous through the 16s loop wrap')
+-    if not 18<=report['background_rumble']['below_strong_thunder_db']<=32: report['failures'].append('Distant rumble should be faint beneath the strong cues')
++    lower,upper=(8,18) if args.louder_rumble else (18,32)
++    if not lower<=report['background_rumble']['below_strong_thunder_db']<=upper: report['failures'].append('Distant rumble must match the requested balance beneath strong cues')
++    if args.louder_rumble:
++        engine,engine_rate=read(OUT/'bed-engine.wav')
++        engine=engine[round(.15*engine_rate):-round(.15*engine_rate)]
++        report['background_rumble']['relative_engine_db']=db(bed)-db(engine)
++        if report['background_rumble']['relative_engine_db'] < -6: report['failures'].append('Raised background rumble must be audible alongside the engine')
+     if arrays['muted','mix'][0].max()!=0 or arrays['muted','mix'][0].min()!=0: report['failures'].append('Vehicle mute must silence the new bed in final output')
+     for layer in ['thunder','rumble','mix']:
+         plain,plain_rate=read(OUT/('bed-'+layer+'.wav'))
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+index 2bb101a5..b1f37b72 100644
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -107,6 +107,7 @@ licence metadata remain unchanged. The40s Clarisse CC0 cicada WAV is unchanged.
+ from the accepted storm_thunder.wav rolling tail (1.2-4.8s, excluding the clap).
+ Same owner-supplied recording attribution and missing original licence metadata
+ as above. Eight offline overlapping excerpts, slower pace, 30Hz cleanup/420Hz
+-lowpass form a seamless 16s mono PCM loop; runtime gain0.10 on Vehicle.
++lowpass form a seamless 16s mono PCM loop; runtime gain0.30 on Vehicle
++(raised from0.10 at the owner's request,2026-10-11).
+ Rebuild: scripts/build_storm_rumble.py. Hashes: ../storm_rumble_manifest.json.
+ The strong thunder master and its two-voice fresh-cue behavior are unchanged.
+diff --git a/docs/STORM_BACKGROUND_RUMBLE.md b/docs/STORM_BACKGROUND_RUMBLE.md
+index 353493f3..e2c692f3 100644
+--- a/docs/STORM_BACKGROUND_RUMBLE.md
++++ b/docs/STORM_BACKGROUND_RUMBLE.md
+@@ -2,7 +2,7 @@
+ 
+ SND60/SND34/SND37/G01/R01/Q01: the owner requests faint continuous thunder
+ behind the existing stronger rumbles. Storm now adds one distant rolling loop
+-at gain 0.10 on the existing Vehicle bus. It follows rain's 0.75s entrance and
++at gain 0.30 on the existing Vehicle bus after the correction below. It follows rain's 0.75s entrance and
+ finish fade, freezes on pause/backgrounding, resumes the same cursor and stops
+ on exit. It does not consume the strike RNG or trigger additional lightning.
+ The accepted six-second strong thunder master, fresh-cue two-voice replacement,
+@@ -62,3 +62,46 @@ Shared Git index and unrelated work remain untouched. No visible UI change,
+ phone listening/performance test, Android export/install, full Validate,
+ physics change, backend action or deployment. Restart the local client and
+ listen on a Storm track; final faint level/tone and phone acceptance remain.
++
++## Louder background and longer lightning intervals, 2026-10-11
++
++SND61/SND60/SND37: the owner cannot hear the initial bed and requests a louder
++background with 50% longer lightning intervals. Gain rises 0.10 to 0.30
++(three times amplitude, +9.542dB). Recurring strike spacing rises 9-16s to
++13.5-24s; initial strike delay rises 6s to 9s. Flash shape/brightness, the
++1.2-2.8s sound-after-lightning delay, strong cue level/tails and rain are retained.
++No WAV or generator changes. The original timing and faint-balance fixture
++calibrations are updated only for these explicit owner requirements; continuous
++playback, headroom, pause, mute, finish and canonical-state guards remain.
++
++Changed files: `game/track/storm_weather.gd`, `game/tests/test_storm.gd`,
++`scripts/review_thunder_audio.py`, `game/assets/audio/ambience/NOTICE.txt`, this
++page, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
++
++Actual commands use the same pinned `scripts/dev.ps1` invocation above:
++
++- `-Action TestScript -ScriptPath res://tests/capture_thunder_audio.gd -Graphical
++  -TestArgument '--evidence-dir=res://../docs/evidence/louder-storm-rumble-2026-10-11'
++  -CommandTimeoutSeconds 180`: 29 checks, zero failures; actual engine/rain/bed,
++  strong strike, pause and mute captures.
++- `-Action TestScript -ScriptPath res://tests/test_wet_road_audio.gd -Graphical
++  -CommandTimeoutSeconds 180`: 50 checks, zero failures; raised level with the
++  existing pause/background/finish and canonical-state checks.
++- `-Action TestStorm -CommandTimeoutSeconds 180`: 94 checks, the same two
++  previously documented visual spray failures. New interval bounds and the
++  five-minute strike-count range pass, along with all other Storm checks.
++- `python scripts/review_thunder_audio.py --evidence-dir
++  docs/evidence/louder-storm-rumble-2026-10-11 --owner-bass --background-rumble
++  --louder-rumble`: exit 0, zero failures. Bed -25.592dBFS versus prior
++  -35.098dBFS (measured +9.506dB across separate native captures), only 2.678dB
++  below engine and 12.050dB below the strong cue average. No silent loop gap;
++  quietest 200ms -30.893dBFS. Mix peak 0.794, paused/muted output exactly zero.
++- `-Action Doctor`: exit 0; no attached Android devices.
++
++All three weather WAVs, vehicle controller and both thunder generators retain
++their before-task hashes. [Updated native audio preview](evidence/louder-storm-rumble-2026-10-11/review.html),
++actual logs and the task-only Git review patch are in the new evidence directory;
++shared index and unrelated work are preserved. No visible UI/asset rebuild,
++phone listening/performance test, Android export/install, full Validate,
++physics/backend action or deployment. Restart the client for this balance;
++owner listening and target-phone audibility acceptance remain.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index ca2079f9..d8221268 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 SND61/SND60/SND37/G01/R01/Q01: owner cannot hear background rumble/wants50% longer lightning intervals. Shared bed0.10->0.30/+9.542dB, spacing9-16s->13.5-24s/first6->9s; accepted strong cue/rain/flashshape/WAVs/generators/canonical unchanged. Native lifecycle50/racecapture29/PCM review pass; measured -25.592dBFS/2.678dB below engine/12.050dB below strong cue/no gaps/mixpeak0.794/pause-mute0. Storm94 retains two prior visual spray failures; new timing/count passes. Doctor no attached phone/no device listening/export-install/fullValidate/backend/deploy. Files/commands/audio/task-only checkpoint/owner-device acceptance: docs/STORM_BACKGROUND_RUMBLE.md (SND61).
++
+ 2026-10-11 CW26/CW01-CW25/V06/G01/R01/Q01: owner reverses curve/flatter rear as dirt falls. Shader-only concave half-wheelbase-scaled arc: rises~22deg behind front tire/~11deg middle/flat rear axle/slight downward tail; both sides/end projection. NativeCompatibility15+MobileVulkan15/actual flatter rear and arc crest-tail checks/rimslow195 pass; previous upright-rear assertion explicitly superseded. Actual Desert-Grass-Storm both sides/rear corners inspected; masks/palette/rims/20xslow/scrub/saves/physics/score unchanged. No phone-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/SETTLING_DIRT.md.
+ 
+ 2026-10-11 RLOAD10-RLOAD11/B01/B07/R01/Q01: owner Dust Cloud Rivalry still fails silently. Actual competitive path had inline-only error; owned alerts now cover ticket-download-compile-contract failures and survive refresh. Compiler mismatch checked before version-derived track hash; direction-aware update message, all acceptance fences retained. Final fullRivalry29/generic21/App99=149checks/0fail; eight captures/two inspected sizes. PublicHTTP200 confirms local23/server22 (other pins match); online remains rollout-blocked, no deploy/catalog/livewrites. Doctor no attached phone/no device test/APK/fullValidate/physics-regression; restart/actual-owner-dialog acceptance. Files/commands/fixture corrections/task-only checkpoint: docs/RIVALRY_START_FEEDBACK.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index aec08923..bec63fe2 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-11 SND61/SND60/SND37/G01/R01/Q01: owner cannot hear background rumble/wants50% longer lightning intervals. Shared bed0.10->0.30/+9.542dB, spacing9-16s->13.5-24s/first6->9s; accepted strong cue/rain/flashshape/WAVs/generators/canonical unchanged. Native lifecycle50/racecapture29/PCM review pass; measured -25.592dBFS/2.678dB below engine/12.050dB below strong cue/no gaps/mixpeak0.794/pause-mute0. Storm94 retains two prior visual spray failures; new timing/count passes. Doctor no attached phone/no device listening/export-install/fullValidate/backend/deploy. Files/commands/audio/task-only checkpoint/owner-device acceptance: docs/STORM_BACKGROUND_RUMBLE.md (SND61).
++
+ 2026-10-11 RLOAD10-RLOAD11/B01/B07/R01/Q01: owner Dust Cloud Rivalry still fails silently. Actual competitive path had inline-only error; owned alerts now cover ticket-download-compile-contract failures and survive refresh. Compiler mismatch checked before version-derived track hash; direction-aware update message, all acceptance fences retained. Final fullRivalry29/generic21/App99=149checks/0fail; eight captures/two inspected sizes. PublicHTTP200 confirms local23/server22 (other pins match); online remains rollout-blocked, no deploy/catalog/livewrites. Doctor no attached phone/no device test/APK/fullValidate/physics-regression; restart/actual-owner-dialog acceptance. Files/commands/fixture corrections/task-only checkpoint: docs/RIVALRY_START_FEEDBACK.md.
+ 
+ 2026-10-11 MUS36-MUS37/SND05/MUS35/SND33/G01/R01/Q01: owner selects Exploration 3_take-3.mp3 as looping menu background. Original preserved; 110.852404s stereo PCM/fade-out trim/1.995125s cosine overlap/quiet cut/-3dBFS peak/existing cyclic guard. Menu-results only; races remain silent. Final Import0/soundtrack1158/biome42/nativecapture9/PCM review pass; two actual wraps/no silent gap/clipping/exact delivered mute. Initial sandbox/QOA/seam/focus/fixture issues corrected and documented. Doctor no phone attached/no device listening/export-install/fullValidate/physics/backend/deploy. Source-license and owner listening acceptance pending. Files/commands/audio/task-only patch: docs/MENU_EXPLORATION.md.

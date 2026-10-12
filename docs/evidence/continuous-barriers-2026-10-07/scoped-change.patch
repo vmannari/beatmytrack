@@ -1,0 +1,778 @@
+diff --git a/game/editor/object_runs.gd b/game/editor/object_runs.gd
+--- /dev/null
++++ b/game/editor/object_runs.gd
+@@ -0,0 +1,74 @@
++class_name ObjectRuns
++extends RefCounted
++## Shared endpoint-fitting for solid walls; tyres/cones retain physical sizes.
++const CONTINUOUS: Array[String] = ["barrier","fence","guardrail","wire_fence"]
++const MIN_LENGTH: float = 0.01
++const MAX_LENGTH: float = 18.0
++
++static func smooth(path: PackedVector2Array) -> PackedVector2Array:
++	var result: PackedVector2Array = path
++	for pass_index: int in range(2):
++		if result.size() < 3: return result
++		var next := PackedVector2Array([result[0]])
++		for i: int in range(result.size()-1):
++			next.append(result[i].lerp(result[i+1],0.25))
++			next.append(result[i].lerp(result[i+1],0.75))
++		next.append(result[-1])
++		result = next
++	return result
++
++static func build(path: PackedVector2Array, kind: String, scale: float, capacity: int) -> Array:
++	var result: Array = []
++	if path.size() < 2 or capacity <= 0: return result
++	if kind in ["tyre_stack","tyre_wall"]: scale = 1.0
++	if kind not in CONTINUOUS: return _stamps(path,kind,scale,capacity)
++	# Dense samples bound both section length and deviation from curved paths.
++	var points := PackedVector2Array([path[0]])
++	for i: int in range(path.size()-1):
++		var span: float = path[i].distance_to(path[i+1])
++		if span < 0.000001: continue
++		var count: int = maxi(1,ceili(span/(0.5*scale)))
++		for step: int in range(1,count+1): points.append(path[i].lerp(path[i+1],float(step)/count))
++	var begin: int = 0
++	while begin < points.size()-1 and result.size() < capacity:
++		var end: int = begin+1
++		while end+1 < points.size():
++			var candidate: int = end+1
++			if points[begin].distance_to(points[candidate]) > 6.0*scale: break
++			var fits: bool = true
++			for sample: int in range(begin+1,candidate):
++				var nearest: Vector2 = Geometry2D.get_closest_point_to_segment(points[sample],points[begin],points[candidate])
++				if nearest.distance_to(points[sample]) > 0.06*scale: fits = false; break
++			if not fits: break
++			end = candidate
++		var a: Vector2 = points[begin]
++		var b: Vector2 = points[end]
++		var length: float = a.distance_to(b)
++		if length >= MIN_LENGTH:
++			var center: Vector2 = (a+b)*0.5
++			var object: Dictionary = {"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg((b-a).angle()),360.0),"length":length}
++			if scale != 1.0: object["scale"] = scale
++			if center.abs().x > 110.0 or center.abs().y > 110.0: break
++			result.append(object)
++		begin = end
++	return result
++
++static func _stamps(path: PackedVector2Array, kind: String, scale: float, capacity: int) -> Array:
++	var result: Array = []
++	var length: float = 0.0
++	for i: int in range(path.size()-1): length += path[i].distance_to(path[i+1])
++	if length < MIN_LENGTH: return result
++	var spacing: float = (2.0 if kind == "cone" else CreatorObjects.dimensions(kind).x)*scale
++	var desired: int = maxi(1,ceili(length/spacing))
++	var segment: int = 0
++	var traveled: float = 0.0
++	for i: int in range(mini(capacity,desired)):
++		var distance: float = length*(i+0.5)/desired
++		while segment < path.size()-2 and traveled+path[segment].distance_to(path[segment+1]) < distance:
++			traveled += path[segment].distance_to(path[segment+1]); segment += 1
++		var tangent: Vector2 = path[segment+1]-path[segment]
++		var center: Vector2 = path[segment].lerp(path[segment+1],clampf((distance-traveled)/maxf(0.001,tangent.length()),0.0,1.0)).clamp(Vector2(-110,-110),Vector2(110,110))
++		var object: Dictionary = {"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)}
++		if scale != 1.0: object["scale"] = scale
++		result.append(object)
++	return result
+diff --git a/game/editor/object_runs.gd.uid b/game/editor/object_runs.gd.uid
+--- /dev/null
++++ b/game/editor/object_runs.gd.uid
+@@ -0,0 +1 @@
++uid://dw7sfxolwqmo5
+diff --git a/game/editor/road_pieces.gd b/game/editor/road_pieces.gd
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -357,7 +357,7 @@
+ 	return (value is int or value is float) and is_finite(float(value))
+ 
+ 
+-static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier") -> Array:
++static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0) -> Array:
+ 	var result: Array = []
+ 	if kind not in CreatorObjects.KINDS: return result
+ 	var capacity: int = maxi(0,96-document.objects.size())
+@@ -391,29 +391,41 @@
+ 	var tangent: Vector2 = anchor.tangent
+ 	var side: float = 1.0 if tangent.cross(start-Vector2(anchor.point)) >= 0.0 else -1.0
+ 	var dimensions: Vector2 = CreatorObjects.dimensions(kind)
++	if kind in ["tyre_stack","tyre_wall"]: scale = 1.0
++	dimensions *= scale
+ 	if absf(delta) < 0.01:
+ 		var center: Vector2 = Vector2(anchor.point)+Vector2(-tangent.y,tangent.x)*side*(float(anchor.width)*0.5+dimensions.y*0.5+0.8)
+ 		if center.abs().x <= 110.0 and center.abs().y <= 110.0:
+-			result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)})
++			var object: Dictionary = {"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)}
++			if scale != 1.0: object["scale"] = scale
++			result.append(object)
+ 		return result
+ 	var offset_points := PackedVector2Array()
++	var edge_points: PackedVector2Array = _offset_edge(path,side,dimensions.y*0.5+0.8)
+ 	var count: int = maxi(1,ceili(absf(delta)/0.75))
+ 	for i: int in range(count+1):
+ 		var sample: Dictionary = _at(path,begin+delta*float(i)/count)
+-		var normal := Vector2(-sample.tangent.y,sample.tangent.x)
+-		offset_points.append(Vector2(sample.point)+normal*side*(float(sample.width)*0.5+dimensions.y*0.5+0.8))
+-	var offset_widths := PackedFloat32Array()
+-	offset_widths.resize(offset_points.size())
+-	offset_widths.fill(1.0)
+-	var offset_path: Dictionary = {"points":offset_points,"widths":offset_widths,"closed":false}
+-	var run_length: float = _path_length(offset_path)
+-	var step: float = dimensions.x+0.2
+-	var stamps: int = mini(capacity,maxi(1,floori(run_length/step)+1))
+-	for i: int in range(stamps):
+-		var sample: Dictionary = _at(offset_path,minf(float(i)*step,run_length))
+-		var center: Vector2 = sample.point
+-		if center.abs().x > 110.0 or center.abs().y > 110.0: continue
+-		result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(Vector2(sample.tangent).angle()),360.0)})
++		var index: int = sample.index
++		offset_points.append(edge_points[index].lerp(edge_points[(index+1)%edge_points.size()],float(sample.blend)))
++	return ObjectRuns.build(offset_points,kind,scale,capacity)
++
++
++static func _offset_edge(path: Dictionary, side: float, clearance: float) -> PackedVector2Array:
++	var points: PackedVector2Array = path.points
++	var result := PackedVector2Array()
++	for i: int in range(points.size()):
++		var previous: int = (i-1+points.size())%points.size()
++		var next: int = (i+1)%points.size()
++		var incoming: Vector2 = (points[i]-points[previous]).normalized()
++		var outgoing: Vector2 = (points[next]-points[i]).normalized()
++		if not path.closed and i == 0: incoming = outgoing
++		if not path.closed and i == points.size()-1: outgoing = incoming
++		var first := Vector2(-incoming.y,incoming.x)
++		var second := Vector2(-outgoing.y,outgoing.x)
++		var normal: Vector2 = (first+second).normalized()
++		if normal.is_zero_approx(): normal = first
++		var reach: float = (float(path.widths[i])*0.5+clearance)/maxf(0.5,normal.dot(first))
++		result.append(points[i]+normal*side*reach)
+ 	return result
+ 
+ 
+@@ -495,9 +507,9 @@
+ 		var span: float = points[i].distance_to(points[next])
+ 		if traveled+span >= target or i == segments-1:
+ 			var blend: float = clampf((target-traveled)/maxf(span,0.0001),0.0,1.0)
+-			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend)}
++			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend),"index":i,"blend":blend}
+ 		traveled += span
+-	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0]}
++	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0],"index":0,"blend":0.0}
+ 
+ 
+ ## Shared width samples for surface compilation and presentation.
+diff --git a/game/editor/editor_canvas.gd b/game/editor/editor_canvas.gd
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -1226,7 +1226,7 @@
+ 
+ func _object_run(start: Vector2, finish: Vector2) -> Array:
+ 	if not free_run:
+-		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind)
++		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale)
+ 		if result.is_empty() and not _run_edge_hint:
+ 			_run_edge_hint = true
+ 			hint_changed.emit("Object limit reached. Remove an object to continue." if document.objects.size() >= 96 else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")
+@@ -1234,25 +1234,8 @@
+ 	return _path_run(PackedVector2Array([start,finish]))
+ 
+ func _path_run(path: PackedVector2Array) -> Array:
+-	var result: Array = []
+-	if path.size()<2: return result
+-	var length: float = 0
+-	for i: int in range(path.size()-1): length+=path[i].distance_to(path[i+1])
+-	var spacing: float = CreatorObjects.dimensions(stamp_kind).x
+-	if stamp_kind=="cone": spacing=2.0
+-	var desired: int = maxi(1,ceili(length/spacing))
+-	var count: int = mini(96-document.objects.size(),desired)
+-	var segment: int = 0
+-	var traversed: float = 0
+-	for i: int in range(count):
+-		var distance: float = length*(i+0.5)/desired
+-		while segment<path.size()-2 and traversed+path[segment].distance_to(path[segment+1])<distance:
+-			traversed+=path[segment].distance_to(path[segment+1]); segment+=1
+-		var tangent: Vector2 = path[segment+1]-path[segment]
+-		var p: Vector2 = path[segment].lerp(path[segment+1],clampf((distance-traversed)/maxf(0.001,tangent.length()),0,1))
+-		p=p.clamp(Vector2(-110,-110),Vector2(110,110))
+-		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360)})
+-	return result
++	var fitted: PackedVector2Array = ObjectRuns.smooth(path) if run_shape == "curve" else path
++	return ObjectRuns.build(fitted,stamp_kind,stamp_scale,96-document.objects.size())
+ 
+ 
+ func connect_nearby() -> void:
+diff --git a/game/editor/creator_objects.gd b/game/editor/creator_objects.gd
+--- a/game/editor/creator_objects.gd
++++ b/game/editor/creator_objects.gd
+@@ -36,7 +36,9 @@
+ 		_: return Vector2(8,6)
+ 
+ static func size_of(object: Dictionary) -> Vector2:
+-	return dimensions(object.kind)*float(object.get("scale",1.0))
++	var size: Vector2 = dimensions(object.kind)*float(object.get("scale",1.0))
++	if object.kind in ObjectRuns.CONTINUOUS: size.x = float(object.get("length",size.x))
++	return size
+ 
+ 
+ static func surface(kind: String) -> int:
+diff --git a/game/editor/track_document.gd b/game/editor/track_document.gd
+--- a/game/editor/track_document.gd
++++ b/game/editor/track_document.gd
+@@ -116,8 +116,11 @@
+ 		if not data.get("objects") is Array or data.objects.size() > 96:
+ 			return ["Use up to 96 placed objects."]
+ 		for object: Variant in data.objects:
+-			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
++			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
+ 				return ["Choose an object from the built-in palette."]
++			if object.has("length"):
++				if object.kind not in ObjectRuns.CONTINUOUS or not _number(object.length) or float(object.length) < ObjectRuns.MIN_LENGTH or float(object.length) > ObjectRuns.MAX_LENGTH:
++					return ["Fence and barrier section lengths must be 0.01 to 18 metres."]
+ 			if object.has("scale"):
+ 				if not _number(object.scale) or float(object.scale) < 0.5 or float(object.scale) > 3.0: return ["Object scale must be 0.5 to 3 times."]
+ 				if object.kind in ["tyre_wall","tyre_stack"] and float(object.scale) != 1.0: return ["Tyre stacks use their physical size; extend the line instead."]
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,7 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0) -> bool:
+ 	var wood := Color("887354")
+ 	var metal := Color("858b87")
+ 	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.08)
+@@ -45,24 +45,37 @@
+ 				for side: float in [-1.0,1.0]:
+ 					_face(tool,kit,center,scale,turn,[Vector3(side*2.005,0.42,0),p+Vector3.RIGHT*side*2.005,q+Vector3.RIGHT*side*2.005],Color("bda079"))
+ 		"barrier":
++			var span: float = section_length/scale if section_length >= 0.0 else 6.0
+ 			# Original solid block and three red bands; graphic shadow foot and bevel.
+-			box.call(Vector3(0,0.43,0),Vector3(6,0.86,1),Color("a8aaa0"))
+-			box.call(Vector3(0,0.10,0),Vector3(6.005,0.20,1.005),Color("505d59"))
+-			box.call(Vector3(0,0.885,0),Vector3(5.94,0.07,0.88),Color("d9d7c4"))
+-			for side: float in [-1.0,1.0]:
+-				_face(tool,kit,center,scale,turn,[Vector3(-3,0.85,side*0.5),Vector3(3,0.85,side*0.5),Vector3(2.97,0.92,side*0.44),Vector3(-2.97,0.92,side*0.44)],Color("c8c9b9"))
++			box.call(Vector3(0,0.43,0),Vector3(span,0.86,1),Color("a8aaa0"))
++			box.call(Vector3(0,0.10,0),Vector3(span+0.005,0.20,1.005),Color("505d59"))
++			box.call(Vector3(0,0.885,0),Vector3(maxf(0.01,span-0.06),0.07,0.88),Color("d9d7c4"))
++			for side: float in [-1.0,1.0]:
++				_face(tool,kit,center,scale,turn,[Vector3(-span*0.5,0.85,side*0.5),Vector3(span*0.5,0.85,side*0.5),Vector3(maxf(0.005,span*0.5-0.03),0.92,side*0.44),Vector3(-maxf(0.005,span*0.5-0.03),0.92,side*0.44)],Color("c8c9b9"))
+ 			for x: int in [-2,0,2]:
+-				box.call(Vector3(x,0.775,0),Vector3(0.9,0.30,1.018),Color("9d392c"))
+-				box.call(Vector3(x,0.935,0),Vector3(0.9,0.025,1.018),Color("cf6045"))
++				box.call(Vector3(x*span/6.0,0.775,0),Vector3(span*0.15,0.30,1.018),Color("9d392c"))
++				box.call(Vector3(x*span/6.0,0.935,0),Vector3(span*0.15,0.025,1.018),Color("cf6045"))
++		"fence":
++			var span: float = section_length/scale if section_length >= 0.0 else 6.0
++			# Endpoint posts hide angled rail joints; dimensions stay uniform.
++			var posts: int = maxi(1,ceili(span/3.0))
++			for i: int in range(posts+1):
++				var reach: float = span*0.5 if section_length >= 0.0 else 2.8
++				box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.64,0),Vector3(0.20,1.28,0.20),Color("706b5b"))
++			for height: float in [0.42,1.02]: box.call(Vector3(0,height,0),Vector3(span,0.16,0.16),Color("898373"))
+ 		"guardrail", "wire_fence":
+-			for x: float in [-2.9,0,2.9]: box.call(Vector3(x,0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
++			var span: float = section_length/scale if section_length >= 0.0 else 6.0
++			var reach: float = span*0.5 if section_length >= 0.0 else 2.9
++			var posts: int = maxi(1,ceili(span/3.0))
++			for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
+ 			if kind == "guardrail":
+-				box.call(Vector3(0,0.8,0),Vector3(6,0.42,0.10),metal.darkened(0.15))
+-				for h: float in [0.66,0.94]: box.call(Vector3(0,h,0.015),Vector3(6,0.10,0.17),metal.lightened(0.1))
+-				for x: float in [-2.9,0,2.9]: box.call(Vector3(x,0.8,0.072),Vector3(0.07,0.07,0.035),Color("d1cfbd"))
++				box.call(Vector3(0,0.8,0),Vector3(span,0.42,0.10),metal.darkened(0.15))
++				for h: float in [0.66,0.94]: box.call(Vector3(0,h,0.015),Vector3(span,0.10,0.17),metal.lightened(0.1))
++				for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.8,0.072),Vector3(0.07,0.07,0.035),Color("d1cfbd"))
+ 			else:
+-				for h: float in [0.3,0.6,0.9,1.2]: box.call(Vector3(0,h,0),Vector3(6,0.025,0.025),metal)
+-				for x: int in range(-5,6): box.call(Vector3(x*0.5,0.75,0),Vector3(0.02,0.9,0.02),metal)
++				for h: float in [0.3,0.6,0.9,1.2]: box.call(Vector3(0,h,0),Vector3(span,0.025,0.025),metal)
++				var wires: int = maxi(1,ceili(span/0.5))
++				for i: int in range(1,wires): box.call(Vector3(lerpf(-span*0.5,span*0.5,float(i)/wires),0.75,0),Vector3(0.02,0.9,0.02),metal)
+ 		"cone":
+ 			box.call(Vector3(0,0.06,0),Vector3(0.7,0.12,0.7),Color("303837"))
+ 			_lathe(tool,kit,center,scale,turn,[Vector2(0.29,0.12),Vector2(0.22,0.38),Vector2(0.16,0.57),Vector2(0.045,0.88),Vector2(0,0.88)],[Color("cc6b32"),Color("e9e7d7"),Color("cc6b32"),Color("cc6b32")])
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -1114,10 +1114,10 @@
+ 			continue
+ 		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
+ 			if object.kind == "tree": _pine(ink_tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
+-			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
++			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)))
+ 			ink_count += 1
+ 			continue
+-		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation))):
++		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0))):
+ 			count += 1
+ 			continue
+ 		if object.kind == "tree":
+@@ -1136,12 +1136,6 @@
+ 			HazardVisual.build(self,object)
+ 			continue
+ 		elif object.kind in ["tyre_wall","tyre_stack"]: continue # Shared instanced mesh below.
+-		elif object.kind == "fence":
+-			var turn: float = deg_to_rad(float(object.rotation))
+-			for x: float in [-2.8,0.0,2.8]:
+-				_colored_box(tool,center+(Vector3(x,0.64,0)*object_scale).rotated(Vector3.UP,turn),Vector3(0.20,1.28,0.20)*object_scale,turn,Color("706b5b"))
+-			for height: float in [0.42,1.02]:
+-				_colored_box(tool,center+Vector3(0,height*object_scale,0),Vector3(6,0.16,0.16)*object_scale,turn,Color("898373"))
+ 		else: continue # Barrier/water/dirt already rendered from exact native cells.
+ 		count += 1
+ 	if count > 0:
+diff --git a/docs/schemas/creator-track-v5.schema.json b/docs/schemas/creator-track-v5.schema.json
+--- a/docs/schemas/creator-track-v5.schema.json
++++ b/docs/schemas/creator-track-v5.schema.json
+@@ -166,6 +166,12 @@
+             "minimum": 0,
+             "exclusiveMaximum": 360
+           },
++          "length": {
++            "type": "number",
++            "minimum": 0.01,
++            "maximum": 18.0,
++            "description": "Physical section length in metres; only solid fences, guardrails and concrete barriers. Scale still controls thickness and height."
++          },
+           "scale": {
+             "type": "number",
+             "minimum": 0.5,
+@@ -174,6 +180,12 @@
+           }
+         },
+         "allOf": [
++          {
++            "if": {"required": ["length"]},
++            "then": {
++              "properties": {"kind": {"enum": ["barrier", "fence", "guardrail", "wire_fence"]}}
++            }
++          },
+           {
+             "if": {
+               "properties": {
+diff --git a/game/tests/test_continuous_barriers.gd b/game/tests/test_continuous_barriers.gd
+--- /dev/null
++++ b/game/tests/test_continuous_barriers.gd
+@@ -0,0 +1,221 @@
++extends SceneTree
++## Actual editor placements and captures, using isolated player storage.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = ""
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func settle() -> void:
++	await process_frame
++	await process_frame
++	var deadline: int = Time.get_ticks_msec()+20000
++	while not settled() and Time.get_ticks_msec()<deadline: await process_frame
++	check(settled(),"editor collision and scenery finish with latest objects")
++
++func settled() -> bool:
++	return app.editor_preview_thread == null and not app.editor_world._building and app.editor_world._visual_track != null and app.editor_world._visual_track.metadata.get("creator_document",{}).get("objects",[]) == app.document.objects
++
++func fixture() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "continuous_fence"; doc.name = "Continuous roadside fences"; doc.theme = "pine"
++	var position := Vector2(-45,-22)
++	var heading: float = 0.0
++	for kind: String in ["straight","curve","straight"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 40.0 if kind == "straight" else 0.0
++		piece.radius = 20.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position; heading = pose.heading
++	doc["start_line"] = {"position":[-30,-22],"heading":0.0}
++	return doc
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var before: bool = OS.get_environment("BMT_BARRIERS_BEFORE") == "1"
++	if DisplayServer.get_name() != "headless":
++		evidence = ProjectSettings.globalize_path("res://../docs/evidence/continuous-barriers-2026-10-07/"+("before" if before else "after"))
++		DirAccess.make_dir_recursive_absolute(evidence)
++	var directory: String = "user://continuous_barriers_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory)
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	await process_frame
++	app.document = fixture()
++	check(TrackDocument.validate(app.document,false).is_empty(),"fixture is a valid editable document: "+str(TrackDocument.validate(app.document,false))+" keys="+str(app.document.keys()))
++	app.canvas = null
++	app.call("_show_screen","create")
++	await process_frame
++	await settle()
++	app.call("_editor_category","objects")
++	app.call("_choose_object","fence")
++	app.call("_object_placement","road edge")
++	app.object_browser.current = "fence"
++	app.object_browser.category = "Barriers"
++	app.object_browser.refresh()
++	var canvas: EditorCanvas = app.canvas
++	canvas.mode = "run"; canvas.free_run = false
++	canvas.zoom = 0.82; canvas.pan = Vector2(5,-3)
++	if before:
++		var legacy := GDScript.new()
++		legacy.source_code = FileAccess.get_file_as_string("res://../docs/evidence/continuous-barriers-2026-10-07/before/game/editor/road_pieces.gd").replace("class_name RoadPieces\n","").replace("class_name RoadPieces\r\n","")
++		check(legacy.reload() == OK,"load archived placement source for before capture")
++		canvas.run_preview = legacy.barrier_run(app.document,Vector2(-40,-31),Vector2(24,32),"fence")
++		canvas.drawing_run = true
++		canvas.active_pointer = -1
++		canvas._end(-1)
++	else:
++		canvas._place(canvas.to_screen(Vector2(-40,-31)))
++		canvas._place(canvas.to_screen(Vector2(24,32)))
++	await settle()
++	await capture("road-edge-fence")
++	canvas.zoom = 1.8; canvas.pan = Vector2(-120,-200)
++	await capture("road-edge-fence-bend")
++	if not before:
++		geometry_checks()
++		await editor_checks()
++	app.queue_free()
++	await process_frame
++	print("CONTINUOUS_BARRIERS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func capture(label: String) -> void:
++	if evidence.is_empty(): return
++	for frame: int in range(3): await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(label+".png")) == OK,"save actual editor "+label)
++
++func editor_checks() -> void:
++	check(not app.document.objects.is_empty(),"two taps place a roadside fence")
++	var roadside: Dictionary = app.document.duplicate(true)
++	check_run(roadside.objects,"editor Road edge")
++	check(app.history.size() == 1,"whole roadside run is one undo operation")
++	check(app.library.load_wip(roadside.id) == JSON.parse_string(JSON.stringify(roadside)),"fitted lengths survive real autosave")
++	var track: NativeTrack = app.canvas.native_preview
++	check(track != null,"roadside native collision preview exists")
++	if track != null:
++		for object: Dictionary in roadside.objects:
++			var ends: PackedVector2Array = endpoints(object)
++			for blend: float in [0.0,0.25,0.5,0.75,1.0]:
++				check(track.overlaps_obstacle(ends[0].lerp(ends[1],blend),0.4,false),"compiled fence collision covers its visible path")
++	app.call("_undo")
++	await settle()
++	check(app.document.objects.is_empty(),"Undo removes the complete fitted run")
++	app.call("_redo")
++	await settle()
++	check(app.document == roadside,"Redo restores identical fitted fence and length data")
++	for mode: String in ["line","curve"]:
++		app.call("_undo")
++		await settle()
++		app.call("_choose_object","fence")
++		app.call("_object_placement",mode)
++		var canvas: EditorCanvas = app.canvas
++		canvas.stamp_scale = 1.5
++		canvas.zoom = 1.15; canvas.pan = Vector2.ZERO
++		var gesture := PackedVector2Array([Vector2(-25,5),Vector2(-10,12),Vector2(5,15),Vector2(20,12),Vector2(35,5)]) if mode == "curve" else PackedVector2Array([Vector2(-25,5),Vector2(35,5)])
++		canvas._begin(canvas.to_screen(gesture[0]),31)
++		for i: int in range(1,gesture.size()): canvas._move(canvas.to_screen(gesture[i]))
++		check(not canvas.run_preview.is_empty() and app.document.objects.is_empty(),mode+" gesture previews without committing")
++		canvas._end(31)
++		await settle()
++		check_run(app.document.objects,"editor "+mode)
++		check(app.history.size() == 1,mode+" commits one undo operation")
++		check(endpoints(app.document.objects[0])[0].distance_to(gesture[0]) < 0.001 and endpoints(app.document.objects[-1])[1].distance_to(gesture[-1]) < 0.001,mode+" fits both chosen endpoints")
++		for object: Dictionary in app.document.objects: check(is_equal_approx(CreatorObjects.size_of(object).y,0.75),mode+" applies size preset without varying thickness")
++		await capture(mode+"-fence")
++		app.library.save_wip(app.document)
++		check(app.library.load_wip(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),mode+" lengths survive save/reload")
++	app.call("_undo")
++	await settle()
++	check(app.document.objects.is_empty(),"final undo removes all sections")
++
++func endpoints(object: Dictionary) -> PackedVector2Array:
++	var center := Vector2(object.position[0],object.position[1])
++	var arm: Vector2 = Vector2.from_angle(deg_to_rad(float(object.rotation)))*CreatorObjects.size_of(object).x*0.5
++	return PackedVector2Array([center-arm,center+arm])
++
++func check_run(objects: Array, label: String) -> void:
++	check(not objects.is_empty(),label+" produces sections")
++	for i: int in range(objects.size()):
++		check(objects[i].has("length"),label+" fits section length")
++		if i > 0: check(endpoints(objects[i-1])[1].distance_to(endpoints(objects[i])[0]) < 0.001,label+" adjacent rails meet exactly")
++		var ends: PackedVector2Array = endpoints(objects[i])
++		for blend: float in [0.0,0.25,0.5,0.75,1.0]: check(CreatorObjects.contains(objects[i],ends[0].lerp(ends[1],blend)),label+" collision footprint covers rail")
++
++func geometry_checks() -> void:
++	var paths: Array[PackedVector2Array] = [PackedVector2Array([Vector2(-13,0),Vector2(14,0)]),PackedVector2Array([Vector2(-5,0),Vector2(-4.6,0)]),PackedVector2Array([Vector2(-8,0),Vector2.ZERO,Vector2(0,8)]),PackedVector2Array([Vector2.ZERO,Vector2(10,0),Vector2.ZERO])]
++	var bend := PackedVector2Array()
++	for i: int in range(33): bend.append(Vector2.from_angle(float(i)*PI/64.0)*24.0)
++	paths.append(bend)
++	for kind: String in ObjectRuns.CONTINUOUS:
++		for scale: float in [0.75,1.0,1.5]:
++			for path: PackedVector2Array in paths:
++				var run: Array = ObjectRuns.build(path,kind,scale,96)
++				check_run(run,kind+" "+str(scale))
++				check(endpoints(run[0])[0].distance_to(path[0]) < 0.001 and endpoints(run[-1])[1].distance_to(path[-1]) < 0.001,"fitted run ends at selected endpoints")
++				check(run == ObjectRuns.build(path,kind,scale,96),"run generation is deterministic")
++				var doc: Dictionary = TrackDocument.create_blank(); doc.objects = run
++				check(TrackDocument.validate(doc,false).is_empty(),"all fitted runs obey saved document contract")
++				for object: Dictionary in run: check(is_equal_approx(CreatorObjects.size_of(object).y,CreatorObjects.dimensions(kind).y*scale),"fitted length preserves selected thickness")
++			var doc: Dictionary = fixture()
++			for side: float in [-1.0,1.0]:
++				var roadside: Array = RoadPieces.barrier_run(doc,Vector2(-40,-22+side*9),Vector2(15+side*9,32),kind,scale)
++				check_run(roadside,kind+" road edge "+str(side))
++				var road: Dictionary = RoadPieces._paths(doc.pieces)[0]
++				for object: Dictionary in roadside:
++					var nearest: Dictionary = RoadPieces._nearest(road,Vector2(object.position[0],object.position[1]))
++					var sample: Dictionary = RoadPieces._at(road,float(nearest.along))
++					check(float(nearest.distance) >= float(sample.width)*0.5+CreatorObjects.size_of(object).y*0.5+0.6,"fitted roadside section stays outside the driving lane")
++				check(RoadPieces.barrier_run(doc,Vector2(15+side*9,32),Vector2(-40,-22+side*9),kind,scale).size() > 1,"reversed road-edge run remains usable")
++	check(ObjectRuns.build(paths[0],"fence",1.0,2).size() == 2,"remaining object budget truncates a continuous prefix")
++	check(ObjectRuns.build(paths[0],"fence",1.0,0).is_empty(),"full object budget produces no sections")
++	check(ObjectRuns.build(PackedVector2Array([Vector2.ZERO,Vector2.ZERO]),"fence",1.0,96).is_empty(),"zero-length free run creates no degenerate mesh")
++	var tyres: Array = ObjectRuns.build(PackedVector2Array([Vector2(40,-50),Vector2(58,-50)]),"tyre_wall",1.5,96)
++	check(tyres.size() == 3 and tyres[0].position == [43.0,-50.0] and not tyres[0].has("length") and not tyres[0].has("scale"),"loose tyre runs keep physical sizes and existing spacing")
++	var invalid: Dictionary = TrackDocument.create_blank()
++	invalid.objects = [{"kind":"tree","position":[0,0],"rotation":0.0,"length":2.0}]
++	check(not TrackDocument.validate(invalid,false).is_empty(),"length is rejected on unrelated objects")
++	for value: float in [-1.0,0.0,19.0,INF]:
++		invalid.objects[0].kind = "fence"; invalid.objects[0].length = value
++		check(not TrackDocument.validate(invalid,false).is_empty(),"invalid section length rejects: "+str(value))
++	var dense := PackedVector2Array()
++	for i: int in range(512): dense.append(Vector2(-80.0+float(i)*0.3,sin(float(i)*0.025)*12.0))
++	var started: int = Time.get_ticks_usec()
++	var stress: Array = ObjectRuns.build(ObjectRuns.smooth(dense),"fence",1.0,96)
++	print("BARRIER_DENSE_CURVE points=512 sections=",stress.size()," elapsed_ms=",float(Time.get_ticks_usec()-started)/1000.0)
++	check_run(stress,"dense curve")
++	# Runtime mesh extents must match saved collision lengths and unchanged height.
++	var kit := NativeTrackVisual.new()
++	for kind: String in ObjectRuns.CONTINUOUS:
++		var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		check(CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.5,0.0,2.25),"fitted wall uses shared runtime mesh")
++		tool.generate_normals()
++		var bounds: AABB = tool.commit().get_aabb()
++		check(absf(bounds.size.x-2.25) < 0.31,"visual section length matches collision extent")
++		check(bounds.size.y > 1.2,"shortening section preserves fence/barrier height")
++	kit.free()
++	var native_doc: Dictionary = TrackDocument.create_blank()
++	native_doc.id = "continuous_barrier_native"
++	var position := Vector2(-28,-18)
++	var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		native_doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position; heading = pose.heading
++	native_doc = RoadPieces.route_from_pieces(native_doc).document
++	native_doc["start_line"] = {"position":[0,-18],"heading":0.0}
++	native_doc.objects = RoadPieces.barrier_run(native_doc,Vector2(-24,-28),Vector2(35,18),"fence")
++	check(TrackDocument.validate(native_doc).is_empty() and not native_doc.objects.is_empty(),"native verification fixture has a complete lap and fitted fence")
++	var output := FileAccess.open("res://../build/continuous-barriers-native-document.json",FileAccess.WRITE)
++	check(output != null,"native verification fixture can be exported")
++	if output != null: output.store_string(JSON.stringify(native_doc)); output.close()
+diff --git a/game/tests/test_continuous_barriers.gd.uid b/game/tests/test_continuous_barriers.gd.uid
+--- /dev/null
++++ b/game/tests/test_continuous_barriers.gd.uid
+@@ -0,0 +1 @@
++uid://dv7w2ckc5co1n
+diff --git a/docs/CONTINUOUS_BARRIERS.md b/docs/CONTINUOUS_BARRIERS.md
+--- /dev/null
++++ b/docs/CONTINUOUS_BARRIERS.md
+@@ -0,0 +1,59 @@
++# Continuous barrier placement — 2026-10-07
++
++Requirements: **T01–T04, R01, V03/V05, Q01**. Owner request: fence/barrier placement modes should produce smooth continuous runs along roads.
++
++Road edge, Line and Curve now fit concrete barriers, wooden fences, guardrails and wire fences between shared endpoints. Straight runs fit their chosen ends; curved runs use shorter chords with at most 6 cm path deviation at 1x size. Free Curve gestures receive two smoothing passes while retaining their endpoints. Road-edge offsets average adjoining road normals instead of stepping between tangents. Both road sides, reversed placement and the selected size preset work. Width/height remain consistent as section length varies. Endpoint posts cover rail joins.
++
++Previously, Road edge stamped complete 6 m pieces every 6.2 m and used the tangent at each stamp. Free Line/Curve stamped full-size pieces at path midpoints. Neither method made adjoining endpoints coincide; runs also ignored size presets.
++
++## Changed files and contract
++
++- `game/editor/object_runs.gd` (+ `.uid`): shared deterministic section fitting and curve smoothing.
++- `game/editor/road_pieces.gd`: continuous road-edge offset and selected scale.
++- `game/editor/editor_canvas.gd`: shared free-run builder; Road edge forwards scale.
++- `game/editor/creator_objects.gd`: fitted collision footprints, bounds and selection outlines.
++- `game/editor/track_document.gd`, `docs/schemas/creator-track-v5.schema.json`: optional physical `length` of 0.01–18 m, restricted to the four fixed barrier types.
++- `game/track/creator_prop_visual.gd`, `game/track/native_track_visual.gd`: shared fence/barrier meshes using fitted length without shrinking thickness/height.
++- `game/tests/test_continuous_barriers.gd` (+ `.uid`): geometry, saved-contract, native collision, actual editor gesture, save and undo regressions/captures.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and task evidence.
++
++This additive optional field remains in creator-track-v5. Existing documents without `length` retain their compiler-22 behavior and content hashes; the retained creator goldens pass unchanged. New documents include length in their immutable hash. Older validators reject the unknown field: publishing new fitted runs requires the matching backend verifier source update. No player files, published revisions or scores were rewritten; physics/rules/compiler identities and gameplay camera are unchanged.
++
++Tyres retain physical size and existing free-line arrangement; cones remain spaced objects. The 96-object cap remains: a capped run creates a continuous prefix. Sections remain individually selectable/movable/deletable. Existing saved runs are not automatically reshaped.
++
++## Actual verification
++
++Pinned `4.7.2.stable.official.ed1daf0bf`, through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Tests use process-local `APPDATA=build/barrier-test-user`; the app fixture injects separate records/library/cloud roots. Windows certificate-store access needed approved elevated execution. No external service writes or sign-in.
++
++| Actual arguments | Result |
++| --- | --- |
++| `-Action Import` | Completed after correcting a new mesh parameter/local-name collision. |
++| `-Action TestScript -ScriptPath res://tests/test_continuous_barriers.gd -Graphical` | **7,374 checks, zero failures**, real gestures, native collision, save/reload and whole-run undo/redo. |
++| Final `-Action TestScript -ScriptPath res://tests/test_continuous_barriers.gd` / `-Graphical` | **7,715 / 7,719 checks, zero failures**, including the dense-curve probe and exported native fixture. 512-point curve, 49 sections: **3.568 ms** headless / **4.444 ms** graphical on this desktop. |
++| `-Action TestPieces` | **377 checks, zero failures**; retained golden hash and two five-lap canonical drives with zero contacts. |
++| `-Action TestCreator` | **113 checks, zero failures**; five biome hashes and historical three-lap diagnostic drives. |
++| `-Action TestWorkflow` | **252 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_editor_review_fixes.gd` | **51 checks, zero failures**. |
++| `-Action TestRefinement` | **32 checks, zero failures**; existing 27-instance shutdown warning. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **338 scripts, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_object_browser.gd` | **67 checks, zero failures**; shared object meshes/palette/placement choices. |
++| `.tools/backend-venv/Scripts/python.exe docs/evidence/continuous-barriers-2026-10-07/native_check.py` | **5 checks, zero failures**; actual local backend native validation twice, 31 sections, identical `track_content_hash=6ce0a3693f95bfa0fd960e788249edab6abaddaba85d8ab7f6cd344a04cdf4e8`. |
++| `git diff --check --` (seven modified runtime/schema files) | Exit 0, no whitespace errors; existing Git CRLF normalization notices. |
++| `.tools/backend-venv/Scripts/python.exe docs/evidence/continuous-barriers-2026-10-07/review_checkpoint.py` | Task-only patch and 16 source hashes retained; original shared index untouched. |
++
++Initial capture fixtures had an invalid theme, a StringName start-line key, wrong world/screen input coordinates and an incomplete wait for latest scenery. Those fixture issues were corrected; final inspected captures show actual fences on a valid document. Baseline capture loads the archived original RoadPieces placement source in the test harness and commits its output through the editor. Updated captures use real two-tap/drag placement.
++
++After adding a dense-curve timing probe, a headless rerun stopped on unrelated concurrent soundtrack work: `res://assets/audio/locked_in_v1/menu_theme.ogg` was referenced before the asset existed. An isolated snapshot with the old soundtrack source also failed because the concurrently updated Game now used a newer music method signature. The isolated snapshot was safely removed and its failed-import log retained. Once the concurrent asset was available, the final **7,715 / 7,719** checks passed in the actual current workspace. This task did not edit soundtrack files. Native fixture attempts first used an unsuitable layout-only track and then the wrong result-key name; the final probe uses original connected roads, a placed start line and the documented `track_content_hash`. No failing invariant was weakened.
++
++## Evidence and remaining acceptance
++
++Actual inspected 1280×720 editor output:
++
++- [Original road-edge fence](evidence/continuous-barriers-2026-10-07/before/road-edge-fence.png).
++- [Continuous road-edge fence](evidence/continuous-barriers-2026-10-07/after/road-edge-fence.png).
++- [Continuous bend](evidence/continuous-barriers-2026-10-07/after/road-edge-fence-bend.png).
++- [Line](evidence/continuous-barriers-2026-10-07/after/line-fence.png) and [smoothed Curve](evidence/continuous-barriers-2026-10-07/after/curve-fence.png).
++
++Pre-edit sources, actual logs, task-only review patch and source hashes are retained under `docs/evidence/continuous-barriers-2026-10-07/`. The review checkpoint is against task-start sources; unrelated workspace edits remain intact.
++
++Owner visual acceptance and physical Android finger feel/performance remain. **No phone/device test, attachment check, Android export/install, full Validate, backend deployment or production action was performed.**
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-07 T01-T04/R01/V03/V05/Q01: barrier placement fixed: Road edge/Line/Curve fit shared endpoints, smooth road normals/curve gestures and honor size while keeping rail thickness/height. Bounded optional v5 length drives both native collision and shared meshes; existing compiler22 hashes/tyre sizes retained. Final headless7715/graphical7719/native backend5, pieces377/creator113/workflow252/review51/browser67/refinement32/parser338 pass; dense512-point curve49 sections3.568/4.444ms desktop. Inspected actual before/after/bend/Line/Curve captures; task-only checkpoint preserves unrelated work. Intermediate fixture/parser/missing-concurrent-audio/native-probe failures corrected and recorded. No phone/device/attachment check/export/install/full Validate/backend deployment; matching verifier source needed for publishing new fitted fields, owner/mobile acceptance remains. Actual files/commands/logs/limits: docs/CONTINUOUS_BARRIERS.md.
++
+ 2026-10-07 B01-B07/R01/Q01: owner-requested Free Race community-scale analysis completed, no shipping behavior change. Actual pinned synthetic5000/250-page probe6 checks confirms final oldest1000 cache, newest4000 eviction, page-two alphabetical movement20 positions and broad-search20-only continuation defect. Actual cached20-preview sample81,619 JSON/35,793 offline-gzip bytes; old registered-player load evidence distinguished from concurrency/content coverage. Proposed stable server-ordered20-page query streams, global search/filter/random, personal collections, reloadable bounded caches, freshness semantics and measured PostgreSQL indexing/load/phone gate; balance unaccepted. Added opt-in diagnostic/report/log/scoped patch. No deployed load/player writes/phone attachment check/device/export/install/full Validate or runtime/backend/deployment change. Outstanding defects and actual commands/limits: docs/DISCOVERY_SCALE_2026_10_07.md.
+ 
+ 2026-10-07 G01/R01/T01-T04/V03-V05/Q01/SP09: Star rules19 gate9 misses a completely paved edge line; local connected road/kerb spans now cover the spline sweep plus 1m shallow recovery. All19 ordered gates retained; final edge156 (18 lines/five laps/both directions,12 deep cuts reject/recover), oldStar51, checkpoint266/notices533/bridge259+258+2527/rewind57/App99/parser332 pass. Real edge drive five laps46138 ticks/zero collisions/exact replay and independent local backend verification pass; backend130/one skip/60 deselected, Ruff/diff pass. Rules20 derives retained revisions without merging historical boards; concurrent physics0.53 preserved. Actual public cached Star geometry matches retained fixture; original draft paths no longer present; no player/live content written. Inspected before/after, task-only review checkpoint. No phone attachment check/device test/export/install/full Validate/live deployment; matching rules20 API/verifier rollout and owner acceptance remain. Files/actual commands/failures/evidence: docs/STAR_GATE_TOLERANCE.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-07 T01-T04/R01/V03/V05/Q01: barrier placement fixed: Road edge/Line/Curve fit shared endpoints, smooth road normals/curve gestures and honor size while keeping rail thickness/height. Bounded optional v5 length drives both native collision and shared meshes; existing compiler22 hashes/tyre sizes retained. Final headless7715/graphical7719/native backend5, pieces377/creator113/workflow252/review51/browser67/refinement32/parser338 pass; dense512-point curve49 sections3.568/4.444ms desktop. Inspected actual before/after/bend/Line/Curve captures; task-only checkpoint preserves unrelated work. Intermediate fixture/parser/missing-concurrent-audio/native-probe failures corrected and recorded. No phone/device/attachment check/export/install/full Validate/backend deployment; matching verifier source needed for publishing new fitted fields, owner/mobile acceptance remains. Actual files/commands/logs/limits: docs/CONTINUOUS_BARRIERS.md.
++
+ 2026-10-07 B01-B07/R01/Q01: owner-requested Free Race community-scale analysis completed, no shipping behavior change. Actual pinned synthetic5000/250-page probe6 checks confirms final oldest1000 cache, newest4000 eviction, page-two alphabetical movement20 positions and broad-search20-only continuation defect. Actual cached20-preview sample81,619 JSON/35,793 offline-gzip bytes; old registered-player load evidence distinguished from concurrency/content coverage. Proposed stable server-ordered20-page query streams, global search/filter/random, personal collections, reloadable bounded caches, freshness semantics and measured PostgreSQL indexing/load/phone gate; balance unaccepted. Added opt-in diagnostic/report/log/scoped patch. No deployed load/player writes/phone attachment check/device/export/install/full Validate or runtime/backend/deployment change. Outstanding defects and actual commands/limits: docs/DISCOVERY_SCALE_2026_10_07.md.
+ 
+ 2026-10-07 G01/R01/T01-T04/V03-V05/Q01/SP09: Star rules19 gate9 misses a completely paved edge line; local connected road/kerb spans now cover the spline sweep plus 1m shallow recovery. All19 ordered gates retained; final edge156 (18 lines/five laps/both directions,12 deep cuts reject/recover), oldStar51, checkpoint266/notices533/bridge259+258+2527/rewind57/App99/parser332 pass. Real edge drive five laps46138 ticks/zero collisions/exact replay and independent local backend verification pass; backend130/one skip/60 deselected, Ruff/diff pass. Rules20 derives retained revisions without merging historical boards; concurrent physics0.53 preserved. Actual public cached Star geometry matches retained fixture; original draft paths no longer present; no player/live content written. Inspected before/after, task-only review checkpoint. No phone attachment check/device test/export/install/full Validate/live deployment; matching rules20 API/verifier rollout and owner acceptance remain. Files/actual commands/failures/evidence: docs/STAR_GATE_TOLERANCE.md.
+diff --git a/docs/evidence/continuous-barriers-2026-10-07/native_check.py b/docs/evidence/continuous-barriers-2026-10-07/native_check.py
+--- /dev/null
++++ b/docs/evidence/continuous-barriers-2026-10-07/native_check.py
+@@ -0,0 +1,33 @@
++"""Read-only native backend validation; no service/account writes."""
++import json
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++
++repo = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(repo / "backend"))
++from bmt_backend.verifier import GodotVerifier  # noqa: E402
++
++schema = json.loads((repo / "docs/schemas/creator-track-v5.schema.json").read_text(encoding="utf-8"))
++objects = schema["properties"]["objects"]["items"]
++assert objects["properties"]["length"]["minimum"] == 0.01
++assert objects["properties"]["length"]["maximum"] == 18
++assert set(objects["allOf"][0]["then"]["properties"]["kind"]["enum"]) == {
++    "barrier", "fence", "guardrail", "wire_fence"
++}
++document = json.loads((repo / "build/continuous-barriers-native-document.json").read_text(encoding="utf-8"))
++settings = SimpleNamespace(
++    godot_bin="C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe",
++    game_project=repo / "game", verifier_timeout_seconds=60,
++)
++verifier = GodotVerifier(settings)
++try:
++    first = verifier.validate_track(document)
++    second = verifier.validate_track(document)
++    assert first["track_content_hash"] == second["track_content_hash"]
++    assert all("length" in obj for obj in document["objects"])
++    result = f"NATIVE_BARRIER_VALIDATION: 5 checks, 0 failures; sections={len(document['objects'])}; hash={first['track_content_hash']}"
++    print(result)
++    (Path(__file__).parent / "logs/native-validation.log").write_text(result + "\n", encoding="utf-8")
++finally:
++    verifier.close()
+diff --git a/docs/evidence/continuous-barriers-2026-10-07/review_checkpoint.py b/docs/evidence/continuous-barriers-2026-10-07/review_checkpoint.py
+--- /dev/null
++++ b/docs/evidence/continuous-barriers-2026-10-07/review_checkpoint.py
+@@ -0,0 +1,71 @@
++"""Retain a task-only review patch without staging unrelated workspace work."""
++import difflib
++import hashlib
++import json
++import shutil
++from pathlib import Path
++
++evidence = Path(__file__).resolve().parent
++repo = evidence.parents[2]
++summary = (
++    "2026-10-07 T01-T04/R01/V03/V05/Q01: barrier placement fixed: Road edge/Line/Curve fit shared endpoints, "
++    "smooth road normals/curve gestures and honor size while keeping rail thickness/height. Bounded optional v5 "
++    "length drives both native collision and shared meshes; existing compiler22 hashes/tyre sizes retained. "
++    "Final headless7715/graphical7719/native backend5, pieces377/creator113/workflow252/review51/browser67/"
++    "refinement32/parser338 pass; dense512-point curve49 sections3.568/4.444ms desktop. "
++    "Inspected actual before/after/bend/Line/Curve captures; task-only checkpoint preserves unrelated work. "
++    "Intermediate fixture/parser/missing-concurrent-audio/native-probe failures corrected and recorded. "
++    "No phone/device/attachment check/export/install/full Validate/backend deployment; matching verifier "
++    "source needed for publishing new fitted fields, owner/mobile acceptance remains. "
++    "Actual files/commands/logs/limits: docs/CONTINUOUS_BARRIERS.md.\n\n"
++)
++for name in ("DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"):
++    target = repo / name
++    previous = target.read_text(encoding="utf-8-sig")
++    if summary.split(":", 1)[1] not in previous:
++        baseline = evidence / "before" / name
++        baseline.parent.mkdir(parents=True, exist_ok=True)
++        if not baseline.exists(): shutil.copyfile(target, baseline)
++        target.write_text(summary + previous, encoding="utf-8")
++
++names = [
++    "game/editor/object_runs.gd", "game/editor/object_runs.gd.uid",
++    "game/editor/road_pieces.gd", "game/editor/editor_canvas.gd",
++    "game/editor/creator_objects.gd", "game/editor/track_document.gd",
++    "game/track/creator_prop_visual.gd", "game/track/native_track_visual.gd",
++    "docs/schemas/creator-track-v5.schema.json",
++    "game/tests/test_continuous_barriers.gd", "game/tests/test_continuous_barriers.gd.uid",
++    "docs/CONTINUOUS_BARRIERS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md",
++    "docs/evidence/continuous-barriers-2026-10-07/native_check.py",
++    "docs/evidence/continuous-barriers-2026-10-07/review_checkpoint.py",
++]
++parts = []
++hashes = {}
++for name in names:
++    source = repo / name
++    baseline = evidence / "before" / name
++    old = baseline.read_text(encoding="utf-8-sig").splitlines(keepends=True) if baseline.exists() else []
++    new = source.read_text(encoding="utf-8-sig").splitlines(keepends=True)
++    difference = list(difflib.unified_diff(old, new, fromfile=f"a/{name}" if baseline.exists() else "/dev/null", tofile=f"b/{name}"))
++    if difference:
++        parts.append(f"diff --git a/{name} b/{name}\n")
++        parts.extend(difference)
++    hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
++(evidence / "scoped-change.patch").write_text("".join(parts), encoding="utf-8")
++(evidence / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")
++
++logs = evidence / "logs"
++logs.mkdir(exist_ok=True)
++explicit = {
++    "TestPieces-12352", "TestCreator-24644", "TestWorkflow-10852",
++    "TestScript-30748", "TestRefinement-24264", "TestScript-29996", "TestScript-16736",
++    "Import-1872", "CheckScript-18736", "Import-32604",
++}
++for directory in (repo / "build/logs").iterdir():
++    if not directory.is_dir(): continue
++    for source in directory.glob("*.log"):
++        contents = source.read_text(encoding="utf-8-sig", errors="replace")
++        if directory.name in explicit or "CONTINUOUS_BARRIERS:" in contents or "BARRIER_DENSE_CURVE" in contents or "BackendClient" in contents or "res://tests/test_continuous_barriers.gd" in contents:
++            shutil.copyfile(source, logs / f"{directory.name}-{source.name}")
++shutil.copyfile(repo / "build/continuous-barriers-native-document.json", evidence / "native-document.json")
++print(f"BARRIER_CHECKPOINT: {len(hashes)} source hashes; task-only patch retained")

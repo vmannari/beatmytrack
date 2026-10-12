@@ -1,0 +1,507 @@
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -97,7 +97,7 @@
+     return np.interp(np.arange(0,len(values)-1,factor),np.arange(len(values)),values)
+ 
+ 
+-def write(name, values, used, looping=True, rms=.14, engine_order=None):
++def write(name, values, used, looping=True, rms=.14, engine_order=None, loop_ready=False):
+     values = filter_audio(values) if engine_order is None else values.copy()
+     values -= values.mean()
+     impact = name.startswith("impact_")
+@@ -110,7 +110,7 @@
+         else:
+             from compact_audio_mastering import seam_loop
+             # Final EQ sees the completed periodic waveform, not an open cut.
+-            values = filter_audio(seam_loop(values, RATE, engine_order))
++            values = filter_audio(values if loop_ready else seam_loop(values, RATE, engine_order))
+             values -= values.mean()
+         if name == "tire":
+             # Retain the existing tire seam invariant with an inaudible 2 ms taper.
+@@ -163,7 +163,7 @@
+     manifest = json.loads((OUT / "manifest.json").read_text(encoding="utf-8"))
+     replaced = {item["file"] for item in outputs}
+     manifest["outputs"] = [next(new for new in outputs if new["file"] == item["file"]) if item["file"] in replaced else item for item in manifest["outputs"]]
+-    manifest["compact_revision"] = "engine-2-phase-loops"
++    manifest["compact_revision"] = "engine-3-stable-sustain"
+     (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+     print(json.dumps({"compact_clips":len(outputs),"bytes":sum((OUT / item["file"]).stat().st_size for item in outputs)},indent=2))
+     raise SystemExit(0)
+@@ -220,6 +220,6 @@
+ render(read, steady, filter_audio, transpose, write, RATE)
+ replaced = {item["file"] for item in outputs}
+ outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
+-manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","compact_revision":"engine-2-phase-loops","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","compact_revision":"engine-3-stable-sustain","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+ (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+ print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/scripts/compact_audio_mastering.py b/scripts/compact_audio_mastering.py
+--- a/scripts/compact_audio_mastering.py
++++ b/scripts/compact_audio_mastering.py
+@@ -29,6 +29,45 @@
+     return np.concatenate((values[overlap:tail_start], joined))
+ 
+ 
++def locked_loop(values, rate, engine_order, seconds=8.0):
++    """Average recorded firing cycles, retaining their waveform without pitch drift."""
++    frequencies = np.fft.fftfreq(len(values), 1 / rate)
++    band = (frequencies > engine_order * .9) & (frequencies < engine_order * 1.1)
++    analytic = np.fft.ifft(np.where(band, np.fft.fft(values) * 2, 0))
++    phase = np.unwrap(np.angle(analytic)) / (2 * np.pi)
++    margin = round(.12 * rate)
++    phase = phase[margin:-margin]
++    recorded = values[margin:-margin]
++    if not np.all(np.diff(phase) > 0):
++        raise ValueError("Engine firing phase must advance monotonically")
++    cycles = np.arange(np.ceil(phase[0]), np.floor(phase[-1]))
++    if len(cycles) < 30:
++        raise ValueError("Too few recorded firing cycles to sustain")
++    grid = np.arange(1024) / 1024
++    aligned = np.interp((cycles[:, None] + grid).ravel(), phase, recorded).reshape(-1, 1024)
++    cycle = aligned.mean(axis=0)
++    count = round(seconds * rate)
++    if abs(seconds * engine_order - round(seconds * engine_order)) > 1e-8:
++        raise ValueError("Sustained bank must contain whole firing cycles")
++    output_phase = np.arange(count, dtype=np.float64) * engine_order / rate % 1
++    tonal = np.interp(output_phase, np.r_[grid, 1.0], np.r_[cycle, cycle[0]])
++    # A restrained continuous air/mechanical bed retains recorded spectral
++    # character. Broad frequency bins avoid carrying the source's wandering
++    # narrow tones into the new sustain. Generated offline, never in the game.
++    residual = recorded - np.interp(phase % 1, np.r_[grid, 1.0], np.r_[cycle, cycle[0]])
++    source_hz = np.fft.rfftfreq(len(residual), 1 / rate)
++    power = abs(np.fft.rfft(residual))**2
++    edges = np.arange(0, rate / 2 + 100, 100)
++    density = np.array([np.mean(power[(source_hz >= low) & (source_hz < high)]) for low, high in zip(edges[:-1], edges[1:])])
++    output_hz = np.fft.rfftfreq(count, 1 / rate)
++    shape = np.sqrt(np.interp(output_hz, (edges[:-1] + edges[1:]) / 2, density))
++    shape *= 1 - np.exp(-(output_hz / 400)**4)
++    rng = np.random.default_rng(10102026 + round(engine_order))
++    noise = np.fft.irfft(np.fft.rfft(rng.normal(0, 1, count)) * shape, n=count)
++    noise *= .16 * np.sqrt(np.mean(tonal**2)) / max(np.sqrt(np.mean(noise**2)), 1e-12)
++    return tonal + noise
++
++
+ def render(read, steady, filter_audio, transpose, write):
+     for index, (source, recorded_order, target_order, warmth, high) in enumerate(LAYERS):
+         factor = target_order / recorded_order
+@@ -40,6 +79,12 @@
+         voiced = filter_audio(transpose(recorded, factor), low=25, high=high, warmth=warmth)
+         seconds = (3.2 if index == 0 else 6.4) / factor
+         loaded = steady(voiced, seconds=seconds, start=.25 / factor)
++        if index > 0:
++            sustained = locked_loop(loaded, 44100, target_order)
++            write(f"compact_{index}_load", sustained, [source], engine_order=target_order, loop_ready=True)
++            coasting = filter_audio(sustained, low=25, high=2400, warmth=.12)
++            write(f"compact_{index}_coast", coasting, [source], rms=.11, engine_order=target_order, loop_ready=True)
++            continue
+         write(f"compact_{index}_load", loaded, [source], engine_order=target_order)
+         # Preserve the same engine order on lift-off; reduce bright exhaust detail.
+         coasting = filter_audio(voiced, low=25, high=2400, warmth=.12)
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -245,11 +245,11 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.2180045351473923,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -7.840480894089898,
+-      "seam_step": 0.005012186559534948,
+-      "sha256": "20ded4b169add1dcd0152a0bd0921d5c0aa23ff736d9d509d8d4282180a394d0"
++      "seconds": 8.0,
++      "rms_dbfs": -17.077439286435236,
++      "peak_dbfs": -10.03080058099928,
++      "seam_step": 0.010999889466284551,
++      "sha256": "14bc34e17b6262a9e131016c36ab84af1032007ddbea9e11e8032004750c36c4"
+     },
+     {
+       "file": "compact_1_coast.wav",
+@@ -257,11 +257,11 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.2180045351473923,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -10.862360240403584,
+-      "seam_step": 0.0007959208229530446,
+-      "sha256": "67f1ed57df6aca17642bc7f1e1b79a4113f4691c28688688005756024b402644"
++      "seconds": 8.0,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -12.506999878303555,
++      "seam_step": 0.0034257092156517177,
++      "sha256": "6e0a386868fb7f12e458510b3a8f1f85482452337260f040396f2faadb58baeb"
+     },
+     {
+       "file": "compact_2_load.wav",
+@@ -269,11 +269,11 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 1.549297052154195,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -8.819665295489559,
+-      "seam_step": 0.003925409154061532,
+-      "sha256": "a422fb9bee420a9f5cf1a68e41fabab43490170dbf39ba0715755f954978de35"
++      "seconds": 8.0,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -9.761449627332642,
++      "seam_step": 0.0009079649374523768,
++      "sha256": "6dda1893b14ead69fb7e1edf3178139334ddf660a45cd7bd359663e1103512b7"
+     },
+     {
+       "file": "compact_2_coast.wav",
+@@ -281,11 +281,11 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 1.549297052154195,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -11.808748818125657,
+-      "seam_step": 0.0011497710580665732,
+-      "sha256": "4b1735dad5751ecff18719cc7d989c46e7350c944a8ffe51fde1ed29b7c23ed0"
++      "seconds": 8.0,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -12.791962618823703,
++      "seam_step": 0.00020982265825306157,
++      "sha256": "ad696b4a7e78652718c530f01b722128db397efb4951dbbd3522f67b128e423b"
+     },
+     {
+       "file": "pickup_0_load.wav",
+@@ -780,5 +780,5 @@
+       "sha256": "7c2278b0420e171ab6b51a7611377f8d600b188dcf1b777ba3f87f4c00cdc4b9"
+     }
+   ],
+-  "compact_revision": "engine-2-phase-loops"
++  "compact_revision": "engine-3-stable-sustain"
+ }
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -91,3 +91,12 @@
+ within two engine periods, and apply final filtering to the completed periodic
+ loop. Mid/high banks use longer source sections. This reduces recurring fade
+ modulation and cut-edge ringing; no new source, runtime voice or gain is added.
++
++Compact sustain revision 3, 2026-10-10: compact_1/2_load/coast.wav now use
++phase-aligned averages of the same recorded Nox firing cycles, sustained at
++exact 100/200 Hz for eight seconds. A restrained original offline noise bed
++uses the broad spectral shape of the recording's residual; it carries no
++wandering source tones. Coast is filtered from the same complete sustain.
++This authored recorded/synthetic derivative removes the previous short
++recording's repeating pitch drift. The low/idle pair and other 41 WAVs are
++unchanged. No runtime synthesis, source purchase or new third-party licence.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND35/SND33-SND34/SND02-SND03/SND05-SND06/G01/R01/Q01: owner artefact persists/~1.5s; high1.549297s bank has repeating internal pitch drift missed by prior envelope checks. Four mid/high Nox recorded-cycle averages plus restrained original offline residual-shaped noise sustain exact100/200Hz for8s; idle/other43 WAV hashes exact. Asset high firing-rate span3.792055 to0.014294Hz; native high3.597253 to0.015301/neighbor-load-coast blend4.205220 to0.011105Hz, four26s repeated-wrap/pause captures and vehicle1446 pass; repeat47 exact/960-tick simulation retained. CompactPCM3429558bytes/+1.89MiB/voices unchanged. Exact owner audible case/platform/build remains unconfirmed; no phone attachment check/device listening/export-install/fullValidate/backend/deploy for task. Files/commands/audio/scoped checkpoint/acceptance: docs/COMPACT_AUDIO_SUSTAIN.md.
++
+ 2026-10-10 SC05/SC01-SC04/B05/B07/R01/Q01/TD06/TD08: owner requests analysis/next-step plan only. Prioritize durable per-board/driver flyinglapPB with accepted-source FK/retention guard, DB-owned conditional projection, reset-epoch-fenced resumable backfill, legacy-oracle parity and driver-scale histogram reads; popularity projection, group-revision cache and versioned smaller uploads follow. Recorded deployment baseline d16a4a17/schema0023 recognized (not live-rechecked). Identified exact-schema readiness rollout constraint and reset mismatch (race clearing/fencing acrosscars vsvehicle-scoped lapse cutoff); selected-car/all-car question pending, proposal not confirmed. Plan includes compatibility-or-maintenance rollout choice, test/benchmark gates and no whole-HTTP5ms claim. Only planning/status/roadmap docs changed; no runtime/migration/deploy/pruning/races/new tests, phone attachment/device/UI/export action. Actual source inspection, proposed files/contracts/milestones/remaining policy decision and review checkpoint: docs/BACKEND_SCALABILITY_NEXT_STEP_PLAN.md.
+ 
+ 2026-10-10 GL01-GL04/G01/V06/R01/Q01: Garage uses all five actual race models, drag rotation, saved per-car Body/Accent colors and factory reset. Owner perspective correction uses restrained38deg perspective/lower17.7deg menu camera; driving reads cosmetic-only version1 colors, atomic failure rollback/lamps/glass/PB keys/physics retained. Final native115/Car105/Records54/App99/parser438 pass;15 captures+picker inspected. Broad swipe268/12 and quality23/3 failures match saved pre-change app; assertions retained. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Source/commands/scoped checkpoint/remaining shape-pattern and device acceptance: docs/GARAGE_LIVERY.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND35/SND33-SND34/SND02-SND03/SND05-SND06/G01/R01/Q01: owner artefact persists/~1.5s; high1.549297s bank has repeating internal pitch drift missed by prior envelope checks. Four mid/high Nox recorded-cycle averages plus restrained original offline residual-shaped noise sustain exact100/200Hz for8s; idle/other43 WAV hashes exact. Asset high firing-rate span3.792055 to0.014294Hz; native high3.597253 to0.015301/neighbor-load-coast blend4.205220 to0.011105Hz, four26s repeated-wrap/pause captures and vehicle1446 pass; repeat47 exact/960-tick simulation retained. CompactPCM3429558bytes/+1.89MiB/voices unchanged. Exact owner audible case/platform/build remains unconfirmed; no phone attachment check/device listening/export-install/fullValidate/backend/deploy for task. Files/commands/audio/scoped checkpoint/acceptance: docs/COMPACT_AUDIO_SUSTAIN.md.
++
+ 2026-10-10 SC05/SC01-SC04/B05/B07/R01/Q01/TD06/TD08: owner requests analysis/next-step plan only. Prioritize durable per-board/driver flyinglapPB with accepted-source FK/retention guard, DB-owned conditional projection, reset-epoch-fenced resumable backfill, legacy-oracle parity and driver-scale histogram reads; popularity projection, group-revision cache and versioned smaller uploads follow. Recorded deployment baseline d16a4a17/schema0023 recognized (not live-rechecked). Identified exact-schema readiness rollout constraint and reset mismatch (race clearing/fencing acrosscars vsvehicle-scoped lapse cutoff); selected-car/all-car question pending, proposal not confirmed. Plan includes compatibility-or-maintenance rollout choice, test/benchmark gates and no whole-HTTP5ms claim. Only planning/status/roadmap docs changed; no runtime/migration/deploy/pruning/races/new tests, phone attachment/device/UI/export action. Actual source inspection, proposed files/contracts/milestones/remaining policy decision and review checkpoint: docs/BACKEND_SCALABILITY_NEXT_STEP_PLAN.md.
+ 
+ 2026-10-10 GL01-GL04/G01/V06/R01/Q01: Garage uses all five actual race models, drag rotation, saved per-car Body/Accent colors and factory reset. Owner perspective correction uses restrained38deg perspective/lower17.7deg menu camera; driving reads cosmetic-only version1 colors, atomic failure rollback/lamps/glass/PB keys/physics retained. Final native115/Car105/Records54/App99/parser438 pass;15 captures+picker inspected. Broad swipe268/12 and quality23/3 failures match saved pre-change app; assertions retained. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Source/commands/scoped checkpoint/remaining shape-pattern and device acceptance: docs/GARAGE_LIVERY.md.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -164,3 +164,5 @@
+ Compact engine revision 1 (2026-10-10): six compact load/coast WAVs use the existing Nox Sound Design CC0 rear-exterior masters. Engine-order calibration, low/mid warmth, restrained high detail, looping and deterministic PCM mastering; high layer now uses the same rear perspective. Other 41 vehicle WAV hashes remain exact. No new source/licence/service. Shipping NOTICE/manifest retain provenance and new derivative hashes. Actual native before/after audition, commands, tests and owner/device listening limits: `docs/COMPACT_AUDIO.md`.
+ 
+ Compact loop revision 2 (2026-10-10): the same six Nox CC0 engine derivatives use full-recording filtering before cuts, phase-aligned head/tail joins, final periodic filtering and longer mid/high source regions. All other 41 vehicle WAV hashes remain exact. Shipping manifest/NOTICE pin derivative hashes and describe changes; no new source/licence. Actual native comparisons and unresolved owner artefact/device acceptance: `docs/COMPACT_AUDIO_LOOPS.md`.
++
++Compact sustain revision 3 (2026-10-10): four mid/high derivatives average phase-aligned cycles from the same pinned Nox CC0 recording, with a restrained original offline noise texture shaped by the recorded residual spectrum. Exact100/200Hz firing orders and whole-cycle8s buffers remove the previous short recorded pitch pattern. These are authored recorded/synthetic derivatives, not unmodified recordings; original notice/source licences retained. Idle/other43 WAVs exact; no new third-party source/runtime synthesis/service. Actual native blends, memory delta and unconfirmed owner platform/listening acceptance: `docs/COMPACT_AUDIO_SUSTAIN.md`.
+diff --git a/game/tests/capture_compact_sustain.gd b/game/tests/capture_compact_sustain.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_compact_sustain.gd
+@@ -0,0 +1,86 @@
++extends SceneTree
++## Matched fixed-RPM native recordings include the neighboring-layer/load blend.
++const OUTPUT: String = "res://../docs/evidence/compact-period-2026-10-10"
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func sample(clip: String, variant: String) -> AudioStreamWAV:
++	if variant=="after":
++		return (load(VehicleAudio.BANK+clip+".wav") as AudioStreamWAV).duplicate() as AudioStreamWAV
++	# Saved masters outside the export root are canonical 44-byte mono PCM WAVs.
++	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(OUTPUT.path_join("before/game/assets/audio/vehicles/"+clip+".wav"))
++	if bytes.size()<44 or bytes.decode_u16(20)!=1 or bytes.decode_u16(22)!=1 or bytes.decode_u32(24)!=44100 or bytes.decode_u16(34)!=16:
++		push_error("Unexpected diagnostic WAV format")
++		failures += 1
++	var stream := AudioStreamWAV.new()
++	stream.format = AudioStreamWAV.FORMAT_16_BITS
++	stream.mix_rate = 44100
++	stream.stereo = false
++	stream.data = bytes.slice(44)
++	return stream
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var bus: int = AudioServer.get_bus_index("Engine")
++	var recorder := AudioEffectRecord.new()
++	recorder.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,recorder)
++	var reports: Array[Dictionary] = []
++	for variant: String in ["before","after"]:
++		for fixture: String in ["high","overlap"]:
++			var players: Array[AudioStreamPlayer] = []
++			var weights: Vector3 = Vector3(0,0,1)
++			if fixture=="overlap":
++				var model := VehicleAudioModel.new()
++				model.configure("compact",46)
++				model.rpm = 4500
++				weights = model.weights()
++			for index: int in [1,2]:
++				for mode: String in ["load","coast"]:
++					var stream: AudioStreamWAV = sample("compact_%d_%s"%[index,mode],variant)
++					stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
++					stream.loop_begin = 0
++					stream.loop_end = stream.data.size()/2
++					var player := AudioStreamPlayer.new()
++					player.stream = stream
++					player.bus = "Engine"
++					player.pitch_scale = (6000.0 if fixture=="high" else 4500.0)/([3000.0,6000.0][index-1])
++					player.volume_linear = weights[index]*sqrt(0.65 if mode=="load" else 0.35)*0.6*(1.0 if mode=="load" else 0.84)
++					root.add_child(player)
++					players.append(player)
++			for player: AudioStreamPlayer in players: player.play()
++			var elapsed: float = 0.0
++			var clock_us: int = Time.get_ticks_usec()
++			var wraps: Array[int] = [0,0,0,0]
++			var positions: Array[float] = [0,0,0,0]
++			recorder.set_recording_active(true)
++			while elapsed<26.0:
++				await process_frame
++				var now: int = Time.get_ticks_usec()
++				elapsed += float(now-clock_us)/1000000.0
++				clock_us = now
++				for index: int in range(players.size()):
++					var position: float = players[index].get_playback_position()
++					if position+0.1<positions[index]: wraps[index] += 1
++					positions[index] = position
++					if elapsed>=25.0: players[index].stream_paused = true
++			recorder.set_recording_active(false)
++			var recording: AudioStreamWAV = recorder.get_recording()
++			if recording==null or recording.get_length()<25.5: failures += 1
++			elif recording.save_to_wav(OUTPUT.path_join(variant+"-"+fixture+".wav"))!=OK: failures += 1
++			for count: int in wraps:
++				if count<2: failures += 1
++			reports.append({"variant":variant,"fixture":fixture,"wraps":wraps})
++			for player: AudioStreamPlayer in players: player.free()
++			print("COMPACT_SUSTAIN: ",variant," ",fixture," wraps=",wraps)
++	AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	var file := FileAccess.open(OUTPUT.path_join("native-capture.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"reports":reports,"failures":failures},"\t"))
++	file.close()
++	print("COMPACT_SUSTAIN_CAPTURE: failures=",failures)
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_compact_sustain.gd.uid b/game/tests/capture_compact_sustain.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_compact_sustain.gd.uid
+@@ -0,0 +1 @@
++uid://cjncltjpw5vxr
+diff --git a/scripts/review_compact_sustain.py b/scripts/review_compact_sustain.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_compact_sustain.py
+@@ -0,0 +1,86 @@
++"""Check repeated source pitch patterns as well as amplitude and native layer blends."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/compact-period-2026-10-10"
++BANK = ROOT / "game/assets/audio/vehicles"
++
++
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate, channels = handle.getframerate(), handle.getnchannels()
++        x = np.frombuffer(handle.readframes(handle.getnframes()), "<i2").astype(float) / 32768
++    return x.reshape(-1, channels), rate
++
++
++def rate_range(x, rate, target):
++    frequencies = np.fft.fftfreq(len(x), 1 / rate)
++    band = (frequencies > target * .9) & (frequencies < target * 1.1)
++    analytic = np.fft.ifft(np.where(band, np.fft.fft(x) * 2, 0))
++    phase = np.unwrap(np.angle(analytic))
++    instantaneous = np.gradient(phase) * rate / (2 * np.pi)
++    window = round(.02 * rate)
++    cumulative = np.r_[0, np.cumsum(instantaneous)]
++    smoothed = (cumulative[window:] - cumulative[:-window]) / window
++    central = smoothed[round(.15 * rate):-round(.15 * rate)]
++    low, high = np.percentile(central, [5, 95])
++    return {"median_hz": float(np.median(central)), "p5_hz": float(low), "p95_hz": float(high), "span_hz": float(high-low)}
++
++
++before = json.loads((OUT / "before-bank-hashes.json").read_text())
++current = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in BANK.glob("*.wav")}
++assert set(before) == set(current)
++changed = sorted(name for name in current if current[name] != before[name])
++expected = [f"compact_{index}_{mode}.wav" for index in (1, 2) for mode in ("coast", "load")]
++assert changed == expected, changed
++assets = []
++for name in expected:
++    target = 100 if name.startswith("compact_1") else 200
++    versions = []
++    for folder in (OUT / "before/game/assets/audio/vehicles", BANK):
++        x, rate = read(folder / name)
++        assert np.max(abs(x)) < .841
++        versions.append({"seconds": len(x)/rate, **rate_range(x[:, 0], rate, target)})
++    assert versions[0]["span_hz"] > 1.0, (name, "repeated source pitch pattern missing")
++    assert versions[1]["seconds"] == 8.0
++    assert abs(versions[1]["median_hz"]-target) < .01
++    assert versions[1]["span_hz"] < .05, (name, "source pitch pattern remains")
++    assets.append({"file": name, "before": versions[0], "after": versions[1]})
++
++status = json.loads((OUT / "native-capture.json").read_text())
++assert status["failures"] == 0 and len(status["reports"]) == 4
++captures = []
++for item in status["reports"]:
++    path = OUT / f'{item["variant"]}-{item["fixture"]}.wav'
++    x, rate = read(path)
++    assert len(x)/rate > 25.5 and .02 < np.max(abs(x)) < .9
++    assert np.max(abs(x[-rate//2:])) == 0
++    assert min(item["wraps"]) >= 2
++    region = x[round(.5*rate):round(24.5*rate)].mean(axis=1)
++    blocks = np.array_split(region, len(region)//round(.02*rate))
++    rms = np.array([np.sqrt(np.mean(block**2)) for block in blocks])
++    assert min(rms) > max(.0003, np.median(rms)*.04), path.name
++    target = 200 if item["fixture"] == "high" else 150
++    frequencies = rate_range(region, rate, target)
++    if item["variant"] == "after":
++        assert abs(frequencies["median_hz"]-target) < .05
++        assert frequencies["span_hz"] < .2, (path.name, frequencies)
++    captures.append({**item, "peak_dbfs": float(20*math.log10(np.max(abs(x)))), "paused_tail_peak": 0, **frequencies})
++
++report = {"changed_clips": changed, "unchanged_clips": len(current)-len(changed), "assets": assets, "native_captures": captures,
++          "owner_acceptance": "1.5-second source pattern removed from the local bank; exact reported artefact/platform and listening remain unconfirmed."}
++(OUT / "review.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++cards = []
++for fixture, label in (("high", "High revs with load/coast blend"), ("overlap", "Mid/high layers at 4500 RPM")):
++    cards.append(f'<article><h2>{label}</h2><p>Before</p><audio controls preload="metadata" src="before-{fixture}.wav"></audio><p>After</p><audio controls preload="metadata" src="after-{fixture}.wav"></audio></article>')
++page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Compact sustain review</title>
++<style>body{margin:0;background:#101b27;color:#eee5d6;font:17px/1.5 system-ui}main{max-width:760px;margin:40px auto;padding:24px}article{padding:20px;background:#1b2937;border:1px solid #425163;border-radius:12px;margin:20px 0}h2{color:#ffd667}audio{width:100%}small{color:#b4bfcc}</style>
++<main><h1>Compact sustain review</h1><p>Matched native mixer captures at fixed RPM and 65% load. Each plays for 25 seconds across several wraps, then pauses. No gear changes, tires or weather.</p>'''+"".join(cards)+'''<small>Nox Sound Design CC0 recorded engine cycles, averaged and sustained offline; original restrained shaped-noise texture added. This is an authored fictional engine voice, not an unmodified field recording. Phone listening remains untested.</small></main>
++<script>document.querySelectorAll('audio').forEach(p=>p.addEventListener('play',()=>document.querySelectorAll('audio').forEach(q=>{if(p!==q)q.pause()})))</script></html>'''
++(OUT / "audition.html").write_text(page, encoding="utf-8")
++print(json.dumps(report, indent=2))
+diff --git a/docs/COMPACT_AUDIO_SUSTAIN.md b/docs/COMPACT_AUDIO_SUSTAIN.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COMPACT_AUDIO_SUSTAIN.md
+@@ -0,0 +1,93 @@
++# Compact repeating-pitch follow-up — 2026-10-10
++
++The owner reports that the artefact persists, approximately every **1.5 seconds**.
++The current high bank lasts **1.549297 seconds**. The earlier amplitude/seam
++checks missed pitch variation inside that recording: smoothing a join does not
++remove a short recorded engine-pitch pattern that repeats at every wrap.
++Requirements: **SND35** sustained-engine pitch-pattern correction;
++**SND33–SND34/SND02–SND03/SND05–SND06/G01/R01/Q01** compact character,
++presentation-only drivetrain, lifecycle/provenance/headroom and canonical isolation.
++
++An offline narrow-band phase analysis of the dominant recorded engine order,
++averaged over 20 ms, confirms the repeating source pattern. The high load bank's
++5th–95th-percentile firing rate is **199.199–202.991 Hz**; the mid load bank's is
++**99.592–101.462 Hz**. Load/coast have the same lengths and high waveform
++correlation (~0.986); changing their crossfade gains alone does not remove the
++source pitch drift. The high-loop period fits the reported interval, but the
++owner's exact audible artefact and active platform/build remain unconfirmed.
++The platform question explicitly distinguishes a restarted Windows project from
++an installed Android build; this work changes the local project only.
++
++The four mid/high derivatives now average phase-aligned firing cycles from the
++existing pinned Nox CC0 recording, retaining the recorded pulse waveform while
++sustaining exact **100/200 Hz** orders. An original offline noise texture at
++16% of tonal RMS uses the recording residual's broad spectral shape, with narrow
++wandering tones removed. It retains a restrained mechanical/air texture rather
++than replaying the old 1.55-second source pattern. Eight-second output buffers
++contain whole firing cycles; they are filtered as complete periodic signals,
++without another cut-and-fade operation. Coast comes from the same sustain and
++has exactly the same loop length and pulse timing as load.
++
++This is an authored recorded/synthetic engine derivative, not an unmodified
++field recording or an exact real-engine reproduction. There is no new runtime
++synthesis, DSP voice, API, service, dependency, licence or source download. The
++low/idle pair is **byte-identical**, as are all other cars, surface layers, wind,
++weather and impact clips. Runtime drivetrain, gains, buses and canonical
++simulation are untouched by this follow-up.
++
++Measured 20 ms engine-order variation (asset 5th–95th percentile span):
++
++| Asset | Before | After |
++| --- | --- | --- |
++| Mid load | 1.869891 Hz | 0.000371 Hz |
++| Mid coast | 1.870534 Hz | 0.000381 Hz |
++| High load | 3.792055 Hz | 0.014294 Hz |
++| High coast | 3.789932 Hz | 0.014276 Hz |
++
++[Listen to the matched native sustain captures](evidence/compact-period-2026-10-10/audition.html).
++Each captures 25 seconds at fixed RPM with 65% load, then one second paused.
++The first case includes high load/coast; the second includes the actual
++4500-RPM mid/high weights and both load/coast voices. Each player crosses at
++least two real wraps. The native high phase-rate span reduces **3.597253 →
++0.015301 Hz**, and the neighboring-layer blend reduces **4.205220 → 0.011105 Hz**.
++All four recordings are audible/unclipped, have no measured 20 ms dropout, and
++end with an exactly silent half-second. These fixed-state diagnostic mixes have
++no shifting, contacts, tires, weather or music; they are not a completed race or
++a hardware microphone capture. They establish the source-pattern correction,
++not that the owner's exact reported sound is definitively identified.
++
++Changed files: `scripts/compact_audio_mastering.py`, `scripts/build_vehicle_audio.py`;
++four `compact_1/2_load/coast.wav` and imports; bank `manifest.json`/`NOTICE.txt`;
++`game/tests/capture_compact_sustain.gd` and generated UID;
++`scripts/review_compact_sustain.py`; this document, `licenses/ASSETS.md`,
++`DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and task evidence.
++All **43 other WAV hashes match** the baseline. Selected compact PCM now totals
++**3,429,558 bytes**, an increase of 1,981,448 bytes (~1.89 MiB); the six-voice
++runtime bound is unchanged. Device memory/performance was not measured.
++
++Actual commands, pinned `4.7.2.stable.official.ed1daf0bf` via `scripts/dev.ps1`:
++
++| Command | Actual result |
++| --- | --- |
++| Local WAV spectral/phase diagnosis | Existing high loop 1.549297 s, internally changing pitch; baseline analysis saved as `phase-diagnosis.json`. |
++| `python scripts/build_vehicle_audio.py --compact-only` | Six generated outputs, **four changed WAV hashes**, stable-sustain revision; low pair exact. |
++| `… dev.ps1 Import` | Exit 0 with normal Windows certificate-store access; lossless imports retained. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/capture_compact_sustain.gd -Graphical` | Exit 0, zero failures. Before wraps high `[15,15,16,16]`, overlap `[11,11,12,12]`; after high `[6,6,3,3]`, overlap `[4,4,2,2]`. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1,446 checks, zero failures**; bank hashes/PCM/headroom, drivetrain/lifecycle, pause/retry/rewind and exact 960-tick simulation equivalence. |
++| `python scripts/review_compact_sustain.py` | Asset pitch variation and whole-cycle length, four-only scope, native neighboring-layer/load blend phase stability, pause/continuity/headroom checks pass. |
++| Repeat compact-only build and compare complete bank SHA-256 | **47/47 WAV hashes identical** to the first revised build. |
++| `git diff --check -- scripts/build_vehicle_audio.py scripts/compact_audio_mastering.py` | Exit 0. |
++| `git apply --reverse --check --ignore-whitespace docs/evidence/compact-period-2026-10-10/scoped-change.patch` | Exit 0; task-only checkpoint valid. |
++
++Playable captures are the presentation evidence; no UI changed. Source snapshots,
++baseline/final hashes, measured review, native launcher logs and a task-only
++Git-format patch are retained in the evidence directory. The shared mixed
++workspace/index is preserved; no commit or unrelated changes are included.
++
++No phone attachment check, phone/tablet listening or performance test, Android
++export/install, full Validate, backend operation or deployment was performed
++for this task. Remaining acceptance: owner confirms the actual platform/build,
++restarts the local project to audition the revised tone and reported artefact,
++then tests real driving across shifts, lift-off, pause, retry and rewind.
++An already-installed Android build does not receive local asset changes without
++an explicitly authorized build/install. Human tone acceptance remains open.

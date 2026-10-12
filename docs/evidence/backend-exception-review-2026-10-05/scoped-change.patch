@@ -1,0 +1,714 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested P1/P2 backend repairs and isolated capacity tooling implemented. Short queue/membership locks, exact incremental projections, reusable fenced canonical workers, bounded pools/uploads, compressed negotiated transport, conditional/batched polling, threaded durable client IO and nonblocking ghosts/results; coordinated online retention/backup and optional private object adapter. Migrations 0013/0014 require a backed-up matching API/worker rollout; existing services/data untouched. Broad desktop suite 284 passed/2 skipped, PostgreSQL 112/6, later affected checks 89/1 and PG race checks 69/5, final native protocol 5 pass; batches overlap. Persistent engine 2, CLI/provider/archive 12 plus 7 subtests, parser 292 and client 12 checks pass. Disposable 2-CPU PostgreSQL lab: 1k/10k/100k registered-player reads max p95 156/172/188 ms with API peak RSS about 105 MiB; 15 new canonical attempts verified and queue drained. Strict tie/join/overload failures retained; explicit provisional endpoint presets documented. Online synthetic dump/object restore preserves exact historical PB after live replacement and GC. No NAS deployment or change-specific attached DN2103 build/performance check; target sustained load, proxy/cellular, provider/Compose-wrapper and device acceptance remain. Scoped patch preserves concurrent menu work. Files, actual commands, reports and acceptance: docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md and backend/LOAD_TESTING.md.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner requests cancellation of back-and-forth page swipes and removal of lingering yellow tab borders, following held biome-card release failures. A deliberate 20-unit backward MOVE now clears intent even far from the origin; a fresh 20-unit forward stroke can rearm, while slight relaxation and held short strokes remain accepted. Parallel mouse input is consumed during page-owned touch, and moving content controls are gated until settling. Primary tab focus outline removed. Explicit parallel-input reproduction: 250 checks/four failures before fix; final graphical gestures 260/app 97 pass, focused pinned export driving 72/catalog 21/menus 48 pass. Exact APK installed/compiled resources verified on DN2103; native long held card stroke and 36-pixel held stroke commit, repeated back-and-forth returns to Create, carousel keeps Race, inspected tab outlines absent. First long attempt interrupted by Settings and repeated; dozing capture retry recovered. Existing shutdown warnings; human feel/full Validate/performance/other-device acceptance pending. Files, actual commands, evidence and scoped review checkpoint: docs/MENU_PAGE_SWIPES.md (Deliberate reversal, exclusive touch and tab outlines). Concurrent work preserved.
+diff --git a/docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md b/docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md
+new file mode 100644
+--- /dev/null
++++ b/docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md
+@@ -0,0 +1,194 @@
++# Backend exceptions and recovery review — 2026-10-05
++
++Requirements: B01–B07, B19–B20, B23, WR03–WR08, RW05–RW07 and Q01. Reviewed the current implementation, including the scalability repairs. Production is a future cloud environment with load-balanced APIs and independently scaled verification workers. Local development capacity is not a production player limit.
++
++This is an analysis/probe slice: no runtime fixes, schema changes, service restarts, deployment, credentials or real player-data changes. The probes use isolated SQLite, fake identities/HTTP responses and workspace-only client files. Existing concurrent work is preserved.
++
++Integrity checks are stronger than recovery paths. Invalid timing/physics does not become a verified PB; interruptions can still lose a locally unsaved attempt, strand uploads, exhaust retries or force reauthentication. The review found three P1 and nine P2 items.
++
++## Findings
++
++### 1. P1 — leaving Results can discard a failed asynchronous save
++
++Replay hashing/writing may still run when Home, Tracks or the next race frees/replaces the completed game. In [app.gd:2236](../game/core/app.gd#L2236), game validity is checked before handling `queued == false`. If storage is full/unwritable or a thread cannot start, the coroutine returns without a durable job or retry dialog. A shared `_result_save_busy` latch also permits only one App save, instead of retaining independent completed attempts.
++
++This is a recovery gap in the recent asynchronous Results change. Normal Results must still appear immediately. The Retry action has an additional ticket guard; Home/Tracks/next-race navigation do not provide that guard.
++
++**Confirmed native observation:** a delayed save returned false after its game was freed; one save attempt, zero recovery dialogs, no saved job, busy flag released.
++
++**Current recovery:** if the completed game remains alive, free storage and use Retry saving. After leaving in this failure case, online-upload recovery is absent; a local timing record does not reconstruct all canonical inputs.
++
++**Required repair:** transfer immutable completed inputs/ticket into a save service that owns them independently of screens, retain failures for recovery and track saves per attempt.
++
++### 2. P1 — a rolling API upgrade can permanently reject a valid recording
++
++Bootstrap from a new replica advertises packed inputs/gzip. A subsequent request routed to an older replica can reject the envelope. Capabilities are cached per origin in [backend_client.gd:308](../game/backend/backend_client.gd#L308); unsupported transport does not renegotiate. [cloud_tracks.gd:683](../game/backend/cloud_tracks.gd#L683) makes a 422 terminal and removes its pending marker.
++
++**Confirmed native observation:** a packed recording reached a simulated older decoder; the job became `Unsupported replay envelope` and a second flush sent nothing. Uniform older-server fallback was tested previously; this fixture models a mixed-fleet deployment possibility, not an existing cloud deployment.
++
++**Current recovery:** the recording remains on disk until dismissal, but a rejected initial upload without a Run ID has no ordinary Retry action. Server rollout completion alone does not requeue it.
++
++**Required repair:** a fleet-common capability floor, versioned routing or a coordinated switch after old targets drain; definitive transport rejections should renegotiate losslessly while preserving the original key and canonical controls/launch/receipts. Physics/rules incompatibility must continue to fail closed.
++
++### 3. P1 — incompatible workers can claim and exhaust legitimate jobs
++
++[worker.py:55](../backend/bmt_backend/worker.py#L55) claims eligible jobs without filtering their pinned build against the worker's actual capabilities. Heartbeat manifests do not gate claiming; result compatibility is checked after expensive verification. Competition health can report readiness when any worker matches, while another incompatible worker still claims work.
++
++**Confirmed probe:** an old-physics worker claimed a valid newer-contract job three times and exhausted it as `failed/verifier_unavailable`. No PB was published. The fixture explicitly advanced backoff rather than waiting.
++
++**Current recovery:** restore compatible workers, then use Uploads → Retry for a retained failed Run. This keeps the same Run/ticket/replay. Unsupported historical contracts return `CONTRACT_UNSUPPORTED` and must not be silently rescored.
++
++**Required repair:** compatible job routing/claim filters or coordinated queue-cohort draining. Incapable workers should not spend an attempt budget. Weekly groups need a deployment policy preserving their pinned rules.
++
++### 4. P2 — malformed success responses abort upload processing
++
++[cloud_tracks.gd:689](../game/backend/cloud_tracks.gd#L689) assumes every successful submission has `run_id`; other paths assume `status` and endpoint-specific dictionary fields. The HTTP adapter validates JSON dictionary shape, not complete success contracts.
++
++**Confirmed fault:** HTTP 202 with `{}` causes a real GDScript `Invalid access ... run_id` error. The unchanged fail-fast development runner exits 1. The aborted source path has no guaranteed cleanup of the flush latch.
++
++**Current recovery:** correct the server/proxy response contract and restart the client to clear process-local latches; the saved recording is preserved. Repeated malformed responses reproduce the fault.
++
++**Required repair:** endpoint-specific field/type validation, bounded retryable protocol errors and latch cleanup on every path.
++
++### 5. P2 — refresh outages can force sign-out
++
++[backend_client.gd:45](../game/backend/backend_client.gd#L45) only retries refresh on proven non-delivery, explicit rate limiting and `REQUEST_VALIDATION_BUSY`. DB-unavailable 503, proxy 502/504, ambiguous timeout or a lost successful refresh response can clear the session. Server rotation is single-use; reusing a consumed token revokes its family in [auth.py:237](../backend/bmt_backend/auth.py#L237).
++
++**Confirmed native observation:** expired access followed by refresh `503/DATABASE_UNAVAILABLE` signs the client out. This is security-conservative: an ambiguous request might have committed token rotation.
++
++**Current recovery:** restore service and sign in again to the same account. Its scoped outbox can continue; do not blindly resend a possibly consumed refresh token.
++
++**Required repair:** clearer reauthentication/recovery UI and a narrowly scoped secure recovery protocol for ambiguous refresh delivery. Preserve reuse detection; do not allow unrestricted token reuse or store plaintext credentials in generic retry records.
++
++Account error text currently tells users to start the PC backend for some network failures. Production recovery messages must instead explain reconnect, service retry, sign-in or local-play choices; developer setup instructions should stay in development flows.
++
++### 6. P2 — an uncertain resume is not durable across leaving/restart
++
++Server consumption and its receipt are atomic/idempotent. Client pending state is only in `ResumeCredits.pending` and `begin()` clears it. There is no durable reconciliation route for an abandoned uncertain operation.
++
++**Confirmed probes:** an ignored successful consume response had already spent the free allowance and created exactly one receipt. Same-key retry recovered it without another spend. Native pending state survived the transport error but disappeared at a new race.
++
++The UI already locks the selected point and offers Retry or Leave race, explaining that the resource may be spent. [game.gd:863](../game/core/game.gd#L863) prevents continuing that uncertain race. Omitting an authorized event fails receipt validation. No double-spend or hidden continuation was demonstrated.
++
++**Current recovery:** stay in the paused race, reconnect and retry the unchanged selection/key. Leaving can forfeit the resource; a restart/new race loses the pending operation identity.
++
++**Required repair:** durable pending-operation tracking and an explicit reconciliation/abandonment policy for banked/daily resources, preserving exact receipts and the three-resume limit.
++
++### 7. P2 — missing accepted Runs can be polled indefinitely
++
++A DB snapshot restore may retain a ticket but precede its accepted Run. [cloud_tracks.gd:697](../game/backend/cloud_tracks.gd#L697) retries status 404 every 15 seconds, without reconciling its saved ticket/key/replay or displaying a terminal recovery state.
++
++**Confirmed probes:** the client only polled its missing Run; after a consistent isolated rollback of Run plus its submission retry record, the original submission could be accepted again while the ticket remained valid.
++
++**Current recovery:** no automatic client resubmission in this case. An operator/client recovery tool can reconcile the original submission if ticket, receipts and original key are still valid. Once expired, show an explicit unverified outcome and start a new race. Ordinary process restart preserves data and is distinct from snapshot restore/data loss.
++
++**Required repair:** missing-Run reconciliation and explicit expired/restore outcomes; never mint a replacement credit or change the recording/key blindly.
++
++### 8. P2 — restart/outage recovery can wait four minutes and become manual
++
++Default leases are 240 seconds and infrastructure work has three attempts. A failed finalization/heartbeat after claim leaves the job fenced, but the computed result may be discarded until lease reclamation. Exhausted failures retain evidence and pause automatic client work.
++
++The CLI loop survives exceptions, but has no explicit SIGTERM/drain handler to stop claiming, finish current work and close its engine. A Compose grace period alone does not implement worker draining.
++
++**Current recovery:** restore DB/storage/compatible worker access; wait for the lease to expire and automatic reclamation. If exhausted, use Uploads → Retry. Existing crash, stale-lease and finalization fault tests passed; real cloud shutdown/failover timing was not measured.
++
++**Required repair:** graceful scale-in, outage-aware retry accounting, bounded retry of a computed fenced result where possible and clear recovery messaging. Keep lease fences/hard queue bounds.
++
++### 9. P2 — a fake Authorization header increases public traffic allowance
++
++[middleware.py:193](../backend/bmt_backend/middleware.py#L193) selects the generous edge budget whenever the header exists. Public bootstrap/discovery do not validate it with `current_player`. Protected endpoints remain secure.
++
++**Confirmed probe:** with public allowance 2 and edge allowance 100, anonymous bootstrap returned 200/200/429; three requests with garbage Authorization returned 200/200/200. `/me` still returned 401. Defaults are 600 versus 12,000 requests/minute.
++
++**Current recovery:** operational edge throttling can contain a burst; invalid credentials grant no protected API access. Existing app rate classification still grants the larger public allowance.
++
++**Required repair:** classify public reads independently or validate identity before granting a separate budget. Preserve legitimate NAT behavior and configure only trusted cloud proxies.
++
++### 10. P2 — wrong phone clocks reject fresh operations
++
++Timestamped keys use the phone wall clock at [backend_client.gd:209](../game/backend/backend_client.gd#L209). Server expiry/future checks are correct for retry retention, but new keys do not use server-adjusted time. Retry scheduling also uses wall time.
++
++**Confirmed API probe:** two days ahead gives 422; 91 days behind gives 410. Tickets, saves and resource writes can be blocked.
++
++**Current recovery:** correct the device clock before creating new operations. Fresh ticket attempts can then generate valid new keys. Persisted clock-invalid upload keys need an explicit recovery flow that the current ordinary UI does not fully provide. Do not replace keys for uncertain accepted requests or bypass expiry.
++
++**Required repair:** bounded server-time offset for new keys and monotonic in-process retry waits, preserving original durable identities.
++
++### 11. P2 — internal ValueError can be labeled invalid client replay
++
++[worker.py:129](../backend/bmt_backend/worker.py#L129) treats all ValueErrors during storage/verifier/ghost work as terminal `invalid_replay`. Standard checksum/gzip failures correctly raise OSError and retry. A malformed server-side digest raises ValueError before canonical verification.
++
++**Confirmed probe:** corrupting a legitimate queued Run's stored digest produced `rejected/invalid_replay`, `retryable=false`. No PB was published, but an infrastructure/data failure was blamed on the recording.
++
++**Current recovery:** an operator must repair/restore trusted metadata/evidence; the ordinary rejected-Run retry route refuses it. An actually invalid replay requires a new valid race.
++
++**Required repair:** catch explicit canonical `VerificationError` for invalid submissions and classify storage/metadata/adapter faults separately.
++
++### 12. P2 — recovery observability is incomplete
++
++Workers emit `verification_seconds`, but [observability.py:19](../backend/bmt_backend/observability.py#L19) drops it from structured logs. It remains in the latest heartbeat details, but competition health does not expose duration distributions. A formatter probe confirmed the loss.
++
++API readiness checks schema/object IO, while separate competition health checks worker builds/age. API readiness can be healthy during verifier outage. No cloud alert/autoscaling integration is deployed.
++
++**Current recovery:** inspect separate competition health, queue/failure counts, worker heartbeat details, structured exception types and backup markers. Healthy API routing alone does not prove verification works.
++
++**Required repair:** compatible capacity, service-time distribution, lease/retry exhaustion, pending age and phase-specific metrics, plus synthetic verification alerts. Keep secrets and submitted bodies out of logs.
++
++## Exception and recovery matrix
++
++| Exception | Automatic behavior | Player/operator recovery | Preserved data / limit |
++| --- | --- | --- | --- |
++| Connection lost while driving | Canonical racing stays local. | Reconnect; ordinary local racing remains available. | Online resumes need server authority; a first submission still needs a valid ticket. |
++| Submission accepted, response lost | Retry original durable key/content returns the same Run. | Let outbox retry; sign into the same account if necessary. | Confirmed across recreated API; no duplicate Run. |
++| API restart or replica replacement | Durable DB sessions/jobs/receipts remain; interrupted requests retry. | Restore healthy routing; keep origin/account configuration stable. | Instance-private caches are dispensable; shared DB/object store is required. |
++| DB unavailable / transaction failure | Bounded API 503, transaction rollback, surviving worker loop. | Restore DB connectivity/pool/failover, then allow retries; expired access may require sign-in. | Unknown commit outcome must be reconciled with original key, not a fresh write. |
++| Storage missing/corrupt/unreachable | Normal checksum/gzip failures fail closed as infrastructure errors. | Restore provider permissions/network/evidence from a coherent backup, then retry. | Do not fabricate missing proof or delete pending recordings. |
++| Worker crash / stale lease | Lease reclamation and token fencing prevent stale finalization. | Wait for lease or retry an exhausted infrastructure failure after repair. | Original ticket/replay remains; default delay can approach four minutes. |
++| Invalid controls/time/checkpoints/receipts | Reject malformed proof; no PB/publication. | Update/repair the client and complete a new valid race. | Do not retry an invalid proof indefinitely or call every rejection cheating. |
++| Version/vehicle/config mismatch | Exact pinned contract blocks acceptance. | Install compatible client/backend cohort; retained infrastructure failures may retry with the original contract. | Historical standings remain unchanged; mixed-fleet recovery gaps above. |
++| Unknown resume spend | Same-key retry recovers the original receipt. | Retry the unchanged selection while paused; Leave may forfeit the spent resource. | Current pending state is not durable across leaving/restart. |
++| Expired ticket/week | First late submission is rejected. | Display unverified/expired outcome and race again. | Two-hour ordinary tickets; rivalry also ends at week boundary. Prior accepted same-key responses can still recover. |
++| Duplicate write / conflict | Same operation recovers; changed content with the same key returns 409. | Retry original identity or use the explicit draft conflict flow. | Grants/receipts are idempotent; immutable revisions are not overwritten. |
++| Token revoked / disabled account | Reject sessions, clear local identity and scope fences. | Reauthenticate if allowed; owner/moderation decision for disabled accounts. | Account-specific outbox remains; another account must not adopt it. |
++| Optional ghost/catalog failure | Missing ghost does not delay race start; bounded scoped caches remain. | Retry presentation/download when online; use local tracks. | Ghost poses are never timing proof; required uncached cloud track data must finish downloading. |
++| Phone storage full / corrupt pending files | Atomic writes fail; corrupt files are preserved for recovery. | Free storage, stay on failed Results and Retry saving; recover backed-up files rather than deleting them. | Leaving during failed async save is P1; process-killed unsaved/in-progress racing is not persisted. |
++| Snapshot restore / pending status 404 | Current client keeps polling. | Reconcile original ticket/key/recording if valid; otherwise explain the restore/expiry outcome. | No current automatic missing-Run resubmission; backup recovery-point losses must be stated. |
++| Malformed backend success | Current outbox can abort. | Repair response contract, restart client; replay remains on disk. | P2: validate endpoint responses and release latches before relying on retry. |
++
++## Cheating scope and robust boundaries
++
++The API accepts only bounded quantized input recordings, rather than client-reported times/state. Canonical simulation computes completion/time, with exact ticket/account/version and rewind receipt binding. Invalid attempts do not produce PBs or creator publication proof. Resource balance/fulfillment is server-owned; duplicate receipts/grants do not mint another resource.
++
++Verification proves a legal deterministic result, not human input provenance. A bot can generate/reuse legally valid recordings under this model. Public ghost poses are not trusted proof. Artificial test identities are isolated, which is distinct from detecting automation by a normal account. Production ad/store fulfillment remains unconfigured; the owner-authorized temporary ad_preview path does not claim an ad was watched or mint banked rewards.
++
++Shaped-but-invalid long recordings or expensive authored geometry can still consume verification CPU before rejection. Per-player pending limits, shared admission limits, maximum frames/bytes, engine deadline and process/container limits bound the work; they do not eliminate abuse by many accounts. Production acceptance should measure repeated expensive invalid inputs and complex UGC, cost-aware fairness/cooldowns and legitimate-user queue delay. Those adversarial resource costs were not measured in this review.
++
++Ownership, disabled-account checks, cancellation and account/origin fences protect private data/cache adoption. Immutable creator versions, conflict snapshots and original retry keys are retained. These were reviewed and covered by the relevant regression batch; this is not a claim that every possible cheating strategy was tested.
++
++## Cloud recovery acceptance
++
++Operator recovery should proceed in this order:
++
++1. Identify the failed dependency/build cohort using API readiness, separate competition health, queue age and storage/DB status. Preserve authoritative volumes, pending recordings and operation identities. Do not reset the DB/queue or delete retries to clear an alarm.
++2. Restore the original shared authority, or a deliberately selected consistent DB/object recovery point. Existing pools pre-ping and reconnect; a simple connection outage does not require restoring a backup. A snapshot restore can lose runs, receipts and wallet writes within its recovery-point window.
++3. Ensure API/worker/schema/contracts agree and incompatible workers stop claiming. Verify readiness and a synthetic or authorized private end-to-end completion before relying on throughput/health claims.
++4. Let fenced leases and original-key retries reconcile pending work. Retry exhausted infrastructure Runs only after the dependency/build is repaired. Reauthentication must retain the same player/outbox scope.
++5. Inspect unresolved/expired/missing operations explicitly, including uncertain resource spends. Check queue drain, unique PB/outcome/receipt writes and resource balances. Do not blindly replay lost fulfillment/credit writes after restore or claim lost evidence was verified.
++6. Reopen/scale normal traffic with gradual warm capacity, bounded retry jitter and monitoring. Perform an actual restore rehearsal and rolling-cohort test; a backup completion marker or a healthy HTTP endpoint alone is insufficient.
++
++Deployment must share DB/object authority across replicas, configure trusted proxy IPs, coordinate migrations/build contracts and retain compatible capacity while draining. More API replicas cannot repair a failed shared dependency or incompatible worker fleet.
++
++Failure retries currently use largely fixed 15-second upload/five-second rivalry delays; success polling has jitter. A common outage can synchronize retries. Add bounded exponential backoff/jitter, preserve operation identities, respect Retry-After and expose definitive failures instead of unlimited retries.
++
++Required target tests: disconnects at each commit/response boundary; TLS/DNS/proxy 502/504; routing across protocol/build cohorts; SIGTERM during every worker phase; actual PostgreSQL restart/failover/unknown commits; provider permissions/timeouts/corruption; migration failure/rollback; phone process kill/full storage/backgrounding; reauthentication during pending uploads/resumes; reconnect storms; coherent backup/restore with traffic.
++
++No cloud, real Google, external object-provider, physical-phone or NAS test was performed here. Phone attachment was not re-enumerated. No full physics validation/export was performed; canonical rules are unchanged.
++
++## Actual verification and changed files
++
++- Relevant existing auth/replay/receipt/lease/storage/recovery tests: **117 passed, 3 skipped, 126 deselected**. The three skips require PostgreSQL cross-connection/row-lock acceptance; PostgreSQL and selected canonical-engine cases were explicitly excluded.
++- API/worker observations: **9 passed, 6 PostgreSQL parametrizations deselected**. Probes assert current behavior, including gaps; passing does not mean those gaps are repaired.
++- Five native client scenarios were recorded with default diagnostic exit 0. A separate malformed-success injection produced the real GDScript error and **exit 1** through the unchanged fail-fast runner; it is not reported as passed.
++- Pinned Godot `4.7.2.stable.official.ed1daf0bf`. Python probe Ruff passes. Initial helper unpacking and diagnostic ordering were corrected without changing production assertions.
++
++Changed files: this report; evidence/probe files; `game/tests/review_backend_exceptions.gd`; new status/phase review notes. No production runtime fix was applied. Source hashes, exact commands, saved results and scoped checkpoint: [evidence/backend-exception-review-2026-10-05](evidence/backend-exception-review-2026-10-05/README.md).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested P1/P2 backend repairs and isolated capacity tooling implemented. Short queue/membership locks, exact incremental projections, reusable fenced canonical workers, bounded pools/uploads, compressed negotiated transport, conditional/batched polling, threaded durable client IO and nonblocking ghosts/results; coordinated online retention/backup and optional private object adapter. Migrations 0013/0014 require a backed-up matching API/worker rollout; existing services/data untouched. Broad desktop suite 284 passed/2 skipped, PostgreSQL 112/6, later affected checks 89/1 and PG race checks 69/5, final native protocol 5 pass; batches overlap. Persistent engine 2, CLI/provider/archive 12 plus 7 subtests, parser 292 and client 12 checks pass. Disposable 2-CPU PostgreSQL lab: 1k/10k/100k registered-player reads max p95 156/172/188 ms with API peak RSS about 105 MiB; 15 new canonical attempts verified and queue drained. Strict tie/join/overload failures retained; explicit provisional endpoint presets documented. Online synthetic dump/object restore preserves exact historical PB after live replacement and GC. No NAS deployment or change-specific attached DN2103 build/performance check; target sustained load, proxy/cellular, provider/Compose-wrapper and device acceptance remain. Scoped patch preserves concurrent menu work. Files, actual commands, reports and acceptance: docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md and backend/LOAD_TESTING.md.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner requests cancellation of back-and-forth page swipes and removal of lingering yellow tab borders, following held biome-card release failures. A deliberate 20-unit backward MOVE now clears intent even far from the origin; a fresh 20-unit forward stroke can rearm, while slight relaxation and held short strokes remain accepted. Parallel mouse input is consumed during page-owned touch, and moving content controls are gated until settling. Primary tab focus outline removed. Explicit parallel-input reproduction: 250 checks/four failures before fix; final graphical gestures 260/app 97 pass, focused pinned export driving 72/catalog 21/menus 48 pass. Exact APK installed/compiled resources verified on DN2103; native long held card stroke and 36-pixel held stroke commit, repeated back-and-forth returns to Create, carousel keeps Race, inspected tab outlines absent. First long attempt interrupted by Settings and repeated; dozing capture retry recovered. Existing shutdown warnings; human feel/full Validate/performance/other-device acceptance pending. Files, actual commands, evidence and scoped review checkpoint: docs/MENU_PAGE_SWIPES.md (Deliberate reversal, exclusive touch and tab outlines). Concurrent work preserved.
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/README.md b/docs/evidence/backend-exception-review-2026-10-05/README.md
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/README.md
+@@ -0,0 +1,24 @@
++# Exception/recovery review evidence ? 2026-10-05
++
++See [findings, current recovery and operator sequence](../../BACKEND_EXCEPTION_REVIEW_2026_10_05.md). This is a review of the existing implementation for future load-balanced cloud production. No production runtime fix, service restart/deployment or existing player-data change was made.
++
++`probe_exception_paths.py` runs against disposable SQLite with inherited domain/auth fixtures. Its nine passing tests assert observed behavior, including recovery gaps; passing does not mean those gaps are fixed. `probe-api.xml` records 9 passed/6 PostgreSQL parametrizations deselected. `regressions.xml` records 117 existing tests passed/3 PostgreSQL-only cases skipped/126 deselected. No live PostgreSQL restart, real cloud provider or physical device was tested.
++
++`client-observations.json` and `client-probe.log` record five native diagnostic scenarios using fake network responses and workspace-only files: failed save after leaving Results, refresh DB failure, uncertain resume state, missing-Run polling and mixed API transport. The real adapters/App save method are invoked; this is not a full graphical user/device interaction test. The source is `game/tests/review_backend_exceptions.gd` and is excluded from shipping test-free exports.
++
++`malformed-success.log` is an intentionally failing native reproduction: HTTP 202 with an empty dictionary triggers the actual missing-run_id error in cloud_tracks.gd. The pinned build entry kills on Script Error and exits 1; its failure checks were not relaxed. That fault is not counted as a passed test. Default native diagnostic exits 0 while recording current problematic states.
++
++Commands actually executed from the workspace root:
++
++```powershell
++.tools/backend-venv/Scripts/python.exe -m pytest docs/evidence/backend-exception-review-2026-10-05/probe_exception_paths.py -q -k 'not postgres' --tb=short --show-capture=no --junitxml=build/backend-exception-probes.xml
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_auth.py backend/tests/test_domains.py backend/tests/test_review_followups.py backend/tests/test_review_reliability.py backend/tests/test_resumes.py backend/tests/test_track_lifecycle.py backend/tests/test_scalability.py -q -k 'not postgres and not full_manifest and not canonical and not recorded_practice' --tb=short --show-capture=no --junitxml=build/backend-exception-regressions.xml
++.tools/backend-venv/Scripts/python.exe -m ruff check docs/evidence/backend-exception-review-2026-10-05/probe_exception_paths.py
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_backend_exceptions.gd
++$env:BMT_EXCEPTION_FAULT='malformed'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_backend_exceptions.gd
++```
++
++Run fault injection in a fresh shell, or remove that task-specific variable afterward before the normal diagnostic. Native runs required normal Windows certificate-store access, using the exact `4.7.2.stable.official.ed1daf0bf` engine. Initial helper tuple unpacking and intentional-error capture ordering were corrected; production assertions were untouched.
++
++`source-hashes.json` fingerprints reviewed runtime/probe files. `scoped-change.patch` includes only this review's new documents/diagnostics and status/phase notes, excluding earlier backend repairs and concurrent menu edits. Separate local checkpoint branch: `backend-exception-review-2026-10-05`, based on the completed scalability checkpoint. Active branch, shared index and working files remain unchanged by checkpoint creation. No merge or deployment.
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/client-observations.json b/docs/evidence/backend-exception-review-2026-10-05/client-observations.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/client-observations.json
+@@ -0,0 +1,44 @@
++{
++	"ambiguous_resume": {
++		"pending": true,
++		"pending_after_new_race": false,
++		"used": 0
++	},
++	"failed_save_after_leaving_results": {
++		"retry_dialogs": 0,
++		"save_attempts": 1,
++		"save_busy": false,
++		"saved": false
++	},
++	"missing_run_poll": {
++		"job": {
++			"_path": "C:/Codes/Godot/Beat my track/build/exception-probe-outbox/missing-2524538/39bf966752165f2cb99debe061c3e9de15ac77563774ab7db11783ce075636fe/players/f6950244a3a83f6942ee19da138ab6ee5795d91793304663c72a800ca5f48463/runs/1de0d88279f76ebcb102a03fa2cf569394d10b61e4f135753d89253bae1f106e.job.json",
++			"key": "v2.1791175483.f9c364d13dcf8a12cd9e300bd0a7b51bac67d7cba8b1d813",
++			"publish": "",
++			"publish_key": "v2.1791175483.8a80465c2c26a534d78400b56ebf9e9258ce0c36ba4ecfc5",
++			"replay": "1de0d88279f76ebcb102a03fa2cf569394d10b61e4f135753d89253bae1f106e.replay.json",
++			"replay_hash": "00807e9d3e6e697a851f7093948b1c81e60635c418685b16b488821d8b38de84",
++			"retry_at": 1791175498.0,
++			"run_id": "previously-accepted-run",
++			"ticket": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
++		},
++		"paths": [
++			"/runs/previously-accepted-run"
++		]
++	},
++	"mixed_api_protocol": {
++		"calls_after_retry": 1,
++		"calls_before_retry": 1,
++		"job_failure": "Unsupported replay envelope",
++		"schema": "bmt-packed-input-v1"
++	},
++	"refresh_database_outage": {
++		"calls": [
++			"/me",
++			"/auth/refresh"
++		],
++		"error": "DATABASE_UNAVAILABLE",
++		"signed_in": false,
++		"status": 503
++	}
++}
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/client-probe.log b/docs/evidence/backend-exception-review-2026-10-05/client-probe.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/client-probe.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++EXCEPTION_REVIEW_OBSERVATIONS {"ambiguous_resume":{"pending":true,"pending_after_new_race":false,"used":0},"failed_save_after_leaving_results":{"retry_dialogs":0,"save_attempts":1,"save_busy":false,"saved":false},"missing_run_poll":{"job":{"_path":"C:/Codes/Godot/Beat my track/build/exception-probe-outbox/missing-2524538/39bf966752165f2cb99debe061c3e9de15ac77563774ab7db11783ce075636fe/players/f6950244a3a83f6942ee19da138ab6ee5795d91793304663c72a800ca5f48463/runs/1de0d88279f76ebcb102a03fa2cf569394d10b61e4f135753d89253bae1f106e.job.json","key":"v2.1791175483.f9c364d13dcf8a12cd9e300bd0a7b51bac67d7cba8b1d813","publish":"","publish_key":"v2.1791175483.8a80465c2c26a534d78400b56ebf9e9258ce0c36ba4ecfc5","replay":"1de0d88279f76ebcb102a03fa2cf569394d10b61e4f135753d89253bae1f106e.replay.json","replay_hash":"00807e9d3e6e697a851f7093948b1c81e60635c418685b16b488821d8b38de84","retry_at":1791175498.0,"run_id":"previously-accepted-run","ticket":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"},"paths":["/runs/previously-accepted-run"]},"mixed_api_protocol":{"calls_after_retry":1,"calls_before_retry":1,"job_failure":"Unsupported replay envelope","schema":"bmt-packed-input-v1"},"refresh_database_outage":{"calls":["/me","/auth/refresh"],"error":"DATABASE_UNAVAILABLE","signed_in":false,"status":503}}
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/malformed-success.log b/docs/evidence/backend-exception-review-2026-10-05/malformed-success.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/malformed-success.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++EXCEPTION_REVIEW_OBSERVATIONS {"ambiguous_resume":{"pending":true,"pending_after_new_race":false,"used":0},"failed_save_after_leaving_results":{"retry_dialogs":0,"save_attempts":1,"save_busy":false,"saved":false},"malformed_success":{"expected_script_error":"cloud_tracks.gd:689","response_data":{},"response_status":202},"refresh_database_outage":{"calls":["/me","/auth/refresh"],"error":"DATABASE_UNAVAILABLE","signed_in":false,"status":503}}
++SCRIPT ERROR: Invalid access to property or key 'run_id' on a base object of type 'Dictionary'.
++   at: flush_outbox (res://backend/cloud_tracks.gd:689)
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/probe-api.xml b/docs/evidence/backend-exception-review-2026-10-05/probe-api.xml
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/probe-api.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="9" time="3.973" timestamp="2026-10-05T07:44:32.962168+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_lost_submission_response_same_key_recovers_across_api_restart[sqlite]" time="0.517" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_lost_resume_response_is_idempotent_but_credit_already_spent[sqlite]" time="0.264" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_incompatible_worker_claims_and_exhausts_valid_job[sqlite]" time="0.267" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_invalid_server_digest_is_classified_as_invalid_client_replay[sqlite]" time="0.287" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_missing_pending_run_after_restore_can_be_resubmitted[sqlite]" time="0.246" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_database_outage_is_503_and_no_secret_parameters" time="0.380" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_old_and_future_phone_clocks_block_new_mutations[sqlite]" time="0.284" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_fake_authorization_header_increases_public_read_allowance" time="0.397" /><testcase classname="docs.evidence.backend-exception-review-2026-10-05.probe_exception_paths" name="test_worker_service_duration_is_dropped_from_structured_logs" time="0.001" /></testsuite></testsuites>
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/probe_exception_paths.py b/docs/evidence/backend-exception-review-2026-10-05/probe_exception_paths.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/probe_exception_paths.py
+@@ -0,0 +1,173 @@
++"""Isolated review probes assert observed behavior, including recovery gaps.
++
++These passing observations do not mean the discovered gaps are repaired.
++"""
++import json
++import logging
++import sys
++from dataclasses import replace
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(ROOT / "backend" / "tests"))
++
++from bmt_backend.app import create_app
++from bmt_backend.observability import JsonFormatter
++from bmt_backend.resume_models import ResumeReceipt
++from bmt_backend.track_models import IdempotencyRecord, PersonalBest, Run, now
++from bmt_backend.worker import process_one
++from conftest import auth_app as auth_app_fixture
++from conftest import auth_client as auth_client_fixture
++from fastapi.testclient import TestClient
++from sqlalchemy import delete, event, select
++from sqlalchemy.exc import OperationalError
++from test_domains import FakeVerifier, headers, public_course, submit, ticket
++from test_domains import domain as domain_fixture
++
++domain = domain_fixture
++auth_app = auth_app_fixture
++auth_client = auth_client_fixture
++
++
++def test_lost_submission_response_same_key_recovers_across_api_restart(domain):
++    course = public_course(domain)[0]
++    issued = ticket(domain, course, "Alice")
++    body = {"ticket_id": issued["ticket_id"],
++            "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
++    h = headers(domain, "Alice", "lost-response-key")
++    accepted = domain.client.post("/v1/runs", json=body, headers=h)
++    assert accepted.status_code == 202
++    # Deliberately ignore the response, then recreate an API against the same DB/store.
++    fresh = create_app(domain.app.state.settings, engine=domain.app.state.engine,
++                       verifier=FakeVerifier())
++    fresh.dependency_overrides = domain.app.dependency_overrides.copy()
++    with TestClient(fresh) as client:
++        retried = client.post("/v1/runs", json=body, headers=h)
++    assert retried.status_code == 202
++    assert retried.json()["run_id"] == accepted.json()["run_id"]
++    with domain.factory() as session:
++        assert len(list(session.scalars(select(Run).where(Run.ticket_id == issued["ticket_id"])))) == 1
++
++
++def test_lost_resume_response_is_idempotent_but_credit_already_spent(domain):
++    course = public_course(domain)[0]
++    issued = ticket(domain, course, "Alice")
++    h = headers(domain, "Alice", "begin-resume-key")
++    race = domain.client.post("/v1/resume-races", json={"ticket_id": issued["ticket_id"]}, headers=h).json()
++    body = {"ordinal": 1, "input_offset": 10, "from_tick": 10, "to_tick": 0}
++    url = f"/v1/resume-races/{race['race_id']}/resumes"
++    h = headers(domain, "Alice", "lost-resume-key")
++    first = domain.client.post(url, json=body, headers=h)
++    assert first.status_code == 200
++    assert first.json()["wallet"]["free"] == 0
++    second = domain.client.post(url, json=body, headers=h)
++    assert second.json() == first.json()
++    with domain.factory() as session:
++        assert len(list(session.scalars(select(ResumeReceipt).where(ResumeReceipt.race_id == race["race_id"])))) == 1
++    # A client must resolve the pending operation; omitting its authorized event fails closed.
++    rejected = domain.client.post("/v1/runs", headers=headers(domain, "Alice"),
++        json={"ticket_id": issued["ticket_id"],
++              "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}})
++    assert rejected.status_code == 422
++
++
++def test_incompatible_worker_claims_and_exhausts_valid_job(domain):
++    course = public_course(domain)[0]
++    issued = ticket(domain, course, "Alice")
++    accepted = submit(domain, issued, "Alice")
++
++    class OldWorker(FakeVerifier):
++        calls = 0
++
++        def manifest(self):
++            return {**super().manifest(), "physics_version": "old-worker"}
++
++        def verify_run(self, *args, **kwargs):
++            self.calls += 1
++            return super().verify_run(*args, **kwargs)
++
++    old = OldWorker()
++    domain.app.state.verifier = old
++    for _ in range(domain.app.state.settings.max_job_attempts):
++        with domain.factory() as session:
++            session.get(Run, accepted["run_id"]).lease_until = 0
++            session.commit()
++        assert process_one(domain.app)
++    assert old.calls == 3
++    result = domain.client.get("/v1/runs/" + accepted["run_id"], headers=headers(domain, "Alice")).json()
++    assert result["status"] == "failed"
++    assert result["failure_code"] == "verifier_unavailable"
++    assert result["retryable"]
++    with domain.factory() as session:
++        assert session.scalar(select(PersonalBest).where(PersonalBest.run_id == accepted["run_id"])) is None
++
++
++def test_invalid_server_digest_is_classified_as_invalid_client_replay(domain):
++    issued = ticket(domain, public_course(domain)[0], "Alice")
++    accepted = submit(domain, issued, "Alice")
++    with domain.factory() as session:
++        session.get(Run, accepted["run_id"]).replay_hash = "z" * 64
++        session.commit()
++    assert process_one(domain.app)
++    result = domain.client.get("/v1/runs/" + accepted["run_id"], headers=headers(domain, "Alice")).json()
++    assert result["status"] == "rejected"
++    assert result["failure_code"] == "invalid_replay"
++    assert not result["retryable"]
++
++
++def test_missing_pending_run_after_restore_can_be_resubmitted(domain):
++    issued = ticket(domain, public_course(domain)[0], "Alice")
++    accepted = submit(domain, issued, "Alice", key="restore-pending-key")
++    # Model a consistent restore point after ticket issue but before submission.
++    with domain.factory() as session:
++        session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.player_id == domain.players["Alice"],
++                                                       IdempotencyRecord.scope == "submit_run"))
++        session.delete(session.get(Run, accepted["run_id"]))
++        session.commit()
++    status = domain.client.get("/v1/runs/" + accepted["run_id"], headers=headers(domain, "Alice"))
++    assert status.status_code == 404
++    recovered = submit(domain, issued, "Alice", key="restore-pending-key")
++    assert recovered["run_id"] != accepted["run_id"]
++
++
++def test_database_outage_is_503_and_no_secret_parameters(auth_app, auth_client):
++    def broken(*args):
++        raise OperationalError("synthetic-statement", {}, Exception("synthetic unavailable"), hide_parameters=True)
++
++    event.listen(auth_app.state.engine, "before_cursor_execute", broken)
++    try:
++        result = auth_client.get("/v1/bootstrap")
++        assert result.status_code == 503
++        assert result.json()["detail"] == "DATABASE_UNAVAILABLE"
++        assert set(result.json()) == {"detail", "request_id"}
++    finally:
++        event.remove(auth_app.state.engine, "before_cursor_execute", broken)
++    assert auth_client.get("/v1/bootstrap").status_code == 200
++
++
++def test_old_and_future_phone_clocks_block_new_mutations(domain):
++    course = public_course(domain)[0]
++    for timestamp, expected in ((now() + 2 * 86400, 422), (now() - 91 * 86400, 410)):
++        key = f"v2.{timestamp:010d}." + "a" * 48
++        response = domain.client.post("/v1/run-tickets", json={"version_id": course["version_id"],
++            "vehicle_id": "compact"}, headers=headers(domain, "Alice", key))
++        assert response.status_code == expected
++
++
++def test_fake_authorization_header_increases_public_read_allowance(auth_app):
++    settings = replace(auth_app.state.settings, rate_limit_per_minute=2, edge_limit_per_minute=100)
++    app = create_app(settings, engine=auth_app.state.engine, identity_verifier=auth_app.state.identity_verifier)
++    with TestClient(app) as client:
++        assert [client.get("/v1/bootstrap").status_code for _ in range(3)] == [200, 200, 429]
++        assert [client.get("/v1/bootstrap", headers={"Authorization": "unvalidated-garbage"}).status_code
++                for _ in range(3)] == [200, 200, 200]
++        assert client.get("/v1/me", headers={"Authorization": "unvalidated-garbage"}).status_code == 401
++
++
++def test_worker_service_duration_is_dropped_from_structured_logs():
++    record = logging.LogRecord("bmt.worker", logging.INFO, "worker.py", 195, "verification_complete", (), None)
++    record.verification_seconds = 1.234
++    record.run_id = "synthetic-run"
++    encoded = json.loads(JsonFormatter().format(record))
++    assert encoded["run_id"] == "synthetic-run"
++    assert "verification_seconds" not in encoded
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/regressions.xml b/docs/evidence/backend-exception-review-2026-10-05/regressions.xml
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/regressions.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="3" tests="120" time="32.856" timestamp="2026-10-05T07:35:28.748534+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_auth" name="test_google_account_uses_internal_id_and_reuses_identity" time="0.447" /><testcase classname="tests.test_auth" name="test_nonce_required_single_use_and_expires" time="0.398" /><testcase classname="tests.test_auth" name="test_refresh_rotation_reuse_revokes_family" time="0.413" /><testcase classname="tests.test_auth" name="test_logout_and_logout_all" time="0.493" /><testcase classname="tests.test_auth" name="test_expiration_and_disabled_players[access]" time="0.420" /><testcase classname="tests.test_auth" name="test_expiration_and_disabled_players[family]" time="0.372" /><testcase classname="tests.test_auth" name="test_expiration_and_disabled_players[disabled]" time="0.424" /><testcase classname="tests.test_auth" name="test_validation_does_not_echo_tokens" time="0.341" /><testcase classname="tests.test_auth" name="test_malformed_json[{&quot;a&quot;:1,&quot;a&quot;:2}]" time="0.372" /><testcase classname="tests.test_auth" name="test_malformed_json[{&quot;a&quot;:NaN}]" time="0.329" /><testcase classname="tests.test_auth" name="test_malformed_json[{&quot;a&quot;:Infinity}]" time="0.313" /><testcase classname="tests.test_auth" name="test_malformed_json[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]" time="0.335" /><testcase classname="tests.test_auth" name="test_json_rejects_overflow_and_unpaired_unicode[{&quot;a&quot;:1e999}]" time="0.330" /><testcase classname="tests.test_auth" name="test_json_rejects_overflow_and_unpaired_unicode[{&quot;a&quot;:-1e999}]" time="0.378" /><testcase classname="tests.test_auth" name="test_json_rejects_overflow_and_unpaired_unicode[{&quot;refresh_token&quot;:&quot;\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800\\ud800&quot;}]" time="0.357" /><testcase classname="tests.test_auth" name="test_json_rejects_overflow_and_unpaired_unicode[{&quot;\\ud800&quot;:&quot;bad key&quot;}]" time="0.394" /><testcase classname="tests.test_auth" name="test_rate_budget_database_failure_is_structured_unavailable" time="0.352" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[verifier_timeout_seconds]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[job_lease_seconds]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[max_job_attempts]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[access_ttl_seconds]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[refresh_ttl_seconds]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[max_body_bytes]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[rate_limit_per_minute]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[auth_limit_per_minute]" time="0.001" /><testcase classname="tests.test_auth" name="test_invalid_resource_budgets_rejected_at_startup[write_limit_per_minute]" time="0.001" /><testcase classname="tests.test_auth" name="test_inconsistent_resource_bounds_rejected" time="0.001" /><testcase classname="tests.test_auth" name="test_lease_covers_cold_manifest_replay_and_finalization" time="0.001" /><testcase classname="tests.test_auth" name="test_non_ascii_development_header_does_not_raise" time="0.320" /><testcase classname="tests.test_auth" name="test_large_or_compressed_requests" time="0.309" /><testcase classname="tests.test_auth" name="test_profile_cannot_change_authority" time="0.384" /><testcase classname="tests.test_auth" name="test_development_auth_is_explicit_separate_and_production_forbidden" time="0.461" /><testcase classname="tests.test_auth" name="test_rate_limit_shared_between_app_instances" time="0.440" /><testcase classname="tests.test_auth" name="test_migration_repeat_and_health" time="0.418" /><testcase classname="tests.test_domains" name="test_upload_is_idempotent_and_documents_are_immutable[sqlite]" time="0.286" /><testcase classname="tests.test_domains" name="test_private_drafts_require_ownership_and_verified_creator_test[sqlite]" time="0.239" /><testcase classname="tests.test_domains" name="test_hide_preserves_records_and_share_links[sqlite]" time="0.366" /><testcase classname="tests.test_domains" name="test_ratings_require_completion_disallow_self_and_replace_vote[sqlite]" time="0.359" /><testcase classname="tests.test_domains" name="test_pb_ties_histogram_neighbours_and_ghost_share_population[sqlite]" time="0.446" /><testcase classname="tests.test_domains" name="test_submission_ticket_binding_expiry_idempotency_and_conflict[sqlite]" time="0.347" /><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay0]" time="0.176" /><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay1]" time="0.167" /><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay2]" time="0.291" /><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay3]" time="0.177" /><testcase classname="tests.test_domains" name="test_rejected_replay_never_publishes_track_or_pb[sqlite]" time="0.198" /><testcase classname="tests.test_domains" name="test_infrastructure_retry_is_durable_and_bounded[sqlite]" time="0.232" /><testcase classname="tests.test_domains" name="test_crashed_worker_lease_can_be_reclaimed[sqlite]" time="0.186" /><testcase classname="tests.test_domains" name="test_lost_lease_fences_stale_verification[sqlite]" time="0.202" /><testcase classname="tests.test_domains" name="test_disabled_players_removed_from_every_board_projection[sqlite]" time="0.329" /><testcase classname="tests.test_domains" name="test_unknown_vehicle_and_changed_runtime_manifest_rejected[sqlite]" time="0.305" /><testcase classname="tests.test_domains" name="test_checkpoint_rules_upgrade_keeps_track_and_historical_board[sqlite]" time="0.284" /><testcase classname="tests.test_domains" name="test_uploaded_document_cannot_spoof_creator[sqlite]" time="0.152" /><testcase classname="tests.test_domains" name="test_creator_practice_unlocks_publish_without_leaderboard_score[sqlite]" time="0.249" /><testcase classname="tests.test_review_followups" name="test_rejected_revision_never_publishes_a_blob[sqlite]" time="0.199" /><testcase classname="tests.test_review_followups" name="test_expired_last_validation_lease_is_not_claimed_again[sqlite]" time="0.161" /><testcase classname="tests.test_review_followups" name="test_health_checks_all_pinned_fields[sqlite-compiler_version]" time="0.112" /><testcase classname="tests.test_review_followups" name="test_health_checks_all_pinned_fields[sqlite-tick_rate]" time="0.109" /><testcase classname="tests.test_review_followups" name="test_health_checks_all_pinned_fields[sqlite-track_schema]" time="0.107" /><testcase classname="tests.test_review_followups" name="test_health_checks_all_pinned_fields[sqlite-vehicles]" time="0.105" /><testcase classname="tests.test_review_followups" name="test_health_rejects_python_verifier_contract_disagreement[sqlite]" time="0.153" /><testcase classname="tests.test_review_followups" name="test_matching_incomplete_builds_cannot_claim_ready[sqlite-compiler_version]" time="0.101" /><testcase classname="tests.test_review_followups" name="test_matching_incomplete_builds_cannot_claim_ready[sqlite-vehicles]" time="0.289" /><testcase classname="tests.test_review_followups" name="test_archive_cancels_pending_work_and_blocks_reinstall_restore[sqlite]" time="0.205" /><testcase classname="tests.test_review_followups" name="test_conflict_recovery_proves_the_local_operation_and_the_current_head[sqlite]" time="0.197" /><testcase classname="tests.test_review_followups" name="test_archive_before_inflight_create_fences_late_save_and_keeps_shared_links[sqlite]" time="0.237" /><testcase classname="tests.test_review_followups" name="test_maximum_four_channel_replay_fits_both_json_boundaries" time="1.456" /><testcase classname="tests.test_review_followups" name="test_retention_bounds_referenced_inspections_and_batches_queries[sqlite]" time="0.531" /><testcase classname="tests.test_review_reliability" name="test_broad_json_tree_is_rejected_without_accepting_nonfinite_values" time="0.977" /><testcase classname="tests.test_review_reliability" name="test_global_admission_and_fair_claims[sqlite]" time="0.354" /><testcase classname="tests.test_review_reliability" name="test_health_requests_never_parse_large_post[sqlite]" time="0.138" /><testcase classname="tests.test_review_reliability" name="test_competition_health_does_not_trust_an_incompatible_fresh_worker[sqlite]" time="0.107" /><testcase classname="tests.test_review_reliability" name="test_track_validations_share_admission_with_races[sqlite]" time="0.304" /><testcase classname="tests.test_review_reliability" name="test_private_validation_claims_are_fair_between_owners[sqlite]" time="0.208" /><testcase classname="tests.test_review_reliability" name="test_discovery_backfill_handles_json_null_and_is_resumable[sqlite]" time="0.474" /><testcase classname="tests.test_review_reliability" name="test_catalog_cursor_crosses_legacy_cap_without_blob_reads[sqlite]" time="3.117" /><testcase classname="tests.test_review_reliability" name="test_retention_preserves_pb_proof_and_all_course_content[sqlite]" time="0.311" /><testcase classname="tests.test_review_reliability" name="test_poll_budget_does_not_exhaust_sign_in_budget[sqlite]" time="0.307" /><testcase classname="tests.test_review_reliability" name="test_document_etag_rechecks_disabled_owner[sqlite]" time="0.221" /><testcase classname="tests.test_review_reliability" name="test_board_cache_tracks_pbs_and_restrictions_across_sessions[sqlite]" time="0.617" /><testcase classname="tests.test_review_reliability" name="test_board_cursor_preserves_competition_ties[sqlite]" time="0.322" /><testcase classname="tests.test_review_reliability" name="test_historical_contract_is_terminal_and_never_rescored[sqlite]" time="0.243" /><testcase classname="tests.test_resumes" name="test_daily_non_stacking_and_permanent_credits[sqlite]" time="0.216" /><testcase classname="tests.test_resumes" name="test_grants_are_idempotent_nonexpiring_and_not_client_claimable[sqlite]" time="0.166" /><testcase classname="tests.test_resumes" name="test_invalid_or_cross_account_requests_never_spend[sqlite]" time="0.195" /><testcase classname="tests.test_resumes" name="test_submission_requires_exact_race_receipts[sqlite]" time="0.259" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[too_far]" time="0.013" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[four]" time="0.008" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[duplicate]" time="0.008" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[offset]" time="0.008" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[tick]" time="0.009" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[fraction]" time="0.008" /><testcase classname="tests.test_resumes" name="test_replay_rejects_invalid_rewind_contract[extra]" time="0.008" /><testcase classname="tests.test_resumes" name="test_temporary_ad_resumes_are_idempotent_bounded_and_not_banked[sqlite]" time="0.201" /><testcase classname="tests.test_track_lifecycle" name="test_new_keys_and_edits_keep_one_logical_track[sqlite]" time="0.204" /><testcase classname="tests.test_track_lifecycle" name="test_private_acceptance_survives_validator_outage_and_retry[sqlite]" time="0.209" /><testcase classname="tests.test_track_lifecycle" name="test_exact_creator_proof_unlocks_publication_and_owner_status[sqlite]" time="0.257" /><testcase classname="tests.test_track_lifecycle" name="test_revision_conflict_keeps_original_master[sqlite]" time="0.169" /><testcase classname="tests.test_track_lifecycle" name="test_owner_heads_exclude_older_revisions_and_other_accounts[sqlite]" time="0.167" /><testcase classname="tests.test_track_lifecycle" name="test_invalid_document_stays_private_and_cannot_publish[sqlite]" time="0.494" /><testcase classname="tests.test_track_lifecycle" name="test_infrastructure_run_retry_retains_original_replay[sqlite]" time="0.261" /><testcase classname="tests.test_track_lifecycle" name="test_legacy_owned_document_identity_recovers_existing_track[sqlite]" time="0.161" /><testcase classname="tests.test_track_lifecycle" name="test_validation_lease_fences_old_worker[sqlite]" time="0.166" /><testcase classname="tests.test_track_lifecycle" name="test_concurrent_new_keys_have_one_authoring_identity[sqlite]" time="0.096"><skipped type="pytest.skip" message="Cross-connection locking acceptance requires PostgreSQL">C:\Codes\Godot\Beat my track\backend\tests\test_track_lifecycle.py:173: Cross-connection locking acceptance requires PostgreSQL</skipped></testcase><testcase classname="tests.test_scalability" name="test_production_worker_writes_and_pool_budget_is_explicit" time="0.009" /><testcase classname="tests.test_scalability" name="test_compact_codec_preserves_every_channel_and_receipt" time="0.001" /><testcase classname="tests.test_scalability" name="test_compressed_upload_and_raw_retry_have_identical_identity[sqlite]" time="0.282" /><testcase classname="tests.test_scalability" name="test_compression_bombs_truncation_and_concatenated_members_are_bounded" time="0.328" /><testcase classname="tests.test_scalability" name="test_large_body_slots_cover_endpoint_lifetime" time="0.425" /><testcase classname="tests.test_scalability" name="test_rivalry_storage_failure_is_a_fenced_retry_outside_db_locks[sqlite]" time="0.280" /><testcase classname="tests.test_scalability" name="test_skill_is_two_queries_for_twenty_boards_and_visibility_is_exact[sqlite]" time="0.277" /><testcase classname="tests.test_scalability" name="test_snapshot_is_batched_read_and_etag_rechecks_visibility[sqlite]" time="0.229" /><testcase classname="tests.test_scalability" name="test_online_gc_respects_publication_pins_and_backup_without_stopping_writers[sqlite]" time="0.136" /><testcase classname="tests.test_scalability" name="test_closed_week_retains_scores_and_releases_optional_evidence[sqlite]" time="0.251" /><testcase classname="tests.test_scalability" name="test_expiring_retry_keys_are_rejected_after_pruning_and_legacy_keys_remain[sqlite]" time="0.100" /><testcase classname="tests.test_scalability" name="test_finalization_db_failure_keeps_fenced_job_recoverable[sqlite]" time="0.252" /><testcase classname="tests.test_scalability" name="test_aggregate_cache_coalesces_concurrent_cold_reads" time="0.339" /><testcase classname="tests.test_scalability" name="test_gc_racing_publication_recreates_before_reference_commit[sqlite]" time="0.099"><skipped type="pytest.skip" message="PostgreSQL row-lock race">C:\Codes\Godot\Beat my track\backend\tests\test_scalability.py:305: PostgreSQL row-lock race</skipped></testcase><testcase classname="tests.test_scalability" name="test_join_retry_recovers_committed_membership_after_snapshot_failure[sqlite]" time="0.210" /><testcase classname="tests.test_scalability" name="test_authenticated_budgets_are_independent_behind_one_nat" time="0.401" /><testcase classname="tests.test_scalability" name="test_concurrent_restriction_and_pb_improvement_keep_projections_exact[sqlite]" time="0.092"><skipped type="pytest.skip" message="PostgreSQL visibility writer race">C:\Codes\Godot\Beat my track\backend\tests\test_scalability.py:364: PostgreSQL visibility writer race</skipped></testcase></testsuite></testsuites>
+diff --git a/docs/evidence/backend-exception-review-2026-10-05/verification-summary.json b/docs/evidence/backend-exception-review-2026-10-05/verification-summary.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-exception-review-2026-10-05/verification-summary.json
+@@ -0,0 +1,62 @@
++{
++  "date": "2026-10-05",
++  "pinned_engine": "4.7.2.stable.official.ed1daf0bf",
++  "findings": {
++    "P1": 3,
++    "P2": 9
++  },
++  "runtime_fixes_applied": false,
++  "existing_services_changed": false,
++  "cloud_or_device_test": false,
++  "regressions": {
++    "passed": 117,
++    "skipped": 3,
++    "deselected": 126,
++    "skip_reason": "PostgreSQL cross-connection/row-lock acceptance"
++  },
++  "observation_probes": {
++    "passed": 9,
++    "deselected": 6,
++    "assert_current_behavior_not_repaired_behavior": true
++  },
++  "native": {
++    "recorded_scenarios": 5,
++    "default_exit": 0,
++    "malformed_success_exit": 1,
++    "malformed_success_not_counted_pass": true
++  },
++  "junit": {
++    "probe-api.xml": [
++      {
++        "name": "pytest",
++        "errors": "0",
++        "failures": "0",
++        "skipped": "0",
++        "tests": "9",
++        "time": "3.973",
++        "timestamp": "2026-10-05T07:44:32.962168+03:00",
++        "hostname": "DESKTOP-96E8L9N"
++      }
++    ],
++    "regressions.xml": [
++      {
++        "name": "pytest",
++        "errors": "0",
++        "failures": "0",
++        "skipped": "3",
++        "tests": "120",
++        "time": "32.856",
++        "timestamp": "2026-10-05T07:35:28.748534+03:00",
++        "hostname": "DESKTOP-96E8L9N"
++      }
++    ]
++  },
++  "remaining_acceptance": [
++    "actual cloud load balancer and rolling cohorts",
++    "SIGTERM during worker phases",
++    "PostgreSQL restart/failover/unknown commit",
++    "object provider faults",
++    "phone background/process kill/disk full",
++    "reconnect storms and coherent restore"
++  ]
++}
+diff --git a/game/tests/review_backend_exceptions.gd b/game/tests/review_backend_exceptions.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_backend_exceptions.gd
+@@ -0,0 +1,139 @@
++extends SceneTree
++## Review observations intentionally reproduce unresolved faults. No real HTTP/identity.
++var report: Dictionary = {}
++var completed: bool = false
++
++class DelayedStore extends Node:
++	var calls: int = 0
++	func queue_run_async(_ticket: Dictionary, _frames: Array, _publish: String, _rewinds: Array) -> bool:
++		calls += 1
++		await get_tree().create_timer(0.05).timeout
++		return false
++	func flush_outbox() -> void:
++		pass
++
++class StubAPI extends "res://backend/backend_client.gd":
++	var mode: String = ""
++	var calls: Array[String] = []
++	var replay_schema: String = ""
++	func _send(path: String, _method: HTTPClient.Method, _payload: Dictionary, _authorized: bool, _key: String = "", _headers: PackedStringArray = [], _owner: int = 0) -> Dictionary:
++		calls.append(path)
++		if path == "/runs": replay_schema = str(_payload.get("replay",{}).get("schema",""))
++		if mode == "refresh":
++			return {"ok":false,"status":503 if path == "/auth/refresh" else 401,"data":{},"error":"DATABASE_UNAVAILABLE" if path == "/auth/refresh" else "INVALID_SESSION"}
++		if mode == "resume":
++			if path == "/resume-races": return {"ok":true,"status":201,"data":{"race_id":"fixture-race"},"error":""}
++			return {"ok":false,"status":0,"data":{},"error":"NETWORK_ERROR","not_delivered":false}
++		if mode == "old_api":
++			return {"ok":false,"status":422,"data":{},"error":"Unsupported replay envelope"}
++		return {"ok":mode == "malformed","status":202 if mode == "malformed" else 404,"data":{},"error":"" if mode == "malformed" else "Run not found"}
++
++func _initialize() -> void:
++	_run.call_deferred()
++	_timeout.call_deferred()
++
++func _timeout() -> void:
++	await create_timer(8).timeout
++	if not completed:
++		push_error("Review probe timed out")
++		quit(2)
++
++func _api(mode: String) -> StubAPI:
++	var api := StubAPI.new()
++	root.add_child(api)
++	api.configure("https://exception-fixture.invalid")
++	api.mode = mode
++	api.player = {"id":"fixture-owner"}
++	api._access_token = "fixture-access"
++	api._refresh_token = "fixture-refresh"
++	return api
++
++func _run() -> void:
++	var app: Node = preload("res://core/app.gd").new()
++	var store := DelayedStore.new()
++	root.add_child(store)
++	app.cloud = store
++	var old_game := Node.new()
++	app.game = old_game
++	app.cloud_ticket = {"ticket_id":"fixture-ticket"}
++	app._save_result_upload(old_game,app.cloud_ticket,[[0,255,0]],"",[])
++	# The Home/next-race path frees this game while durable save is outstanding.
++	app.game = null
++	old_game.free()
++	await create_timer(0.1).timeout
++	report["failed_save_after_leaving_results"] = {"save_attempts":store.calls,
++		"retry_dialogs":app.get_child_count(),"save_busy":app._result_save_busy,"saved":false}
++	app.free()
++	store.queue_free()
++
++	var refreshing: StubAPI = _api("refresh")
++	var response: Dictionary = await refreshing.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	report["refresh_database_outage"] = {"status":response.status,"error":response.error,
++		"signed_in":refreshing.signed_in(),"calls":refreshing.calls}
++	refreshing.queue_free()
++
++	var pending_api: StubAPI = _api("resume")
++	var credits: Node = preload("res://platform/resume_credits.gd").new()
++	root.add_child(credits)
++	credits.client = pending_api
++	credits.begin("fixture-ticket")
++	await credits.consume(10,0,10)
++	report["ambiguous_resume"] = {"pending":not credits.pending.is_empty(),"used":credits.used}
++	# A new race/process does not persist or reconcile this operation.
++	credits.begin("replacement-ticket")
++	report["ambiguous_resume"]["pending_after_new_race"] = not credits.pending.is_empty()
++	credits.queue_free()
++	pending_api.queue_free()
++
++	var modes: Array[String] = ["missing","old_api"]
++	if OS.get_environment("BMT_EXCEPTION_FAULT") == "malformed": modes = ["malformed"]
++	for mode: String in modes:
++		var api: StubAPI = _api(mode)
++		var cloud: Node = preload("res://backend/cloud_tracks.gd").new()
++		root.add_child(cloud)
++		cloud.client = api
++		if mode == "old_api": api._capabilities = {"replay_wire_schema":"bmt-packed-input-v1"}
++		var repository: String = ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
++		cloud.root_override = repository.path_join("build/exception-probe-outbox").path_join(mode+"-"+str(Time.get_ticks_usec()))
++		var ticket_id: String = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
++		cloud.queue_run({"ticket_id":ticket_id},[[0,255,0]],"",[])
++		if mode == "missing":
++			var job: Dictionary = cloud.upload_job(ticket_id)
++			var path: String = str(job._path)
++			job.erase("_path")
++			job.run_id = "previously-accepted-run"
++			cloud._save_job(path,job)
++			await cloud.flush_outbox()
++			report["missing_run_poll"] = {"paths":api.calls.duplicate(),"job":cloud.upload_job(ticket_id)}
++		elif mode == "old_api":
++			await cloud.flush_outbox()
++			var before: int = api.calls.size()
++			await cloud.flush_outbox()
++			report["mixed_api_protocol"] = {"schema":api.replay_schema,"calls_before_retry":before,
++				"calls_after_retry":api.calls.size(),"job_failure":cloud.upload_job(ticket_id).get("failure","")}
++		else:
++			# Expected GDScript error: a valid JSON success lacks run_id.
++			# Do not await that aborted coroutine; observe its unreleased latch.
++			report["malformed_success"] = {"response_status":202,"response_data":{},"expected_script_error":"cloud_tracks.gd:689"}
++			_write_report()
++			cloud.call_deferred("flush_outbox")
++			var deadline: int = Time.get_ticks_msec()+2000
++			while api.calls.is_empty() and Time.get_ticks_msec()<deadline: await process_frame
++			await process_frame
++			var before: int = api.calls.size()
++			cloud.flush_outbox()
++			report["malformed_success"] = {"flushing_stuck":cloud.flushing,
++				"calls_before_retry":before,"calls_after_retry":api.calls.size()}
++		cloud.queue_free()
++		api.queue_free()
++	_write_report()
++	completed = true
++	quit(0)
++
++func _write_report() -> void:
++	var output: String = ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir().path_join("build/backend-exception-client.json")
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	if file == null: quit(3); return
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("EXCEPTION_REVIEW_OBSERVATIONS "+JSON.stringify(report))

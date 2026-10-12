@@ -1,0 +1,2489 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,9 @@
++2026-10-11 CW25/CW01-CW24/V06/G01/R01/Q01: owner curve dirt flow/more vertical at rear. Shader-only smooth half-wheelbase-scaled quadratic after mid-door; shallow front becomes~45deg rear axle/~59deg tail/both sides; shared flecks-film-smudges/end projection retained. NativeCompatibility12+MobileVulkan12/actualfront-horizontal rear-upright gradients/rimslow195 pass; initial logical-vs-image region bug corrected/assertions retained, prior uniform slope superseded explicitly. Actual Desert-Grass-Storm both sides/rear corners inspected; masks/palette/rims/20xslow/scrub/saves/physics/score unchanged. No phone-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/CURVED_DIRT.md.
++
++2026-10-11 GC06-GC09/GC03-GC05/CW13/CW15/CW16/V06/G01/R01/Q01: owner rejects first Garage layout; supplied Free Race composition now drives left60px rail, central actual showroom, bottom Select car and five actual 3D model cards. Cards preview without selecting; confirm opens left Customise/Care/Tuning, horizontal paint controls/free local Wash/placeholder. Static isolated 2x-MSAA card renders refresh on changes; five byte-exact freeze/change checks; interactive4x-MSAA showroom/framing only, no gameplay scale change. Native150/MobileVulkan150/livery115/wash1402/view59/menu23/swipes268/App99 pass;30 captures inspected. Cached getter fixture corrected with actual pixel proof; initial concurrent reverse-swipe failure isolated and heading rectangle used/all assertions retained. Doctor no phone; no device test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_FREE_RACE_LAYOUT.md.
++
++2026-10-11 STUDIO-QUALITY/CASES/COMPETITIONS: local partial expansion, no deployment. Prepared signed-in frame/segment/exit counters, sampled heatmap/discovery/latest creator state, dedicated rivalry/challenge source inspectors, revision-fenced cases/notes/issues, reports/appeals and audited track quarantine. Isolated Play/AdMob proof adapters tested offline; live fulfillment/revenue/reversal ledger/recovery/compensation remain unavailable pending provider/policy inputs. PostgreSQL116pass/2SQLite-lock skips; browser9; client26/outbox55; Java exit helper compile pass. Android export blocked by unchanged creator golden assertion (113checks/1fail); no new APK/device test. Actual scope, source gaps, traffic/compute and workspace checkpoint: docs/STUDIO_EXPANSION_2026_10_11.md.
++
+ 2026-10-11 SND60/SND34/SND37/G01/R01/Q01: owner faint continuous Storm thunder. One distant Vehicle loop0.10/16s/accepted recorded tail only/30-420Hz/1411244bytes; existing strong WAV and fresh two-voice strikes exact. Rain-aligned pause-focus-finish-exit fades/no strike RNG or canonical changes. Final Import0/native lifecycle50/rapid21/racecapture29/PCM review pass; continuous -35.098dBFS/21.556dB below cue/mixpeak0.794/pause-mute0/rebuild exact. Storm94 retains two existing visual spray failures; initial restricted import and headless fixture-shutdown limitations documented. Doctor no attached phone/no device listening/export-install/fullValidate/backend/deploy. Files/commands/audio/scoped checkpoint/owner-device acceptance: docs/STORM_BACKGROUND_RUMBLE.md.
+ 
+ 2026-10-11 HC01-HC04/RR06/R01/R03/TD06/TD08/B05/B07/V03/V05/Q01: owner Top40%-fastest histogram mismatch. Reproduced local-fast marker/older-server placement plus slower-device candidate and stale-cache paths; exact displayed-PB tick binding, race-lap min/local-verified captions-markers-requests, one read on new PB and late-reply fence. Baseline11/6fail; final personal22/startup22/unified127/continuity12/results37/App99=319checks/0fail; five fixture captures inspected. Exact owner live packet not read; no rank inferred from bins/competitive write. Doctor no phone attached/no device test/export-install/fullValidate/physics regression/backend change/deploy. Restart/owner-account acceptance; files/actual commands/task-only checkpoint: docs/PERSONAL_COMPARISON_2026_10_11.md.
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -203,3 +203,5 @@
+ # Race challenges (2026-10-08)
+ 
+ The local API/worker now supports pinned Beat my time and Group challenges, owned verified targets, invitation codes, canonical ghosts and best-only results. Migration `0020_challenges` must precede deployment of the matching API/worker. This feature has been verified against disposable local services; the retained development backend has not been changed. See [CHALLENGES.md](../docs/CHALLENGES.md) for endpoint contracts, actual tests, native sharing/link configuration, screenshots and remaining device/deployment acceptance.
++
++Studio expansion local checkpoint: [scope and validation](../docs/STUDIO_EXPANSION_2026_10_11.md). Additive local migrations 0026/0027 supply cases/quarantine and prepared quality facts. `BMT_CLIENT_QUALITY_ENABLED=true` requires product telemetry and negotiated client support; default false. New Studio workspaces inspect existing evidence or bounded counters. Signed-in report/appeal API exists; in-game report UI, enhanced capture, live provider fulfillment/reconciliation, complete reversal ledger, recovery and production compensation remain unavailable. No automatic deployment is authorized by this local change.
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -58,7 +58,7 @@
+ 
+ @router.get("/admin/assets/{name}", include_in_schema=False)
+ def asset(name: str):
+-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "style.css"):
++    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -3,6 +3,9 @@
+ let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
+ let dialogGeneration=0, dialogOpener=null;
+ const sections=[['overview','Studio pulse','◫','LEARN'],['product','Product analytics','↗',''],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
++sections.splice(4,0,['competitions','Competition inspector','⚑',''],['cases','Support cases','♙','OPERATE']);
++sections.splice(2,0,['quality','Client quality & heatmaps','↗','']);
++sections.find(s=>s[0]==='players')[3]='';
+ const titles=Object.fromEntries(sections.map(x=>[x[0],x[1]]));
+ const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
+ const status=v=>`<span class="console-state ${['failed','rejected','queued','disabled','hidden'].includes(String(v))?'warn':''}">${esc(v)}</span>`;
+@@ -82,10 +85,11 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api((section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
++  const d=await api((['quality','cases','competitions'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+-  if(section==='product')html=productAnalyticsView(d);
++  if(['quality','competitions','cases'].includes(section))html=await operationsView(section,id,params);
++  else if(section==='product')html=productAnalyticsView(d);
+   else if(section==='overview')html=await overview(d);
+   else if(section==='studio')html=await studioCoverage();
+   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -9,6 +9,7 @@
+   <script src="/admin/assets/support.js" defer></script>
+   <script src="/admin/assets/studio.js" defer></script>
+   <script src="/admin/assets/product_analytics.js" defer></script>
++  <script src="/admin/assets/operations.js" defer></script>
+   <script src="/admin/assets/app.js" defer></script>
+ </head>
+ <body>
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/operations.js
+@@ -0,0 +1,54 @@
++'use strict';
++async function operationsView(section,id,params){
++ if(section==='quality'){
++  const kinds=['quality_summary','segment_summary','process_exit','discovery','creator'],kind=kinds.includes(params.get('kind'))?params.get('kind'):'quality_summary';
++  const query=new URLSearchParams({kind});for(const field of ['since','until'])if(params.has(field))query.set(field,params.get(field));
++  const d=await api(kind==='creator'?'creator-health':'quality?'+query);role=d.role;
++  const switches='<div class="console-actions">'+[['quality_summary','Frame times'],['segment_summary','Track heatmaps'],['process_exit','Crash / ANR exits'],['discovery','Discovery'],['creator','Creator health']].map(([k,label])=>`<a class="btn" href="${scopedHref('quality?kind='+k,params)}">${label}</a>`).join('')+'</div>';
++  if(kind==='creator')return intro('Creator health','Recent immutable versions and current publication state.')+switches+card('Latest versions',`<div class="console-table"><table><thead><tr><th>Version</th><th>Creator</th><th>State</th><th>Published</th></tr></thead><tbody>${d.items.map(r=>`<tr><td>${link('tracks',r.version_id,r.name)}</td><td>${link('players',r.creator_id,r.creator_id)}</td><td>${esc(r.state)}${r.hidden?' · Quarantined':''}</td><td>${esc(date(r.published_at))}</td></tr>`).join('')}</tbody></table></div>${d.truncated?'<p>Latest 100 versions only.</p>':''}`)+card('Coverage',esc(d.coverage));
++  let visual='';
++  if(kind==='quality_summary'){
++   const counts=d.bucket_upper_ms.map((_,i)=>d.items.reduce((sum,r)=>sum+r['b'+i],0)),max=Math.max(1,...counts);
++   visual=card('Frame-time histogram',`<div role="img" aria-label="Frame-time bucket counts">${counts.map((v,i)=>`<p>${i===7?'Over 100':(i?d.bucket_upper_ms[i-1]+'–':'0–')+d.bucket_upper_ms[i]} ms: ${v}<span style="display:block;background:#e8c354;height:12px;width:${v/max*100}%"></span></p>`).join('')}</div>`);
++  }else if(kind==='segment_summary'&&d.items.length){
++   const versions=[...new Set(d.items.map(r=>r.context.track_version_id))],version=versions.includes(params.get('version'))?params.get('version'):versions[0];
++   const rows=d.items.filter(r=>r.context.track_version_id===version),minX=Math.min(...rows.map(r=>r.context.cell_x)),minY=Math.min(...rows.map(r=>r.context.cell_y)),width=Math.max(...rows.map(r=>r.context.cell_x))-minX+1,height=Math.max(...rows.map(r=>r.context.cell_y))-minY+1,max=Math.max(1,...rows.map(r=>r.samples));
++   visual=card('Sampled presence · 20 m cells','<div class="console-actions">'+versions.map(v=>`<a class="btn" href="${scopedHref('quality?kind=segment_summary&version='+v,params)}">${esc(v)}</a>`).join('')+`</div><svg role="img" aria-label="Sampled track cell heatmap" viewBox="0 0 ${width} ${height}" style="width:100%;height:320px;background:#142434">${rows.map(r=>`<rect x="${r.context.cell_x-minX}" y="${height-1-r.context.cell_y+minY}" width="1" height="1" fill="#e8c354" fill-opacity="${Math.max(.1,r.samples/max)}"><title>Segment ${r.context.segment}, samples ${r.samples}, slow ${r.slow}</title></rect>`).join('')}</svg>`);
++  }
++  return intro('Client quality & track diagnostics','Prepared client observations; fixed counters and sampled cells.')+switches+visual+card(kind==='discovery'?'Observed discovery exposures / selections':'Observed summaries',`<div class="console-table"><table><thead><tr><th>UTC day</th><th>Context</th><th>${kind==='discovery'?'Exposures':'Reports'}</th><th>${kind==='discovery'?'Selections':'Samples'}</th><th>Slow</th></tr></thead><tbody>${d.items.map(r=>`<tr><td>${esc(date(r.day*86400))}</td><td><pre>${esc(JSON.stringify(r.context,null,2))}</pre></td><td>${r.reports}</td><td>${r.samples}</td><td>${r.slow}</td></tr>`).join('')}</tbody></table></div>${d.truncated?'<p>First 1,000 daily dimensions only.</p>':''}`)+card('Source coverage',kv(d.coverage));
++ }
++ if(section==='competitions'){
++  const kind=params.get('kind')==='challenge'?'challenge':'rivalry';
++  const d=await api(id?'competitions/'+kind+'/'+encodeURIComponent(id):'competitions?kind='+kind);
++  role=d.role;
++  const switches='<div class="console-actions"><a class="btn" href="#competitions?kind=rivalry">Weekly Rivalry</a><a class="btn" href="#competitions?kind=challenge">Challenges</a></div>';
++  if(!id)return intro('Competition inspector','Pinned contracts, accepted best results and scoring provenance.')+switches+card('Current records',`<div class="console-table"><table><thead><tr><th>ID</th><th>Ends</th><th>Members</th></tr></thead><tbody>${d.items.map(r=>`<tr><td><a href="#competitions/${esc(r.id)}?kind=${kind}">${esc(r.id)}</a></td><td>${esc(date(r.ends_at))}</td><td>${esc(r.member_count)}</td></tr>`).join('')}</tbody></table></div>${d.has_more?'<p>Additional records exceed this page’s 50-record budget.</p>':''}`);
++  return intro(kind==='rivalry'?'Weekly Rivalry inspection':'Challenge inspection','Recomputed from linked accepted evidence. Source inconsistencies remain visible.')+switches+
++   card('Pinned definition',kv(d.definition))+card('Roster and pre-round context',`<div class="console-table"><table><thead><tr><th>Driver</th><th>Player type</th><th>Skill at entry</th><th>Attempts used</th><th>Recomputed points</th></tr></thead><tbody>${d.roster.map(r=>`<tr><td>${link('players',r.player_id,r.name)}</td><td>${r.is_test_driver?'Artificial':'Real'}${r.disabled?' · Restricted':''}</td><td>${esc(r.pre_round_skill)}</td><td>${esc(r.attempts_used)}</td><td>${esc(r.points)}</td></tr>`).join('')}</tbody></table></div>`)+
++   card('Best-result provenance',`<div class="console-table"><table><thead><tr><th>Slot</th><th>Driver</th><th>Stored / evidence rank</th><th>Stored / evidence points</th><th>Pinned seconds</th><th>Evidence</th><th>Problems</th></tr></thead><tbody>${d.results.map(r=>`<tr><td>${r.slot+1}</td><td>${link('players',r.player_id,d.roster.find(p=>p.player_id===r.player_id)?.name||r.player_id)}</td><td>${esc(r.rank_from_stored_bests)} / ${esc(r.rank)}</td><td>${r.points_from_stored_bests} / ${r.points}</td><td>${esc(r.seconds?.toFixed(3))}</td><td>${r.run_id?link('races',r.run_id,'Inspect race'):esc(r.provenance)}</td><td>${esc(r.problems.join(', ')||'Verified source')}</td></tr>`).join('')}</tbody></table></div>`)+card('Attempt evidence',kv(d.attempt_states)+(d.attempts_truncated?'<p>First 500 linked attempts only.</p>':''))+
++   (d.target?card('Exact challenge target',kv(d.target)):'')+card('Inspection limits',`<ul>${d.limits.map(v=>'<li>'+esc(v)+'</li>').join('')}</ul>`);
++ }
++ const d=await api(id?'cases/'+encodeURIComponent(id):'cases');role=d.role;
++ if(!id)return intro('Support cases','Case-linked notes, issue references and recorded workflow decisions.')+
++  (role==='owner'?'<button class="btn btn-primary" data-case-action="create">New case</button>':'')+card('Cases',`<div class="console-table"><table><thead><tr><th>Title</th><th>State</th><th>Updated</th></tr></thead><tbody>${d.items.map(r=>`<tr><td><a href="#cases/${esc(r.id)}">${esc(r.title)}</a></td><td>${esc(r.status)}</td><td>${esc(date(r.updated_at))}</td></tr>`).join('')}</tbody></table></div>`);
++ const c=d.case;
++ return intro(c.title,'Case evidence is append-only; revision checks protect concurrent edits.')+card('Case context',kv(c))+
++  (role==='owner'?`<div class="console-actions">${['note','issue','transition',...(c.track_id?['quarantine','restore']:[])].map(a=>`<button class="btn" data-case-action="${a}" data-case-id="${esc(c.id)}" data-case-revision="${c.revision}">${{note:'Add note',issue:'Link issue',transition:'Change state',quarantine:'Quarantine track',restore:'Restore track'}[a]}</button>`).join('')}</div>`:'')+
++  card('Activity',`<ol>${d.events.map(e=>`<li><b>${esc(e.kind)}</b> · ${esc(date(e.created_at))}<pre style="white-space:pre-wrap">${esc(JSON.stringify(e.detail,null,2))}</pre></li>`).join('')}</ol>${d.history_truncated?'<p>Latest 100 events only.</p>':''}`)+card('Coverage',kv(d.coverage));
++}
++document.addEventListener('click',event=>{
++ const target=event.target.closest('[data-case-action]');if(!target||role!=='owner')return;
++ const action=target.dataset.caseAction,auth=authGeneration,credential=key,view=generation;
++ const dialog=$('#dialog');
++ dialog.innerHTML=`<form class="console-padding"><h3>${action==='create'?'New case':action==='transition'?'Case transition':'Case evidence'}</h3>${action==='transition'?'<label>State<select name="status"><option>investigating</option><option>resolved</option><option>appealed</option><option>open</option></select></label>':''}<label>${action==='create'?'Title':action==='issue'?'Issue reference':'Note / reason'}<textarea name="text" maxlength="${action==='create'?160:2000}" required></textarea></label><p class="console-note">Keep credentials, purchase tokens and private keys out of case evidence.</p><p class="console-error" id="case-error"></p><div class="console-actions"><button class="btn" type="button" id="case-cancel">Cancel</button><button class="btn btn-primary">Save</button></div></form>`;
++ if(action==='create')dialog.querySelector('textarea').closest('label').insertAdjacentHTML('afterend','<label>Player ID (optional)<input name="player_id" maxlength="36"></label><label>Track ID (optional)<input name="track_id" maxlength="36"></label>');
++ dialog.showModal();dialog.addEventListener('close',()=>{if(target.isConnected)target.focus();},{once:true});$('#case-cancel').onclick=()=>dialog.close();
++ const command=crypto.randomUUID();dialog.querySelector('form').onsubmit=async ev=>{
++  ev.preventDefault();if(auth!==authGeneration||credential!==key||view!==generation)return;
++  const form=new FormData(ev.target),body=action==='create'?{command_id:command,title:form.get('text')}:{command_id:command,expected_revision:Number(target.dataset.caseRevision),kind:action,text:form.get('text'),...(action==='transition'?{status:form.get('status')}:{})};
++  if(action==='create')for(const field of ['player_id','track_id'])if(form.get(field)?.trim())body[field]=form.get(field).trim();
++  const save=ev.target.querySelector('button:not([type="button"])');save.disabled=true;
++  try{const d=await api(action==='create'?'cases':'cases/'+target.dataset.caseId+'/events',body);if(auth!==authGeneration||view!==generation)return;dialog.close();location.hash='cases/'+d.id;await render();}
++  catch(e){if(auth===authGeneration&&view===generation&&dialog.open){$('#case-error').textContent=e.message;save.disabled=false;}}
++ };
++});
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -28,10 +28,13 @@
+         commerce,
+         discovery,
+         product_analytics,
++        quality,
+         resumes,
+         rivalry,
+         runs,
+         studio,
++        studio_cases,
++        studio_competitions,
+         telemetry,
+         test_drivers,
+         test_population_batch,
+@@ -74,8 +77,11 @@
+     app.include_router(admin_purchase_controls.router)
+     app.include_router(admin_support.router)
+     app.include_router(studio.router)
++    app.include_router(studio_cases.router)
++    app.include_router(studio_competitions.router)
+     app.include_router(telemetry.router)
+     app.include_router(product_analytics.router)
++    app.include_router(quality.router)
+     app.include_router(auth.router, prefix="/v1")
+     app.include_router(browser_auth.router, prefix="/v1")
+     app.include_router(tracks.router, prefix="/v1")
+@@ -148,6 +154,7 @@
+                 "idle_flush_seconds": 300,
+                 "response_limit_bytes": 16384,
+                 "guest_coverage": False,
++                "quality_schema_version": 1 if settings.client_quality_enabled else 0,
+             },
+             "track_schema": "creator-track-v5",
+             "replay_schema": "bmt-replay-v1",
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -13,6 +13,7 @@
+     test_driver_api_url: str = ""
+     purchase_simulation_enabled: bool = False
+     telemetry_enabled: bool = False
++    client_quality_enabled: bool = False
+     telemetry_client_backlog: int = 50000
+     telemetry_processor_batch: int = 500
+     telemetry_raw_days: int = 7
+@@ -69,6 +70,8 @@
+     s3_prefix: str = "bmt/v1"
+ 
+     def __post_init__(self):
++        if self.client_quality_enabled and not self.telemetry_enabled:
++            raise ValueError("Client quality requires bounded product telemetry transport")
+         if (not 50 <= self.telemetry_client_backlog <= 1000000
+                 or not 1 <= self.telemetry_processor_batch <= 1000
+                 or not 1 <= self.telemetry_raw_days <= 30 or not 14 <= self.telemetry_fact_days <= 366):
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -8,8 +8,10 @@
+     discovery,
+     identity_models,
+     object_models,
++    quality_models,
+     resume_models,
+     rivalry_models,
++    studio_case_models,
+     telemetry_models,
+     test_driver_models,
+     track_models,
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0026_studio_cases.py
+@@ -0,0 +1,35 @@
++"""Case records and immutable command events; no business balance changes."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0026_studio_cases"
++down_revision = "0025_product_telemetry"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_table("studio_cases", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id")),
++        sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id")),
++        sa.Column("title", sa.String(160), nullable=False), sa.Column("status", sa.String(24), nullable=False),
++        sa.Column("revision", sa.Integer(), nullable=False), sa.Column("created_at", sa.Integer(), nullable=False),
++        sa.Column("updated_at", sa.Integer(), nullable=False))
++    op.create_index("ix_studio_case_updated", "studio_cases", ["updated_at", "id"])
++    op.create_table("studio_case_events", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("case_id", sa.String(36), sa.ForeignKey("studio_cases.id"), nullable=False),
++        sa.Column("actor", sa.String(24), nullable=False), sa.Column("kind", sa.String(24), nullable=False),
++        sa.Column("revision", sa.Integer(), nullable=False),
++        sa.Column("detail", sa.JSON(), nullable=False), sa.Column("request_hash", sa.String(64), nullable=False),
++        sa.Column("created_at", sa.Integer(), nullable=False),
++        sa.UniqueConstraint("case_id", "revision", name="uq_studio_case_revision"))
++    op.create_index("ix_studio_case_event", "studio_case_events", ["case_id", "created_at", "id"])
++    op.create_table("studio_quarantines", sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id"), primary_key=True),
++        sa.Column("case_id", sa.String(36), sa.ForeignKey("studio_cases.id"), nullable=False),
++        sa.Column("audit_id", sa.String(36), sa.ForeignKey("admin_audit.id"), nullable=False))
++
++
++def downgrade():
++    op.drop_table("studio_quarantines")
++    op.drop_table("studio_case_events")
++    op.drop_table("studio_cases")
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0027_client_quality.py
+@@ -0,0 +1,26 @@
++"""Prepared client quality and spatial counters."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0027_client_quality"
++down_revision = "0026_studio_cases"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_index("ix_studio_creator_versions", "track_versions", ["created_at", "id"])
++    op.create_index("ix_studio_rivalry_recent", "rivalry_groups", ["created_at", "id"])
++    op.create_index("ix_studio_challenge_recent", "challenges", ["created_at", "id"])
++    op.create_table("quality_facts", sa.Column("day", sa.Integer(), primary_key=True),
++        sa.Column("kind", sa.String(24), primary_key=True), sa.Column("dimension", sa.String(64), primary_key=True),
++        sa.Column("context", sa.JSON(), nullable=False),
++        *(sa.Column(field, sa.BigInteger(), nullable=False) for field in
++            ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))))
++
++
++def downgrade():
++    op.drop_table("quality_facts")
++    op.drop_index("ix_studio_challenge_recent", table_name="challenges")
++    op.drop_index("ix_studio_rivalry_recent", table_name="rivalry_groups")
++    op.drop_index("ix_studio_creator_versions", table_name="track_versions")
+--- a/backend/bmt_backend/product_analytics.py
++++ b/backend/bmt_backend/product_analytics.py
+@@ -6,10 +6,12 @@
+ from fastapi import APIRouter, Query, Request
+ from sqlalchemy import delete, false, func, select, text, tuple_, update
+ 
++from . import quality as client_quality
+ from .admin import Access, Window
+ from .admin_ranges import calendar_range
+ from .identity_models import Player
+ from .middleware import ParsedJSONRoute
++from .quality_models import QualityFact
+ from .telemetry import insert_for
+ from .telemetry_models import (
+     ProductEvent,
+@@ -135,6 +137,7 @@
+         events = session.scalars(select(ProductEvent).where(ProductEvent.processed_at.is_(None))
+             .order_by(ProductEvent.received_at, ProductEvent.id).limit(limit)).all()
+         players = {event.player_id for event in events}
++        client_quality.project(session, events, insert_for)
+         profiles = {profile.player_id: profile for profile in session.scalars(
+             select(ProductProfile).where(ProductProfile.player_id.in_(players)))} if players else {}
+         missing_flags = {event.player_id for event in events if event.is_test_driver is None}
+@@ -286,6 +289,7 @@
+         if old_server:
+             session.execute(update(ProductEvent).where(ProductEvent.id.in_(old_server)).values(properties={}, compacted=True))
+         for model, columns in ((ProductPlayerDay, (ProductPlayerDay.day, ProductPlayerDay.player_id)),
++                (QualityFact, (QualityFact.day, QualityFact.kind, QualityFact.dimension)),
+                 (ProductMetric, (ProductMetric.day, ProductMetric.key, ProductMetric.dimension))):
+             expired_keys = session.execute(select(*columns).where(model.day < at // DAY - fact_days)
+                 .order_by(*columns).limit(limit)).all()
+--- /dev/null
++++ b/backend/bmt_backend/provider_proofs.py
+@@ -0,0 +1,191 @@
++"""Provider proof adapters. No client callbacks or catalog prices confer paid authority.
++
++Integration deliberately stays unavailable until package, products, SSV placement,
++acknowledgement/reconciliation jobs and reversal policy have been configured.
++"""
++import base64
++import hashlib
++import hmac
++import json
++import re
++import threading
++import time
++from datetime import datetime, timezone
++from urllib.parse import parse_qsl, quote, unquote_to_bytes
++
++import google.auth
++import requests
++from cryptography.exceptions import InvalidSignature
++from cryptography.hazmat.primitives import hashes, serialization
++from cryptography.hazmat.primitives.asymmetric import ec
++from google.auth.transport.requests import AuthorizedSession
++
++
++class InvalidProof(ValueError):
++    """Messages never contain receipt tokens, callback data or provider responses."""
++
++
++class ProviderUnavailable(RuntimeError):
++    pass
++
++
++def account_binding(player_id):
++    return hashlib.sha256(("bmt-play-player-v1/" + player_id).encode()).hexdigest()
++
++
++def bounded_response(response, limit=16384):
++    if response.status_code != 200:
++        response.close()
++        raise ProviderUnavailable("PROVIDER_RESPONSE_UNAVAILABLE")
++    try:
++        content = bytearray()
++        for chunk in response.iter_content(4096):
++            content.extend(chunk)
++            if len(content) > limit:
++                raise ProviderUnavailable("PROVIDER_RESPONSE_TOO_LARGE")
++        return json.loads(content)
++    except (ValueError, UnicodeError):
++        raise ProviderUnavailable("INVALID_PROVIDER_RESPONSE") from None
++    finally:
++        response.close()
++
++
++class PlayVerifier:
++    def __init__(self, package, *, http=None):
++        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
++            raise ValueError("EXPLICIT_PLAY_PACKAGE_REQUIRED")
++        self.package, self.http, self.lock = package, http, threading.Lock()
++
++    def verify(self, token, product_id, player_id, *, at=None):
++        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9._~:+/=-]{1,4096}", token):
++            raise InvalidProof("INVALID_PURCHASE_TOKEN")
++        url = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + quote(self.package, safe="")
++        url += "/purchases/productsv2/tokens/" + quote(token, safe="")
++        # No database lock is held while the provider is contacted. Serialize ADC
++        # refresh and cap concurrent calls per instance; caller supplies backpressure.
++        with self.lock:
++            try:
++                if self.http is None:
++                    credentials, _project = google.auth.default(scopes=["https://www.googleapis.com/auth/androidpublisher"])
++                    self.http = AuthorizedSession(credentials)
++                response = self.http.get(url, timeout=(3, 5), stream=True, allow_redirects=False)
++                proof = bounded_response(response)
++            except ProviderUnavailable:
++                raise
++            except (google.auth.exceptions.GoogleAuthError, requests.exceptions.RequestException, OSError):
++                raise ProviderUnavailable("PLAY_VERIFICATION_UNAVAILABLE") from None
++        return validate_play(proof, product_id, player_id, at=int(time.time()) if at is None else at)
++
++
++def validate_play(proof, product_id, player_id, *, at):
++    if not isinstance(proof, dict):
++        raise InvalidProof("INVALID_PLAY_PROOF")
++    expected = account_binding(player_id)
++    actual = proof.get("obfuscatedExternalAccountId")
++    if not isinstance(actual, str) or not re.fullmatch(r"[a-f0-9]{64}", actual) or not hmac.compare_digest(expected, actual):
++        raise InvalidProof("PURCHASE_ACCOUNT_MISMATCH")
++    items = proof.get("productLineItem")
++    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict) or items[0].get("productId") != product_id:
++        raise InvalidProof("PURCHASE_PRODUCT_MISMATCH")
++    offer = items[0].get("productOfferDetails", {})
++    if not isinstance(offer, dict) or type(offer.get("quantity")) is not int or offer["quantity"] != 1:
++        raise InvalidProof("UNSUPPORTED_PURCHASE_QUANTITY")
++    if "rentOfferDetails" in offer or "preorderOfferDetails" in offer:
++        raise InvalidProof("UNSUPPORTED_PRODUCT_OFFER")
++    state = proof.get("purchaseStateContext", {})
++    state = state.get("purchaseState") if isinstance(state, dict) else None
++    if state not in ("PURCHASED", "PENDING", "CANCELLED"):
++        raise InvalidProof("INVALID_PURCHASE_STATE")
++    completed = None
++    if state == "PURCHASED":
++        try:
++            if not isinstance(proof.get("purchaseCompletionTime"), str):
++                raise TypeError()
++            date = datetime.fromisoformat(proof["purchaseCompletionTime"].replace("Z", "+00:00"))
++            if date.tzinfo is None:
++                raise ValueError()
++            completed = int(date.astimezone(timezone.utc).timestamp())
++            if not 0 <= completed <= at + 300:
++                raise ValueError()
++        except (KeyError, TypeError, ValueError, OverflowError):
++            raise InvalidProof("INVALID_PURCHASE_COMPLETION_TIME") from None
++    refundable = offer.get("refundableQuantity")
++    if type(refundable) is not int or refundable not in (0, 1):
++        raise InvalidProof("INVALID_REFUNDABLE_QUANTITY")
++    return {"product_id": product_id, "state": state, "completed_at": completed,
++        "test_purchase": "testPurchaseContext" in proof,
++        "refundable_quantity": refundable, "acknowledgement": proof.get("acknowledgementState"),
++        "consumption": offer.get("consumptionState")}
++
++
++class AdMobKeys:
++    """Trusted Google keys only; bounded response/cache and paced unknown-key refresh."""
++    URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"
++
++    def __init__(self, *, http=None, clock=time.monotonic):
++        self.http, self.clock = http or requests.Session(), clock
++        self.keys, self.expires, self.refresh_after = {}, 0, 0
++        self.lock = threading.Lock()
++
++    def key(self, key_id):
++        with self.lock:
++            at = self.clock()
++            if at < self.expires and key_id in self.keys:
++                return self.keys[key_id]
++            if at >= self.refresh_after:
++                self.refresh_after = at + 60
++                try:
++                    value = bounded_response(self.http.get(self.URL, timeout=(3, 5), stream=True, allow_redirects=False))
++                    rows = value["keys"]
++                    if not isinstance(rows, list) or not 1 <= len(rows) <= 10:
++                        raise ValueError()
++                    keys = {}
++                    for row in rows:
++                        key = serialization.load_der_public_key(base64.b64decode(row["base64"], validate=True))
++                        if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, (ec.SECP256R1, ec.SECP224R1)):
++                            raise TypeError()
++                        keys[str(row["keyId"])] = key
++                    self.keys, self.expires = keys, at + 3600
++                except (ProviderUnavailable, requests.exceptions.RequestException, KeyError, TypeError, ValueError):
++                    raise ProviderUnavailable("ADMOB_KEYS_UNAVAILABLE") from None
++            if at >= self.expires:
++                raise ProviderUnavailable("ADMOB_KEYS_EXPIRED")
++            if key_id not in self.keys:
++                raise InvalidProof("UNKNOWN_ADMOB_KEY")
++            return self.keys[key_id]
++
++
++def verify_admob(raw_query, keys):
++    """Match Google's URI.getQuery() canonicalization before parsing business fields."""
++    if not isinstance(raw_query, bytes) or not 1 <= len(raw_query) <= 4096:
++        raise InvalidProof("INVALID_ADMOB_QUERY")
++    try:
++        content, signature = raw_query.rsplit(b"&signature=", 1)
++        signature, key_id = signature.split(b"&key_id=")
++        signature = unquote_to_bytes(signature)
++        if not re.fullmatch(rb"[0-9]{1,20}", key_id) or not re.fullmatch(rb"[A-Za-z0-9_-]{1,128}={0,2}", signature):
++            raise ValueError()
++        signed = base64.b64decode(signature + b"=" * (-len(signature) % 4), altchars=b"-_", validate=True)
++        # Google's reference verifies URI.getQuery(): percent decode once, keep
++        # literal '+' and original parameter order. Do not use form decoding or
++        # serialize a parsed dictionary to reconstruct the signed message.
++        verified_content = unquote_to_bytes(content)
++        verified_content.decode("utf-8", errors="strict")
++        keys.key(key_id.decode("ascii")).verify(signed, verified_content, ec.ECDSA(hashes.SHA256()))
++        pairs = parse_qsl(content.decode("ascii"), keep_blank_values=True, strict_parsing=True,
++            encoding="utf-8", errors="strict", max_num_fields=16)
++        value = dict(pairs)
++        allowed = {"ad_network", "ad_unit", "custom_data", "reward_amount", "reward_item", "timestamp", "transaction_id", "user_id"}
++        if len(pairs) != len(value) or not set(value) <= allowed or not (allowed - {"user_id"}) <= set(value):
++            raise ValueError()
++        if value["reward_amount"] != "1" or value["reward_item"] != "resume":
++            raise InvalidProof("UNSUPPORTED_AD_REWARD")
++        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["transaction_id"]) or not re.fullmatch(r"[0-9]{1,20}", value["timestamp"]):
++            raise ValueError()
++        # Placement and opaque server-issued intent must be checked by fulfillment.
++        # Signature verification alone never grants a resource or attributes revenue.
++        return value
++    except (ValueError, UnicodeError, InvalidSignature) as error:
++        if isinstance(error, InvalidProof):
++            raise
++        raise InvalidProof("INVALID_ADMOB_PROOF") from None
+--- /dev/null
++++ b/backend/bmt_backend/quality.py
+@@ -0,0 +1,99 @@
++"""Bounded scalar diagnostic observations; never race proof or compensation authority."""
++from collections import Counter
++
++from fastapi import APIRouter, Query, Request
++from sqlalchemy import select
++
++from .admin import Access, Window
++from .admin_ranges import calendar_range
++from .quality_models import QualityFact
++from .track_models import Track, TrackVersion, digest
++
++router = APIRouter(tags=["client quality"])
++BUCKET_UPPER_MS = (8, 12, 17, 25, 34, 50, 100, None)
++NAMES = {"quality_summary", "segment_summary", "process_exit"}
++NUMBERS = {"samples", "slow", "segment", "cell_x", "cell_y", "exit_reason", *("b" + str(i) for i in range(8))}
++FIELDS = {"quality_summary": {"device_class", "scene", "samples", "slow", *("b" + str(i) for i in range(8))},
++    "segment_summary": {"track_version_id", "segment", "cell_x", "cell_y", "samples", "slow"},
++    "process_exit": {"exit_reason", "device_class"}}
++
++
++def validate(name, props):
++    if set(props) != FIELDS[name]:
++        raise ValueError("INVALID_EVENT")
++    for key, value in props.items():
++        if key in NUMBERS:
++            low, high = (-5000, 5000) if key in ("cell_x", "cell_y") else (0, 1000000)
++            if type(value) is not int or not low <= value <= high:
++                raise ValueError("INVALID_EVENT")
++        elif key == "device_class" and value not in ("android_arm64", "android_other", "desktop", "other") or key == "scene" and value not in ("race", "menu", "editor"):
++            raise ValueError("INVALID_EVENT")
++    if name == "quality_summary" and (sum(props["b" + str(i)] for i in range(8)) != props["samples"]
++            or props["slow"] != sum(props["b" + str(i)] for i in (5, 6, 7))):
++        raise ValueError("INVALID_EVENT")
++    if name == "segment_summary" and (props["segment"] > 31 or props["slow"] > props["samples"]):
++        raise ValueError("INVALID_EVENT")
++    if name == "process_exit" and props["exit_reason"] not in (4, 5, 6):
++        raise ValueError("INVALID_EVENT")
++    return props
++
++
++def project(session, events, insert_for):
++    counters, contexts = {}, {}
++    for event in events:
++        discovery = event.name in ("track_exposed", "track_selected") and event.properties.get("track_version_id")
++        if (event.name not in NAMES and not discovery) or event.source != "client":
++            continue
++        props = event.properties
++        context = {"track_version_id": props["track_version_id"]} if discovery else {
++            "build_id": event.build_id, "platform": event.platform, **{k: v for k, v in props.items() if k not in
++                {"samples", "slow", *("b" + str(i) for i in range(8))}}}
++        identity = event.occurred_at // 86400, "discovery" if discovery else event.name, digest(context)
++        contexts[identity] = context
++        values = counters.setdefault(identity, Counter())
++        values["reports"] += int(event.name != "track_selected")
++        for field in ("samples", "slow", *("b" + str(i) for i in range(8))):
++            values[field] += int(event.name == "track_selected") if discovery and field == "samples" else props.get(field, 0)
++    if counters:
++        statement = insert_for(session, QualityFact).values([{ "day": day, "kind": kind, "dimension": dimension,
++            "context": contexts[identity], **dict(values)} for identity, values in counters.items()
++            for day, kind, dimension in (identity,)])
++        session.execute(statement.on_conflict_do_update(index_elements=["day", "kind", "dimension"], set_={
++            field: getattr(QualityFact, field) + getattr(statement.excluded, field)
++            for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))}))
++
++
++@router.get("/v1/admin/quality")
++def report(request: Request, role: Access, window: Window, kind: str = "quality_summary",
++           limit: int = Query(1000, ge=1, le=1000)):
++    if kind not in NAMES | {"discovery"}:
++        from fastapi import HTTPException
++        raise HTTPException(422, "INVALID_DIAGNOSTIC_KIND")
++    first, until = window or calendar_range(7)
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(QualityFact).where(QualityFact.kind == kind,
++            QualityFact.day >= first // 86400, QualityFact.day <= (until - 1) // 86400)
++            .order_by(QualityFact.day.desc(), QualityFact.dimension).limit(limit + 1)).all()
++        return {"items": [{"day": row.day, "context": row.context, **{field: getattr(row, field)
++            for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))}}
++            for row in rows[:limit]], "truncated": len(rows) > limit, "role": role,
++            "bucket_upper_ms": BUCKET_UPPER_MS,
++            "resolution": "UTC calendar day; partial-day requests include their entire day buckets",
++            "coverage": {"enabled": request.app.state.settings.client_quality_enabled,
++                "guest": "unavailable", "crash_stack": "unavailable", "play_vitals": "unavailable",
++                "spatial": "Client 1 Hz observations in 20 m cells; sampled presence, never verified race evidence.",
++                "sampling": "Lowest-hash 16 cells per 10-minute window, 32 route segments. Inclusion probability unavailable; capped coverage cannot estimate total dwell time or distinct drivers.",
++                "exit": "Android API 30+ OS process exits; previous process, not proven current-player crash/ANR.",
++                "capture": "Fixed counters only; no arbitrary logs, coordinates, credentials or control-input captures."}}
++
++
++@router.get("/v1/admin/creator-health")
++def creator_health(request: Request, role: Access, limit: int = Query(100, ge=1, le=100)):
++    with request.app.state.session_factory() as session:
++        rows = session.execute(select(TrackVersion, Track).join(Track)
++            .order_by(TrackVersion.created_at.desc(), TrackVersion.id).limit(limit + 1)).all()
++        return {"items": [{"version_id": version.id, "track_id": track.id, "creator_id": track.owner_id,
++            "name": version.name, "state": version.state, "created_at": version.created_at,
++            "published_at": version.published_at, "hidden": track.hidden, "archived": track.archived}
++            for version, track in rows[:limit]], "truncated": len(rows) > limit, "role": role,
++            "coverage": "Latest 100 immutable versions and publication states. Local unsaved drafts, editor crashes and validation phase timings are unavailable."}
+--- /dev/null
++++ b/backend/bmt_backend/quality_models.py
+@@ -0,0 +1,25 @@
++"""Prepared diagnostic counters: no player IDs, trace text or raw trajectories."""
++from sqlalchemy import JSON, BigInteger, Integer, String
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++
++
++class QualityFact(Base):
++    __tablename__ = "quality_facts"
++    day: Mapped[int] = mapped_column(Integer, primary_key=True)
++    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
++    dimension: Mapped[str] = mapped_column(String(64), primary_key=True)
++    context: Mapped[dict] = mapped_column(JSON)
++    reports: Mapped[int] = mapped_column(BigInteger, default=0)
++    samples: Mapped[int] = mapped_column(BigInteger, default=0)
++    slow: Mapped[int] = mapped_column(BigInteger, default=0)
++    b0: Mapped[int] = mapped_column(BigInteger, default=0)
++    b1: Mapped[int] = mapped_column(BigInteger, default=0)
++    b2: Mapped[int] = mapped_column(BigInteger, default=0)
++    b3: Mapped[int] = mapped_column(BigInteger, default=0)
++    b4: Mapped[int] = mapped_column(BigInteger, default=0)
++    b5: Mapped[int] = mapped_column(BigInteger, default=0)
++    b6: Mapped[int] = mapped_column(BigInteger, default=0)
++    b7: Mapped[int] = mapped_column(BigInteger, default=0)
++
+--- a/backend/bmt_backend/studio.py
++++ b/backend/bmt_backend/studio.py
+@@ -2,11 +2,12 @@
+ 
+ from uuid import UUID
+ 
+-from fastapi import APIRouter, HTTPException, Request
++from fastapi import APIRouter, HTTPException, Query, Request
+ from fastapi.responses import JSONResponse
+ from sqlalchemy import func, select, text
+ 
+-from .admin import Access
++from .admin import Access, Window
++from .admin_ranges import calendar_range
+ from .identity_models import Player
+ from .middleware import ParsedJSONRoute
+ from .resume_models import ResumeRace, ResumeReceipt
+@@ -42,6 +43,16 @@
+         for source in sources:
+             if source["key"] == "behaviour":
+                 source.update(status="unavailable", description="Product telemetry is disabled on this backend. No observed activity is implied by registered accounts or submitted attempts.")
++    if request.app.state.settings.client_quality_enabled:
++        for source in sources:
++            if source["key"] == "client_quality":
++                source.update(status="partial", description="Prepared build/device-class frame buckets, bounded sampled segments and Android API 30+ process-exit reasons. Crash stacks, Play vitals and consented enhanced captures remain unavailable.")
++    sources.extend([
++        {"key": "competition_inspection", "title": "Competition provenance", "status": "partial",
++            "description": "Bounded rivalry/challenge roster, pinned contracts, accepted-run checks, ranks/points and exact target; archived runs and reward delivery may be unavailable.", "requirement_ids": ["BMT-034"]},
++        {"key": "case_workflow", "title": "Support and moderation cases", "status": "partial",
++            "description": "Append-only notes/issues, case transitions, signed-in reports and appeals, audited track quarantine. Expiring scopes, verified recovery and production compensation are unavailable.", "requirement_ids": ["BMT-033", "BMT-050", "BMT-054", "BMT-056"]},
++    ])
+     return {
+         "schema": "bmt-studio-capabilities-v1", "as_of": now(),
+         "environment": request.app.state.settings.environment, "role": role, "read_only": True,
+@@ -60,6 +71,13 @@
+     value = board.manifest if board and isinstance(board.manifest, dict) else {}
+     # Project only known scalar contract fields; never copy arbitrary stored metadata.
+     return {key: value[key] for key in MANIFEST_FIELDS if key in value and type(value[key]) in (str, int)}
++
++
++@router.get("/v1/admin/studio/context")
++def studio_context(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
++    first, until = window or calendar_range(days)
++    return {"role": role, "environment": request.app.state.settings.environment,
++        "since": first, "until": until, "as_of": now()}
+ 
+ 
+ def race_evidence(session, run_id):
+--- /dev/null
++++ b/backend/bmt_backend/studio_case_models.py
+@@ -0,0 +1,40 @@
++"""Case-owned evidence and append-only support activity; no identity reassignment."""
++from sqlalchemy import JSON, ForeignKey, Index, Integer, String, UniqueConstraint
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++from .track_models import new_id, now
++
++
++class StudioCase(Base):
++    __tablename__ = "studio_cases"
++    __table_args__ = (Index("ix_studio_case_updated", "updated_at", "id"),)
++    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
++    player_id: Mapped[str | None] = mapped_column(ForeignKey("players.id"), nullable=True)
++    track_id: Mapped[str | None] = mapped_column(ForeignKey("tracks.id"), nullable=True)
++    title: Mapped[str] = mapped_column(String(160))
++    status: Mapped[str] = mapped_column(String(24), default="open")
++    revision: Mapped[int] = mapped_column(Integer, default=0)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++    updated_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class StudioCaseEvent(Base):
++    __tablename__ = "studio_case_events"
++    __table_args__ = (Index("ix_studio_case_event", "case_id", "created_at", "id"),
++        UniqueConstraint("case_id", "revision", name="uq_studio_case_revision"))
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    case_id: Mapped[str] = mapped_column(ForeignKey("studio_cases.id"))
++    actor: Mapped[str] = mapped_column(String(24))
++    kind: Mapped[str] = mapped_column(String(24))
++    revision: Mapped[int] = mapped_column(Integer, default=0)
++    detail: Mapped[dict] = mapped_column(JSON)
++    request_hash: Mapped[str] = mapped_column(String(64))
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class StudioQuarantine(Base):
++    __tablename__ = "studio_quarantines"
++    track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"), primary_key=True)
++    case_id: Mapped[str] = mapped_column(ForeignKey("studio_cases.id"))
++    audit_id: Mapped[str] = mapped_column(ForeignKey("admin_audit.id"))
+--- /dev/null
++++ b/backend/bmt_backend/studio_cases.py
+@@ -0,0 +1,258 @@
++"""Bounded owner-authored case workflow; business grants/recovery require policy."""
++import re
++from uuid import NAMESPACE_URL, UUID, uuid5
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import select, text
++
++from .admin import Access
++from .admin_models import AdminAudit
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .studio_case_models import StudioCase, StudioCaseEvent, StudioQuarantine
++from .track_models import Track, digest, now
++from .tracks import Auth
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio cases"])
++TRANSITIONS = {"open": {"investigating", "resolved"}, "investigating": {"resolved"},
++    "resolved": {"open", "appealed"}, "appealed": {"investigating", "resolved"}}
++
++
++def value(case):
++    return {key: getattr(case, key) for key in ("id", "player_id", "track_id", "title", "status", "revision", "created_at", "updated_at")}
++
++
++def safe_text(value, limit):
++    value = value.strip()
++    if not value or len(value) > limit or any(ord(char) < 32 and char not in "\n\t" for char in value):
++        raise HTTPException(422, "INVALID_CASE_TEXT")
++    # Notes are staff evidence, not a credential vault. Avoid common pasted secrets.
++    if re.search(r"(?i)(bearer\s+\S+|-----BEGIN .*PRIVATE KEY|(?:access_token|refresh_token|purchaseToken)\s*[:=])", value):
++        raise HTTPException(422, "CREDENTIALS_NOT_CASE_EVIDENCE")
++    return value
++
++
++class Create(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    title: str = Field(min_length=1, max_length=160)
++    player_id: UUID | None = None
++    track_id: UUID | None = None
++
++
++class Action(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=0)
++    kind: str = Field(pattern="^(note|issue|transition|quarantine|restore)$")
++    text: str = Field(default="", max_length=2000)
++    status: str | None = None
++
++
++def owner(role):
++    if role != "owner":
++        raise HTTPException(403, "OWNER_REQUIRED")
++
++
++def begin(session, identity):
++    if session.bind.dialect.name == "sqlite":
++        session.execute(text("BEGIN IMMEDIATE"))
++    else:
++        session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": UUID(identity).int % (2**63)})
++
++
++def replay(session, identity, request_hash, case_id=None):
++    old = session.get(StudioCaseEvent, identity)
++    if old:
++        if old.request_hash != request_hash or case_id and old.case_id != case_id:
++            raise HTTPException(409, "CASE_COMMAND_CONFLICT")
++        return value(session.get(StudioCase, old.case_id))
++
++
++@router.get("/v1/admin/cases")
++def list_cases(request: Request, role: Access, limit: int = Query(50, ge=1, le=100),
++               offset: int = Query(0, ge=0, le=10000), status: str | None = None):
++    with request.app.state.session_factory() as session:
++        query = select(StudioCase)
++        if status:
++            if status not in TRANSITIONS:
++                raise HTTPException(422, "INVALID_CASE_STATUS")
++            query = query.where(StudioCase.status == status)
++        rows = session.scalars(query.order_by(StudioCase.updated_at.desc(), StudioCase.id).offset(offset).limit(limit + 1)).all()
++        return {"items": [value(row) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
++
++
++@router.post("/v1/admin/cases")
++def create_case(payload: Create, request: Request, role: Access):
++    owner(role)
++    title = safe_text(payload.title, 160)
++    body = payload.model_dump(mode="json")
++    request_hash = digest(body)
++    identity = str(payload.command_id)
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash)
++        if result:
++            return result
++        for model, field in ((Player, payload.player_id), (Track, payload.track_id)):
++            if field and session.get(model, str(field)) is None:
++                raise HTTPException(404, "CASE_ENTITY_NOT_FOUND")
++        case = StudioCase(title=title, player_id=str(payload.player_id) if payload.player_id else None,
++            track_id=str(payload.track_id) if payload.track_id else None)
++        session.add(case)
++        session.flush()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor=role, kind="created",
++            detail={"title": title}, request_hash=request_hash))
++        session.commit()
++        return value(case)
++
++
++@router.get("/v1/admin/cases/{case_id}")
++def inspect_case(case_id: UUID, request: Request, role: Access):
++    with request.app.state.session_factory() as session:
++        case = session.get(StudioCase, str(case_id))
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        query = select(StudioCaseEvent).where(StudioCaseEvent.case_id == case.id)
++        # Case revision is a concurrency fence; event ID/time are source evidence.
++        rows = session.scalars(query.order_by(StudioCaseEvent.revision.desc()).limit(101)).all()
++        return {"case": value(case), "events": [{key: getattr(row, key) for key in
++            ("id", "actor", "kind", "revision", "detail", "created_at")} for row in rows[:100]],
++            "history_truncated": len(rows) > 100, "role": role,
++            "allowed_transitions": sorted(TRANSITIONS[case.status]),
++            "coverage": {"recovery": "unavailable", "production_compensation": "unavailable",
++                "quarantine": "case-linked track visibility, audited; restoration checks intervening moderation",
++                "staff_identity": "credential role; no individual SSO"}}
++
++
++@router.post("/v1/admin/cases/{case_id}/events")
++def append_event(case_id: UUID, payload: Action, request: Request, role: Access):
++    owner(role)
++    identity, request_hash = str(payload.command_id), digest(payload.model_dump(mode="json"))
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash, str(case_id))
++        if result:
++            return result
++        case = session.scalar(select(StudioCase).where(StudioCase.id == str(case_id)).with_for_update())
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        if case.revision != payload.expected_revision:
++            raise HTTPException(409, "STALE_CASE_REVISION")
++        if payload.kind in ("quarantine", "restore"):
++            if not case.track_id or payload.status is not None:
++                raise HTTPException(422, "TRACK_CASE_REQUIRED")
++            reason = safe_text(payload.text, 500)
++            track = session.scalar(select(Track).where(Track.id == case.track_id).with_for_update())
++            quarantine = session.get(StudioQuarantine, track.id)
++            if payload.kind == "quarantine":
++                if track.hidden or quarantine:
++                    raise HTTPException(409, "TRACK_ALREADY_RESTRICTED")
++                before = {"hidden": False}; track.hidden = True
++            else:
++                if not quarantine or quarantine.case_id != case.id or not track.hidden:
++                    raise HTTPException(409, "CASE_DOES_NOT_OWN_QUARANTINE")
++                # Never undo a later moderation action recorded by another workflow.
++                source = session.get(AdminAudit, quarantine.audit_id)
++                intervening = session.scalar(select(AdminAudit.id).where(AdminAudit.entity_id == track.id,
++                    AdminAudit.id != source.id, AdminAudit.created_at >= source.created_at,
++                    AdminAudit.action.in_(("track_visibility", "quarantine", "restore"))).limit(1))
++                if intervening:
++                    raise HTTPException(409, "INTERVENING_TRACK_MODERATION")
++                before = {"hidden": True}; track.hidden = False
++                session.delete(quarantine)
++            audit = AdminAudit(command_id=identity, actor=role, action=payload.kind, entity_id=track.id,
++                reason=reason, before=before, after={"hidden": track.hidden, "case_id": case.id},
++                request_hash=request_hash, request_id=request.state.request_id)
++            session.add(audit); session.flush()
++            if payload.kind == "quarantine":
++                session.add(StudioQuarantine(track_id=track.id, case_id=case.id, audit_id=audit.id))
++            detail = {"track_id": track.id, "audit_id": audit.id, "reason": reason, "hidden": track.hidden}
++        elif payload.kind == "transition":
++            if payload.status not in TRANSITIONS[case.status] or not payload.text:
++                raise HTTPException(409, "INVALID_CASE_TRANSITION")
++            detail = {"from": case.status, "to": payload.status, "reason": safe_text(payload.text, 2000)}
++            case.status = payload.status
++        elif payload.status is not None:
++            raise HTTPException(422, "UNEXPECTED_CASE_STATUS")
++        else:
++            detail = {"text": safe_text(payload.text, 2000)}
++            if payload.kind == "issue" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/#-]{0,159}", payload.text):
++                raise HTTPException(422, "INVALID_ISSUE_REFERENCE")
++        case.revision += 1
++        case.updated_at = now()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor=role, kind=payload.kind,
++            revision=case.revision, detail=detail, request_hash=request_hash))
++        session.commit()
++        return value(case)
++
++
++class Report(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    reason: str = Field(pattern="^(track_issue|abuse|billing_issue|technical_issue)$")
++    text: str = Field(min_length=1, max_length=2000)
++    track_id: UUID | None = None
++
++
++@router.post("/v1/reports")
++def player_report(payload: Report, request: Request, player: Auth):
++    identity = str(uuid5(NAMESPACE_URL, "bmt-report/" + player.id + "/" + str(payload.command_id)))
++    request_hash = digest(payload.model_dump(mode="json"))
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash)
++        if result:
++            return {"id": result["id"], "status": result["status"]}
++        if payload.track_id and session.get(Track, str(payload.track_id)) is None:
++            raise HTTPException(404, "TRACK_NOT_FOUND")
++        case = StudioCase(player_id=player.id, track_id=str(payload.track_id) if payload.track_id else None,
++            title=payload.reason.replace("_", " ").capitalize())
++        session.add(case); session.flush()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor="player", kind="reported",
++            detail={"reason": payload.reason, "text": safe_text(payload.text, 2000)}, request_hash=request_hash))
++        session.commit()
++        return {"id": case.id, "status": case.status}
++
++
++class Appeal(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=0)
++    text: str = Field(min_length=1, max_length=2000)
++
++
++@router.get("/v1/reports")
++def my_reports(request: Request, player: Auth):
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(StudioCase).where(StudioCase.player_id == player.id)
++            .where(select(StudioCaseEvent.id).where(StudioCaseEvent.case_id == StudioCase.id,
++                StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player").exists())
++            .order_by(StudioCase.updated_at.desc(), StudioCase.id).limit(51)).all()
++        return {"items": [{"id": row.id, "title": row.title, "status": row.status,
++            "revision": row.revision} for row in rows[:50]], "has_more": len(rows) > 50}
++
++
++@router.post("/v1/reports/{case_id}/appeal")
++def player_appeal(case_id: UUID, payload: Appeal, request: Request, player: Auth):
++    identity = str(uuid5(NAMESPACE_URL, "bmt-appeal/" + player.id + "/" + str(payload.command_id)))
++    hashed = digest({"case_id": str(case_id), **payload.model_dump(mode="json")})
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        case = session.scalar(select(StudioCase).where(StudioCase.id == str(case_id),
++            StudioCase.player_id == player.id,
++            select(StudioCaseEvent.id).where(StudioCaseEvent.case_id == StudioCase.id,
++                StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player").exists()).with_for_update())
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        prior = replay(session, identity, hashed, case.id)
++        if prior:
++            return {"id": case.id, "status": case.status}
++        if case.status != "resolved" or case.revision != payload.expected_revision:
++            raise HTTPException(409, "CASE_NOT_APPEALABLE_REFRESH_REQUIRED")
++        case.status = "appealed"; case.revision += 1; case.updated_at = now()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor="player", kind="appealed",
++            revision=case.revision, detail={"text": safe_text(payload.text, 2000)}, request_hash=hashed))
++        session.commit()
++        return {"id": case.id, "status": case.status}
+--- /dev/null
++++ b/backend/bmt_backend/studio_competitions.py
+@@ -0,0 +1,175 @@
++"""Bounded read-only competition provenance; never invokes verification or scoring writes."""
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from sqlalchemy import select, text
++
++from .admin import Access
++from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .rivalry import POINTS, rankings
++from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++from .studio import pinned_manifest
++from .track_models import Board, Run, RunTicket, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio competitions"])
++
++
++def snapshot(session):
++    if session.bind.dialect.name == "postgresql":
++        session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++    else:
++        session.execute(text("BEGIN"))
++
++
++def record(row, fields):
++    return {field: getattr(row, field) for field in fields}
++
++
++@router.get("/v1/admin/competitions")
++def list_competitions(request: Request, role: Access, kind: str = "rivalry", limit: int = Query(50, ge=1, le=100)):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    model, fields = ((RivalryGroup, ("id", "week_start", "ends_at", "vehicle_id", "member_count", "archived"))
++        if kind == "rivalry" else (Challenge, ("id", "mode", "created_at", "ends_at", "member_count", "cancelled")))
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(model).order_by(model.created_at.desc(), model.id).limit(limit + 1)).all()
++        return {"kind": kind, "items": [record(row, fields) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
++
++
++def proof(run, player_id, board, ticket):
++    problems = []
++    if run is None:
++        return ["SOURCE_RUN_UNAVAILABLE"]
++    if run.status != "verified":
++        problems.append("SOURCE_NOT_VERIFIED")
++    if run.player_id != player_id or board is None or run.board_id != board.id:
++        problems.append("SOURCE_CONTRACT_MISMATCH")
++    if ticket is None or ticket.player_id != player_id or ticket.board_id != run.board_id:
++        problems.append("SOURCE_TICKET_MISMATCH")
++    if type(run.time_ticks) is not int or run.time_ticks <= 0:
++        problems.append("SOURCE_TIME_UNAVAILABLE")
++    return problems
++
++
++@router.get("/v1/admin/competitions/{kind}/{identity}")
++def inspect_competition(kind: str, identity: UUID, request: Request, role: Access):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    with request.app.state.session_factory() as session:
++        snapshot(session)
++        entity = session.get(RivalryGroup if kind == "rivalry" else Challenge, str(identity))
++        if entity is None:
++            raise HTTPException(404, "COMPETITION_NOT_FOUND")
++        member_model = RivalryMember if kind == "rivalry" else ChallengeMember
++        member_field = member_model.group_id if kind == "rivalry" else member_model.challenge_id
++        members = session.execute(select(member_model, Player).join(Player).where(member_field == entity.id)
++            .order_by(Player.id).limit(201)).all()
++        if len(members) > 200:
++            raise HTTPException(409, "COMPETITION_ROSTER_EXCEEDS_INSPECTION_BUDGET")
++        if kind == "rivalry":
++            if not isinstance(entity.tracks, list) or len(entity.tracks) > 5:
++                raise HTTPException(409, "INVALID_PINNED_TRACK_LIST")
++            best_model = RivalryArchivedBest if entity.archived else RivalryBest
++            bests = list(session.scalars(select(best_model).where(best_model.group_id == entity.id).limit(1001)))
++            slots = entity.tracks
++            definition = record(entity, ("id", "week_start", "ends_at", "contract_key", "skill_band", "vehicle_id", "archived", "test_population"))
++        else:
++            bests = [member for member, _player in members if member.time_ticks is not None]
++            board = session.get(Board, entity.board_id)
++            if board is None:
++                raise HTTPException(409, "PINNED_BOARD_UNAVAILABLE")
++            slots = [{"board_id": board.id, "version_id": board.version_id, "tick_rate": board.manifest.get("tick_rate")}]
++            definition = record(entity, ("id", "board_id", "mode", "ends_at", "attempt_limit", "cancelled", "target_run_id", "target_ticks"))
++        if len(bests) > 1000:
++            raise HTTPException(409, "COMPETITION_RESULTS_EXCEED_INSPECTION_BUDGET")
++        run_ids = {getattr(best, "run_id", None) for best in bests} - {None}
++        if kind == "challenge" and entity.target_run_id:
++            run_ids.add(entity.target_run_id)
++        runs = {row.id: row for row in session.scalars(select(Run).where(Run.id.in_(run_ids)))} if run_ids else {}
++        tickets = {row.id: row for row in session.scalars(select(RunTicket).where(RunTicket.id.in_(
++            [run.ticket_id for run in runs.values()]))) } if runs else {}
++        ticket_model = RivalryTicket if kind == "rivalry" else ChallengeTicket
++        bindings = {row.ticket_id: row for row in session.scalars(select(ticket_model).where(
++            ticket_model.ticket_id.in_(tickets)))} if tickets else {}
++        board_ids = {slot.get("board_id") for slot in slots} | {run.board_id for run in runs.values()}
++        boards = {row.id: row for row in session.scalars(select(Board).where(Board.id.in_(board_ids - {None})))}
++        roster = {player.id: {"player_id": player.id, "name": player.display_name, "is_test_driver": player.is_test_driver,
++            "disabled": player.disabled, "pre_round_skill": getattr(member, "skill", None),
++            "attempts_used": getattr(member, "attempts_used", None), "joined_at": member.joined_at,
++            "points": 0, "eligible_results": 0} for member, player in members}
++        results = []
++        for slot_index, slot in enumerate(slots):
++            rows = []
++            for best in bests:
++                if getattr(best, "slot", 0) != slot_index:
++                    continue
++                player = roster.get(best.player_id)
++                if player is None:
++                    continue
++                run = runs.get(getattr(best, "run_id", None))
++                board = boards.get(run.board_id) if run else boards.get(slot.get("board_id"))
++                problems = proof(run, best.player_id, board, tickets.get(run.ticket_id) if run else None)
++                if board and (board.version_id != slot.get("version_id") or board.id != slot.get("board_id")
++                        or kind == "rivalry" and board.vehicle_id != entity.vehicle_id):
++                    problems.append("PINNED_VERSION_MISMATCH")
++                binding = bindings.get(run.ticket_id) if run else None
++                seeded_target = kind == "challenge" and best.player_id == entity.creator_id and run and run.id == entity.target_run_id
++                if run and not seeded_target and (binding is None or
++                        (kind == "rivalry" and (binding.group_id != entity.id or binding.slot != slot_index)) or
++                        (kind == "challenge" and binding.challenge_id != entity.id)):
++                    problems.append("COMPETITION_TICKET_MISMATCH")
++                if run and not seeded_target and not (getattr(entity, "week_start", entity.created_at) <= run.created_at < entity.ends_at):
++                    problems.append("SUBMISSION_OUTSIDE_COMPETITION_WINDOW")
++                if run and run.time_ticks != best.time_ticks:
++                    problems.append("STORED_BEST_DIFFERS_FROM_SOURCE")
++                if player["disabled"] or player["is_test_driver"] and (kind == "challenge" or not entity.test_population):
++                    problems.append("PLAYER_NOT_COMPETITIVELY_ELIGIBLE")
++                tick_rate = board.manifest.get("tick_rate") if board else None
++                if type(tick_rate) is not int or not 0 < tick_rate <= 1000:
++                    problems.append("PINNED_TICK_RATE_UNAVAILABLE")
++                elif kind == "rivalry" and tick_rate != slot.get("tick_rate"):
++                    problems.append("PINNED_TICK_RATE_MISMATCH")
++                rows.append({"id": best.player_id, "player_id": best.player_id, "slot": slot_index, "run_id": getattr(best, "run_id", None),
++                    "stored_ticks": best.time_ticks, "ticks": run.time_ticks if not problems else None,
++                    "seconds": run.time_ticks / tick_rate if not problems and type(tick_rate) is int and tick_rate > 0 else None,
++                    "provenance": "accepted_run" if not problems else "unavailable_or_inconsistent",
++                    "problems": problems, "evidence_route": "/v1/admin/studio/races/" + run.id if run else None,
++                    "manifest": pinned_manifest(board)})
++            eligible = [row for row in rows if row["ticks"] is not None]
++            rankings(eligible, "ticks")
++            stored = [{"id": row["player_id"], "ticks": row["stored_ticks"]} for row in rows
++                if not roster[row["player_id"]]["disabled"] and type(row["stored_ticks"]) is int and row["stored_ticks"] > 0]
++            rankings(stored, "ticks")
++            stored_ranks = {row["id"]: row["rank"] for row in stored}
++            for row in rows:
++                row.setdefault("rank", None)
++                row["rank_from_stored_bests"] = stored_ranks.get(row["player_id"])
++                stored_rank = row["rank_from_stored_bests"]
++                row["points_from_stored_bests"] = POINTS[stored_rank - 1] if kind == "rivalry" and stored_rank and stored_rank <= len(POINTS) else 0
++                row["points"] = POINTS[row["rank"] - 1] if kind == "rivalry" and row["rank"] and row["rank"] <= len(POINTS) else 0
++                roster[row["player_id"]]["points"] += row["points"]
++                roster[row["player_id"]]["eligible_results"] += int(row["ticks"] is not None)
++            results.extend(rows)
++        ticket_field = ticket_model.group_id if kind == "rivalry" else ticket_model.challenge_id
++        attempts = session.execute(select(Run.status).join(ticket_model, ticket_model.ticket_id == Run.ticket_id)
++            .where(ticket_field == entity.id).order_by(Run.created_at, Run.id).limit(501)).all()
++        counts = {}
++        for (state,) in attempts[:500]:
++            counts[state] = counts.get(state, 0) + 1
++        target = None
++        if kind == "challenge" and entity.target_run_id:
++            run = runs.get(entity.target_run_id)
++            target = {"run_id": entity.target_run_id, "stored_ticks": entity.target_ticks,
++                "problems": proof(run, entity.creator_id, boards.get(entity.board_id), tickets.get(run.ticket_id) if run else None)}
++            if entity.mode == "beat" and run and run.time_ticks != entity.target_ticks:
++                target["problems"].append("STORED_TARGET_DIFFERS_FROM_SOURCE")
++        return {"kind": kind, "definition": definition, "roster": list(roster.values()), "results": results,
++            "target": target, "points_policy": list(POINTS) if kind == "rivalry" else None,
++            "attempt_states": counts, "attempts_truncated": len(attempts) > 500,
++            "as_of": now(), "role": role, "read_only": True,
++            "limits": ["Ranks/points recomputed from linked accepted evidence; inconsistencies do not mutate official results.",
++                "Archived timing without a retained run cannot prove original acceptance.",
++                "Ghosts and attempt count do not confer score eligibility; no verifier or proof-object reads.",
++                "Reward delivery is unavailable; no progression reward is inferred."]}
+--- a/backend/bmt_backend/telemetry.py
++++ b/backend/bmt_backend/telemetry.py
+@@ -10,6 +10,7 @@
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
++from . import quality
+ from .db import get_session
+ from .middleware import ParsedJSONRoute
+ from .security import current_player
+@@ -43,6 +44,7 @@
+     "collection_summary": {"dropped_events", "rejected_events", "persistence_failures"},
+     "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
+ }
++ALLOWED.update(quality.FIELDS)
+ REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
+     "save", "publish", "edit", "test", "open", "join", "create", "share"}
+ 
+@@ -75,6 +77,9 @@
+         raise ValueError("INVALID_EVENT")
+     result = {}
+     for key, item in value.items():
++        if name in quality.NAMES and key != "track_version_id":
++            result[key] = item
++            continue
+         if key in ("track_version_id", "ticket_id", "challenge_id"):
+             item = uuid_value(item)
+         elif key == "car_id":
+@@ -98,7 +103,7 @@
+         elif key == "reason" and item not in REASONS:
+             raise ValueError("INVALID_EVENT")
+         result[key] = item
+-    return result
++    return quality.validate(name, result) if name in quality.NAMES else result
+ 
+ 
+ class Batch(BaseModel):
+@@ -173,6 +178,8 @@
+                 raise ValueError("INVALID_EVENT")
+             name = raw["name"]
+             if not isinstance(name, str) or name not in ALLOWED:
++                raise ValueError("INVALID_EVENT")
++            if name in quality.NAMES and not request.app.state.settings.client_quality_enabled:
+                 raise ValueError("INVALID_EVENT")
+             occurred = integer(raw["occurred_at"], high=4102444800)
+             if occurred < at - MAX_AGE or occurred > at + FUTURE_ALLOWANCE:
+--- a/backend/deploy/.env.example
++++ b/backend/deploy/.env.example
+@@ -49,3 +49,6 @@
+ # After approved migration/configuration:
+ # python -m bmt_backend.product_worker --once  (one bounded pass)
+ # python -m bmt_backend.product_worker         (separate long-running service)
++
++# Optional bounded client counters; also requires BMT_TELEMETRY_ENABLED=true.
++BMT_CLIENT_QUALITY_ENABLED=false
+--- a/backend/schemas/product-events-v1.schema.json
++++ b/backend/schemas/product-events-v1.schema.json
+@@ -3,7 +3,7 @@
+   "$id": "bmt-product-events-v1",
+   "title": "Authenticated product-observation batch",
+   "description": "Valid client batches for POST /v1/telemetry/batches. Bearer authentication supplies player identity and artificial classification; client observations cannot authorize game results, purchases or grants. This strict authoring schema validates every event. Runtime ingress intentionally validates event rows separately and returns accepted/duplicate/rejected acknowledgements instead of rejecting all valid siblings.",
+-  "$comment": "The server enforces at most 50 events and a 65536-byte compact UTF-8 serialization of the normalized batch model, including defaults; JSON Schema cannot express that encoded-size limit. Wire integer values must be integer JSON tokens: the Python event parser rejects booleans and floating-point values, including 1.0. The relative timestamp window and persisted event-ID conflicts require server context and are not JSON Schema checks. UUID patterns specify canonical representations; the parser normalizes UUIDs. No authentication key or identity subject belongs in this payload.",
++  "$comment": "The server enforces at most 50 events and a 65536-byte compact UTF-8 serialization of the normalized batch model, including defaults; JSON Schema cannot express that encoded-size limit. Wire integer values must be integer JSON tokens: the Python event parser rejects booleans and floating-point values, including 1.0. The relative timestamp window and persisted event-ID conflicts require server context and are not JSON Schema checks. UUID patterns specify canonical representations; the parser normalizes UUIDs. No authentication key or identity subject belongs in this payload. Quality events require quality_schema_version=1 and BMT_CLIENT_QUALITY_ENABLED. Runtime also enforces histogram sum=samples, slow=b5+b6+b7 and segment slow<=samples. Process exits describe prior process, not current player attribution.",
+   "x-max-canonical-bytes": 65536,
+   "x-max-event-age-seconds": 604800,
+   "x-future-allowance-seconds": 300,
+@@ -131,7 +131,10 @@
+             "collection_summary",
+             "store_opened",
+             "offer_exposed",
+-            "purchase_requested"
++            "purchase_requested",
++            "quality_summary",
++            "segment_summary",
++            "process_exit"
+           ]
+         },
+         "occurred_at": {
+@@ -1269,6 +1272,197 @@
+               }
+             }
+           }
++        },
++        {
++          "if": {
++            "properties": {
++              "name": {
++                "const": "quality_summary"
++              }
++            }
++          },
++          "then": {
++            "properties": {
++              "properties": {
++                "type": "object",
++                "additionalProperties": false,
++                "required": [
++                  "device_class",
++                  "scene",
++                  "samples",
++                  "slow",
++                  "b0",
++                  "b1",
++                  "b2",
++                  "b3",
++                  "b4",
++                  "b5",
++                  "b6",
++                  "b7"
++                ],
++                "properties": {
++                  "device_class": {
++                    "enum": [
++                      "android_arm64",
++                      "android_other",
++                      "desktop",
++                      "other"
++                    ]
++                  },
++                  "scene": {
++                    "enum": [
++                      "race",
++                      "menu",
++                      "editor"
++                    ]
++                  },
++                  "samples": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "slow": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b0": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b1": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b2": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b3": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b4": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b5": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b6": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "b7": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  }
++                }
++              }
++            }
++          }
++        },
++        {
++          "if": {
++            "properties": {
++              "name": {
++                "const": "segment_summary"
++              }
++            }
++          },
++          "then": {
++            "properties": {
++              "properties": {
++                "type": "object",
++                "additionalProperties": false,
++                "required": [
++                  "track_version_id",
++                  "segment",
++                  "cell_x",
++                  "cell_y",
++                  "samples",
++                  "slow"
++                ],
++                "properties": {
++                  "track_version_id": {
++                    "$ref": "#/$defs/uuid"
++                  },
++                  "segment": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 31
++                  },
++                  "cell_x": {
++                    "type": "integer",
++                    "minimum": -5000,
++                    "maximum": 5000
++                  },
++                  "cell_y": {
++                    "type": "integer",
++                    "minimum": -5000,
++                    "maximum": 5000
++                  },
++                  "samples": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  },
++                  "slow": {
++                    "type": "integer",
++                    "minimum": 0,
++                    "maximum": 1000000
++                  }
++                }
++              }
++            }
++          }
++        },
++        {
++          "if": {
++            "properties": {
++              "name": {
++                "const": "process_exit"
++              }
++            }
++          },
++          "then": {
++            "properties": {
++              "properties": {
++                "type": "object",
++                "additionalProperties": false,
++                "required": [
++                  "device_class",
++                  "exit_reason"
++                ],
++                "properties": {
++                  "device_class": {
++                    "enum": [
++                      "android_arm64",
++                      "android_other",
++                      "desktop",
++                      "other"
++                    ]
++                  },
++                  "exit_reason": {
++                    "enum": [
++                      4,
++                      5,
++                      6
++                    ]
++                  }
++                }
++              }
++            }
++          }
+         }
+       ]
+     },
+--- /dev/null
++++ b/backend/tests/test_client_quality.py
+@@ -0,0 +1,58 @@
++"""Quality observations are bounded, deduplicated and never scoring evidence."""
++# ruff: noqa: F811
++from dataclasses import replace
++from uuid import uuid4
++
++import pytest
++from sqlalchemy import func, select
++from test_product_analytics import AT, body, observed, product, send  # noqa: F401
++
++from bmt_backend.product_analytics import project_pending
++from bmt_backend.quality_models import QualityFact
++
++
++def frames(**changes):
++    return {"device_class": "android_arm64", "scene": "race", "samples": 100, "slow": 10,
++        **{f"b{i}": 90 if i == 2 else 10 if i == 5 else 0 for i in range(8)}, **changes}
++
++
++def test_quality_gate_validation_dedupe_projection_and_read_budget(product):
++    app, client, _auth, _player = product
++    observation = observed("quality_summary", properties=frames())
++    assert send(product, [observation]).json()["events"][0]["status"] == "rejected"
++    app.state.settings = replace(app.state.settings, client_quality_enabled=True)
++    # A rejected ID is permanently handled; a newly valid event needs its own ID.
++    observation["id"] = str(uuid4())
++    assert send(product, [observation]).json()["events"][0]["status"] == "accepted"
++    assert send(product, [observation]).json()["events"][0]["status"] == "duplicate"
++    for props in (frames(samples=101), frames(email="secret@example.invalid"), frames(b0=True), frames(device_class="unique-device-id")):
++        assert send(product, [observed("quality_summary", properties=props)]).json()["events"][0]["status"] == "rejected"
++    project_pending(app.state.session_factory, at=AT)
++    project_pending(app.state.session_factory, at=AT)
++    assert client.get('/v1/admin/quality').status_code == 401
++    query = f'/v1/admin/quality?since={AT-3600}&until={AT+1}'
++    report = client.get(query, headers={"Authorization": "Bearer " + "a" * 40}).json()
++    assert len(report['items']) == 1 and report['items'][0]['samples'] == 100
++    assert report['items'][0]['slow'] == 10 and report['coverage']['guest'] == 'unavailable'
++    assert client.get(query+'&limit=1001', headers={"Authorization": "Bearer " + "a" * 40}).status_code == 422
++
++
++def test_spatial_and_exit_contracts_are_typed_bounded_not_arbitrary_capture(product):
++    app, _client, _auth, _player = product
++    app.state.settings = replace(app.state.settings, client_quality_enabled=True)
++    cell = {"track_version_id": str(uuid4()), "segment": 2, "cell_x": -3, "cell_y": 4, "samples": 15, "slow": 1}
++    for props in (cell, {**cell, 'segment': 31}):
++        assert send(product, [observed('segment_summary', properties=props)]).json()['events'][0]['status'] == 'accepted'
++    for props in ({**cell, 'segment': 32}, {**cell, 'cell_x': 5001}, {**cell, 'slow': 16}, {**cell, 'track_version_id': 'invalid'}):
++        assert send(product, [observed('segment_summary', properties=props)]).json()['events'][0]['status'] == 'rejected'
++    assert send(product, [observed('process_exit', properties={'device_class':'android_arm64','exit_reason':6})]).json()['events'][0]['status'] == 'accepted'
++    assert send(product, [observed('process_exit', properties={'device_class':'android_arm64','exit_reason':2,'stack':'secret'})]).json()['events'][0]['status'] == 'rejected'
++    project_pending(app.state.session_factory, at=AT)
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(QualityFact)) == 3
++
++
++def test_quality_requires_telemetry_transport():
++    from bmt_backend.config import Settings
++    with pytest.raises(ValueError, match='transport'):
++        Settings(client_quality_enabled=True)
+--- /dev/null
++++ b/backend/tests/test_provider_proofs.py
+@@ -0,0 +1,65 @@
++"""Real cryptography/provider contracts tested offline, without purchases or ad grants."""
++import base64
++from datetime import datetime, timezone
++from urllib.parse import quote, unquote_to_bytes
++
++import pytest
++from cryptography.hazmat.primitives import hashes
++from cryptography.hazmat.primitives.asymmetric import ec
++
++from bmt_backend.provider_proofs import InvalidProof, account_binding, validate_play, verify_admob
++
++
++def purchase(**changes):
++    return {"obfuscatedExternalAccountId": account_binding("player-a"),
++        "productLineItem": [{"productId": "ad_free_month", "productOfferDetails": {
++            "quantity": 1, "refundableQuantity": 1, "consumptionState": "CONSUMPTION_STATE_YET_TO_BE_CONSUMED"}}],
++        "purchaseStateContext": {"purchaseState": "PURCHASED"},
++        "purchaseCompletionTime": "2026-09-12T12:00:00Z", **changes}
++
++
++def test_play_authority_is_provider_bound_to_account_exact_product_quantity_and_state():
++    at = int(datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc).timestamp())
++    assert validate_play(purchase(), 'ad_free_month', 'player-a', at=at)['completed_at'] == at
++    with pytest.raises(InvalidProof, match='ACCOUNT'):
++        validate_play(purchase(), 'ad_free_month', 'player-b', at=at)
++    with pytest.raises(InvalidProof, match='PRODUCT'):
++        validate_play(purchase(), 'creator_slot_1', 'player-a', at=at)
++    with pytest.raises(InvalidProof, match='QUANTITY'):
++        proof = purchase(); proof['productLineItem'][0]['productOfferDetails']['quantity'] = True
++        validate_play(proof, 'ad_free_month', 'player-a', at=at)
++    with pytest.raises(InvalidProof, match='STATE'):
++        validate_play(purchase(purchaseStateContext={'purchaseState':'invented'}), 'ad_free_month', 'player-a', at=at)
++    with pytest.raises(InvalidProof, match='TIME'):
++        validate_play(purchase(purchaseCompletionTime='2030-01-01T00:00:00Z'), 'ad_free_month', 'player-a', at=at)
++    pending = validate_play(purchase(purchaseStateContext={'purchaseState':'PENDING'}, purchaseCompletionTime=None), 'ad_free_month', 'player-a', at=at)
++    assert pending['state'] == 'PENDING' and pending['completed_at'] is None
++    assert validate_play(purchase(testPurchaseContext={'fopType':'TEST'}), 'ad_free_month', 'player-a', at=at)['test_purchase']
++
++
++def test_ssv_verifies_exact_query_bytes_and_never_trusts_unsigned_decoded_params():
++    private = ec.generate_private_key(ec.SECP256R1())
++
++    class Keys:
++        def key(self, identity):
++            if identity != '1': raise InvalidProof('UNKNOWN_ADMOB_KEY')
++            return private.public_key()
++
++    raw = ('ad_network=5450213213286189855&ad_unit=123&custom_data='+quote('opaque/intent',safe='')+
++        '&reward_amount=1&reward_item=resume&timestamp=1791737979545&transaction_id=abcdef').encode()
++
++    def signed(value):
++        signature = base64.urlsafe_b64encode(private.sign(unquote_to_bytes(value), ec.ECDSA(hashes.SHA256()))).rstrip(b'=')
++        return value+b'&signature='+signature+b'&key_id=1'
++
++    callback = signed(raw)
++    assert verify_admob(callback, Keys())['custom_data'] == 'opaque/intent'
++    # URI.getQuery() treats these equivalent wire representations identically.
++    assert verify_admob(callback.replace(b'%2F',b'/'), Keys())['custom_data'] == 'opaque/intent'
++    for altered in (callback.replace(b'ad_unit=123',b'ad_unit=456'), callback.replace(b'%2F',b'%252F'), callback+b'&reward_amount=1'):
++        with pytest.raises(InvalidProof): verify_admob(altered, Keys())
++    plus = signed(raw.replace(b'opaque%2Fintent', b'opaque+intent'))
++    with pytest.raises(InvalidProof): verify_admob(plus.replace(b'+',b'%20',1), Keys())
++    with pytest.raises(InvalidProof): verify_admob(signed(raw+b'&reward_amount=1'), Keys())
++    with pytest.raises(InvalidProof): verify_admob(signed(raw.replace(b'reward_amount=1',b'reward_amount=100')), Keys())
++    with pytest.raises(InvalidProof): verify_admob(b'x'*4097, Keys())
+--- /dev/null
++++ b/backend/tests/test_studio_expansion_postgres.py
+@@ -0,0 +1,49 @@
++"""Race case edits and project diagnostic facts in an isolated PostgreSQL schema."""
++# ruff: noqa: F811
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from uuid import uuid4
++
++from sqlalchemy import func, select
++from test_auth_postgres import google_request, postgres_auth  # noqa: F401
++from test_product_analytics import body, observed
++from test_studio import headers
++
++from bmt_backend.product_analytics import project_pending
++from bmt_backend.quality_models import QualityFact
++from bmt_backend.studio_case_models import StudioCaseEvent
++from bmt_backend.track_models import now
++
++
++def test_postgres_case_revision_and_permanent_commands_are_atomic(postgres_auth):
++    app, client = postgres_auth
++    app.state.settings = replace(app.state.settings,admin_owner_key='o'*40,admin_analyst_key='a'*40)
++    create = {'command_id':str(uuid4()),'title':'Concurrent support case'}
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        results=list(pool.map(lambda _:client.post('/v1/admin/cases',headers=headers('owner'),json=create),range(4)))
++    assert [result.status_code for result in results] == [200]*4
++    assert len({result.json()['id'] for result in results}) == 1
++    identity=results[0].json()['id'];endpoint='/v1/admin/cases/'+identity+'/events'
++    def edit(_):
++        return client.post(endpoint,headers=headers('owner'),json={'command_id':str(uuid4()),'expected_revision':0,'kind':'note','text':'Investigate durable upload'})
++    with ThreadPoolExecutor(max_workers=4) as pool: responses=list(pool.map(edit,range(4)))
++    assert sorted(response.status_code for response in responses) == [200,409,409,409]
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(StudioCaseEvent)) == 2
++
++
++def test_postgres_quality_duplicate_upload_and_parallel_projection_are_one_effect(postgres_auth):
++    app,client=postgres_auth
++    app.state.settings=replace(app.state.settings,telemetry_enabled=True,client_quality_enabled=True)
++    signed=client.post('/v1/auth/google',json=google_request(app,client,'quality-racer')).json()
++    auth={'Authorization':'Bearer '+signed['access_token']}
++    props={'device_class':'android_arm64','scene':'race','samples':100,'slow':10,**{f'b{i}':90 if i==2 else 10 if i==5 else 0 for i in range(8)}}
++    observation=observed('quality_summary',at=now(),properties=props)
++    def ingest(_):return client.post('/v1/telemetry/batches',headers=auth,json=body([observation]))
++    with ThreadPoolExecutor(max_workers=4) as pool: responses=list(pool.map(ingest,range(4)))
++    assert all(response.status_code==200 for response in responses)
++    assert sorted(response.json()['events'][0]['status'] for response in responses)==['accepted','duplicate','duplicate','duplicate']
++    with ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(lambda _:project_pending(app.state.session_factory),range(4)))
++    with app.state.session_factory() as session:
++        fact=session.scalar(select(QualityFact))
++        assert fact.reports==1 and fact.samples==100 and fact.slow==10
+--- /dev/null
++++ b/backend/tests/test_studio_moderation.py
+@@ -0,0 +1,73 @@
++"""Case-linked visibility is atomic; players cannot read notes or appeal another case."""
++# ruff: noqa: F811
++from uuid import uuid4
++
++from sqlalchemy import select
++from test_studio import evidence, headers  # noqa: F401
++
++from bmt_backend.admin_models import AdminAudit
++from bmt_backend.studio_case_models import StudioCase
++from bmt_backend.track_models import Track, TrackVersion
++
++
++def test_case_quarantine_restore_retry_and_intervening_moderation(evidence):
++    client, app, ids = evidence
++    with app.state.session_factory() as session:
++        track_id = session.get(TrackVersion, ids['version']).track_id
++    case = client.post('/v1/admin/cases', headers=headers('owner'), json={
++        'command_id':str(uuid4()),'title':'Track report','track_id':track_id}).json()
++    url = '/v1/admin/cases/'+case['id']+'/events'
++    command = {'command_id':str(uuid4()),'expected_revision':0,'kind':'quarantine','text':'Check reported track geometry'}
++    assert client.post(url, headers=headers(), json=command).status_code == 403
++    assert client.post(url, headers=headers('owner'), json=command).json()['revision'] == 1
++    assert client.post(url, headers=headers('owner'), json=command).json()['revision'] == 1
++    with app.state.session_factory() as session:
++        assert session.get(Track, track_id).hidden
++        audit = session.scalar(select(AdminAudit).where(AdminAudit.command_id == command['command_id']))
++        assert audit.after['case_id'] == case['id']
++    restore = {**command,'command_id':str(uuid4()),'kind':'restore','expected_revision':1,'text':'Report investigated and resolved'}
++    assert client.post(url, headers=headers('owner'), json=restore).json()['revision'] == 2
++    with app.state.session_factory() as session:
++        assert not session.get(Track, track_id).hidden
++    quarantine = {**command,'command_id':str(uuid4()),'expected_revision':2}
++    assert client.post(url, headers=headers('owner'), json=quarantine).json()['revision'] == 3
++    # Simulate a subsequent moderation decision by the existing owner command API.
++    with app.state.session_factory() as session:
++        session.add(AdminAudit(command_id=str(uuid4()),actor='owner',action='track_visibility',entity_id=track_id,
++            reason='An additional unresolved report',before={'hidden':False},after={'hidden':True},
++            request_hash='a'*64,request_id=str(uuid4()),created_at=2100000000))
++        session.commit()
++    assert client.post(url, headers=headers('owner'), json={**restore,'command_id':str(uuid4()),'expected_revision':3}).status_code == 409
++    with app.state.session_factory() as session:
++        assert session.get(Track, track_id).hidden
++
++
++def test_signed_in_reports_appeals_and_staff_note_isolation(auth_client, auth_app, sign_in):
++    from dataclasses import replace
++    auth_app.state.settings = replace(auth_app.state.settings,admin_owner_key='o'*40,admin_analyst_key='a'*40)
++    alice = {'Authorization':'Bearer '+sign_in('alice-report')['access_token']}
++    bob = {'Authorization':'Bearer '+sign_in('bob-report')['access_token']}
++    body = {'command_id':str(uuid4()),'reason':'technical_issue','text':'Upload remains pending'}
++    assert auth_client.post('/v1/reports',json=body).status_code == 401
++    created = auth_client.post('/v1/reports',headers=alice,json=body).json()
++    assert auth_client.post('/v1/reports',headers=alice,json=body).json() == created
++    identity = created['id']
++    note = {'command_id':str(uuid4()),'expected_revision':0,'kind':'note','text':'Private staff analysis'}
++    assert auth_client.post('/v1/admin/cases/'+identity+'/events',headers=headers('owner'),json=note).status_code == 200
++    transition = {**note,'command_id':str(uuid4()),'expected_revision':1,'kind':'transition','status':'resolved','text':'Resolved with evidence'}
++    assert auth_client.post('/v1/admin/cases/'+identity+'/events',headers=headers('owner'),json=transition).status_code == 200
++    summary = auth_client.get('/v1/reports',headers=alice)
++    assert 'Private staff' not in summary.text and len(summary.json()['items']) == 1
++    assert auth_client.get('/v1/reports',headers=bob).json()['items'] == []
++    with auth_app.state.session_factory() as session:
++        public_case = session.get(StudioCase,identity)
++        internal = StudioCase(player_id=public_case.player_id,title='Confidential staff investigation')
++        session.add(internal);session.commit();internal_id=internal.id
++    assert 'Confidential' not in auth_client.get('/v1/reports',headers=alice).text
++    appeal = {'command_id':str(uuid4()),'expected_revision':2,'text':'New reproducible evidence supplied'}
++    assert auth_client.post('/v1/reports/'+internal_id+'/appeal',headers=alice,json=appeal).status_code == 404
++    assert auth_client.post('/v1/reports/'+identity+'/appeal',headers=bob,json=appeal).status_code == 404
++    assert auth_client.post('/v1/reports/'+identity+'/appeal',headers=alice,json=appeal).json()['status'] == 'appealed'
++    assert auth_client.post('/v1/reports/'+identity+'/appeal',headers=alice,json=appeal).json()['status'] == 'appealed'
++    with auth_app.state.session_factory() as session:
++        assert session.get(StudioCase,identity).revision == 3
+--- /dev/null
++++ b/backend/tests/test_studio_operations.py
+@@ -0,0 +1,71 @@
++"""Case concurrency/auth and competition inspection use real sources, never proof replay."""
++# ruff: noqa: F811
++from uuid import uuid4
++
++from sqlalchemy import func, select
++from test_studio import evidence, headers  # noqa: F401
++
++from bmt_backend.challenge_models import Challenge, ChallengeMember
++from bmt_backend.studio_case_models import StudioCaseEvent
++
++
++def test_case_auth_retry_revision_workflow_and_credentials(evidence, auth_client, auth_app):
++    client, _app, ids = evidence
++    created = {"command_id": str(uuid4()), "title": "Race upload issue", "player_id": ids["player"]}
++    assert client.post('/v1/admin/cases', json=created).status_code == 401
++    assert client.post('/v1/admin/cases', headers=headers(), json=created).status_code == 403
++    response = client.post('/v1/admin/cases', headers=headers('owner'), json=created)
++    assert response.status_code == 200, response.text
++    case = response.json()
++    assert client.post('/v1/admin/cases', headers=headers('owner'), json=created).json()['id'] == case['id']
++    endpoint = '/v1/admin/cases/' + case['id'] + '/events'
++    event = {"command_id": str(uuid4()), "expected_revision": 0, "kind": "note", "text": "Stored result is pending"}
++    assert client.post(endpoint, headers=headers(), json=event).status_code == 403
++    assert client.post(endpoint, headers=headers('owner'), json=event).json()['revision'] == 1
++    assert client.post(endpoint, headers=headers('owner'), json=event).json()['revision'] == 1
++    assert client.post(endpoint, headers=headers('owner'), json={**event, 'command_id': str(uuid4())}).status_code == 409
++    assert client.post(endpoint, headers=headers('owner'), json={**event, 'expected_revision': 1,
++        'command_id': str(uuid4()), 'text': 'Bearer SECRET'}).status_code == 422
++    transition = {"command_id": str(uuid4()), "expected_revision": 1, "kind": "transition", "text": "Checked pinned source", "status": "resolved"}
++    assert client.post(endpoint, headers=headers('owner'), json=transition).json()['status'] == 'resolved'
++    transition.update(command_id=str(uuid4()), expected_revision=2, status='appealed', text='New evidence supplied')
++    assert client.post(endpoint, headers=headers('owner'), json=transition).json()['status'] == 'appealed'
++    report = client.get('/v1/admin/cases/' + case['id'], headers=headers()).json()
++    assert len(report['events']) == 4 and report['coverage']['production_compensation'] == 'unavailable'
++    with auth_app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(StudioCaseEvent)) == 4
++
++
++def test_challenge_exact_target_best_and_bad_source_remain_distinct(evidence):
++    client, app, ids = evidence
++    from bmt_backend.track_models import Run
++    with app.state.session_factory() as session:
++        run = session.get(Run, ids['run'])
++        challenge = Challenge(code='AUDIT001', creator_id=ids['player'], board_id=run.board_id,
++            mode='duel', target_run_id=run.id, target_ticks=run.time_ticks, ends_at=2000001000)
++        session.add(challenge); session.flush()
++        session.add(ChallengeMember(challenge_id=challenge.id, player_id=ids['player'], run_id=run.id, time_ticks=run.time_ticks))
++        session.commit(); identity = challenge.id
++    endpoint = '/v1/admin/competitions/challenge/' + identity
++    assert client.get(endpoint).status_code == 401
++    report = client.get(endpoint, headers=headers()).json()
++    assert report['results'][0]['rank'] == 1
++    assert report['results'][0]['seconds'] == 100
++    assert report['target']['problems'] == []
++    assert report['results'][0]['evidence_route'].endswith(ids['run'])
++    with app.state.session_factory() as session:
++        session.get(Run, ids['run']).status = 'queued'; session.commit()
++    report = client.get(endpoint, headers=headers()).json()
++    assert report['results'][0]['rank'] is None
++    assert report['results'][0]['rank_from_stored_bests'] == 1
++    assert 'SOURCE_NOT_VERIFIED' in report['results'][0]['problems']
++    assert report['target']['problems'] == ['SOURCE_NOT_VERIFIED']
++
++
++def test_inspection_never_reads_objects_or_runs_verification(evidence):
++    client, _app, _ids = evidence
++    # Existing evidence fixture raises on any blob/verifier read.
++    assert client.get('/v1/admin/competitions?kind=rivalry', headers=headers()).status_code == 200
++    assert client.get('/v1/admin/competitions?kind=challenge', headers=headers()).status_code == 200
++    assert client.get('/v1/admin/competitions?kind=unknown', headers=headers()).status_code == 422
++    assert client.get('/v1/admin/cases', headers=headers()).status_code == 200
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1761,3 +1761,18 @@
+ ## Rearward lengthwise dirt direction, 2026-10-11
+ 
+ 2026-10-11 CW23-CW24/CW01-CW22/V06/G01/R01/Q01: owner dirt runs up-down/wants lengthwise and slightly up toward rear. Shader-only authored+Z flow/across-height0.14 slope for mottling/flecks/wet-melted smudges; end panels use lateral coordinate/both sides physically rearward. NativeCompatibility11+MobileVulkan11/actualflow gradient5.9x/rimslow195/Import0 pass; both-side Desert-Grass-Storm and rear-corner smudge0.85 captures inspected. Masks/colours/rims/20xslow/scrub/condition/physics/score intact; no newassets/phone-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/REARWARD_DIRT.md.
++
++## Studio operations and client counters (2026-10-11)
++
++2026-10-11 STUDIO-QUALITY/CASES/COMPETITIONS: local partial expansion, no deployment. Prepared signed-in frame/segment/exit counters, sampled heatmap/discovery/latest creator state, dedicated rivalry/challenge source inspectors, revision-fenced cases/notes/issues, reports/appeals and audited track quarantine. Isolated Play/AdMob proof adapters tested offline; live fulfillment/revenue/reversal ledger/recovery/compensation remain unavailable pending provider/policy inputs. PostgreSQL116pass/2SQLite-lock skips; browser9; client26/outbox55; Java exit helper compile pass. Android export blocked by unchanged creator golden assertion (113checks/1fail); no new APK/device test. Actual scope, source gaps, traffic/compute and workspace checkpoint: docs/STUDIO_EXPANSION_2026_10_11.md.
++
++
++
++## Garage Free Race layout correction, 2026-10-11
++
++2026-10-11 GC06-GC09/GC03-GC05/CW13/CW15/CW16/V06/G01/R01/Q01: owner rejects first Garage layout; supplied Free Race composition now drives left60px rail, central actual showroom, bottom Select car and five actual 3D model cards. Cards preview without selecting; confirm opens left Customise/Care/Tuning, horizontal paint controls/free local Wash/placeholder. Static isolated 2x-MSAA card renders refresh on changes; five byte-exact freeze/change checks; interactive4x-MSAA showroom/framing only, no gameplay scale change. Native150/MobileVulkan150/livery115/wash1402/view59/menu23/swipes268/App99 pass;30 captures inspected. Cached getter fixture corrected with actual pixel proof; initial concurrent reverse-swipe failure isolated and heading rectangle used/all assertions retained. Doctor no phone; no device test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_FREE_RACE_LAYOUT.md.
++
++
++## Curved rear-quarter dirt flow, 2026-10-11
++
++2026-10-11 CW25/CW01-CW24/V06/G01/R01/Q01: owner curve dirt flow/more vertical at rear. Shader-only smooth half-wheelbase-scaled quadratic after mid-door; shallow front becomes~45deg rear axle/~59deg tail/both sides; shared flecks-film-smudges/end projection retained. NativeCompatibility12+MobileVulkan12/actualfront-horizontal rear-upright gradients/rimslow195 pass; initial logical-vs-image region bug corrected/assertions retained, prior uniform slope superseded explicitly. Actual Desert-Grass-Storm both sides/rear corners inspected; masks/palette/rims/20xslow/scrub/saves/physics/score unchanged. No phone-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/CURVED_DIRT.md.
+--- /dev/null
++++ b/docs/STUDIO_EXPANSION_2026_10_11.md
+@@ -0,0 +1,48 @@
++# Studio expansion — local checkpoint, 2026-10-11
++
++At 18:38 UTC this is a **partial local implementation**, not a completed implementation of all four requested areas and not a deployment. The live backend remains on the previously deployed product-telemetry release. Guest coverage remains unavailable. Local car dirt/washing state is not collected.
++
++| Area / requirement | Implemented here | Still missing |
++| --- | --- | --- |
++| Client quality — BMT-018, BMT-070 | Signed-in frame histograms by configured build ID, platform/device class and scene; bounded 1 Hz spatial/segment observations; Android API 30+ crash/native-crash/ANR **process-exit reasons**; prepared Studio views. | Crash stacks/symbolication/grouping, actual device models/OS/GPU tiers, per-race/biome summaries and load-failure instrumentation, Play vitals and correct crash-free denominators. Existing build version is not a unique artifact fingerprint. |
++| Enhanced capture — BMT-053 | Routine capture is bounded to counters and sampled cells. | **Consented, expiring enhanced diagnostic capture is not implemented.** Routine counters must not be described as fulfilling BMT-053. |
++| Billing/ads — BMT-040, BMT-043 | Isolated Play ProductPurchaseV2 verification adapter and AdMob ECDSA proof verifier, with offline adversarial tests. No new dependencies. | Production package/product configuration, BillingClient integration, durable encrypted token/acknowledgement/consume jobs, RTDN authentication, reward intents/callback fulfillment and consent/placement setup. These adapters have no exposed purchase/grant endpoint. |
++| Revenue/ledger — BMT-041, BMT-044, BMT-048 | Existing development controls are preserved. No catalog price is treated as revenue. | Real spend/estimated-net/reconciled-receipt feeds, original currency/FX/tax/fee basis, void/refund reconciliation, reversal ordering/tombstones and complete entitlement projection ledger. **These are not implemented in this checkpoint.** |
++| Tracks/competition — BMT-030, BMT-032, BMT-034, BMT-036 | Per-version observed exposures/selections; latest 100 creator versions and publication state; sampled heatmap; dedicated rivalry/challenge inspector with pinned contracts, roster context, accepted-run/ticket/board/window checks, stored-best versus evidence-derived ranks/points, exact target and attempt-state window. | Complete discovery journey/visibility concentration/creator-return diagnostics; spatial collision/quit/rewind measures; historical validator phases; original evidence for archived bests lacking run links; reward delivery. Existing Product analytics retains ordered creator/external-racer cohorts. |
++| Support/moderation — BMT-033, BMT-050 | Cases, ordered append-only events, notes, issue references, revision fencing, permanent command dedupe, signed-in report/appeal API, case-linked track quarantine/restoration and audit linkage. Player report responses exclude staff notes and internal staff-created cases. | In-game report UI, record-level quarantine, automatic quarantine expiry, individual staff SSO/MFA, dedicated verified recovery and production compensation. Existing Google sign-in retains its original identity checks; no new account merging or impersonation is offered. |
++
++The moderation scope here changes track visibility and new-ticket availability through the existing hidden-track contract. It does not delete content, remove submitted evidence, rewrite accepted results or transfer balances. Restoration refuses a different owning case or intervening visibility moderation; ambiguous same-second moderation is conservatively refused. Cases use shared owner/analyst credential roles, not individual staff attribution.
++
++Competition reads use one consistent transaction, at most 200 members/5 slots/1,000 bests and the first 500 linked attempts in deterministic order. They never fetch proof/ghost objects or invoke the verifier. Creator source runs deliberately seeded into challenges remain valid without a challenge-ticket binding. A corrupt linked source remains visible rather than silently becoming an accepted rank. Archived timing alone cannot prove original acceptance. Current points are explained using the existing rivalry policy; reads never change official scores.
++
++Network and compute:
++
++- Reuse the existing authenticated, account/origin-separated durable telemetry outbox: 50 events / 64 KiB per packet, 1,000 events / 2 MiB local queue, stable-ID retries and acknowledgement after commit. A backend feature flag plus negotiated `quality_schema_version=1` is required. `BMT_CLIENT_QUALITY_ENABLED` defaults false and requires telemetry enabled.
++- Frames become eight integer buckets every five minutes, separated by menu/race/editor scene. No per-frame requests or stored frame arrays. Spatial sampling reads presentation state once a second, using 20 m cells / 32 route segments and retaining the 16 lowest stable cell hashes per ten-minute window. It is censored sampled presence, not total dwell time, distinct drivers or validated race evidence. Inclusion probabilities are unavailable; local dropped-cell counts are not currently projected to Studio.
++- Quality events are passive for the existing five-minute idle flush rule. They do not trigger one-minute journey flushes; actual product activity retains its original cadence. No transport or persistence worker starts during an ordinary foreground race; pooled identifiers reserve 32 entries for product/race observations. Extended races may lose optional counters when the pool/outbox budget is exhausted.
++- The Windows collector fixture measured **1.0034 µs/frame** and **18.472 µs/cell observation**. Its 19-event compact packet was **5,852 bytes**. A single-scene hour has at most 12 frame summaries and 96 retained-cell summaries, plus at most four startup exit observations. Packet size and collector timing are measured; hourly body traffic, TLS/radio cost and physical-device CPU remain unmeasured. Retries, existing product traffic and compressed transport affect actual traffic.
++- The existing lower-priority product worker performs grouped counter upserts in the same bounded projection transaction. No new worker instance, simulation, geometry scan or object download is introduced. Diagnostic facts use 64-bit counters and paced retention under the existing fact retention setting. Studio reads prepared counters with a 1,000-row response ceiling; it does not scan raw events. New indexed ordering supports recent creator/rivalry/challenge lists. Two small API reads serve each new workspace: context (no operational count queries) and its bounded data query. Large-population query load has not been benchmarked for this slice.
++- Android reads at most four OS exit records, once outside racing, with a persisted cursor. It uploads the reason and collection time; the original exit timestamp stays in the local cursor. It never reads trace streams, PIDs, device IDs, raw logs or credentials. These describe the previous process and cannot prove a crash affected the current signed-in account. API availability is documented by [Android ApplicationExitInfo](https://developer.android.com/reference/android/app/ApplicationExitInfo).
++
++Provider contracts follow [Google Play ProductPurchaseV2](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.productsv2) and [AdMob SSV](https://developers.google.com/admob/android/ssv). The Play adapter checks explicit package, exact product, server account binding, quantity, state, completion time and refundable quantity; pending/test/refund state stays explicit. AdMob matches [Google's reference verifier](https://github.com/tink-crypto/tink-java-apps/blob/main/rewardedads/src/main/java/com/google/crypto/tink/apps/rewardedads/RewardedAdsVerifier.java): percent-decode the URI query once, preserve literal plus signs and parameter order, then authenticate before parsing business fields. It rejects duplicate/unknown parameters and unsupported rewards, and caches trusted Google EC keys for one hour with paced refresh. Signature validation alone never grants resumes: configured placement, server-issued intent, expiry, permanent transaction dedupe and atomic fulfillment are still required. No production provider call, purchase, ad grant or payout was performed.
++
++Actual validation:
++
++- `.tools/backend-venv/Scripts/python.exe scripts/test_studio_expansion_postgres.py` — **116 passed, 2 skipped**, 96.33 s, owned PostgreSQL 17 removed. Covers additive migrations through `0027_client_quality`, duplicate/concurrent ingestion and projection, concurrent case creation/edit fencing, and touched Studio/product/store regressions. Skips are SQLite variants that require PostgreSQL row locks; corresponding PostgreSQL paths run. Existing Starlette/httpx deprecation warning remains.
++- Final focused SQLite/domain/proof tests — **10 passed**, 6.62 s, including internal-case privacy and stored-rank/source inconsistency checks. Ruff checks on all touched/new backend source, migrations, tests and harnesses passed.
++- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_client_quality.gd` — **26 checks / zero failures**, including finite bucket boundaries, bounded spatial memory, lack of exact positions/device IDs and a nonempty durable-event packet.
++- Same entry point with `res://tests/test_product_telemetry.gd` — **55 checks / zero failures**. Existing queue/identity/retry/storage tests retain their assertions.
++- `.tools/backend-venv/Scripts/python.exe scripts/test_studio_expansion_console.py` — **9 browser checks passed**, actual headless Edge against a newly owned, seeded loopback database; owner creation/note/quarantine, HTML escaping, histograms/heatmap/exact target, analyst read-only access, 390 px capture and zero JavaScript errors. [Browser receipt](evidence/studio-expansion-2026-10-11/browser.json), [case capture](evidence/studio-expansion-2026-10-11/cases-desktop.png), [histogram](evidence/studio-expansion-2026-10-11/quality-desktop.png), [heatmap](evidence/studio-expansion-2026-10-11/heatmap-desktop.png), [competition](evidence/studio-expansion-2026-10-11/competition-desktop.png), [mobile](evidence/studio-expansion-2026-10-11/competition-mobile.png). These are test records, not live populations or completed canonical races.
++- Pinned Godot `CheckScript` passed. `ExportAndroid` parsed **530 scripts**, then its full validation stopped at the creator-v22 pine geometry golden assertion (**113 creator checks, one failure**). Expected fixture was not changed. Log: `build/logs/ExportAndroid-672/creator-tests.log`. **No new APK was produced by this attempt**, and a full regression pass is not claimed.
++- JDK 17 `javac -Xlint:all` against installed Android 36 compiled `BmtProcessExits.java` successfully to the owned workspace classes directory (1,819-byte class). This checks the adapter's Java/API compatibility, not full plugin packaging or device behavior. The first sandboxed compiler attempt emitted SDK access errors; only the subsequent successful escalated run is accepted.
++- No phone/device test, live deployment, live database migration, account recovery, production compensation or provider fulfillment was performed. Local schema additions are not applied to the deployed backend.
++
++Remaining owner inputs, already requested:
++
++1. Production Play package/product IDs and AdMob app/rewarded placement; whether Play verification/RTDN and signed SSV are configured. Supply public resource IDs only; credentials belong in private configuration.
++2. Refunded slots already consumed by published tracks: keep tracks and carry a deficit, or unpublish affected tracks and restore capacity. This choice must be enforced by the complete reversal ledger before live billing is enabled.
++3. Verified recovery/production compensation policy: owner-reviewed case, or two-person approval, with verified identity proof. Available typed resources are slots, ad-free time and resumes; identity proof and approved case linkage must precede production actions.
++
++Affected code: `backend/bmt_backend/{studio_cases,studio_case_models,studio_competitions,quality,quality_models,provider_proofs}.py`; additive migrations `0026_studio_cases` / `0027_client_quality`; app/config/context/ingress/projector imports and hooks; `admin_ui/operations.js` and asset/navigation registration; extended `backend/schemas/product-events-v1.schema.json`; `game/backend/client_quality.gd` and existing outbox/capability/App wiring; Android process-exit helper/sign-in bridge; focused tests and owned browser/PostgreSQL harnesses. The workspace checkpoint includes only this task's differences from its saved before files; unrelated pre-existing work is preserved. No Git commit is claimed.
++
++[Scoped 42-file checkpoint manifest](evidence/studio-expansion-2026-10-11/checkpoint.json) and [incremental review patch](evidence/studio-expansion-2026-10-11/workspace-task-only.patch). Recreate with `.tools/backend-venv/Scripts/python.exe scripts/checkpoint_studio_expansion.py`; the baseline is the saved dirty workspace, not clean Git HEAD.
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -79,6 +79,9 @@
+ 		request.cancel_request()
+ 		request.set_meta("cancelled",true)
+ 		request.request_completed.emit(HTTPRequest.RESULT_REQUEST_FAILED,0,PackedStringArray(),PackedByteArray())
++
++func quality_supported() -> bool:
++	return telemetry_supported() and int(_capabilities.get("product_telemetry",{}).get("quality_schema_version",0)) == 1
+ 
+ func request_telemetry(payload: Dictionary) -> Dictionary:
+ 	# Optional observations never reserve the mutation queue or rotate credentials.
+--- /dev/null
++++ b/game/backend/client_quality.gd
+@@ -0,0 +1,109 @@
++extends Node
++## Presentation observer only. Fixed counters, 1 Hz cells, no simulation writes.
++const LIMITS: Array[float] = [8.0,12.0,17.0,25.0,34.0,50.0,100.0]
++const MAX_CELLS: int = 16
++var telemetry: Node
++var app: Node
++var bins: Dictionary = {}
++var cells: Dictionary = {}
++var _scope: String = ""
++var _last_summary_msec: int = Time.get_ticks_msec()
++var _last_cells_msec: int = Time.get_ticks_msec()
++var _next_position_msec: int = 0
++var _native_checked: bool = false
++var _device: String = "desktop"
++var _last_frame_usec: int = 0
++var _slow_since_sample: bool = false
++var dropped_cell_samples: int = 0
++
++func supported() -> bool:
++	return telemetry != null and telemetry.enabled and telemetry.client != null and telemetry.client.has_method("quality_supported") and telemetry.client.quality_supported() and telemetry._foreground
++
++func _ready() -> void:
++	if OS.get_name() == "Android": _device = "android_arm64" if OS.has_feature("arm64") else "android_other"
++	elif OS.get_name() != "Windows" and OS.get_name() != "Linux": _device = "other"
++
++func _process(delta: float) -> void:
++	if not supported():
++		bins.clear(); cells.clear(); _scope = ""
++		_last_frame_usec = 0
++		return
++	var current_scope: String = telemetry._scope
++	if current_scope != _scope:
++		bins.clear(); cells.clear(); _scope = current_scope
++		_last_summary_msec = Time.get_ticks_msec(); _last_cells_msec = _last_summary_msec
++	var current_game: Node = app.get("game") if app != null else null
++	var racing: bool = is_instance_valid(current_game) and not bool(current_game.get("paused")) and not bool(app.get("_telemetry_race_finished"))
++	var scene: String = "race" if racing else "editor" if app != null and app.get("screen") == "create" else "menu"
++	var usec: int = Time.get_ticks_usec()
++	var frame_ms: float = (usec-_last_frame_usec)/1000.0 if _last_frame_usec > 0 else delta*1000.0
++	_last_frame_usec = usec
++	sample_frame(scene,frame_ms)
++	if racing and frame_ms > 34.0: _slow_since_sample = true
++	var at: int = Time.get_ticks_msec()
++	if racing and at >= _next_position_msec:
++		_next_position_msec = at+1000
++		var sim: VehicleSimulation = current_game.get("sim")
++		var track: NativeTrack = current_game.get("native_track")
++		var session: TrackSession = current_game.get("track_session")
++		if sim != null and session != null and track != null and sim.state.tick > 0:
++			var version: String = str(track.metadata.get("cloud_version",""))
++			if version.length() == 36:
++				var segment: int = clampi(int(fposmod(session.last_progress,track.route_length)/maxf(track.route_length,1.0)*32),0,31)
++				sample_cell(version,segment,sim.state.position,_slow_since_sample)
++		_slow_since_sample = false
++	if at-_last_summary_msec >= 300000:
++		flush_frames(); _last_summary_msec = at
++	if at-_last_cells_msec >= 600000 and telemetry._allowed:
++		flush_cells(); _last_cells_msec = at
++	if not _native_checked and telemetry._allowed and telemetry._loaded:
++		_native_checked = true
++		_collect_exits()
++
++func sample_frame(scene: String, milliseconds: float) -> void:
++	if not is_finite(milliseconds) or milliseconds < 0: return
++	var value: PackedInt64Array = bins.get(scene,PackedInt64Array([0,0,0,0,0,0,0,0]))
++	var bucket: int = 0
++	while bucket < LIMITS.size() and milliseconds > LIMITS[bucket]: bucket += 1
++	if value[bucket] < 1000000: value[bucket] += 1
++	bins[scene] = value
++
++func sample_cell(version: String, segment: int, position: Vector2, slow: bool) -> void:
++	if not is_finite(position.x) or not is_finite(position.y): return
++	var x: int = int(floor(position.x/20.0)); var y: int = int(floor(position.y/20.0))
++	if absi(x) > 5000 or absi(y) > 5000: return
++	var key: String = version+"/"+str(segment)+"/"+str(x)+"/"+str(y)
++	if not cells.has(key) and cells.size() >= MAX_CELLS:
++		# Retain the 16 lowest stable cell hashes instead of only start-line cells.
++		var largest: String = key
++		for existing: String in cells:
++			if existing.sha256_text() > largest.sha256_text(): largest = existing
++		if largest == key: dropped_cell_samples += 1; return
++		dropped_cell_samples += int(cells[largest].samples); cells.erase(largest)
++	var value: Dictionary = cells.get(key,{"track_version_id":version,"segment":segment,"cell_x":x,"cell_y":y,"samples":0,"slow":0})
++	if value.samples < 1000000: value.samples += 1; value.slow += int(slow)
++	cells[key] = value
++
++func flush_frames() -> void:
++	for scene: String in bins.keys():
++		var value: PackedInt64Array = bins[scene]
++		var props: Dictionary = {"device_class":_device,"scene":scene,"samples":0,"slow":value[5]+value[6]+value[7]}
++		for index: int in range(8): props["b"+str(index)] = int(value[index]); props.samples += int(value[index])
++		if props.samples > 0 and telemetry.observe("quality_summary",props): bins.erase(scene)
++
++func flush_cells() -> void:
++	for key: String in cells.keys():
++		if telemetry.observe("segment_summary",cells[key]): cells.erase(key)
++
++func _collect_exits() -> void:
++	if not Engine.has_singleton("BmtGoogleSignIn"): return
++	var native: Object = Engine.get_singleton("BmtGoogleSignIn")
++	if not native.has_method("getProcessExits"): return
++	var parsed: Variant = JSON.parse_string(native.getProcessExits())
++	if not parsed is Array: return
++	for entry: Variant in parsed:
++		if not entry is Dictionary or int(entry.get("at",0)) <= telemetry._process_exit_cursor: continue
++		var reason: int = int(entry.get("reason",0))
++		if reason in [4,5,6] and telemetry.observe("process_exit",{"device_class":_device,"exit_reason":reason}):
++			telemetry._process_exit_cursor = maxi(telemetry._process_exit_cursor,int(entry.at))
++			telemetry._mark_dirty()
+--- /dev/null
++++ b/game/backend/client_quality.gd.uid
+@@ -0,0 +1 @@
++uid://el1xnbsxpdxr
+--- a/game/backend/product_telemetry.gd
++++ b/game/backend/product_telemetry.gd
+@@ -65,6 +65,10 @@
+ var _event_ids: Array[String] = uuid_pool(128)
+ var _provisional_first_opens: Dictionary = {}
+ var _collection_started_scope: String = ""
++var _process_exit_cursor: int = 0
++const QUALITY_NAMES: Array[String] = ["quality_summary","segment_summary","process_exit"]
++const PASSIVE_NAMES: Array[String] = ["session_heartbeat","quality_summary","segment_summary","process_exit"]
++const QUALITY_NUMBERS: Array[String] = ["samples","slow","segment","cell_x","cell_y","exit_reason","b0","b1","b2","b3","b4","b5","b6","b7"]
+ 
+ static func uuid() -> String:
+ 	var bytes: PackedByteArray = Crypto.new().generate_random_bytes(16)
+@@ -143,7 +147,9 @@
+ 	_clock_quality = "server_estimate" if estimated > 0 else "client_clock"
+ 
+ func observe(name: String, properties: Dictionary = {}, once_key: String = "") -> bool:
+-	if not enabled or not _foreground or name not in EVENT_NAMES or client == null or not client.telemetry_supported() or _scope == "guest": return false
++	if name in QUALITY_NAMES and (client == null or not client.has_method("quality_supported") or not client.quality_supported()): return false
++	if name in QUALITY_NAMES and not _allowed and _event_ids.size() <= 32: return false # Reserve identifiers for product/race observations.
++	if not enabled or not _foreground or (name not in EVENT_NAMES and name not in QUALITY_NAMES) or client == null or not client.telemetry_supported() or _scope == "guest": return false
+ 	if name in ["offer_exposed","purchase_requested"] and properties.get("product_id","") not in STORE_PRODUCTS: return false
+ 	# Never call the operating-system random provider during a live race.
+ 	# An unusually long attempt can exhaust the bounded preallocated pool; report
+@@ -166,7 +172,7 @@
+ 	var event: Dictionary = {"id":_event_ids.pop_back() if not _event_ids.is_empty() else uuid(),"name":name,"occurred_at":_session_clock_unix+elapsed/1000,"session_id":_session_id,"seq":_sequence,"monotonic_ms":elapsed,"properties":safe}
+ 	queue.append({"scope":_scope,"build_id":_build_id,"platform":_platform,"clock_quality":_clock_quality,"event":event})
+ 	if _pending_since_msec < 0: _pending_since_msec = Time.get_ticks_msec()
+-	if name != "session_heartbeat" and _journey_pending_msec < 0: _journey_pending_msec = Time.get_ticks_msec()
++	if name not in PASSIVE_NAMES and _journey_pending_msec < 0: _journey_pending_msec = Time.get_ticks_msec()
+ 	while queue.size() > MAX_EVENTS:
+ 		_persisted_ids.erase(str(queue[0].event.id))
+ 		queue.pop_front()
+@@ -176,7 +182,10 @@
+ 
+ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
+ 	var allowed: Array[String] = []
+-	if name in ["track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried"]:
++	if name == "quality_summary": allowed = ["device_class","scene","samples","slow","b0","b1","b2","b3","b4","b5","b6","b7"]
++	elif name == "segment_summary": allowed = ["track_version_id","segment","cell_x","cell_y","samples","slow"]
++	elif name == "process_exit": allowed = ["exit_reason","device_class"]
++	elif name in ["track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried"]:
+ 		allowed = ["track_version_id","ticket_id","car_id","biome","mode","position"]
+ 		if name in ["race_finished","race_abandoned","race_retried"]: allowed.append("reason")
+ 	elif name in ["editor_opened","draft_saved","publish_requested"]: allowed = ["biome","reason"]
+@@ -189,6 +198,12 @@
+ 	for key: String in properties:
+ 		if key not in allowed: continue
+ 		var value: Variant = properties[key]
++		if name in QUALITY_NAMES:
++			if key in QUALITY_NUMBERS and value is int and value >= (-5000 if key in ["cell_x","cell_y"] else 0) and value <= (5000 if key in ["cell_x","cell_y"] else 1000000): safe[key] = value
++			elif key == "device_class" and value in ["android_arm64","android_other","desktop","other"]: safe[key] = value
++			elif key == "scene" and value in ["menu","race","editor"]: safe[key] = value
++			elif key == "track_version_id" and value is String and _uuid_pattern.search(value) != null: safe[key] = value
++			continue
+ 		if key in ["track_version_id","ticket_id","challenge_id"] and value is String and _uuid_pattern.search(value) != null: safe[key] = value
+ 		elif key == "car_id" and value in ["compact","pickup","classic","formula","kart"]: safe[key] = value
+ 		elif key == "mode" and value in ["free","rivalry","challenge","creator"]: safe[key] = value
+@@ -330,7 +345,7 @@
+ 	for entry: Dictionary in queue:
+ 		if entry.scope != _scope: continue
+ 		if _pending_since_msec < 0: _pending_since_msec = Time.get_ticks_msec()
+-		if entry.event.name != "session_heartbeat": _journey_pending_msec = Time.get_ticks_msec()
++		if entry.event.name not in PASSIVE_NAMES: _journey_pending_msec = Time.get_ticks_msec()
+ 	_mark_dirty()
+ 
+ func _prune() -> void:
+@@ -365,7 +380,7 @@
+ 	if storage_path.is_empty(): return # Tests may explicitly exercise enqueue only.
+ 	_save_generation = _generation
+ 	# Event dictionaries are immutable after enqueue; copy only the outer list.
+-	var value: Dictionary = {"schema":SCHEMA,"install_id":_install_id,"first_open_scopes":_first_open_scopes.duplicate(),"queue":queue.duplicate(),"dropped_events":dropped_events,"rejected_events":rejected_events,"persistence_failures":persistence_failures}
++	var value: Dictionary = {"schema":SCHEMA,"install_id":_install_id,"process_exit_cursor":_process_exit_cursor,"first_open_scopes":_first_open_scopes.duplicate(),"queue":queue.duplicate(),"dropped_events":dropped_events,"rejected_events":rejected_events,"persistence_failures":persistence_failures}
+ 	_start_thread("write",_write_measured.bind(storage_path,value,256 if _event_ids.size() < 128 else 0))
+ 
+ static func _write_measured(path: String, value: Dictionary, refill_count: int = 0) -> Dictionary:
+@@ -389,11 +404,13 @@
+ 		result = result.get("data",{}) if result is Dictionary else {}
+ 		_loaded = true
+ 		if result is Dictionary and result.get("schema","") == SCHEMA:
++			var exit_cursor: Variant = result.get("process_exit_cursor",0)
++			if (exit_cursor is int or exit_cursor is float) and is_finite(float(exit_cursor)) and exit_cursor >= 0 and exit_cursor <= 4102444800000: _process_exit_cursor = int(exit_cursor)
+ 			if _uuid_pattern.search(str(result.get("install_id",""))) != null: _install_id = str(result.install_id)
+ 			var restored: Array[Dictionary] = []
+ 			var saved_queue: Array = result.queue if result.get("queue") is Array else []
+ 			for entry: Variant in saved_queue:
+-				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and entry.event.get("name","") in EVENT_NAMES and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
++				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
+ 					var original: Dictionary = entry.event
+ 					entry.event = {"id":str(original.id),"name":str(original.name),"occurred_at":_saved_integer(original.get("occurred_at",0)),"session_id":str(original.session_id),"seq":_saved_integer(original.get("seq",0)),"monotonic_ms":_saved_integer(original.get("monotonic_ms",0)),"properties":_safe_properties(str(original.name),original.properties)}
+ 					restored.append(entry)
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -56,6 +56,7 @@
+ var editor_world: EditorWorld
+ var object_browser_state: Dictionary = {}
+ var object_browser: ObjectBrowser
++var object_population_panel: ObjectPopulationPanel
+ var editor_palette: Control
+ var editor_context: HBoxContainer
+ var surface_toolbar: PanelContainer
+@@ -212,6 +213,10 @@
+ 	product_telemetry.storage_path = profile_root.path_join("product_telemetry.json")
+ 	product_telemetry.observations_due.connect(_telemetry_observe_activity)
+ 	add_child(product_telemetry)
++	var quality_observer: Node = preload("res://backend/client_quality.gd").new()
++	quality_observer.telemetry = product_telemetry
++	quality_observer.app = self
++	add_child(quality_observer)
+ 	cloud = preload("res://backend/cloud_tracks.gd").new()
+ 	cloud.changed.connect(_prime_free_race_comparisons)
+ 	cloud.client = online.client
+@@ -1962,6 +1967,7 @@
+ 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+ 	object_browser.select_requested.connect(func() -> void:
+ 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
++	object_browser.populate_requested.connect(_open_object_population)
+ 	editor_tools_panel = _editor_panel(overlay,"EditorTools")
+ 	editor_inspector = VBoxContainer.new()
+ 	editor_tools_panel.add_child(editor_inspector)
+@@ -3327,6 +3333,7 @@
+ 		_unhandled_key_input(event)
+ 
+ func _unhandled_key_input(event: InputEvent) -> void:
++	if is_instance_valid(object_population_panel): return
+ 	if screen != "create" or is_instance_valid(game) or not event is InputEventKey or not event.pressed: return
+ 	var focus: Control = get_viewport().gui_get_focus_owner()
+ 	if focus is LineEdit or focus is TextEdit: return
+@@ -3772,6 +3779,58 @@
+ 	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+ 	_object_placement("single")
++
++func _open_object_population() -> void:
++	if is_instance_valid(object_population_panel) or not is_instance_valid(canvas): return
++	if _has_pending_editor_work():
++		_notice("Confirm or cancel the preview before populating.")
++		return
++	if document.objects.size() >= ObjectPopulation.MAX_OBJECTS:
++		_notice("Remove an object before adding more.")
++		return
++	var errors: Array[String] = TrackDocument.validate(document,false)
++	if not errors.is_empty():
++		_notice(errors[0])
++		return
++	if editor_preview_thread != null or canvas.native_preview == null:
++		_editor_hint("The track is still being prepared. Try Populate again shortly.")
++		return
++	canvas.cancel_gesture()
++	var preview := ObjectPopulationPanel.new()
++	preview.source = document.duplicate(true)
++	preview.terrain = canvas.native_preview
++	preview.navigation_canvas = canvas
++	preview.previous_mode = canvas.mode
++	canvas.mode = "pan"
++	object_population_panel = preview
++	root_ui.add_child(preview)
++	preview.preview_changed.connect(func(track: NativeTrack) -> void:
++		if screen == "create" and is_instance_valid(editor_world): editor_world.show_track(track))
++	preview.cancel_requested.connect(func() -> void: _close_object_population(false))
++	preview.apply_requested.connect(func(objects: Array) -> void:
++		if document != preview.source:
++			_close_object_population(false)
++			_editor_hint("The track changed. Open Populate again.")
++			return
++		if objects.is_empty() or document.objects.size()+objects.size() > ObjectPopulation.MAX_OBJECTS: return
++		_remember()
++		document.objects.append_array(objects)
++		document["automatic_scenery"] = false
++		canvas.selected_object = -1
++		canvas.mode = "objects"
++		_close_object_population(true)
++		_save_draft(true)
++		_build_editor_tools())
++
++func _close_object_population(applied: bool) -> void:
++	if not is_instance_valid(object_population_panel): return
++	if is_instance_valid(canvas):
++		canvas.cancel_gesture()
++		canvas.mode = "objects" if applied else object_population_panel.previous_mode
++	object_population_panel.queue_free()
++	object_population_panel = null
++	if not applied and is_instance_valid(editor_world) and is_instance_valid(canvas):
++		editor_world.show_track(canvas.native_preview)
+ 
+ func _object_placement(value: String) -> void:
+ 	canvas.cancel_gesture()
+--- /dev/null
++++ b/game/tests/test_client_quality.gd
+@@ -0,0 +1,50 @@
++extends SceneTree
++const Quality = preload("res://backend/client_quality.gd")
++const Telemetry = preload("res://backend/product_telemetry.gd")
++var checks: int = 0
++var failures: int = 0
++class Client extends Node:
++	var player: Dictionary = {"id":"quality-fixture"}
++	func quality_supported() -> bool: return true
++	func telemetry_supported() -> bool: return true
++	func signed_in() -> bool: return true
++	func base_url() -> String: return "http://127.0.0.1:18181"
++	func server_now() -> int: return 0
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL: "+label)
++func _initialize() -> void:
++	call_deferred("run")
++func run() -> void:
++	var client := Client.new(); root.add_child(client)
++	var telemetry := Telemetry.new(); telemetry.client = client; root.add_child(telemetry)
++	telemetry.set_process(false); telemetry._timer.stop()
++	var quality := Quality.new(); quality.telemetry = telemetry
++	for value: float in [8.0,9.0,12.0,17.0,25.0,34.0,35.0,50.0,51.0,100.0,101.0]: quality.sample_frame("race",value)
++	quality.sample_frame("race",NAN)
++	quality.flush_frames()
++	var props: Dictionary = telemetry.queue[-1].event.properties
++	check(props.samples == 11 and props.slow == 5,"inclusive histogram boundaries and no nonfinite frames")
++	check(props.b0 == 1 and props.b1 == 2 and props.b7 == 1,"real bucket counts")
++	check(not props.has("raw_frames"),"no per-frame trace")
++	var version: String = Telemetry.uuid()
++	for index: int in range(100): quality.sample_cell(version,index%32,Vector2(index*20.0,-index*20.0),index%2 == 0)
++	check(quality.cells.size() == Quality.MAX_CELLS and quality.dropped_cell_samples > 0,"bounded spatial memory and recorded truncation")
++	quality.flush_cells()
++	check(quality.cells.is_empty(),"bounded cell observations enter existing outbox")
++	check(telemetry.queue.size() <= 20,"capture remains within one 50-event batch")
++	for entry: Dictionary in telemetry.queue: telemetry._persisted_ids[str(entry.event.id)] = true
++	check(telemetry.batch_payload().events.size() == telemetry.queue.size() and telemetry.queue.size() <= 50,"persisted observations fit one bounded packet")
++	print("QUALITY_BATCH_BYTES ",JSON.stringify(telemetry.batch_payload()).to_utf8_buffer().size())
++	var start: int = Time.get_ticks_usec()
++	for index: int in range(10000): quality.sample_frame("race",16.5)
++	print("QUALITY_FRAME_MEAN_USEC ",(Time.get_ticks_usec()-start)/10000.0)
++	start = Time.get_ticks_usec()
++	for index: int in range(1000): quality.sample_cell(version,index%32,Vector2(index*20.0,-index*20.0),false)
++	print("QUALITY_CELL_MEAN_USEC ",(Time.get_ticks_usec()-start)/1000.0)
++	for entry: Dictionary in telemetry.queue:
++		check(not entry.event.properties.has("position") and not entry.event.properties.has("device_id"),"no exact trajectory or device identity")
++	print("Client quality: %d checks, %d failures" % [checks,failures])
++	quality.free(); telemetry.queue_free(); client.queue_free()
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_client_quality.gd.uid
+@@ -0,0 +1 @@
++uid://jr8mplu76wsp
+--- a/native/google_sign_in/PROVENANCE.md
++++ b/native/google_sign_in/PROVENANCE.md
+@@ -1,7 +1,11 @@
+-# Native Google sign-in
+-
+-Original Beat my track Android/Godot bridge. Owner requested phone login without opening a browser on 2026-10-09, authorizing the native identity integration. No third-party Godot plugin is vendored.
+-
+-Pinned Android dependencies: AndroidX Credential Manager and its Play Services provider 1.5.0 (Apache-2.0), Google Identity googleid 1.1.1 (Google SDK terms apply). Resolved by Gradle from existing Maven repositories; generated binaries and caches stay outside Git. No runtime AI or additional identity provider.
+-
+-Implementation reference: https://developer.android.com/identity/sign-in/credential-manager-siwg-implementation (checked 2026-10-09). Button flow uses GetSignInWithGoogleOption with the configured Web client ID and server-issued nonce. Tokens are consumed from memory once, never logged or persisted by the plugin. Session persistence remains in the existing client adapter. Cancellation invalidates callbacks from earlier requests; sign-out clears provider credential state. Android never opens a browser as fallback.
++# Native Google sign-in
++
++Original Beat my track Android/Godot bridge. Owner requested phone login without opening a browser on 2026-10-09, authorizing the native identity integration. No third-party Godot plugin is vendored.
++
++Pinned Android dependencies: AndroidX Credential Manager and its Play Services provider 1.5.0 (Apache-2.0), Google Identity googleid 1.1.1 (Google SDK terms apply). Resolved by Gradle from existing Maven repositories; generated binaries and caches stay outside Git. No runtime AI or additional identity provider.
++
++Implementation reference: https://developer.android.com/identity/sign-in/credential-manager-siwg-implementation (checked 2026-10-09). Button flow uses GetSignInWithGoogleOption with the configured Web client ID and server-issued nonce. Tokens are consumed from memory once, never logged or persisted by the plugin. Session persistence remains in the existing client adapter. Cancellation invalidates callbacks from earlier requests; sign-out clears provider credential state. Android never opens a browser as fallback.
++
++## Optional process exit metadata (2026-10-11)
++
++`BmtProcessExits.java` is first-party source using Android ApplicationExitInfo (API30+), with no added dependency. At most four OS exit records yield reason/time only, outside racing; trace streams, PIDs and device IDs are never read. Backend counters do not prove current-account crash attribution. JDK17/Android36 compile check passed; full Android export stopped at the creator geometry golden check, and device acceptance remains outstanding. See `docs/STUDIO_EXPANSION_2026_10_11.md`.
+--- a/native/google_sign_in/src/org/beatmytrack/signin/BmtGoogleSignIn.java
++++ b/native/google_sign_in/src/org/beatmytrack/signin/BmtGoogleSignIn.java
+@@ -17,6 +17,11 @@
+     private CancellationSignal cancellation;
+     public BmtGoogleSignIn(Godot godot) { super(godot); }
+     @NonNull @Override public String getPluginName() { return "BmtGoogleSignIn"; }
++
++    /** OS evidence only; no stack traces, PIDs, package/device IDs or credentials. */
++    @UsedByGodot public String getProcessExits() {
++        return BmtProcessExits.read(getActivity());
++    }
+ 
+     @UsedByGodot public void startSignIn(String clientId, String nonce) {
+         Activity activity = getActivity();
+--- /dev/null
++++ b/native/google_sign_in/src/org/beatmytrack/signin/BmtProcessExits.java
+@@ -0,0 +1,35 @@
++package org.beatmytrack.signin;
++
++import android.app.Activity;
++import android.app.ActivityManager;
++import android.app.ApplicationExitInfo;
++import android.content.Context;
++import android.os.Build;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++/** Bounded OS process metadata; never stack traces, PIDs, identifiers or tokens. */
++public final class BmtProcessExits {
++    private BmtProcessExits() { }
++    public static String read(Activity activity) {
++        if (Build.VERSION.SDK_INT < 30 || activity == null) return "[]";
++        JSONArray result = new JSONArray();
++        try {
++            ActivityManager manager = (ActivityManager) activity.getSystemService(Context.ACTIVITY_SERVICE);
++            long floor = System.currentTimeMillis() - 7L * 86400000L;
++            List<ApplicationExitInfo> exits = new ArrayList<>(manager.getHistoricalProcessExitReasons(
++                    activity.getPackageName(), 0, 4));
++            Collections.reverse(exits);
++            for (ApplicationExitInfo exit : exits) {
++                int reason = exit.getReason();
++                if (exit.getTimestamp() < floor || (reason != 4 && reason != 5 && reason != 6)) continue;
++                JSONObject record = new JSONObject();
++                record.put("at", exit.getTimestamp()); record.put("reason", reason); result.put(record);
++            }
++        } catch (Exception ignored) { return "[]"; }
++        return result.toString();
++    }
++}
+--- /dev/null
++++ b/scripts/checkpoint_studio_expansion.py
+@@ -0,0 +1,54 @@
++"""Save this task's incremental changes against its dirty-workspace before files."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++BEFORE = ROOT / "build/studio-expansion-2026-10-11/before"
++OUTPUT = ROOT / "docs/evidence/studio-expansion-2026-10-11"
++NEW = [
++    "backend/bmt_backend/studio_cases.py", "backend/bmt_backend/studio_case_models.py",
++    "backend/bmt_backend/studio_competitions.py", "backend/bmt_backend/quality.py",
++    "backend/bmt_backend/quality_models.py", "backend/bmt_backend/provider_proofs.py",
++    "backend/bmt_backend/migrations/versions/0026_studio_cases.py",
++    "backend/bmt_backend/migrations/versions/0027_client_quality.py",
++    "backend/bmt_backend/admin_ui/operations.js", "backend/tests/test_studio_operations.py",
++    "backend/tests/test_studio_moderation.py", "backend/tests/test_studio_expansion_postgres.py",
++    "backend/tests/test_client_quality.py", "backend/tests/test_provider_proofs.py",
++    "game/backend/client_quality.gd", "game/backend/client_quality.gd.uid",
++    "game/tests/test_client_quality.gd", "game/tests/test_client_quality.gd.uid",
++    "native/google_sign_in/src/org/beatmytrack/signin/BmtProcessExits.java",
++    "scripts/test_studio_expansion_console.py", "scripts/test_studio_expansion_postgres.py",
++    "scripts/checkpoint_studio_expansion.py", "docs/STUDIO_EXPANSION_2026_10_11.md",
++]
++
++
++def main():
++    sources = {file.name.replace("__", "/"): file for file in BEFORE.iterdir() if file.is_file()}
++    for name in NEW:
++        if name in sources:
++            raise RuntimeError("Duplicate checkpoint path")
++        sources[name] = None
++    manifest, patches = [], []
++    for name, original in sorted(sources.items()):
++        current = ROOT / name
++        before = original.read_bytes() if original else b""
++        after = current.read_bytes()
++        if before == after:
++            continue
++        manifest.append({"path": name, "before_sha256": hashlib.sha256(before).hexdigest() if original else None,
++            "after_sha256": hashlib.sha256(after).hexdigest(), "bytes": len(after)})
++        patches.extend(difflib.unified_diff(before.decode("utf-8").splitlines(keepends=True),
++            after.decode("utf-8").splitlines(keepends=True),
++            fromfile="a/" + name if original else "/dev/null", tofile="b/" + name))
++    OUTPUT.mkdir(parents=True, exist_ok=True)
++    (OUTPUT / "workspace-task-only.patch").write_text("".join(patches), encoding="utf-8")
++    (OUTPUT / "checkpoint.json").write_text(json.dumps({"schema": "bmt-workspace-checkpoint-v1",
++        "baseline": "Saved dirty-workspace files; not clean Git HEAD", "git_commit_created": False,
++        "deployment_performed": False, "files": manifest}, indent=2) + "\n", encoding="utf-8")
++    print(f"Scoped checkpoint: {len(manifest)} source/docs files; no private configuration or unrelated changes")
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/scripts/test_studio_expansion_console.py
+@@ -0,0 +1,113 @@
++"""Headless browser acceptance against a newly owned, seeded loopback database."""
++import argparse
++import json
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++from uuid import uuid4
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "backend"))
++sys.path.insert(0, str(ROOT / "backend/tests"))
++
++
++def serve(folder, port):
++    import uvicorn
++    from test_backend_studio_console import serve as base_serve
++    original = uvicorn.run
++
++    def seeded(app, **kwargs):
++        from dataclasses import replace
++
++        from bmt_backend.challenge_models import Challenge, ChallengeMember
++        from bmt_backend.quality_models import QualityFact
++        from bmt_backend.track_models import Run, TrackVersion, digest, now
++        app.state.settings = replace(app.state.settings,telemetry_enabled=True,client_quality_enabled=True)
++        fixture = json.loads((folder / "fixture.json").read_text())
++        with app.state.session_factory() as session:
++            run = session.get(Run,fixture['run_id'])
++            challenge = Challenge(code='LOCALUI1',creator_id=run.player_id,board_id=run.board_id,mode='beat',
++                target_run_id=run.id,target_ticks=run.time_ticks,ends_at=now()+86400)
++            session.add(challenge);session.flush()
++            session.add(ChallengeMember(challenge_id=challenge.id,player_id=run.player_id,run_id=run.id,time_ticks=run.time_ticks))
++            for kind,context,values in (
++                ('quality_summary',{'build_id':'browser-fixture','platform':'android','device_class':'android_arm64','scene':'race'}, {'reports':1,'samples':100,'slow':10,'b2':90,'b5':10}),
++                ('segment_summary',{'build_id':'browser-fixture','platform':'android','track_version_id':fixture['version_id'],'segment':3,'cell_x':2,'cell_y':4},{'reports':1,'samples':12,'slow':2}),
++                ('segment_summary',{'build_id':'browser-fixture','platform':'android','track_version_id':fixture['version_id'],'segment':4,'cell_x':3,'cell_y':3},{'reports':1,'samples':5,'slow':1})):
++                session.add(QualityFact(day=now()//86400,kind=kind,dimension=digest(context),context=context,**values))
++            session.commit()
++            fixture.update(challenge_id=challenge.id,track_id=session.get(TrackVersion,fixture['version_id']).track_id)
++        (folder / "fixture.json").write_text(json.dumps(fixture))
++        original(app,**kwargs)
++    uvicorn.run = seeded
++    base_serve(folder,port)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--serve',type=Path);parser.add_argument('--port',type=int)
++    args = parser.parse_args()
++    if args.serve: serve(args.serve,args.port);return
++    import httpx
++    from playwright.sync_api import expect, sync_playwright
++    folder = ROOT / 'build' / ('studio-expansion-browser-'+uuid4().hex[:8]);folder.mkdir(parents=True)
++    evidence = ROOT / 'docs/evidence/studio-expansion-2026-10-11';evidence.mkdir(parents=True,exist_ok=True)
++    config = {name:secrets.token_urlsafe(32) for name in ('owner','analyst','development')}
++    (folder/'config.private.json').write_text(json.dumps(config))
++    with socket.socket() as reservation: reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
++    base = f'http://127.0.0.1:{port}';checks=[]
++    with (folder/'server.log').open('w',encoding='utf-8') as log:
++        process = subprocess.Popen([sys.executable,str(Path(__file__)), '--serve',str(folder),'--port',str(port)],
++            stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
++        try:
++            with httpx.Client(base_url=base,timeout=10) as http:
++                for _ in range(100):
++                    if process.poll() is not None:raise RuntimeError('Owned browser fixture failed; inspect private server.log')
++                    try:
++                        if http.get('/health').status_code==200:break
++                    except httpx.ConnectError:pass
++                    time.sleep(.2)
++                else:raise RuntimeError('Owned fixture not ready')
++            fixture=json.loads((folder/'fixture.json').read_text())
++            with sync_playwright() as driver:
++                browser=driver.chromium.launch(headless=True,executable_path='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
++                page=browser.new_page(viewport={'width':1440,'height':1000});errors=[]
++                page.on('pageerror',lambda error:errors.append(str(error)))
++                page.goto(base+'/admin#cases');page.fill('#key',config['owner']);page.locator('#login button').click()
++                expect(page.locator('[data-case-action="create"]')).to_be_visible()
++                page.locator('[data-case-action="create"]').click();page.locator('#dialog textarea').fill('UI <script> case')
++                page.locator('#dialog input[name="track_id"]').fill(fixture['track_id'])
++                page.locator('#dialog button').filter(has_text='Save').click()
++                expect(page.locator('h1')).to_have_text('UI <script> case');checks.append('owner creates linked case and escaped title')
++                page.locator('[data-case-action="note"]').click();page.locator('#dialog textarea').fill('Evidence note from browser')
++                page.locator('#dialog button').filter(has_text='Save').click();expect(page.locator('#main')).to_contain_text('Evidence note from browser')
++                checks.append('owner note commits with case revision');page.screenshot(path=str(evidence/'cases-desktop.png'),full_page=True)
++                page.locator('[data-case-action="quarantine"]').click();page.locator('#dialog textarea').fill('Reported geometry review')
++                page.locator('#dialog button').filter(has_text='Save').click();expect(page.locator('#main')).to_contain_text('"hidden": true')
++                checks.append('case-linked quarantine is audited')
++                page.evaluate("location.hash='quality'");expect(page.locator('h1')).to_have_text('Client quality & track diagnostics')
++                expect(page.get_by_role('img',name='Frame-time bucket counts')).to_be_visible();checks.append('prepared frame histogram')
++                page.screenshot(path=str(evidence/'quality-desktop.png'),full_page=True)
++                page.evaluate("location.hash='quality?kind=segment_summary'");expect(page.get_by_role('img',name='Sampled track cell heatmap')).to_be_visible()
++                page.screenshot(path=str(evidence/'heatmap-desktop.png'),full_page=True);checks.append('bounded sampled heatmap')
++                page.evaluate("identity => location.hash='competitions/'+identity+'?kind=challenge'",fixture['challenge_id'])
++                expect(page.locator('h1')).to_have_text('Challenge inspection');expect(page.locator('#main')).to_contain_text('Verified source')
++                page.screenshot(path=str(evidence/'competition-desktop.png'),full_page=True);checks.append('exact target and best provenance')
++                page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(evidence/'competition-mobile.png'),full_page=True)
++                checks.append('390px responsive capture')
++                page.locator('#logout').click();expect(page.locator('#login')).to_be_visible()
++                page.fill('#key',config['analyst']);page.locator('#login button').click()
++                page.evaluate("location.hash='cases'");expect(page.locator('h1')).to_have_text('Support cases')
++                assert page.locator('[data-case-action]').count()==0;checks.append('analyst has read-only case UI')
++                assert not errors,errors;checks.append('zero browser JavaScript errors')
++                browser.close()
++            (evidence/'browser.json').write_text(json.dumps({'checks':checks,'seeded_loopback_only':True,'remote_writes':0},indent=2))
++            print(f'Studio expansion browser: {len(checks)} checks passed; seeded loopback only')
++        finally:
++            if process.poll() is None:process.terminate();process.wait(timeout=10)
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/scripts/test_studio_expansion_postgres.py
+@@ -0,0 +1,45 @@
++"""All touched Studio/product tests on a newly owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[1]
++
++
++def main():
++    config=ROOT/'.tools/gcp-staging/config.json'
++    docker=json.loads(config.read_text())['docker'] if config.is_file() else ['docker']
++    name='bmt-expansion-pg-'+secrets.token_hex(4);label='studio-expansion-'+secrets.token_hex(8)
++    password=secrets.token_urlsafe(24)
++    with socket.socket() as reservation:reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
++    def call(*args):return subprocess.run([*docker,*args],capture_output=True,text=True,timeout=30,check=False)
++    started=call('run','-d','--rm','--name',name,'--label','bmt.task='+label,'-p',f'127.0.0.1:{port}:5432',
++        '-e','POSTGRES_USER=expansion_test','-e','POSTGRES_DB=expansion_test','-e','POSTGRES_PASSWORD='+password,'postgres:17')
++    if started.returncode:raise RuntimeError('Owned PostgreSQL could not start; no existing service changed')
++    try:
++        for _ in range(30):
++            if call('exec',name,'pg_isready','-U','expansion_test').returncode==0:break
++            time.sleep(.5)
++        else:raise RuntimeError('Owned PostgreSQL did not become ready')
++        env=dict(os.environ);env['BMT_TEST_DATABASE_URL']=f'postgresql+psycopg://expansion_test:{password}@127.0.0.1:{port}/expansion_test'
++        selected=['test_studio_operations','test_studio_moderation','test_studio_expansion_postgres','test_client_quality',
++            'test_provider_proofs','test_product_analytics','test_product_domain_events','test_studio','test_admin','test_admin_support','test_store_admin']
++        result=subprocess.run([sys.executable,'-m','pytest',*[f'tests/{name}.py' for name in selected],'-q','--tb=short'],
++            cwd=ROOT/'backend',env=env,capture_output=True,text=True,check=False,timeout=300)
++        output=(result.stdout+result.stderr).replace(password,'[REDACTED]')
++        evidence=ROOT/'docs/evidence/studio-expansion-2026-10-11';evidence.mkdir(parents=True,exist_ok=True)
++        (evidence/'postgres-tests.log').write_text(output,encoding='utf-8');print(output[-6000:])
++    finally:
++        checked=call('inspect',name,'--format','{{json .Config.Labels}}')
++        if checked.returncode==0 and json.loads(checked.stdout).get('bmt.task')==label:
++            print('Owned PostgreSQL removed:',call('stop',name).returncode==0)
++        else:raise RuntimeError('Owned database label changed; leaving it untouched')
++    return result.returncode
++
++
++if __name__=='__main__':raise SystemExit(main())

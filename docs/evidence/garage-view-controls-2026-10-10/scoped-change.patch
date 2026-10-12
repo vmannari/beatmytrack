@@ -1,0 +1,413 @@
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -8,6 +8,16 @@
+ var showroom_viewport: SubViewport
+ var yaw: float = 0.70
+ var pointer: int = -1
++var elevation: float = atan(0.32)
++var zoom: float = 1.0
++var touches: Dictionary = {}
++var pinch_distance: float = 0.0
++var resume_orbit: bool = false
++const DEFAULT_YAW: float = 0.70
++const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
++const MAX_ELEVATION: float = PI * 4.0 / 9.0 # 80 degrees.
++const MIN_ZOOM: float = 0.48
++const MAX_ZOOM: float = 1.80
+ 
+ func _ready() -> void:
+ 	stretch = true
+@@ -46,25 +56,78 @@
+ 	camera.current = true
+ 	_orbit()
+ 	gui_input.connect(_drag)
++	visibility_changed.connect(_clear_gesture)
+ 	# The stretched container owns viewport dimensions, including phone resizes.
+ 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+ 
+ func _orbit() -> void:
+-	var distance: float = 8.5 if vehicle_id == "pickup" else 7.1 if vehicle_id != "kart" else 4.9
+-	camera.position = Vector3(sin(yaw)*distance, 0.55 + distance*0.32, -cos(yaw)*distance)
++	var distance: float = (8.5 if vehicle_id == "pickup" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * zoom
++	var horizontal: float = cos(elevation) * distance
++	camera.position = Vector3(sin(yaw)*horizontal, 0.55 + sin(elevation)*distance, -cos(yaw)*horizontal)
+ 	camera.look_at(Vector3(0, 0.55, 0))
+ 
+ func _drag(event: InputEvent) -> void:
+ 	if event is InputEventScreenTouch:
+-		if event.pressed and pointer == -1: pointer = event.index
+-		elif not event.pressed and pointer == event.index: pointer = -1
+-	elif event is InputEventScreenDrag and event.index == pointer:
+-		yaw -= event.relative.x * 0.012
+-		_orbit()
+-	elif event is InputEventMouseMotion and pointer == -1 and event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+-		yaw -= event.relative.x * 0.012
+-		_orbit()
++		if event.canceled:
++			_clear_gesture()
++		elif event.pressed:
++			if touches.size() < 2: touches[event.index] = event.position
++			pointer = int(touches.keys()[0])
++			pinch_distance = _finger_distance()
++		else:
++			touches.erase(event.index)
++			pointer = int(touches.keys()[0]) if not touches.is_empty() else -1
++			pinch_distance = _finger_distance()
++			resume_orbit = not touches.is_empty()
++	elif event is InputEventScreenDrag and touches.has(event.index):
++		touches[event.index] = event.position
++		if touches.size() == 2:
++			var distance: float = _finger_distance()
++			if distance > 1.0 and pinch_distance > 1.0: set_zoom(zoom * pinch_distance / distance)
++			pinch_distance = distance
++		elif resume_orbit:
++			resume_orbit = false
++		else:
++			rotate_view(event.relative)
++	elif event is InputEventMouseMotion and touches.is_empty() and event.device != InputEvent.DEVICE_ID_EMULATION and event.button_mask & MOUSE_BUTTON_MASK_LEFT:
++		rotate_view(event.relative)
++	elif event is InputEventMouseButton and event.pressed and touches.is_empty():
++		if event.button_index == MOUSE_BUTTON_WHEEL_UP: set_zoom(zoom * exp(-0.12 * event.factor))
++		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN: set_zoom(zoom * exp(0.12 * event.factor))
++	elif event is InputEventMagnifyGesture and touches.is_empty() and event.factor > 0.0:
++		set_zoom(zoom / event.factor)
+ 	accept_event()
++
++func rotate_view(movement: Vector2) -> void:
++	yaw = wrapf(yaw - movement.x * 0.012, -PI, PI)
++	elevation = clampf(elevation + movement.y * 0.008, MIN_ELEVATION, MAX_ELEVATION)
++	_orbit()
++
++func set_zoom(value: float) -> void:
++	if not is_finite(value): return
++	zoom = clampf(value, MIN_ZOOM, MAX_ZOOM)
++	_orbit()
++
++func zoom_by(factor: float) -> void:
++	set_zoom(zoom * factor)
++
++func reset_view() -> void:
++	yaw = DEFAULT_YAW
++	elevation = atan(0.32)
++	zoom = 1.0
++	_clear_gesture()
++	_orbit()
++
++func _finger_distance() -> float:
++	if touches.size() != 2: return 0.0
++	var points: Array = touches.values()
++	return (points[0] as Vector2).distance_to(points[1] as Vector2)
++
++func _clear_gesture() -> void:
++	touches.clear()
++	pointer = -1
++	pinch_distance = 0.0
++	resume_orbit = false
+ 
+ func apply_livery(value: Dictionary) -> void:
+ 	livery = value.duplicate(true)
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -25,7 +25,31 @@
+ 	showroom.livery = draft
+ 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.add_child(showroom)
+-	preview.add_child(MenuStyle.label("Drag to rotate", 16, true))
++	var view_controls := HBoxContainer.new()
++	view_controls.name = "GarageViewControls"
++	preview.add_child(view_controls)
++	var hint := MenuStyle.label("Drag to rotate", 16, true)
++	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	view_controls.add_child(hint)
++	var zoom_out := MenuStyle.button("-", showroom.zoom_by.bind(1.15))
++	zoom_out.name = "GarageZoomOut"
++	zoom_out.tooltip_text = "Zoom out"
++	zoom_out.custom_minimum_size = Vector2(48,48)
++	zoom_out.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
++	view_controls.add_child(zoom_out)
++	var zoom_in := MenuStyle.button("+", showroom.zoom_by.bind(1.0/1.15))
++	zoom_in.name = "GarageZoomIn"
++	zoom_in.tooltip_text = "Zoom in"
++	zoom_in.custom_minimum_size = Vector2(48,48)
++	zoom_in.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
++	view_controls.add_child(zoom_in)
++	var reset_view := MenuStyle.button("", showroom.reset_view)
++	reset_view.name = "GarageResetView"
++	reset_view.icon = MenuIcon.texture("restart")
++	reset_view.tooltip_text = "Reset view"
++	reset_view.custom_minimum_size = Vector2(48,48)
++	reset_view.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
++	view_controls.add_child(reset_view)
+ 	var circuit := MenuFeature.new()
+ 	circuit.name = "GarageCircuit"
+ 	circuit.heading = circuit_title
+diff --git a/game/tests/test_garage_view_controls.gd b/game/tests/test_garage_view_controls.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_view_controls.gd
+@@ -0,0 +1,201 @@
++extends SceneTree
++## Dispatch through the real menu: orbit, pinch transitions, bounds and buttons.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/garage-view-controls-2026-10-10"
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + label)
++
++func settle() -> void:
++	for i: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++
++func touch(index: int, point: Vector2, pressed: bool, canceled: bool = false) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = index
++	event.position = point
++	event.pressed = pressed
++	event.canceled = canceled
++	root.push_input(event, true)
++
++func drag(index: int, point: Vector2, movement: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.index = index
++	event.position = point
++	event.relative = movement
++	root.push_input(event, true)
++
++func screenshot(label: String) -> void:
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label + ".png")) == OK, "capture " + label)
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://garage_view_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.size = Vector2i(1280,720)
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	await create_timer(0.45).timeout
++	await settle()
++	var view: CarShowroom = app.root_ui.find_child("GarageShowroom",true,false)
++	var center: Vector2 = view.get_global_rect().get_center()
++	var old_yaw: float = view.yaw
++	var old_elevation: float = view.elevation
++	touch(0, center, true)
++	drag(0, center + Vector2(40,30), Vector2(40,30))
++	touch(0, center + Vector2(40,30), false)
++	check(view.yaw != old_yaw and view.elevation > old_elevation and app.screen == "garage", "touch changes both angles without navigating")
++	check(view.touches.is_empty(), "orbit release clears fingers")
++	view.reset_view()
++	var mouse_press := InputEventMouseButton.new()
++	mouse_press.position = center
++	mouse_press.button_index = MOUSE_BUTTON_LEFT
++	mouse_press.pressed = true
++	root.push_input(mouse_press,true)
++	var mouse := InputEventMouseMotion.new()
++	mouse.position = center
++	mouse.relative = Vector2(-30,-10)
++	mouse.button_mask = MOUSE_BUTTON_MASK_LEFT
++	root.push_input(mouse, true)
++	mouse_press = mouse_press.duplicate() as InputEventMouseButton
++	mouse_press.pressed = false
++	root.push_input(mouse_press,true)
++	check(view.yaw > old_yaw and view.elevation < old_elevation, "mouse changes both angles")
++	view.reset_view()
++	var wheel := InputEventMouseButton.new()
++	wheel.position = center
++	wheel.button_index = MOUSE_BUTTON_WHEEL_UP
++	wheel.pressed = true
++	root.push_input(wheel, true)
++	check(view.zoom < 1.0, "wheel zooms in")
++	wheel = wheel.duplicate() as InputEventMouseButton
++	wheel.pressed = false
++	root.push_input(wheel,true)
++	wheel = wheel.duplicate() as InputEventMouseButton
++	wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
++	wheel.pressed = true
++	root.push_input(wheel, true)
++	check(is_equal_approx(view.zoom,1.0), "wheel zooms out")
++	wheel = wheel.duplicate() as InputEventMouseButton
++	wheel.pressed = false
++	root.push_input(wheel,true)
++	var trackpad := InputEventMagnifyGesture.new()
++	trackpad.position = center
++	trackpad.factor = 1.25
++	view.gui_input.emit(trackpad)
++	check(is_equal_approx(view.zoom,0.8), "trackpad magnification")
++	view.reset_view()
++	var left: Vector2 = center - Vector2(60,0)
++	var right: Vector2 = center + Vector2(60,0)
++	touch(0, left, true)
++	touch(1, right, true)
++	check(view.touches.size() == 2, "real menu delivers both pinch fingers")
++	drag(1, right + Vector2(40,0), Vector2(40,0))
++	check(is_equal_approx(view.zoom,0.75) and view.yaw == old_yaw and view.elevation == old_elevation, "pinch spreads to zoom without orbiting")
++	drag(1, right, Vector2(-40,0))
++	check(is_equal_approx(view.zoom,1.0), "pinch closes to zoom out")
++	# Emulated mouse movement during touch must not duplicate camera motion.
++	mouse.device = InputEvent.DEVICE_ID_EMULATION
++	view.gui_input.emit(mouse)
++	check(view.yaw == old_yaw and view.elevation == old_elevation, "touch ignores emulated mouse motion")
++	touch(1, right, false)
++	drag(0, left + Vector2(20,0), Vector2(20,0))
++	check(view.yaw == old_yaw, "pinch release cannot jump into rotation")
++	drag(0, left + Vector2(40,0), Vector2(20,0))
++	check(view.yaw != old_yaw, "remaining finger resumes rotation")
++	touch(0, left + Vector2(40,0), false)
++	check(view.pointer == -1 and view.touches.is_empty(), "pinch clears every pointer")
++	view.reset_view()
++	touch(0,left,true)
++	touch(1,right,true)
++	touch(1,right,false,true)
++	check(view.touches.is_empty() and view.pointer == -1, "canceled pinch clears all gesture state")
++	var stable_zoom: float = view.zoom
++	drag(0,left+Vector2(100,0),Vector2(100,0))
++	check(view.zoom == stable_zoom and view.yaw == old_yaw, "late drag after cancellation is ignored")
++	touch(0,left,false)
++	for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
++		var button: Button = app.root_ui.find_child(name,true,false)
++		if name == "GarageResetView":
++			view.rotate_view(Vector2(40,30))
++			view.set_zoom(0.6)
++		check(button.custom_minimum_size.x >= 48 and button.custom_minimum_size.y >= 48, name + " touch size")
++		check(app.root_ui.get_node("MenuPageSwipe")._owns_gesture(app.root_ui,button.get_global_rect().get_center()), name + " gesture ownership")
++		var click := InputEventMouseButton.new()
++		click.position = button.get_global_rect().get_center()
++		click.global_position = click.position
++		click.button_index = MOUSE_BUTTON_LEFT
++		click.pressed = true
++		var hover := InputEventMouseMotion.new()
++		hover.position = click.position
++		hover.global_position = click.position
++		root.push_input(hover,true)
++		await process_frame
++		root.push_input(click,true)
++		await process_frame
++		click = click.duplicate() as InputEventMouseButton
++		click.pressed = false
++		root.push_input(click,true)
++		await process_frame
++		if name == "GarageZoomIn": check(view.zoom < 1.0,"actual zoom-in button")
++		elif name == "GarageZoomOut": check(is_equal_approx(view.zoom,1.0),"actual zoom-out button")
++		else: check(view.yaw == old_yaw and view.elevation == old_elevation and view.zoom == 1.0,"actual reset button")
++	var zoom_button: Control = app.root_ui.find_child("GarageZoomIn",true,false)
++	touch(0,zoom_button.get_global_rect().get_center(),true)
++	touch(0,zoom_button.get_global_rect().get_center(),false)
++	check(view.zoom < 1.0 and app.screen == "garage","touch zoom button without menu navigation")
++	view.reset_view()
++	touch(0,left,true)
++	view.hide()
++	check(view.touches.is_empty() and view.pointer == -1,"hidden preview clears held gesture")
++	view.show()
++	touch(0,left,false)
++	check(view.zoom == 1.0 and view.yaw == old_yaw,"showing preview retains view without stale pointer")
++	for id: String in VehicleCatalog.IDS:
++		VehicleCatalog.selected = id
++		app._show_screen("garage")
++		await create_timer(0.4).timeout
++		view = app.root_ui.find_child("GarageShowroom",true,false)
++		view.rotate_view(Vector2(100000,100000))
++		view.set_zoom(-100)
++		check(is_equal_approx(view.elevation,CarShowroom.MAX_ELEVATION) and is_equal_approx(view.zoom,CarShowroom.MIN_ZOOM),id + " upper angle and near zoom bounded")
++		check(is_finite(view.camera.position.x) and view.camera.position.y > 0,id + " finite camera above floor")
++		view.rotate_view(Vector2(-100000,-100000))
++		view.set_zoom(100)
++		check(is_equal_approx(view.elevation,CarShowroom.MIN_ELEVATION) and is_equal_approx(view.zoom,CarShowroom.MAX_ZOOM),id + " lower angle and far zoom bounded")
++		view.reset_view()
++		check(view.yaw == old_yaw and view.elevation == old_elevation and view.zoom == 1.0,id + " factory view restored")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++		root.size = dimensions
++		VehicleCatalog.selected = "compact"
++		app._show_screen("garage")
++		await create_timer(0.4).timeout
++		view = app.root_ui.find_child("GarageShowroom",true,false)
++		await screenshot("default-" + str(dimensions.x))
++		view.rotate_view(Vector2(90,60))
++		view.set_zoom(0.65)
++		await screenshot("high-close-" + str(dimensions.x))
++		view.reset_view()
++		view.rotate_view(Vector2(-80,-20))
++		view.set_zoom(1.4)
++		await screenshot("low-wide-" + str(dimensions.x))
++		for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
++			check(app.root_ui.get_global_rect().encloses(app.root_ui.find_child(name,true,false).get_global_rect()),name + " within " + str(dimensions))
++	app.queue_free()
++	await process_frame
++	print("GARAGE_VIEW_CONTROLS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/GARAGE_LIVERY.md b/docs/GARAGE_LIVERY.md
+--- a/docs/GARAGE_LIVERY.md
++++ b/docs/GARAGE_LIVERY.md
+@@ -29,3 +29,8 @@
+ Final inspected captures: [Compact 960](evidence/garage-livery-2026-10-10/compact-960.png), [Hauler 960](evidence/garage-livery-2026-10-10/pickup-960.png), [Rearsport 1280](evidence/garage-livery-2026-10-10/classic-1280.png), [Formula 1280](evidence/garage-livery-2026-10-10/formula-1280.png), [Kart 1600](evidence/garage-livery-2026-10-10/kart-1600.png) and [compact color picker](evidence/garage-livery-2026-10-10/color-picker.png). These are actual desktop game captures using isolated test colors, not generated artwork or player records.
+ 
+ No physical-device test, Android export/install, backend changes/deployment, full Validate or production action was performed. Remaining acceptance: owner view/proportion review, physical touch/picker usability, and Android frame pacing with the menu SubViewport. The pre-existing menu regression failures remain open. Reload/rebuild the client to use the local change.
++
++
++## Manual view controls follow-up (2026-10-10)
++
++The owner additionally requests more manual angle adjustment and zoom. Dragging now changes azimuth and elevation; pinch, mouse wheel, trackpad magnification and the compact zoom/reset toolbar control the view. See [actual bounds, checks and captures](GARAGE_VIEW_CONTROLS.md). The previous lower perspective remains the default and Reset view restores it.
+diff --git a/docs/GARAGE_VIEW_CONTROLS.md b/docs/GARAGE_VIEW_CONTROLS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_VIEW_CONTROLS.md
+@@ -0,0 +1,27 @@
++# Garage manual angle and zoom - 2026-10-10
++
++Requirements: GL05 (manual horizontal/vertical angle), GL06 (zoom in/out and reset), GL01-GL04/G01/V06/R01/Q01. The owner requests more manual control over the actual Garage car view.
++
++Dragging the car horizontally turns the camera through a full 360-degree orbit; dragging vertically changes elevation from 5 to 80 degrees. Perspective remains 38 degrees with the previous approximately 17.7-degree view as default. The camera now follows a spherical orbit around the same model target. At default elevation and zoom, the previous camera position is preserved exactly.
++
++Two fingers spread/close to zoom in/out. Mouse wheel and trackpad magnification provide desktop zoom. Three compact toolbar actions provide Zoom out, Zoom in and Reset view, with minimum 48x48 logical touch targets and existing menu styling/icons. Zoom changes camera distance between 0.48 and 1.80 times normal; the model's scale never changes. Close zoom intentionally allows detail inspection/cropping. Reset restores azimuth, elevation and normal zoom. Changing cars rebuilds its normal showroom framing; view adjustments remain through livery edits and cached menu navigation but are not saved as new preferences.
++
++Pinching cannot rotate the view. Lifting one finger suppresses the first remaining-finger drag before resuming rotation, preventing a transition jump. Canceled touches and hiding the preview clear gesture state; emulated mouse movement cannot duplicate touch rotation. The menu's existing showroom ownership and press-mode toolbar buttons keep these gestures from navigating between primary pages. Navigation swipes remain available outside the preview and toolbar.
++
++Changed files: `game/ui/car_showroom.gd` (spherical orbit, two-axis drag, bounded distance zoom and touch lifecycle), `game/ui/garage_page.gd` (three-action toolbar), new `game/tests/test_garage_view_controls.gd`, `docs/GARAGE_LIVERY.md`, this document, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md. No gameplay camera, physical model, canonical simulation, livery persistence, PB/ticket contracts or backend changes. Existing unrelated workspace changes are preserved. [Scoped Git checkpoint](evidence/garage-view-controls-2026-10-10/scoped-change.patch).
++
++Actual commands used pinned Godot `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with normal Windows access for engine logs/certificates. Both Garage fixtures use isolated local storage and an empty API URL.
++
++| Actual command | Actual outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical` | Final **59 checks, zero failures**: real viewport two-axis touch/mouse drag, wheel in/out, trackpad factor, both pinch fingers, zoom without orbit, pinch release/cancel/late input, emulation suppression, actual mouse and touch toolbar actions, changed-view reset, hidden gesture cleanup, bounds/default restore for all five cars, six captures and button bounds at 960x540/1280x720 |
++| `-Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical` | **115 checks, zero failures** with the new toolbar/gesture implementation; real car materials, saved/reopened independent colors, livery controls, original orbit compatibility, picker/reset/write failure, driving color application and unchanged PB key |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **440 scripts, zero failures** |
++| `adb devices -l` | OnePlus Pad 2 OPD2403/f0ba474a attached; **no phone attached** |
++| Scoped `git diff --check` / reverse checkpoint check | Exit 0 |
++
++Initial button checks did not dispatch wheel release events, leaving synthetic viewport mouse focus held by the preview. The fixture now sends complete wheel and mouse press/drag/release sequences before testing the toolbar. The runtime implementation was not changed to accommodate the incomplete fixture. The final checks also verify Reset view from a changed angle/zoom and gesture cleanup on hiding the view. No invariant/assertion was removed.
++
++Inspected actual captures: [default 960](evidence/garage-view-controls-2026-10-10/default-960.png), [higher close view 1280](evidence/garage-view-controls-2026-10-10/high-close-1280.png), and [low wide view 960](evidence/garage-view-controls-2026-10-10/low-wide-960.png). All six fixture PNGs are under the same evidence directory; the vehicle and colors are actual local game assets.
++
++No physical-device test, Android export/install, full Validate, backend deployment or production action was performed. The prior broad menu regression failures documented in GARAGE_LIVERY.md were not rerun or claimed fixed. Remaining acceptance: owner sensitivity/view-range review, physical pinch/desktop trackpad behavior and device frame pacing. Reload/rebuild the client to use this local change.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 GL05-GL06/GL01-GL04/G01/V06/R01/Q01: Garage supports full azimuth/5-80deg manual elevation, pinch/wheel/trackpad zoom and 48px zoom/reset toolbar. Spherical camera distance0.48-1.80x preserves default perspective/geometry; pinch transitions/cancel/hide/emulated mouse protected. Native camera59/livery115/parser440 pass;6 angle/zoom captures inspected; initial fixture wheel-release omission corrected. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Prior broad menu failures remain. Files/commands/scoped checkpoint/owner sensitivity-device acceptance: docs/GARAGE_VIEW_CONTROLS.md.
++
+ 2026-10-10 SND19/SND05/G01/R01/Q01/V06: owner reports noticeable night cicada looping. Same CC0 recording extends18-to40s with4s equal-power blend/full-source filtering; overlap250ms dip improves-3.723-to-0.803dB, RMS-22/gain0.4/one-voice lifecycle retained. PCM3528044bytes/hashd4baf926 reproducible; import/headless25/native31(two wraps81.003s)/PCM22/App99 pass, pause-mute-finish digitally silent. Initial restricted importer/focus-interrupted capture retained; sustained-foreground fixture corrected without runtime focus changes. No phone attachment check/device listening/export-install/fullValidate/physics/backend/deploy. Files/commands/audio/scoped checkpoint/remaining subjective and device acceptance: docs/NIGHT_CICADAS.md (Less conspicuous looping).
+ 
+ 2026-10-10 SND35/SND33-SND34/SND02-SND03/SND05-SND06/G01/R01/Q01: owner artefact persists/~1.5s; high1.549297s bank has repeating internal pitch drift missed by prior envelope checks. Four mid/high Nox recorded-cycle averages plus restrained original offline residual-shaped noise sustain exact100/200Hz for8s; idle/other43 WAV hashes exact. Asset high firing-rate span3.792055 to0.014294Hz; native high3.597253 to0.015301/neighbor-load-coast blend4.205220 to0.011105Hz, four26s repeated-wrap/pause captures and vehicle1446 pass; repeat47 exact/960-tick simulation retained. CompactPCM3429558bytes/+1.89MiB/voices unchanged. Exact owner audible case/platform/build remains unconfirmed; no phone attachment check/device listening/export-install/fullValidate/backend/deploy for task. Files/commands/audio/scoped checkpoint/acceptance: docs/COMPACT_AUDIO_SUSTAIN.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 GL05-GL06/GL01-GL04/G01/V06/R01/Q01: Garage supports full azimuth/5-80deg manual elevation, pinch/wheel/trackpad zoom and 48px zoom/reset toolbar. Spherical camera distance0.48-1.80x preserves default perspective/geometry; pinch transitions/cancel/hide/emulated mouse protected. Native camera59/livery115/parser440 pass;6 angle/zoom captures inspected; initial fixture wheel-release omission corrected. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Prior broad menu failures remain. Files/commands/scoped checkpoint/owner sensitivity-device acceptance: docs/GARAGE_VIEW_CONTROLS.md.
++
+ 2026-10-10 SND19/SND05/G01/R01/Q01/V06: owner reports noticeable night cicada looping. Same CC0 recording extends18-to40s with4s equal-power blend/full-source filtering; overlap250ms dip improves-3.723-to-0.803dB, RMS-22/gain0.4/one-voice lifecycle retained. PCM3528044bytes/hashd4baf926 reproducible; import/headless25/native31(two wraps81.003s)/PCM22/App99 pass, pause-mute-finish digitally silent. Initial restricted importer/focus-interrupted capture retained; sustained-foreground fixture corrected without runtime focus changes. No phone attachment check/device listening/export-install/fullValidate/physics/backend/deploy. Files/commands/audio/scoped checkpoint/remaining subjective and device acceptance: docs/NIGHT_CICADAS.md (Less conspicuous looping).
+ 
+ 2026-10-10 SND35/SND33-SND34/SND02-SND03/SND05-SND06/G01/R01/Q01: owner artefact persists/~1.5s; high1.549297s bank has repeating internal pitch drift missed by prior envelope checks. Four mid/high Nox recorded-cycle averages plus restrained original offline residual-shaped noise sustain exact100/200Hz for8s; idle/other43 WAV hashes exact. Asset high firing-rate span3.792055 to0.014294Hz; native high3.597253 to0.015301/neighbor-load-coast blend4.205220 to0.011105Hz, four26s repeated-wrap/pause captures and vehicle1446 pass; repeat47 exact/960-tick simulation retained. CompactPCM3429558bytes/+1.89MiB/voices unchanged. Exact owner audible case/platform/build remains unconfirmed; no phone attachment check/device listening/export-install/fullValidate/backend/deploy for task. Files/commands/audio/scoped checkpoint/acceptance: docs/COMPACT_AUDIO_SUSTAIN.md.

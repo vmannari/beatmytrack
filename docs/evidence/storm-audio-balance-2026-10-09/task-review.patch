@@ -1,0 +1,588 @@
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -399,7 +399,7 @@
+ 		return
+ 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+ 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
+-	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
++	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused,finish_sim != null)
+ 	if night_ambience != null: night_ambience.present(delta,paused,finish_sim != null)
+ 	if sand_dust != null: sand_dust.set_water_paused(paused)
+ 	if cloud_shadow != null and not paused:
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -5,6 +5,8 @@
+ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
+ const MIN_INTERVAL: float = 9.0
+ const MAX_INTERVAL: float = 16.0
++const RAIN_LEVEL: float = 0.13
++const RAIN_FADE_SECONDS: float = 0.75
+ var elapsed: float = 0.0
+ var until_lightning: float = 6.0
+ var until_thunder: float = -1.0
+@@ -15,6 +17,10 @@
+ var light: DirectionalLight3D
+ var base_light_energy: float = 0.5
+ var rng := RandomNumberGenerator.new()
++var rain_audio: AudioStreamPlayer
++var rain_gain: float = 0.0
++var weather_paused: bool = false
++var suspended: bool = false
+ var thunder_audio: AudioStreamPlayer
+ var lens_drops: Array[ColorRect] = []
+ var wet_glass_material: ShaderMaterial
+@@ -52,15 +58,34 @@
+ 	resized.connect(_update_lens)
+ 	_update_lens()
+ 	rng.randomize()
++	rain_audio = AudioStreamPlayer.new()
++	rain_audio.name = "BackgroundRain"
++	rain_audio.bus = "Vehicle"
++	rain_audio.volume_linear = 0.0
++	var rain_stream: AudioStreamWAV = preload("res://assets/audio/ambience/storm_rain_recorded.wav").duplicate()
++	rain_stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
++	rain_stream.loop_begin = 0
++	var rain_pcm: PackedByteArray = rain_stream.data
++	rain_stream.loop_end = rain_pcm.size()/2
++	rain_pcm.append_array(rain_pcm.slice(0,2))
++	rain_stream.data = rain_pcm
++	rain_audio.stream = rain_stream
++	add_child(rain_audio)
+ 	thunder_audio = AudioStreamPlayer.new()
+ 	thunder_audio.stream = preload("res://assets/audio/storm_thunder.wav")
+ 	thunder_audio.volume_db = -12.0
+ 	add_child(thunder_audio)
+ 	if light != null: base_light_energy = light.light_energy
+ 
+-func advance(delta: float, paused: bool) -> void:
+-	thunder_audio.stream_paused = paused
+-	if paused: return
++func advance(delta: float, paused: bool, finished: bool = false) -> void:
++	weather_paused = paused
++	rain_audio.stream_paused = paused or suspended
++	thunder_audio.stream_paused = paused or suspended
++	if paused or suspended: return
++	rain_gain = move_toward(rain_gain,0.0 if finished else RAIN_LEVEL,RAIN_LEVEL*delta/RAIN_FADE_SECONDS)
++	rain_audio.volume_linear = rain_gain
++	if rain_gain<=0.0: rain_audio.stop()
++	elif not rain_audio.playing and DisplayServer.get_name()!="headless": rain_audio.play()
+ 	elapsed = fmod(elapsed+delta,3600.0)
+ 	RenderingServer.global_shader_parameter_set("storm_ripple_time",elapsed)
+ 	flash_age += delta
+@@ -217,5 +242,15 @@
+ 			newer = older
+ 
+ func _exit_tree() -> void:
++	if is_instance_valid(rain_audio): rain_audio.stop()
+ 	if is_instance_valid(thunder_audio): thunder_audio.stop()
+ 	if is_instance_valid(light): light.light_energy = base_light_energy
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:
++		suspended = true
++	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
++		suspended = false
++	else: return
++	if is_instance_valid(rain_audio): rain_audio.stream_paused = weather_paused or suspended
++	if is_instance_valid(thunder_audio): thunder_audio.stream_paused = weather_paused or suspended
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -244,7 +244,7 @@
+ 	if road_player.stream != road_stream:
+ 		road_player.stream = road_stream
+ 		road_player.play()
+-	var road_gain: float = movement*(0.10+smoothstep(0.4,42.0,speed)*0.24) if wet_road else rolling*0.13
++	var road_gain: float = movement*(0.30+smoothstep(0.4,42.0,speed)*0.72) if wet_road else rolling*0.13
+ 	var road_pitch: float = 0.84+clampf(speed/46.0,0.0,1.0)*0.30 if wet_road else 0.78+clampf(speed/46.0,0.0,1.0)*0.46
+ 	_layer("road",road_gain*surface_model.pavement,road_pitch,dt,tires_silent or surface_model.pavement==0.0 or speed<=0.4)
+ 	_layer("loose",movement*(0.10+rolling*0.25+scrub*0.15)*surface_model.gravel,0.82+clampf(speed/46.0,0,1)*0.28,dt,tires_silent or surface_model.gravel==0.0 or movement==0.0)
+diff --git a/game/tests/test_wet_road_audio.gd b/game/tests/test_wet_road_audio.gd
+--- a/game/tests/test_wet_road_audio.gd
++++ b/game/tests/test_wet_road_audio.gd
+@@ -80,8 +80,19 @@
+ 	for child: Node in weather.get_children():
+ 		if child is AudioStreamPlayer:
+ 			weather_voices += 1
+-			check(child==weather.thunder_audio,"weather contains only the requested thunder voice")
+-	check(weather_voices==1,"storm has no ambient rain player")
++			check(child==weather.thunder_audio or child==weather.rain_audio,"storm has only recorded rain and delayed thunder")
++	check(weather_voices==2,"one quiet recorded rain voice alongside thunder")
++	weather.advance(1.0,false)
++	check(is_equal_approx(weather.rain_gain,StormWeather.RAIN_LEVEL) and weather.rain_audio.bus=="Vehicle","rain reaches restrained level through Vehicle volume")
++	var weather_elapsed: float = weather.elapsed
++	weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++	weather.advance(1.0,false)
++	check(weather.suspended and weather.elapsed==weather_elapsed and is_equal_approx(weather.rain_gain,StormWeather.RAIN_LEVEL),"backgrounding freezes weather and rain fade")
++	weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++	weather.advance(1.0,true)
++	check(not weather.suspended and weather.elapsed==weather_elapsed,"focus return retains race pause")
++	weather.advance(1.0,false,true)
++	check(weather.rain_gain==0.0 and not weather.rain_audio.playing,"finished race fades and stops rain")
+ 	weather.free()
+ 	if "--capture" in OS.get_cmdline_user_args():
+ 		check(DisplayServer.get_name()!="headless","native capture uses audio driver")
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -6,3 +6,14 @@
+ levelled and crossfaded into an 18-second loop. See manifest.json for
+ source/derivative hashes and scripts/build_night_ambience.py for mastering.
+ No runtime downloads or external audio services.
++
++
++storm_rain_recorded.wav: "Rain on concrete" by Joseph SARDIN, BigSoundBank sound 1289.
++https://bigsoundbank.com/rain-on-concrete-s1289.html
++CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
++
++Outdoor rain field recording, 20-40s excerpt; mono 44.1kHz 16-bit PCM;
++rumble/high-frequency softening and soft drop-transient limiting; 1s cyclic
++crossfade into a19s loop. Quiet playback level .13 on Vehicle bus. Source and
++derivative hashes: storm_rain_manifest.json; rebuild: scripts/build_storm_rain.py.
++No runtime download or external audio service.
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -1,4 +1,7 @@
+ # Storm wet-asphalt tire rolling, 2026-10-09
++
++The follow-up correction below raises wet rolling and adds quiet recorded rain
++at the owner's request. It supersedes this first revision's rain removal and mix.
+ 
+ The owner removes storm rain audio and requests tire rolling on wet asphalt
+ that follows speed. SND19 implements this correction to SND04/SND05, with
+@@ -66,3 +69,87 @@
+ Android export/install, full Validate, physics merge or deployment was performed.
+ Remaining acceptance: owner listening to texture/balance in normal storm driving
+ and on the target device. The two existing visual spray failures remain open.
++
++## Stronger wet rolling and quiet recorded rain
++
++The owner cannot hear wet tires well enough and now explicitly requests a
++suitable quiet background rain recording. SND21 (wet-tire presence) and SND22
++(recorded rain), with SND04/SND05/G01/R01/Q01/V06, implement this follow-up.
++Wet road gain is three times the previous value (+9.542 dB), with the same
++speed response, wheel contacts, bounded pitch, stop/airborne/countdown/retry
++guards and 22 mixer voices. None of the 47 vehicle WAVs change.
++
++One race-owned 19-second mono PCM rain loop replaces the earlier synthetic
++rain reference. The source is [Rain on concrete by Joseph SARDIN,
++BigSoundBank sound 1289](https://bigsoundbank.com/rain-on-concrete-s1289.html),
++whose page confirms an outdoor recording and CC0 licence. The shipping
++derivative extracts seconds 20–40, softens rumble/high frequencies and sharp
++drop transients, and crossfades a cyclic one-second seam. The first candidate
++had disproportionately strong isolated drops and was remastered before use.
++Source SHA256 `e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef`;
++derivative SHA256 `8e6eef9c6c9651caaeec3f19a02afaf3fe77a02c050daffecfad4ec7b604d5de`,
++1,675,844 bytes, RMS -21.938 dBFS. Rebuilding offline preserves identical bytes.
++Rain plays at 0.13 gain, about -39.7 dBFS nominal, on the existing Vehicle bus
++so vehicle volume/master mute apply. It fades in/out over 0.75 seconds,
++suspends with race pause/background focus and fades out on race finish.
++Retry/theme replacement/exit stop the old race-owned voice. Occasional delayed
++thunder remains. No new UI, physics/rules, source services or runtime dependencies.
++
++Follow-up changed files: `game/vehicle/vehicle_audio.gd`,
++`game/track/storm_weather.gd`, the storm advance call in `game/core/game.gd`,
++`game/tests/test_wet_road_audio.gd`,
++`game/tests/capture_storm_audio_balance.gd` and its UID,
++`scripts/build_storm_rain.py`, `scripts/review_storm_audio_balance.py`,
++`game/assets/audio/ambience/{storm_rain_recorded.wav,storm_rain_recorded.wav.import,storm_rain_manifest.json,NOTICE.txt}`,
++this page, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `licenses/ASSETS.md`.
++
++Actual commands use the pinned `scripts/dev.ps1` entry point as above:
++
++- `python scripts/build_storm_rain.py --fetch`: source/licence fetched with
++  approved network access after the restricted socket attempt failed. No login,
++  purchase or account. `python scripts/build_storm_rain.py`: exact offline rebuild.
++- `Import`: exit 0.
++- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`: final 38 checks,
++  zero failures, including separate focus/pause/finish guards.
++- `TestScript -ScriptPath res://tests/test_vehicle_audio.gd`: 1,446 checks,
++  zero failures, including exact 960-tick canonical equivalence.
++- `TestScript -ScriptPath res://tests/test_storm.gd`: 94 checks, the same two
++  previously recorded visual spray failures; weather/thunder checks pass.
++- `TestScript -ScriptPath res://tests/capture_storm_audio_balance.gd -Graphical`:
++  final 30 checks, zero failures; seven same-clock mixer/engine/wet/rain sets,
++  including a real rain-loop wrap. Final capture exits cleanly.
++- `python scripts/review_storm_audio_balance.py`: zero failures; measured wet
++  increase 9.5299 dB. At 57.6/115.2 km/h wet/engine relative levels are -3.21/
++  +1.59 dB for compact and +1.45 dB for Formula at 115.2 km/h. Quiet rain is
++  16.66/22.07/20.79 dB below wet rolling respectively. Stationary wet and all
++  paused PCM are exactly zero; rain remains audible at rest. No clipped output
++  or dropout windows in source repeated seams or 21s native rain recording.
++  All 47 vehicle WAV hashes match the actual before-task snapshot.
++- `TestApp`: 99 checks, zero failures; race creation/return/record lifecycle.
++
++Native mix evidence, actual capture receipts, continuity/mix measurements and
++the task-only review patch are in `docs/evidence/storm-audio-balance-2026-10-09/`.
++The initial shorter unpaired gain comparison and a later capture interrupted by
++desktop focus changes are retained. The final fixture models foreground play
++explicitly; pause/background behavior is tested separately. No failures were
++removed from the production contracts. Listening review:
++[wet tires, engine and quiet rain](evidence/storm-audio-balance-2026-10-09/review.html).
++
++The initial old-level fixture briefly restored full wet gain between separate
++volume writes, allowing the audio thread to read that intermediate level. The
++final comparison uses a private one-third-level PCM copy as the mathematically
++equivalent previous wet level; both versions use the same held speed/engine,
++quiet rain and loop cursor. Shipping assets and the reviewed gain invariant
++remain unchanged. Initial measurement failures and recordings are retained.
++
++No physical-device listening/performance test, phone attachment check,
++Android export/install, full Validate, physics merge, backend or deployment.
++Owner hearing/texture approval in the normal game mix, music balance and
++target-device listening remain; native PCM measurements do not prove these.
++
++Follow-up checkpoint: `docs/evidence/storm-audio-balance-2026-10-09/task-review.patch`
++and `checkpoint-files.json`. The text patch includes only this task's changes;
++the new WAV is retained separately with its pinned hash. Read-only reverse
++verification uses `git -c core.autocrlf=false apply --reverse --check
++--ignore-space-change --whitespace=error-all` against that patch. Current
++unrelated workspace changes are preserved and unstaged.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: Free Race displays race/lap histograms side by side without requiring a personal time; missing times add no player marker. Cached-selected-track hydration skip reproduced/fixed, duplicate pending reads coalesced, 180px records panel keeps complete axes at three window sizes. Final graphical90/App99 checks pass; six native captures retained and two inspected. Existing unified endpoint unchanged; no new backend deployment, generated races or player-record writes. Initial certificate/fixture/layout/ID failures corrected; blocked owned test child stopped. No phone attachment check/device test/Android export-install/full Validate/production action. Files, actual commands, task-only checkpoint and remaining visual/device acceptance: docs/FREE_RACE_HISTOGRAMS.md.
++
++2026-10-09 SND21-SND22/SND04-SND05/G01/R01/Q01/V06: owner-requested stronger wet tires and quiet recorded storm rain implemented. Wet road gain3x/native+9.5299dB, same speed/contact/pitch/silence contracts; all47 vehicle WAVs exact. New CC0 Joseph SARDIN rain1289 derivative19s/1675844bytes/8e6eef9c, Vehicle gain0.13/fades/pause-background/finish-reset ownership. Native rain16.66-22.07dB below wet/no dropout wraps/paused zero; focused38/vehicle1446/nativecapture30/App99/review checks pass, storm94 retains two pre-existing visual spray failures. Restricted source socket/first sharp-drop master/unpaired gain/audio-thread volume race/focus-interrupted fixtures corrected and retained; final foreground paired reference clean. No phone attachment/device listening/Android export-install/full Validate/physics/backend/deploy. Actual files/commands/recording licence/review/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (follow-up).
+ 
+ 2026-10-09 VF05-VF09/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved trajectory-only acceptance replaces game/session/controls/physics replay and fallback with one small Python gate/continuity/timing/speed pass. Static build-pinned geometry cached at validation; compact four-field paths, creator capture, rewind branches/receipts and original optional ghosts retained. Windows500 calls median1.684/p953.131/max3.679ms; prepared adapter1.737/p953.173; LinuxoneCPU200 median1.188/p951.829/max7.233ms, zero engine calls. Kernel9/diagnostic80/nativeHTTP2/practice1/scoring51/PG113(8skip)/driver1/generated1/challengeHTTP2 and native61/99/54/17 pass. Historical rules409 and prior storm-render assertions retained. Focused72/21/48 export; APK241655826/SHA25613C6AF0FC9B77ADD78D7713AE5DFA2CD74002416EF566FBF057B84E5BDAC0BAD installed/ColdLaunchok on reconnected f0ba474a; no physical complete-race acceptance. Task-only local Linux image3437a5e, no push/deploy; previous remote auto-review rejection still requires explicit owner approval. Source/schema/commands/evidence/checkpoint/limits: docs/TRAJECTORY_VERIFICATION.md.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1401,3 +1401,8 @@
+ 2026-10-09 SND19/SND05/G01/R01/Q01/V06: owner-requested night cicada ambience implemented as one race-owned CC0 field-recorded 18s mono PCM loop/1,587,644 bytes. Soft 0.75s fades, Vehicle/master volume, pause/background, finish/retry, theme-switch and exit ownership retained. Final headless25/native31/PCM17/App99/parser406 checks pass; native two wraps/36.992s have no clipping or silent100ms gaps; pause/mute/finish captures digitally silent. Exact offline rebuild/asset provenance/task-only Git patch retained; initial socket/certificate/download/QOA/headless-getter/queued-cleanup/PowerShell failures corrected and documented. No phone attachment check/device listening/Android export-install/full Validate/backend or production action; owner/device mix and performance acceptance remain. Files/actual commands/evidence/limits: docs/NIGHT_CICADAS.md.
+ 
+ 2026-10-09 R01/WR01-WR02/Q01: Weekly Rivalry is now the default Race destination. game/core/app.gd initializes race_area_mode to rivalry, restores authenticated sessions into rivalry and routes Account Continue through the existing populated-overview entry. Required sign-in/username setup remains. Commands: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp (99 checks, zero failures); TestScript -ScriptPath res://tests/test_rivalry_entry.gd -Graphical (70 checks, zero failures), with BMT_RIVALRY_ENTRY_CAPTURE_DIR=build/rivalry-startup. Pinned Godot 4.7.2; overview-1280x720.png visually inspected, compact capture also saved. Initial script-policy and sandbox user-log access failures corrected with process-only execution-policy bypass and approved local access. Scoped before/patch: build/rivalry-startup/app-before.gd and change.patch. No phone attachment check/device test, Android export/install or deployment; actual saved-session startup remains an owner acceptance check.
++
++
++## Storm audio presence and quiet recorded rain, 2026-10-09
++
++2026-10-09 SND21-SND22/SND04-SND05/G01/R01/Q01/V06: owner-requested stronger wet tires and quiet recorded storm rain implemented. Wet road gain3x/native+9.5299dB, same speed/contact/pitch/silence contracts; all47 vehicle WAVs exact. New CC0 Joseph SARDIN rain1289 derivative19s/1675844bytes/8e6eef9c, Vehicle gain0.13/fades/pause-background/finish-reset ownership. Native rain16.66-22.07dB below wet/no dropout wraps/paused zero; focused38/vehicle1446/nativecapture30/App99/review checks pass, storm94 retains two pre-existing visual spray failures. Restricted source socket/first sharp-drop master/unpaired gain/audio-thread volume race/focus-interrupted fixtures corrected and retained; final foreground paired reference clean. No phone attachment/device listening/Android export-install/full Validate/physics/backend/deploy. Actual files/commands/recording licence/review/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (follow-up).
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -143,3 +143,6 @@
+ 
+ 
+ Storm wet tire correction (2026-10-09): `game/assets/audio/vehicles/wet_road.wav` is an offline blend of cleared Nox CC0 car-interior rolling and original sustained spray hiss, filtered/crossfaded/mastered/dithered by `scripts/build_vehicle_audio.py`. Designed wet-asphalt rolling, not a dedicated wet-road field recording. All46 prior WAV hashes retained, manifest/NOTICE updated; no new provider, purchase, runtime API or dependency. Ambient storm rain playback removed; original unused rain asset retained. Actual checks and listening samples: `docs/WET_ROAD_AUDIO.md`.
++
++
++Quiet recorded storm rain (2026-10-09): `game/assets/audio/ambience/storm_rain_recorded.wav` derives from Joseph SARDIN, BigSoundBank "Rain on concrete", sound1289, CC0-1.0. Source/licence: https://bigsoundbank.com/rain-on-concrete-s1289.html ; source/derivative hashes and editing in `storm_rain_manifest.json`, shipping `NOTICE.txt` and `scripts/build_storm_rain.py`. Original20-40s excerpt, mono44.1kHz PCM, spectral/drop-transient softening,19s cyclic loop; quiet Vehicle-bus mix. All47 existing vehicle WAVs unchanged; wet rolling gain +9.542dB. No purchase/runtime generation/service/dependency. Actual measurements/listening: `docs/WET_ROAD_AUDIO.md` (follow-up).
+diff --git a/scripts/build_storm_rain.py b/scripts/build_storm_rain.py
+--- /dev/null
++++ b/scripts/build_storm_rain.py
+@@ -0,0 +1,83 @@
++"""Fetch/master a cleared field-recorded rain loop; build tools only."""
++from pathlib import Path
++import argparse
++import hashlib
++import json
++import struct
++import urllib.request
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = ROOT / "build/storm_rain_sources"
++OUT = ROOT / "game/assets/audio/ambience"
++PAGE = "https://bigsoundbank.com/rain-on-concrete-s1289.html"
++MEDIA = "https://bigsoundbank.com/UPLOAD/bwf-en/1289.wav"
++RATE = 44100
++SOURCE_SHA256 = "e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef"
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--fetch", action="store_true")
++    args = parser.parse_args()
++    SOURCE.mkdir(parents=True, exist_ok=True)
++    master = SOURCE / "rain-1289.wav"
++    if args.fetch:
++        html = urllib.request.urlopen(PAGE, timeout=30).read()
++        if b"CC0" not in html or b"Joseph SARDIN" not in html:
++            raise ValueError("Expected CC0 recording/author metadata")
++        (SOURCE / "license.html").write_bytes(html)
++        if not master.exists():
++            master.write_bytes(urllib.request.urlopen(MEDIA, timeout=45).read())
++    data = master.read_bytes()
++    if hashlib.sha256(data).hexdigest()!=SOURCE_SHA256:
++        raise ValueError("Rain source hash changed; review the source before rebuilding")
++    pos = 12
++    while pos + 8 <= len(data):
++        kind, count = struct.unpack_from("<4sI", data, pos)
++        body = data[pos+8:pos+8+count]
++        if kind == b"fmt ":
++            fmt, channels, rate, _, _, bits = struct.unpack_from("<HHIIHH", body)
++            if fmt == 65534: fmt = struct.unpack_from("<H", body, 24)[0]
++        elif kind == b"data": pcm = body
++        pos += 8 + count + (count & 1)
++    if fmt != 1 or bits not in [16,24]: raise ValueError("Expected recorded PCM")
++    if bits == 24:
++        raw = np.frombuffer(pcm,dtype=np.uint8).reshape(-1,3).astype(np.int32)
++        ints = raw[:,0] | (raw[:,1]<<8) | (raw[:,2]<<16)
++        values = ((ints ^ 0x800000)-0x800000)/8388608.0
++    else: values = np.frombuffer(pcm,dtype='<i2').astype(np.float64)/32768.0
++    values = values.reshape(-1,channels).mean(axis=1)
++    values = values[round(20*rate):round(40*rate)]
++    coordinates = np.arange(round(len(values)*RATE/rate),dtype=np.float64)*rate/RATE
++    values = np.interp(coordinates,np.arange(len(values),dtype=np.float64),values)
++    hz = np.fft.rfftfreq(len(values),1/RATE)
++    spectrum = np.fft.rfft(values)
++    spectrum *= (1-np.exp(-(hz/140)**4))*np.exp(-(hz/6500)**4)
++    values = np.fft.irfft(spectrum,n=len(values))
++    # Tame close-microphone drop transients so isolated drops do not set the
++    # entire loop's quietness or punctuate the background with sharp knocks.
++    values = np.tanh(values/max(np.sqrt(np.mean(values**2))*3.0,1e-8))
++    overlap = RATE
++    ramp = .5-.5*np.cos(np.linspace(0,np.pi,overlap))
++    joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
++    values = np.concatenate([values[overlap:-overlap],joined])
++    values -= values.mean()
++    values *= min(.08/max(np.sqrt(np.mean(values**2)),1e-8),.5/max(np.max(np.abs(values)),1e-8))
++    pcm = np.rint(values*32767).astype('<i2')
++    OUT.mkdir(parents=True,exist_ok=True)
++    target = OUT/'storm_rain_recorded.wav'
++    with wave.open(str(target),'wb') as handle:
++        handle.setnchannels(1); handle.setsampwidth(2); handle.setframerate(RATE)
++        handle.writeframes(pcm.tobytes())
++    settings = target.with_suffix('.wav.import')
++    if not settings.exists(): settings.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding='utf-8')
++    manifest = dict(file=target.name,source=PAGE,download=MEDIA,author='Joseph SARDIN',license='CC0-1.0',
++        source_sha256=hashlib.sha256(data).hexdigest(),sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
++        rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
++        edits='20-40s recording; mono; 44.1kHz; 140Hz-6.5kHz softening; soft drop-transient limiting; 1s cyclic crossfade; RMS .08, peak cap .5',
++        rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
++    (OUT/'storm_rain_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
++    print(json.dumps(manifest,indent=2))
++
++if __name__ == '__main__': main()
+diff --git a/scripts/review_storm_audio_balance.py b/scripts/review_storm_audio_balance.py
+--- /dev/null
++++ b/scripts/review_storm_audio_balance.py
+@@ -0,0 +1,58 @@
++"""Actual native mix levels and loop/silence checks for the storm correction."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++from test_vehicle_audio_continuity import measure
++
++ROOT=Path(__file__).resolve().parents[1]
++OUT=ROOT/'docs/evidence/storm-audio-balance-2026-10-09'
++report={'captures':[],'failures':[]}
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate=handle.getframerate(); channels=handle.getnchannels()
++        assert handle.getsampwidth()==2
++        pcm=np.frombuffer(handle.readframes(handle.getnframes()),dtype='<i2').astype(np.float64)/32768.0
++    return pcm.reshape(-1,channels),rate
++def db(values): return 20*math.log10(max(float(np.sqrt(np.mean(values**2))),1e-9))
++for scene in ['cruise-before','cruise-after','fast-after','formula-after','stopped','paused','rain-loop']:
++    row={'scene':scene}
++    for layer in ['mix','engine','wet','rain']:
++        pcm,rate=read(OUT/(scene+'-'+layer+'.wav'))
++        body=pcm[round(.15*rate):-round(.15*rate)]
++        row[layer+'_dbfs']=db(body)
++        row[layer+'_peak']=float(np.max(np.abs(body)))
++        if row[layer+'_peak']>=.95: report['failures'].append('Clipping/headroom: '+scene+' '+layer)
++        if scene=='paused' and row[layer+'_peak']!=0: report['failures'].append('Pause should be digitally silent: '+layer)
++        if layer=='wet' and scene in ['stopped','rain-loop'] and row[layer+'_peak']!=0: report['failures'].append('Stationary wet road should be silent')
++        if layer=='rain' and scene!='paused' and row[layer+'_dbfs'] < -65: report['failures'].append('Foreground background rain must be present: '+scene)
++    if scene in ['cruise-after','fast-after','formula-after']:
++        row['wet_relative_engine_db']=row['wet_dbfs']-row['engine_dbfs']
++        row['rain_relative_wet_db']=row['rain_dbfs']-row['wet_dbfs']
++        if row['wet_relative_engine_db'] < -10: report['failures'].append('Wet rolling too far below engine: '+scene)
++        if row['rain_relative_wet_db'] > -12: report['failures'].append('Rain should be substantially quieter than rolling: '+scene)
++    report['captures'].append(row)
++boost=report['captures'][1]['wet_dbfs']-report['captures'][0]['wet_dbfs']
++report['measured_wet_gain_db']=boost
++if not 9.0<boost<10.2: report['failures'].append('Native before/after rolling gain should be about 9.5dB')
++pcm,rate=read(OUT/'rain-loop-rain.wav')
++report['native_rain_continuity']=measure(pcm,rate)
++if report['native_rain_continuity']['maximum_dropout_ms']>=100: report['failures'].append('Native rain contains a sustained gap')
++bank=json.loads((OUT/'before/bank-hashes.json').read_text())
++report['preserved_vehicle_clips']=len(bank)
++for name,digest in bank.items():
++    if hashlib.sha256((ROOT/'game/assets/audio/vehicles'/name).read_bytes()).hexdigest()!=digest:
++        report['failures'].append('Existing vehicle WAV changed: '+name)
++manifest=json.loads((ROOT/'game/assets/audio/ambience/storm_rain_manifest.json').read_text())
++sample=ROOT/'game/assets/audio/ambience/storm_rain_recorded.wav'
++if hashlib.sha256(sample.read_bytes()).hexdigest()!=manifest['sha256']: report['failures'].append('Rain manifest hash mismatch')
++pcm,rate=read(sample)
++report['rain_asset_continuity']=measure(np.tile(pcm,(3,1)),rate)
++if report['rain_asset_continuity']['maximum_dropout_ms']>=100: report['failures'].append('Rain asset contains a sustained gap')
++(OUT/'review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++cards=''.join('<article><h2>'+label+'</h2><audio controls preload="metadata" src="'+name+'.wav"></audio></article>' for label,name in [('Previous wet level + quiet rain','cruise-before-mix'),('Stronger wet tires + quiet rain','cruise-after-mix'),('Faster driving','fast-after-mix'),('Formula car','formula-after-mix'),('Rain at the shipping background level','rain-loop-rain')])
++(OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Storm audio balance</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}h2{margin:0 0 10px}audio{width:100%}</style><h1>Wet tires and quiet rain</h1><p>Native engine/tire/rain mix at 57.6 and 115.2 km/h. Music is excluded. The rain recording is Joseph SARDIN\'s CC0 Rain on concrete from BigSoundBank.</p>'+cards,encoding='utf-8')
++print(json.dumps(report,indent=2))
++raise SystemExit(bool(report['failures']))
+diff --git a/game/tests/capture_storm_audio_balance.gd b/game/tests/capture_storm_audio_balance.gd
+--- /dev/null
++++ b/game/tests/capture_storm_audio_balance.gd
+@@ -0,0 +1,106 @@
++extends SceneTree
++## Same-clock engine, wet tire, quiet rain and complete native mixer references.
++const OUT: String = "res://../docs/evidence/storm-audio-balance-2026-10-09"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	check(DisplayServer.get_name()!="headless","actual audio driver required")
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	track.metadata.theme = "storm"
++	track.cells.fill(0)
++	var audio := VehicleAudio.new()
++	audio.use_windows_impacts = false
++	root.add_child(audio)
++	var full_wet: AudioStreamWAV = audio._stream("wet_road",true)
++	var baseline_wet: AudioStreamWAV = full_wet.duplicate()
++	var baseline_pcm: PackedByteArray = baseline_wet.data
++	for offset: int in range(0,baseline_pcm.size(),2):
++		baseline_pcm.encode_s16(offset,roundi(float(baseline_pcm.decode_s16(offset))/3.0))
++	baseline_wet.data = baseline_pcm
++	var weather := StormWeather.new()
++	root.add_child(weather)
++	weather.until_lightning = 9999.0
++	var buses: Array[int] = [0,AudioServer.get_bus_index("Engine")]
++	for label: String in ["WetRoadReview","RainReview"]:
++		var bus: int = AudioServer.get_bus_count()
++		AudioServer.add_bus()
++		AudioServer.set_bus_name(bus,label)
++		AudioServer.set_bus_send(bus,"Tires" if label=="WetRoadReview" else "Vehicle")
++		buses.append(bus)
++	(audio.layers.road as AudioStreamPlayer).bus = "WetRoadReview"
++	weather.rain_audio.bus = "RainReview"
++	var records: Array[AudioEffectRecord] = []
++	for bus: int in buses:
++		var record := AudioEffectRecord.new()
++		record.format = AudioStreamWAV.FORMAT_16_BITS
++		AudioServer.add_bus_effect(bus,record)
++		records.append(record)
++	var names: Array[String] = ["mix","engine","wet","rain"]
++	var rows: Array[Dictionary] = []
++	for scene: String in ["cruise-before","cruise-after","fast-after","formula-after","stopped","paused","rain-loop"]:
++		# The only old/new wet difference is a factor of three. Apply its inverse
++		# to this private PCM copy for a stable old-level reference, avoiding
++		# temporary volume writes racing the audio thread between present calls.
++		audio.streams.wet_road = baseline_wet if scene=="cruise-before" else full_wet
++		audio.configure("formula" if scene=="formula-after" else "compact",VehicleCatalog.config("formula" if scene=="formula-after" else "compact"))
++		var state := VehicleState.new()
++		state.position = track.spawn
++		state.velocity = Vector2(0,32 if scene in ["fast-after","formula-after"] else 16)
++		if scene in ["stopped","rain-loop"]: state.velocity = Vector2.ZERO
++		var input := DriveFrame.sample(0,0.7,0)
++		# This fixture models foreground driving; external test windows can
++		# steal actual desktop focus. Focus suspension is checked separately.
++		weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++		for tick: int in range(30):
++			audio.present(state,input,track,.05,scene=="paused")
++			weather.advance(.05,scene=="paused")
++		# Compare identical source regions; other phases may have left the player
++		# at a different cursor despite the same held presentation state.
++		(audio.layers.road as AudioStreamPlayer).play(0.0)
++		await create_timer(.25).timeout
++		for record: AudioEffectRecord in records: record.set_recording_active(true)
++		var elapsed: float = 0.0
++		var last_us: int = Time.get_ticks_usec()
++		var previous_cursor: float = weather.rain_audio.get_playback_position()
++		var wraps: int = 0
++		while elapsed<(21.0 if scene=="rain-loop" else 7.0 if scene in ["cruise-before","cruise-after"] else 3.0):
++			await process_frame
++			var now: int = Time.get_ticks_usec()
++			var dt: float = float(now-last_us)/1000000.0
++			last_us = now
++			elapsed += dt
++			state.tick += 1
++			weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			audio.present(state,input,track,dt,scene=="paused")
++			weather.advance(dt,scene=="paused")
++			var cursor: float = weather.rain_audio.get_playback_position()
++			if cursor+.5<previous_cursor: wraps += 1
++			previous_cursor = cursor
++		for i: int in range(records.size()):
++			records[i].set_recording_active(false)
++			check(records[i].get_recording().save_to_wav(OUT.path_join(scene+"-"+names[i]+".wav"))==OK,"native reference: "+scene+" "+names[i])
++		if scene=="rain-loop": check(wraps>=1,"continuous recorded rain crosses a real playback wrap")
++		rows.append({"scene":scene,"speed_mps":state.velocity.length(),"road_gain":audio.levels.road,"rain_gain":weather.rain_gain,"rain_wraps":wraps,"foreground_fixture":not weather.suspended})
++	var report := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(rows,"\t")+"\n")
++	report.close()
++	audio.free()
++	weather.free()
++	await create_timer(.15).timeout
++	for bus: int in buses: AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	AudioServer.remove_bus(buses[3])
++	AudioServer.remove_bus(buses[2])
++	print("STORM_AUDIO_BALANCE_CAPTURE: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_storm_audio_balance.gd.uid b/game/tests/capture_storm_audio_balance.gd.uid
+--- /dev/null
++++ b/game/tests/capture_storm_audio_balance.gd.uid
+@@ -0,0 +1 @@
++uid://dkibm53fx6tv5
+diff --git a/game/assets/audio/ambience/storm_rain_recorded.wav.import b/game/assets/audio/ambience/storm_rain_recorded.wav.import
+--- /dev/null
++++ b/game/assets/audio/ambience/storm_rain_recorded.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://ciwtxq0dwhk7v"
++path="res://.godot/imported/storm_rain_recorded.wav-b351a2d360b0f12c2c5e8b743708b86b.sample"
++
++[deps]
++
++source_file="res://assets/audio/ambience/storm_rain_recorded.wav"
++dest_files=["res://.godot/imported/storm_rain_recorded.wav-b351a2d360b0f12c2c5e8b743708b86b.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/ambience/storm_rain_manifest.json b/game/assets/audio/ambience/storm_rain_manifest.json
+--- /dev/null
++++ b/game/assets/audio/ambience/storm_rain_manifest.json
+@@ -0,0 +1,17 @@
++{
++  "file": "storm_rain_recorded.wav",
++  "source": "https://bigsoundbank.com/rain-on-concrete-s1289.html",
++  "download": "https://bigsoundbank.com/UPLOAD/bwf-en/1289.wav",
++  "author": "Joseph SARDIN",
++  "license": "CC0-1.0",
++  "source_sha256": "e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef",
++  "sha256": "8e6eef9c6c9651caaeec3f19a02afaf3fe77a02c050daffecfad4ec7b604d5de",
++  "rate": 44100,
++  "channels": 1,
++  "bits": 16,
++  "seconds": 19.0,
++  "bytes": 1675844,
++  "edits": "20-40s recording; mono; 44.1kHz; 140Hz-6.5kHz softening; soft drop-transient limiting; 1s cyclic crossfade; RMS .08, peak cap .5",
++  "rms_dbfs": -21.93820026016113,
++  "peak_dbfs": -7.8129637007851525
++}

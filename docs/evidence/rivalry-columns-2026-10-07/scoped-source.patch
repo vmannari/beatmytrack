@@ -1,0 +1,147 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -25,6 +25,8 @@
+ var track_markers: Array[ColorRect] = []
+ const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
+ const COMPACT_ART: Texture2D = preload("res://assets/menu/rivalry_compact_cutout_v1.png")
++const ModeIcons = preload("res://ui/race_mode_icons.gd")
++const STANDINGS_GUTTER: int = 12
+ const QUIET_BORDER := Color("2e495a88")
+ const Badge = preload("res://ui/biome_badge.gd")
+ 
+@@ -256,7 +258,7 @@
+ 	field.add_theme_constant_override("separation",12)
+ 	parent.add_child(field)
+ 	_podium(field)
+-	_driver_table(field,"ALL DRIVERS")
++	_driver_table(field,"STANDINGS")
+ 	var right := VBoxContainer.new()
+ 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	right.size_flags_stretch_ratio = 1.13
+@@ -308,7 +310,8 @@
+ 		group.add_theme_constant_override("separation",12)
+ 		center.add_child(group)
+ 		var flag := TextureRect.new()
+-		flag.texture = MenuIcon.texture("flag")
++		flag.texture = ModeIcons.texture("flag")
++		flag.name = "RivalryRaceFlag"
+ 		flag.custom_minimum_size = Vector2(28,28)
+ 		flag.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 		flag.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+@@ -326,24 +329,36 @@
+ 	table.add_child(heading)
+ 	_copy(heading,title,27).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_copy(heading,"%d DRIVERS" % model.standing().size(),14,MenuStyle.MUTED)
+-	var legend := HBoxContainer.new()
+-	legend.add_theme_constant_override("separation",9)
+-	table.add_child(legend)
+-	_copy(legend,"#",14,MenuStyle.MUTED).custom_minimum_size.x = 34
+-	_copy(legend,"DRIVER",14,MenuStyle.MUTED).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	for column: Array in [["POINTS",60],["GAP",54]]:
+-		var label: Label = _copy(legend,str(column[0]),14,MenuStyle.MUTED)
+-		label.custom_minimum_size.x = int(column[1])
+-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 	var scroll := ScrollContainer.new()
+ 	scroll.name = "RivalryStandingsScroll"
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
++	var legend_margin := MarginContainer.new()
++	legend_margin.name = "RivalryStandingsColumnHeader"
++	legend_margin.add_theme_constant_override("margin_left",5)
++	legend_margin.add_theme_constant_override("margin_right",ceili(scroll.get_v_scroll_bar().get_combined_minimum_size().x)+STANDINGS_GUTTER+5)
++	table.add_child(legend_margin)
++	var legend := HBoxContainer.new()
++	legend.add_theme_constant_override("separation",9)
++	legend_margin.add_child(legend)
++	_copy(legend,"#",14,MenuStyle.MUTED).custom_minimum_size.x = 30
++	_copy(legend,"DRIVER",14,MenuStyle.MUTED).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	for column: Array in [["POINTS",60],["GAP",54]]:
++		var label: Label = _copy(legend,str(column[0]),14,MenuStyle.MUTED)
++		label.name = "RivalryColumn_"+str(column[0])
++		label.custom_minimum_size.x = int(column[1])
++		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 	table.add_child(scroll)
++	var row_margin := MarginContainer.new()
++	row_margin.name = "RivalryStandingsScrollGutter"
++	row_margin.add_theme_constant_override("margin_right",STANDINGS_GUTTER)
++	row_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	scroll.add_child(row_margin)
+ 	var rows := VBoxContainer.new()
+ 	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	rows.add_theme_constant_override("separation",2)
+-	scroll.add_child(rows)
++	row_margin.add_child(rows)
+ 	var own_panel: Control
+ 	var standings: Array[Dictionary] = model.standing()
+ 	var leader_points: int = int(standings[0].points)
+@@ -384,6 +399,7 @@
+ 		points.custom_minimum_size.x = 60
+ 		points.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 		var gap: Label = _copy(line,"--" if driver.get("rank") == null or int(driver.points) == leader_points else str(int(driver.points)-leader_points),18,color if own else MenuStyle.MUTED)
++		gap.name = "RivalryPlayerGap_"+str(driver.id)
+ 		gap.custom_minimum_size.x = 54
+ 		gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 		if own: own_panel = panel
+@@ -681,7 +697,7 @@
+ 	field.add_theme_constant_override("separation",10)
+ 	parent.add_child(field)
+ 	_podium(field)
+-	_driver_table(field,"OVERALL STANDINGS")
++	_driver_table(field,"STANDINGS")
+ 	var context: VBoxContainer = _card(parent,"winter",20)
+ 	_copy(context,"YOUR CHAMPIONSHIP",20,MenuStyle.MUTED)
+ 	var own: Dictionary = WeeklyRivalry.self_row(model.standing())
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -50,7 +50,7 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-reference-2026-10-07/ui")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-columns-2026-10-07/ui")
+ 	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
+ 	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
+ 	var fixture := WeeklyRivalry.new(true)
+@@ -106,6 +106,12 @@
+ 		var player_row: Control = app.root_ui.find_child("Driver_you",true,false)
+ 		var table_scroll: Control = app.root_ui.find_child("RivalryStandingsScroll",true,false)
+ 		check(table_scroll.get_global_rect().grow(1).encloses(player_row.get_global_rect()),"the highlighted player row is visible within the standings viewport")
++		var gap_header: Control = app.root_ui.find_child("RivalryColumn_GAP",true,false)
++		var player_gap: Control = app.root_ui.find_child("RivalryPlayerGap_you",true,false)
++		var bar: VScrollBar = (table_scroll as ScrollContainer).get_v_scroll_bar()
++		check(player_gap.get_global_rect().end.x <= bar.get_global_rect().position.x-12.0,"gap values leave clear space before the scrollbar")
++		check(gap_header.get_global_rect().end.x <= bar.get_global_rect().position.x-12.0,"gap heading stays clear of the scrollbar")
++		check(absf(gap_header.get_global_rect().end.x-player_gap.get_global_rect().end.x) <= 1.0,"gap heading and values share their right edge")
+ 		check(app.root_ui.find_child("RivalryDataNotice",true,false) == null,"no debug footer remains")
+ 		var car_image: Image = WeeklyRivalryPage.COMPACT_ART.get_image()
+ 		check(car_image.detect_alpha() != Image.ALPHA_NONE,"compact podium art keeps genuine alpha")
+--- a/docs/RIVALRY_REFERENCE.md
++++ b/docs/RIVALRY_REFERENCE.md
+@@ -30,3 +30,10 @@
+ Inspected captures: [ranked fixture Overview](evidence/rivalry-reference-2026-10-07/ui/overview-1280x720.png), [compact fixture](evidence/rivalry-reference-2026-10-07/ui/overview-960x540.png), [live Overview](evidence/rivalry-reference-2026-10-07/live/live-overview-1280x720.png), [compact live Overview](evidence/rivalry-reference-2026-10-07/live/live-overview-960x540.png), [completed week](evidence/rivalry-reference-2026-10-07/ui/weekly-finale-960x540.png). Fixture screenshots are isolated layout evidence; the live images use the actual development backend. Biome labels follow actual track metadata, including Grass for the current Silmukka; the reference's example Winter label does not retheme that track.
+ 
+ Remaining acceptance: owner visual/interaction approval, physical-phone legibility/input/frame/memory performance and visual review of noncompact podium groups. Full Validate/physics regression, new backend deployment, production deployment and purchases are not performed by this task. The [scoped source patch](evidence/rivalry-reference-2026-10-07/scoped-source.patch) and [asset manifest](evidence/rivalry-reference-2026-10-07/asset-manifest.json) preserve the review checkpoint without committing unrelated working-tree changes. Reverse applicability and whitespace checks pass.
++
++
++## Chequered flag and standings-column correction - 2026-10-07
++
++WR10/R01/V03-V05/Q01: the owner requests the reference chequered flag, the Standings title and correction of the gap column meeting the scrollbar. `game/ui/weekly_rivalry_page.gd` now reuses the existing original waving chequered flag from `race_mode_icons.gd` for the centred Race action. Both championship table views use STANDINGS. A 12-logical-pixel content gutter and reserved scrollbar width keep row values separate from the scrollbar; the column legend reserves the same width plus row padding, so Points/Gap right edges align. The vertical scrollbar keeps a stable reserved lane even with a short field. Existing player-row reveal and panel/track dimensions remain.
++
++Actual pinned command `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical` passes **1,097 checks, zero failures**, at 1280x720, 960x540 and 1600x720. New regression checks measure the gap-heading/value clearance from the real scrollbar and their shared right edge. Inspected [Overview](evidence/rivalry-columns-2026-10-07/ui/overview-1280x720.png) and compact capture. Only the page, its existing test, this report and status/phase entries change. No new image generation/assets, simulation/backend changes, live-backend test, phone attachment check/device test, export/install or full Validate in this correction. Current unrelated physics/rules/editor work is preserved; its rollout is outside this UI correction. [Scoped checkpoint](evidence/rivalry-columns-2026-10-07/scoped-source.patch) and actual log/source hashes are retained. Owner/device acceptance remains.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-07 WR10/R01/V03-V05/Q01: owner-requested Race chequered flag and standings-column repair implemented. Reuses existing waving checker icon, names both panels STANDINGS and reserves matching header/row scrollbar gutters with 12px clear space; fixed lane preserves dimensions for short fields. Final graphical1097 checks/zero failures at three landscape sizes include measured gap/header clearance and right-edge alignment; screenshot inspected/scoped checkpoint retained. No new asset generation, physics/backend change, live-backend/phone/attachment test, export/install/full Validate or deployment. Unrelated .53/rules20/editor work preserved. Files, commands, evidence and acceptance: docs/RIVALRY_REFERENCE.md (column correction).
++
+ 2026-10-07 G01/T03: owner rejects barely noticeable .52 drag and requests considerable slowdown. Normal-impulse scrape friction0.18-to1.0, physics0.53/local compatibility and oval expected pin; smooth resolver/normals/recoil/alignment/feedback retained. Same108km/h2deg one-second coast99.082-to75.953km/h, powered135.430-to110.858km/h; first tangent loss0.629-to3.492%. Strong-scrub20268/diagnostic14820 and selected backend121 checks pass/50PG deselected; explicit coast/power slowdown and no-freeze/energy/corner/reverse/replay targets covered. Full332 parses and preceding core checks pass, concurrent ObjectRuns cache update stops storm; pinned Import and final storm/soil/suspension/records/rewind/ghost/camera/cars/kart/history all pass, no full-green claim. Inspected native screenshot/unclipped PCM, scoped patch/hash/log evidence retained. Concurrent rules20/editor/hub work preserved. No phone attachment check/device/export/install/live deployment/score migration; matching verifier rollout remains. Files, actual commands, results and limits: docs/SHALLOW_COLLISION_FIX.md (considerably stronger slowdown), docs/evidence/strong-wall-drag-2026-10-07.
+ 
+ 2026-10-07 T01-T04/R01/V03/V05/Q01: barrier placement fixed: Road edge/Line/Curve fit shared endpoints, smooth road normals/curve gestures and honor size while keeping rail thickness/height. Bounded optional v5 length drives both native collision and shared meshes; existing compiler22 hashes/tyre sizes retained. Final headless7715/graphical7719/native backend5, pieces377/creator113/workflow252/review51/browser67/refinement32/parser338 pass; dense512-point curve49 sections3.568/4.444ms desktop. Inspected actual before/after/bend/Line/Curve captures; task-only checkpoint preserves unrelated work. Intermediate fixture/parser/missing-concurrent-audio/native-probe failures corrected and recorded. No phone/device/attachment check/export/install/full Validate/backend deployment; matching verifier source needed for publishing new fitted fields, owner/mobile acceptance remains. Actual files/commands/logs/limits: docs/CONTINUOUS_BARRIERS.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-07 WR10/R01/V03-V05/Q01: owner-requested Race chequered flag and standings-column repair implemented. Reuses existing waving checker icon, names both panels STANDINGS and reserves matching header/row scrollbar gutters with 12px clear space; fixed lane preserves dimensions for short fields. Final graphical1097 checks/zero failures at three landscape sizes include measured gap/header clearance and right-edge alignment; screenshot inspected/scoped checkpoint retained. No new asset generation, physics/backend change, live-backend/phone/attachment test, export/install/full Validate or deployment. Unrelated .53/rules20/editor work preserved. Files, commands, evidence and acceptance: docs/RIVALRY_REFERENCE.md (column correction).
++
+ 2026-10-07 G01/T03: owner rejects barely noticeable .52 drag and requests considerable slowdown. Normal-impulse scrape friction0.18-to1.0, physics0.53/local compatibility and oval expected pin; smooth resolver/normals/recoil/alignment/feedback retained. Same108km/h2deg one-second coast99.082-to75.953km/h, powered135.430-to110.858km/h; first tangent loss0.629-to3.492%. Strong-scrub20268/diagnostic14820 and selected backend121 checks pass/50PG deselected; explicit coast/power slowdown and no-freeze/energy/corner/reverse/replay targets covered. Full332 parses and preceding core checks pass, concurrent ObjectRuns cache update stops storm; pinned Import and final storm/soil/suspension/records/rewind/ghost/camera/cars/kart/history all pass, no full-green claim. Inspected native screenshot/unclipped PCM, scoped patch/hash/log evidence retained. Concurrent rules20/editor/hub work preserved. No phone attachment check/device/export/install/live deployment/score migration; matching verifier rollout remains. Files, actual commands, results and limits: docs/SHALLOW_COLLISION_FIX.md (considerably stronger slowdown), docs/evidence/strong-wall-drag-2026-10-07.
+ 
+ 2026-10-07 T01-T04/R01/V03/V05/Q01: barrier placement fixed: Road edge/Line/Curve fit shared endpoints, smooth road normals/curve gestures and honor size while keeping rail thickness/height. Bounded optional v5 length drives both native collision and shared meshes; existing compiler22 hashes/tyre sizes retained. Final headless7715/graphical7719/native backend5, pieces377/creator113/workflow252/review51/browser67/refinement32/parser338 pass; dense512-point curve49 sections3.568/4.444ms desktop. Inspected actual before/after/bend/Line/Curve captures; task-only checkpoint preserves unrelated work. Intermediate fixture/parser/missing-concurrent-audio/native-probe failures corrected and recorded. No phone/device/attachment check/export/install/full Validate/backend deployment; matching verifier source needed for publishing new fitted fields, owner/mobile acceptance remains. Actual files/commands/logs/limits: docs/CONTINUOUS_BARRIERS.md.

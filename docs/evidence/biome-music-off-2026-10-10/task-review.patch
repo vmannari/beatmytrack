@@ -1,0 +1,380 @@
+diff --git a/game/soundtrack/audio_world.gd b/game/soundtrack/audio_world.gd
+--- a/game/soundtrack/audio_world.gd
++++ b/game/soundtrack/audio_world.gd
+@@ -125,14 +125,18 @@
+ 
+ 
+ func begin_race(owner: Node, theme: String, state: VehicleState) -> void:
+-	# Release a paused decoder before replacing its synchronized stream on retry.
++	# Owner removed background music from every driving biome, including practice.
+ 	race_player.stream_paused = false
+ 	race_player.stop()
++	race_player.stream = null
++	synced = null
++	menu_player.stop()
++	menu_gain = 0.0
+ 	race_owner = weakref(owner)
+ 	mode = "race"
+ 	blocked = false
+ 	menu_target = 0.0
+-	race_target = 1.0
++	race_target = 0.0
+ 	family = theme if theme in TrackTheme.IDS else "pine"
+ 	progress.reset(state)
+ 	gains = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+@@ -149,47 +153,23 @@
+ 	retreat_wait = 0.0
+ 	event_kind = ""
+ 	event_player.stop()
+-	synced = AudioStreamSynchronized.new()
+-	synced.stream_count = LAYERS.size()
+-	for i: int in range(LAYERS.size()):
+-		synced.set_sync_stream(i, _loop(family + "_" + LAYERS[i] + ".ogg"))
+-		synced.set_sync_stream_volume(i, 0.0 if i == 0 else -80.0)
+-	race_player.stream = synced
++	event_player.stream = null
+ 	race_player.stream_paused = app_suspended
+ 	race_gain = 0.0
+ 	race_player.volume_db = -80.0
+-	if output_enabled: race_player.play()
+ 
+ 
+ func is_race_owner(owner: Node) -> bool:
+ 	return race_owner != null and race_owner.get_ref() == owner
+ 
+ 
+-func present_race(owner: Node, state: VehicleState, track: NativeTrack, config: HandlingConfig, session: TrackSession, paused: bool, countdown: bool, finished: bool, context: Dictionary = {}) -> void:
++func present_race(owner: Node, _state: VehicleState, _track: NativeTrack, _config: HandlingConfig, _session: TrackSession, paused: bool, _countdown: bool, _finished: bool, _context: Dictionary = {}) -> void:
+ 	if not is_race_owner(owner): return
+-	if finished:
+-		show_menu()
+-		return
+ 	blocked = paused
+ 	race_player.stream_paused = paused or app_suspended
+ 	menu_player.stream_paused = paused or app_suspended or menu_gain <= 0.0
+ 	event_player.stream_paused = paused or app_suspended
+-	if paused or countdown: return
+-	if not pace_configured and track != null:
+-		var personal: Dictionary = context.get("personal", {})
+-		var recording: Dictionary = personal.get("race", personal.get("lap", {}))
+-		personal_reference.configure(track, recording, not personal.has("race"))
+-		rival_reference.configure(track, context.get("rival", {}))
+-		pace_configured = true
+-	if track != null and session != null:
+-		var distance: float = session.completed_laps * track.route_length + session.route_distance
+-		var elapsed: float = float(session.elapsed_ticks) / VehicleSimulation.TICK_RATE
+-		progress.pace_delta = NAN if personal_reference.lap and session.completed_laps == 0 else personal_reference.delta_seconds(session.route_distance if personal_reference.lap else distance, elapsed - session.lap_start_time if personal_reference.lap else elapsed)
+-		progress.rival_delta = rival_reference.delta_seconds(distance, elapsed)
+-	progress.observe(state, track, config, session)
+-	if progress.breath_pending:
+-		breath_queued = true
+-		progress.breath_pending = false
++	# Stay silent through countdown, driving, rewind and the finish coast.
+ 
+ 
+ func leave_race(owner: Node) -> void:
+@@ -255,6 +235,7 @@
+ 
+ func play_musical_event(kind: String) -> void:
+ 	if kind not in ["finish", "personal_best", "breath"]: return
++	if kind == "breath" and mode == "race": return
+ 	event_kind = kind
+ 	event_elapsed = 0.0
+ 	event_player.stream = load(BANK + kind + ".wav")
+@@ -264,6 +245,8 @@
+ 
+ 
+ func results_feedback(improvement_seconds: float, eligible: bool) -> void:
++	# The actual summary, rather than the in-world finish coast, restores menus.
++	if mode == "race": show_menu()
+ 	results_improvement = improvement_seconds if is_finite(improvement_seconds) else 0.0
+ 	play_musical_event("personal_best" if eligible and results_improvement > 0.0005 else "finish")
+ 
+diff --git a/game/tests/test_soundtrack.gd b/game/tests/test_soundtrack.gd
+--- a/game/tests/test_soundtrack.gd
++++ b/game/tests/test_soundtrack.gd
+@@ -176,12 +176,9 @@
+ 	game.production_mode = true
+ 	root.add_child(game)
+ 	game.set_physics_process(false)
+-	check(world.is_race_owner(game) and world.mode == "race", "actual race starts its score")
+-	check(world.synced.stream_count == 6, "one synchronized stream contains six band layers")
+-	check(world.race_player.playing if world.output_enabled else not world.race_player.playing, "playbacks run only with graphical audio output")
+-	for i: int in range(6):
+-		var stream: AudioStreamOggVorbis = world.synced.get_sync_stream(i)
+-		check(stream.loop and stream.loop_offset == 0 and absf(stream.get_length() - 48.0) < .0001, "sample-aligned runtime layer %d" % i)
++	check(world.is_race_owner(game) and world.mode == "race", "actual race owns its silent music context")
++	check(world.synced == null and world.race_player.stream == null, "race allocates no biome score decoders")
++	check(not world.race_player.playing and not world.menu_player.playing, "race has no score or menu fade leakage")
+ 	game._process(0.0)
+ 	check(world.progress.earned_seconds == 0, "countdown earns no progress")
+ 	game.paused = true
+@@ -197,7 +194,9 @@
+ 	check(world.progress.earned_seconds == 0 and world.gains[4] == 0, "actual retry resets only this score")
+ 	game._begin_finish()
+ 	game._process(0.0)
+-	check(world.mode == "menu" and world.menu_target == 1.0, "finish returns gently to menu score before result UI")
++	check(world.mode == "race" and world.menu_target == 0.0 and not world.menu_player.playing, "finish coast remains silent until actual result UI")
++	world.results_feedback(0.0,false)
++	check(world.mode == "menu" and world.menu_target == 1.0, "actual results restore menu music")
+ 	world.begin_race(game, "desert", game.sim.state)
+ 	check(world.family == "desert", "desert chooses its dry/tremolo band palette")
+ 	root.remove_child(game)
+diff --git a/game/tests/test_score_flow.gd b/game/tests/test_score_flow.gd
+--- a/game/tests/test_score_flow.gd
++++ b/game/tests/test_score_flow.gd
+@@ -106,7 +106,7 @@
+ 	world.begin_race(owner, "pine", state)
+ 	for biome: String in TrackTheme.IDS:
+ 		world.begin_race(owner, biome, state)
+-		check(world.family == biome and world.synced.stream_count == 6, "each biome uses the shared six-part band family: " + biome)
++		check(world.family == biome and world.synced == null and world.race_player.stream == null and not world.race_player.playing, "each biome has no background score: " + biome)
+ 	world.progress.confidence = 1.0
+ 	world.progress.earned_seconds = 56.0
+ 	world.progress.clean_sectors = 4
+@@ -116,11 +116,11 @@
+ 	world.advance_arrangement(0.01, world.BAR_SECONDS * 5.0 + 0.10)
+ 	check(world.breath_count == 0, "exceptional PB breath waits for a musical boundary")
+ 	world.advance_arrangement(0.01, world.BAR_SECONDS * 6.0)
+-	check(world.breath_count == 1 and world.event_kind == "breath", "boundary triggers one held-note breath")
++	check(world.breath_count == 1 and world.event_kind == "" and not world.event_player.playing, "diagnostic musical boundary cannot play a race breath cue")
+ 	world._process(0.4)
+ 	check(world.race_player.volume_db <= -79.0, "two-beat breath exposes car audio through a muted score")
+ 	world._process(0.9)
+-	check(world.breath_elapsed < 0 and world.race_player.volume_db > -5, "band returns smoothly after the selected breath")
++	check(world.breath_elapsed < 0 and world.race_player.volume_db <= -79.0 and not world.race_player.playing, "race score stays absent after the diagnostic breath")
+ 	world.results_feedback(0.08, true)
+ 	check(world.event_kind == "personal_best" and world.results_improvement == 0.08, "real 0.08s improvement routes the resolving PB sting")
+ 	world.results_feedback(0.08, false)
+diff --git a/game/ui/settings_page.gd b/game/ui/settings_page.gd
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -400,7 +400,7 @@
+ 
+ func _audio() -> void:
+ 	for item: Array in [
+-		["music_volume", "Music", "Menus and the evolving race soundtrack."],
++		["music_volume", "Music", "Menus and results."],
+ 		["vehicle_volume", "Vehicle", "Engines, tyres, road and collisions."],
+ 		["interface_volume", "Interface", "Menu selections and confirmations."],
+ 	]:
+@@ -427,7 +427,6 @@
+ 			value.text = "%d%%" % roundi(amount)
+ 			_changed())
+ 		column.add_child(slider)
+-	body.add_child(_label("Clean driving develops the race theme. Music stays continuous through corners and grows toward a fuller arrangement.", 16, true))
+ 
+ 
+ func _haptics() -> void:
+diff --git a/game/tests/capture_settings.gd b/game/tests/capture_settings.gd
+--- a/game/tests/capture_settings.gd
++++ b/game/tests/capture_settings.gd
+@@ -70,6 +70,8 @@
+ 			var choice: Button = page.find_child("Ghost_" + mode, true, false)
+ 			check(choice != null and choice.is_visible_in_tree() and choice.size.y >= 52, "reachable ghost choice " + mode)
+ 		await _capture("ghosts", dimensions)
++		await _press("SettingsCategory_audio")
++		await _capture("audio", dimensions)
+ 		await _press("SettingsCategory_haptics")
+ 		check(page.section == "haptics" and panel.get_global_rect().is_equal_approx(panel_rect), "haptics keeps panel geometry")
+ 		await _capture("haptics", dimensions)
+diff --git a/docs/ADAPTIVE_SOUNDTRACK.md b/docs/ADAPTIVE_SOUNDTRACK.md
+--- a/docs/ADAPTIVE_SOUNDTRACK.md
++++ b/docs/ADAPTIVE_SOUNDTRACK.md
+@@ -1,4 +1,9 @@
+ # Original adaptive soundtrack — 2026-10-07
++
++**2026-10-10 runtime override:** the owner removes background music from every
++driving biome. Race/practice scores are disabled; menu/results music remains.
++[Current implementation and verification](BIOME_MUSIC_OFF.md).
++The arrangements and approvals below are historical.
+ 
+ **Current correction:** the owner rejected this mix as too melancholic. The
+ installed soundtrack is now the upbeat revision 3, with silent hover/focus and
+diff --git a/docs/music/STATE.md b/docs/music/STATE.md
+--- a/docs/music/STATE.md
++++ b/docs/music/STATE.md
+@@ -1,8 +1,16 @@
+ # Beat My Track - Music State
+ 
+-_Last updated: 2026-10-08_
++_Last updated: 2026-10-10_
+ 
+-## Latest owner direction
++## Current runtime direction
++
++On2026-10-10 the owner requests removing background music from all biomes.
++All race/practice biome scores and race-only musical breaths are now disabled;
++menu/results music and interface sounds remain. No race score decoders load.
++The older composition/research notes below are historical, not approval to
++restore biome playback. Current checks and files: `../BIOME_MUSIC_OFF.md`.
++
++## Earlier composition direction
+ 
+ "This is like someone learning to play piano, so it is again a no. You need to look into music theory, inspect working patterns for game soundtracks especially what works on the background and in racing games."
+ 
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -1,4 +1,7 @@
+ # Storm wet-asphalt tire rolling, 2026-10-09
++
++All driving-biome background music is now disabled at the owner's request;
++vehicle/weather sound remains. [Music-removal verification](BIOME_MUSIC_OFF.md).
+ 
+ Current state: the owner rejected wet rolling and moved it to the wishlist.
+ Storm asphalt rolling is disabled; the owner-supplied rain now plays as a
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 MUS35/SND33/SND05/G01/R01/Q01/V06: owner removes background music from all5 driving biomes/practice. No race synchronized streams/decoders or menu fade leak; pause/retry/rewind/finish coast remain silent, race breath suppressed, actual results restore menu music/PB cue. Vehicle/weather/interface retained; preferences/rules/scoring unchanged. Soundtrack1156/flow29/native5-biome52/App99 checks pass; independent Music PCM0, Audio1280 capture inspected. Full Audio-inclusive settings284 has one retained camera touch-strength fixture failure; ineffective input experiment reverted, no runtime camera edit/weakening. No phone attachment/device listening/export-install/full Validate/backend/deploy. Files/commands/captures/task-only checkpoint/acceptance: docs/BIOME_MUSIC_OFF.md.
++
+ 2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
+ 
+ 2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1476,3 +1476,8 @@
+ ## Owner-supplied thunder and bass boost, 2026-10-10
+ 
+ 2026-10-10 SND32/SND30-SND31/SND24/SND05/G01/R01/Q01/V06: owner-supplied thunder MP3 replaces prior clip, original16.056s buildup/clap/tail retained,+6dB low shelf below180Hz yields measured4.089dB bass-to-mid increase after safe mastering. Source12b96eaa/derivative768b2f76/1416184bytes, original untouched/filename attribution and missing licence metadata explicit. Offline rebuild/import/focused40/native19/owner-bass review pass; strongest final50ms8.663dB above engine, peak0.701/paused0/mute-only music.117 focused shutdown references retained; rain0.28/thunder1.0 and47 vehicle/wet mixer/wishlist hashes exact. No phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (owner bass).
++
++
++## All driving-biome music removed, 2026-10-10
++
++2026-10-10 MUS35/SND33/SND05/G01/R01/Q01/V06: owner removes background music from all5 driving biomes/practice. No race synchronized streams/decoders or menu fade leak; pause/retry/rewind/finish coast remain silent, race breath suppressed, actual results restore menu music/PB cue. Vehicle/weather/interface retained; preferences/rules/scoring unchanged. Soundtrack1156/flow29/native5-biome52/App99 checks pass; independent Music PCM0, Audio1280 capture inspected. Full Audio-inclusive settings284 has one retained camera touch-strength fixture failure; ineffective input experiment reverted, no runtime camera edit/weakening. No phone attachment/device listening/export-install/full Validate/backend/deploy. Files/commands/captures/task-only checkpoint/acceptance: docs/BIOME_MUSIC_OFF.md.
+diff --git a/game/tests/test_biome_music_off.gd b/game/tests/test_biome_music_off.gd
+--- /dev/null
++++ b/game/tests/test_biome_music_off.gd
+@@ -0,0 +1,75 @@
++extends SceneTree
++## Every biome stays music-free during race/practice lifecycle; effects/menu survive.
++const OUT: String = "res://../docs/evidence/biome-music-off-2026-10-10"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var world: GameSoundtrack = GameSoundtrack.instance()
++	var graphical: bool = DisplayServer.get_name()!="headless"
++	var record := AudioEffectRecord.new()
++	record.format = AudioStreamWAV.FORMAT_16_BITS
++	var bus: int = AudioServer.get_bus_index("Music")
++	if graphical:
++		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++		AudioServer.add_bus_effect(bus,record)
++	world.apply_settings({})
++	for theme: String in TrackTheme.IDS:
++		world.show_menu()
++		world._process(1.0)
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++		game.initial_track.metadata.theme = theme
++		root.add_child(game)
++		game.set_physics_process(false)
++		game.set_process(false)
++		game.countdown_ticks = 0
++		game.sim.state.velocity = game.sim.state.forward()*20
++		check(world.mode=="race" and world.synced==null and world.race_player.stream==null,"no score resources: "+theme)
++		check(not world.menu_player.playing and not world.race_player.playing,"menu stops immediately at biome entry: "+theme)
++		world.play_musical_event("breath")
++		check(not world.event_player.playing,"no musical breath during driving: "+theme)
++		if graphical: await create_timer(.20).timeout
++		if graphical: record.set_recording_active(true)
++		for tick: int in range(30):
++			if graphical: await process_frame
++			game.paused = tick>=15 and tick<20
++			game.frame = DriveFrame.sample(0,.7,0)
++			world._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			if game.storm_weather!=null: game.storm_weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			game._process(.016)
++			world._process(.016)
++		check(not world.race_player.playing and world.race_target==0.0,"driving/pause/resume stay music-free: "+theme)
++		check(game.vehicle_audio.active and game.vehicle_audio.engine_load[0].stream!=null,"vehicle audio remains active: "+theme)
++		if theme=="storm": check(game.storm_weather.rain_gain>0 and game.storm_weather.thunder_audio.stream!=null,"rain and thunder remain installed")
++		if theme=="night_city": check(game.night_ambience.enabled,"night cicadas remain enabled")
++		if graphical:
++			record.set_recording_active(false)
++			var sample: AudioStreamWAV = record.get_recording()
++			check(sample.save_to_wav(OUT.path_join(theme+"-music.wav"))==OK,"native Music-bus capture: "+theme)
++			var pcm: PackedByteArray = sample.data
++			var peak: int = 0
++			for offset: int in range(0,pcm.size(),2): peak = maxi(peak,absi(pcm.decode_s16(offset)))
++			check(peak==0,"all race music PCM exactly silent: "+theme)
++		game.restart()
++		check(world.synced==null and world.race_player.stream==null and not world.menu_player.playing,"retry cannot reload music: "+theme)
++		game._begin_finish()
++		game.paused = false
++		game._process(.1)
++		check(world.mode=="race" and not world.menu_player.playing,"finish coast has no menu music: "+theme)
++		world.results_feedback(0.0,false)
++		check(world.mode=="menu" and world.menu_target==1.0,"actual summary restores menu music: "+theme)
++		game.free()
++		world.event_player.stop()
++		await create_timer(.15).timeout
++	if graphical: AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	world.menu_player.stop()
++	print("BIOME_MUSIC_OFF: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/test_biome_music_off.gd.uid b/game/tests/test_biome_music_off.gd.uid
+--- /dev/null
++++ b/game/tests/test_biome_music_off.gd.uid
+@@ -0,0 +1 @@
++uid://cerpvcok8kuvd
+diff --git a/docs/BIOME_MUSIC_OFF.md b/docs/BIOME_MUSIC_OFF.md
+--- /dev/null
++++ b/docs/BIOME_MUSIC_OFF.md
+@@ -0,0 +1,45 @@
++# Background music removed from driving biomes, 2026-10-10
++
++The owner requests removing background music from all biomes. MUS35/SND33,
++with SND05/G01/R01/Q01/V06, disable the shared race score in Pine, Desert,
++Night City, Winter and Storm, including untimed practice. Race entry stops
++menu playback immediately; no six-layer synchronized stream or biome decoder
++is allocated. Pause/resume/retry/rewind/finish coast cannot restore it. Race-only
++musical breath cues are suppressed. Actual summary entry restores menu/results
++music and PB/finish feedback; ordinary menus and interface sounds remain.
++Engine/tires/other surfaces, cicadas, rain and thunder stay independent.
++
++No music slider preferences, audio master files, physics, rules, scoring or
++server contracts change. Historical score assets/arrangement research remain
++available outside active biome playback. The Audio settings description now
++says “Menus and results”; obsolete driving-arrangement explanation is removed.
++
++Changed files: `game/soundtrack/audio_world.gd`,
++`game/ui/settings_page.gd`, `game/tests/test_soundtrack.gd`,
++`game/tests/test_score_flow.gd`, `game/tests/test_biome_music_off.gd` and UID,
++`game/tests/capture_settings.gd` (add Audio captures), this page,
++`docs/ADAPTIVE_SOUNDTRACK.md`, `docs/music/STATE.md`,
++`docs/WET_ROAD_AUDIO.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Actual engine commands use `powershell -NoProfile -ExecutionPolicy Bypass
++-File scripts/dev.ps1` and pinned4.7.2.stable.official.ed1daf0bf:
++
++| Command suffix | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_soundtrack.gd` | 1,156 checks, zero failures. Menu/settings/results lifecycle and exact960-tick input/state equivalence retained; race-decoder assertions follow the owner's changed contract. |
++| `TestScript -ScriptPath res://tests/test_score_flow.gd` | 29 checks, zero failures; all five biome contexts stay score-free. Offline progress diagnostics remain. |
++| `TestScript -ScriptPath res://tests/test_biome_music_off.gd -Graphical` | 52 checks, zero failures; five native Music-bus recordings have PCM peak exactly zero. Vehicle/weather ownership, immediate menu stop, pause/resume/retry and silent finish coast checked. |
++| `TestApp` | 99 checks, zero failures. |
++| `TestScript -ScriptPath res://tests/capture_settings.gd -Graphical` with an absolute `--capture-settings` evidence directory | Initial pre-Audio capture278/zero; full Audio-inclusive capture284 has one camera touch-strength assertion failure. Same failure persists after a direct-window input experiment; that unsuccessful input change is reverted. Camera runtime/assertion is unchanged, failure retained. Audio captures at960/1280/1600 widths succeed; final1280 screenshot inspected. |
++| Independent Python PCM/hash review | All five biome music recordings digitally silent. Weather/vehicle/wishlist/audio-source hashes unchanged by the music-removal slice; later requested thunder-tail work is tracked separately. |
++
++Evidence, source snapshots, test receipts and task-only source patch:
++`docs/evidence/biome-music-off-2026-10-10/`. Screenshot:
++[Audio settings](evidence/biome-music-off-2026-10-10/settings/settings-audio-1280x720.png).
++No failing camera invariant is removed or reported as passing. Music removal
++does not depend on that unrelated camera capture acceptance.
++
++No phone attachment check, physical-device listening/test, APK export/install,
++full Validate, physics merge, backend or deployment. Owner confirmation in
++ordinary driving/device listening remains. Source/PCM checks do not establish
++zero speaker/Bluetooth output-buffer latency.

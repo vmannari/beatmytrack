@@ -1,0 +1,509 @@
+--- a/game/ui/challenges_page.gd
++++ b/game/ui/challenges_page.gd
+@@ -28,6 +28,7 @@
+ 
+ func _ready() -> void:
+ 	name = "ChallengesPage"
++	theme = MenuStyle.theme()
+ 	_received_at = Time.get_ticks_msec()
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	add_theme_constant_override("separation",12)
+@@ -55,7 +56,7 @@
+ 		_action(header,"Back to Challenges",func() -> void: back_requested.emit())
+ 	else:
+ 		_action(header,"Enter code",func() -> void: code_requested.emit())
+-		_action(header,"Create challenge",func() -> void: create_requested.emit(),true)
++		_action(header,"Create challenge",func() -> void: create_requested.emit(),selected.is_empty() and signed_in)
+ 		var refresh := _action(header,"",func() -> void: refresh_requested.emit())
+ 		refresh.icon = MenuIcon.texture("restart")
+ 		refresh.tooltip_text = "Refresh challenges"
+@@ -71,10 +72,12 @@
+ 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	main.add_child(body)
+ 	if not result_view: _inbox(body)
+-	if not selected.is_empty(): _detail(body)
++	if not selected.is_empty():
++		if result_view: _detail(body)
++		else: _hub_detail(body)
+ 	elif signed_in:
+ 		var blank := _panel(body)
+-		blank.add_child(MenuStyle.label("Choose a challenge" if not items.is_empty() else "No received challenges" if folder == "received" else "No sent challenges",26))
++		blank.add_child(MenuStyle.label("Choose a challenge" if not items.is_empty() else "Loading challenges…" if busy else "No received challenges" if folder == "received" else "No sent challenges",26))
+ 		var scene := TextureRect.new()
+ 		scene.texture = TrackTile.scenery_texture("pine")
+ 		scene.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+@@ -91,7 +94,8 @@
+ 	column.name = "ChallengeInbox"
+ 	column.custom_minimum_size.x = 290
+ 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.size_flags_stretch_ratio = 0.72
++	column.size_flags_stretch_ratio = 0.62
++	column.add_theme_constant_override("separation",12)
+ 	parent.add_child(column)
+ 	var tabs := HBoxContainer.new()
+ 	column.add_child(tabs)
+@@ -111,13 +115,15 @@
+ 	gutter.add_theme_constant_override("margin_right",16)
+ 	scroll.add_child(gutter)
+ 	var list := VBoxContainer.new()
++	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	list.add_theme_constant_override("separation",10)
+ 	gutter.add_child(list)
+ 	for item: Dictionary in items:
+-		var target: String = "%.3f s" % (float(item.target_ms)/1000.0) if item.get("target_ms") != null else "Group challenge"
++		var target: Variant = _target_ms(item)
+ 		var tile := MenuStyle.button("",func() -> void: selected_requested.emit(str(item.code)))
+ 		tile.name = "ChallengeCard_"+str(item.code)
+-		tile.custom_minimum_size.y = 120 if item.state == "active" else 140
++		tile.custom_minimum_size.y = 132
++		tile.clip_contents = true
+ 		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		list.add_child(tile)
+ 		var fill := MarginContainer.new()
+@@ -126,32 +132,199 @@
+ 		fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		tile.add_child(fill)
+ 		var row := HBoxContainer.new()
++		row.add_theme_constant_override("separation",12)
+ 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		fill.add_child(row)
+ 		var image := TextureRect.new()
+ 		image.texture = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
+ 		image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 		image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-		image.custom_minimum_size.x = 70
++		image.custom_minimum_size.x = 76
+ 		image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		row.add_child(image)
+ 		var info := VBoxContainer.new()
++		info.add_theme_constant_override("separation",2)
+ 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		row.add_child(info)
+-		var lines: Array = [[item.entry.name,21],[str(item.creator),15],[target,21]]
+-		if item.state != "active": lines.append([str(item.state).capitalize(),14])
++		var competition: String = "Beat my time" if item.mode == "beat" else "Group challenge"
++		var performance: String = MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time"
++		var lines: Array = [[item.entry.name,24],[competition+" · "+str(item.creator),15],[performance,25],[_remaining_text(item),15]]
+ 		for data: Array in lines:
+ 			var label := MenuStyle.label(str(data[0]),int(data[1]),int(data[1]) < 20)
+ 			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 			label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 			info.add_child(label)
++			if int(data[1]) == 25: label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+ 		if str(item.code) == str(selected.get("code","")):
+-			var style := MenuStyle.box(Color("294352"),10)
++			var style := MenuStyle.box(Color("1b3443"),10)
+ 			style.border_color = MenuStyle.ACCENT
+-			style.set_border_width_all(1)
++			style.border_width_left = 3
++			style.border_width_top = 1
++			style.border_width_bottom = 1
++			style.border_width_right = 1
+ 			tile.add_theme_stylebox_override("normal",style)
+ 	if has_more: _action(list,"More",func() -> void: more_requested.emit())
++
++func _hub_detail(parent: Control) -> void:
++	# Race browsing has its own composition; post-race feedback keeps _detail.
++	var column := _panel(parent)
++	column.name = "ChallengeDetail"
++	var heading := MenuStyle.label(str(selected.entry.name),32)
++	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	column.add_child(heading)
++	var identity := HBoxContainer.new()
++	column.add_child(identity)
++	var competition: String = "Your challenge" if selected.mode == "beat" and selected.creator_id == selected.self_id else "Beat "+str(selected.creator)+"'s time" if selected.mode == "beat" else "Group challenge · "+str(selected.creator)
++	var creator := MenuStyle.label(competition,17,true)
++	creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	creator.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.add_child(creator)
++	_clock = MenuStyle.label("",16,true)
++	identity.add_child(_clock)
++	_update_clock()
++	var timer := Timer.new()
++	timer.wait_time = 1.0
++	timer.autostart = true
++	timer.timeout.connect(_update_clock)
++	add_child(timer)
++	var preview := HBoxContainer.new()
++	preview.name = "ChallengeTrackPreview"
++	preview.custom_minimum_size.y = 140
++	preview.add_theme_constant_override("separation",0)
++	column.add_child(preview)
++	var scenery := PanelContainer.new()
++	scenery.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	scenery.clip_contents = true
++	scenery.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),10))
++	preview.add_child(scenery)
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(selected.entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	art.modulate = Color(0.83,0.87,0.9)
++	scenery.add_child(art)
++	var route := LapRouteView.new()
++	route.name = "ChallengeRoute"
++	route.miniature = true
++	for point: Array in selected.entry.points: route.route.append(Vector2(point[0],point[1]))
++	scenery.add_child(route)
++	var performance := PanelContainer.new()
++	performance.custom_minimum_size.x = 242
++	performance.add_theme_stylebox_override("panel",MenuStyle.box(Color("122a38"),12))
++	preview.add_child(performance)
++	var time_box := VBoxContainer.new()
++	time_box.add_theme_constant_override("separation",2)
++	time_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	performance.add_child(time_box)
++	var target: Variant = _target_ms(selected)
++	time_box.add_child(MenuStyle.label("Time to beat" if selected.mode == "beat" else "Leading time" if target != null else "Group challenge",16,true))
++	var clock := MenuStyle.label(MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time",44 if target != null else 28)
++	clock.name = "ChallengeTargetTime"
++	clock.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	time_box.add_child(clock)
++	var own: Dictionary = _own_standing()
++	if own.get("ms") != null:
++		var best := MenuStyle.label("Your best  "+MenuStyle.time_text(float(own.ms)/1000.0),17)
++		best.name = "ChallengePersonalBest"
++		time_box.add_child(best)
++		if target != null:
++			var difference: int = int(own.ms)-int(target)
++			var shared_lead: bool = selected.mode == "group" and selected.standings.any(func(row: Dictionary) -> bool: return row.get("ms") != null and int(row.ms) == int(target) and str(row.id) != str(selected.self_id))
++			var gap := MenuStyle.label("Target beaten" if difference < 0 and selected.mode == "beat" else "Joint lead" if difference == 0 and shared_lead else "You lead" if difference == 0 and selected.mode == "group" else "Tied with target" if difference == 0 else "%+.3f s" % (float(difference)/1000.0),18,true)
++			gap.name = "ChallengePersonalGap"
++			if difference < 0 or (difference == 0 and selected.mode == "group"): gap.add_theme_color_override("font_color",MenuStyle.POSITIVE)
++			time_box.add_child(gap)
++	var facts := HBoxContainer.new()
++	column.add_child(facts)
++	var car := MenuStyle.label("5 laps · "+VehicleCatalog.title(str(selected.vehicle_id)),16,true)
++	car.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	facts.add_child(car)
++	if selected.get("attempt_limit") != null:
++		facts.add_child(MenuStyle.label("%d tries left" % int(selected.attempts_remaining),16,true))
++	var heading_gutter := MarginContainer.new()
++	heading_gutter.add_theme_constant_override("margin_left",6)
++	heading_gutter.add_theme_constant_override("margin_right",30)
++	column.add_child(heading_gutter)
++	var labels := HBoxContainer.new()
++	labels.name = "ChallengeStandingsHeader"
++	heading_gutter.add_child(labels)
++	_standing_values(labels,"#","Driver","Time","Gap (s)",true)
++	var scroll := ScrollContainer.new()
++	scroll.name = "ChallengeStandingsScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	column.add_child(scroll)
++	var gutter := MarginContainer.new()
++	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	gutter.add_theme_constant_override("margin_right",12)
++	scroll.add_child(gutter)
++	var table := VBoxContainer.new()
++	table.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	table.add_theme_constant_override("separation",4)
++	gutter.add_child(table)
++	for row: Dictionary in selected.standings:
++		var card := PanelContainer.new()
++		var player: bool = str(row.id) == str(selected.self_id)
++		card.name = "ChallengeDriver_"+str(row.id)
++		card.custom_minimum_size.y = 36
++		card.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.ACCENT if player else Color("172b38"),6))
++		table.add_child(card)
++		var values := HBoxContainer.new()
++		card.add_child(values)
++		var delta: String = "—"
++		if row.get("ms") != null and target != null: delta = "%+.3f" % (float(int(row.ms)-int(target))/1000.0)
++		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else "—",delta,false,player)
++	var actions := HBoxContainer.new()
++	actions.name = "ChallengeActions"
++	actions.add_theme_constant_override("separation",8)
++	column.add_child(actions)
++	var share := _action(actions,"Share",func() -> void: share_requested.emit())
++	share.icon = MenuIcon.texture("share")
++	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode == "group" else int(own.ticks) < int(selected.target_ticks))
++	if winning: _action(actions,"Rematch",func() -> void: rematch_requested.emit())
++	if str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
++		var cancel := _action(actions,"",func() -> void: cancel_requested.emit())
++		cancel.icon = MenuIcon.texture("close")
++		cancel.tooltip_text = "Cancel challenge"
++		cancel.custom_minimum_size.x = 52
++	var exhausted: bool = selected.get("attempts_remaining") != null and int(selected.attempts_remaining) <= 0
++	var creator_target: bool = selected.mode == "beat" and selected.creator_id == selected.self_id
++	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
++	var race := _action(actions,caption,func() -> void: race_requested.emit(),true)
++	race.name = "ChallengeRace"
++	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	race.disabled = busy or exhausted or selected.state != "active" or creator_target
++
++func _standing_values(parent: HBoxContainer, rank: String, driver: String, time: String, gap: String, header: bool = false, player: bool = false) -> void:
++	parent.add_theme_constant_override("separation",8)
++	for index: int in range(4):
++		var label := MenuStyle.label([rank,driver,time,gap][index],15 if header else 19,header)
++		label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		if player: label.add_theme_color_override("font_color",MenuStyle.INK)
++		if index == 1: label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		else:
++			label.custom_minimum_size.x = [24,0,96,68][index]
++			if index > 1: label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++		parent.add_child(label)
++
++func _own_standing() -> Dictionary:
++	for row: Dictionary in selected.get("standings",[]):
++		if str(row.id) == str(selected.get("self_id","")): return row
++	return {}
++
++func _target_ms(item: Dictionary) -> Variant:
++	if item.mode == "beat": return item.get("target_ms")
++	for row: Dictionary in item.get("standings",[]):
++		if row.get("ms") != null: return row.ms
++	return null
++
++func _remaining_text(item: Dictionary) -> String:
++	if item.state != "active": return "Ended" if item.state == "complete" else "Finalizing results" if item.state == "settling" else str(item.state).capitalize()
++	var remaining: int = maxi(0,int(item.ends_at)-int(item.server_now)-(Time.get_ticks_msec()-_received_at)/1000)
++	if remaining == 0: return "Ending"
++	if remaining < 60: return "<1m left"
++	return "%dd %02dh left" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%dh %02dm left" % [remaining/3600,(remaining%3600)/60]
+ 
+ func _detail(parent: Control) -> void:
+ 	var column := _panel(parent)
+@@ -265,6 +438,9 @@
+ 
+ func _update_clock() -> void:
+ 	if _clock == null: return
++	if not result_view:
++		_clock.text = _remaining_text(selected)
++		return
+ 	var remaining: int = maxi(0,int(selected.ends_at)-int(selected.server_now)-(Time.get_ticks_msec()-_received_at)/1000)
+ 	_clock.text = str(selected.state).capitalize() if selected.state != "active" else "%dd %02dh" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%02dh %02dm" % [remaining/3600,(remaining%3600)/60]
+ 
+--- /dev/null
++++ b/game/tests/test_challenge_tab.gd
+@@ -0,0 +1,154 @@
++extends SceneTree
++## Presentation and action gates for the Race tab; no external services/player data.
++var checks: int = 0
++var failures: int = 0
++var selection: String = ""
++var races: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(condition: bool, detail: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: "+detail)
++
++func fixture(group: bool = false) -> Dictionary:
++	var value: Dictionary = {"code":"AB12CD34EF56AB78","mode":"group" if group else "beat","state":"active","creator":"Mika","creator_id":"rival","self_id":"self","joined":true,"vehicle_id":"compact","target_ms":98250 if not group else null,"target_ticks":11790 if not group else null,"ends_at":604800,"server_now":432000,"entry":{"name":"Forest Run","theme":"pine","points":[[0,0],[100,0],[120,70],[40,90],[-10,30]]},"standings":[]}
++	for index: int in range(20 if group else 2):
++		value.standings.append({"id":"self" if index == 1 else "rival" if index == 0 else "driver_%d" % index,"name":"You" if index == 1 else "Mika" if index == 0 else "Driver %d" % index,"rank":index+1,"ms":98250+index*1000,"ticks":11790+index*120})
++	return value
++
++func page_for(value: Dictionary, signed_in: bool = true, busy: bool = false) -> ChallengesPage:
++	var page := ChallengesPage.new()
++	page.signed_in = signed_in
++	page.busy = busy
++	page.selected = value.duplicate(true)
++	if not value.is_empty(): page.items.assign([value.duplicate(true)])
++	page.selected_requested.connect(func(code: String) -> void: selection = code)
++	page.race_requested.connect(func() -> void: races += 1)
++	root.add_child(page)
++	MenuStyle.fill(page)
++	return page
++
++func settle() -> void:
++	await process_frame
++	await process_frame
++
++func remove_page(page: ChallengesPage) -> void:
++	page.queue_free()
++	await process_frame
++
++func bounds(page: ChallengesPage, name: String) -> void:
++	var node: Control = page.find_child(name,true,false)
++	var rectangle: Rect2 = node.get_global_rect()
++	var viewport: Rect2 = root.get_visible_rect()
++	check(rectangle.position.x >= -1 and rectangle.position.y >= -1 and rectangle.end.x <= viewport.end.x+1 and rectangle.end.y <= viewport.end.y+1,name+" fits "+str(viewport.size))
++
++func run() -> void:
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		var value: Dictionary = fixture()
++		var page: ChallengesPage = page_for(value)
++		await settle()
++		check((page.find_child("ChallengeTargetTime",true,false) as Label).text == "01:38.250","duel shows the fixed target in minutes")
++		check((page.find_child("ChallengePersonalBest",true,false) as Label).text.ends_with("01:39.250"),"own challenge best is distinct from target")
++		check((page.find_child("ChallengePersonalGap",true,false) as Label).text == "+1.000 s","player gap compares with the fixed target")
++		var own: PanelContainer = page.find_child("ChallengeDriver_self",true,false)
++		check(own.get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player standing retains yellow highlight")
++		var row: HBoxContainer = own.get_child(0)
++		check((row.get_child(2) as Label).text == "01:39.250" and (row.get_child(3) as Label).text == "+1.000","standings give comparable times and signed gaps")
++		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions","ChallengeStandingsHeader"]: bounds(page,name)
++		var race: Button = page.find_child("ChallengeRace",true,false)
++		check(not race.disabled and race.text == "Race","joined recipient can race")
++		var card: Button = page.find_child("ChallengeCard_"+str(value.code),true,false)
++		if DisplayServer.get_name() != "headless":
++			selection = ""
++			var click := InputEventMouseButton.new()
++			click.button_index = MOUSE_BUTTON_LEFT
++			click.position = card.get_global_rect().get_center()
++			click.global_position = click.position
++			click.pressed = true
++			root.push_input(click,true)
++			click = click.duplicate()
++			click.pressed = false
++			root.push_input(click,true)
++			await process_frame
++			check(selection == value.code,"whole scenic card accepts pointer selection")
++		await remove_page(page)
++		value.standings[0].ms = 90000
++		page = page_for(value)
++		await settle()
++		check((page.find_child("ChallengeTargetTime",true,false) as Label).text == "01:38.250","later creator best never moves the pinned duel target")
++		await remove_page(page)
++		value = fixture(true)
++		page = page_for(value)
++		await settle()
++		var scroll: ScrollContainer = page.find_child("ChallengeStandingsScroll",true,false)
++		check(scroll.get_v_scroll_bar().max_value > scroll.size.y,"all twenty drivers remain scrollable")
++		scroll.scroll_vertical = int(scroll.get_v_scroll_bar().max_value)
++		await settle()
++		check(page.find_child("ChallengeDriver_driver_19",true,false).get_global_rect().intersects(scroll.get_global_rect()),"final group driver is reachable")
++		await remove_page(page)
++	var value: Dictionary = fixture(true)
++	for row: Dictionary in value.standings:
++		row.ms = null
++		row.ticks = null
++		row.rank = null
++	var page: ChallengesPage = page_for(value)
++	await settle()
++	check((page.find_child("ChallengeTargetTime",true,false) as Label).text == "Set the first time","unseeded group has an actionable empty state")
++	check(page.find_child("ChallengePersonalBest",true,false) == null,"missing player time is never invented")
++	await remove_page(page)
++	value = fixture()
++	value.standings[1].ms = value.target_ms
++	value.standings[1].ticks = value.target_ticks
++	page = page_for(value)
++	await settle()
++	check((page.find_child("ChallengePersonalGap",true,false) as Label).text == "Tied with target","equal duel time is never presented as a win")
++	await remove_page(page)
++	value.standings[1].ms = 97000
++	value.standings[1].ticks = 11640
++	page = page_for(value)
++	await settle()
++	check((page.find_child("ChallengePersonalGap",true,false) as Label).text == "Target beaten","faster verified challenge best shows success")
++	await remove_page(page)
++	value = fixture(true)
++	value.standings[1].ms = value.standings[0].ms
++	value.standings[1].ticks = value.standings[0].ticks
++	value.standings[1].rank = 1
++	page = page_for(value)
++	await settle()
++	check((page.find_child("ChallengePersonalGap",true,false) as Label).text == "Joint lead","shared group first place is described accurately")
++	await remove_page(page)
++	value = fixture()
++	value.entry.name = "A very long community track name that must remain within the challenge panel"
++	value.creator = "A very long driver name that must not push the race action outside the panel"
++	page = page_for(value)
++	await settle()
++	for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
++	await remove_page(page)
++	for state: String in ["complete","cancelled","settling","exhausted","creator","busy","guest","unjoined"]:
++		value = fixture()
++		if state in ["complete","cancelled","settling"]: value.state = state
++		if state == "exhausted":
++			value.attempt_limit = 3
++			value.attempts_remaining = 0
++		if state == "creator": value.creator_id = "self"
++		if state in ["guest","unjoined"]: value.joined = false
++		page = page_for(value,state != "guest",state == "busy")
++		await settle()
++		var race: Button = page.find_child("ChallengeRace",true,false)
++		check(race.disabled == (state not in ["guest","unjoined"]),state+" preserves the existing start gate")
++		if state == "guest": check(race.text == "Try track","guest retains invitation try")
++		if state == "unjoined": check(race.text == "Join & race","authenticated recipient has a clear join action")
++		if state == "exhausted": check(race.text == "No tries left","exhausted start explains its state")
++		if state == "creator": check(race.text == "Waiting for opponent","creator cannot race their fixed duel target")
++		await remove_page(page)
++	page = page_for({},true,true)
++	await settle()
++	var labels: Array[Node] = page.find_children("*","Label",true,false)
++	check(labels.any(func(node: Node) -> bool: return node.text == "Loading challenges…"),"initial refresh does not claim an empty inbox")
++	await remove_page(page)
++	print("CHALLENGE TAB: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_challenge_tab.gd.uid
+@@ -0,0 +1 @@
++uid://bvm74k0vmuj8d
+--- /dev/null
++++ b/docs/CHALLENGE_TAB.md
+@@ -0,0 +1,52 @@
++# Race Challenges tab — 2026-10-10
++
++The owner authorized the benchmark-led presentation pass, narrowed to the Challenges tab within Race. The inbox/detail composition now emphasizes the actual competition, target and player performance. Creation and post-race feedback retain their existing views and behavior.
++
++## Requirements and delivered behavior
++
++| ID | Behavior |
++| --- | --- |
++| CH01 / V03–V05 / R01 | Received/Sent cards show original scenery, track, competition/creator, formatted target or group lead, and expiry. The selected card has a restrained yellow edge. The shared menu header and Race mode rail remain. |
++| CH03 / CH04 | Duel target stays pinned even when the creator's standing improves. Group leading time comes from an actual timed standing. No-time groups show Set the first time; missing player performances are omitted. |
++| CH05 / R01 | Browsing has its own detail presentation, separate from the existing post-race feedback. A readable navy time panel accompanies the scenic actual route; the player's challenge best, signed gap and accurate success/tie/shared-lead state are shown. |
++| CH01 / CH04 / V03–V05 | Four aligned standings columns show rank, driver, minute/millisecond time and signed gap in seconds. Yellow player highlight, all twenty group drivers and bounded scrolling remain. Final compact capture shows four complete rows. |
++| CH06 / CH15 / R05 | Share, explicit Rematch, creator cancellation and existing start signals remain. Ended, exhausted and creator-duel race gates have explanatory captions. Guest Try track, authenticated Join & race, busy gates and five pinned laps remain. |
++| V03 / Q01 | Race is the main yellow action when detail is selected; Create challenge becomes primary for a signed-in empty selection. Loading does not falsely claim an empty inbox. No source/test labels, invented opponents, rewards or social features were added. |
++
++Benchmark reasoning is documented in the preceding owner review: [EA's Autolog manual](https://eaassets-a.akamaihd.net/eahelp/manuals/nfs-hp-remastered-switch-en.pdf) emphasizes friends' performances; [Forza's Rivals description](https://forza.net/events/featured-rivals-logitech-mclaren-qualifier-1) centers car/track/time comparison; [the historical DRIVECLUB challenge loop](https://blog.playstation.com/2014/06/02/how-driveclub-aims-to-make-rage-quitting-extinct/) connects finishes to friend challenges. The local composition is a design inference, not a claim to reproduce those games' current interfaces.
++
++## Changed files
++
++- `game/ui/challenges_page.gd`: Race-tab inbox/detail presentation and honest states; existing result-detail presenter retained.
++- `game/tests/test_challenge_tab.gd` and `.uid`: isolated native presentation/action checks.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, and task evidence/checkpoint tooling.
++
++`game/ui/challenge_create.gd`, `game/core/app.gd`, challenge adapter/backend/contracts and the existing challenge integration test were not edited by this task. The unchanged integration test and its task-start copy have SHA256 `2a3546b6f846bef12e717d6f088734cd1cbe4b3e3d40ee1d455defa610664380`. Creation source SHA256 at final review is `9d2d77f7ff456a2942bfd3c547577052183f2a0f234c45c9c7193709d76cff3a`.
++
++## Actual commands and outcomes
++
++Commands use the pinned Godot `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`. PowerShell runs with process-local ExecutionPolicy Bypass; APPDATA points inside `build/challenge-tab-2026-10-10/` to isolate saves. Graphical integration captures set `BMT_CHALLENGE_CAPTURE_DIR` to this task's screenshots directory. Local-access execution is required because the sandbox denies Godot's system certificate-store read; no external service/player mutation is performed.
++
++| Actual command | Outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_challenges.gd -Graphical -CommandTimeoutSeconds 150` | Final 140 checks, zero failures; eighteen captures at 1280×720, 960×540 and 1600×720. Includes actual App/menu integration, creation, locked completed result, pending verification, normal-result feedback, all group drivers and exhausted starts. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_challenge_tab.gd -Graphical -CommandTimeoutSeconds 120` | Final 63 checks, zero failures. Fixed duel target despite faster creator standing, own best/signed gap, real pointer selection, group bottom-row reachability, no-time groups, equal duel time, shared group lead, long names, busy/ended/cancelled/settling/exhausted/creator/guest/unjoined states covered. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp -CommandTimeoutSeconds 120` | 99 checks, zero failures. Ran before the last local spacing/tie-copy refinements; final graphical integration recompiled and exercised the App afterward. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import -CommandTimeoutSeconds 150` | Attempt failed while copying the already-loaded `~bmt_windows_audio_v3.dll`; not reported as a successful full import. |
++
++An intermediate integration rerun failed because the generated class cache did not yet contain the concurrently added `GrassBirds`. Its existing `class_name`/Node/path entry was added to the ignored generated cache; the subsequent final App integration/captures passed. No unrelated ambience source, Windows native module, open editor or failing assertion was changed. An initial patch application failed due to hunk order and was reapplied successfully. Earlier native runs also passed140 and58/63 checks; they are not additional unique coverage.
++
++Actual logs are retained in [integration.log](evidence/challenge-tab-2026-10-10/integration.log), [tab.log](evidence/challenge-tab-2026-10-10/tab.log) and [app.log](evidence/challenge-tab-2026-10-10/app.log). Initial cache/import failure logs are retained separately.
++
++## Visual evidence and acceptance
++
++- [Received duel, desktop](evidence/challenge-tab-2026-10-10/screenshots/received-1280x720.png)
++- [Group, compact](evidence/challenge-tab-2026-10-10/screenshots/group-960x540.png)
++- [Full group bottom, compact](evidence/challenge-tab-2026-10-10/screenshots/group-bottom-960x540.png)
++- [Creation remains its existing view](evidence/challenge-tab-2026-10-10/screenshots/menu-create-1280x720.png)
++
++Final desktop/compact screenshots were inspected. Displayed identities/times are isolated fixtures, never inserted into a live board. Existing cleared fictional car/scenic art and fonts are reused; no new generated/reference shipping asset is introduced.
++
++Remaining acceptance: owner visual/wording review, actual phone/tablet touch and safe-area checks, long-lived background refresh/scroll behavior and signed-in real invitation/join/share flow. No phone attachment check or device test was performed. No APK export/install, new HTTP race, backend migration/deployment, purchase, physics change/merge or full Validate occurred. Existing challenge verification, durable/idempotent uploads and public/artificial isolation are unchanged.
++
++Task-only review checkpoint: `refs/codex/challenge-tab-2026-10-10`; inspect with `git diff refs/codex/challenge-tab-2026-10-10^ refs/codex/challenge-tab-2026-10-10`. The checkpoint preserves the live branch/index and concurrent work. Receipt: `docs/evidence/challenge-tab-2026-10-10/checkpoint.json`.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 CH01/CH03-CH06/CH15/V03-V05/R01/Q01: owner narrows benchmark-led pass to Race Challenges tab. Scenic inbox cards expose actual competition/time/expiry; separate readable target/own-best/gap panel, four aligned signed-gap standings columns and four compact rows. Ties/sharedlead/no-time/ended/exhausted/creator/guest states honest; original creation/result presenters and service contracts retained. Final graphical integration140/tab63/App99 pass; final desktop/compact captures inspected. Concurrent GrassBirds generated-cache omission corrected locally; Import remained blocked by loaded Windows DLL, no unrelated source/editor changes. No phone check/device/APK/fullValidate/backend/deploy/physics/live writes. Files/commands/evidence/task-only checkpoint/owner and device acceptance: docs/CHALLENGE_TAB.md.
++
+ 2026-10-10 CG06-CG07/CG01-CG05/G01/V06/R01/Q01: owner mirrors exactly50% taller/50% thinner and marked upper-front corner rounded. Native housing0.206x0.165x0.064m, matching glass/roll presentation bound; closed35mm nose fillets.14mirror assets changed/32prior nonmirror hashes exact/6new nose,52resources687896bytes. Studio77/suspension59/parser468 and native3closeups/AABB ratios pass; source parity retained. Final97436tri/47meshes, RTX3090 studioCPU0.640/GPU0.183ms median (not mobile/whole-app claim). TabletOPD2403 attached/no phone/device/export-install/fullValidate/backend/deploy. Commands/files/provenance/scoped binary+text checkpoint/owner acceptance: docs/COMPACT_MIRROR_AND_CORNER.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner rejects car halo and requires low tyre-born dust that slowly grows/rises. Presentation18 removes silhouette shader/cache/Game call; real world-height envelope0.025-0.065m at0.2s, ~0.58m top1s/~2.08m2s; small birth widths build to dense old wake, lifetime9/counts/colour retained. Explicit particle projection/view-depth, local age, dust shadowOff and diagnostic profile-parameter restoration address native streak/comparison findings. FinalGPU64/five cars/real emitter117x1-to117x98 pixels, desert88/bridge121/roof241/quick72-21-48 pass; prior immediate250ms-large-wake assertion superseded by owner physical emergence, dense alpha/late wake retained. Native Pad2 final18/life9/mesh4/GL-opengl3/MSAA2x/1.5MP/paused0: moving12s102.49m median20.024/p9526.121 (~50FPS); refined small-to-aged plume/body clear/no mask, final visual-only underpass roof/wall clear. APK267759435/SHA2568DDA150AA1C12DDA1C6EB9F16DC27750E82A55D26B1A5C454D5CC458E3A59286 installedSuccess; markers absent/normalPID22837/playerdata retained. Early17 candidates, stale diagnostic presets, conditional-POS above-deck failure and typed fixture corrected with retained assertions; exact mobile cause not isolated. No fullValidate/physics/backend/production/timed-complete/thermal60FPS acceptance; owner natural rise/slow driving/other-view review remains. Files/commands/screenshots/scoped checkpoint: docs/DUST_HEIGHT_2026_10_10.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 CH01/CH03-CH06/CH15/V03-V05/R01/Q01: owner narrows benchmark-led pass to Race Challenges tab. Scenic inbox cards expose actual competition/time/expiry; separate readable target/own-best/gap panel, four aligned signed-gap standings columns and four compact rows. Ties/sharedlead/no-time/ended/exhausted/creator/guest states honest; original creation/result presenters and service contracts retained. Final graphical integration140/tab63/App99 pass; final desktop/compact captures inspected. Concurrent GrassBirds generated-cache omission corrected locally; Import remained blocked by loaded Windows DLL, no unrelated source/editor changes. No phone check/device/APK/fullValidate/backend/deploy/physics/live writes. Files/commands/evidence/task-only checkpoint/owner and device acceptance: docs/CHALLENGE_TAB.md.
++
+ 2026-10-10 CG06-CG07/CG01-CG05/G01/V06/R01/Q01: owner mirrors exactly50% taller/50% thinner and marked upper-front corner rounded. Native housing0.206x0.165x0.064m, matching glass/roll presentation bound; closed35mm nose fillets.14mirror assets changed/32prior nonmirror hashes exact/6new nose,52resources687896bytes. Studio77/suspension59/parser468 and native3closeups/AABB ratios pass; source parity retained. Final97436tri/47meshes, RTX3090 studioCPU0.640/GPU0.183ms median (not mobile/whole-app claim). TabletOPD2403 attached/no phone/device/export-install/fullValidate/backend/deploy. Commands/files/provenance/scoped binary+text checkpoint/owner acceptance: docs/COMPACT_MIRROR_AND_CORNER.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner rejects car halo and requires low tyre-born dust that slowly grows/rises. Presentation18 removes silhouette shader/cache/Game call; real world-height envelope0.025-0.065m at0.2s, ~0.58m top1s/~2.08m2s; small birth widths build to dense old wake, lifetime9/counts/colour retained. Explicit particle projection/view-depth, local age, dust shadowOff and diagnostic profile-parameter restoration address native streak/comparison findings. FinalGPU64/five cars/real emitter117x1-to117x98 pixels, desert88/bridge121/roof241/quick72-21-48 pass; prior immediate250ms-large-wake assertion superseded by owner physical emergence, dense alpha/late wake retained. Native Pad2 final18/life9/mesh4/GL-opengl3/MSAA2x/1.5MP/paused0: moving12s102.49m median20.024/p9526.121 (~50FPS); refined small-to-aged plume/body clear/no mask, final visual-only underpass roof/wall clear. APK267759435/SHA2568DDA150AA1C12DDA1C6EB9F16DC27750E82A55D26B1A5C454D5CC458E3A59286 installedSuccess; markers absent/normalPID22837/playerdata retained. Early17 candidates, stale diagnostic presets, conditional-POS above-deck failure and typed fixture corrected with retained assertions; exact mobile cause not isolated. No fullValidate/physics/backend/production/timed-complete/thermal60FPS acceptance; owner natural rise/slow driving/other-view review remains. Files/commands/screenshots/scoped checkpoint: docs/DUST_HEIGHT_2026_10_10.md.

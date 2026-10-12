@@ -1,0 +1,486 @@
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -460,7 +460,7 @@
+     return histogram_from_entries(board_id, session, bins, metric, entries)
+ 
+ 
+-def histogram_from_entries(board_id, session, bins, metric, entries):
++def histogram_from_entries(board_id, session, bins, metric, entries, *, candidate=None, frame_from=None, frame_to=None):
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+@@ -476,14 +476,20 @@
+             "bins": [],
+             "metric": metric,
+         }
+-    width = max(1, math.ceil((maximum - minimum + 1) / bins))
+-    bucket = cast(func.floor((entries.c.time_ticks - minimum) / width), Integer)
++    # Reserve the completed result's domain before its PB upload verifies. It
++    # changes only the bin geometry, never the verified population/counts.
++    start = min(minimum, candidate if candidate is not None else minimum,
++                frame_from if frame_from is not None else minimum)
++    end = max(maximum + 1, candidate + 1 if candidate is not None else maximum + 1,
++              frame_to if frame_to is not None else maximum + 1)
++    width = max(1, math.ceil((end - start) / bins))
++    bucket = cast(func.floor((entries.c.time_ticks - start) / width), Integer)
+     grouped = {int(bucket): int(frequency) for bucket, frequency in
+         session.execute(
+             select(bucket.label("bucket"), func.sum(entries.c.count)).select_from(entries).group_by(bucket)
+         ).all()
+     }
+-    occupied_bins = (maximum - minimum) // width + 1
++    occupied_bins = (end - start - 1) // width + 1
+     return {
+         "board_id": board_id,
+         "metric": metric,
+@@ -492,8 +498,8 @@
+         "maximum_ticks": maximum,
+         "bins": [
+             {
+-                "from_ticks": minimum + i * width,
+-                "to_ticks_exclusive": minimum + (i + 1) * width,
++                "from_ticks": start + i * width,
++                "to_ticks_exclusive": start + (i + 1) * width,
+                 "count": grouped.get(i, 0),
+             }
+             for i in range(occupied_bins)
+@@ -555,10 +561,17 @@
+ 
+ @router.get("/track-versions/{version_id}/results-comparison")
+ def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
+-                       bins: int = Query(8, ge=1, le=100),
++                       bins: int = Query(16, ge=1, le=100),
+                        race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
+-                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES)):
++                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       race_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       race_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
++                       lap_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2)):
+     """One deduplicated field of all available drivers, never a UI source choice."""
++    for start, end in ((race_from_ticks, race_to_ticks), (lap_from_ticks, lap_to_ticks)):
++        if (start is None) != (end is None) or start is not None and end <= start:
++            raise HTTPException(422, "Histogram frame requires ordered start/end bounds")
+     version = published_version(session, version_id)
+     pinned = board_manifest(version, vehicle_id)
+     public_id = digest({"version_id": version.id, **pinned})
+@@ -582,8 +595,10 @@
+     race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
+     lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
+     board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
+-    race = histogram_from_entries(board_id, session, bins, "race", race_entries)
+-    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries)
++    race = histogram_from_entries(board_id, session, bins, "race", race_entries,
++                                  candidate=race_ticks, frame_from=race_from_ticks, frame_to=race_to_ticks)
++    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries,
++                                 candidate=lap_ticks, frame_from=lap_from_ticks, frame_to=lap_to_ticks)
+     race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
+     lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
+     race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -349,6 +349,33 @@
+     assert domain.client.get(path, params={**params,"race_ticks":0}, headers=headers(domain)).status_code == 422
+ 
+ 
++def test_results_histogram_grid_survives_pending_pb_verification(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    path = f"/v1/track-versions/{version['version_id']}/results-comparison"
++    params = {"vehicle_id": "compact", "bins": 16, "race_ticks": 50, "lap_ticks": 10}
++    before = domain.client.get(path, params=params, headers=headers(domain)).json()
++    for metric, prefix in (("race", "race"), ("best_lap", "lap")):
++        bins = before[metric]["bins"]
++        params[prefix + "_from_ticks"] = bins[0]["from_ticks"]
++        params[prefix + "_to_ticks"] = bins[-1]["to_ticks_exclusive"]
++        assert len(bins) > 8
++        assert sum(b["count"] for b in bins) == 2  # Candidate never adds a sample.
++    race(domain, version, frames=10)
++    after = domain.client.get(path, params=params, headers=headers(domain)).json()
++    for metric in ("race", "best_lap"):
++        old_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in before[metric]["bins"]]
++        new_edges = [(b["from_ticks"], b["to_ticks_exclusive"]) for b in after[metric]["bins"]]
++        assert old_edges == new_edges
++        assert after[metric]["population"] == sum(b["count"] for b in after[metric]["bins"]) == 2
++        assert before[metric]["bins"] != after[metric]["bins"]  # Actual verified counts still update.
++    invalid = {**params, "race_to_ticks": params["race_from_ticks"]}
++    assert domain.client.get(path, params=invalid, headers=headers(domain)).status_code == 422
++    invalid = {**params}
++    invalid.pop("race_to_ticks")
++    assert domain.client.get(path, params=invalid, headers=headers(domain)).status_code == 422
++
++
+ def test_results_comparison_has_exact_top_percentile_with_ties(domain):
+     from bmt_backend.runs import comparison_position
+     from bmt_backend.track_models import BoardTimeCount
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -26,7 +26,7 @@
+ var last_comparison: Dictionary = {}
+ var refresh_again: bool = false
+ var comparison_refresh: Timer
+-const COMPARISON_BINS: int = 8
++const COMPARISON_BINS: int = 16
+ var vehicle_id: String = "compact"
+ var facts: Dictionary
+ var recommendations: Array[Dictionary] = []
+@@ -366,6 +366,8 @@
+ 	if results.total > 0: path += "&race_ticks=%d" % roundi(results.total*VehicleSimulation.TICK_RATE)
+ 	var flying: float = float(facts.get("flying",0))
+ 	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
++	path += _frame_query(last_comparison.get("race",{}),"race")
++	path += _frame_query(last_comparison.get("best_lap",{}),"lap")
+ 	var response: Dictionary = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+ 	if not is_inside_tree(): return
+ 	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
+@@ -373,6 +375,11 @@
+ 	if refresh_again:
+ 		refresh_again = false
+ 		_queue_comparison_refresh()
++
++static func _frame_query(histogram: Dictionary, metric: String) -> String:
++	var bins: Array = histogram.get("bins",[])
++	if bins.is_empty(): return ""
++	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,int(bins[0].from_ticks),metric,int(bins[-1].to_ticks_exclusive)]
+ 
+ func _comparison_unavailable(message: String) -> void:
+ 	# A transient error keeps the last complete, correctly scoped comparison.
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -36,6 +36,7 @@
+ var _working_entry: Dictionary = {}
+ var _selection_serial: int = 0
+ var _working_serial: int = 0
++var _cloud_detail_pending: Dictionary = {}
+ var rng := RandomNumberGenerator.new()
+ var cloud: Node
+ var cloud_status: Label
+@@ -97,7 +98,7 @@
+ 	MenuStyle.fill(hero)
+ 	var records_slot := Control.new()
+ 	records_slot.name = "RecordsSlot"
+-	records_slot.custom_minimum_size.y = 160
++	records_slot.custom_minimum_size.y = 180
+ 	records_slot.clip_contents = true
+ 	main.add_child(records_slot)
+ 	var selection := PanelContainer.new()
+@@ -477,7 +478,10 @@
+ 
+ func _select(entry: Dictionary) -> void:
+ 	var cached: NativeTrack = catalog.cached_track(entry)
+-	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null: return
++	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null:
++		if not page_preview and cloud != null and cached.metadata.has("cloud_version"):
++			_load_cloud_detail(cached)
++		return
+ 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
+ 	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
+ 	var previous_index: int = -1
+@@ -604,22 +608,36 @@
+ 	var serial: int = _selection_serial
+ 	var vehicle: String = VehicleCatalog.selected
+ 	var key: String = records.key_for(track,HandlingSelection.config())
++	var request_key: String = "%d:%s:%d" % [track.get_instance_id(),vehicle,serial]
++	if _cloud_detail_pending.has(request_key): return
++	_cloud_detail_pending[request_key] = true
+ 	cloud.client.cancel_public_reads(get_instance_id())
+ 	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
+-	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
++	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++		_cloud_detail_pending.erase(request_key)
++		return
+ 	var standings: Array = []
+ 	if response.ok:
+ 		for item: Dictionary in response.data.items:
+ 			standings.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"country_code":str(item.get("country_code","")),"race_ms":float(item.time_ticks)*1000.0/120.0})
+ 	var snapshot: Dictionary = discovery.records_by_rules_key.get(key,{}).duplicate(true)
+-	if snapshot.get("comparison_scope","") != "all":
++	if snapshot.get("comparison_scope","") != "all" or int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
+ 		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
+ 	snapshot.friends = standings
+ 	snapshot.board_error = "" if response.ok else str(response.error)
+ 	if cloud.client.signed_in():
+-		var comparison: Dictionary = await cloud.client.request_api("/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS,HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
++		var path: String = "/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS
++		var local: Dictionary = records.records.get(key,{})
++		if int(local.get("race_ms",0)) > 0: path += "&race_ticks=%d" % roundi(float(local.race_ms)*VehicleSimulation.TICK_RATE/1000.0)
++		if int(local.get("flying_ms",0)) > 0: path += "&lap_ticks=%d" % roundi(float(local.flying_ms)*VehicleSimulation.TICK_RATE/1000.0)
++		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
++		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
++		var comparison: Dictionary = await cloud.client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
++		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++			_cloud_detail_pending.erase(request_key)
++			return
+ 		if comparison.ok: _apply_cloud_comparison(snapshot,comparison.data,track)
++	_cloud_detail_pending.erase(request_key)
+ 	discovery.records_by_rules_key[key] = snapshot
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 
+@@ -654,8 +672,14 @@
+ 			snapshot.race_top_percent = int(histogram.comparison.top_percent)
+ 			snapshot.population = int(histogram.comparison.population)
+ 	snapshot.comparison_scope = "all"
++	snapshot.comparison_bins = RaceComplete.COMPARISON_BINS
+ 	snapshot.erase("test_population")
+ 	return true
++
++static func _cached_frame_query(distribution: Dictionary, metric: String) -> String:
++	var edges: Array = distribution.get("edges_ms",[])
++	if edges.size() < 2: return ""
++	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),metric,roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)]
+ 
+ func _open_scores() -> void:
+ 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
+@@ -737,6 +761,10 @@
+ 	var key: String = records.key_for(selected_track,HandlingSelection.config())
+ 	var pb: Dictionary = records.records.get(key,{})
+ 	var snapshot: Dictionary = discovery.record_snapshot(key)
++	# An old-resolution cache must not flash before the fresh grid arrives.
++	if int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
++		snapshot.erase("race_distribution")
++		snapshot.erase("lap_distribution")
+ 	var available: bool = _selected_is_available()
+ 	var current: Array = [selected_track,key,available,pb,snapshot,str(selected_track.metadata.get("cloud_version",""))]
+ 	if current == _detail_state:
+@@ -787,13 +815,13 @@
+ 	distribution.size_flags_stretch_ratio = 1.4
+ 	distribution.add_theme_constant_override("separation",2)
+ 	row.add_child(distribution)
+-	_heading(distribution,"WHERE YOU STAND","bars")
++	_heading(distribution,"WHERE YOU STAND","podium")
+ 	var distribution_body: VBoxContainer = _section_body(distribution)
+ 	var charts := HBoxContainer.new()
+ 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	charts.add_theme_constant_override("separation",8)
+ 	distribution_body.add_child(charts)
+-	for metric: String in ["race"]:
++	for metric: String in ["race","lap"]:
+ 		var card := PanelContainer.new()
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		card.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+@@ -801,14 +829,15 @@
+ 		var column := VBoxContainer.new()
+ 		column.add_theme_constant_override("separation",4)
+ 		card.add_child(column)
++		column.add_child(MenuStyle.label("Race" if metric == "race" else "Lap",12,true))
+ 		var histogram := TrackDistribution.new()
+ 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
+ 		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+ 		if histogram.snapshot.get("bins",[]).is_empty():
+ 			histogram.hide()
+-			_friendly_hint(column,"Share this track and set a time to see how you compare." if not selected_track.metadata.has("cloud_version") else "Set a time to see how you compare.")
++			column.add_child(MenuStyle.label("No times yet",12,true))
+ 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+-		histogram.custom_minimum_size = Vector2(164,96)
++		histogram.custom_minimum_size = Vector2(112,96)
+ 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		column.add_child(histogram)
+ 	row.add_child(VSeparator.new())
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -442,7 +442,7 @@
+ 	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
+ 	check(page.global_rank.text == "POSITION 2" and page.race_context.text.is_empty(), "position uses the comparison field without diagnostic labels")
+ 	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text == "POSITION 2", "best-lap chart loads every driver's PB rather than this race's flying laps")
+-	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=8")), "results requests wider race-time bins")
++	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=16")), "results requests finer sixteen-bin comparisons")
+ 	check(page.race_chart.snapshot.markers.size() == 2 and page.race_chart.snapshot.markers[0].value_ms == 55000, "server comparison retains this race and the local personal-best markers")
+ 	check(page.race_chart.snapshot.markers[1].value_ms == 1000, "verified personal best from another device updates the best marker")
+ 	var geometry: Dictionary = TrackDistribution.comparison_geometry(page.race_chart.snapshot,400)
+@@ -450,6 +450,7 @@
+ 	client.own = null
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.bins == [25,45,30] and page.global_rank.text == "POSITION 2", "pending upload compares the current result with the same field")
++	check(client.paths[-1].contains("race_from_ticks=100") and client.paths[-1].contains("race_to_ticks=160") and client.paths[-1].contains("lap_from_ticks=1800") and client.paths[-1].contains("lap_to_ticks=2163"),"results pins both displayed bin domains on refresh")
+ 	client.tests_available = true
+ 	page.comparison_scope = "all"
+ 	await page._refresh_rank()
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -51,16 +51,21 @@
+ 	browser.cloud = cloud
+ 	browser.selected_track = track
+ 	browser.state = {"sort":"name"}
++	var old_key: String = browser.records.key_for(track,HandlingSelection.config())
++	browser.discovery.records_by_rules_key[old_key] = {"comparison_scope":"all","comparison_bins":8,"race_distribution":{"bins":[101]}}
+ 	root.content_scale_size = Vector2i(1280,720)
+ 	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+ 	root.size = Vector2i(1280,720)
+ 	root.add_child(browser)
+ 	MenuStyle.fill(browser)
+ 	await settle()
++	var initial_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
++	check(initial_chart != null and initial_chart.snapshot.get("bins",[]).is_empty(),"old coarse cache never flashes before the finer response")
+ 	await browser._load_cloud_detail(track)
+ 	var key: String = browser.records.key_for(track,HandlingSelection.config())
+ 	var snapshot: Dictionary = browser.discovery.record_snapshot(key)
+ 	check(snapshot.comparison_scope == "all","discovery uses the unified population")
++	check(snapshot.comparison_bins == 16,"discovery cache identifies the finer histogram contract")
+ 	var count: int = 0
+ 	for amount: int in snapshot.race_distribution.bins: count += amount
+ 	check(count == 101,"one discovery chart contains all 100 retained drivers and the player's fixture")
+@@ -76,25 +81,81 @@
+ 	client.hold = true
+ 	browser.call_deferred("_load_cloud_detail",track)
+ 	await settle()
++	var pending_requests: int = client.paths.size()
++	browser.call_deferred("_load_cloud_detail",track)
++	await settle()
++	check(client.paths.size() == pending_requests,"duplicate pending histogram reads are coalesced")
+ 	check(browser.discovery.record_snapshot(key) == before,"pending discovery read preserves the complete unified chart")
+ 	client.hold = false
+ 	await settle()
+ 	check(browser.discovery.record_snapshot(key) == before,"identical discovery data stays stable")
++	check(client.paths[-1].contains("bins=16") and client.paths[-1].contains("race_from_ticks="),"discovery preserves the displayed grid during refresh")
+ 	check(client.paths.all(func(path: String) -> bool: return not path.contains("/histogram") and not path.contains("test_population")),"discovery never queries split histogram sources")
+ 	var chart: Control = browser.find_child("RaceDistribution",true,false)
+ 	check(chart != null and chart.size.y >= 90,"removed captions leave usable chart height")
++	var lap_chart: Control = browser.find_child("LapDistribution",true,false)
++	check(lap_chart != null and lap_chart.visible,"discovery displays the best-lap histogram alongside the race histogram")
+ 	if DisplayServer.get_name() != "headless":
+ 		capture = true
+ 		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 			root.size = dimensions
+ 			await settle()
+ 			await screenshot("discovery-%dx%d" % [dimensions.x,dimensions.y])
++	# A driver without either a local or verified PB still sees the complete field.
++	client.packet = client.packet.duplicate(true)
++	for metric: String in ["race","best_lap"]:
++		client.packet[metric].own_best_ticks = null
++		client.packet[metric].comparison = null
++	browser.records.records.clear()
++	browser.discovery.records_by_rules_key.clear()
++	client.paths.clear()
++	browser.catalog.indexed_revision = browser.library.revision
++	browser.catalog.remember_track(browser.catalog.entries[0],track)
++	browser._select(browser.catalog.entries[0])
++	await settle()
++	check(client.paths.any(func(path: String) -> bool: return path.contains("/results-comparison")),"reopening the cached selected track hydrates its histograms without a player record")
++	check_no_time_charts(browser,track)
++	check(client.paths.any(func(path: String) -> bool: return path.contains("/results-comparison") and not path.contains("&race_ticks=") and not path.contains("&lap_ticks=")),"a track with no personal time requests both distributions without a candidate")
++	if DisplayServer.get_name() != "headless":
++		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++			root.size = dimensions
++			await settle()
++			check_chart_layout(browser)
++			await screenshot("discovery-no-time-%dx%d" % [dimensions.x,dimensions.y])
++	for index: int in range(2):
++		var document: Dictionary = TrackDocument.create_default()
++		document.id = "unraced_discovery_%d" % index
++		document.name = "Unraced track %d" % index
++		var unraced: NativeTrack = TrackCompiler.compile(document)
++		unraced.metadata.cloud_version = "unraced-fixture-%d" % index
++		browser.catalog.entries.append({"id":unraced.identity,"version_id":unraced.metadata.cloud_version,"source":"cloud","name":document.name,"creator":"Beat my track","theme":"pine"})
++		browser._finish_selection({"track":unraced,"draft":{}})
++		await settle()
++		check_no_time_charts(browser,unraced)
+ 	browser.free()
+ 	cloud.free()
+ 	client.free()
+ 	print("UNIFIED_HISTOGRAMS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures > 0 else 0)
+ 
++func check_no_time_charts(browser: TrackBrowser, track: NativeTrack) -> void:
++	var snapshot: Dictionary = browser.discovery.record_snapshot(browser.records.key_for(track,HandlingSelection.config()))
++	check(not snapshot.has("race_ms") and not snapshot.has("lap_ms"),"unraced track does not invent a player time")
++	for metric: String in ["race","lap"]:
++		var chart: TrackDistribution = browser.find_child("RaceDistribution" if metric == "race" else "LapDistribution",true,false)
++		check(chart != null and chart.visible and not chart.snapshot.get("bins",[]).is_empty(),metric+" histogram is visible without a player record")
++		check(chart != null and chart.snapshot.get("markers",[]).is_empty(),metric+" histogram does not invent a YOU marker")
++		check(snapshot[metric+"_distribution"].bins == chart.snapshot.bins,metric+" chart preserves the complete server distribution")
++	check(not ui_text(browser).contains("Set a time to see how you compare."),"missing personal time never gates available comparisons")
++
++func check_chart_layout(browser: TrackBrowser) -> void:
++	var race: Control = browser.find_child("RaceDistribution",true,false)
++	var lap: Control = browser.find_child("LapDistribution",true,false)
++	check(race.get_global_rect().end.x <= lap.get_global_rect().position.x,"race and lap charts sit side by side without overlap")
++	check(is_equal_approx(race.global_position.y,lap.global_position.y),"both histogram baselines align")
++	var panel: Control = browser.find_child("RecordsSlot",true,false)
++	check(panel.get_global_rect().encloses(race.get_global_rect()) and panel.get_global_rect().encloses(lap.get_global_rect()),"both complete charts fit inside the records panel")
++
+ func ui_text(node: Node) -> String:
+ 	var value: String = node.text if node is Label or node is Button else ""
+ 	for child: Node in node.get_children(): value += "\n"+ui_text(child)
+--- a/docs/schemas/results-comparison-v1.schema.json
++++ b/docs/schemas/results-comparison-v1.schema.json
+@@ -11,5 +11,5 @@
+     "best_lap": {"$ref": "time-histogram-v1.schema.json"}
+   },
+   "additionalProperties": false,
+-  "description": "One database snapshot for both charts, over all available comparable real and artificial drivers. Compatible public/development board entries are deduplicated by driver, choosing each driver's best race and flying lap. Artificial records remain development-gated and isolated from public competitive ranks. Exact placement replaces the player's retained entry with the display-only candidate, never writing records. No opponents means null comparison. Top ten display position; remaining positions show an upward-rounded top-percent threshold."
++  "description": "One database snapshot for both charts, over all available comparable real and artificial drivers. Compatible public/development board entries are deduplicated by driver, choosing each driver's best race and flying lap. Artificial records remain development-gated and isolated from public competitive ranks. Exact placement replaces the player's retained entry with the display-only candidate, never writing records. Default resolution is 16 bins. Display-only candidates may reserve the bin domain before verification without adding samples; minimum/maximum remain actual verified extrema. Optional paired race_from_ticks/race_to_ticks and lap_from_ticks/lap_to_ticks preserve an existing displayed domain on refresh. New genuine extrema outside that domain expand it so no driver is omitted. No opponents means null comparison. Top ten display position; remaining positions show an upward-rounded top-percent threshold."
+ }
+--- /dev/null
++++ b/docs/HISTOGRAM_GRID_2026_10_09.md
+@@ -0,0 +1,54 @@
++# Stable, finer histograms — 2026-10-09
++
++Requirements: RR06/R01/R03, TD06/TD08, B05/B07, V03/V05 and Q01. The owner reports changing bins shortly after the histogram appears and insufficient resolution. The correction applies to normal race-complete results and the Race track preview.
++
++Results and discovery now request **16 bins**, up from eight. The development backend is updated and the Android client is installed/launched on the connected OnePlus Pad 2. Live Underpass returns 16 race bins and 16 best-lap bins over 101 distinct drivers, including the retained 100 artificial PBs. All 27 eligible tracks pass live counts/metrics and repeated fixed-domain checks.
++
++## Cause and correction
++
++The server previously recalculated its bin start/width from current verified extrema on every request. A pending result becoming a new PB could change the minimum and retire the previous maximum, immediately rearranging both charts. Discovery also displayed previously cached coarse bins before fetching new data.
++
++The server reserves the completed display-only candidate's time range on the initial request, without counting it as a verified sample. Both metrics accept paired `race_from_ticks`/`race_to_ticks` and `lap_from_ticks`/`lap_to_ticks` parameters. Results sends the first displayed boundaries on subsequent requests; discovery preserves its cached compatible boundaries and sends known local PB candidates. This holds the bin edges while verification updates actual counts, PBs and exact placement. Actual verified minimum/maximum fields remain unchanged by display candidates. The response remains one atomic, deduplicated real/artificial field, with public competition/rating/eligibility isolation intact.
++
++Discovery caches identify the requested resolution. Old eight-bin/untagged distributions are not drawn before the finer response arrives. Normal result times/PB markers remain available during loading. No source selectors, diagnostic counts, test classifications or new UI captions were added.
++
++New genuine extrema **outside** the reserved range can expand the domain so every driver remains represented. This is a deliberate completeness limit, not a promise to freeze all future population changes. The domain is remembered for the current results view or compatible track/vehicle preview cache; it is not a permanent league/track timing bound. The 16-bin choice is a reviewable local presentation default, not an owner-approved balance constant. Normal results first, actual five laps and best-only verified scoring remain intact.
++
++## Changed files
++
++- `game/ui/race_complete.gd`: 16-bin requests and preserved race/lap frame parameters.
++- `game/ui/track_browser.gd`: compatible cache tagging, no old coarse first frame, local PB candidates and preserved frame queries.
++- `backend/bmt_backend/runs.py`: display-only candidate domain, bounded paired frame parameters, default 16 bins; all actual counts/ranking queries unchanged.
++- `backend/tests/test_domains.py`: real fixture PB verification that changes both extrema, with identical before/after edges, updated counts and invalid-frame rejection.
++- `game/tests/test_race_results.gd`, `test_unified_histograms.gd`: finer request/pinned-domain assertions and old-cache first-frame regression.
++- Response-schema description, this report and development/phase status. No canonical simulation, track, car, audio, dust or art asset change.
++
++## Actual verification
++
++| Command | Outcome |
++| --- | --- |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py -q -k '(histogram or results_comparison) and not postgres' --tb=short --show-capture=no` | **7 passed, 66 deselected**, SQLite. Same tests against the exact packaged `runs.py` in an isolated package copy: **7 passed**. Other supporting modules in that copy use current workspace sources; actual image import/smoke is separately verified. |
++| Ruff on `runs.py` and `test_domains.py`; scoped whitespace/patch checks | Pass. |
++| Pinned `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical` | **50 checks, zero failures**; three landscape sizes and marker fixtures. |
++| Pinned `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical` | **50 checks, zero failures**; includes hidden coarse cache and fixed-domain refresh. |
++| `TestScript ...test_results_histograms.gd`, optional `BMT_LIVE_RESULTS_PACKET=.../live-underpass-after.json` | **44 checks, zero failures** against the actual deployed 16-bin packet. |
++| `scripts/dev.ps1 ExportAndroid -QuickValidation` | Import/APP_READY, driving **72**, catalog **21**, menus **48** pass; debug export completes. Full `Validate` not run. |
++| `scripts/dev.ps1 Doctor`, `InstallAndroid`, `LaunchAndroid` | OnePlus Pad 2 **f0ba474a** attached/authorized; install **Success**, launch **COLD/Status ok**. Tablet was confirmed idle in Race before install. |
++
++Graphical checks used isolated `APPDATA` directories and pinned Godot **4.7.2 ed1daf0bf** through `scripts/dev.ps1`; Windows certificate access was permitted. The first sandbox-only Doctor failed to create the default ADB directory; the permitted device check passed. A combined packaged-test shell returned exit 1 only from a subsequent unmatched function-name search; its actual pytest result was seven passes. No failing assertion was weakened.
++
++Inspected [compact results](evidence/histogram-grid-2026-10-09/comparison-960x540.png) and [compact discovery](evidence/histogram-grid-2026-10-09/discovery-960x540.png) show the finer charts and original markers. Desktop/wide variants are in the same evidence directory. Captures use retained canonical Silmukka driver records and explicit player presentation fixtures, never new submitted races. [Fixture provenance](evidence/histogram-grid-2026-10-09/verified-silmukka-histograms.json).
++
++## Authorized development rollout
++
++The preceding explicit backend-update authorization remains in force. A one-module exact-function overlay derives from deployed image `a00d8aede0a2e73e8f3d9ca2377e134b1dcdd0bc756e820173e4a13750c4ad18`. All **112 packaged canonical-game files** are byte-identical. Fresh successful Cloud SQL backup **1791571338120** preceded upload. Development API, worker and associated migrate/smoke/catalog job images now use immutable digest **da0ab3da07ceb28bd6a2ae63294ef6faeff99dad3e09d0219e34347c4c114c63**. No migration/reseed was required or run. [Proof](evidence/histogram-grid-2026-10-09/packaged-game-proof.json), [deployment receipt](evidence/histogram-grid-2026-10-09/deployment.json), [exact image patch](evidence/histogram-grid-2026-10-09/backend-image.patch).
++
++Actual private helper commands: `prepare.py`; local cached-parent Docker build with `--pull=false --network=none`; `deploy.py backup`, `publish`, `deploy`, `smoke`; `verify_live.py`; `audit.py`, all under `.tools/histogram-grid-20261009`. API/worker **Ready**. The actual smoke log confirms schema **0020_challenges**, **12,757 canonical ticks**, results API present, two temporary diagnostic storage objects and **zero player writes**. [Readiness/smoke](evidence/histogram-grid-2026-10-09/final-readiness.json).
++
++Live reads check all 27 tracks with 16-bin requests and repeated pinned-frame requests, preserving exact edges, all counts and metric/board scope. Underpass has **101 race and 101 lap contributors**, 16 bins each; its private board remains rejected by the public histogram route (404). [Live Underpass](evidence/histogram-grid-2026-10-09/live-underpass-after.json), [catalog checks](evidence/histogram-grid-2026-10-09/live-catalog-checks.json). Existing artificial diagnostic sessions only; no new profiles, races, player-record changes or production action.
++
++## Tablet and remaining acceptance
++
++Installed APK **244,646,086 bytes**, SHA-256 **259161eb5bbbd7f763a992e39a9f9f1aa50e06512412f9230b14690f09fb9734**, retained at `build/histogram-grid-2026-10-09/circuit01-debug.apk`. Records/sign-in data are preserved. [Install/build receipt](evidence/histogram-grid-2026-10-09/android-update.json).
++
++The post-install chart captures were black. Read-only power/window checks confirmed **Asleep** and **secure keyguard showing**; waking the display did not bypass the lock. These captures are not claimed as successful device chart evidence. No race was started and no device result/verification flow was tested. Remaining acceptance: owner unlock and visual review of results/preview refresh on the tablet; other devices, PostgreSQL and full regression were not tested. [Task-only source/documentation checkpoint](evidence/histogram-grid-2026-10-09/scoped-change.patch) preserves unrelated concurrent work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 RR06/R01/R03/TD06/TD08/B05/B07/V03/V05/Q01: histogram correction doubles resolution8-to16 and preserves displayed bin domains through PB verification/refresh; prospective display-only candidate reserves initial geometry without samples, old coarse discovery caches never flash. Real counts/placement/all-driver/public isolation retained; genuine outside extrema may expand. SQLite7/exactpackaged7/results50/discovery50/livepacket44 pass; all27 live16-bin/pinned-frame checks and logged12757-tick/schema0020/native storage smoke pass. Exact-parent one-module development imageda0ab3da follows successful backup1791571338120; API-workerReady/all112 canonical files identical/no migration-reseed. Pinned export72/21/48, APK244646086/SHA256259161eb5bbbd7f763a992e39a9f9f1aa50e06512412f9230b14690f09fb9734 installedSuccess/launchedCOLD on idle authorizedtablet f0ba474a; postinstall asleep/securekeyguard prevents chart visual acceptance, no race started. No PG/fullValidate/production/player-record mutations; no additional approval requested under existing backend authorization. Commands/files/captures/receipts/task-only checkpoint/remaining owner-device review: docs/HISTOGRAM_GRID_2026_10_09.md.
++
+ 2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: Free Race displays race/lap histograms side by side without requiring a personal time; missing times add no player marker. Cached-selected-track hydration skip reproduced/fixed, duplicate pending reads coalesced, 180px records panel keeps complete axes at three window sizes. Final graphical90/App99 checks pass; six native captures retained and two inspected. Existing unified endpoint unchanged; no new backend deployment, generated races or player-record writes. Initial certificate/fixture/layout/ID failures corrected; blocked owned test child stopped. No phone attachment check/device test/Android export-install/full Validate/production action. Files, actual commands, task-only checkpoint and remaining visual/device acceptance: docs/FREE_RACE_HISTOGRAMS.md.
+ 
+ 2026-10-09 SND21-SND22/SND04-SND05/G01/R01/Q01/V06: owner-requested stronger wet tires and quiet recorded storm rain implemented. Wet road gain3x/native+9.5299dB, same speed/contact/pitch/silence contracts; all47 vehicle WAVs exact. New CC0 Joseph SARDIN rain1289 derivative19s/1675844bytes/8e6eef9c, Vehicle gain0.13/fades/pause-background/finish-reset ownership. Native rain16.66-22.07dB below wet/no dropout wraps/paused zero; focused38/vehicle1446/nativecapture30/App99/review checks pass, storm94 retains two pre-existing visual spray failures. Restricted source socket/first sharp-drop master/unpaired gain/audio-thread volume race/focus-interrupted fixtures corrected and retained; final foreground paired reference clean. No phone attachment/device listening/Android export-install/full Validate/physics/backend/deploy. Actual files/commands/recording licence/review/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (follow-up).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 RR06/R01/R03/TD06/TD08/B05/B07/V03/V05/Q01: histogram correction doubles resolution8-to16 and preserves displayed bin domains through PB verification/refresh; prospective display-only candidate reserves initial geometry without samples, old coarse discovery caches never flash. Real counts/placement/all-driver/public isolation retained; genuine outside extrema may expand. SQLite7/exactpackaged7/results50/discovery50/livepacket44 pass; all27 live16-bin/pinned-frame checks and logged12757-tick/schema0020/native storage smoke pass. Exact-parent one-module development imageda0ab3da follows successful backup1791571338120; API-workerReady/all112 canonical files identical/no migration-reseed. Pinned export72/21/48, APK244646086/SHA256259161eb5bbbd7f763a992e39a9f9f1aa50e06512412f9230b14690f09fb9734 installedSuccess/launchedCOLD on idle authorizedtablet f0ba474a; postinstall asleep/securekeyguard prevents chart visual acceptance, no race started. No PG/fullValidate/production/player-record mutations; no additional approval requested under existing backend authorization. Commands/files/captures/receipts/task-only checkpoint/remaining owner-device review: docs/HISTOGRAM_GRID_2026_10_09.md.
++
+ 2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: Free Race displays race/lap histograms side by side without requiring a personal time; missing times add no player marker. Cached-selected-track hydration skip reproduced/fixed, duplicate pending reads coalesced, 180px records panel keeps complete axes at three window sizes. Final graphical90/App99 checks pass; six native captures retained and two inspected. Existing unified endpoint unchanged; no new backend deployment, generated races or player-record writes. Initial certificate/fixture/layout/ID failures corrected; blocked owned test child stopped. No phone attachment check/device test/Android export-install/full Validate/production action. Files, actual commands, task-only checkpoint and remaining visual/device acceptance: docs/FREE_RACE_HISTOGRAMS.md.
+ 
+ 2026-10-09 VF05-VF09/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved trajectory-only acceptance replaces game/session/controls/physics replay and fallback with one small Python gate/continuity/timing/speed pass. Static build-pinned geometry cached at validation; compact four-field paths, creator capture, rewind branches/receipts and original optional ghosts retained. Windows500 calls median1.684/p953.131/max3.679ms; prepared adapter1.737/p953.173; LinuxoneCPU200 median1.188/p951.829/max7.233ms, zero engine calls. Kernel9/diagnostic80/nativeHTTP2/practice1/scoring51/PG113(8skip)/driver1/generated1/challengeHTTP2 and native61/99/54/17 pass. Historical rules409 and prior storm-render assertions retained. Focused72/21/48 export; APK241655826/SHA25613C6AF0FC9B77ADD78D7713AE5DFA2CD74002416EF566FBF057B84E5BDAC0BAD installed/ColdLaunchok on reconnected f0ba474a; no physical complete-race acceptance. Task-only local Linux image3437a5e, no push/deploy; previous remote auto-review rejection still requires explicit owner approval. Source/schema/commands/evidence/checkpoint/limits: docs/TRAJECTORY_VERIFICATION.md.

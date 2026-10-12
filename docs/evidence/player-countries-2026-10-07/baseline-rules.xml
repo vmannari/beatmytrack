@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.747" timestamp="2026-10-07T22:36:48.075080+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_domains" name="test_checkpoint_rules_upgrade_keeps_track_and_historical_board[sqlite]" time="0.509"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002306EB43DC0&gt;, client=&lt;starlette.testclient.TestClient obj...2994', 'Bob': '31a3db10-09b2-4a20-9a26-b987c9ef8c98', 'Carol': 'b2fec082-4a36-41f4-b01e-8c5f2d6b02a4'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002306EB2B0A0&gt;
+
+    def test_checkpoint_rules_upgrade_keeps_track_and_historical_board(domain, monkeypatch):
+        from bmt_backend import runs
+    
+        previous, current = runs.CHECKPOINT_RULES_TRANSITION
+        base = domain.app.state.verifier.manifest()
+        domain.app.state.verifier.manifest = lambda: {**base, "rules_key": previous}
+        # Establish the historical state using the previous ticket policy.
+        with monkeypatch.context() as old_policy:
+            old_policy.setattr(runs, "current_manifest", lambda value: value)
+            version, old_board_id = public_course(domain)
+        with domain.factory() as session:
+            original = dict(session.get(TrackVersion, version["version_id"]).manifest)
+        domain.app.state.verifier.manifest = lambda: {**base, "rules_key": current}
+&gt;       issued = ticket(domain, version, "Alice")
+
+backend\tests\test_domains.py:502: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002306EB43DC0&gt;, client=&lt;starlette.testclient.TestClient obj...2994', 'Bob': '31a3db10-09b2-4a20-9a26-b987c9ef8c98', 'Carol': 'b2fec082-4a36-41f4-b01e-8c5f2d6b02a4'}, postgres=False)
+version = {'theme': 'pine', 'authoring_id': None, 'points': [], 'track_id': '01fc2c09-9830-4f7c-949d-80ddf83c1580', ...}
+player = 'Alice'
+
+    def ticket(domain, version, player="Creator"):
+        response = domain.client.post(
+            "/v1/run-tickets",
+            json={"version_id": version["version_id"], "vehicle_id": "compact"},
+            headers=headers(domain, player),
+        )
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_domains.py:146: AssertionError</failure></testcase></testsuite></testsuites>

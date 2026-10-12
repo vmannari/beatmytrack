@@ -1,0 +1,338 @@
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -3,6 +3,9 @@
+ ## Presentation only: no access to simulation state, inputs or race clocks.
+ const DROP_COUNT: int = 6
+ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
++const FLASH_PEAK_MAX: float = 0.90
++const FLASH_LIGHT_ENERGY: float = 20.0
++const FLASH_OVERLAY_ALPHA: float = 0.55
+ const MIN_INTERVAL: float = 9.0
+ const MAX_INTERVAL: float = 16.0
+ const RAIN_LEVEL: float = 0.28
+@@ -112,7 +115,7 @@
+ 		strikes += 1
+ 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
+ 		until_thunder = rng.randf_range(1.2,2.8)
+-	if light != null: light.light_energy = base_light_energy+flash_strength()*13.0
++	if light != null: light.light_energy = base_light_energy+flash_strength()*FLASH_LIGHT_ENERGY
+ 	_update_lens()
+ 	queue_redraw()
+ 
+@@ -141,14 +144,14 @@
+ 	return 0.0
+ 
+ func _build_flash_profile() -> void:
+-	# Sample once per strike. Broad, shallow swells share one thunder event
++	# Sample once per strike. Strong, broad swells share one thunder event
+ 	# and the paused presentation clock, without rapid bright/dark flicker.
+ 	flash_profile = PackedVector2Array([Vector2.ZERO])
+ 	var cursor: float = rng.randf_range(0.16,0.24)
+ 	var pulses: int = rng.randi_range(2,3)
+-	var peak: float = rng.randf_range(0.24,0.32)
++	var peak: float = rng.randf_range(0.72,FLASH_PEAK_MAX)
+ 	for pulse: int in range(pulses):
+-		if pulse > 0: peak = clampf(peak*rng.randf_range(0.88,1.10),0.18,0.32)
++		if pulse > 0: peak = clampf(peak*rng.randf_range(0.88,1.10),0.60,FLASH_PEAK_MAX)
+ 		flash_profile.append(Vector2(cursor,peak))
+ 		cursor += rng.randf_range(0.18,0.28)
+ 		flash_profile.append(Vector2(cursor,peak*rng.randf_range(0.65,0.82)))
+@@ -166,7 +169,7 @@
+ 		draw_line(Vector2(x,y),Vector2(x-length*0.35,y+length),Color(0.72,0.83,0.90,0.27),1.0,true)
+ 	_draw_lens_trails()
+ 	var flash: float = flash_strength()
+-	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*0.40))
++	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*FLASH_OVERLAY_ALPHA))
+ 
+ # Analytic presentation paths keep stops, growth and trails independent of frame rate.
+ func _lens_hash(value: float) -> float:
+--- a/scripts/build_storm_thunder.py
++++ b/scripts/build_storm_thunder.py
+@@ -41,7 +41,14 @@
+     attack=round(.015*RATE);release=min(round(1.20*RATE),len(values)//3)
+     values[:attack]*=np.linspace(0,1,attack)
+     values[-release:]*=.5+.5*np.cos(np.linspace(0,np.pi,release))
+-    values*=min(.22/max(np.sqrt(np.mean(values**2)),1e-8),.84/max(np.max(np.abs(values)),1e-8))
++    # Give the rolling body more presence after the main clap; keep its short
++    # cosine tail and bounded peak rather than extending the sound.
++    time=np.arange(len(values),dtype=np.float64)/RATE
++    rise=np.clip((time-.65)/.45,0.0,1.0)
++    values*=1.0+rise*rise*(3.0-2.0*rise)
++    body_knee=max(np.sqrt(np.mean(values**2))*2.5,1e-8)
++    values=np.tanh(values/body_knee)*body_knee
++    values*=min(.30/max(np.sqrt(np.mean(values**2)),1e-8),.84/max(np.max(np.abs(values)),1e-8))
+     pcm=np.rint(values*32767).astype('<i2')
+     target=ROOT/'game/assets/audio/storm_thunder.wav'
+     with wave.open(str(target),'wb') as handle:
+@@ -52,7 +59,7 @@
+         author='freesound_community (filename attribution)',license='Owner-supplied; original licence metadata not provided',
+         source_sha256=digest,sha256=hashlib.sha256(target.read_bytes()).hexdigest(),source_start_seconds=start/rate,decoded_sha256=meta['sha256'],source_seconds=meta['source_seconds'],bass_shelf_db=6.0,bass_shelf_hz=180,
+         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
+-        edits='main-clap onset6s excerpt; mono44.1kHz; +6dB low shelf below180Hz/25Hz cleanup; soft peak control;15ms attack/1.2s cosine release; RMS .22/peak cap .84; no added layers',
++        edits='main-clap onset6s excerpt; mono44.1kHz; +6dB low shelf below180Hz/25Hz cleanup; soft peak control; rumble lift after650ms;15ms attack/1.2s cosine release; RMS .30/peak cap .84; no added layers',
+         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+     (target.parent/'storm_thunder_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+     print(json.dumps(manifest,indent=2))
+--- a/game/tests/test_storm.gd
++++ b/game/tests/test_storm.gd
+@@ -171,7 +171,7 @@
+ 	check(weather.strikes == 1 and weather.thunder_count == 0 and weather.until_thunder >= 1.2,"lightning precedes delayed thunder")
+ 	check(weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0,"occasional lightning spacing")
+ 	weather.advance(0.16,false)
+-	check(light.light_energy > weather.base_light_energy and weather.flash_strength() <= 0.32,"restrained irregular lightning intensity")
++	check(light.light_energy > weather.base_light_energy+8.0 and weather.flash_strength() <= weather.FLASH_PEAK_MAX,"strong irregular lightning raises world illumination")
+ 	var elapsed: float = weather.elapsed
+ 	var frozen_flash: float = weather.flash_strength()
+ 	weather.advance(10.0,true)
+@@ -270,11 +270,11 @@
+ 		for sample: int in range(ceili(weather.FLASH_DURATION*120.0)+1):
+ 			weather.flash_age = float(sample)/120.0
+ 			var strength: float = weather.flash_strength()
+-			bounded = bounded and strength >= 0.0 and strength <= 0.32
+-			gradual = gradual and absf(strength-previous_strength) <= 0.03
++			bounded = bounded and strength >= 0.0 and strength <= weather.FLASH_PEAK_MAX
++			gradual = gradual and absf(strength-previous_strength)/weather.FLASH_PEAK_MAX <= 0.03/0.32
+ 			previous_strength = strength
+ 		bounded = bounded and weather.rng.state == rng_state and weather.flash_strength() == 0.0
+-	check(bounded,"64 seeded strikes have 2-3 softer peaks, at least 0.98s duration and no random sampling during rendering")
++	check(bounded,"64 seeded strikes have 2-3 strong bounded peaks, at least 0.98s duration and no random sampling during rendering")
+ 	check(gradual,"lightning intensity changes gradually instead of fast high-contrast flicker")
+ 	check(varied,"strike shape varies with the random seed")
+ 	weather.rng.seed = 0
+--- a/game/tests/test_thunder_replacement.gd
++++ b/game/tests/test_thunder_replacement.gd
+@@ -1,6 +1,7 @@
+ extends SceneTree
+ ## Each cue gets a fresh clap; prior tails fade out with two bounded voices.
+ const OUT: String = "res://../docs/evidence/short-thunder-2026-10-10"
++var evidence_dir: String = OUT
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -12,6 +13,8 @@
+ 		print("FAIL: "+message)
+ 
+ func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): evidence_dir = argument.trim_prefix("--evidence-dir=")
+ 	var graphical: bool = DisplayServer.get_name()!="headless"
+ 	var weather := StormWeather.new()
+ 	root.add_child(weather)
+@@ -29,7 +32,7 @@
+ 	var record := AudioEffectRecord.new()
+ 	record.format = AudioStreamWAV.FORMAT_16_BITS
+ 	if graphical:
+-		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
+ 		AudioServer.add_bus_effect(0,record)
+ 		record.set_recording_active(true)
+ 	weather.until_thunder = .001
+@@ -63,7 +66,7 @@
+ 	if graphical:
+ 		await create_timer(1.5).timeout
+ 		record.set_recording_active(false)
+-		check(record.get_recording().save_to_wav(OUT.path_join("rapid-cues.wav"))==OK,"native rapid-replacement audio saved")
++		check(record.get_recording().save_to_wav(evidence_dir.path_join("rapid-cues.wav"))==OK,"native rapid-replacement audio saved")
+ 		AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
+ 	weather.free()
+ 	weather = null
+--- a/game/assets/audio/storm_thunder_manifest.json
++++ b/game/assets/audio/storm_thunder_manifest.json
+@@ -5,7 +5,7 @@
+   "author": "freesound_community (filename attribution)",
+   "license": "Owner-supplied; original licence metadata not provided",
+   "source_sha256": "12b96eaaae5e4528237bb67b7dcc9eeb4a00e3dcc11d424b29146cd71007c0ca",
+-  "sha256": "b6c04a66a0432ff11ed71e8d52e499648f66745c94d76ad94b6b8ec7247ae113",
++  "sha256": "66210f9ed33fb60ab325f0ecf3c76450a993bdfef5f2ede8071e4c899256055b",
+   "source_start_seconds": 1.88,
+   "decoded_sha256": "49115978eb72d8316ae77cd74797c4c618518c58e4475c05d9e0804069d24a98",
+   "source_seconds": 16.0559997558594,
+@@ -16,7 +16,7 @@
+   "bits": 16,
+   "seconds": 6.0,
+   "bytes": 529244,
+-  "edits": "main-clap onset6s excerpt; mono44.1kHz; +6dB low shelf below180Hz/25Hz cleanup; soft peak control;15ms attack/1.2s cosine release; RMS .22/peak cap .84; no added layers",
+-  "rms_dbfs": -13.151546383555875,
+-  "peak_dbfs": -1.6949829841987523
++  "edits": "main-clap onset6s excerpt; mono44.1kHz; +6dB low shelf below180Hz/25Hz cleanup; soft peak control; rumble lift after650ms;15ms attack/1.2s cosine release; RMS .30/peak cap .84; no added layers",
++  "rms_dbfs": -10.457574905606752,
++  "peak_dbfs": -1.7308715571129953
+ }
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -27,7 +27,7 @@
+ Filename attribution: freesound_community; original licence metadata not provided.
+ Local use/edit explicitly requested by owner; no CC0 licence inferred or inherited.
+ Six-second main-clap excerpt from1.88s, mono44.1kHz16-bit PCM;+6dB low shelf below
+-180Hz/25Hz subsonic cleanup, soft peak control and level matching,15ms attack/
++180Hz/25Hz subsonic cleanup, soft peak control, rolling-body lift after650ms and level matching,15ms attack/
+ 1.2-second cosine release. Source/decoded/derivative hashes: ../storm_thunder_manifest.json.
+ Rebuild: scripts/build_storm_thunder.py and tests/decode_storm_rain_source.gd.
+ Playback1.0/delayed lightning/Vehicle volume retained. Each new cue starts
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -614,3 +614,57 @@
+ physics/camera/backend or deployment. Owner final tail/cue/bass and target-device
+ acceptance remain. Music-removal Settings capture's unrelated camera-touch
+ failure and earlier visual spray failures remain documented separately.
++
++## Stronger lightning and louder rolling body, 2026-10-10
++
++SND37/V04/V05: owner requests a much stronger flash and louder rumble. Flash
++peak ceiling rises0.32 to0.90, world-light multiplier13 to20 and overlay
++multiplier0.40 to0.55. Existing broad2–3-swell timing/spacing remains; normalized
++smooth-step bounds are retained. Stronger amplitude supersedes the older0.32
++restrained-light limit. HUD/camera/physics remain independent. Native frozen
++captures show sampled world luminance0.230 to0.797 (3.463x overcast), with
++unchanged car state/camera and restored base light. Images were inspected.
++
++The same six-second bass-enhanced clip lifts the rolling body after650ms and
++uses additional soft peak control for headroom. Rumble1.0–4.8s RMS rises4.744dB.
++The1.2s cosine tail, zero final PCM sample,0.18s old-voice replacement fade,
++fresh cue starts, rain0.28/thunder1.0 and disabled biome music remain. Final
++asset SHA256 `66210f9ed33fb60ab325f0ecf3c76450a993bdfef5f2ede8071e4c899256055b`,
++529,244 bytes. Initial lift hit the peak cap and was remastered; the initial
++measurement script's NumPy bool serialization was corrected before reporting.
++
++Changed files: `game/track/storm_weather.gd`, `scripts/build_storm_thunder.py`,
++`game/tests/test_storm.gd`, `game/tests/capture_strong_storm_flash.gd` and UID,
++`game/tests/test_thunder_replacement.gd` (separate evidence-directory argument),
++`game/assets/audio/{storm_thunder.wav,storm_thunder_manifest.json}`,
++ambience `NOTICE.txt`, this page, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Actual pinned `scripts/dev.ps1` commands:
++
++- `Import`:exit0. `python scripts/build_storm_thunder.py`: final asset generated;
++  independent same-window PCM comparison confirms the4.744dB rumble increase.
++- `TestScript -ScriptPath res://tests/capture_strong_storm_flash.gd -Graphical`:
++ 9 checks, zero failures; baseline/peak/restored captures, pause and state/camera
++  guards. Peak0.827, light boost16.543, overlay alpha0.455.
++- `TestScript -ScriptPath res://tests/capture_thunder_audio.gd -Graphical`
++  with this evidence directory:19 checks, zero failures.
++- `python scripts/review_thunder_audio.py --evidence-dir
++  docs/evidence/storm-flash-rumble-2026-10-10 --owner-bass`:zero failures.
++  Mix peak0.612, paused/muted PCM zero; final output strongest50ms -11.214dBFS.
++- `TestScript -ScriptPath res://tests/test_thunder_replacement.gd -Graphical`
++  with this evidence directory:21 checks, zero failures. First run used the
++  prior default evidence path; subsequent run is isolated here.
++- `TestScript -ScriptPath res://tests/test_storm.gd`:94 checks, two unchanged
++  visual spray failures; all64 seeded stronger profiles/smoothness/timing guards
++  and thunder/weather assertions pass. No visual spray assertion is weakened.
++
++Snapshots/source checkpoint, audio preview and native images:
++`docs/evidence/storm-flash-rumble-2026-10-10/`.
++[Strong flash](evidence/storm-flash-rumble-2026-10-10/strong-flash.png),
++[overcast](evidence/storm-flash-rumble-2026-10-10/overcast.png),
++[rumble mix](evidence/storm-flash-rumble-2026-10-10/review.html).
++Concurrent unowned `vehicle_audio.gd` updates are preserved, with initial/current
++hashes recorded separately; rain/muted-biome controller/wishlist hashes retained.
++No phone attachment check/device visual or acoustic test, APK export/install,
++full Validate, physics/backend or deployment. Owner brightness/rumble/device
++acceptance remains; desktop captured luminance is not a phone/performance claim.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND37/SND34/MUS35/V04-V05/G01/R01/Q01/V06: owner stronger flash/louder rumble. Peak0.32-to0.90/world multiplier13-to20/overlay0.40-to0.55, broad timing/normalized smoothness retained; frozen native world3.463x overcast/state-camera exact/restored base light, images inspected. Six-second source rolling body+4.744dB, same1.2s cosine tail/0.18s old-voice fade/fresh starts/rain0.28/thunder1.0/music off. Asset66210f9e/529244bytes; import/flash9/nativeaudio19/rapid21/review pass, storm94 retains two prior spray failures. Initial peak-capped lift/NumPy bool report corrected; unowned concurrent vehicle-audio changes preserved/rebased with hashes. No phone attachment/device visual-acoustic test/export-install/full Validate/physics/backend/deploy. Commands/files/images/audio/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (stronger flash/rumble).
++
+ 2026-10-10 RATE04/RATE01-RATE03/B04/R01/Q01/V06: owner Ajorata still not prompted; reproduced prompt CanvasLayer8 behind actual opaque menuCanvas20 and blocked pointer input. Prompt derives layer above all owning ancestor canvases (App21). Corrected native fixture uses actual menu20, checks rendered panel pixel and pointer clicks on Skip/fourth star. Before26/3fail; final26/0fail, desktop1280x720/compact960x540 before/after inspected. Prior focused24 fixture lacked menu layering; claim corrected without weaker assertions. Two script files/qualification/upload/scoring unchanged otherwise. No phone attachment check/device/live Ajorata rating write/APK export-install/backend/deploy/fullValidate or repeated broad suite; restarting/rebuilding actual client and device acceptance remain. Actual commands/logs/task-only Git patch: docs/TRACK_RATING_PROMPT_2026_10_10.md (Hidden prompt correction).
+ 
+ 2026-10-10 RATE01-RATE03/B04/R01/Q01/V06: owner rating label correction and missing prompts. Shared caption/finish title now Rate the track; completed-ticket cloud races add optional server-qualified prompt over already available normal results, while local finish prompt remains. Server vote suppresses repeat; Skip permits later race, in-flight verification rechecks/repeated status retained, save retry key/account-origin fences/listener cleanup protected. Final native24/App99 pass; desktop1280x720/compact960x540 captures inspected. Broad CaptureResults retains eight failures plus recommendation out-of-bounds, identically reproduced in isolated starting-code overlay; not reported passing. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/live ratings. Task-only Git patch/files/actual commands/logs/remaining signed-in/device acceptance: docs/TRACK_RATING_PROMPT_2026_10_10.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1524,3 +1524,8 @@
+ ## Hidden rating prompt correction, 2026-10-10
+ 
+ 2026-10-10 RATE04/RATE01-RATE03/B04/R01/Q01/V06: owner Ajorata still not prompted; reproduced prompt CanvasLayer8 behind actual opaque menuCanvas20 and blocked pointer input. Prompt derives layer above all owning ancestor canvases (App21). Corrected native fixture uses actual menu20, checks rendered panel pixel and pointer clicks on Skip/fourth star. Before26/3fail; final26/0fail, desktop1280x720/compact960x540 before/after inspected. Prior focused24 fixture lacked menu layering; claim corrected without weaker assertions. Two script files/qualification/upload/scoring unchanged otherwise. No phone attachment check/device/live Ajorata rating write/APK export-install/backend/deploy/fullValidate or repeated broad suite; restarting/rebuilding actual client and device acceptance remain. Actual commands/logs/task-only Git patch: docs/TRACK_RATING_PROMPT_2026_10_10.md (Hidden prompt correction).
++
++
++## Stronger storm flash and rolling thunder, 2026-10-10
++
++2026-10-10 SND37/SND34/MUS35/V04-V05/G01/R01/Q01/V06: owner stronger flash/louder rumble. Peak0.32-to0.90/world multiplier13-to20/overlay0.40-to0.55, broad timing/normalized smoothness retained; frozen native world3.463x overcast/state-camera exact/restored base light, images inspected. Six-second source rolling body+4.744dB, same1.2s cosine tail/0.18s old-voice fade/fresh starts/rain0.28/thunder1.0/music off. Asset66210f9e/529244bytes; import/flash9/nativeaudio19/rapid21/review pass, storm94 retains two prior spray failures. Initial peak-capped lift/NumPy bool report corrected; unowned concurrent vehicle-audio changes preserved/rebased with hashes. No phone attachment/device visual-acoustic test/export-install/full Validate/physics/backend/deploy. Commands/files/images/audio/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (stronger flash/rumble).
+--- /dev/null
++++ b/game/tests/capture_strong_storm_flash.gd
+@@ -0,0 +1,81 @@
++extends SceneTree
++## Frozen actual world: baseline, strong flash and restored overcast; camera/state stable.
++const OUT: String = "res://../docs/evidence/storm-flash-rumble-2026-10-10"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool,message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	root.size = Vector2i(1280,720)
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.initial_track.metadata.theme = "storm"
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	var weather: StormWeather = game.storm_weather
++	weather.until_lightning = 9999
++	weather.until_thunder = -1
++	for tick: int in range(8):
++		await process_frame
++		weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++		game.paused = false
++		game._process(.016)
++	var state: Array = game.sim.state.snapshot()
++	var camera: Camera3D = root.get_camera_3d()
++	var pose: Transform3D = camera.global_transform
++	var size: float = camera.size
++	weather.flash_age = weather.FLASH_DURATION
++	weather.advance(0,false)
++	await RenderingServer.frame_post_draw
++	var before: Image = root.get_texture().get_image()
++	check(before.save_png(OUT.path_join("overcast.png"))==OK,"captured overcast world")
++	weather.rng.seed = 317
++	weather._build_flash_profile()
++	var strongest: Vector2 = Vector2.ZERO
++	for knot: Vector2 in weather.flash_profile:
++		if knot.y>strongest.y: strongest = knot
++	weather.flash_age = strongest.x
++	weather.advance(0,false)
++	await RenderingServer.frame_post_draw
++	var flash: Image = root.get_texture().get_image()
++	check(flash.save_png(OUT.path_join("strong-flash.png"))==OK,"captured strong lightning world")
++	check(strongest.y>=.72 and strongest.y<=weather.FLASH_PEAK_MAX,"strong flash envelope reaches new amplitude")
++	check(game.biome_light.light_energy>weather.base_light_energy+14,"world light rises strongly")
++	var before_luma: float = 0
++	var flash_luma: float = 0
++	var samples: int = 0
++	for y: int in range(150,650,20):
++		for x: int in range(260,1050,20):
++			var a: Color = before.get_pixel(x,y)
++			var b: Color = flash.get_pixel(x,y)
++			before_luma += a.r*.2126+a.g*.7152+a.b*.0722
++			flash_luma += b.r*.2126+b.g*.7152+b.b*.0722
++			samples += 1
++	check(flash_luma>before_luma*1.8,"rendered world is substantially brighter at the flash")
++	weather.advance(0,true)
++	check(is_equal_approx(weather.flash_strength(),strongest.y),"pause freezes flash level")
++	weather.flash_age = weather.FLASH_DURATION
++	weather.advance(0,false)
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(OUT.path_join("restored.png"))==OK,"captured restored overcast")
++	check(is_equal_approx(game.biome_light.light_energy,weather.base_light_energy),"flash restores base world light")
++	check(game.sim.state.snapshot()==state and camera.global_transform==pose and camera.size==size,"flash does not alter simulation or camera")
++	var file := FileAccess.open(OUT.path_join("flash-check.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"peak":strongest.y,"world_light_boost":strongest.y*weather.FLASH_LIGHT_ENERGY,"overlay_alpha":strongest.y*weather.FLASH_OVERLAY_ALPHA,"mean_before":before_luma/samples,"mean_flash":flash_luma/samples,"brightness_ratio":flash_luma/before_luma},"\t")+"\n")
++	file.close()
++	game.free()
++	GameSoundtrack.instance().menu_player.stop()
++	await create_timer(.15).timeout
++	print("STRONG_STORM_FLASH: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+--- /dev/null
++++ b/game/tests/capture_strong_storm_flash.gd.uid
+@@ -0,0 +1 @@
++uid://ba07bcymc4nm0

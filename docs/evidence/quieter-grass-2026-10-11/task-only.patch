@@ -1,0 +1,102 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+index f87bb26f..979de2fc 100644
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -259,7 +259,7 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
+ func _grass_gain(state: VehicleState, speed: float) -> float:
+ 	var movement: float = smoothstep(.35,3.0,speed)
+ 	var rolling: float = smoothstep(.4,22.0,speed)
+-	return movement*(.16+rolling*.44+TireAudio.scrub_amount(state)*.10+surface_model.drive*.08)*sqrt(surface_model.grass)
++	return .35*movement*(.16+rolling*.44+TireAudio.scrub_amount(state)*.10+surface_model.drive*.08)*sqrt(surface_model.grass)
+ 
+ func _grass_pitch(speed: float) -> float:
+ 	# Rustle pace rises with travel speed while preserving the recorded texture.
+diff --git a/game/tests/test_grass_kerb_audio.gd b/game/tests/test_grass_kerb_audio.gd
+index c6fddcfe..81fa12cc 100644
+--- a/game/tests/test_grass_kerb_audio.gd
++++ b/game/tests/test_grass_kerb_audio.gd
+@@ -59,7 +59,7 @@ func run() -> void:
+ 		for frame: int in range(60): audio.present(state,input,track,1.0/60,false)
+ 		var settled: float = float(audio.levels.grass)
+ 		check(first>=settled*.85,"grass reaches audible level on first displayed contact: "+id)
+-		check(first>.35,"grass is clear against the engine immediately: "+id)
++		check(first>.12,"quieter grass remains audible immediately: "+id)
+ 		rows.append({"car":id,"first":first,"settled":settled,"ratio":first/settled})
+ 		track.cells.fill(0)
+ 		audio.present(state,input,track,1.0/60,false)
+@@ -87,7 +87,7 @@ func run() -> void:
+ 		var snapshot: Array = onset.snapshot()
+ 		audio.begin_physics_feedback()
+ 		audio.call("resolved_contact",onset,track,onset.velocity)
+-		check(float(audio.levels.grass)>.30,"grass starts on live wheel contact before the next render")
++		check(float(audio.levels.grass)>.10,"quieter grass starts on live wheel contact before the next render")
+ 		check(onset.snapshot()==snapshot,"immediate grass observer does not alter driving")
+ 		# Only the wheels actually over grass participate in the initial mix.
+ 		track.cells.fill(0)
+@@ -96,7 +96,7 @@ func run() -> void:
+ 				if (x+.5)*track.cell_size-track.half_extent.x>=0: track.cells[y*track.grid_width+x] = 1
+ 		audio.reset()
+ 		audio.present(onset,input,track,1.0/60,false)
+-		check(audio.surface_model.grass==.5 and float(audio.levels.grass)>.25,"first two-wheel grass contact is audible without waiting for the car centre")
++		check(audio.surface_model.grass==.5 and float(audio.levels.grass)>.08,"quieter first two-wheel grass contact is audible without waiting for the car centre")
+ 		await shoulder_contact(audio)
+ 	var kerb_track: NativeTrack = make_track(true)
+ 	check(audio.layers.has("kerb_roll"),"dedicated continuous tyre/body kerb rumble exists")
+diff --git a/docs/OWNER_GRASS_RUSTLE.md b/docs/OWNER_GRASS_RUSTLE.md
+index 70597dc3..6a32b52f 100644
+--- a/docs/OWNER_GRASS_RUSTLE.md
++++ b/docs/OWNER_GRASS_RUSTLE.md
+@@ -76,3 +76,33 @@ direct-hit collision regression unchanged; no whole-suite-green claim.
+ Remaining acceptance: restart an existing game to load the new loop, then owner
+ listening on actual grass and phone speakers/headphones. **No phone listening/
+ device test, Android export/install, fullValidate or deployment performed.**
++
++## Significantly quieter grass — SND58, 2026-10-11
++
++Owner accepts the effect but requests significantly less volume. Multiply the
++shared grass gain by **0.35**:65% less signal amplitude/**−9.12dB**. This applies
++equally to immediate physics feedback and the rendered mix. The waveform,
++source provenance, rustle pace/speed curve, first-contact response and silence
++gates are unchanged; all49 bank WAV hashes remain exact. Other vehicle/ambient
++layers, kerbs and the engine sidechain are untouched.
++
++Only `game/vehicle/vehicle_audio.gd` gain, the existing fixture's three absolute
++grass-level calibrations, this document, status and phase notes change. The
++owner's new loudness requirement supersedes the previous loud-grass calibration;
++the85% first-frame response, partial-wheel onset, speed progression, snapshot
++equivalence and silence assertions remain unchanged. No new tests or rebuild.
++
++Actual pinned command:
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action
++TestScript -ScriptPath res://tests/test_grass_kerb_audio.gd -Graphical
++-TestArgument '--offroad-review=res://../docs/evidence/quieter-grass-2026-10-11'`
++passes **106 checks/zero failures**, recording30 native mixed/isolated auditions.
++Direct before/after first-frame gain audit across all five cars is exactly0.35;
++the first-frame response ratio stays86.5%. Native moving grass/engine mix peak
++0.171 and isolated grass peak0.117; every final150ms pause tail is zero. All49
++WAVs hash-exact. Actual command output/log, volume/hash/headroom audit, previews
++and scoped checkpoint: `docs/evidence/quieter-grass-2026-10-11/`.
++
++Owner listening after restarting the game remains the loudness acceptance.
++**No phone listening/device test, Android export/install, fullValidate or
++deployment performed.** No physics, geometry, backend, mixer or asset changes.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 416e5d91..e0686592 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 SND58/SND57/G01/R01/Q01: owner accepts supplied grass effect/wants significantly quieter. Shared grass gain0.35 of prior/-9.12dB; texture/speed pitch/immediate86.5% contact/silence unchanged. Three previous absolute grass-level fixture calibrations updated to owner loudness requirement; timing/speed/snapshot/silence assertions retained. Native106/0fail; five-car first-gain ratio exactly0.35/30captures/49WAVs exact; grass mix peak0.171/isolated0.117/pause tails0. No new test/asset rebuild/mixer/physics/backend changes; no phone listening-device test/export-install/fullValidate/deploy. Actual command/previews/audit/scoped checkpoint/restart-and-listen acceptance: docs/OWNER_GRASS_RUSTLE.md (SND58).
++
+ 2026-10-11 WW17-WW19/V04/V05/G01/R01/Q01: owner prefers previous soft Winter shape with increased speed. Revision5 restores revision3 shader byte-exact/controller exact except version+6-24mps speed; 81ground/36bank wisps/world-lit source-to-road/two draws/594tri max/522 actual. Parity/headless33/native44/MobileVulkan33 pass; headless51ObjectDB shutdown warning retained. 24mps exact/static741/moving709-713-709 roof unchanged/canonical exact; grain-only coverage cap superseded by explicit shape choice. 120frame30FPS driving+curve inspected/desktop14-17us/no phone test-or-attachment check/export-install/fullValidate/app-physics regression/backend/deploy. Restart client; owner visual acceptance pending. Files/commands/limits/scoped checkpoint: docs/WINTER_SOFT_FAST.md.
+ 
+ 2026-10-11 SND57/G01/R01/Q01: owner slightly quieter Grass birds. Only call gain0.27-0.38 to0.216-0.304 (20% lower amplitude/-1.94dB); existing test calibration updated. Random timing/order/density/pitch/lifecycle, bird WAVs/provenance/nature layers/vehicle/otherbiomes unchanged. Pinned Godot headless295 checks/0fail/eight race sequences pass. No native capture/device listening-test/Android export-install/fullValidate/deployment. Commands/files/log/scoped checkpoint/restart-and-listen acceptance: docs/GRASS_BIRDS.md (SND57).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 87391d03..aef10983 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-11 SND58/SND57/G01/R01/Q01: owner accepts supplied grass effect/wants significantly quieter. Shared grass gain0.35 of prior/-9.12dB; texture/speed pitch/immediate86.5% contact/silence unchanged. Three previous absolute grass-level fixture calibrations updated to owner loudness requirement; timing/speed/snapshot/silence assertions retained. Native106/0fail; five-car first-gain ratio exactly0.35/30captures/49WAVs exact; grass mix peak0.171/isolated0.117/pause tails0. No new test/asset rebuild/mixer/physics/backend changes; no phone listening-device test/export-install/fullValidate/deploy. Actual command/previews/audit/scoped checkpoint/restart-and-listen acceptance: docs/OWNER_GRASS_RUSTLE.md (SND58).
++
+ 2026-10-11 SND57/G01/R01/Q01: owner slightly quieter Grass birds. Only call gain0.27-0.38 to0.216-0.304 (20% lower amplitude/-1.94dB); existing test calibration updated. Random timing/order/density/pitch/lifecycle, bird WAVs/provenance/nature layers/vehicle/otherbiomes unchanged. Pinned Godot headless295 checks/0fail/eight race sequences pass. No native capture/device listening-test/Android export-install/fullValidate/deployment. Commands/files/log/scoped checkpoint/restart-and-listen acceptance: docs/GRASS_BIRDS.md (SND57).
+ 
+ 2026-10-11 SND57/SND55/SND54/SND47/SND09/G01/R01/Q01/V06: owner supplies Dragon Studio rustles05-511299/04-511301; requests continuous/speed-dependent grass. Pinned mono decode/active excerpts/alternating variable cuts120ms soft overlaps/500ms energy control/no added noise-tones;11.5s1014344byte PCM. Shared immediate-render grass pace0.70-1.35 with speed; existing intensity/86.5% first-frame contact/silence rules retained. All48 other WAVs/accepted engine-kerb-scrape-gravel exact; Engine-sidechain repair/49bank23players/repeat49exact. Native106/vehicle1454/material67/loops42/review30captures pass; grass mix peak0.373/pause tails0. Original third-party license not supplied/source attribution filename-only/provenance preserved; no phone listening-device test/export-install/backend/deploy/fullValidate. Existing direct-hit regression unchanged. Files/commands/source hashes/previews/scoped checkpoint/restart-listen acceptance: docs/OWNER_GRASS_RUSTLE.md.

@@ -1,0 +1,423 @@
+diff --git a/game/editor/spline_borders.gd b/game/editor/spline_borders.gd
+--- a/game/editor/spline_borders.gd
++++ b/game/editor/spline_borders.gd
+@@ -158,6 +158,29 @@
+ 			result.append(polygon)
+ 	return result
+ 
++static func keep_join_planes(contours_in: Array[PackedVector2Array], cuts: Array[Dictionary], margin: float) -> Array[PackedVector2Array]:
++	if margin >= 0.0 or cuts.is_empty(): return contours_in
++	var result: Array[PackedVector2Array] = []
++	for source: PackedVector2Array in contours_in:
++		var polygon: PackedVector2Array = source.duplicate()
++		for cut: Dictionary in cuts:
++			var inward: Vector2 = cut.normal
++			var across: Vector2 = inward.orthogonal()
++			var retained := PackedByteArray()
++			retained.resize(polygon.size())
++			for i: int in range(polygon.size()):
++				var next: int = (i+1)%polygon.size()
++				var a: Vector2 = polygon[i]-Vector2(cut.point)
++				var b: Vector2 = polygon[next]-Vector2(cut.point)
++				# Match a whole cap edge, including an asymmetric wider corner.
++				# Restrict its midpoint to the existing local mouth-cut region.
++				if absf(a.dot(inward)+margin)<0.002 and absf(b.dot(inward)+margin)<0.002 and absf(((a+b)*0.5).dot(across)) <= float(cut.span)*0.5+1.0+absf(margin):
++					retained[i] = 1; retained[next] = 1
++			for i: int in range(polygon.size()):
++				if retained[i] != 0: polygon[i] -= inward*(polygon[i]-Vector2(cut.point)).dot(inward)
++		result.append(polygon)
++	return result
++
+ static func surface(contours_in: Array[PackedVector2Array]) -> Array[PackedVector2Array]:
+ 	# Even/odd horizontal slabs tessellate outer contours and holes together.
+ 	# Every slab is simple: no overlapping strips, hidden fold or filled island.
+diff --git a/game/track/road_edges.gd b/game/track/road_edges.gd
+--- a/game/track/road_edges.gd
++++ b/game/track/road_edges.gd
+@@ -9,6 +9,12 @@
+ 	if not topology.spline_contours.has(index):
+ 		topology.spline_contours[index] = SplineBorders.contours(RoadPieces.section_geometry(pieces,index,topology),_join_cuts(pieces,index,topology))
+ 	return SplineBorders.offset(topology.spline_contours[index],margin)
++
++static func presentation_contours(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> Array[PackedVector2Array]:
++	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
++	var contours: Array[PackedVector2Array] = section_contours(pieces,index,margin,topology)
++	if pieces[index].kind != "spline": return contours
++	return SplineBorders.keep_join_planes(contours,_join_cuts(pieces,index,topology),margin)
+ 
+ static func _join_cuts(pieces: Array, index: int, topology: Dictionary = {}) -> Array[Dictionary]:
+ 	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
+@@ -68,14 +74,21 @@
+ 		if absf((a-Vector2(cut.point)).dot(cut.normal)) < 0.001 and absf((b-Vector2(cut.point)).dot(cut.normal)) < 0.001: return true
+ 	return false
+ 
++static func _on_join_cap(a: Vector2, b: Vector2, cuts: Array[Dictionary]) -> bool:
++	for cut: Dictionary in cuts:
++		var normal: Vector2 = cut.normal
++		var middle: Vector2 = (a+b)*0.5-Vector2(cut.point)
++		if absf((a-Vector2(cut.point)).dot(normal))<0.001 and absf((b-Vector2(cut.point)).dot(normal))<0.001 and absf(middle.dot(normal.orthogonal())) <= float(cut.span)*0.5+1.2: return true
++	return false
+ 
+-static func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictionary]) -> Vector2:
++
++static func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictionary], presentation: bool = false) -> Vector2:
+ 	var point: Vector2 = polygon[index]
+ 	var before: Vector2 = polygon[(index+polygon.size()-1)%polygon.size()]
+ 	var after: Vector2 = polygon[(index+1)%polygon.size()]
+ 	var tangent := Vector2.ZERO
+-	if _on_join_cut(before,point,cuts): tangent = after-point
+-	elif _on_join_cut(point,after,cuts): tangent = point-before
++	if (_on_join_cap(before,point,cuts) if presentation else _on_join_cut(before,point,cuts)): tangent = after-point
++	elif (_on_join_cap(point,after,cuts) if presentation else _on_join_cut(point,after,cuts)): tangent = point-before
+ 	else: return _edge_miter(polygon,index)
+ 	var normal: Vector2 = tangent.normalized().orthogonal()
+ 	var area: float = 0.0
+diff --git a/game/track/road_kerbs.gd b/game/track/road_kerbs.gd
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -82,7 +82,7 @@
+ 
+ 
+ 
+-static func creator_segments(document: Dictionary, selected_kind: String = "") -> Array[Dictionary]:
++static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false) -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+ 	if document.get("surface","asphalt") == "dirt": return result
+ 	var pieces: Array = document.get("pieces",[])
+@@ -104,15 +104,16 @@
+ 		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+ 		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+-		for polygon: PackedVector2Array in RoadEdges.section_contours(pieces,index,-0.20,topology):
++		var border_contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if presentation else RoadEdges.section_contours(pieces,index,-0.20,topology)
++		for polygon: PackedVector2Array in border_contours:
+ 			var hole: bool = pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
+ 			var distance: float = 0.0
+ 			for edge: int in range(polygon.size()):
+ 				var a: Vector2 = polygon[edge]
+ 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+-				if RoadEdges._on_join_cut(a,b,cuts): continue
+-				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts)
+-				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
++				if RoadEdges._on_join_cut(a,b,cuts) or (presentation and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,presentation)
++				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,presentation)
+ 				if hole: na = -na; nb = -nb
+ 				if pieces[index].kind == "spline":
+ 					na = SplineBorders.kerb_normal(polygon,edge,na)
+diff --git a/game/track/visual_road_join.gd b/game/track/visual_road_join.gd
+--- a/game/track/visual_road_join.gd
++++ b/game/track/visual_road_join.gd
+@@ -16,7 +16,7 @@
+ 		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other,topology)
+ 		var other_polygon := PackedVector2Array()
+ 		if pieces[other].kind == "spline":
+-			for contour: PackedVector2Array in RoadEdges.section_contours(pieces,other,margin,topology):
++			for contour: PackedVector2Array in RoadEdges.presentation_contours(pieces,other,margin,topology):
+ 				if Geometry2D.is_polygon_clockwise(contour): continue
+ 				other_polygon = contour
+ 				if Geometry2D.is_point_in_polygon(cut.point,contour): break
+@@ -158,7 +158,7 @@
+ 	for piece: Dictionary in pieces: has_spline = has_spline or piece.kind == "spline"
+ 	if has_spline:
+ 		if yield_budget.is_valid() and not await yield_budget.call(): return []
+-		segments.append_array(RoadKerbs.creator_segments(document,"spline"))
++		segments.append_array(RoadKerbs.creator_segments(document,"spline",true))
+ 	var visual := RoadKerbs.new()
+ 	var first: int = 0
+ 	while first < segments.size():
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-114"
++const VERSION: String = "track-kit-115"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -321,7 +321,7 @@
+ 			counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 		var dirt: bool = document.get("surface","asphalt") == "dirt"
+ 		var border_contours: Array[PackedVector2Array] = []
+-		if piece.kind == "spline": border_contours = RoadEdges.section_contours(pieces,index,-0.20,topology)
++		if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
+ 		else: border_contours.append(marking_join.polygon)
+ 		for polygon: PackedVector2Array in border_contours:
+ 			var hole: bool = piece.kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
+@@ -332,9 +332,9 @@
+ 					_slice_started = Time.get_ticks_usec()
+ 				var a: Vector2 = polygon[edge]
+ 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+-				if _on_join_cut(a,b,cuts): continue
+-				var normal_a: Vector2 = _roadside_miter(polygon,edge,cuts)
+-				var normal_b: Vector2 = _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
++				if _on_join_cut(a,b,cuts) or (piece.kind == "spline" and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var normal_a: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,true) if piece.kind == "spline" else _roadside_miter(polygon,edge,cuts)
++				var normal_b: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,true) if piece.kind == "spline" else _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
+ 				if hole: normal_a = -normal_a; normal_b = -normal_b
+ 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+ 				for step: int in range(steps):
+diff --git a/game/platform/resume_credits.gd b/game/platform/resume_credits.gd
+--- a/game/platform/resume_credits.gd
++++ b/game/platform/resume_credits.gd
+@@ -70,7 +70,7 @@
+ 		if not checked.ok:
+ 			busy = false
+ 			return checked
+-        if not bool(wallet.get("free_rewinds",false)) and int(wallet.get("balance",0)) == 0 and int(wallet.get("free",0)) == 0:
++		if not bool(wallet.get("free_rewinds",false)) and int(wallet.get("balance",0)) == 0 and int(wallet.get("free",0)) == 0:
+ 			if not bool(wallet.get("ad_preview_available", false)):
+ 				busy = false
+ 				return {"ok":false,"error":"Test-ad resumes are not enabled on this backend."}
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -159,6 +159,7 @@
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_road.gd') 'spline-road-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_borders.gd') 'spline-border-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_composition.gd') 'spline-composition-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_joins.gd') 'spline-join-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/profile_editor_performance.gd') 'editor-performance-tests.log'
+diff --git a/docs/SPLINE_COMPOSITION_FIX.md b/docs/SPLINE_COMPOSITION_FIX.md
+--- a/docs/SPLINE_COMPOSITION_FIX.md
++++ b/docs/SPLINE_COMPOSITION_FIX.md
+@@ -1,4 +1,6 @@
+ # Spline preservation when adding other roads — 2026-10-06
++
++Follow-up: [open spline-to-spline joins](SPLINE_JOIN_FIX.md) removes inset cap stripes across connections in visual kit115, retaining compiler22 and canonical contacts.
+ 
+ Owner report: a single spline looked acceptable, but adding any other road broke it. Owner clarified that the second road can be completely separate. Requirement IDs: R01, T01–T04, V03–V05, Q01, SP04–SP05; SP06 (stable spline presentation in multi-piece documents).
+ 
+diff --git a/game/tests/test_spline_joins.gd b/game/tests/test_spline_joins.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_spline_joins.gd
+@@ -0,0 +1,152 @@
++extends SceneTree
++## Reject painted/apron end caps across joined spline driving lanes.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var folder: String
++var evidence: String
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func pieces(angle: float = 340.0, width_a: float = 14.0, width_b: float = 14.0) -> Array:
++	var first: Dictionary = RoadPieces.create("spline",Vector2(-18,32),270.0,width_a)
++	first.spline_points = [[0.0,0.0],[10.0,0.0],[20.0,1.0],[30.0,2.0],[40.0,2.0]]
++	var second: Dictionary = RoadPieces.create("spline",RoadPieces.end_pose(first).position,angle,width_b)
++	second.spline_points = [[0.0,0.0],[12.0,0.0],[24.0,-2.0],[38.0,-3.0],[52.0,1.0]]
++	return [first,second]
++
++func reversed_piece(piece: Dictionary) -> Dictionary:
++	var nodes: PackedVector2Array = SplineRoad.points(piece)
++	nodes.reverse()
++	var result: Dictionary = piece.duplicate(true)
++	result.heading = 0.0; result.flip = false; result.position = [nodes[0].x,nodes[0].y]
++	for i: int in range(nodes.size()):
++		var local: Vector2 = nodes[i]-nodes[0]
++		result.spline_points[i] = [local.x,local.y]
++	result.point_widths.reverse()
++	return result
++
++func document(roads: Array) -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "spline_join"; doc.name = "Open spline joins"; doc.pieces = roads
++	return doc
++
++func seam_triangles(visual: Node, cut: Dictionary, parameter: String) -> int:
++	var count: int = 0
++	for child: Node in visual.get_children():
++		if not child is MeshInstance3D or not child.material_override is ShaderMaterial: continue
++		var material: ShaderMaterial = child.material_override
++		if material.shader.resource_path != "res://track/creator_road.gdshader" or not material.get_shader_parameter(parameter): continue
++		var vertices: PackedVector3Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++		for i: int in range(0,vertices.size(),3):
++			var center: Vector3 = (vertices[i]+vertices[i+1]+vertices[i+2])/3.0
++			var delta: Vector2 = Vector2(center.x,-center.z)-Vector2(cut.point)
++			if absf(delta.dot(cut.normal)) < 0.5 and absf(delta.dot(Vector2(cut.normal).orthogonal())) < float(cut.lane_width)*0.30:
++				count += 1
++	return count
++
++func geometry_checks() -> void:
++	var contacts_script := GDScript.new()
++	contacts_script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/spline-joins-2026-10-06/before/game/track/road_kerbs.gd").replace("\r\n","\n").replace("class_name RoadKerbs\n","")
++	check(contacts_script.reload() == OK,"task-start physical contact builder compiles")
++	var renderer_script := GDScript.new()
++	renderer_script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/spline-joins-2026-10-06/before/game/track/native_track_visual.gd").replace("\r\n","\n").replace("class_name NativeTrackVisual\n","")
++	check(renderer_script.reload() == OK,"task-start renderer compiles for seam reproduction")
++	var sample_roads: Array = pieces()
++	var sample_native: NativeTrack = TrackCompiler.compile(document(sample_roads))
++	var sample_cut: Dictionary = RoadEdges._join_cuts(sample_roads,0)[0]; sample_cut["lane_width"] = 14.0
++	var old_visual: Node3D = renderer_script.new()
++	old_visual.set("cache_road_meshes",false); old_visual.set("theme_id","pine"); old_visual.set("colors",TrackTheme.palette("pine"))
++	root.add_child(old_visual); await old_visual.call("_build_creator_roads",sample_native)
++	check(seam_triangles(old_visual,sample_cut,"road_marking") > 0 and seam_triangles(old_visual,sample_cut,"gravel") > 0,"same centre-lane probe reproduces both old cap stripes and apron")
++	old_visual.free(); await process_frame
++	var cases: Array[Dictionary] = []
++	for angle: float in [270.0,300.0,340.0,25.0]:
++		for widths: Vector2 in [Vector2(14,14),Vector2(8,18)]: cases.append({"roads":pieces(angle,widths.x,widths.y),"label":"angle %.0f / widths %s" % [angle,widths]})
++	var pair: Array = pieces(340,8,18)
++	cases.append({"roads":[reversed_piece(pair[0]),pair[1]],"label":"start to start"})
++	cases.append({"roads":[pair[0],reversed_piece(pair[1])],"label":"end to end"})
++	cases.append({"roads":[reversed_piece(pair[0]),reversed_piece(pair[1])],"label":"both reversed"})
++	cases.append({"roads":[pair[1],pair[0]],"label":"piece order reversed"})
++	var total_markings: int = 0
++	var total_aprons: int = 0
++	for case: Dictionary in cases:
++		var roads: Array = case.roads
++		var topology: Dictionary = RoadPieces.prepare_endpoints(roads)
++		var cuts: Array[Dictionary] = RoadEdges._join_cuts(roads,0,topology)
++		check(cuts.size() == 1,"fixture has an actual shared endpoint")
++		var partner: Array = RoadPieces._matches(topology,0,int(cuts[0].endpoint))[0]
++		cuts[0]["lane_width"] = (RoadPieces.endpoint_width(roads[0],int(cuts[0].endpoint))+RoadPieces.endpoint_width(roads[int(partner[0])],int(partner[1])))*0.5
++		for index: int in range(2):
++			var own_cuts: Array[Dictionary] = RoadEdges._join_cuts(roads,index,topology)
++			var cap_count: int = 0
++			var stale_count: int = 0
++			for polygon: PackedVector2Array in RoadEdges.presentation_contours(roads,index,-0.2,topology):
++				for edge: int in range(polygon.size()):
++					var a: Vector2 = polygon[edge]; var b: Vector2 = polygon[(edge+1)%polygon.size()]
++					if RoadEdges._on_join_cap(a,b,own_cuts): cap_count += 1
++					var normal: Vector2 = own_cuts[0].normal
++					var da: float = (a-Vector2(own_cuts[0].point)).dot(normal)
++					var db: float = (b-Vector2(own_cuts[0].point)).dot(normal)
++					if absf(da-0.2)<0.002 and absf(db-0.2)<0.002 and a.distance_to(b)>1.0: stale_count += 1
++			check(cap_count > 0,"inset retains its mouth on the actual shared plane")
++			check(stale_count == 0,"whole asymmetric cap is extended back rather than left inside the road")
++		var native: NativeTrack = TrackCompiler.compile(document(roads))
++		check(native != null,"connected spline fixture compiles: "+str(case.label))
++		if native == null: continue
++		var old_contacts: RefCounted = contacts_script.new()
++		old_contacts.call("build",native)
++		check(old_contacts.get("triangles") == native.kerbs.triangles and old_contacts.get("blocked") == native.kerbs.blocked,"presentation fix preserves exact original physical kerbs and masks")
++		var original: Array = roads.duplicate(true)
++		var visual := NativeTrackVisual.new(); visual.cache_road_meshes = false
++		visual.theme_id = "pine"; visual.colors = TrackTheme.palette("pine")
++		root.add_child(visual); await visual._build_creator_roads(native)
++		var markings: int = seam_triangles(visual,cuts[0],"road_marking")
++		var aprons: int = seam_triangles(visual,cuts[0],"gravel")
++		print("SPLINE_JOIN_CASE ",case.label," marking=",markings," apron=",aprons)
++		total_markings += markings; total_aprons += aprons
++		check(markings == 0,"no white end-cap stripe across joined spline lane")
++		check(aprons == 0,"no sandy apron across joined spline lane")
++		check(roads == original,"join presentation preserves authored points and widths")
++		visual.free(); await process_frame
++	print("SPLINE_JOIN_INTERIOR_TRIANGLES marking=",total_markings," apron=",total_aprons)
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"real joined-spline scene finishes preparation")
++	await process_frame
++
++func shot(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(name+".png")) == OK,"save "+name)
++
++func run() -> void:
++	await geometry_checks()
++	root.size = Vector2i(1280,720)
++	folder = "user://spline_join_test_"+TrackLibrary.unique_id()
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/spline-joins-2026-10-06").simplify_path()
++	DirAccess.make_dir_recursive_absolute(evidence)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder+"/records.json")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = document(pieces()); app.canvas = null; app.editor_view.clear(); app.call("_show_screen","create")
++	await settle()
++	app.canvas.fit(); await shot("joined-1280x720")
++	app.canvas.zoom_by(2.0,app.canvas.to_screen(Vector2(-16,-8))); await shot("join-closeup")
++	root.size = Vector2i(960,540); await process_frame; app.canvas.fit(); await shot("joined-960x540")
++	app.queue_free(); await process_frame
++	cleanup(folder)
++	print("SPLINE_JOIN_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func cleanup(path: String) -> void:
++	if not DirAccess.dir_exists_absolute(path): return
++	for child: String in DirAccess.get_directories_at(path): cleanup(path.path_join(child))
++	for file: String in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
++	DirAccess.remove_absolute(path)
+diff --git a/game/tests/test_spline_joins.gd.uid b/game/tests/test_spline_joins.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_spline_joins.gd.uid
+@@ -0,0 +1 @@
++uid://daxgk1l3kwbyc
+diff --git a/docs/SPLINE_JOIN_FIX.md b/docs/SPLINE_JOIN_FIX.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SPLINE_JOIN_FIX.md
+@@ -0,0 +1,42 @@
++# Open spline-to-spline joins — 2026-10-06
++
++Owner report: connecting two splines creates a double diagonal border across the driving lane, as shown in the supplied close-up. Requirement IDs: R01, T01–T04, V03–V05, Q01, SP04–SP06; SP07 (open joined mouths with no cross-road marking/apron/kerb cap).
++
++Joined spline edge paint and shoulders now stop treating the connection as an exposed end. The two internal cap stripes and sandy strip across the road are removed. The exterior borders remain, including curved kerbs. Both endpoint directions, reversed piece order and unequal widths are covered. Authored spline points and widths remain untouched.
++
++## Cause and correction
++
++The swept spline contour is clipped to a shared join plane. Insetting that **closed** contour by 0.20 m for markings also moved its closing cap 0.20 m into the road. The cap no longer lay on the plane used to recognize an internal connection, so both pieces painted it and added shoulder/fringe geometry across the lane.
++
++`SplineBorders.keep_join_planes` restores whole inset cap edges to the original plane. It matches edges within the existing local mouth region, including asymmetric wide corners; matching only individual vertices missed a wider corner in unequal-width cases. `RoadEdges.presentation_contours` applies this only to presentation. Local cap classification recognizes fragmented edges without applying an infinite cut to a distant returning branch. Presentation normals ignore the closing edge when building roadside strips. The spline cosmetic kerb path uses the same corrected presentation contour, while ordinary road pieces retain their original normal and join treatment.
++
++**Canonical contours/kerbs, surface cells, compiler22, content identities, physics/rules, player files and existing recordings are unchanged.** Tests compare the current physical triangles/masks against the actual task-start builder for twelve joined cases. Only **track-kit-115** advances to invalidate old baked meshes. No backend rollout is needed for this correction, and no live service was changed.
++
++An unrelated concurrent edit left eight spaces on `game/platform/resume_credits.gd:73` inside a tab-indented block, preventing the app/editor from loading. Corrected that one line to two tabs while preserving its complete `free_rewinds` condition. This is a syntax repair only; the existing resume behavior is covered by its regression suite.
++
++## Actual checks
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, through `scripts/dev.ps1`; Windows Compatibility/OpenGL on RTX 3090.
++
++- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_spline_joins.gd -Graphical`: final **127 checks, zero failures**. Twelve cases cover straight/30°/70°/115° joins, equal/unequal widths, start-to-start, end-to-end, both reversed and piece order reversed. Every inset mouth stays on its shared plane, with no stale inward cap. Actual road-marking and apron mesh probes find **zero triangles crossing the central driving corridor**. The same probe run against the task-start renderer still reproduces the original stripe/apron. Exact original physical triangles/masks and authored coordinates/widths are retained. Real editor desktop, compact and close-up screenshots are saved and inspected.
++- Initial graphical reproduction: **44 checks / 16 failures**, with cross-lane marking and apron failures for all eight initial cases. First setup attempt omitted the renderer palette and failed on its empty colour array; initialized it normally. The first whole-edge repair exposed an asymmetric cap corner; extending the complete edge fixes that case.
++- The diagnostic lane probe initially used the enlarged miter span, which included legitimate exterior-edge geometry at 115° turns. It now uses the actual shared endpoint width, alongside independent checks of the **entire** cap edge/plane. The original renderer continues to fail that same corridor probe. No failing road invariant was removed.
++- `... TestScript -ScriptPath res://tests/test_spline_composition.gd`: **36 headless checks, zero failures**; separate-road preservation, connected variants, crossings and actual undo/redo remain covered. Its 42-check graphical run from the preceding slice included six capture assertions.
++- `... TestScript -ScriptPath res://tests/test_spline_borders.gd`: final **1,107 headless checks, zero failures**, including steep borders, holes and four exact legacy-biome renderer comparisons. An intermediate direct call to the generic normal helper changed those legacy arrays; restored the original non-spline normal path and all four assertions pass.
++- `... TestShoulders`: union/triangle checks pass, **71 visual-join / 18 internal-contour checks**, zero failures.
++- `... TestScript -ScriptPath res://tests/test_spline_road.gd`: **476 checks, zero failures**, including five laps / **13,517 ticks / zero contacts** and exact replay.
++- `... TestRoadCache`: **66 checks, zero failures**.
++- `... TestWorkflow`: **252 checks, zero failures**.
++- `... TestRewind`: **57 checks, zero failures** after the indentation-only dependency repair.
++- `... Import`: exit 0; new test UID registered. Final `... TestScript -ScriptPath res://tests/test_script_parse.gd`: **312 scripts, zero failures**.
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q -k 'standalone_verifier or real_five_lap'`: **2 passed / 61 deselected**, with unchanged compiler22 manifests, packaged spline compilation and the retained verified five-lap recording/times. Existing Starlette deprecation warning retained.
++
++Several intermediate editor captures stopped at the existing resume-script indentation error; `CheckScript -ScriptPath res://platform/resume_credits.gd` identified the exact line, rather than treating them as successful captures. A test-only loop refactor indentation error was also corrected. No full Validate was run; older full-validation/desert-golden limits remain in the preceding slice documents.
++
++## Files and evidence
++
++Runtime: `game/editor/spline_borders.gd`; `game/track/road_edges.gd`, `road_kerbs.gd`, `visual_road_join.gd`, `native_track_visual.gd`; indentation-only `game/platform/resume_credits.gd`. Verification: new `game/tests/test_spline_joins.gd` and UID; `scripts/dev.ps1` adds the test to Validate. Documentation: this file, follow-up link in `docs/SPLINE_COMPOSITION_FIX.md`, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
++
++Evidence under `docs/evidence/spline-joins-2026-10-06/`: [before](evidence/spline-joins-2026-10-06/before-captures/join-closeup.png), [after](evidence/spline-joins-2026-10-06/join-closeup.png), [desktop](evidence/spline-joins-2026-10-06/joined-1280x720.png), [compact](evidence/spline-joins-2026-10-06/joined-960x540.png), actual logs and task-start source snapshots. `python docs/evidence/spline-joins-2026-10-06/create_checkpoint.py`, `git apply --reverse --check` on its patch, and scoped `git diff --check` each exit 0. The source-only review checkpoint uses the scoped patch and normalized hashes, preserving concurrent changes and leaving the Git index untouched. Open-road fixture issue badges still represent unconnected lap endpoints, not a failed seam repair. The owner image is diagnostic reference, not a shipping asset.
++
++No phone attachment check, Android export/install or physical-device test was performed. Owner acceptance on the reported map and phone performance remain outstanding. No backend/cloud/NAS deployment, live document/record rewrite or new dependency was performed.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 R01/T01-T04/V03-V05/Q01/SP07: connected spline seam reproduced as two inset end-cap paint/apron strips across the lane. Presentation now restores whole cap edges to the shared plane and omits their strips, including asymmetric corners/reversed endpoints; canonical contours/contacts/compiler22 unchanged, kit115 invalidates old bakes. Final graphical join127, composition36, borders1107/four exact legacy biomes, shoulders71+18, spline476/exact five laps13517 ticks, cache66, workflow252, rewind57, parser312 and backend2 pass. Necessary resume-script one-line tab repair preserves its condition. Before/after inspected; snapshots/scoped patch retained; failed intermediate fixture/palette/normal/parse attempts documented. No phone attachment check/device test/export/install or backend/cloud deployment/full Validate. Owner/map/phone acceptance remains. Commands, files and evidence: docs/SPLINE_JOIN_FIX.md.
++
+ 2026-10-06 SND02/SND04-SND06/G01/R01/Q01/V06: owner intermittent-loop report reproduced as offline Windows int32 resampler overflow, not broken source recordings. Float64 coordinates and generator gap guard rebuild 40 PCM clips; 22 formerly interrupted loops become zero failures across all36 looped assets/three repeats and15 actual engine-bus segments. Cursor-observed 4-10 wraps/voice; graphical48/audio1418/handling88/parser311 pass. Muted tire feedback raises dry-slip gain4.25dB with actual before/after full-mix captures, no clipping and silent pause tails. Unsupported WAV loop-count probe and concurrent resume-indent/import failure corrected without weakening continuity; backend/resume files not edited. No attachment check/phone test/export/install/full Validate/deployment/canonical change. Continuous previews, source hashes, scoped patch, actual commands and acceptance: docs/VEHICLE_AUDIO_CONTINUITY.md. Concurrent work preserved.
+ 
+ 2026-10-06 B19-B20/B23/WR03-WR08/Q01: owner cost review completed read-only against latest compiler22 retained cloud. Preceding-day monitoring: SQLCPU mean9.5/max18.2%, RAM about1.00GiB of3.75; API sampled peak280MiB of1024; worker355MiB of768 and CPU reaches100%. Candidate API512 saves EUR0.095/day, worker512 EUR0.023/day; shared SQLg1-small EUR0.687/day requires isolated latency/connection benchmark and accepts shared-core/SLA tradeoff. Combined conditional EUR0.806/day, not proven no-impact. Keep warmAPI1, workerCPU1 and protection/backups; curated registry housekeeping minor, idle heartbeat load optimization not an immediate fixed-bill saving. No cloud/source-runtime/data/image/scheduler/secret changes, downsizing tests, device/export/attachment check or production action. Inventory, metric/price evidence, conditions, actual commands and review checkpoint: docs/CLOUD_COST_REVIEW_2026_10_06.md. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 R01/T01-T04/V03-V05/Q01/SP07: connected spline seam reproduced as two inset end-cap paint/apron strips across the lane. Presentation now restores whole cap edges to the shared plane and omits their strips, including asymmetric corners/reversed endpoints; canonical contours/contacts/compiler22 unchanged, kit115 invalidates old bakes. Final graphical join127, composition36, borders1107/four exact legacy biomes, shoulders71+18, spline476/exact five laps13517 ticks, cache66, workflow252, rewind57, parser312 and backend2 pass. Necessary resume-script one-line tab repair preserves its condition. Before/after inspected; snapshots/scoped patch retained; failed intermediate fixture/palette/normal/parse attempts documented. No phone attachment check/device test/export/install or backend/cloud deployment/full Validate. Owner/map/phone acceptance remains. Commands, files and evidence: docs/SPLINE_JOIN_FIX.md.
++
+ 2026-10-06 B19-B20/B23/WR03-WR08/Q01: owner cost review completed read-only against latest compiler22 retained cloud. Preceding-day monitoring: SQLCPU mean9.5/max18.2%, RAM about1.00GiB of3.75; API sampled peak280MiB of1024; worker355MiB of768 and CPU reaches100%. Candidate API512 saves EUR0.095/day, worker512 EUR0.023/day; shared SQLg1-small EUR0.687/day requires isolated latency/connection benchmark and accepts shared-core/SLA tradeoff. Combined conditional EUR0.806/day, not proven no-impact. Keep warmAPI1, workerCPU1 and protection/backups; curated registry housekeeping minor, idle heartbeat load optimization not an immediate fixed-bill saving. No cloud/source-runtime/data/image/scheduler/secret changes, downsizing tests, device/export/attachment check or production action. Inventory, metric/price evidence, conditions, actual commands and review checkpoint: docs/CLOUD_COST_REVIEW_2026_10_06.md. Concurrent work preserved.
+ 
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP06: second separate road reproduced a switch from clean spline kerbs3258 to legacy decorative732, causing four visual/triangle/order failures. Multi-piece helper now reuses clean spline segments and masks while retaining legacy join fairing; kit114 invalidates old bakes. Final graphical composition42, borders1107, spline476/exact five-lap13517 ticks, shoulders71+18, roads377, cache66, workflow252, parser312 and canonical backend2 pass. Exact task-start physical triangles/masks and compiler22/identities preserved; no rollout needed. Before/after screenshots inspected, scoped patch/logs retained. No phone attachment check/device test/export/install or backend/cloud change/full Validate. Owner/map/phone acceptance remains. Commands, files, corrected fixture and evidence: docs/SPLINE_COMPOSITION_FIX.md.

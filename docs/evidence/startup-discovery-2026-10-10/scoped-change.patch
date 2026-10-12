@@ -1,0 +1,334 @@
+diff --git a/game/backend/discovery_pages.gd b/game/backend/discovery_pages.gd
+--- a/game/backend/discovery_pages.gd
++++ b/game/backend/discovery_pages.gd
+@@ -16,6 +16,9 @@
+ var desired_index: int = 0
+ var locate_version: String = ""
+ var last_used: int = 0
++var cache_directory: String = ""
++var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
++var _initial_refresh: bool = false
+ const PAGE_SIZE: int = 20
+ const MAX_PAGES: int = 15
+ 
+@@ -44,6 +47,7 @@
+ func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
+ 	var body: Dictionary = payload(filters,favorites,raced)
+ 	var key: String = JSON.stringify(body)
++	if not fresh and key == query_key and origin == scope() and loading: return
+ 	if not fresh and key == query_key and origin == scope() and total >= 0 and Time.get_ticks_msec()-last_used < 60000:
+ 		request_visible(desired_index)
+ 		return
+@@ -59,6 +63,16 @@
+ 	loading = false
+ 	error = ""
+ 	desired_index = 0
++	_initial_refresh = true
++	snapshot_cache.max_entries = 3
++	snapshot_cache.max_age_seconds = 86400
++	snapshot_cache.configure(cache_directory.path_join(scope().sha256_text()+".json") if not cache_directory.is_empty() else "",scope())
++	if not fresh and locate_version.is_empty():
++		var cached: Dictionary = snapshot_cache.read(key)
++		if _valid_page(cached,0):
++			total = int(cached.total)
++			pages[0] = {"items":cached.items,"used":Time.get_ticks_msec()}
++			last_used = -60000
+ 	await _fetch(0,fresh)
+ 
+ func _fetch(page_number: int, fresh: bool = false) -> void:
+@@ -67,9 +81,9 @@
+ 	var serial: int = generation
+ 	var body: Dictionary = query.duplicate(true)
+ 	body.offset = page_number*PAGE_SIZE
+-	if not snapshot.is_empty(): body.cursor = _cursor_at(body.offset)
++	if not _initial_refresh and not snapshot.is_empty(): body.cursor = _cursor_at(body.offset)
+ 	if fresh: body.fresh = true
+-	var locating: bool = snapshot.is_empty() and not locate_version.is_empty()
++	var locating: bool = _initial_refresh and not locate_version.is_empty()
+ 	if locating: body.locate_version = locate_version
+ 	changed.emit()
+ 	var result: Dictionary = await client.request_discovery(body,get_instance_id())
+@@ -86,9 +100,12 @@
+ 		changed.emit()
+ 		return
+ 	total = int(data.total)
++	if _initial_refresh: pages.clear()
++	_initial_refresh = false
+ 	snapshot = str(data.snapshot)
+ 	cursor = str(data.get("page_cursor",""))
+ 	pages[effective_page] = {"items":data.items,"used":Time.get_ticks_msec()}
++	if effective_page == 0: snapshot_cache.remember(query_key,data)
+ 	if locating:
+ 		desired_index = effective_page*PAGE_SIZE
+ 		locate_version = ""
+diff --git a/game/backend/cloud_tracks.gd b/game/backend/cloud_tracks.gd
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -409,6 +409,7 @@
+ 	if is_instance_valid(discovery_pages): return
+ 	discovery_pages = preload("res://backend/discovery_pages.gd").new()
+ 	discovery_pages.client = client
++	discovery_pages.cache_directory = cache_root().path_join("discovery")
+ 	add_child(discovery_pages)
+ 	discovery_pages.changed.connect(_discovery_changed)
+ 
+@@ -420,11 +421,16 @@
+ 		await search(filters)
+ 		return
+ 	_ensure_discovery_pages()
++	discovery_pages.cache_directory = cache_root().path_join("discovery")
+ 	if not _publication_pin.is_empty(): discovery_pages.locate_version = str(_publication_pin.version_id)
+ 	await discovery_pages.begin(filters,favorites,raced,fresh or not _publication_pin.is_empty())
+ 
+ func _discovery_changed() -> void:
+-	entries = discovery_pages.entries()
++	var loaded: Array[Dictionary] = discovery_pages.entries()
++	# The older public index is also useful on the first upgraded app launch.
++	# Never carry its cards into a filtered query or a confirmed empty response.
++	if not (loaded.is_empty() and discovery_pages.loading and discovery_pages.total < 0 and discovery_pages.query == discovery_pages.payload({})):
++		entries = loaded
+ 	if not _publication_pin.is_empty():
+ 		if not discovery_pages.loading and discovery_pages.total >= 0 and discovery_pages.error.is_empty(): _publication_pin.clear()
+ 		else: entries.append(_publication_pin)
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -329,10 +329,15 @@
+ 	_render_tiles(true)
+ 	if matches.is_empty() and grid.get_child_count() == 0:
+ 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
++		var unresolved: bool = loading or (cloud != null and cloud.paged_discovery_available() and (not is_instance_valid(cloud.discovery_pages) or cloud.discovery_pages.total < 0 or cloud.discovery_pages.loading))
+ 		if state.get("section") == "favorites" and str(state.get("name","")).is_empty() and str(state.get("creator","")).is_empty():
+ 			empty.text = "Your favorites start here.\nSelect a circuit and tap its star."
+ 		if state.get("section","all") == "all" and state.get("feed","recommended") != "recommended" and not discovery.available:
+ 			empty.text = "This discovery feed needs online data.\nYour local tracks are in Recommended."
++		if unresolved:
++			empty.text = "Loading tracks..."
++			if cloud != null and is_instance_valid(cloud.discovery_pages) and not cloud.discovery_pages.error.is_empty(): empty.text = cloud.discovery_pages.error
++		empty.name = "DiscoveryEmptyState"
+ 		empty.custom_minimum_size.y = 128
+ 		grid.add_child(empty)
+ 	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
+@@ -442,7 +447,7 @@
+ 	for child: Node in grid.get_children():
+ 		var index: int = int(child.get_meta("catalog_index",-1))
+ 		var metadata: Dictionary = cloud.discovery_pages.entry_at(index) if index >= 0 else {}
+-		if index < first or index >= end or (not child is TrackTile and not metadata.is_empty()) or (child is TrackTile and str(child.entry.get("version_id","")) != str(metadata.get("version_id",""))):
++		if not child.has_meta("catalog_index") or index < first or index >= end or (not child is TrackTile and not metadata.is_empty()) or (child is TrackTile and str(child.entry.get("version_id","")) != str(metadata.get("version_id",""))):
+ 			grid.remove_child(child)
+ 			child.queue_free()
+ 		else: retained[index] = child
+@@ -816,7 +821,8 @@
+ 	if not available:
+ 		_clear(detail)
+ 		_show_hero("CHOOSE A TRACK","pine")
+-		detail.add_child(MenuStyle.label("Connect to load published tracks. Downloaded tracks remain available offline.",18,true))
++		if matches.is_empty() and not loading and (cloud == null or not cloud.refreshing) and (cloud == null or not cloud.paged_discovery_available() or (is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0)):
++			detail.add_child(MenuStyle.label("Connect to load published tracks. Downloaded tracks remain available offline.",18,true))
+ 		if is_instance_valid(race_button): race_button.disabled = true
+ 		return
+ 	_prepare_outgoing_section()
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -280,6 +280,7 @@
+ 		elif screen == "account" and online.client.signed_in() and not online.needs_username():
+ 			_show_screen("rivalry")
+ 	startup_complete = true
++	_prefetch_discovery()
+ 	_prefetch_rivalry()
+ 	print("APP_READY")
+ 	if OS.is_debug_build() and FileAccess.file_exists("user://mobile_probe.json"):
+@@ -931,7 +932,14 @@
+ 		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
+ 	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
+ 		_show_screen("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
++	_prefetch_discovery()
+ 	_prefetch_rivalry()
++
++func _prefetch_discovery() -> void:
++	if cloud == null or is_instance_valid(game) or not cloud.paged_discovery_available(): return
++	# Prime the visible page during sign-in/startup, before Free Race is opened.
++	# The adapter coalesces this with menu activation and retains its scoped cache.
++	cloud.query_discovery(browser_state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+ 
+ func _legacy_track_directories() -> Array[String]:
+ 	# Normal recovery must never inspect or clean another profile's drafts.
+diff --git a/game/tests/test_startup_discovery.gd b/game/tests/test_startup_discovery.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_startup_discovery.gd
+@@ -0,0 +1,118 @@
++extends "res://tests/test_discovery_pages.gd"
++## Startup cards remain visible while independent, scoped refreshes are held.
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.theme = MenuStyle.theme()
++	folder = "user://startup_discovery_"+TrackLibrary.unique_id()
++	var client := PagedClient.new()
++	root.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	client._capabilities = {"discovery_paging_version":2}
++	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
++	client.hash_value = JSON.stringify(client.document).sha256_text()
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	root.add_child(cloud)
++	cloud.load_cached()
++	var app: Node = load("res://core/app.gd").new()
++	app.cloud = cloud
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	client.hold_once = true
++	app._prefetch_discovery()
++	check(cloud.discovery_pages.loading and cloud.discovery_pages.total == -1,"cold startup remains unresolved while first page is held")
++	var browser := TrackBrowser.new()
++	browser.library = TrackLibrary.new(folder.path_join("drafts"))
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	browser.catalog = TrackCatalog.new(browser.library)
++	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	browser.cloud = cloud
++	browser.state = {}
++	root.add_child(browser)
++	MenuStyle.fill(browser)
++	await process_frame
++	await process_frame
++	check(client.requests.size() == 1,"startup preload and opening Free Race share one pending request")
++	app._prefetch_discovery()
++	check(client.requests.size() == 1,"account/startup notifications coalesce discovery before menu activation")
++	check(not _text(browser).contains("No tracks found"),"first unresolved frame never claims no tracks exist")
++	check(_text(browser).contains("Loading tracks"),"uncached discovery uses the existing loading area")
++	await _capture("cold-start-loading")
++	client.release_read.emit()
++	await settle(cloud.discovery_pages)
++	check(browser.grid.get_child_count() > 0 and browser.grid.get_child(0) is TrackTile,"response replaces the loading control with real track cards")
++	check(not _text(browser).contains("Loading tracks") and not _text(browser).contains("No tracks found"),"no stale empty-state control survives the page response")
++	var first: Dictionary = cloud.discovery_pages.entry_at(0).duplicate(true)
++	browser.queue_free()
++	app.free()
++	cloud.queue_free()
++	await process_frame
++	# Fresh adapter/app process: cached page is usable before the first reply.
++	var reopened := Cloud.new()
++	reopened.client = client
++	reopened.root_override = folder.path_join("cloud")
++	root.add_child(reopened)
++	reopened.load_cached()
++	client.hold_once = true
++	var before: int = client.requests.size()
++	reopened.query_discovery({})
++	check(reopened.discovery_pages.total == 5000 and reopened.discovery_pages.loading,"restart restores the original total while fetching a fresh page")
++	check(JSON.stringify(reopened.discovery_pages.entry_at(0)) == JSON.stringify(JSON.parse_string(JSON.stringify(first))),"restart exposes every cached metadata value immediately after its JSON round trip")
++	check(not client.requests[-1].has("cursor"),"restart never reuses the cached server cursor")
++	reopened.query_discovery({})
++	check(client.requests.size() == before+1,"duplicate startup requests are coalesced even with cached cards")
++	var warm := TrackBrowser.new()
++	warm.library = browser.library if is_instance_valid(browser) else TrackLibrary.new(folder.path_join("drafts"))
++	warm.records = LocalRecords.new(folder.path_join("records.json"))
++	warm.catalog = TrackCatalog.new(warm.library)
++	warm.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	warm.cloud = reopened
++	warm.state = {}
++	root.add_child(warm)
++	MenuStyle.fill(warm)
++	await process_frame
++	await process_frame
++	check(warm.grid.get_child(0) is TrackTile,"first reopened menu frames have their cached cards")
++	check(not _text(warm).contains("No tracks found") and not _text(warm).contains("Loading tracks"),"warm cards need no loading or false-empty caption")
++	await _capture("warm-start-cards")
++	client.release_read.emit()
++	await settle(reopened.discovery_pages)
++	client.hold_once = true
++	reopened.query_discovery({"search":"does-not-exist"})
++	await process_frame
++	check(not _text(warm).contains("No tracks found"),"new filtered query cannot claim emptiness before its response")
++	check(reopened.entries.is_empty(),"cached default cards never appear in a different filtered query")
++	client.release_read.emit()
++	await settle(reopened.discovery_pages)
++	check(reopened.discovery_pages.total == 0,"server-confirmed empty query is retained as empty")
++	# Match the UI's applied query and expose its confirmed empty state.
++	warm.state = {"search":"does-not-exist"}
++	warm._refresh()
++	check(_text(warm).contains("No tracks found"),"only the completed empty query shows No tracks found")
++	await _capture("confirmed-empty-search")
++	client.player = {"id":"another-account"}
++	client.hold_once = true
++	reopened.query_discovery({})
++	check(reopened.discovery_pages.total == -1 and reopened.discovery_pages.pages.is_empty(),"another account cannot hydrate the previous scoped page")
++	client.release_read.emit()
++	await settle(reopened.discovery_pages)
++	warm.queue_free()
++	reopened.queue_free()
++	client.queue_free()
++	await process_frame
++	print("STARTUP_DISCOVERY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _text(node: Node) -> String:
++	if node is CanvasItem and not node.is_visible_in_tree(): return ""
++	var result: String = node.text if node is Label else ""
++	for child: Node in node.get_children(): result += "\n"+_text(child)
++	return result
++
++func _capture(label: String) -> void:
++	var destination: String = OS.get_environment("BMT_STARTUP_EVIDENCE")
++	if destination.is_empty() or DisplayServer.get_name() == "headless": return
++	DirAccess.make_dir_recursive_absolute(destination)
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(destination.path_join(label+".png")) == OK,"capture "+label)
+diff --git a/docs/STARTUP_DISCOVERY_2026_10_10.md b/docs/STARTUP_DISCOVERY_2026_10_10.md
+new file mode 100644
+--- /dev/null
++++ b/docs/STARTUP_DISCOVERY_2026_10_10.md
+@@ -0,0 +1,32 @@
++# Startup discovery — 2026-10-10
++
++Requirements: START01 (no false empty state), START02 (startup prefetch), START03 (immediate compatible cached cards), RR06/V03/V05/B07/R01/Q01; preserve paging/search, account isolation, pinned racing contracts and public/artificial isolation.
++
++The owner reports “No tracks found” appearing before Free Race's tracks load, and authorizes preloading during app startup. The carousel previously treated an unresolved catalog as an empty result. Beginning a paged query also replaced the existing cached index with an empty page list.
++
++Discovery now starts during account/service initialization and again at startup completion. Identical pending requests coalesce, including when Free Race opens before the startup response arrives. This does not delay the account screen or startup completion on the full community catalog. Rivalry's existing independent prefetch remains intact.
++
++The first **20 metadata cards** are persisted per query and server/account scope, with at most **three queries**, a **24-hour** age bound and the existing bounded atomic JSON cache. On restart, compatible cards and the actual previously returned total appear immediately while a new first page is fetched. Cached opaque server cursors are never reused. A successful fresh response replaces cached pages, including withdrawal or a confirmed empty response. Different filters/accounts do not hydrate the previous scoped page. An older public index can remain visible during the first upgraded app's default-query refresh; it is not used for filtered results or confirmed empty responses.
++
++An uncached/unresolved list shows the existing “Loading tracks...” area. “No tracks found” appears only after the actual response confirms an empty result. Network errors retain their actionable error state. The previous empty/loading control is explicitly removed when paged cards arrive. The obsolete Connect prompt is suppressed while discovery is loading or cached cards are already present. No implementation/source labels or fabricated tracks/scores were added.
++
++Preloading covers the first visible discovery page. It **does not download/compile every community track or fetch every histogram**: those remain bounded and selection-driven, with the preceding menu snapshot caches and metadata-first hero behavior. Artwork/fonts are already preloaded by the existing menu resources. Racing still requires the existing actual geometry/ticket checks; cached card metadata confers no competitive eligibility.
++
++Changed files: `game/backend/discovery_pages.gd`, `game/backend/cloud_tracks.gd`, `game/ui/track_browser.gd`, `game/core/app.gd`; new regression `game/tests/test_startup_discovery.gd`; this document, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md. No backend/runtime schema/deployment, canonical simulation, camera/art assets or player-record writes were changed. [Task-only checkpoint](evidence/startup-discovery-2026-10-10/scoped-change.patch) preserves prior/concurrent workspace changes.
++
++Actual commands use pinned Godot **4.7.2 stable ed1daf0bf** through `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, isolated `APPDATA=build/startup-discovery-*-user`, and `BMT_STARTUP_EVIDENCE=docs/evidence/startup-discovery-2026-10-10`. Normal Windows certificate-store access was needed for engine startup.
++
++| Actual command | Outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_startup_discovery.gd -Graphical -CommandTimeoutSeconds 90` | **21 checks, zero failures**; real app prefetch helper before menu activation, pending-read coalescing, cold/warm first frames, exact cached metadata JSON values, original total, fresh cursor, query/account fences, confirmed emptiness and three native captures |
++| `TestScript -ScriptPath res://tests/test_discovery_pages.gd -CommandTimeoutSeconds 90` | **269 checks, zero failures**; 5,000-track paging, bounded eviction, search/favorites/random, stale-query fences, malformed page and explicit refresh; traversal **1733.436 ms** on this desktop fixture |
++| `TestApp -CommandTimeoutSeconds 90` | **99 checks, zero failures**; existing menus, account storage, actual five-lap racing and PB persistence |
++| `TestScript -ScriptPath res://tests/test_menu_loading.gd -CommandTimeoutSeconds 90` | **39 checks, zero failures**; compilation supersession, bounded cache, downloads, optional records and race availability |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **428 scripts, zero failures** |
++| Scoped `git diff --check` and reverse checkpoint check | Pass |
++
++Initial fixture assertions incorrectly compared typed in-memory metadata with JSON's numerical representation and included hidden diagnostic labels when checking visible UI. Those assertions now compare every metadata value through its actual JSON representation and inspect visible controls; no product requirement was relaxed. The final capture also removes the misleading Connect prompt from the warm list.
++
++Inspected [uncached loading](evidence/startup-discovery-2026-10-10/cold-start-loading.png), [cached cards before the reply](evidence/startup-discovery-2026-10-10/warm-start-cards.png), and [confirmed empty search](evidence/startup-discovery-2026-10-10/confirmed-empty-search.png). These use the existing 5,000-track metadata fixture and delayed mock responses; they are not a live community screenshot, new races or shipping sample content.
++
++No phone attachment check or physical-device test, Android export/install, full Validate, backend update or production action was performed. The fix is local client code and requires a rebuilt/restarted app. A genuinely uncached first launch must receive one metadata page before it can show real tracks; it never fabricates content or claims that unresolved data is empty. Remaining acceptance: actual device startup after cached/uncached login, service failures and account changes.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 START01-START03/RR06/V03/V05/B07/R01/Q01: owner reports startup No tracks found flash and authorizes preloading. Discovery primes during account/service startup; identical pending reads coalesce with Free Race activation. Bounded20-card/3-query/24h atomic server-account-query cache restores original total/cards while fresh cursor-free first page loads; successful response replaces old pages, different queries/accounts stay fenced. Unknown/error/confirmed-empty states remain distinct and stale loading controls removed; Connect prompt suppressed with cached/loading cards. Native graphical21/paging269(5000tracks1733.436ms)/App99/loading39/parser428 pass; three inspected captures/task-only checkpoint. No phone attachment/device test/export-install/fullValidate/backend/deploy/player-score writes; first genuinely uncached page still requires network, client rebuild/restart and device acceptance remain. Files/commands/evidence: docs/STARTUP_DISCOVERY_2026_10_10.md.
++
+ 2026-10-10 MUS35/SND33/SND05/G01/R01/Q01/V06: owner removes background music from all5 driving biomes/practice. No race synchronized streams/decoders or menu fade leak; pause/retry/rewind/finish coast remain silent, race breath suppressed, actual results restore menu music/PB cue. Vehicle/weather/interface retained; preferences/rules/scoring unchanged. Soundtrack1156/flow29/native5-biome52/App99 checks pass; independent Music PCM0, Audio1280 capture inspected. Full Audio-inclusive settings284 has one retained camera touch-strength fixture failure; ineffective input experiment reverted, no runtime camera edit/weakening. No phone attachment/device listening/export-install/full Validate/backend/deploy. Files/commands/captures/task-only checkpoint/acceptance: docs/BIOME_MUSIC_OFF.md.
+ 
+ 2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 START01-START03/RR06/V03/V05/B07/R01/Q01: owner reports startup No tracks found flash and authorizes preloading. Discovery primes during account/service startup; identical pending reads coalesce with Free Race activation. Bounded20-card/3-query/24h atomic server-account-query cache restores original total/cards while fresh cursor-free first page loads; successful response replaces old pages, different queries/accounts stay fenced. Unknown/error/confirmed-empty states remain distinct and stale loading controls removed; Connect prompt suppressed with cached/loading cards. Native graphical21/paging269(5000tracks1733.436ms)/App99/loading39/parser428 pass; three inspected captures/task-only checkpoint. No phone attachment/device test/export-install/fullValidate/backend/deploy/player-score writes; first genuinely uncached page still requires network, client rebuild/restart and device acceptance remain. Files/commands/evidence: docs/STARTUP_DISCOVERY_2026_10_10.md.
++
+ 2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
+ 
+ 2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.

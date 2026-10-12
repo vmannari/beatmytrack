@@ -1,0 +1,220 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -66,6 +66,7 @@
+ var _cloud_catalog_state: Array = []
+ var _page_dirty: bool = false
+ var _detail_state: Array = []
++var _detail_loading: bool = false
+ var _hero_state: Array = []
+ 
+ func _ready() -> void:
+@@ -602,7 +603,7 @@
+ 	track_selected.emit(track)
+ 	_show_detail()
+ 	if cloud != null and track.metadata.has("cloud_version"):
+-		_load_cloud_detail(track) # Optional records hydrate after the playable selection.
++		_load_cloud_detail(track)
+ 
+ func _load_cloud_detail(track: NativeTrack) -> void:
+ 	var serial: int = _selection_serial
+@@ -636,7 +637,10 @@
+ 		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
+ 			_cloud_detail_pending.erase(request_key)
+ 			return
+-		if comparison.ok: _apply_cloud_comparison(snapshot,comparison.data,track)
++		if not comparison.ok or not _apply_cloud_comparison(snapshot,comparison.data,track):
++			snapshot.comparison_error = "Comparison unavailable"
++	else:
++		snapshot.comparison_error = "Sign in to compare"
+ 	_cloud_detail_pending.erase(request_key)
+ 	discovery.records_by_rules_key[key] = snapshot
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+@@ -673,8 +677,12 @@
+ 			snapshot.population = int(histogram.comparison.population)
+ 	snapshot.comparison_scope = "all"
+ 	snapshot.comparison_bins = RaceComplete.COMPARISON_BINS
++	snapshot.erase("comparison_error")
+ 	snapshot.erase("test_population")
+ 	return true
++
++static func _comparison_ready(snapshot: Dictionary) -> bool:
++	return snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS and snapshot.get("race_distribution") is Dictionary and snapshot.get("lap_distribution") is Dictionary
+ 
+ static func _cached_frame_query(distribution: Dictionary, metric: String) -> String:
+ 	var edges: Array = distribution.get("edges_ms",[])
+@@ -750,7 +758,7 @@
+ 	var indent := Control.new()
+ 	indent.custom_minimum_size.x = 4
+ 	row.add_child(indent)
+-	row.add_child(ResultsIcons.view(icon,20))
++	row.add_child(ResultsIcons.view(icon,26 if icon == "podium" else 20))
+ 	var label := MenuStyle.label(caption,21,true)
+ 	label.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	row.add_child(label)
+@@ -766,6 +774,24 @@
+ 		snapshot.erase("race_distribution")
+ 		snapshot.erase("lap_distribution")
+ 	var available: bool = _selected_is_available()
++	if cloud != null and selected_track.metadata.has("cloud_version") and not _comparison_ready(snapshot) and not cloud.client.signed_in():
++		snapshot.comparison_error = "Sign in to compare"
++	if available and cloud != null and selected_track.metadata.has("cloud_version") and not _comparison_ready(snapshot) and not snapshot.has("comparison_error"):
++		# Reveal the track and both charts together, using a complete compatible
++		# cache immediately or retaining the previous view until the read finishes.
++		_detail_loading = true
++		race_button.disabled = selecting or _resolve_thread != null
++		race_button.text = "RACE "+str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper()
++		if detail.get_child_count() == 0:
++			detail.hide()
++			pending_records.text = "Loading..."
++			pending_records.show()
++		return
++	if _detail_loading:
++		_detail_loading = false
++		_detail_state = []
++	pending_records.hide()
++	detail.show()
+ 	var current: Array = [selected_track,key,available,pb,snapshot,str(selected_track.metadata.get("cloud_version",""))]
+ 	if current == _detail_state:
+ 		_show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper() if available else "CHOOSE A TRACK",str(selected_track.metadata.get("theme","pine")) if available else "pine")
+@@ -835,7 +861,7 @@
+ 		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+ 		if histogram.snapshot.get("bins",[]).is_empty():
+ 			histogram.hide()
+-			column.add_child(MenuStyle.label("No times yet",12,true))
++			column.add_child(MenuStyle.label(str(snapshot.get("comparison_error","No times yet")),12,true))
+ 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+ 		histogram.custom_minimum_size = Vector2(112,96)
+ 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -10,6 +10,7 @@
+ 	var packet: Dictionary
+ 	var paths: Array[String] = []
+ 	var hold: bool = false
++	var fail: bool = false
+ 	func signed_in() -> bool: return true
+ 	func cancel_public_reads(_owner: int) -> void: pass
+ 	func request_public(path: String, _owner: int) -> Dictionary:
+@@ -18,6 +19,7 @@
+ 	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
+ 		paths.append(path)
+ 		while hold: await get_tree().process_frame
++		if fail: return {"ok":false,"data":{},"error":"Fixture unavailable"}
+ 		return {"ok":true,"data":packet,"error":""}
+ 
+ class Cloud extends Node:
+@@ -60,7 +62,11 @@
+ 	MenuStyle.fill(browser)
+ 	await settle()
+ 	var initial_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+-	check(initial_chart != null and initial_chart.snapshot.get("bins",[]).is_empty(),"old coarse cache never flashes before the finer response")
++	check(initial_chart == null or initial_chart.snapshot.get("bins",[]).is_empty(),"old coarse cache never flashes before the finer response")
++	check(not ui_text(browser).contains("No times yet"),"first loading frame never claims the track has no times")
++	if DisplayServer.get_name() != "headless":
++		capture = true
++		await screenshot("initial-loading")
+ 	await browser._load_cloud_detail(track)
+ 	var key: String = browser.records.key_for(track,HandlingSelection.config())
+ 	var snapshot: Dictionary = browser.discovery.record_snapshot(key)
+@@ -129,9 +135,54 @@
+ 		var unraced: NativeTrack = TrackCompiler.compile(document)
+ 		unraced.metadata.cloud_version = "unraced-fixture-%d" % index
+ 		browser.catalog.entries.append({"id":unraced.identity,"version_id":unraced.metadata.cloud_version,"source":"cloud","name":document.name,"creator":"Beat my track","theme":"pine"})
++		client.hold = true
++		var previous_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
++		var previous_snapshot: Dictionary = previous_chart.snapshot.duplicate(true)
+ 		browser._finish_selection({"track":unraced,"draft":{}})
+ 		await settle()
++		var loading_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
++		check(loading_chart == previous_chart and loading_chart.snapshot == previous_snapshot,"cold track keeps the previously displayed histogram until its data arrives")
++		check(not ui_text(browser).contains("No times yet"),"pending track selection never flashes an empty histogram message")
++		check(not browser.race_button.disabled,"optional comparison loading never blocks a resolved track from racing")
++		for frame: int in range(12):
++			await process_frame
++			check(browser.find_child("RaceDistribution",true,false) == previous_chart and not ui_text(browser).contains("No times yet"),"delayed histogram keeps the complete previous view on frame %d" % frame)
++		await screenshot("track-%d-waiting" % index)
++		client.hold = false
++		await settle()
+ 		check_no_time_charts(browser,unraced)
++		check(not browser._detail_loading,"ready comparison releases the pending track reveal")
++		await screenshot("track-%d-ready" % index)
++	# Revisit a complete cache: values appear immediately while refresh is pending.
++	client.hold = true
++	browser._finish_selection({"track":track,"draft":{}})
++	await settle()
++	check(not browser._detail_loading and not browser.race_button.disabled,"warm track cache reveals immediately without blocking racing")
++	check_no_time_charts(browser,track)
++	client.hold = false
++	await settle()
++	# Service failure releases the view with an honest unavailable state; only a
++	# successful zero-population response may claim there are no recorded times.
++	browser.discovery.records_by_rules_key.clear()
++	client.fail = true
++	browser._finish_selection({"track":track,"draft":{}})
++	await settle()
++	check(not browser._detail_loading and not browser.race_button.disabled,"comparison failure never leaves the track loading or blocks racing")
++	check(ui_text(browser).contains("Comparison unavailable") and not ui_text(browser).contains("No times yet"),"failed histogram reads never masquerade as an empty population")
++	client.fail = false
++	client.packet = client.packet.duplicate(true)
++	for metric: String in ["race","best_lap"]:
++		client.packet[metric].bins = []
++		client.packet[metric].population = 0
++		client.packet[metric].minimum_ticks = null
++		client.packet[metric].maximum_ticks = null
++	client.hold = true
++	browser.call_deferred("_load_cloud_detail",track)
++	await settle()
++	check(not ui_text(browser).contains("No times yet"),"zero-population response is not guessed while the read is pending")
++	client.hold = false
++	await settle()
++	check(ui_text(browser).contains("No times yet") and not ui_text(browser).contains("Comparison unavailable"),"confirmed empty comparison shows the truthful empty state and clears the prior error")
+ 	browser.free()
+ 	cloud.free()
+ 	client.free()
+--- a/game/tests/test_menu_loading.gd
++++ b/game/tests/test_menu_loading.gd
+@@ -202,6 +202,8 @@
+ 	signal finished
+ 	var client: Node = self
+ 	var calls: int = 0
++	func signed_in() -> bool: return false
++	func paged_discovery_available() -> bool: return false
+ 	func test_drivers_available() -> bool: return false
+ 	func cancel_public_reads(_owner: int) -> void: pass
+ 	func request_public(_path: String, _owner: int) -> Dictionary:
+--- a/docs/FREE_RACE_HISTOGRAMS.md
++++ b/docs/FREE_RACE_HISTOGRAMS.md
+@@ -19,3 +19,23 @@
+ Inspected captures: [no personal time, compact](evidence/free-race-histograms-2026-10-09/discovery-no-time-960x540.png), [with personal times](evidence/free-race-histograms-2026-10-09/discovery-1280x720.png). Both charts fit completely at **1280×720, 960×540 and 1600×720**, without overlap and with aligned baselines. The retained Silmukka fixture contains actual previously verified driver distributions and illustrative player UI values; the no-time case removes own-best/comparison fields and local records. It generates no races and writes no player/server records. Its sparse carousel and single public standings row are fixture setup, not a live discovery capture.
+ 
+ Limitations: comparison records still require the existing authenticated service access, or an already cached snapshot. Tracks with no recorded comparison times remain empty; no histogram samples or player markers are invented. No phone attachment check or physical-device test was performed. No Android export/install, full Validate, backend deployment or production action was performed. Remaining acceptance: owner/device visual review in the populated Free Race menu.
++
++## Loading-state correction, 2026-10-09
++
++Requirements RR06/V03/V05/Q01/R01/TD06/TD08. The owner reports a brief “No times yet” flash before the real histograms arrive. Previously `_finish_selection()` drew the newly selected track with an empty comparison snapshot before starting its optional read. Unknown data was presented as an empty population.
++
++`track_browser.gd` now reveals the selected track and both histograms together. A complete cache with the current 16-bin contract is shown immediately; an uncached selection retains the previous complete hero and charts until its response arrives. A first uncached view uses the existing small loading area. First-time service failures show “Comparison unavailable”; guests without cached comparisons see “Sign in to compare”. Only a successful, validated zero-population response shows “No times yet”. Successful reads clear the previous failure. Actual race availability remains independent of optional comparison reads, and local PBs remain visible for guest/offline entry. Existing selection/vehicle guards, deduplicated reads, unified driver field, exact server counts, five laps and public isolation remain intact.
++
++Changed files for this correction: `game/ui/track_browser.gd`, `game/tests/test_unified_histograms.gd`, `game/tests/test_menu_loading.gd`, this document, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. The existing menu test's guest-only delayed-board double now implements the production `signed_in` and `paged_discovery_available` capability methods; no assertion was removed. [Task-only Git checkpoint](evidence/free-race-histogram-loading-2026-10-09/scoped-change.patch).
++
++Actual verification through pinned `scripts/dev.ps1`, with isolated `APPDATA=build/free-race-histogram-loading-*-user` and `BMT_RESULTS_EVIDENCE=docs/evidence/free-race-histogram-loading-2026-10-09`:
++
++- `TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical -CommandTimeoutSeconds 90`: **141 checks, zero failures**. Includes first frame, 24 individually observed delayed frames across two uncached tracks, warm cache, service failure, confirmed empty population, both charts/no personal times, optional racing and 11 native screenshots. [Log](evidence/free-race-histogram-loading-2026-10-09/histograms-final.log).
++- `TestApp -CommandTimeoutSeconds 90`: **99 checks, zero failures**, including stored PBs after an offline app relaunch. [Log](evidence/free-race-histogram-loading-2026-10-09/app-final.log).
++- `TestScript -ScriptPath res://tests/test_discovery_pages.gd -CommandTimeoutSeconds 90`: **269 checks, zero failures**, including 5,000-track browsing and selected-track availability. [Log](evidence/free-race-histogram-loading-2026-10-09/paging-final.log).
++- `TestScript -ScriptPath res://tests/test_menu_loading.gd -CommandTimeoutSeconds 90`: **38 checks, zero failures**, preserving coherent selection geometry and playable cached tracks while optional standings wait. [Log](evidence/free-race-histogram-loading-2026-10-09/menu-loading-final.log).
++- Scoped `git diff --check` and reverse Git checkpoint check: pass.
++
++The flash was reproduced before the fix: **80 checks, five failures** covering the first frame and both delayed selections. [Baseline log](evidence/free-race-histogram-loading-2026-10-09/before-fix.log). An initial overly broad reveal delay hid the offline app fixture's PB; guest/offline entry was corrected and the unchanged 99-check app suite passed. The menu fixture's missing cloud capability method was completed before its final pass.
++
++Inspected native [waiting](evidence/free-race-histogram-loading-2026-10-09/track-0-waiting.png) and [ready](evidence/free-race-histogram-loading-2026-10-09/track-0-ready.png) captures show the previous complete charts retained before the new hero appears. The fixture reuses retained verified Silmukka distributions and presentation-only synthetic track names; it is not a live catalog race or server write. Network data cannot be displayed before it arrives; cold selections wait to reveal, while compatible cached values appear immediately. No phone attachment check, physical-device test, Android export/install, full Validate, backend or production deployment was performed for this correction. Remaining acceptance: owner/device review of transitions under real service latency.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: owner-reported Free Race histogram loading flash reproduced with five failures. Complete compatible cache shows immediately; cold target retains prior hero/charts until both metrics arrive, first entry uses existing loading area. Confirmed empty responses alone show No times yet; failures/guest access remain distinct, optional race availability/local PBs retained. Final graphical141/App99/paging269/menu38 checks pass; 11 native captures retained, waiting/ready pair inspected. Additive test-double capability repair; initial offline PB fixture regression corrected. No phone attachment/device test/Android export-install/full Validate/backend or production deployment. Files, actual commands, scoped Git checkpoint and remaining latency/device acceptance: docs/FREE_RACE_HISTOGRAMS.md (Loading-state correction).
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: owner-reported Free Race histogram loading flash reproduced with five failures. Complete compatible cache shows immediately; cold target retains prior hero/charts until both metrics arrive, first entry uses existing loading area. Confirmed empty responses alone show No times yet; failures/guest access remain distinct, optional race availability/local PBs retained. Final graphical141/App99/paging269/menu38 checks pass; 11 native captures retained, waiting/ready pair inspected. Additive test-double capability repair; initial offline PB fixture regression corrected. No phone attachment/device test/Android export-install/full Validate/backend or production deployment. Files, actual commands, scoped Git checkpoint and remaining latency/device acceptance: docs/FREE_RACE_HISTOGRAMS.md (Loading-state correction).
++

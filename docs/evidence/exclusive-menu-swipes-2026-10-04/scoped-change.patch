@@ -1,0 +1,274 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -356,6 +356,7 @@
+ 		var id: String = item[0]
+ 		var button: Button = MenuStyle.tab(item[1], _new_document if id == "create" else _open_race_area if id == "tracks" else _navigate_menu_page.bind(id), screen == id or (id == "tracks" and screen == "rivalry") or (id == "create" and screen in ["biome","drafts"]))
+ 		button.name = "Tab_" + id
++		button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+ 		button.custom_minimum_size.y = 64
+ 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		tabs.add_child(button)
+@@ -508,7 +509,9 @@
+ 	if menu_edge_motion != null:
+ 		menu_edge_motion.kill()
+ 		menu_edge_motion = null
+-	if is_instance_valid(menu_body): menu_body.position.x = 0.0
++	if is_instance_valid(menu_body):
++		menu_body.position.x = 0.0
++		_set_menu_preview_input(menu_body, false)
+ 	menu_drag_offset = 0.0
+ 	menu_neighbor_direction = 0
+ 	for neighbor: Dictionary in menu_neighbors.values():
+@@ -516,6 +519,9 @@
+ 
+ func _drag_menu_edge(distance: float) -> void:
+ 	if not is_instance_valid(menu_body): return
++	# The page owns this horizontal gesture until it settles. No button on its
++	# moving content may accept a parallel platform input and rebuild the page.
++	_set_menu_preview_input(menu_body, true)
+ 	var direction: int = 1 if distance < 0.0 else -1
+ 	menu_neighbor_direction = direction
+ 	for neighbor_direction: int in menu_neighbors:
+@@ -536,7 +542,10 @@
+ 	return minf(MENU_PAGE_GAP, absf(distance) * 0.5)
+ 
+ func _settle_menu_edge() -> void:
+-	if not is_instance_valid(menu_body) or is_zero_approx(menu_body.position.x): return
++	if not is_instance_valid(menu_body): return
++	if is_zero_approx(menu_body.position.x):
++		_set_menu_preview_input(menu_body, false)
++		return
+ 	if menu_edge_motion != null: menu_edge_motion.kill()
+ 	menu_edge_motion = create_tween().set_parallel(true)
+ 	var edge: bool = is_zero_approx(menu_drag_offset)
+@@ -551,6 +560,7 @@
+ 		menu_edge_motion.tween_method(_return_menu_drag.bind(menu_body.position.x, neighbor, neighbor_start, menu_body_slot.size.x * menu_neighbor_direction), 0.0, 1.0, duration)
+ 	menu_edge_motion.chain().tween_callback(func() -> void:
+ 		menu_edge_motion = null
++		_set_menu_preview_input(menu_body, false)
+ 		menu_drag_offset = 0.0
+ 		menu_neighbor_direction = 0
+ 		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide())
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -15,16 +15,20 @@
+ var target: BaseButton
+ var last_drag_distance: float = 0.0
+ var commit_direction: int = 0
++var intent_sign: float = 0.0
++var intent_origin: float = 0.0
++var intent_peak: float = 0.0
+ const CLAIM_DISTANCE: float = 6.0
+ const PAGE_DISTANCE: float = 20.0
+ const CANCEL_DISTANCE: float = 6.0
++const REVERSE_DISTANCE: float = 20.0
+ 
+ func _input(event: InputEvent) -> void:
+ 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+-	if event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION:
+-		# Godot dispatches a touch's emulated mouse event BEFORE the touch itself.
+-		# A moving button stays under the finger: its mouse UP would activate it,
+-		# rebuild the original page and discard the pending touch release.
++	if event is InputEventMouse and (event.device == InputEvent.DEVICE_ID_EMULATION or pointer != -1):
++		# Godot dispatches emulated mouse input before its touch; some platforms
++		# also deliver a parallel mouse stream. During our touch, neither stream
++		# may activate a moving button and rebuild the page before touch UP.
+ 		if pointer != -1:
+ 			get_viewport().set_input_as_handled()
+ 		elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+@@ -49,6 +53,9 @@
+ 			rejected = false
+ 			last_drag_distance = 0.0
+ 			commit_direction = 0
++			intent_sign = 0.0
++			intent_origin = 0.0
++			intent_peak = 0.0
+ 			target = _button_at(menu, origin)
+ 			gesture_started.emit()
+ 			# Match the carousel's tap dispatch; a swipe never activates its starting button.
+@@ -64,7 +71,7 @@
+ 				var horizontal_release: bool = dragging or absf(distance.x) > absf(distance.y) * 1.05
+ 				if forward_release and horizontal_release and absf(distance.x) >= PAGE_DISTANCE:
+ 					dragging = true
+-					commit_direction = 1 if distance.x < 0.0 else -1
++					_update_intent(distance.x)
+ 			var navigate: bool = dragging and not rejected and not event.canceled and not _modal_open(modal_root) and commit_direction != 0
+ 			var direction: int = commit_direction
+ 			var tap: BaseButton = target
+@@ -87,15 +94,31 @@
+ 			# gesture to establish horizontal intent after initial vertical jitter.
+ 			if absf(distance.x) > absf(distance.y) * 1.05: dragging = true
+ 		if dragging and not rejected:
++			_update_intent(distance.x)
+ 			last_drag_distance = distance.x
+-			# Hysteresis lets a short completed swipe survive finger relaxation,
+-			# while returning close to the origin or crossing it cancels that direction.
+-			if commit_direction != 0 and -commit_direction * distance.x <= CANCEL_DISTANCE:
+-				commit_direction = 0
+-			if absf(distance.x) >= PAGE_DISTANCE:
+-				commit_direction = 1 if distance.x < 0.0 else -1
+ 			drag_changed.emit(distance.x)
+ 		if dragging or is_instance_valid(target): get_viewport().set_input_as_handled()
++
++func _update_intent(distance: float) -> void:
++	var direction: float = signf(distance)
++	if direction != intent_sign:
++		intent_sign = direction
++		intent_origin = 0.0
++		intent_peak = direction * distance
++		commit_direction = 0
++	var progress: float = intent_sign * distance
++	if commit_direction != 0:
++		intent_peak = maxf(intent_peak, progress)
++		if progress <= CANCEL_DISTANCE or intent_peak - progress >= REVERSE_DISTANCE:
++			# A deliberate backward stroke cancels even far from the press. It
++			# takes fresh forward travel to rearm, rather than a noisy UP event.
++			commit_direction = 0
++			intent_origin = distance
++	else:
++		if intent_sign * (distance - intent_origin) < 0.0: intent_origin = distance
++		if progress >= PAGE_DISTANCE and intent_sign * (distance - intent_origin) >= PAGE_DISTANCE:
++			commit_direction = -int(intent_sign)
++			intent_peak = progress
+ 
+ func _owns_gesture(node: Node, location: Vector2) -> bool:
+ 	if node is Control:
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -160,6 +160,7 @@
+ 		await swipe(Vector2(dimensions.x * 0.55, dimensions.y * 0.45), Vector2(-150,0))
+ 		check(app.screen == "create" and app.canvas.pan != before, "editor canvas keeps its pan gesture")
+ 		await check_engine_button_swipe(dimensions)
++		await check_parallel_mouse_swipe()
+ 	app.queue_free()
+ 	await process_frame
+ 	print("MENU_PAGE_SWIPE: %d checks, %d failures" % [checks, failures])
+@@ -235,6 +236,30 @@
+ 	event.pressed = pressed
+ 	Input.parse_input_event(event)
+ 	Input.flush_buffered_events()
++
++func check_parallel_mouse_swipe() -> void:
++	await show("biome")
++	var card: Button = app.root_ui.find_child("Biome_night_city",true,false)
++	var actions: Array[int] = [0]
++	card.pressed.connect(func() -> void: actions[0] += 1)
++	var shell: Control = app.root_ui
++	var point: Vector2 = card.get_global_rect().get_center()
++	var end: Vector2 = point - Vector2(point.x * 0.75,0)
++	# A GUI mouse press may precede the touch stream on a touchscreen platform.
++	engine_mouse(point,true)
++	engine_touch(point,true)
++	await process_frame
++	engine_drag(end,end-point)
++	await process_frame
++	await create_timer(0.8).timeout
++	# Reported platform mouse events need not use Godot's emulation device ID.
++	engine_mouse(end,false)
++	engine_touch(end,false)
++	await process_frame
++	check(actions[0] == 0 and app.root_ui == shell, "parallel platform mouse release cannot rebuild the page during a held touch swipe")
++	check(app.screen == "garage", "held swipe commits despite a parallel mouse stream")
++	await settle()
++	await show("tracks")
+ 
+ func engine_drag(point: Vector2, relative: Vector2) -> void:
+ 	var event := InputEventScreenDrag.new()
+@@ -334,6 +359,30 @@
+ 	await settle()
+ 	check(app.screen == "tracks" and is_zero_approx(app.menu_body.position.x), "deliberately dragging back near the starting point cancels commitment")
+ 	touch(point,true)
++	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-90,0))
++	touch(point + Vector2(-91,0),false)
++	check(app.screen == "tracks" and app.menu_body.position.x == -90.0 and app.menu_edge_motion != null, "backward stroke far from the origin cancels with a smooth return despite forward lift jitter")
++	await settle()
++	check(app.menu_body.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE, "canceled swipe restores page interaction")
++	touch(point,true)
++	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-70,0))
++	drag(point + Vector2(-130,0))
++	drag(point + Vector2(-80,0))
++	touch(point + Vector2(-80,0),false)
++	await settle()
++	check(app.screen == "tracks", "repeated back-and-forth strokes ending backward stay on the original page")
++	touch(point,true)
++	drag(point + Vector2(-150,0))
++	drag(point + Vector2(-90,0))
++	drag(point + Vector2(-110,0))
++	touch(point + Vector2(-110,0),false)
++	await settle()
++	check(app.screen == "biome", "a fresh short forward stroke after cancellation rearms the intended page change")
++	await swipe(point, Vector2(20,0))
++	check(app.screen == "tracks", "short reverse returns after rearmed commitment")
++	touch(point,true)
+ 	drag(point + Vector2(-20,0))
+ 	drag(point + Vector2(-8,0))
+ 	touch(point,false)
+@@ -458,6 +507,6 @@
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/held-menu-swipes-2026-10-04")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/exclusive-menu-swipes-2026-10-04")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")
+--- a/docs/MENU_PAGE_SWIPES.md
++++ b/docs/MENU_PAGE_SWIPES.md
+@@ -194,3 +194,40 @@
+ Actual **DN2103** verification after confirmed install: choose Guest, open Create, DOWN (2150,500) over a biome card, MOVE through (2000,500), (1500,500), (800,500), (220,500), remain still **1.5 seconds**, then UP (220,500). [Held content](evidence/held-menu-swipes-2026-10-04/phone-fixed-held.png) remains displaced with Garage visible; [release](evidence/held-menu-swipes-2026-10-04/phone-fixed-committed.png) completes Garage. Inspected both captures. This exercises the user-confirmed starting area with a near-full-width stroke and stationary hold.
+ 
+ Initial native header-origin swipe with a one-second rest already passed, showing why a static-area-only check was insufficient. A later initial card attempt was interrupted by sign-in/relaunch; restored Guest Create and repeated it, with successful held/committed screenshots retained as `phone-initial-*`, without claiming controlled pre-fix device reproduction. The decisive pre-fix reproduction is the full-engine regression above. A post-install attempt to check a short return and normal tap encountered an independently active desert race instead of Create; captures are renamed `interrupted-phone-*` and **not** counted as menu acceptance. Last observed phone state was the paused race, so no further blind input was sent. Temporary remote screenshot removed. No human-finger subjective acceptance, new video/performance/thermal measurements, full Validate/replay, real Google or ad test, or service deployment. Other shared-tree work remains intact.
++
++## Deliberate reversal, exclusive touch and tab outlines (2026-10-04)
++
++Requirements **R01/V03/V04/V05/Q01**. The owner reports that back-and-forth swiping sometimes changes pages and asks to remove the yellow outline that remains on the last tapped tab after a swipe. This follows the held Create-biome-card release complaint above.
++
++Page-change intent still arms after **20 logical units**. An actual backward MOVE of **20 units from the stroke's furthest position** now cancels it, including when the finger remains far from the original press. Returning within six units or crossing the origin also clears that direction. A new 20-unit forward stroke from the reversal's trough can rearm it; a tiny forward UP cannot. Small relaxation remains accepted: the existing 20-to-eight-unit test still commits. Stationary holds have no timeout. Canceled movement uses the existing shared smootherstep return from the exact displayed position, keeping both pages and their gutter together.
++
++Full-engine dispatch with an explicit parallel real-mouse DOWN/UP stream exposes another input path: the mouse release activates the moving biome card before touch UP, rebuilding Create and losing the swipe. The previous emulation-only guard fails four checks across two viewport sizes. While page navigation owns a touch, **all parallel mouse events** are now consumed. The moving body's native mouse/focus subtree gate also prevents its controls from acting during drag/return and restores them on completion, cancellation, zero-offset release or a new press. Ordinary desktop mouse, single touch taps, inner carousel/range/editor input and modal ownership remain covered. The identity of any additional native mouse stream in the owner's original physical gesture was not instrumented; this is a reproduced failure path and defensive correction, not proof of that device event identity.
++
++Primary Race/Create/Garage tabs now override the focus style with an empty box. Their actual selected-page background/text continue to update, and the last tapped tab no longer retains a yellow focus rectangle after swiping. Fixed navigation, live neighboring content, 64-unit gutter and outer-end spring are retained. No simulation/rules/schema/backend/ad change.
++
++Changed files: `game/ui/menu_page_swipe.gd` (input exclusivity/reversal tracking), `game/core/app.gd` (moving-body input gate/restore and tab focus style), `game/tests/test_menu_page_swipe.gd` (parallel-input, repeated reversal, fresh-stroke rearm and interaction restoration), this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `docs/evidence/exclusive-menu-swipes-2026-10-04/`. Concurrent menu-quality/loading/account/backend work is preserved; the scoped before/after patch contains this task's edits only. No mixed-workspace commit.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned **4.7.2.stable.official.ed1daf0bf**:
++
++| Command/action | Actual result |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical`, before fix | **250 checks, four reproduced failures**, `TestScript-37780`: parallel mouse release rebuilds Create and loses held commitment at both viewport sizes. |
++| Same command, final implementation | **260 checks, zero failures**, `TestScript-29212`; includes 150-to-90-unit cancellation with a noisy forward UP, repeated back-and-forth, fresh 20-unit rearm, small relaxation, full-engine held card swipes/taps/real mouse/carousel and existing header/gutter/modal/editor/end/return regressions. Twenty-six desktop/compact screenshots. |
++| `TestApp` | **97 checks, zero failures**, `TestApp-23500`. |
++| `ExportAndroid -QuickValidation -CommandTimeoutSeconds 600` | **Passed**, `ExportAndroid-36948`: import/startup, driving **72**, catalog **21**, menus **48**, signed normal Gradle APK with matching templates. Existing three driving shutdown ObjectDB warnings remain. |
++| Preserved entry-point `InstallAndroid -DeviceSerial PRQKU4U4PREQNRWG -AdbPath <SDK adb>` | **Success**, `build/exclusive-menu-deploy/build/logs/InstallAndroid-12064`. Unmodified entry script and exact APK copied under this isolated deployment directory to prevent another shared build from replacing the installation; no export/preset overrides. |
++| Same entry point `LaunchAndroid` with explicit serial/SDK adb | **Status ok**, wait **484 ms**, `LaunchAndroid-6520`; Android reports launch state `UNKNOWN (0)`, not a claimed cold-start measurement. |
++| Pull installed APK and compare SHA-256 | Whole APK and compiled `menu_page_swipe.gdc`/`app.gdc` match the preserved tested build. See `built-resources.json` and `installed-resources.json`. |
++| Scoped `git diff --check` and patch reverse check | Passed; reverse check uses `--ignore-space-change` for mixed CRLF/LF context. |
++
++Preserved APK: `build/exclusive-menu-phone.apk`, SHA-256 **74090102F1C1B5FEC7FC478B9AE2E63398981F5BA67157251BA73434C961330B**. Focused failing/passing/export/install/launch logs, native phone commands/helper and scoped patch are retained with the evidence.
++
++Physical **DN2103** checks use native Android DOWN/MOVE/UP input, with 2400x1080 screenshots:
++
++- Tap Create: [tab has no yellow outline](evidence/exclusive-menu-swipes-2026-10-04/phone-tapped-create.png).
++- Card-started long swipe: DOWN (2150,500), MOVE through x=2000/1500/800/220 at y=500, rest **1.5 seconds**, then UP (220,500). Inspected [held neighboring content/gutter](evidence/exclusive-menu-swipes-2026-10-04/phone-long-held.png) and [committed Garage](evidence/exclusive-menu-swipes-2026-10-04/phone-long-committed.png); header remains fixed and the earlier Create tab has no lingering border.
++- Repeated back-and-forth: DOWN (2150,500), MOVE x=1500/1800/1550/1830, rest **0.8 seconds**, release at x=1830, still **320 physical pixels from the press**. Inspected [held offset](evidence/exclusive-menu-swipes-2026-10-04/phone-backtrack-held.png) and [returned Create](evidence/exclusive-menu-swipes-2026-10-04/phone-backtrack-returned.png); no biome selection or unintended page change.
++- Short card-started stroke: x=2150 to **2114**, rest **0.8 seconds**, then release. This **36-physical-pixel** movement commits [Garage](evidence/exclusive-menu-swipes-2026-10-04/phone-short-committed.png).
++- Race track-list swipe (1350,840) to (950,840), 450 ms, [keeps Race](evidence/exclusive-menu-swipes-2026-10-04/phone-carousel.png). The five device cards fit this wide screen, so this confirms independent carousel ownership rather than overflowing-list scrolling; the desktop fixture covers actual scrolling.
++
++The first launch capture shows a dozing phone. A wake/dismiss-unlocked-screen attempt briefly failed to capture; enumeration/retry recovered with `Awake` confirmed. The first long native attempt encountered an intervening Settings screen and is not counted; it was repeated successfully from confirmed Create after the cancellation check. No credentials/lock challenge bypassed. Temporary remote screenshot removed; last observed phone screen is Guest Race. No human-finger subjective acceptance, new video/frame-time/GPU/thermal/large-catalog benchmarks, other-device test, full Validate/replay, real Google/ad test or service deployment. The automated phone checks and desktop release samples do not establish every human input pattern or sustained smoothness.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner requests cancellation of back-and-forth page swipes and removal of lingering yellow tab borders, following held biome-card release failures. A deliberate 20-unit backward MOVE now clears intent even far from the origin; a fresh 20-unit forward stroke can rearm, while slight relaxation and held short strokes remain accepted. Parallel mouse input is consumed during page-owned touch, and moving content controls are gated until settling. Primary tab focus outline removed. Explicit parallel-input reproduction: 250 checks/four failures before fix; final graphical gestures 260/app 97 pass, focused pinned export driving 72/catalog 21/menus 48 pass. Exact APK installed/compiled resources verified on DN2103; native long held card stroke and 36-pixel held stroke commit, repeated back-and-forth returns to Create, carousel keeps Race, inspected tab outlines absent. First long attempt interrupted by Settings and repeated; dozing capture retry recovered. Existing shutdown warnings; human feel/full Validate/performance/other-device acceptance pending. Files, actual commands, evidence and scoped review checkpoint: docs/MENU_PAGE_SWIPES.md (Deliberate reversal, exclusive touch and tab outlines). Concurrent work preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner-requested menu correctness/quality/performance review completed. Primary navigation promotes cached pages; unchanged status signals retain cards/carousel settlement; hero/detail, route geometry, biome atlases and Theme are reused; native page-root mouse/focus gates replace recursive child rewrites. Fixed stale Garage Race/caption, filter reset, favorite hero and retained-card callback metadata. Final quality 23, graphical gestures 246, app 97, selection 38, rivalry 764, parser 291 and graphical capture 1744 checks pass; focused export driving 72/catalog 21/menus 48 passes. Final debug APK installed on physical DN2103: maximum measured tab frame 263.367 to 46.022 ms, maximum tab CPU call 108.203 to 4.152 ms, status median 5.889 to 0.454 ms; eight device swipes pass, native Garage/Create reset and input screenshots inspected. Probe markers removed; normal startup restored. Short-window process timings do not establish locked 60 fps, human finger feel or sustained thermal/other-device acceptance. No full physics Validate, backend/deployment or canonical change; concurrent work preserved. Files, actual commands, logs, screenshots, limitations and scoped review checkpoint: docs/MENU_QUALITY.md.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-04 R01/V03/V04/V05/Q01: owner requests cancellation of back-and-forth page swipes and removal of lingering yellow tab borders, following held biome-card release failures. A deliberate 20-unit backward MOVE now clears intent even far from the origin; a fresh 20-unit forward stroke can rearm, while slight relaxation and held short strokes remain accepted. Parallel mouse input is consumed during page-owned touch, and moving content controls are gated until settling. Primary tab focus outline removed. Explicit parallel-input reproduction: 250 checks/four failures before fix; final graphical gestures 260/app 97 pass, focused pinned export driving 72/catalog 21/menus 48 pass. Exact APK installed/compiled resources verified on DN2103; native long held card stroke and 36-pixel held stroke commit, repeated back-and-forth returns to Create, carousel keeps Race, inspected tab outlines absent. First long attempt interrupted by Settings and repeated; dozing capture retry recovered. Existing shutdown warnings; human feel/full Validate/performance/other-device acceptance pending. Files, actual commands, evidence and scoped review checkpoint: docs/MENU_PAGE_SWIPES.md (Deliberate reversal, exclusive touch and tab outlines). Concurrent work preserved.
++
+ 2026-10-04 R01/V03/V04/V05/Q01: owner-requested menu correctness/quality/performance review completed. Primary navigation promotes cached pages; unchanged status signals retain cards/carousel settlement; hero/detail, route geometry, biome atlases and Theme are reused; native page-root mouse/focus gates replace recursive child rewrites. Fixed stale Garage Race/caption, filter reset, favorite hero and retained-card callback metadata. Final quality 23, graphical gestures 246, app 97, selection 38, rivalry 764, parser 291 and graphical capture 1744 checks pass; focused export driving 72/catalog 21/menus 48 passes. Final debug APK installed on physical DN2103: maximum measured tab frame 263.367 to 46.022 ms, maximum tab CPU call 108.203 to 4.152 ms, status median 5.889 to 0.454 ms; eight device swipes pass, native Garage/Create reset and input screenshots inspected. Probe markers removed; normal startup restored. Short-window process timings do not establish locked 60 fps, human finger feel or sustained thermal/other-device acceptance. No full physics Validate, backend/deployment or canonical change; concurrent work preserved. Files, actual commands, logs, screenshots, limitations and scoped review checkpoint: docs/MENU_QUALITY.md.
+ 
+ 2026-10-04 R01/V03/V04/V05/Q01: owner reports long swipe, stop and release snapping to the original page, and confirms Create biome start. Reproduced four failures through the full engine input path: touch-generated mouse UP reaches the moving biome button before ScreenTouch UP, selects/rebuilds Create and discards the pending swipe. Menu gesture owner now consumes duplicate emulated mouse input for its own static/button gestures while preserving carousel/range/modal input and real desktop mouse. Final graphical gesture 246 and app 97 checks pass; focused pinned export driving 72/catalog 21/menus 48 pass. Corrected APK installed/cold-launched on DN2103; card-started near-full-width swipe held 1.5 seconds commits Garage. Later short/tap phone attempt interrupted by an active race, so those device results are not counted; full-engine desktop checks verify them. Existing three driving shutdown warnings, human feel/full Validate/performance acceptance remain. Source files, actual commands, evidence and scoped checkpoint: docs/MENU_PAGE_SWIPES.md (Held biome swipes and duplicate input). Concurrent menu/account/backend work preserved.

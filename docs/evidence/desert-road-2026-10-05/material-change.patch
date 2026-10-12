@@ -1,0 +1,80 @@
+﻿diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index 4cfba04c..144a1e24 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -64,7 +64,7 @@ void fragment() {
+ 		// curves never inherit the coarse canonical surface-grid staircase.
+ 		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
+ 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
+-		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
++		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.22*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+ 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
+ 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+ 		wet_coverage *= asphalt_coverage;
+@@ -97,7 +97,7 @@ void fragment() {
+ 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
+ 		if (packed_sand) {
+ 			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
+-			ALBEDO *= 1.0-contact*0.16;
++			ALBEDO *= 1.0-contact*0.055;
+ 			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
+ 		}
+ 		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);
+diff --git a/game/track/surface_detail.gdshaderinc b/game/track/surface_detail.gdshaderinc
+index 45fc8dd2..3d24331f 100644
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -23,6 +23,9 @@ vec3 dune_sand(vec2 p) {
+ 	// Broad crests and wind ripples stay in the original artwork. Multi-metre
+ 	// mineral patches vary independently of the dune tile, without runtime noise.
+ 	vec3 sand = texture(dune_albedo,p/28.0).rgb;
++	// Keep the authored dune shapes; slightly strengthen their wind ripple values.
++	float ripple = dot(sand,vec3(0.2126,0.7152,0.0722));
++	sand *= 1.0+(ripple-0.5)*0.12;
+ 	vec2 mineral = texture(surface_factors,p/96.0+vec2(0.17,0.43)).gb;
+ 	vec3 pigment = mix(vec3(0.64,0.63,0.59),vec3(0.68,0.67,0.64),smoothstep(0.35,0.65,mineral.x));
+ 	// Preserve pale crest highlights and deepen the warmer sheltered faces.
+@@ -87,7 +90,8 @@ vec3 sand_detail(vec3 base, vec2 p) {
+ vec3 desert_shoulder(vec3 base, vec2 p) {
+ 	vec3 grit = texture(desert_apron,p/6.0).rgb;
+ 	float deposits = texture(surface_factors,p/38.0+vec2(0.29,0.61)).g;
+-	return grit*vec3(0.62,0.64,0.67)*(0.93+deposits*0.12);
++	// Quiet granular apron rather than a dark gravel outline.
++	return mix(base,grit*vec3(0.62,0.64,0.67),0.48)*(0.98+deposits*0.04);
+ }
+ 
+ // Shared world-space baked asphalt. Random repair/crack shapes are removed;
+@@ -165,10 +169,8 @@ vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
+ vec3 surface_detail(vec3 base, vec2 p, bool road) {
+ 	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
+ 	if (road && packed_sand) {
+-		vec3 grains = texture(surface_factors,p/32.0).rgb;
+ 		float broad = texture(surface_factors,p/64.0).g;
+-		float gravel = texture(surface_factors,p/12.0).g;
+-		return base * (0.96 + grains.b*0.045 + broad*0.025);
++		return base * (0.985 + broad*0.025);
+ 	}
+ 	if (road && wet_road) {
+ 		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
+@@ -196,7 +198,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
+ vec3 packed_wear(vec3 base, vec2 road_uv) {
+  float tracks = texture(surface_factors,road_uv/vec2(45.0,4.0)).g;
+  float broad = texture(surface_factors,road_uv/vec2(140.0,32.0)).g;
+- return base*(0.955+tracks*0.065+broad*0.025);
++ return base*(0.982+tracks*0.020+broad*0.016);
+ }
+ 
+ // Short, broken laying/wear grain aligned to the local road tangent. Sample
+diff --git a/game/vehicle/skid_trails.gd b/game/vehicle/skid_trails.gd
+index b402aec7..a50cb787 100644
+--- a/game/vehicle/skid_trails.gd
++++ b/game/vehicle/skid_trails.gd
+@@ -275,7 +275,7 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool
+ 		_:
+ 			result = Vector4(0.49, 0.34, 0.18, 0.78) if dirt > 0.025 else Vector4(0.10, 0.11, 0.105, 0.70)
+ 	if kind == 2 and desert:
+-		result = Vector4(0.61,0.48,0.30,0.50) # Soft dusty-brown pressed sand.
++		result = Vector4(0.66,0.55,0.39,0.28) # Restrained pressed-sand grooves.
+ 	if kind in [0,5,8,9]: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
+ 	else: result.w *= lerpf(0.12, 1.0, clampf(strength, 0.0, 1.0))
+ 	return result

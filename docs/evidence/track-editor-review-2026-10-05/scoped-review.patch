@@ -1,0 +1,388 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested track-editor performance/usability review completed. Ten findings: invisible autosave failure, synchronous large-map work, pending-preview loss, pinch committing movement, Surface/header overlap, missing Publish glyph, first-only issue navigation, phantom road-edge runs, rebuilt thumbnails and stale async workflow checks. Pinned desktop connected 96-piece opening 6.603 s, foreground save 1.221 s, later maximum frame interval 1.726 s; small approval 12.8-16.3 ms. Focused suites 312 checks pass; workflow 201 checks/two failures retained. Final disposable graphical observations exit 0, screenshots inspected. DN2103 attached; no phone editor test, export, runtime/schema/simulation fix, backend/service change or full Validate. Report, exact commands/logs, limitations and scoped review checkpoint: docs/TRACK_EDITOR_REVIEW_2026_10_05.md.
++
+ 2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-05 R01/T01-T04/V03-V05/Q01: owner-requested track-editor performance/usability review completed. Ten findings: invisible autosave failure, synchronous large-map work, pending-preview loss, pinch committing movement, Surface/header overlap, missing Publish glyph, first-only issue navigation, phantom road-edge runs, rebuilt thumbnails and stale async workflow checks. Pinned desktop connected 96-piece opening 6.603 s, foreground save 1.221 s, later maximum frame interval 1.726 s; small approval 12.8-16.3 ms. Focused suites 312 checks pass; workflow 201 checks/two failures retained. Final disposable graphical observations exit 0, screenshots inspected. DN2103 attached; no phone editor test, export, runtime/schema/simulation fix, backend/service change or full Validate. Report, exact commands/logs, limitations and scoped review checkpoint: docs/TRACK_EDITOR_REVIEW_2026_10_05.md.
++
+ 2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+diff --git a/docs/TRACK_EDITOR_REVIEW_2026_10_05.md b/docs/TRACK_EDITOR_REVIEW_2026_10_05.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_EDITOR_REVIEW_2026_10_05.md
+@@ -0,0 +1,132 @@
++# Track editor performance and usability review — 2026-10-05
++
++Requirements: R01, T01–T04, V03–V05, Q01. Review of the current working tree, including the latest automatic-route/start-line, bridge-junction, draft-saving, publication and race-loading changes. Runtime behavior was not changed. Existing concurrent backend/client/menu edits were preserved.
++
++The editor has useful direct geometry controls, reversible gestures, atomic WIP recovery, background compilation, coalescing of obsolete results and bounded preview caches. Small road approvals remain quick. The remaining problems are substantial: supported large tracks still block the main thread, save failures are invisible, navigation can silently discard pending work, and several visible controls are obstructed or incorrectly drawn. The September usability report should not be used unchanged: out-of-bounds road dragging, pending-road practice protection and the original pinch-on-empty-ground problem have since been addressed.
++
++## Prioritized findings
++
++### 1. P1 — Autosave failure has no visible warning
++
++Every edit calls `_save_draft(true)`, which records `Could not save: …` in `editor_status`, but the status control is permanently hidden. `hint_changed` and lifecycle feedback also target that hidden control. In the isolated failure injection, save returned `ERR_FILE_CANT_WRITE`, the document remained dirty and the error text existed, but there was no visible indication that recovery had failed. Subsequent editor use can look normal while the newest changes exist only in memory. Explicit Save does show a failure dialog; ordinary editing does not.
++
++Sources: [hidden status](../game/core/app.gd:1435), [autosave result handling](../game/core/app.gd:1840), [gesture save callback](../game/core/app.gd:1275). Evidence: [save failure capture](evidence/track-editor-review-2026-10-05/save-failure-desktop.png), final observation log.
++
++Recommended: a persistent saved/saving/failed indicator with a retry action, distinguishing crash recovery from explicit Save. Keep failed edits dirty and retain the existing atomic persistence contract. The final probe injects the error return at the library boundary; it does not claim a real full-disk test. An earlier genuine invalid-directory write did produce an engine filesystem error and the runner correctly stopped it.
++
++### 2. P1 — Supported large tracks still freeze editing, opening and saving
++
++`_partner()` scans all road endpoints and repeatedly computes their poses. `joins()`, `connected_route()` and section attachment/geometry use it repeatedly. Automatic routing runs synchronously in every `_save_draft`, including object/title changes and undo. Issue refresh runs another join scan. This produces roughly quadratic authoring cost before the worker can help.
++
++The final graphical probe measured a valid 96-piece open draft: **4.626 s opening**, **104.952 ms save-and-queue**, **202.953 ms undo**, **69.567 ms issue refresh**, and a **286.177 ms** frame interval while its replacement settled. All sections passed authoring validation. A separate **connected, valid 96-piece lap** took **6.603 s to open** and **182.071 ms to regenerate its route**. Thus this is not confined to malformed or disconnected documents.
++
++Initial `_editor()` construction compiles synchronously; `EditorWorld` enables scenery slices only when a previous visual already exists. `_finish_preview_thread()` also joins pending compilation on navigation and foreground Save. On the connected fixture, changing only the name cost **218.936 ms** to save and queue; an immediate foreground save cost **1.221 s**. Scenery then took another **6.556 s** to settle with a **1.726 s** frame interval. Metadata-only changes still fail the full-document `_same_ground()` comparison and trigger geometry work. The nominal six-millisecond slice budget is cooperative, not a bound on each indivisible operation.
++
++Sources: [endpoint matching](../game/editor/road_pieces.gd:148), [route generation](../game/editor/road_pieces.gd:240), [synchronous authoring save](../game/core/app.gd:1840), [opening preview](../game/core/app.gd:2812), [initial scenery versus replacement](../game/editor/editor_world.gd:130), [ground comparison](../game/editor/editor_world.gd:113), [worker join](../game/core/app.gd:101), [rename save](../game/core/app.gd:3076).
++
++Recommended: prepare endpoint poses and an adjacency index once per geometry revision; share that result between route, joins and attachment checks. Skip geometry/routing work for metadata and ordinary prop edits. Make initial opening and foreground persistence use a visible, cancellable preparation flow; saving authoring data should not need to finish its render preview. Profile and split the remaining indivisible scenery work. Preserve exact compiler, collision and route results with equivalence checks; do not lower the supported authoring limits to hide the cost.
++
++### 3. P2 — Pending work is discarded by navigation without being treated as dirty
++
++On a clean saved oval, choose a Curve and change its radius. The document stays unchanged until confirmation, so `_editor_has_unsaved_changes()` returns false. Close exits straight to Race with no Save/Discard/Cancel dialog; the adjusted road is lost. Track → Objects also unconditionally clears the ghost. Paint previews and object runs have similar transient-state exposure through `cancel_gesture()` and view retention. The observed reproduction directly covers road previews.
++
++Sources: [dirty calculation and departure](../game/core/app.gd:2518), [category change](../game/core/app.gd:1501), [retained editor state excludes previews](../game/core/app.gd:260), [gesture cancellation](../game/editor/editor_canvas.gd:136).
++
++Recommended: retain per-tool pending geometry, or consistently resolve Confirm/Discard/Cancel before losing it. Include pending edits in the departure policy. Existing prevention of practice with a road ghost is useful, but navigation does not provide equivalent protection.
++
++### 4. P2 — A pinch can accidentally commit the first finger's road movement
++
++Touch inside a committed straight, move the first finger 14 logical units, then add a second finger to pan/zoom. The road has moved, history contains one edit, and a preview worker starts. The second-touch handler calls `edit_finished` rather than restoring the gesture's original geometry. The earlier fix that defers empty-ground ghost placement does not cover this case.
++
++Sources: [second-touch handoff](../game/editor/editor_canvas.gd:181), [road movement threshold](../game/editor/editor_canvas.gd:753). Recommended: restore the pre-gesture document when converting a content gesture into navigation, or distinguish an intentional completed edit from the short first-finger movement typical of a pinch. Keep subsequent handoff of either remaining finger working.
++
++### 5. P2 — Surface controls cover naming and history controls
++
++At 960×540 physical output, the project's stretch preserves a 1280×720 logical canvas. In Surface mode the toolbar occupies `(370,8,540,102)` while the name/history container occupies `(16,16,503,52)`: they intersect. The inspected [surface capture](evidence/track-editor-review-2026-10-05/surface-compact.png) shows the Free/Area controls drawn over the rename/history area. The ordinary Road header containers do not overlap in this fixture. Shrinking only the title to 130 logical units is insufficient.
++
++Sources: [absolute toolbar placement](../game/core/app.gd:1421), [category title shrink](../game/core/app.gd:1547). Recommended: give the toolbar its own layout row or reserve nonoverlapping space responsively. Validate every visible control's bounds across editing modes, long account names, wide/narrow ratios and device safe areas.
++
++### 6. P2 — Publish renders its icon identifier as oversized text
++
++The editor passes `"publish"` to `EditorButton.action`, but `EditorButton._draw()` has no corresponding glyph branch or symbol mapping. Its fallback draws the literal word at 28-point size, centered in the icon slot. It spills into the Test area and overlaps the Publish caption in both inspected desktop and compact captures. This is an unknown glyph, not an intentional second label.
++
++Sources: [Publish button](../game/core/app.gd:1372), [glyph fallback](../game/editor/editor_button.gd:130). Evidence: [road desktop](evidence/track-editor-review-2026-10-05/road-desktop.png), [road compact](evidence/track-editor-review-2026-10-05/road-compact.png). Recommended: a defined shared publish/upload glyph and a check that every editor icon identifier is supported. Inspect disabled/enabled states; bound icon drawing to its reserved area.
++
++### 7. P2 — The issue badge cannot move past the first issue
++
++An oval with one displaced straight produces four issues. Three badge taps select `[0,0,0]`; `_focus_issue()` always reads `editor_issues[0]`. The on-map callout is visible, but additional explanatory status remains hidden. On the large draft the badge reports 192 issues with the same navigation limitation.
++
++Source: [issue focus](../game/core/app.gd:1733). Evidence: [issues capture](evidence/track-editor-review-2026-10-05/issues-desktop.png). Recommended: an actionable list or next/previous navigation with “1 of N,” selectable markers and clear distinction between blocked starts and open endpoints. Open roads may remain valid for untimed practice; do not turn informational join issues into an unexplained universal driving ban.
++
++### 8. P2 — Road-edge runs can follow an invisible road on a blank map
++
++`RoadPieces.barrier_run()` on a blank document with no pieces, paint or layout creates **eight barriers** between the probe locations by falling back to the document's retained lap route. The object browser exposes Road edge placement, so the result can suggest that a real road exists where it does not.
++
++Source: [fallback route](../game/editor/road_pieces.gd:312). Recommended: require an actual road edge, or explicitly offer the existing straight/free-run modes. Preview the run before committing it and explain an unavailable road-edge choice visibly.
++
++### 9. P2 — Object selection recreates all visible 3D thumbnails
++
++`choose()` calls `refresh()`, which clears the tile row and creates new `ObjectThumbnail` controls. Each thumbnail creates its own 208×128 4×MSAA 3D viewport, prop meshes, camera, light and environment. Placement-mode changes also call `refresh()`, even when the artwork is unchanged. The final desktop probe measured **35.822 / 35.651 / 39.648 ms** for an eight-tile refresh, excluding subsequent GPU rendering and deferred destruction. Earlier samples measured 30–32 ms. This consumes multiple 60 Hz frame budgets for a selection change.
++
++Sources: [browser refresh](../game/editor/object_browser.gd:81), [thumbnail construction](../game/editor/object_thumbnail.gd:4). Recommended: cache rendered thumbnails by biome/asset/visual-kit identity and update selection styles and detail controls independently. Preserve the shared gameplay mesh source and bound cache memory. These desktop numbers do not establish phone GPU cost.
++
++### 10. P2 — Workflow regression no longer waits for asynchronous practice launch
++
++`TestWorkflow` completes **201 checks with two failures**, at the tight-bend and closed-circuit practice launch checks. Both emit Test and await just one `process_frame` before reading `app.game`. `_test_document` now awaits preparation and the multi-frame race-loading flow. The separate practice suite passes 54 checks; the race-loading suite passes 20, including an awaited editor-practice launch. This is strong evidence of stale timing expectations, but the failing suite has not been fixed here, and a complete green workflow regression is not claimed.
++
++Sources: [tight-bend assertion](../game/tests/test_editor_workflow.gd:321), [closed-loop assertion](../game/tests/test_editor_workflow.gd:435), [async launch](../game/core/app.gd:1883). Recommended: await actual loading/preparation completion with a bounded deadline, then retain every spawn, exact-content and driving assertion. Keep an isolated guest fixture so saved sessions/backend availability cannot affect this local workflow gate.
++
++## Measured performance
++
++Windows, pinned Godot `4.7.2.stable.official.ed1daf0bf`, Compatibility renderer, RTX 3090. Measurements are handler elapsed time and sampled process-frame intervals, not CPU-profiler attribution, locked frame rate, input-to-photon timing or sustained device acceptance. The final large-map probe was run without this task's regression suites running concurrently. Other host activity was not controlled; use these as diagnostic evidence, not hardware guarantees.
++
++| Fixture/action | Final observation |
++| --- | ---: |
++| Small oval: three road approval handlers, existing graphical profiler | 12.801 / 15.502 / 16.327 ms |
++| Same approvals: first rendered frame | 42.238 / 36.825 / 36.966 ms |
++| Same approvals: complete detail / maximum sampled frame interval | 1.889 s / 125.912 ms |
++| Same profiler: undo / redo | 42.510 / 14.529 ms |
++| Route attempt plus issue scan: 4 pieces, three samples | 0.261–0.279 ms |
++| Same: 24 pieces | 8.589–9.423 ms |
++| Same: 48 pieces | 32.887–34.128 ms |
++| Same: 96 pieces | 145.751–169.705 ms |
++| Open 96-piece draft: opening / undo | 4.626 s / 202.953 ms |
++| Connected 96-piece lap: opening / foreground save during preview work | 6.603 s / 1.221 s |
++| Connected lap after name change/save: settle / maximum sampled frame interval | 6.556 s / 1.726 s |
++
++The existing road profiler's reconstructed synchronous undo measured 292.764 ms. It uses current caches and is not a historical binary comparison. Its correctness assertions passed. This review does not infer that the earlier September sliced-build timings were false; the current supported-size probes expose work those smaller fixtures did not bound.
++
++## Actual commands, outcomes and evidence
++
++All engine actions used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action <Action> -CommandTimeoutSeconds 90`, unless specified below. The exact local build was checked by the runner. Copied per-process logs are in [the evidence directory](evidence/track-editor-review-2026-10-05/).
++
++| Action | Outcome |
++| --- | --- |
++| `Doctor` | Passed after approved local tool access; matching templates found; DN2103 attached |
++| `TestWorkflow` | 201 checks, **two failures** described above |
++| `ProfileRoadApproval` | Graphical, 38 checks, zero failures; snapshots and exact mesh/cache/supersession assertions |
++| `TestPractice` | 54 checks, zero failures; cleanup warning for four leaked ObjectDB instances |
++| `TestPlacement` | 24 checks, zero failures |
++| `TestStartLine` | 27 checks, zero failures |
++| `TestFreeEditor` | 45 checks, zero failures |
++| `TestConstruction` | 104 checks, zero failures; five bridge laps/exact replay; cleanup warning for two leaked ObjectDB instances |
++| `TestScript -ScriptPath res://tests/test_race_loading.gd` | 20 checks, zero failures |
++| `TestScript -ScriptPath res://tests/review_track_editor_2026_10_05.gd -Graphical -CommandTimeoutSeconds 120` | Final run exited 0 and printed `EDITOR_REVIEW_COMPLETED`; observations, not assertions treating bugs as desired behavior |
++| Scoped `git diff --check` | Passed |
++
++The passing focused suites total **312 checks**; the failing workflow suite is separate. Placement/start-line/free-editor/construction suites ran in parallel after the final graphical performance probe; their headless timing output is not used as a benchmark. No assertions were removed or weakened.
++
++Initial sandbox attempts could not write Godot logs or initialize adb and were rerun with approved access. The first exploratory run used an invalid `res://..` directory-creation path; it was corrected to an absolute evidence path. A genuine save-failure attempt correctly stopped on the runner's fatal engine-error policy, so the completed probe uses a controlled persistence-boundary error injection. One expanded run collected observations but then failed cleanup of an already-removed disposable directory; the final version checks existence and completed successfully. These aborted runs are not counted as passing checks.
++
++Inspected actual engine output: [Road desktop](evidence/track-editor-review-2026-10-05/road-desktop.png), [Objects desktop](evidence/track-editor-review-2026-10-05/objects-desktop.png), [Issues](evidence/track-editor-review-2026-10-05/issues-desktop.png), [Save failure](evidence/track-editor-review-2026-10-05/save-failure-desktop.png), [Road compact](evidence/track-editor-review-2026-10-05/road-compact.png), [Surface compact](evidence/track-editor-review-2026-10-05/surface-compact.png), [Objects compact](evidence/track-editor-review-2026-10-05/objects-compact.png), [Open large draft](evidence/track-editor-review-2026-10-05/large-ready.png), [Connected large lap](evidence/track-editor-review-2026-10-05/closed-large-ready.png). Compact captures use real project stretch; they are not phone screenshots.
++
++## Suggested repair sequence and acceptance
++
++1. Make failed recovery saves visible; preserve/resolve pending tool work on navigation and pinch handoff.
++2. Cache adjacency and geometry by revision, remove metadata-only scene rebuilding, and move initial opening/foreground preview waits out of input handlers. Verify exact output and measure all frames through settled scenery on 4/24/48/96-piece connected and open tracks, dense objects and heavily painted maps.
++3. Fix Surface/header layout and Publish artwork, make issues navigable, require real edges for Road edge runs, and reuse thumbnails.
++4. Repair the workflow suite's asynchronous expectations without dropping spawn/driving assertions, then run the complete relevant regression gate.
++
++Changed files by this review: this report; `game/tests/review_track_editor_2026_10_05.gd`; evidence/logs/source hashes/scoped review patch; review entries in `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. The new diagnostic runs only when explicitly selected via `TestScript`; it is not added to Validate. No runtime, schema, compiler/physics version, service, owner draft/record or backend configuration changed. Disposable probes used unique library/record folders and cleaned their own files. Existing unrelated working-tree changes remain outside the review patch.
++
++**No Android export, install or physical-phone editor test was performed**, although Doctor listed the DN2103. No full Validate, GPU/memory attribution, thermal run, real full-disk test, phone IME/safe-area/gesture acceptance, real Google/publication integration or deployment was performed. Required remaining acceptance includes human placement/drag/pinch feel, finger occlusion at nearby handles, long-session memory with the bounded caches, and sustained mobile frame times on a large representative owner track. These limitations should remain explicit until measured.
+diff --git a/game/tests/review_track_editor_2026_10_05.gd b/game/tests/review_track_editor_2026_10_05.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_track_editor_2026_10_05.gd
+@@ -0,0 +1,228 @@
++extends SceneTree
++## Disposable observations for a review; known problems are not passing invariants.
++
++var app: Node
++var folder: String
++var evidence: String
++
++class FailedSaveLibrary extends TrackLibrary:
++	func save_wip(_document: Dictionary) -> Error:
++		last_error = "Injected storage write failure"
++		return ERR_FILE_CANT_WRITE
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func observe(label: String, data: Dictionary) -> void:
++	print("EDITOR_REVIEW ",label," ",JSON.stringify(data))
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	var slowest: float = 0.0
++	var started: int = Time.get_ticks_usec()
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
++		var before: int = Time.get_ticks_usec()
++		await process_frame
++		slowest = maxf(slowest,(Time.get_ticks_usec()-before)/1000.0)
++	observe("settle",{"elapsed_ms":(Time.get_ticks_usec()-started)/1000.0,"longest_frame_interval_ms":slowest,"completed":app.editor_preview_thread == null and not app.editor_world._building})
++
++func show(doc: Dictionary) -> void:
++	app.canvas = null
++	app.editor_view.clear()
++	app.history.clear()
++	app.redo_history.clear()
++	app.document = doc.duplicate(true)
++	var started: int = Time.get_ticks_usec()
++	app.call("_show_screen","create")
++	observe("open",{"pieces":doc.pieces.size(),"handler_ms":(Time.get_ticks_usec()-started)/1000.0})
++	await process_frame
++	await settle()
++
++func oval() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "review_oval"
++	doc.name = "Editor review oval"
++	var position := Vector2(-28,-18)
++	var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position
++		heading = pose.heading
++	return RoadPieces.route_from_pieces(doc).document
++
++func shot(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	root.get_texture().get_image().save_png(evidence+"/"+name+".png")
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://").path_join("../docs/evidence/track-editor-review-2026-10-05").simplify_path()
++	DirAccess.make_dir_recursive_absolute(evidence)
++	root.size = Vector2i(1280,720)
++	folder = "user://editor_review_20261005_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder)
++	app.records = LocalRecords.new(folder+"/records.json")
++	root.add_child(app)
++	await process_frame
++	await show(oval())
++	await shot("road-desktop")
++	# A clean saved document with a changed, unconfirmed road is still 'clean'.
++	app.call("_save_draft")
++	app.editor_saved_snapshot = app.document.duplicate(true)
++	app.canvas.choose_piece("curve")
++	app.canvas.ghost.radius = 23.0
++	observe("pending_departure",{"has_pending_road":not app.canvas.ghost.is_empty(),"dirty":app.call("_editor_has_unsaved_changes")})
++	app.call("_request_editor_exit")
++	observe("pending_departure_result",{"screen":app.screen,"save_dialog":app.root_ui.find_child("SaveChangesDialog",true,false) != null})
++	await show(oval())
++	app.canvas.choose_piece("curve")
++	app.canvas.ghost.radius = 23.0
++	app.call("_editor_category","objects")
++	observe("category_pending_road",{"survives":not app.canvas.ghost.is_empty()})
++	await shot("objects-desktop")
++	var browser_samples: Array = []
++	for repeat: int in range(3):
++		var started: int = Time.get_ticks_usec()
++		app.object_browser.refresh()
++		browser_samples.append((Time.get_ticks_usec()-started)/1000.0)
++		await process_frame
++	observe("object_browser_refresh",{"handler_ms":browser_samples,"tiles":app.object_browser.tiles.get_child_count()})
++	# Multi-touch navigation should not commit a one-finger content move.
++	app.call("_editor_category","road")
++	app.canvas.selected_piece = 0
++	app.canvas.snap_enabled = false
++	var before_piece: Dictionary = app.document.pieces[0].duplicate(true)
++	var at: Vector2 = app.canvas.to_screen(Vector2(10,-18))
++	var first := InputEventScreenTouch.new()
++	first.index = 0; first.position = at; first.pressed = true
++	app.canvas._gui_input(first)
++	var move := InputEventScreenDrag.new()
++	move.index = 0; move.position = at+Vector2(14,0)
++	app.canvas._gui_input(move)
++	var second := InputEventScreenTouch.new()
++	second.index = 1; second.position = at+Vector2(200,70); second.pressed = true
++	app.canvas._gui_input(second)
++	observe("pinch_after_initial_motion",{"piece_moved":app.document.pieces[0] != before_piece,"history":app.history.size(),"preview_worker":app.editor_preview_thread != null})
++	app.canvas.cancel_gesture()
++	await settle()
++	# Repeated issue taps always select the same issue.
++	var open_doc: Dictionary = oval()
++	open_doc.pieces[0].position[0] += 8.0
++	await show(open_doc)
++	var selected: Array = []
++	for i: int in range(3):
++		app.call("_focus_issue")
++		selected.append(app.canvas.selected_piece)
++	observe("issue_navigation",{"issue_count":app.editor_issues.size(),"selected_pieces":selected,"status_visible":app.editor_status.is_visible_in_tree()})
++	await shot("issues-desktop")
++	# Inject the write-failure return at the persistence boundary. The command
++	# wrapper correctly stops on genuine engine filesystem ERROR messages.
++	var old_library: TrackLibrary = app.library
++	app.library = FailedSaveLibrary.new(folder)
++	app.library.owner_name = old_library.owner_name
++	app.document.name = "Unsaved change"
++	var save_error: Error = app.call("_save_draft",true)
++	observe("autosave_failure",{"error":save_error,"status":app.editor_status.text,"status_visible":app.editor_status.is_visible_in_tree(),"dirty":app.call("_editor_has_unsaved_changes")})
++	await shot("save-failure-desktop")
++	app.library = old_library
++	await settle()
++	# Road-follow runs on a blank map use the invisible fallback route.
++	var blank: Dictionary = TrackDocument.create_blank()
++	observe("barriers_without_roads",{"pieces":blank.pieces.size(),"paint":blank.paint.size(),"barriers":RoadPieces.barrier_run(blank,Vector2(-38,-12),Vector2(-25,22)).size()})
++	# Compact layout uses the actual app controls and graphical renderer.
++	root.size = Vector2i(960,540)
++	await show(oval())
++	var identity: Control = app.root_ui.find_child("EditorIdentityAndHistory",true,false)
++	var issue_parent: Control = app.editor_issue_button.get_parent()
++	observe("compact_header",{"identity_rect":str(identity.get_global_rect()),"actions_rect":str(issue_parent.get_global_rect()),"overlap":identity.get_global_rect().intersects(issue_parent.get_global_rect())})
++	await shot("road-compact")
++	app.call("_editor_category","paint")
++	await process_frame
++	observe("surface_header",{"toolbar_rect":str(app.surface_toolbar.get_global_rect()),"identity_rect":str(identity.get_global_rect()),"overlap":app.surface_toolbar.get_global_rect().intersects(identity.get_global_rect()),"physical_size":str(root.size),"logical_size":str(root.get_visible_rect().size)})
++	await shot("surface-compact")
++	app.call("_editor_category","objects")
++	await process_frame
++	await shot("objects-compact")
++	# Measure supported authoring sizes; disconnected sections are legitimate WIP.
++	root.size = Vector2i(1280,720)
++	for count: int in [4,24,48,96]:
++		var large: Dictionary = TrackDocument.create_blank()
++		large.id = "review_scale"
++		large.name = "Scale %d" % count
++		for i: int in range(count):
++			var piece: Dictionary = RoadPieces.create("straight",Vector2(-100+(i%12)*17,-94+(i/12)*24),0,6)
++			piece.length = 12.0
++			large.pieces.append(piece)
++		var samples: Array = []
++		for repetition: int in range(3):
++			var started: int = Time.get_ticks_usec()
++			RoadPieces.route_from_pieces(large)
++			RoadPieces.joins(large.pieces)
++			samples.append((Time.get_ticks_usec()-started)/1000.0)
++		observe("route_and_issues",{"pieces":count,"handler_samples_ms":samples,"validation_errors":TrackDocument.validate(large,false)})
++		if count != 96: continue
++		await show(large)
++		app.call("_remember")
++		app.document.pieces[0].position[0] += 1.0
++		var started: int = Time.get_ticks_usec()
++		app.call("_save_draft",true)
++		observe("large_edit",{"pieces":count,"save_and_queue_ms":(Time.get_ticks_usec()-started)/1000.0})
++		started = Time.get_ticks_usec()
++		app.call("_undo")
++		observe("large_undo",{"handler_ms":(Time.get_ticks_usec()-started)/1000.0})
++		await settle()
++		await shot("large-ready")
++		started = Time.get_ticks_usec()
++		app.call("_update_editor_issues")
++		observe("large_issue_refresh",{"handler_ms":(Time.get_ticks_usec()-started)/1000.0,"issues":app.editor_issues.size()})
++	# A 96-piece connected loop uses 47 minimum-length straights per side,
++	# with two hairpins. This also covers complete authoring, not only open WIP.
++	var closed: Dictionary = TrackDocument.create_blank()
++	closed.id = "review_closed"
++	closed.name = "96 connected pieces"
++	var position := Vector2(-47,-36)
++	var heading: float = 0.0
++	for side: int in range(2):
++		for i: int in range(47):
++			var piece: Dictionary = RoadPieces.create("straight",position,heading,6)
++			piece.length = 2.0
++			closed.pieces.append(piece)
++			position = RoadPieces.end_pose(piece).position
++		var turn: Dictionary = RoadPieces.create("hairpin",position,heading,6)
++		turn.radius = 36.0
++		closed.pieces.append(turn)
++		var pose: Dictionary = RoadPieces.end_pose(turn)
++		position = pose.position; heading = pose.heading
++	var started: int = Time.get_ticks_usec()
++	var route: Dictionary = RoadPieces.route_from_pieces(closed)
++	observe("closed_route",{"pieces":96,"ok":route.ok,"elapsed_ms":(Time.get_ticks_usec()-started)/1000.0,"errors":route.errors})
++	if route.ok:
++		await show(route.document)
++		app.call("_remember")
++		app.document.name = "Changed closed title"
++		started = Time.get_ticks_usec()
++		app.call("_save_draft",true)
++		observe("closed_edit",{"save_and_queue_ms":(Time.get_ticks_usec()-started)/1000.0})
++		started = Time.get_ticks_usec()
++		app.call("_save_draft")
++		observe("closed_foreground_save",{"handler_ms":(Time.get_ticks_usec()-started)/1000.0})
++		await settle()
++		await shot("closed-large-ready")
++	app.queue_free()
++	await process_frame
++	# Remove only this uniquely allocated disposable directory.
++	cleanup(folder)
++	cleanup("user://editor_review_20261005_track_21de8308f09cdede3fc87eb1fcf44d48")
++	print("EDITOR_REVIEW_COMPLETED")
++	quit()
++
++func cleanup(path: String) -> void:
++	if not DirAccess.dir_exists_absolute(path): return
++	for child: String in DirAccess.get_directories_at(path): cleanup(path.path_join(child))
++	for file: String in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
++	DirAccess.remove_absolute(path)

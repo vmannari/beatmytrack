@@ -1,0 +1,2273 @@
+diff --git a/backend/bmt_backend/service_worker.py b/backend/bmt_backend/service_worker.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/service_worker.py
+@@ -0,0 +1,166 @@
++"""Supervise competition and optional low-priority product work in one container."""
++
++from __future__ import annotations
++
++import logging
++import os
++import signal
++import subprocess
++import sys
++import time
++
++log = logging.getLogger("bmt.service_worker")
++
++
++def _product_priority():
++    # This supervisor is single-threaded; the pre-exec hook makes only this
++    # syscall, before product code imports or starts database/CPU work.
++    os.setpriority(os.PRIO_PROCESS, 0, 19)
++
++
++def _spawn(role, command):
++    options = {"start_new_session": os.name == "posix"}
++    if role == "product" and sys.platform.startswith("linux"):
++        options["preexec_fn"] = _product_priority
++    return subprocess.Popen(command, **options)
++
++
++def _adopt_descendants():
++    if not sys.platform.startswith("linux") or os.getpid() == 1:
++        return
++    # PID 1 already adopts descendants. A standalone Linux supervisor must do
++    # the same so a misbehaving child cannot leave an unreaped verifier behind.
++    import ctypes
++
++    library = ctypes.CDLL(None, use_errno=True)
++    if library.prctl(36, 1, 0, 0, 0) != 0:  # Linux PR_SET_CHILD_SUBREAPER
++        raise OSError(ctypes.get_errno(), "Cannot supervise descendant cleanup")
++
++
++def _reap_adopted():
++    if os.name != "posix":
++        return False
++    while True:
++        try:
++            pid, _status = os.waitpid(-1, os.WNOHANG)
++        except ChildProcessError:
++            return False
++        if pid == 0:
++            return True
++
++
++def _signal_child(child, signum):
++    if child.poll() is None:
++        try:
++            child.send_signal(signum)
++        except ProcessLookupError:
++            pass
++
++
++def _kill_group(child):
++    if os.name == "posix":
++        try:
++            os.killpg(child.pid, signal.SIGKILL)
++            return True
++        except ProcessLookupError:
++            return False
++    if child.poll() is None:
++        child.kill()
++        return True
++    return False
++
++
++def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, child_factory=_spawn):
++    """Fixed shipping roles; commands/factory injection is for process tests only.
++
++    Normal exit requires a stop request, clean child exits and no forced cleanup.
++    A daemon exiting by itself, including exit zero, stops its peer and fails the
++    service so an unhealthy product process cannot hide behind worker readiness.
++    """
++    if not 0.1 <= shutdown_seconds <= 300:
++        raise ValueError("Invalid bounded service shutdown budget")
++    shipping = {
++        "worker": (sys.executable, "-m", "bmt_backend.worker"),
++        "product": (sys.executable, "-m", "bmt_backend.product_worker"),
++    }
++    selected = commands if commands is not None else shipping
++    roles = ("worker", "product") if telemetry_enabled else ("worker",)
++    children, previous = {}, {}
++    requested_at, requested_signal, failed = None, None, False
++
++    def stop(signum, _frame):
++        nonlocal requested_at, requested_signal
++        if requested_at is None:
++            requested_at, requested_signal = time.monotonic(), signum
++
++    _adopt_descendants()
++    try:
++        for signum in (signal.SIGTERM, signal.SIGINT):
++            previous[signum] = signal.getsignal(signum)
++            signal.signal(signum, stop)
++        for role in roles:
++            if requested_at is not None:
++                break
++            children[role] = child_factory(role, selected[role])
++            log.info("service_child_started role=%s pid=%s", role, children[role].pid)
++        while requested_at is None:
++            for role, child in children.items():
++                code = child.poll()
++                if code is not None:
++                    log.error("service_child_exited role=%s code=%s", role, code)
++                    failed = True
++                    requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++                    break
++            if requested_at is None:
++                time.sleep(0.05)
++    except (OSError, KeyError, subprocess.SubprocessError):
++        log.exception("service_child_launch_failed")
++        failed = True
++        requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++    finally:
++        if requested_at is None:
++            requested_at, requested_signal = time.monotonic(), signal.SIGTERM
++        # Signal the child PID, not its whole group: the competitive worker owns
++        # its verifier cancellation and retains its existing finish grace.
++        for child in children.values():
++            _signal_child(child, requested_signal)
++        deadline = requested_at + shutdown_seconds
++        while any(child.poll() is None for child in children.values()) and time.monotonic() < deadline:
++            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
++        for child in children.values():
++            if child.poll() is None:
++                failed = _kill_group(child) or failed
++        # Reap tracked children first; generic waitpid must not steal their exit
++        # status and accidentally report a failed worker as a clean shutdown.
++        for role, child in children.items():
++            try:
++                code = child.wait(timeout=1)
++            except subprocess.TimeoutExpired:
++                log.error("service_child_did_not_stop role=%s", role)
++                failed = True
++                continue
++            if code != 0:
++                failed = True
++        _reap_adopted()
++        for child in children.values():
++            # A direct child can exit without cleaning up its own descendants.
++            failed = _kill_group(child) or failed
++        reaping_until = time.monotonic() + 0.5
++        while _reap_adopted() and time.monotonic() < reaping_until:
++            time.sleep(0.01)
++        for signum, handler in previous.items():
++            signal.signal(signum, handler)
++    return 1 if failed else 0
++
++
++def main():
++    from .config import Settings
++
++    settings = Settings.from_env()
++    logging.basicConfig(level=logging.INFO)
++    return supervise(telemetry_enabled=settings.telemetry_enabled,
++        shutdown_seconds=settings.worker_shutdown_grace_seconds + 2)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/backend/tests/test_service_worker.py b/backend/tests/test_service_worker.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_service_worker.py
+@@ -0,0 +1,123 @@
++"""Actual Linux process supervision, priority and signal propagation acceptance."""
++
++import json
++import os
++import signal
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++import pytest
++
++pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Requires actual Linux signals/nice")
++PROBE = Path(__file__).with_name("service_worker_probe.py")
++
++
++def wait_file(process, folder, name):
++    deadline = time.monotonic() + 5
++    while not (folder / name).exists() and process.poll() is None and time.monotonic() < deadline:
++        time.sleep(0.01)
++    assert (folder / name).exists(), f"Fixture did not reach {name}; supervisor={process.poll()}"
++    return json.loads((folder / name).read_text(encoding="utf8"))
++
++
++def launch(folder, mode):
++    output = (folder / "supervisor.log").open("w", encoding="utf8")
++    process = subprocess.Popen([sys.executable, str(PROBE), "supervise", str(folder), mode],
++        stdout=output, stderr=output)
++    return process, output
++
++
++def assert_reaped(folder):
++    for name in ("worker.ready", "product.ready", "descendant.ready"):
++        if (folder / name).exists():
++            pid = json.loads((folder / name).read_text(encoding="utf8"))["pid"]
++            with pytest.raises(ProcessLookupError):
++                os.kill(pid, 0)
++
++
++def cleanup(process, output):
++    if process.poll() is None:
++        process.send_signal(signal.SIGTERM)
++        try:
++            process.wait(timeout=3)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait(timeout=2)
++    output.close()
++
++
++@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
++def test_signals_reach_both_children_preserving_grace_and_priority(tmp_path, stop_signal):
++    process, output = launch(tmp_path, "on")
++    try:
++        worker = wait_file(process, tmp_path, "worker.ready")
++        product = wait_file(process, tmp_path, "product.ready")
++        assert product["nice"] == 19 and worker["nice"] < product["nice"]
++        assert worker["group"] == worker["pid"] and product["group"] == product["pid"]
++        requested = time.monotonic()
++        process.send_signal(stop_signal)
++        assert process.wait(timeout=3) == 0
++        for role in ("worker", "product"):
++            delivered = json.loads((tmp_path / (role + ".signal")).read_text())
++            assert delivered["signal"] == stop_signal
++        assert time.monotonic() - requested >= 0.25
++        assert json.loads((tmp_path / "supervisor.result").read_text())["handlers_restored"]
++        assert_reaped(tmp_path)
++    finally:
++        cleanup(process, output)
++
++
++def test_disabled_default_launches_only_competitive_worker(tmp_path):
++    process, output = launch(tmp_path, "off")
++    try:
++        wait_file(process, tmp_path, "worker.ready")
++        time.sleep(0.1)
++        assert not (tmp_path / "product.ready").exists()
++        process.send_signal(signal.SIGTERM)
++        assert process.wait(timeout=3) == 0
++        assert_reaped(tmp_path)
++    finally:
++        cleanup(process, output)
++
++
++@pytest.mark.parametrize("mode", ["product_fail", "worker_fail", "product_exit_zero", "launch_failure", "priority_failure"])
++def test_child_exit_or_launch_failure_cannot_leave_service_healthy(tmp_path, mode):
++    process, output = launch(tmp_path, mode)
++    try:
++        wait_file(process, tmp_path, "worker.ready")
++        assert process.wait(timeout=4) != 0
++        assert (tmp_path / "worker.signal").exists() or mode == "worker_fail"
++        if mode not in ("launch_failure", "priority_failure"):
++            assert (tmp_path / "product.ready").exists()
++        assert_reaped(tmp_path)
++    finally:
++        cleanup(process, output)
++
++
++def test_stubborn_worker_is_force_stopped_with_bounded_nonzero_exit(tmp_path):
++    process, output = launch(tmp_path, "timeout")
++    try:
++        wait_file(process, tmp_path, "worker.ready")
++        wait_file(process, tmp_path, "product.ready")
++        started = time.monotonic()
++        process.send_signal(signal.SIGTERM)
++        assert process.wait(timeout=3) != 0
++        assert 0.5 <= time.monotonic() - started < 2.5
++        assert_reaped(tmp_path)
++    finally:
++        cleanup(process, output)
++
++
++def test_uncooperative_descendant_is_killed_and_reaped(tmp_path):
++    process, output = launch(tmp_path, "orphan")
++    try:
++        wait_file(process, tmp_path, "worker.ready")
++        wait_file(process, tmp_path, "product.ready")
++        wait_file(process, tmp_path, "descendant.ready")
++        process.send_signal(signal.SIGTERM)
++        assert process.wait(timeout=3) != 0
++        assert_reaped(tmp_path)
++    finally:
++        cleanup(process, output)
+diff --git a/backend/tests/service_worker_probe.py b/backend/tests/service_worker_probe.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/service_worker_probe.py
+@@ -0,0 +1,75 @@
++"""Owned subprocess fixture; never connects to a backend or verifier."""
++
++import json
++import os
++import signal
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++from bmt_backend.service_worker import _spawn, supervise
++
++
++def write(folder, name, value):
++    (folder / name).write_text(json.dumps(value), encoding="utf8")
++
++
++def child(folder, role, mode):
++    stop_at = None
++
++    def stopped(signum, _frame):
++        nonlocal stop_at
++        write(folder, role + ".signal", {"signal": signum, "at": time.monotonic()})
++        if mode not in ("stubborn", "grandchild"):
++            stop_at = time.monotonic()
++
++    for signum in (signal.SIGTERM, signal.SIGINT):
++        signal.signal(signum, stopped)
++    if mode == "orphan":
++        subprocess.Popen([sys.executable, __file__, "child", str(folder), "descendant", "grandchild"])
++    write(folder, role + ".ready", {"pid": os.getpid(), "group": os.getpgrp(),
++        "nice": os.getpriority(os.PRIO_PROCESS, 0)})
++    if mode in ("fail", "exit_zero"):
++        time.sleep(0.15)
++        return 17 if mode == "fail" else 0
++    while stop_at is None:
++        time.sleep(0.01)
++    # Model the existing competitive worker's bounded finish grace.
++    if role == "worker":
++        time.sleep(0.25)
++    write(folder, role + ".stopped", {"at": time.monotonic()})
++    return 0
++
++
++def supervisor(folder, mode):
++    worker_mode = "fail" if mode == "worker_fail" else "stubborn" if mode == "timeout" else "orphan" if mode == "orphan" else "normal"
++    product_mode = "fail" if mode == "product_fail" else "exit_zero" if mode == "product_exit_zero" else "normal"
++    commands = {"worker": (sys.executable, __file__, "child", str(folder), "worker", worker_mode),
++        "product": (sys.executable, __file__, "child", str(folder), "product", product_mode)}
++
++    def factory(role, command):
++        if mode in ("launch_failure", "priority_failure") and role == "product":
++            deadline = time.monotonic() + 2
++            while not (folder / "worker.ready").exists() and time.monotonic() < deadline:
++                time.sleep(0.01)
++            if mode == "priority_failure":
++                raise subprocess.SubprocessError("Injected pre-exec priority failure")
++            raise OSError("Injected launch failure")
++        return _spawn(role, command)
++
++    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
++    options = {"shutdown_seconds": 0.6, "commands": commands, "child_factory": factory}
++    if mode != "off":
++        options["telemetry_enabled"] = True
++    result = supervise(**options)
++    write(folder, "supervisor.result", {"code": result,
++        "handlers_restored": all(signal.getsignal(signum) == value for signum, value in previous.items())})
++    return result
++
++
++if __name__ == "__main__":
++    operation, location, *args = sys.argv[1:]
++    directory = Path(location)
++    directory.mkdir(parents=True, exist_ok=True)
++    raise SystemExit(child(directory, *args) if operation == "child" else supervisor(directory, args[0]))
+diff --git a/.tools/product_telemetry_rollout_20261011.py b/.tools/product_telemetry_rollout_20261011.py
+new file mode 100644
+--- /dev/null
++++ b/.tools/product_telemetry_rollout_20261011.py
+@@ -0,0 +1,893 @@
++"""Owner-authorized retained-staging telemetry rollout; frozen parent and exact guards."""
++import argparse
++import ast
++import base64
++import copy
++import gzip
++import hashlib
++import importlib.util
++import json
++import os
++import shutil
++import subprocess
++from concurrent.futures import ThreadPoolExecutor
++from datetime import datetime, timezone
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUTPUT = ROOT / 'docs/evidence/product-telemetry-deploy-2026-10-11'
++WORK = ROOT / 'build/product-telemetry-deploy-2026-10-11'
++CONTEXT = WORK / 'image'
++OUTPUT.mkdir(parents=True, exist_ok=True)
++WORK.mkdir(parents=True, exist_ok=True)
++spec = importlib.util.spec_from_file_location('prior_studio_utils', ROOT / '.tools/backend_studio_rollout_20261011.py')
++prior = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(prior)
++stage, config, DIRECTORY = prior.stage, prior.config, prior.DIRECTORY
++
++
++class PrivateRunner(stage.Runner):
++    def run(self, argv, *, input_data=None, allow_missing=False, cwd=None):
++        result = subprocess.run(argv, input=input_data, capture_output=True, text=True,
++                                cwd=cwd, timeout=1800, check=False)
++        if result.returncode:
++            if allow_missing and any(s in result.stderr.lower() for s in ('not_found', 'not found', 'does not exist', 'no such image', '404')):
++                return None
++            (WORK / 'last-error.private.log').write_text(result.stdout + result.stderr, encoding='utf-8')
++            raise RuntimeError('Cloud/container operation failed; private diagnostic retained')
++        return result.stdout.strip()
++
++
++service = stage.Staging(config, DIRECTORY, PrivateRunner())
++RECEIPT = OUTPUT / 'rollout.json'
++receipt = json.loads(RECEIPT.read_text()) if RECEIPT.exists() else {}
++env, container, staff_key, fetch = prior.env, prior.container, prior.staff_key, prior.fetch
++
++
++def save():
++    RECEIPT.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
++
++
++def digest(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def builder():
++    settings = copy.deepcopy(config)
++    if '--cd' in settings['docker']:
++        settings['docker'][settings['docker'].index('--cd') + 1] = '/mnt/' + WORK.drive[0].lower() + WORK.as_posix()[2:]
++    return stage.Staging(settings, DIRECTORY, PrivateRunner())
++
++
++def targets():
++    return [('api', service.n['api']), ('worker', service.n['worker']), ('job', service.n['migrate']),
++            ('job', service.n['smoke']), ('job', 'bmt-stg-' + config['owner'][:8] + '-catalog')]
++
++
++def inspect_live():
++    old = json.loads((DIRECTORY / 'deployment.json').read_text())
++    resources = targets() + [('sql', service.n['sql']), ('bucket', service.n['bucket']), ('repo', service.n['repo'])]
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        values = list(pool.map(lambda item: (item, service.describe(*item)), resources))
++    found = {}
++    for (kind, name), value in values:
++        if value is None and name.endswith('-catalog'):
++            continue
++        assert value is not None
++        (WORK / ('before-' + name + '.private.json')).write_text(json.dumps(value), encoding='utf-8')
++        if kind in ('api', 'worker', 'job'):
++            assert stage.resource_image(value) == old['image'], 'Unreconciled live image: ' + name
++            found[name] = kind
++        if kind == 'sql':
++            assert value['settings']['deletionProtectionEnabled'] or value['settings'].get('deletionProtectionEnabled', False)
++        if kind == 'api':
++            assert env(value)['BMT_ENVIRONMENT']['value'] == 'development'
++            assert env(value)['BMT_DEV_AUTH_ENABLED']['value'] == 'true'
++            api_resource = value
++    origin = api_resource['status']['url']
++    assert origin == old['url']
++    key = staff_key(api_resource)
++    overview = fetch(origin, '/v1/admin/overview', key).json()
++    health = fetch(origin, '/v1/admin/competition-health', key).json()
++    bootstrap = fetch(origin, '/v1/bootstrap').json()
++    receipt.update(parent=old['image'], url=origin, owner=config['owner'], targets=found,
++                   schema_before=overview['schema'], initial_players=overview['players'],
++                   started_utc=datetime.now(timezone.utc).isoformat(), old_traffic=api_resource['status']['traffic'])
++    save()
++    public = {'parent': receipt['parent'], 'schema': receipt['schema_before'], 'players': receipt['initial_players'],
++        'health': health['status'], 'queue_depth': health['queue_depth'], 'available_workers': health['available_workers'],
++        'telemetry_advertised': bootstrap.get('features', {}).get('product_telemetry'),
++        'owner_verified': True, 'url': origin}
++    (OUTPUT / 'initial-readonly.json').write_text(json.dumps(public, indent=2) + '\n')
++    print(json.dumps(public))
++
++
++def extract_parent():
++    assert receipt.get('parent')
++    build = builder()
++    present = build.runner.run([*build.c['docker'], 'image', 'inspect', receipt['parent'],
++        '--format={{.Id}}'], allow_missing=True)
++    if present is None:
++        registry = config['region'] + '-docker.pkg.dev'
++        token = service.call('auth', 'print-access-token')
++        auth = WORK / 'pull-docker-private'
++        auth.mkdir(exist_ok=False)
++        try:
++            build.runner.run([*build.c['docker'], '--config=pull-docker-private', 'login', registry,
++                '--username=oauth2accesstoken', '--password-stdin'], input_data=token)
++            build.runner.run([*build.c['docker'], '--config=pull-docker-private', 'pull', receipt['parent']])
++        finally:
++            assert auth.resolve().parent == WORK.resolve() and WORK.resolve().is_relative_to(ROOT.resolve())
++            assert not auth.is_symlink() and all(not p.is_symlink() for p in auth.rglob('*'))
++            shutil.rmtree(auth)
++    if not (WORK / 'parent').exists():
++        name = 'bmt-product-parent-' + os.urandom(4).hex()
++        label = 'bmt.product-rollout=' + config['owner']
++        build.runner.run([*build.c['docker'], 'create', '--name=' + name, '--label=' + label, receipt['parent']])
++        try:
++            build.runner.run([*build.c['docker'], 'cp', name + ':/app/bmt_backend', './parent'])
++        finally:
++            labels = json.loads(build.runner.run([*build.c['docker'], 'inspect', name, '--format={{json .Config.Labels}}']))
++            assert labels.get('bmt.product-rollout') == config['owner']
++            build.runner.run([*build.c['docker'], 'rm', name])
++    assert (WORK / 'parent/migrations/versions/0023_operational_read_indexes.py').is_file()
++    baseline = ROOT / 'build/telemetry-analysis-2026-10-11/before'
++    comparison = {}
++    mapping = {'admin.py': 'admin.py', 'studio.py': 'studio.py', 'worker.py': 'worker.py', 'tracks.py': 'tracks.py',
++        'app.py': 'backend__bmt_backend__app.py', 'config.py': 'backend__bmt_backend__config.py',
++        'middleware.py': 'backend__bmt_backend__middleware.py', 'migrations/env.py': 'backend__bmt_backend__migrations__env.py'}
++    for name, saved in mapping.items():
++        live = (WORK / 'parent' / name).read_bytes().replace(b'\r\n', b'\n')
++        previous = (baseline / saved).read_bytes().replace(b'\r\n', b'\n')
++        comparison[name] = {'matches_telemetry_before': live == previous, 'live_sha256': digest(live),
++            'before_sha256': digest(previous)}
++    (OUTPUT / 'parent-source-comparison.json').write_text(json.dumps(comparison, indent=2) + '\n')
++    receipt['parent_extracted'] = True
++    save()
++    print(json.dumps({'parent_extracted': True, 'baseline_matches': {k: v['matches_telemetry_before'] for k, v in comparison.items()}}))
++
++
++def probe_database():
++    assert receipt.get('parent_extracted')
++    job = service.describe('job', service.n['smoke'])
++    assert stage.resource_image(job) == receipt['parent']
++    code = '''import hashlib,json
++from sqlalchemy import text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url)
++with e.connect() as c:
++ c.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++ counts={n:c.execute(text("SELECT count(*) FROM "+n)).scalar() for n in ("players","boards","runs","personal_bests","histogram_snapshots","operation_state")}
++ counts["verified_runs"]=c.execute(text("SELECT count(*) FROM runs WHERE status='verified'")).scalar()
++ counts["published_versions"]=c.execute(text("SELECT count(*) FROM track_versions WHERE state='published'")).scalar()
++ counts["run_bytes"]=c.execute(text("SELECT pg_total_relation_size('runs'::regclass)")).scalar()
++ counts["active_run_jobs"]=c.execute(text("SELECT count(*) FROM runs WHERE status IN ('queued','verifying')")).scalar()
++ counts["schema"]=c.execute(text("SELECT version_num FROM alembic_version")).scalar()
++ rows=c.execute(text("SELECT board_id,player_id,run_id,time_ticks,achieved_at FROM personal_bests ORDER BY board_id,player_id")).all()
++ counts["race_pb_hash"]=hashlib.sha256(json.dumps([list(r) for r in rows],separators=(',',':')).encode()).hexdigest()
++ counts["database_bytes"]=c.execute(text("SELECT pg_database_size(current_database())")).scalar()
++ print("PRODUCT_DEPLOY_DB:"+json.dumps(counts,separators=(',',':')))
++e.dispose()
++'''
++    result = json.loads(service.call('run', 'jobs', 'execute', service.n['smoke'], '--region=' + config['region'],
++        '--wait', '--task-timeout=180s', '--args=^@^-c@' + code, '--format=json'))
++    execution = result.get('metadata', {}).get('name') or result.get('name')
++    assert execution and '/' not in execution
++    receipt['database_probe_execution'] = execution
++    save()
++    logs = json.loads(service.call('logging', 'read', 'resource.type="cloud_run_job" AND '
++        'resource.labels.job_name="' + service.n['smoke'] + '" AND '
++        'labels."run.googleapis.com/execution_name"="' + execution + '"', '--limit=30', '--format=json'))
++    (WORK / 'database-probe-logs.private.json').write_text(json.dumps(logs), encoding='utf-8')
++    lines = [item.get('textPayload', '') for item in logs if item.get('textPayload', '').startswith('PRODUCT_DEPLOY_DB:')]
++    assert len(lines) == 1, 'Probe log not yet available; retained execution is safe to reread'
++    data = json.loads(lines[0].split(':', 1)[1])
++    assert data['schema'] == receipt['schema_before']
++    (OUTPUT / 'database-before.json').write_text(json.dumps(data, indent=2) + '\n')
++    receipt['database_before'] = data
++    save()
++    print(json.dumps(data))
++
++
++def source_function(source, name):
++    node = next(node for node in ast.parse(source).body if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == name)
++    first = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list]) - 1
++    return '\n'.join(source.splitlines()[first:node.end_lineno])
++
++
++def replace_once(source, before, after):
++    assert source.count(before) == 1, 'Ambiguous source patch'
++    return source.replace(before, after)
++
++
++def maintenance_gate(source):
++    if '\nimport os\n' not in source:
++        source = replace_once(source, '\nimport math\n', '\nimport math\nimport os\n')
++    marker = '            token_auth = scope["path"] in ("/v1/auth/google/browser/poll", "/v1/auth/refresh")\n'
++    block = ('            if (os.environ.get("BMT_DEPLOYMENT_MAINTENANCE", "false").lower() == "true"\n'
++             '                    and scope["path"].startswith("/v1/") and method not in ("GET", "HEAD", "OPTIONS")):\n'
++             '                return await error(503, "DEPLOYMENT_MAINTENANCE")\n')
++    return replace_once(source, marker, block + marker)
++
++
++def prepare_image():
++    assert receipt.get('parent_extracted') and not CONTEXT.exists()
++    CONTEXT.mkdir()
++    manifest = json.loads((ROOT / 'docs/evidence/telemetry-analysis-2026-10-11/checkpoint/manifest.json').read_text())
++    frozen = {item['path']: item for item in manifest['files']}
++    direct = ['admin.py', 'studio.py', 'config.py', 'middleware.py', 'telemetry.py', 'telemetry_models.py',
++        'product_analytics.py', 'product_worker.py', 'migrations/versions/0025_product_telemetry.py',
++        'admin_ui/app.js', 'admin_ui/index.html', 'admin_ui/style.css', 'admin_ui/studio.js', 'admin_ui/product_analytics.js']
++    expected = {}
++    def save_source(name, text):
++        compile(text, name, 'exec') if name.endswith('.py') else None
++        path = CONTEXT / 'source' / name
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_bytes(text.replace('\r\n', '\n').encode('utf-8'))
++        expected[name] = digest(path.read_bytes())
++    def local(name):
++        path = ROOT / 'backend/bmt_backend' / name
++        assert digest(path.read_bytes()) == frozen['backend/bmt_backend/' + name]['after_sha256']
++        return path.read_text(encoding='utf-8')
++    def parent(name):
++        return (WORK / 'parent' / name).read_text(encoding='utf-8')
++    for name in direct:
++        source = local(name)
++        if name == 'middleware.py':
++            source = maintenance_gate(source)
++        save_source(name, source)
++    for path in sorted((WORK / 'prereq-source').rglob('*.py')):
++        save_source(path.relative_to(WORK / 'prereq-source').as_posix(), path.read_text(encoding='utf-8'))
++    save_source('migrations/versions/0024_lap_personal_bests.py',
++        (ROOT / 'backend/bmt_backend/migrations/versions/0024_lap_personal_bests.py').read_text(encoding='utf-8'))
++    save_source('service_worker.py', (ROOT / 'backend/bmt_backend/service_worker.py').read_text(encoding='utf-8'))
++    source = parent('app.py')
++    source = replace_once(source, '    from .verifier import GodotVerifier\n',
++        '    from .verifier import GodotVerifier\n    from . import telemetry, product_analytics\n')
++    source = replace_once(source, '    app.include_router(studio.router)\n',
++        '    app.include_router(studio.router)\n    app.include_router(telemetry.router)\n    app.include_router(product_analytics.router)\n')
++    telemetry_block = source_function(local('app.py'), 'create_app')
++    start = telemetry_block.index('            "product_telemetry": {')
++    finish = telemetry_block.index('            "track_schema":', start)
++    source = replace_once(source, '            "track_schema": "creator-track-v5",\n',
++        telemetry_block[start:finish] + '            "track_schema": "creator-track-v5",\n')
++    save_source('app.py', source)
++    source = parent('migrations/env.py')
++    source = replace_once(source, '    track_models,\n', '    track_models,\n    telemetry_models,\n')
++    save_source('migrations/env.py', source)
++    source = parent('worker.py')
++    source = replace_once(source, '            if refresh_histograms:\n',
++        '            if refresh_histograms:\n                from .lap_bests import backfill_one\n'
++        '                if backfill_one(app.state.session_factory)["worked"]:\n                    return True\n')
++    after = local('worker.py')
++    start = after.index('        if getattr(settings, "telemetry_enabled", False):')
++    end = after.index('        session.commit()\n', start)
++    source = replace_once(source, '        session.commit()\n        logger.info("verification_complete",',
++        after[start:end] + '        session.commit()\n        logger.info("verification_complete",')
++    save_source('worker.py', source)
++    source = parent('tracks.py')
++    before = (ROOT / 'build/telemetry-analysis-2026-10-11/before/tracks.py').read_text(encoding='utf-8')
++    # This one file's baseline is exactly the parent; all its changes are this slice.
++    assert source == before
++    save_source('tracks.py', local('tracks.py'))
++    schema = ROOT / 'backend/schemas/product-events-v1.schema.json'
++    assert digest(schema.read_bytes()) == frozen['backend/schemas/product-events-v1.schema.json']['after_sha256']
++    (CONTEXT / 'product-events-v1.schema.json').write_bytes(schema.read_bytes())
++    (CONTEXT / 'expected.json').write_text(json.dumps(expected))
++    patch = '''import hashlib,json,shutil,sys
++from pathlib import Path
++def hashes(folder):
++ return {p.relative_to(folder).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file() and '__pycache__' not in p.parts and '.godot' not in p.parts}
++backend=Path('/app/bmt_backend');game=Path('/opt/bmt');source=Path('/tmp/product-source')
++old=hashes(backend);canonical=hashes(game);expected=json.loads(Path('/tmp/product-expected.json').read_text())
++for name,value in expected.items():
++ p=source/name;assert hashlib.sha256(p.read_bytes()).hexdigest()==value
++ target=backend/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
++new=hashes(backend);changed=sorted(name for name,value in new.items() if old.get(name)!=value)
++assert changed==sorted(expected);assert hashes(game)==canonical
++assert all(new[k]==v for k,v in old.items() if k not in changed)
++sys.path.insert(0,'/app')
++from bmt_backend.config import Settings
++from bmt_backend.app import create_app
++from bmt_backend.migrate import upgrade,SCHEMA_HEAD
++from bmt_backend.cloud_smoke import check_comparison_route
++assert SCHEMA_HEAD=='0025_product_telemetry'
++a=create_app(Settings(environment='test',database_url='sqlite://'))
++upgrade(a.state.engine);check_comparison_route(a)
++a.state.engine.dispose();a.state.verifier.close()
++Path('/app/product-overlay-proof.json').write_text(json.dumps({'changed_backend_files':changed,'backend_unchanged_files':len(old)-sum(k in old for k in changed),'canonical_unchanged':True,'canonical_files':len(canonical),'game_hashes':canonical,'schema':SCHEMA_HEAD,'comparison_route':True}))
++print('PRODUCT_SCOPED_OVERLAY_VALID')
++'''
++    (CONTEXT / 'patch.py').write_text(patch)
++    (CONTEXT / 'Dockerfile').write_text('FROM ' + receipt['parent'] + '\nUSER root\n'
++        'COPY source /tmp/product-source\nCOPY expected.json /tmp/product-expected.json\n'
++        'COPY patch.py /tmp/product-patch.py\nCOPY product-events-v1.schema.json /app/schemas/product-events-v1.schema.json\n'
++        'RUN python /tmp/product-patch.py\nUSER 10001:10001\n')
++    maintenance = WORK / 'maintenance-image'
++    maintenance.mkdir()
++    (maintenance / 'middleware.py').write_text(maintenance_gate(parent('middleware.py')))
++    (maintenance / 'Dockerfile').write_text('FROM ' + receipt['parent'] + '\nUSER root\n'
++        'COPY middleware.py /app/bmt_backend/middleware.py\nUSER 10001:10001\n')
++    receipt['frozen_files'] = {p.relative_to(CONTEXT).as_posix(): digest(p.read_bytes()) for p in CONTEXT.rglob('*') if p.is_file()}
++    receipt['source_hash'] = digest(json.dumps(receipt['frozen_files'], sort_keys=True).encode())
++    receipt['overlay_files'] = sorted(expected)
++    save()
++    print(json.dumps({'prepared': True, 'changed_backend_files': len(expected), 'schema': '0025_product_telemetry', 'game_preserved': True}))
++
++
++def build_image():
++    assert receipt['frozen_files'] == {p.relative_to(CONTEXT).as_posix(): digest(p.read_bytes()) for p in CONTEXT.rglob('*') if p.is_file()}
++    build = builder()
++    tag = 'bmt-product-telemetry:' + receipt['source_hash'][:16]
++    args = [*build.c['docker'], 'build', '--network=none', '--pull=false', '--platform=linux/amd64',
++        '--file=image/Dockerfile', '--tag=' + tag, 'image']
++    output = build.runner.run(args)
++    (WORK / 'build.private.log').write_text(output, encoding='utf-8')
++    proof = json.loads(build.runner.run([*build.c['docker'], 'run', '--rm', '--network=none', '--entrypoint=cat',
++        tag, '/app/product-overlay-proof.json']))
++    assert proof['schema'] == '0025_product_telemetry' and proof['canonical_unchanged']
++    assert proof['changed_backend_files'] == receipt['overlay_files']
++    (OUTPUT / 'packaged-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
++    receipt['local_tag'] = tag
++    receipt['candidate_id'] = json.loads(build.runner.run([*build.c['docker'], 'image', 'inspect', tag, '--format={{json .Id}}']))
++    maintenance_tag = 'bmt-product-maintenance:' + receipt['source_hash'][:16]
++    build.runner.run([*build.c['docker'], 'build', '--network=none', '--pull=false', '--platform=linux/amd64',
++        '--file=maintenance-image/Dockerfile', '--tag=' + maintenance_tag, 'maintenance-image'])
++    receipt['maintenance_local_tag'] = maintenance_tag
++    save()
++    print(json.dumps({'candidate': receipt['candidate_id'], 'overlay_files': len(receipt['overlay_files']),
++        'canonical_files_unchanged': proof['canonical_files'], 'local_only': True}))
++
++
++TELEMETRY_ENV = {'BMT_TELEMETRY_ENABLED': 'true', 'BMT_TELEMETRY_CLIENT_BACKLOG': '50000',
++    'BMT_TELEMETRY_PROCESSOR_BATCH': '100', 'BMT_TELEMETRY_RAW_DAYS': '7', 'BMT_TELEMETRY_FACT_DAYS': '180'}
++ALLOWED_ENV = set(TELEMETRY_ENV) | {'BMT_DEPLOYMENT_MAINTENANCE'}
++
++
++def runtime_without_allowed(resource):
++    value = prior.normalized_template(resource)
++    target = container(value)
++    target['env'] = sorted((item for item in target.get('env', []) if item['name'] not in ALLOWED_ENV), key=lambda v: v['name'])
++    # Command changes are separately pinned, not accepted silently.
++    target.pop('command', None)
++    target.pop('args', None)
++    return value
++
++
++def guard_target(kind, name, images, *, command=None):
++    current = service.describe(kind, name)
++    assert current and stage.resource_image(current) in images, 'Unexpected image or owner: ' + name
++    before = json.loads((WORK / ('before-' + name + '.private.json')).read_text())
++    assert runtime_without_allowed(before) == runtime_without_allowed(current), 'Unexpected runtime configuration: ' + name
++    expected_command = command or (container(before).get('command'), container(before).get('args'))
++    assert (container(current).get('command'), container(current).get('args')) == expected_command
++    original_labels = before.get('metadata', {}).get('labels', {})
++    actual_labels = current.get('metadata', {}).get('labels', {})
++    assert {k:v for k,v in original_labels.items() if k != 'run.googleapis.com/lastUpdatedTime'} == {
++        k:v for k,v in actual_labels.items() if k != 'run.googleapis.com/lastUpdatedTime'}
++    for key, value in env(current).items():
++        if key in TELEMETRY_ENV:
++            assert value == {'name': key, 'value': TELEMETRY_ENV[key]} or key == 'BMT_TELEMETRY_ENABLED' and value == {'name': key, 'value': 'false'}
++        elif key == 'BMT_DEPLOYMENT_MAINTENANCE':
++            assert value.get('value') in ('true', 'false') and set(value) == {'name', 'value'}
++    return current
++
++
++def push_images():
++    rehearsal = json.loads((OUTPUT / 'lap-rehearsal.json').read_text())
++    assert rehearsal['lap_parity'] and rehearsal['valid_legacy_eligible_lap_parity']
++    assert rehearsal['incomplete_boards'] == 0 and rehearsal['historical_telemetry_rows'] == 0
++    assert rehearsal['race_personal_bests_unchanged'] and rehearsal['run_count_unchanged']
++    receipt['lap_rehearsal'] = True
++    save()
++    assert receipt.get('exact_image_tests') and receipt.get('exact_image_browser') and receipt.get('lap_rehearsal')
++    build = builder()
++    registry = config['region'] + '-docker.pkg.dev'
++    auth = WORK / 'push-docker-private'
++    auth.mkdir(exist_ok=False)
++    try:
++        token = service.call('auth', 'print-access-token')
++        build.runner.run([*build.c['docker'], '--config=push-docker-private', 'login', registry,
++            '--username=oauth2accesstoken', '--password-stdin'], input_data=token)
++        for field, tag_field, suffix in (('image','local_tag','product'),('maintenance_image','maintenance_local_tag','maintenance')):
++            tag = registry + '/' + config['project'] + '/' + service.n['repo'] + '/backend:' + suffix + '-' + receipt['source_hash'][:20]
++            build.runner.run([*build.c['docker'], 'tag', receipt[tag_field], tag])
++            build.runner.run([*build.c['docker'], '--config=push-docker-private', 'push', tag])
++            values = json.loads(build.runner.run([*build.c['docker'], 'image', 'inspect', tag, '--format={{json .RepoDigests}}']))
++            receipt[field] = next(value for value in values if value.startswith(registry + '/'))
++            save()
++    finally:
++        assert auth.resolve().parent == WORK.resolve() and WORK.resolve().is_relative_to(ROOT.resolve())
++        assert not auth.is_symlink() and all(not p.is_symlink() for p in auth.rglob('*'))
++        shutil.rmtree(auth)
++    print(json.dumps({'image': receipt['image'], 'maintenance_image': receipt['maintenance_image']}))
++
++
++def create_backup():
++    assert receipt.get('image')
++    for name, kind in receipt['targets'].items():
++        guard_target(kind, name, [receipt['parent'], receipt['maintenance_image']])
++    description = 'Before signed-in telemetry update ' + datetime.now(timezone.utc).isoformat()
++    service.call('sql', 'backups', 'create', '--instance=' + service.n['sql'], '--description=' + description, '--format=json')
++    backups = json.loads(service.call('sql', 'backups', 'list', '--instance=' + service.n['sql'], '--format=json'))
++    backup = next(value for value in backups if value.get('description') == description and value.get('status') == 'SUCCESSFUL')
++    receipt['backup_id'] = backup['id']
++    save()
++    print(json.dumps({'successful_backup': backup['id']}))
++
++
++def export_lap_snapshot(*, reread=False):
++    assert receipt.get('database_before') and receipt['database_before']['runs'] < 20000
++    resource = guard_target('job', service.n['smoke'], [receipt['parent']])
++    assert env(resource).get('BMT_STAGING_OWNER', {}).get('value') == config['owner']
++    snapshot_source = (WORK / 'lap_snapshot.py').read_text(encoding='utf-8')
++    source = ('import base64,gzip,hashlib,hmac,json,math,os,re,secrets\nfrom uuid import UUID\n'
++        + source_function(snapshot_source, 'export_snapshot') + '\n').encode()
++    encoded = base64.b64encode(gzip.compress(source)).decode()
++    code = ('import base64,gzip; ns={"__name__":"snapshot_export"}; '
++        'exec(gzip.decompress(base64.b64decode("' + encoded + '")).decode(),ns); ns["export_snapshot"]()')
++    assert len(code) < 7500
++    if reread:
++        execution = receipt['lap_snapshot_execution']
++    else:
++        result = json.loads(service.call('run', 'jobs', 'execute', service.n['smoke'], '--region=' + config['region'],
++            '--wait', '--task-timeout=180s', '--args=^@^-c@' + code, '--format=json'))
++        execution = result.get('metadata', {}).get('name') or result.get('name')
++        assert execution and '/' not in execution
++        receipt['lap_snapshot_execution'] = execution
++        save()
++    logs = json.loads(service.call('logging', 'read', 'resource.type="cloud_run_job" AND '
++        'resource.labels.job_name="' + service.n['smoke'] + '" AND '
++        'labels."run.googleapis.com/execution_name"="' + execution + '"', '--limit=100', '--format=json'))
++    path = WORK / 'lap-snapshot-logs.private.json'
++    path.write_text(json.dumps(logs), encoding='utf-8')
++    spec = importlib.util.spec_from_file_location('lap_snapshot_private', WORK / 'lap_snapshot.py')
++    helper = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(helper)
++    value = helper.decode_log(path, WORK / 'lap-snapshot.private.json.gz')
++    receipt['lap_snapshot_counts'] = value['counts']
++    save()
++    print(json.dumps({'readonly_deidentified_snapshot': True, 'counts': value['counts'], 'identities_content_credentials_exported': False}))
++
++
++def telemetry_env_argument(enabled=True, *, maintenance=False):
++    values = {**TELEMETRY_ENV, 'BMT_TELEMETRY_ENABLED': 'true' if enabled else 'false',
++        'BMT_DEPLOYMENT_MAINTENANCE': 'true' if maintenance else 'false'}
++    return '--update-env-vars=' + ','.join(key + '=' + value for key,value in values.items())
++
++
++def maintenance_start():
++    assert receipt.get('backup_id') and not receipt.get('migration_complete')
++    guard_target('api', service.n['api'], [receipt['parent']])
++    tag = 'product-maint-' + receipt['source_hash'][:8]
++    service.call('run', 'services', 'update', service.n['api'], '--region=' + config['region'],
++        '--image=' + receipt['maintenance_image'], '--no-traffic', '--tag=' + tag,
++        '--update-env-vars=BMT_DEPLOYMENT_MAINTENANCE=true', '--format=json')
++    current = guard_target('api', service.n['api'], [receipt['maintenance_image']])
++    route = next(route for route in current['status']['traffic'] if route.get('tag') == tag)
++    assert route.get('percent', 0) == 0
++    old = {(v['revisionName'], v.get('percent', 0)) for v in receipt['old_traffic'] if v.get('percent', 0)}
++    actual = {(v['revisionName'], v.get('percent', 0)) for v in current['status']['traffic'] if v.get('percent', 0)}
++    assert actual == old
++    fetch(route['url'], '/ready')
++    import requests
++    denied = requests.post(route['url'] + '/v1/telemetry/batches', json={}, timeout=(5, 15), allow_redirects=False)
++    assert denied.status_code == 503 and denied.json()['detail'] == 'DEPLOYMENT_MAINTENANCE'
++    service.call('run', 'services', 'update-traffic', service.n['api'], '--region=' + config['region'],
++        '--to-revisions=' + route['revisionName'] + '=100', '--format=json')
++    before_worker = guard_target('worker', service.n['worker'], [receipt['parent']])
++    count = before_worker['metadata']['annotations']['run.googleapis.com/manualInstanceCount']
++    assert count == '1'
++    receipt['worker_instances_before'] = int(count)
++    service.call('run', 'worker-pools', 'update', service.n['worker'], '--region=' + config['region'], '--instances=0', '--format=json')
++    paused = guard_target('worker', service.n['worker'], [receipt['parent']])
++    assert paused['metadata']['annotations']['run.googleapis.com/manualInstanceCount'] == '0'
++    receipt.update(maintenance_revision=route['revisionName'], maintenance_tag=tag,
++        maintenance_started_utc=datetime.now(timezone.utc).isoformat(), writers_paused=True)
++    save()
++    print(json.dumps({'maintenance': True, 'v1_writes_retryable_503': True, 'verification_worker_instances': 0}))
++
++
++def execute_program(name, code, prefix, *, timeout=600):
++    encoded = base64.b64encode(gzip.compress(code.encode())).decode()
++    boot = 'import base64,gzip; exec(gzip.decompress(base64.b64decode("' + encoded + '")).decode())'
++    assert len(boot) < 7400
++    existing = receipt.get(name + '_execution')
++    if existing is None:
++        value = json.loads(service.call('run', 'jobs', 'execute', service.n['smoke'], '--region=' + config['region'],
++            '--wait', '--task-timeout=' + str(timeout) + 's', '--args=^@^-c@' + boot, '--format=json'))
++        existing = value.get('metadata', {}).get('name') or value.get('name')
++        assert existing and '/' not in existing
++        receipt[name + '_execution'] = existing
++        save()
++    logs = json.loads(service.call('logging', 'read', 'resource.type="cloud_run_job" AND '
++        'resource.labels.job_name="' + service.n['smoke'] + '" AND labels."run.googleapis.com/execution_name"="'
++        + existing + '"', '--limit=100', '--format=json'))
++    (WORK / (name + '-logs.private.json')).write_text(json.dumps(logs), encoding='utf-8')
++    values = [entry.get('textPayload', '') for entry in logs if entry.get('textPayload', '').startswith(prefix)]
++    assert len(values) == 1, 'Diagnostic result log not visible yet; safe to reread the completed execution'
++    result = json.loads(values[0][len(prefix):])
++    (OUTPUT / (name + '.json')).write_text(json.dumps(result, indent=2) + '\n')
++    return result
++
++
++def stopped_writer_check():
++    assert receipt.get('writers_paused')
++    code = '''import hashlib,json
++from sqlalchemy import text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url)
++with e.connect() as c:
++ c.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++ data={n:c.execute(text("SELECT count(*) FROM "+n)).scalar() for n in ("players","boards","runs","personal_bests")}
++ data["schema"]=c.execute(text("SELECT version_num FROM alembic_version")).scalar()
++ data["active_run_jobs"]=c.execute(text("SELECT count(*) FROM runs WHERE status IN ('queued','verifying')")).scalar()
++ data["pending_track_jobs"]=c.execute(text("SELECT count(*) FROM track_validations WHERE status IN ('queued','validating')")).scalar()
++ rows=c.execute(text("SELECT board_id,player_id,run_id,time_ticks,achieved_at FROM personal_bests ORDER BY board_id,player_id")).all()
++ data["race_pb_hash"]=hashlib.sha256(json.dumps([list(r) for r in rows],separators=(',',':')).encode()).hexdigest()
++ boards={r.id:r for r in c.execute(text("""SELECT b.id,b.manifest,
++ coalesce((SELECT max((o.details->>'created_at')::integer) FROM operation_state o
++ WHERE o.id LIKE 'test-pop-batch:%' AND o.details#>>'{request,clear_test_records}'='true'
++ AND EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(o.details::jsonb->'tracks','[]'::jsonb)) entry
++ JOIN track_versions retired ON retired.id=entry->>'version_id'
++ JOIN track_versions current_version ON current_version.id=b.version_id
++ WHERE retired.track_id=current_version.track_id)),0) AS cutoff FROM boards b"""))}
++ players={r.id:r for r in c.execute(text("SELECT id,is_test_driver,disabled FROM players"))}
++ expected={}
++ for run in c.execute(text("SELECT board_id,player_id,lap_ticks,created_at FROM runs WHERE status='verified' AND time_ticks>0")):
++  board=boards[run.board_id]; player=players[run.player_id]; laps=run.lap_ticks
++  if board.manifest.get('purpose')=='creator_test' or not isinstance(laps,list) or len(laps)!=5 or any(type(t) is not int or not 1<=t<=216000 for t in laps): continue
++  if board.manifest.get('test_population') and player.is_test_driver and run.created_at<board.cutoff: continue
++  pair=(run.board_id,run.player_id); value=min(laps[1:]); expected[pair]=min(expected.get(pair,value),value)
++ members={(r[0],r[1]) for r in rows}
++ visible={pair:value for pair,value in expected.items() if pair in members
++  and not players[pair[1]].disabled and (boards[pair[0]].manifest.get('test_population') or not players[pair[1]].is_test_driver)}
++ data['expected_lap_minima']=len(expected)
++ data['expected_visible_lap_minima']=len(visible)
++ data['expected_lap_hash']=hashlib.sha256(json.dumps(sorted([*pair,value] for pair,value in expected.items()),separators=(',',':')).encode()).hexdigest()
++ data['expected_visible_lap_hash']=hashlib.sha256(json.dumps(sorted([*pair,value] for pair,value in visible.items()),separators=(',',':')).encode()).hexdigest()
++ print("PRODUCT_STOPPED:"+json.dumps(data,separators=(',',':')))
++e.dispose()
++'''
++    result = execute_program('stopped-writer', code, 'PRODUCT_STOPPED:', timeout=180)
++    assert result['schema'] == receipt['schema_before'] and result['active_run_jobs'] == result['pending_track_jobs'] == 0
++    assert all(result[key] == receipt['database_before'][key] for key in ('players','boards','runs','personal_bests','race_pb_hash'))
++    receipt['stopped_writer_check'] = result
++    save()
++    print(json.dumps({'writers_drained': True, 'snapshot_counts_and_race_pbs_unchanged': True}))
++
++
++def migrate_database():
++    assert receipt.get('stopped_writer_check') and receipt.get('backup_id')
++    resource = guard_target('job', service.n['migrate'], [receipt['parent'], receipt['image']])
++    if stage.resource_image(resource) == receipt['parent']:
++        service.call('run', 'jobs', 'update', service.n['migrate'], '--region=' + config['region'], '--image=' + receipt['image'], '--format=json')
++    guard_target('job', service.n['migrate'], [receipt['image']])
++    service.call('run', 'jobs', 'execute', service.n['migrate'], '--region=' + config['region'], '--wait', '--format=json')
++    receipt['migration_complete'] = True
++    save()
++    service.call('run', 'jobs', 'update', service.n['smoke'], '--region=' + config['region'], '--image=' + receipt['image'], '--format=json')
++    guard_target('job', service.n['smoke'], [receipt['image']])
++    print(json.dumps({'owned_schema_migrated': '0025_product_telemetry', 'cloud_setup_grants_applied': True}))
++
++
++def initialize_lap_projections():
++    assert receipt.get('migration_complete')
++    guard_target('job', service.n['smoke'], [receipt['image']])
++    code = '''import hashlib,json,time
++from sqlalchemy import select,text,update
++from bmt_backend.app import create_app
++from bmt_backend.lap_bests import backfill_one
++from bmt_backend.histogram_snapshots import refresh_one
++from bmt_backend.track_models import HistogramSnapshot
++a=create_app();f=a.state.session_factory
++began=time.monotonic();batches=inspected=invalid=0
++for _ in range(5000):
++ value=backfill_one(f,limit=200)
++ inspected+=value.get('inspected',0);invalid+=value.get('invalid_records',0)
++ if not value['worked']: break
++ batches+=1
++else: raise RuntimeError('Bounded initial lap backfill did not finish')
++with f() as s:
++ data={'backfill_batches':batches,'inspected':inspected,'invalid_records':invalid}
++ data['schema']=s.execute(text('SELECT version_num FROM alembic_version')).scalar()
++ data['incomplete_boards']=s.execute(text('SELECT count(*) FROM lap_best_state WHERE NOT complete')).scalar()
++ assert data['incomplete_boards']==0
++ lap_rows=s.execute(text('SELECT board_id,player_id,time_ticks FROM lap_personal_bests ORDER BY board_id,player_id')).all()
++ data['lap_minima']=len(lap_rows)
++ data['lap_hash']=hashlib.sha256(json.dumps([list(r) for r in lap_rows],separators=(',',':')).encode()).hexdigest()
++ visible=s.execute(text("""SELECT l.board_id,l.player_id,l.time_ticks FROM lap_personal_bests l
++ JOIN players p ON p.id=l.player_id JOIN boards b ON b.id=l.board_id
++ JOIN personal_bests pb ON pb.board_id=l.board_id AND pb.player_id=l.player_id
++ WHERE NOT p.disabled AND (b.manifest->>'test_population'='true' OR NOT p.is_test_driver)
++ ORDER BY l.board_id,l.player_id""")).all()
++ data['visible_lap_minima']=len(visible)
++ data['visible_lap_hash']=hashlib.sha256(json.dumps([list(r) for r in visible],separators=(',',':')).encode()).hexdigest()
++ rows=s.execute(text('SELECT board_id,player_id,run_id,time_ticks,achieved_at FROM personal_bests ORDER BY board_id,player_id')).all()
++ data['race_pb_hash']=hashlib.sha256(json.dumps([list(r) for r in rows],separators=(',',':')).encode()).hexdigest()
++ for table in ('runs','personal_bests','players','product_events'):
++  data[table]=s.execute(text('SELECT count(*) FROM '+table)).scalar()
++ data['app_role']=s.execute(text('SELECT current_user')).scalar()
++ data['table_privileges']={t:{p:s.execute(text('SELECT has_table_privilege(current_user,:t,:p)'),{'t':t,'p':p}).scalar()
++  for p in ('SELECT','INSERT','UPDATE','DELETE')} for t in ('product_events','product_state','lap_personal_bests','lap_best_state')}
++ data['role_superuser']=s.execute(text('SELECT rolsuper FROM pg_roles WHERE rolname=current_user')).scalar()
++ s.execute(update(HistogramSnapshot).values(next_refresh_at=int(time.time()),dirty=True));s.commit()
++data['backfill_parity_seconds']=round(time.monotonic()-began,3)
++refreshed=0;clock=int(time.time())
++for _ in range(3000):
++ if not refresh_one(a,clock=clock): break
++ refreshed+=1
++else: raise RuntimeError('Initial histogram refresh exceeded budget')
++with f() as s:
++ data['snapshots']=s.execute(text('SELECT count(*) FROM histogram_snapshots')).scalar()
++ data['snapshots_invalidated']=s.execute(text('SELECT count(*) FROM histogram_snapshots WHERE invalidated')).scalar()
++data['refreshed_snapshots']=refreshed;data['total_seconds']=round(time.monotonic()-began,3)
++a.state.engine.dispose();a.state.verifier.close()
++print('PRODUCT_INITIALIZE:'+json.dumps(data,separators=(',',':')))
++'''
++    result = execute_program('initialize-projections', code, 'PRODUCT_INITIALIZE:', timeout=600)
++    baseline = receipt['stopped_writer_check']
++    assert result['schema'] == '0025_product_telemetry' and result['incomplete_boards'] == 0
++    assert result['lap_minima'] == baseline['expected_lap_minima'] and result['lap_hash'] == baseline['expected_lap_hash']
++    assert result['visible_lap_minima'] == baseline['expected_visible_lap_minima'] and result['visible_lap_hash'] == baseline['expected_visible_lap_hash']
++    assert result['race_pb_hash'] == baseline['race_pb_hash'] and result['runs'] == baseline['runs']
++    assert result['personal_bests'] == baseline['personal_bests'] and result['players'] == baseline['players']
++    assert result['product_events'] == 0 and not result['role_superuser'] and all(all(v.values()) for v in result['table_privileges'].values())
++    receipt['initial_lap_projection_verified'] = True
++    save()
++    print(json.dumps({k:v for k,v in result.items() if k not in ('race_pb_hash','lap_hash','visible_lap_hash')}))
++
++
++def warm_private_snapshots():
++    assert receipt.get('initial_lap_projection_verified')
++    code = '''import json,time,secrets
++from dataclasses import replace
++from sqlalchemy import text,update
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.histogram_snapshots import refresh_one
++from bmt_backend.track_models import HistogramSnapshot
++# This diagnostic opens no listener, signs in nobody and issues no session.
++# An ephemeral key satisfies the development-population configuration invariant.
++a=create_app(replace(Settings.from_env(),environment='development',dev_auth_enabled=True,
++ dev_auth_key=secrets.token_urlsafe(32),test_drivers_enabled=True));f=a.state.session_factory
++clock=int(time.time());started=time.monotonic()
++with f() as s:
++ s.execute(update(HistogramSnapshot).where(HistogramSnapshot.include_artificial.is_(True)).values(next_refresh_at=clock,dirty=True));s.commit()
++refreshed=0
++for _ in range(3000):
++ if not refresh_one(a,clock=clock):break
++ refreshed+=1
++else:raise RuntimeError('Private warm exceeded bounded budget')
++with f() as s:
++ result={'refreshed':refreshed,'seconds':round(time.monotonic()-started,3)}
++ result['published_invalidated']=s.execute(text("SELECT count(*) FROM histogram_snapshots h JOIN track_versions v ON v.id=h.version_id WHERE v.state='published' AND h.invalidated")).scalar()
++ result['remaining_nonpublished_invalidated']=s.execute(text("SELECT count(*) FROM histogram_snapshots h JOIN track_versions v ON v.id=h.version_id WHERE v.state<>'published' AND h.invalidated")).scalar()
++ result['incomplete_boards']=s.execute(text('SELECT count(*) FROM lap_best_state WHERE NOT complete')).scalar()
++a.state.engine.dispose();a.state.verifier.close()
++print('PRODUCT_PRIVATE_WARM:'+json.dumps(result,separators=(',',':')))
++'''
++    result=execute_program('private-snapshot-warm',code,'PRODUCT_PRIVATE_WARM:',timeout=600)
++    assert result['published_invalidated']==0 and result['incomplete_boards']==0
++    receipt['public_private_snapshots_warmed']=True;save()
++    print(json.dumps(result))
++
++
++def verify_product_http(origin):
++    resource = service.describe('api', service.n['api'])
++    key = staff_key(resource)
++    ready = fetch(origin, '/ready').json()
++    assert ready['status'] == 'ready'
++    bootstrap = fetch(origin, '/v1/bootstrap').json()
++    telemetry = bootstrap['product_telemetry']
++    assert telemetry['enabled'] is True and telemetry['schema_version'] == 1 and telemetry['guest_coverage'] is False
++    assert telemetry['max_events'] == 50 and telemetry['max_batch_bytes'] == 65536
++    overview = fetch(origin, '/v1/admin/overview', key).json()
++    assert overview['schema'] == '0025_product_telemetry' and overview['players'] == receipt['initial_players']
++    data = fetch(origin, '/v1/admin/product-analytics?days=7', key).json()
++    assert data['schema'] == 'bmt-product-analytics-v1' and data['telemetry_enabled']
++    assert data['coverage']['fact_retention_days'] == 180 and len(data['daily']) <= 8
++    assert 'Guest coverage is unavailable' in ' '.join(data['coverage']['limitations'])
++    assert all(not cell['d7']['mature'] for cell in data['retention'])
++    assert data['store']['fulfilled'] is None
++    pre = fetch(origin, '/v1/admin/product-analytics?since=1790812800&until=1790899200', key).json()
++    assert all(row['active_players'] is None for row in pre['daily'])
++    assert pre['weekly_active_players'] is None and pre['store']['opened'] is None
++    assets = {}
++    for name in ('index.html','app.js','style.css','studio.js','support.js','commerce.js','product_analytics.js'):
++        path = '/admin' if name == 'index.html' else '/admin/assets/' + name
++        raw = fetch(origin, path).content
++        frozen = CONTEXT / 'source/admin_ui' / name
++        expected = frozen.read_bytes() if frozen.exists() else (WORK / 'parent/admin_ui' / name).read_bytes()
++        assert raw == expected, 'Asset parity failure: ' + name
++        assets[name] = digest(raw)
++    return {'observed_at':datetime.now(timezone.utc).isoformat(), 'origin':origin, 'schema':overview['schema'],
++        'players_including_artificial':overview['players'], 'read_only':True, 'telemetry':telemetry,
++        'coverage':data['coverage'], 'daily_rows':len(data['daily']), 'client_cohorts':len(data['retention']),
++        'precollection_unknown':True, 'paid_outcomes_unavailable':True, 'assets':assets}
++
++
++def create_canary():
++    assert receipt.get('initial_lap_projection_verified') and receipt.get('public_private_snapshots_warmed')
++    guard_target('api', service.n['api'], [receipt['maintenance_image']])
++    tag = 'product-' + receipt['source_hash'][:10]
++    service.call('run', 'services', 'update', service.n['api'], '--region=' + config['region'],
++        '--image=' + receipt['image'], '--no-traffic', '--tag=' + tag,
++        telemetry_env_argument(), '--format=json')
++    current = guard_target('api', service.n['api'], [receipt['image']])
++    active = [route for route in current['status']['traffic'] if route.get('percent', 0)]
++    assert len(active) == 1 and active[0]['revisionName'] == receipt['maintenance_revision'] and active[0]['percent'] == 100
++    route = next(route for route in current['status']['traffic'] if route.get('tag') == tag)
++    assert route.get('percent', 0) == 0
++    receipt.update(canary_revision=route['revisionName'], canary_url=route['url'], canary_tag=tag)
++    save()
++    result = verify_product_http(route['url'])
++    (OUTPUT / 'verify-canary.json').write_text(json.dumps(result, indent=2) + '\n')
++    receipt['verify_canary'] = True
++    save()
++    print(json.dumps({'canary':route['revisionName'],'normal_maintenance_traffic_preserved':True,
++        'ready25':True,'telemetry_enabled_signedin_only':True,'assets_verified':len(result['assets'])}))
++
++
++def promote_and_resources():
++    assert receipt.get('verify_canary')
++    guard_target('api', service.n['api'], [receipt['image']])
++    service.call('run', 'services', 'update-traffic', service.n['api'], '--region=' + config['region'],
++        '--to-revisions=' + receipt['canary_revision'] + '=100', '--format=json')
++    receipt['promoted'] = True
++    receipt['maintenance_ended_utc'] = datetime.now(timezone.utc).isoformat()
++    save()
++    worker = guard_target('worker', service.n['worker'], [receipt['parent']])
++    assert worker['metadata']['annotations']['run.googleapis.com/manualInstanceCount'] == '0'
++    service.call('run', 'worker-pools', 'update', service.n['worker'], '--region=' + config['region'],
++        '--image=' + receipt['image'], '--command=python', '--args=-m,bmt_backend.service_worker',
++        telemetry_env_argument(), '--instances=' + str(receipt['worker_instances_before']), '--format=json')
++    guard_target('worker', service.n['worker'], [receipt['image']], command=(['python'],['-m','bmt_backend.service_worker']))
++    for name, kind in receipt['targets'].items():
++        if kind in ('api','worker'):
++            continue
++        value = guard_target(kind, name, [receipt['parent'],receipt['image']])
++        if stage.resource_image(value) == receipt['parent']:
++            service.call('run','jobs','update',name,'--region='+config['region'],'--image='+receipt['image'],'--format=json')
++        guard_target(kind,name,[receipt['image']])
++    old=json.loads((DIRECTORY/'deployment.json').read_text())
++    assert old['image']==receipt['parent']
++    stage.write_json(DIRECTORY/('deployment-before-product-'+str(receipt['backup_id'])+'.json'),old)
++    stage.write_json(DIRECTORY/'deployment.json',{**old,'image':receipt['image']})
++    path=DIRECTORY/'test-population.json'
++    if path.exists():
++        data=json.loads(path.read_text());stage.write_json(path,{**data,'image':receipt['image']})
++    receipt['deployed']=True
++    save()
++    print(json.dumps({'promoted':True,'revision':receipt['canary_revision'],'worker_instances':receipt['worker_instances_before'],
++        'product_process_nice':19,'product_batch':100,'new_cloud_instances':0}))
++
++
++def final_smoke():
++    assert receipt.get('deployed')
++    service.call('run','jobs','execute',service.n['smoke'],'--region='+config['region'],'--wait','--format=json')
++    receipt['native_storage_schema_smoke']=True
++    result=verify_product_http(receipt['url'])
++    health=fetch(receipt['url'],'/v1/admin/competition-health',staff_key(service.describe('api',service.n['api']))).json()
++    assert health['status']=='ready' and health['available_workers']>=1
++    result['competition_ready']=True;result['available_workers']=health['available_workers']
++    (OUTPUT/'verify-live.json').write_text(json.dumps(result,indent=2)+'\n')
++    receipt['verify_live']=True
++    save()
++    print(json.dumps({'ready25':True,'telemetry_enabled':True,'available_workers':health['available_workers'],
++        'native_storage_schema_smoke':True,'seven_asset_hashes_verified':True}))
++
++
++def finish_rollout():
++    assert receipt.get('verify_live') and receipt.get('native_storage_schema_smoke') and receipt.get('live_browser')
++    service.call('run','services','update-traffic',service.n['api'],'--region='+config['region'],
++        '--remove-tags='+receipt['canary_tag']+','+receipt['maintenance_tag'],'--format=json')
++    current=guard_target('api',service.n['api'],[receipt['image']])
++    assert any(route.get('revisionName')==receipt['canary_revision'] and route.get('percent')==100 for route in current['status']['traffic'])
++    assert not any(route.get('tag') in (receipt['canary_tag'],receipt['maintenance_tag']) for route in current['status']['traffic'])
++    for name,kind in receipt['targets'].items():
++        guard_target(kind,name,[receipt['image']],command=(['python'],['-m','bmt_backend.service_worker']) if kind=='worker' else None)
++    receipt.update(completed=True,completed_utc=datetime.now(timezone.utc).isoformat(),temporary_tags_removed=True)
++    save()
++    print(json.dumps({'completed':True,'revision':receipt['canary_revision'],'url':receipt['url'],'schema':'0025_product_telemetry'}))
++
++
++def rollback_rollout():
++    # Never drop accepted data or redeploy a schema23 process against schema25.
++    code = '''import json
++from sqlalchemy import text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url)
++with e.connect() as c:
++ c.execute(text('SET TRANSACTION READ ONLY'))
++ v=c.execute(text('SELECT version_num FROM alembic_version')).scalar()
++print('PRODUCT_ROLLBACK_SCHEMA:'+json.dumps({'schema':v}));e.dispose()
++'''
++    data = execute_program('rollback-schema',code,'PRODUCT_ROLLBACK_SCHEMA:',timeout=180)
++    if data['schema'] == receipt['schema_before']:
++        traffic=','.join(v['revisionName']+'='+str(v['percent']) for v in receipt['old_traffic'] if v.get('percent',0))
++        service.call('run','services','update-traffic',service.n['api'],'--region='+config['region'],'--to-revisions='+traffic,'--format=json')
++        service.call('run','worker-pools','update',service.n['worker'],'--region='+config['region'],
++            '--instances='+str(receipt.get('worker_instances_before',1)),'--format=json')
++        receipt['rollback_mode']='Original23 traffic restored; no database migration had committed'
++    else:
++        assert data['schema']=='0025_product_telemetry'
++        tag='product-fallback-'+receipt['source_hash'][:8]
++        service.call('run','services','update',service.n['api'],'--region='+config['region'],'--image='+receipt['image'],
++            '--no-traffic','--tag='+tag,telemetry_env_argument(False),'--format=json')
++        current=guard_target('api',service.n['api'],[receipt['image']])
++        route=next(v for v in current['status']['traffic'] if v.get('tag')==tag)
++        fetch(route['url'],'/ready')
++        assert fetch(route['url'],'/v1/bootstrap').json()['product_telemetry']['enabled'] is False
++        service.call('run','services','update-traffic',service.n['api'],'--region='+config['region'],
++            '--to-revisions='+route['revisionName']+'=100','--format=json')
++        service.call('run','worker-pools','update',service.n['worker'],'--region='+config['region'],
++            '--image='+receipt['image'],'--command=python','--args=-m,bmt_backend.service_worker',
++            telemetry_env_argument(False),'--instances='+str(receipt.get('worker_instances_before',1)),'--format=json')
++        receipt['rollback_mode']='Schema25-compatible candidate retained; collection/projector disabled; data preserved'
++    receipt['rolled_back']=True;save()
++    print(json.dumps({'rolled_back':True,'mode':receipt['rollback_mode'],'database_downgraded':False}))
++
++
++def failed_warm_logs():
++    logs=json.loads(service.call('logging','read','resource.type="cloud_run_job" AND resource.labels.job_name="'+service.n['smoke']
++        +'" AND labels."run.googleapis.com/execution_name"="bmt-stg-e7a444ab-smoke-cj6p7"','--limit=30','--format=json'))
++    (WORK/'failed-private-warm-logs.private.json').write_text(json.dumps(logs))
++    for entry in logs:
++        line=entry.get('textPayload','')
++        if 'Error:' in line or 'RuntimeError' in line or 'ValueError' in line:
++            print(line[-1600:])
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('action', choices=['inspect', 'extract', 'database-inspect', 'prepare', 'build', 'push', 'backup', 'snapshot', 'snapshot-logs',
++        'maintenance', 'stopped-check', 'migrate', 'initialize', 'warm-private', 'canary', 'promote', 'smoke', 'finish', 'rollback', 'failed-warm-logs'])
++    action = parser.parse_args().action
++    if action == 'inspect':
++        inspect_live()
++    elif action == 'extract':
++        extract_parent()
++    elif action == 'database-inspect':
++        probe_database()
++    elif action == 'prepare':
++        prepare_image()
++    elif action == 'build':
++        build_image()
++    elif action == 'push':
++        push_images()
++    elif action == 'backup':
++        create_backup()
++    elif action == 'snapshot':
++        export_lap_snapshot()
++    elif action == 'snapshot-logs':
++        export_lap_snapshot(reread=True)
++    elif action == 'maintenance':
++        maintenance_start()
++    elif action == 'stopped-check':
++        stopped_writer_check()
++    elif action == 'migrate':
++        migrate_database()
++    elif action == 'initialize':
++        initialize_lap_projections()
++    elif action == 'warm-private':
++        warm_private_snapshots()
++    elif action == 'canary':
++        create_canary()
++    elif action == 'promote':
++        promote_and_resources()
++    elif action == 'smoke':
++        final_smoke()
++    elif action == 'finish':
++        finish_rollout()
++    elif action == 'rollback':
++        rollback_rollout()
++    elif action == 'failed-warm-logs':
++        failed_warm_logs()
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/.tools/product_telemetry_image_tests_20261011.py b/.tools/product_telemetry_image_tests_20261011.py
+new file mode 100644
+--- /dev/null
++++ b/.tools/product_telemetry_image_tests_20261011.py
+@@ -0,0 +1,332 @@
++"""Frozen exact-image acceptance on owned local Docker resources; no cloud calls."""
++
++import argparse
++import hashlib
++import importlib.util
++import json
++import os
++import secrets
++import shutil
++import subprocess
++import sys
++import time
++import xml.etree.ElementTree as ET
++from datetime import datetime, timezone
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++CONTEXT = ROOT / "build/product-telemetry-deploy-2026-10-11/image"
++WORK = CONTEXT.parent / "acceptance"
++OUTPUT = ROOT / "docs/evidence/product-telemetry-deploy-2026-10-11"
++ROLLOUT = OUTPUT / "rollout.json"
++TASK_LABEL = "product-image-" + secrets.token_hex(12)
++SELECTED = [
++    "test_product_analytics.py", "test_product_domain_events.py", "test_admin.py",
++    "test_admin_support.py", "test_studio.py", "test_store_admin.py",
++    "test_lap_bests.py", "test_histogram_snapshots.py",
++]
++
++
++def hashes(folder):
++    return {p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
++
++
++def linux_path(path):
++    value = Path(path).resolve()
++    assert value.is_relative_to(ROOT.resolve())
++    return "/mnt/" + value.drive[0].lower() + value.as_posix()[2:]
++
++
++class OwnedDocker:
++    def __init__(self, docker, tag):
++        self.docker = docker
++        self.tag = tag
++        self.containers = set()
++        self.networks = set()
++        self.secrets = []
++
++    def clean(self, text):
++        for secret in self.secrets:
++            text = text.replace(secret, "[REDACTED]")
++        return text
++
++    def call(self, *args, timeout=300, check=True):
++        result = subprocess.run([*self.docker, *args], capture_output=True, text=True,
++                                timeout=timeout, check=False)
++        if check and result.returncode:
++            (WORK / "last-docker-error.private.log").write_text(result.stdout + result.stderr, encoding="utf-8")
++            raise RuntimeError("Owned Docker operation failed; private diagnostic retained")
++        return result
++
++    def labelled(self, kind, name):
++        args = ("network", "inspect") if kind == "network" else ("inspect",)
++        result = self.call(*args, name, "--format", "{{json .Labels}}" if kind == "network"
++                           else "{{json .Config.Labels}}", check=False)
++        return result.returncode == 0 and json.loads(result.stdout).get("bmt.task") == TASK_LABEL
++
++    def stop(self, name):
++        if name not in self.containers:
++            return
++        exists = self.call("inspect", name, "--format", "{{json .State.Running}}", check=False)
++        if exists.returncode == 0:
++            assert self.labelled("container", name), "Container ownership changed"
++            self.call("stop", "--time=15", name)
++        self.containers.discard(name)
++
++    def remove_network(self, name):
++        if name in self.networks:
++            assert self.labelled("network", name), "Network ownership changed"
++            self.call("network", "rm", name)
++            self.networks.discard(name)
++
++    def cleanup(self):
++        for name in tuple(self.containers):
++            self.stop(name)
++        for name in tuple(self.networks):
++            self.remove_network(name)
++
++
++def freeze():
++    WORK.mkdir(parents=True, exist_ok=True)
++    OUTPUT.mkdir(parents=True, exist_ok=True)
++    tests = WORK / "frozen-tests"
++    if not tests.exists():
++        shutil.copytree(ROOT / "backend/tests", tests,
++                        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
++    driver = WORK / "product_console.py"
++    if not driver.exists():
++        shutil.copyfile(ROOT / "scripts/test_product_analytics_console.py", driver)
++    config = WORK / "pytest.ini"
++    if not config.exists():
++        config.write_text("[pytest]\nmarkers =\n    postgres: requires owned PostgreSQL\n"
++                          "    godot: requires exact pinned Godot\n", encoding="utf-8")
++    manifest = {
++        "test_files": hashes(tests), "selected": SELECTED,
++        "browser_driver_sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
++        "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "maintenance_probe_sha256": hashlib.sha256((WORK / "candidate-maintenance-check.py").read_bytes()).hexdigest(),
++        "browser_server_wrapper_sha256": hashlib.sha256((WORK / "candidate-browser-server.py").read_bytes()).hexdigest(),
++    }
++    (OUTPUT / "exact-image-test-sources.json").write_text(json.dumps(manifest, indent=2) + "\n")
++    return tests, driver, config, manifest
++
++
++def junit(path):
++    root = ET.parse(path).getroot()
++    suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
++    result = {key: sum(int(node.attrib.get(key, "0")) for node in suites)
++              for key in ("tests", "failures", "errors", "skipped")}
++    result["passed"] = result["tests"] - result["failures"] - result["errors"] - result["skipped"]
++    result["seconds"] = sum(float(node.attrib.get("time", "0")) for node in suites)
++    return result
++
++
++def pytest_image(docker, tests, config, *, postgres=False, network=None, db_name=None, password=None):
++    kind = "postgres" if postgres else "sqlite"
++    scratch = WORK / kind
++    scratch.mkdir(exist_ok=True)
++    environment = scratch / "environment.private"
++    if postgres:
++        environment.write_text("BMT_TEST_DATABASE_URL=postgresql+psycopg://image_test:"
++                               + password + "@" + db_name + ":5432/image_test\n"
++                               "BMT_DEPLOYMENT_MAINTENANCE=false\n")
++    else:
++        environment.write_text("BMT_TEST_DATABASE_URL=\nBMT_DEPLOYMENT_MAINTENANCE=false\n")
++    name = "bmt-product-image-" + kind + "-" + secrets.token_hex(4)
++    args = ["run", "--rm", "--name", name, "--label", "bmt.task=" + TASK_LABEL,
++            "--network=" + (network if postgres else "none"),
++            "-v", linux_path(tests) + ":/frozen/backend/tests:ro",
++            "-v", linux_path(config) + ":/pytest.ini:ro",
++            "-v", linux_path(scratch) + ":/results",
++            "--env-file", linux_path(environment), "-e", "PYTHONPATH=/app:/frozen/backend/tests",
++            "--entrypoint=python", docker.tag, "-m", "pytest", "-c", "/pytest.ini",
++            *["/frozen/backend/tests/" + filename for filename in SELECTED],
++            "-q", "-p", "no:cacheprovider", "--tb=short", "--junitxml=/results/results.xml"]
++    if not postgres:
++        args.extend(["-k", "not postgres"])
++    docker.containers.add(name)
++    started = time.monotonic()
++    run = docker.call(*args, timeout=1200, check=False)
++    docker.containers.discard(name)  # --rm removes the completed test container.
++    output = docker.clean(run.stdout + run.stderr)
++    (OUTPUT / ("exact-image-" + kind + "-tests.log")).write_text(output, encoding="utf-8")
++    stats = junit(scratch / "results.xml") if (scratch / "results.xml").exists() else {}
++    stats.update(exit_code=run.returncode, wall_seconds=time.monotonic() - started)
++    print(kind + " exact-image tests: " + json.dumps(stats), flush=True)
++    if run.returncode:
++        print(output[-7000:], flush=True)
++    return stats
++
++
++def maintenance(docker):
++    probe = WORK / "candidate-maintenance-check.py"
++    assert probe.exists(), "Owned maintenance probe is not ready"
++    result = docker.call("run", "--rm", "--network=none", "--label", "bmt.task=" + TASK_LABEL,
++                         "-v", linux_path(probe) + ":/probe.py:ro", "-e", "PYTHONPATH=/app",
++                         "--entrypoint=python", docker.tag, "/probe.py")
++    (OUTPUT / "exact-image-maintenance.log").write_text(docker.clean(result.stdout + result.stderr))
++    value = json.loads(result.stdout.strip().splitlines()[-1])
++    assert value["ok"] and not value["failures"]
++    return value
++
++
++def browser_image(docker, tests, driver, network):
++    """Run the existing browser driver while replacing only its server launcher."""
++    # asyncio's Windows implementation subclasses Popen during import.
++    # Load browser dependencies before replacing the one fixture-server call.
++    importlib.import_module("httpx")
++    importlib.import_module("playwright.sync_api")
++    spec = importlib.util.spec_from_file_location("frozen_product_console", driver)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    original_popen = subprocess.Popen
++
++    class Server:
++        def __init__(self, name, log):
++            self.name, self.log = name, log
++
++        def poll(self):
++            result = docker.call("inspect", self.name, "--format", "{{json .State.Running}}", check=False)
++            if result.returncode == 0 and json.loads(result.stdout):
++                return None
++            self.capture()
++            return 1
++
++        def capture(self):
++            result = docker.call("logs", self.name, check=False)
++            text = docker.clean(result.stdout + result.stderr)
++            if not self.log.closed:
++                self.log.write(text)
++                self.log.flush()
++            (OUTPUT / "exact-image-browser-server.log").write_text(text, encoding="utf-8")
++
++        def terminate(self):
++            self.capture()
++            docker.stop(self.name)
++
++        def wait(self, timeout=None):
++            return 0
++
++    def launcher(args, *positional, **kwargs):
++        if len(args) > 2 and args[1] == str(driver.resolve()) and "--serve" in args:
++            folder = Path(args[args.index("--serve") + 1])
++            port = int(args[args.index("--port") + 1])
++            private = json.loads((folder / "config.private.json").read_text())
++            docker.secrets.extend(private.values())
++            name = "bmt-product-image-browser-" + secrets.token_hex(4)
++            result = docker.call("run", "-d", "--rm", "--name", name,
++                "--label", "bmt.task=" + TASK_LABEL, "--network=bridge",
++                "-p", f"127.0.0.1:{port}:8080",
++                "-v", linux_path(folder) + ":/fixture",
++                "-v", linux_path(tests) + ":/frozen/backend/tests:ro",
++                "-v", linux_path(driver) + ":/frozen/product_console.py:ro",
++                "-v", linux_path(WORK / "candidate-browser-server.py") + ":/browser-server.py:ro",
++                "-e", "PYTHONPATH=/app:/frozen/backend/tests",
++                "-e", "BMT_DEPLOYMENT_MAINTENANCE=false",
++                "--entrypoint=python", docker.tag, "/browser-server.py")
++            assert result.returncode == 0
++            docker.containers.add(name)
++            # Docker's published TCP proxy can accept connections before the
++            # seeded application has opened its listener, causing a reset rather
++            # than the host fixture's expected connection-refused startup state.
++            probe = ("import urllib.request;"
++                     "r=urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2);"
++                     "assert r.status==200")
++            for _attempt in range(120):
++                if docker.call("exec", name, "python", "-c", probe, check=False).returncode == 0:
++                    break
++                time.sleep(0.2)
++            else:
++                raise RuntimeError("Owned candidate browser listener did not become healthy")
++            return Server(name, kwargs["stdout"])
++        return original_popen(args, *positional, **kwargs)
++
++    old_args = sys.argv[:]
++    try:
++        subprocess.Popen = launcher
++        sys.argv = [str(driver), "--output", str(OUTPUT / "exact-image-browser")]
++        module.main()
++    finally:
++        subprocess.Popen = original_popen
++        sys.argv = old_args
++    value = json.loads((OUTPUT / "exact-image-browser/browser-receipt.json").read_text())
++    value["runtime"] = "Actual candidate Docker API and assets; no workspace backend imports."
++    return value
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--skip-browser", action="store_true")
++    parser.add_argument("--reuse-sqlite", action="store_true", help="Reuse exact same image/test hashes' successful SQLite receipt")
++    parser.add_argument("--reuse-tests", action="store_true", help="Reuse same image/test bytes' successful SQLite and PostgreSQL receipts")
++    args = parser.parse_args()
++    receipt = json.loads(ROLLOUT.read_text())
++    assert receipt.get("local_tag") and receipt.get("candidate_id")
++    assert receipt["frozen_files"] == hashes(CONTEXT), "Candidate source context changed"
++    config = json.loads((ROOT / ".tools/gcp-staging/config.json").read_text())
++    docker = OwnedDocker(config["docker"], receipt["local_tag"])
++    tests, driver, pytest_config, manifest = freeze()
++    image_id = docker.call("image", "inspect", docker.tag, "--format", "{{.Id}}").stdout.strip()
++    assert image_id == receipt["candidate_id"], "Candidate tag points at a different image"
++    result = {"image": docker.tag, "candidate_id": image_id, "source_hash": receipt["source_hash"],
++              "started_utc": datetime.now(timezone.utc).isoformat(),
++              "cloud_calls": 0, "owned_resources_only": True, "test_source_hashes": manifest}
++    network = "bmt-product-image-" + secrets.token_hex(4)
++    pg = "bmt-product-image-pg-" + secrets.token_hex(4)
++    password = secrets.token_urlsafe(24)
++    docker.secrets.append(password)
++    try:
++        if args.reuse_sqlite or args.reuse_tests:
++            reused = "tests-passed-browser-harness-failure.json" if args.reuse_tests else "initial-exact-image-acceptance.json"
++            previous = json.loads((OUTPUT / reused).read_text())
++            assert previous["candidate_id"] == image_id and previous["sqlite"]["exit_code"] == 0
++            assert previous["test_source_hashes"]["test_files"] == manifest["test_files"]
++            result["sqlite"] = previous["sqlite"]
++            result["sqlite_receipt_reused"] = reused + "; same image and test bytes"
++        else:
++            result["sqlite"] = pytest_image(docker, tests, pytest_config)
++        docker.call("network", "create", "--internal", "--label", "bmt.task=" + TASK_LABEL, network)
++        docker.networks.add(network)
++        if args.reuse_tests:
++            assert previous["postgres"]["exit_code"] == 0
++            result["postgres"] = previous["postgres"]
++            result["postgres_receipt_reused"] = reused + "; same image and test bytes"
++        else:
++            pg_env = WORK / "postgres.environment.private"
++            pg_env.write_text("POSTGRES_USER=image_test\nPOSTGRES_DB=image_test\nPOSTGRES_PASSWORD=" + password + "\n")
++            docker.call("run", "-d", "--rm", "--name", pg, "--label", "bmt.task=" + TASK_LABEL,
++                        "--network=" + network, "--env-file", linux_path(pg_env), "postgres:17")
++            docker.containers.add(pg)
++            for _attempt in range(60):
++                if docker.call("exec", pg, "pg_isready", "-U", "image_test", check=False).returncode == 0:
++                    break
++                time.sleep(0.5)
++            else:
++                raise RuntimeError("Owned PostgreSQL did not become ready")
++            result["postgres"] = pytest_image(docker, tests, pytest_config, postgres=True,
++                                              network=network, db_name=pg, password=password)
++        result["maintenance"] = maintenance(docker)
++        if not args.skip_browser:
++            result["browser"] = browser_image(docker, tests, driver, network)
++    finally:
++        docker.cleanup()
++        result["owned_resources_removed"] = not docker.containers and not docker.networks
++        result["finished_utc"] = datetime.now(timezone.utc).isoformat()
++        (OUTPUT / "exact-image-acceptance.json").write_text(json.dumps(result, indent=2) + "\n")
++    assert result["sqlite"]["exit_code"] == result["postgres"]["exit_code"] == 0, "Exact-image tests failed"
++    latest = json.loads(ROLLOUT.read_text())
++    assert latest["candidate_id"] == image_id and latest["source_hash"] == result["source_hash"]
++    latest["exact_image_tests"] = True
++    latest["exact_image_acceptance"] = "exact-image-acceptance.json"
++    latest["exact_image_browser"] = bool(result.get("browser"))
++    temporary = ROLLOUT.with_name("rollout.tests.tmp")
++    temporary.write_text(json.dumps(latest, indent=2) + "\n")
++    os.replace(temporary, ROLLOUT)
++    print(json.dumps({"exact_image_tests": True, "sqlite": result["sqlite"], "postgres": result["postgres"],
++                      "maintenance": result["maintenance"], "browser_checks": len(result.get("browser", {}).get("checks", [])),
++                      "owned_resources_removed": result["owned_resources_removed"]}), flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/.tools/product_telemetry_live_browser_20261011.py b/.tools/product_telemetry_live_browser_20261011.py
+new file mode 100644
+--- /dev/null
++++ b/.tools/product_telemetry_live_browser_20261011.py
+@@ -0,0 +1,299 @@
++"""Owner-authorized GET-only acceptance of the promoted product Studio.
++
++Uses genuine aggregate responses and the existing staff credential in tab memory.
++No ingestion, races, accounts, purchases or successful response substitution.
++"""
++import hashlib
++import importlib.util
++import json
++import os
++from datetime import datetime, timezone
++from pathlib import Path
++from urllib.parse import urlparse
++
++from playwright.sync_api import expect, sync_playwright
++
++ROOT = Path(__file__).resolve().parents[1]
++ASSETS = (
++    "index.html", "app.js", "style.css", "studio.js", "support.js",
++    "commerce.js", "product_analytics.js",
++)
++PRODUCT_PATH = "/v1/admin/product-analytics"
++
++
++def load_rollout():
++    path = ROOT / ".tools/product_telemetry_rollout_20261011.py"
++    spec = importlib.util.spec_from_file_location("product_live_rollout", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def restrict_cloud_reads(service, calls):
++    original = service.call
++
++    def read_only(*args, **kwargs):
++        prefix = tuple(args[:3])
++        assert prefix in (
++            ("run", "services", "describe"), ("secrets", "versions", "access"),
++        ), "Live browser helper permits only service description and existing secret reads"
++        calls.append(" ".join(prefix))
++        return original(*args, **kwargs)
++
++    service.call = read_only
++
++
++def count_label(value, missing="Not observed"):
++    return f"{value:,}" if isinstance(value, int) and not isinstance(value, bool) else missing
++
++
++def validate_bundle(data):
++    assert data["schema"] == "bmt-product-analytics-v1"
++    assert data["telemetry_enabled"] is True
++    assert 1 <= data["days"] <= 90 and 1 <= len(data["daily"]) <= 91
++    assert data["store"]["fulfilled"] is None, "Paid outcomes must remain unavailable"
++    coverage = data["coverage"]
++    assert coverage["fact_retention_days"] == 180
++    assert "Guest coverage is unavailable" in " ".join(coverage["limitations"])
++    for row in data["daily"]:
++        if not row["observed"]:
++            assert row["active_players"] is None and row["accepted_races"] is None
++    for row in data["retention"]:
++        for day in ("d1", "d7"):
++            cell = row[day]
++            if not cell["mature"]:
++                assert cell["returned"] is None
++            if cell["returned"] is not None:
++                assert 0 <= cell["returned"] <= cell["eligible"]
++    for funnel in data["funnels"].values():
++        known = funnel["cohort_players"] is not None
++        if not known:
++            assert all(step["count"] is None for step in funnel["steps"])
++        else:
++            assert all(step["count"] is None or 0 <= step["count"] <= funnel["cohort_players"]
++                       for step in funnel["steps"])
++    assert data["funnels"]["first_race"]["steps"][-1]["name"] == "second_voluntary_race"
++    assert data["funnels"]["first_race"]["second_race_followup_seconds"] == 600
++
++
++def assert_presented_values(page, data):
++    latest = data["daily"][-1]
++    expect(page.locator("#pa-dau")).to_have_text(count_label(latest["active_players"]))
++    expect(page.locator("#pa-wau")).to_have_text(count_label(data["weekly_active_players"]))
++    expect(page.locator("#pa-period-active")).to_have_text(count_label(data["period_active_players"]))
++    expect(page.locator("#pa-store-opened")).to_have_text(count_label(data["store"]["opened"]))
++    if page.locator(".studio-chart-data").get_attribute("open") is None:
++        page.locator(".studio-chart-data summary").click()
++    rows = page.locator("#pa-daily-table tbody tr")
++    assert rows.count() == len(data["daily"])
++    for index, record in enumerate(data["daily"]):
++        expect(rows.nth(index).locator("td").nth(0)).to_have_text(count_label(record["active_players"]))
++        expect(rows.nth(index).locator("td").nth(1)).to_have_text(count_label(record["accepted_races"]))
++    observed = any(row["observed"] for row in data["daily"])
++    for name, selector in (("first_race", "#pa-first-race-funnel"),
++                           ("creator", "#pa-creator-funnel")):
++        funnel = data["funnels"][name]
++        fallback = "Not observed" if not observed else "Not mature" if not funnel["mature"] else "Unavailable"
++        steps = page.locator(selector + " .pa-step-count")
++        assert steps.count() == len(funnel["steps"])
++        for index, step in enumerate(funnel["steps"]):
++            text = steps.nth(index).inner_text().splitlines()[0]
++            assert text == count_label(step["count"], fallback)
++    retention = page.locator("#pa-retention-table tbody tr")
++    assert retention.count() == len(data["retention"])
++    for index, record in enumerate(data["retention"]):
++        for column, name in ((1, "d1"), (2, "d7")):
++            cell = record[name]
++            locator = retention.nth(index).locator("td").nth(column)
++            if not cell["mature"]:
++                expect(locator).to_have_text("Not mature")
++            elif cell["returned"] is None:
++                expect(locator).to_have_text("Unavailable")
++            elif not cell["eligible"]:
++                expect(locator).to_have_text("No eligible players")
++            else:
++                expect(locator.locator("small")).to_have_text(
++                    count_label(cell["returned"]) + " / " + count_label(cell["eligible"]))
++                percentage = locator.locator("strong").inner_text()
++                assert percentage.endswith("%")
++                assert abs(float(percentage[:-1]) - 100 * cell["returned"] / cell["eligible"]) <= 0.050001
++    for key in ("challenge_opened", "challenge_joined", "challenge_created", "share_clicked"):
++        expect(page.locator(f'[data-social-metric="{key}"]')).to_have_text(count_label(data["challenges"][key]))
++    for key in ("dropped_events", "rejected_events", "persistence_failures"):
++        expect(page.locator(f'[data-quality-metric="{key}"]')).to_have_text(count_label(data["quality"][key]))
++
++
++def main():
++    module = load_rollout()
++    receipt = module.receipt
++    assert receipt.get("deployed") and receipt.get("promoted") and receipt.get("verify_live"), \
++        "Run live browser acceptance only after promotion and the real live smoke check"
++    assert receipt.get("exact_image_tests") and receipt.get("exact_image_browser")
++    cloud_reads = []
++    restrict_cloud_reads(module.service, cloud_reads)
++    restrict_cloud_reads(module.prior.service, cloud_reads)
++    resource = module.service.describe("api", module.service.n["api"])
++    assert module.stage.resource_image(resource) == receipt["image"]
++    active = [route for route in resource["status"]["traffic"] if route.get("percent", 0)]
++    assert len(active) == 1 and active[0]["percent"] == 100
++    assert active[0]["revisionName"] == receipt["canary_revision"]
++    origin = receipt["url"]
++    assert resource["status"]["url"] == origin and urlparse(origin).scheme == "https"
++    role, key = module.prior.read_staff(resource)
++    checks, errors, writes, external, requests, packets, assets = [], [], [], [], [], [], {}
++    product_origin = urlparse(origin).netloc
++    output = module.OUTPUT
++    browser = None
++
++    with sync_playwright() as playwright:
++        try:
++            browser = playwright.chromium.launch(headless=True,
++                executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
++            context = browser.new_context(viewport={"width": 1440, "height": 900})
++            page = context.new_page()
++            page.set_default_timeout(45000)
++            page.on("pageerror", lambda _error: errors.append("Browser exception"))
++
++            def get_only(route):
++                request = route.request
++                parsed = urlparse(request.url)
++                if parsed.scheme in ("http", "https") and parsed.netloc != product_origin:
++                    external.append(parsed.netloc)
++                    route.abort()
++                elif parsed.scheme in ("http", "https") and request.method != "GET":
++                    writes.append({"method": request.method, "path": parsed.path})
++                    route.abort()
++                else:
++                    if parsed.path.startswith("/v1/"):
++                        requests.append({"method": request.method, "path": parsed.path,
++                                         "query": parsed.query})
++                    route.continue_()
++
++            def capture_asset(response):
++                parsed = urlparse(response.url)
++                name = "index.html" if parsed.path in ("/admin", "/admin/") else parsed.path.rsplit("/", 1)[-1]
++                if parsed.netloc == product_origin and name in ASSETS:
++                    assets[name] = response
++
++            context.route("**/*", get_only)
++            page.on("response", capture_asset)
++            page.goto(origin + "/admin#product", wait_until="domcontentloaded")
++            page.fill("#key", key)
++
++            def expect_product(action):
++                before = len(requests)
++                with page.expect_response(lambda response: urlparse(response.url).path == PRODUCT_PATH) as pending:
++                    action()
++                response = pending.value
++                assert response.status == 200, "Actual live analytics query failed"
++                data = response.json()
++                page.get_by_role("heading", name="Product analytics", exact=True).wait_for()
++                page.wait_for_function("document.querySelector('#main').getAttribute('aria-busy')!=='true'")
++                assert len(requests) == before + 1 and requests[-1]["path"] == PRODUCT_PATH
++                validate_bundle(data)
++                assert_presented_values(page, data)
++                packets.append({"decoded_bytes": len(response.body()), "daily_rows": len(data["daily"]),
++                                "since": data["since"], "until": data["until"]})
++                return data
++
++            first = expect_product(lambda: page.locator("#login button").click())
++            assert first["role"] == role
++            assert len(requests) == 1
++            assert not page.locator("[data-support-action], [data-product], #command").count()
++            assert "Signed-in players only" in first["coverage"]["scope"]
++            assert "including artificial" in first["coverage"]["scope"]
++            expect(page.locator("#pa-coverage")).to_contain_text(first["coverage"]["scope"])
++            checks.append("Existing staff credential reads one real prepared aggregate bundle without operational fanout")
++
++            parity = {}
++            assert set(assets) == set(ASSETS), "All seven deployed UI assets must be observed"
++            for name, response in assets.items():
++                frozen = module.CONTEXT / "source/admin_ui" / name
++                expected = frozen if frozen.exists() else module.WORK / "parent/admin_ui" / name
++                body = response.body()
++                assert response.status == 200 and body == expected.read_bytes(), "Candidate UI asset parity failed"
++                parity[name] = hashlib.sha256(body).hexdigest()
++            checks.append("Seven normal-origin UI assets exactly match the frozen accepted image sources")
++
++            count = len(requests)
++            page.wait_for_timeout(2000)
++            assert len(requests) == count
++            current = expect_product(lambda: page.locator("#refresh").click())
++            checks.append("Idle view makes no API requests; explicit Refresh performs one bounded prepared query")
++
++            for width, height in ((1440, 900), (1280, 800), (390, 844)):
++                page.set_viewport_size({"width": width, "height": height})
++                page.evaluate("scrollTo(0,0)")
++                page.wait_for_timeout(250)
++                assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
++                page.screenshot(path=str(output / f"live-product-{width}.png"), full_page=True,
++                                animations="disabled")
++            checks.append("Actual aggregate dashboards fit 1440, 1280 and 390 pixel widths")
++            checks.append("Daily unknowns and exact-day immature or unavailable cells match the actual API response")
++
++            start = current["coverage"]["collection_started_at"]
++            cutoff = (int(start if start is not None else current["as_of"]) // 86400) * 86400
++            query = f"since={cutoff - 86400}&until={cutoff}"
++            page.set_viewport_size({"width": 1440, "height": 900})
++            pre = expect_product(lambda: page.evaluate("route=>location.hash=route", "product?" + query))
++            assert all(not row["observed"] and row["active_players"] is None
++                       and row["accepted_races"] is None for row in pre["daily"])
++            assert pre["weekly_active_players"] is None and pre["period_active_players"] is None
++            assert pre["store"]["opened"] is None and pre["store"]["fulfilled"] is None
++            assert all(funnel["cohort_players"] is None and all(step["count"] is None for step in funnel["steps"])
++                       for funnel in pre["funnels"].values())
++            expect(page.locator("#pa-dau")).to_have_text("Not observed")
++            expect(page.locator("#pa-store-opened")).to_have_text("Not observed")
++            page.evaluate("scrollTo(0,0)")
++            page.screenshot(path=str(output / "live-product-precollection.png"), full_page=True,
++                            animations="disabled")
++            checks.append("Genuine precollection query stays unknown rather than creating zero activity, journeys or Store outcomes")
++
++            restored = expect_product(lambda: page.evaluate("location.hash='product'"))
++            assert restored["store"]["fulfilled"] is None
++            checks.append("Observed Store and social events retain their meaning; no verified payment or client history is invented")
++            count = len(requests)
++            page.locator("#logout").click()
++            expect(page.locator("#login")).to_be_visible()
++            assert page.locator("#key").input_value() == "" and not page.locator("#pa-dau").count()
++            assert not page.evaluate("Object.keys(localStorage).length+Object.keys(sessionStorage).length")
++            page.wait_for_timeout(500)
++            assert len(requests) == count and not errors and not writes and not external
++            checks.append("Lock clears the aggregate view and credential; no stored credentials, API writes or browser exceptions")
++            key = None
++        finally:
++            key = None
++            if browser:
++                browser.close()
++
++    report = {
++        "observed_at": datetime.now(timezone.utc).isoformat(), "url": origin,
++        "image": receipt["image"], "normal_revision": active[0]["revisionName"],
++        "read_only": True, "role": role, "checks": checks, "failures": 0,
++        "javascript_errors": len(errors), "api_non_get_requests": len(writes),
++        "http_non_get_requests": len(writes),
++        "cloud_mutations": 0, "cloud_read_calls": cloud_reads,
++        "browser_api_requests": requests, "product_reads_per_refresh": 1,
++        "idle_observation_seconds": 2, "responses": packets, "assets": parity,
++        "actual_coverage": restored["coverage"], "client_retention_cohort_rows": len(restored["retention"]),
++        "mature_d1_cells": sum(row["d1"]["mature"] for row in restored["retention"]),
++        "mature_d7_cells": sum(row["d7"]["mature"] for row in restored["retention"]),
++        "client_updated_by_backend_deploy": False, "guest_coverage": False,
++        "paid_outcomes_unavailable": True, "fixture_data_or_success_substitution": False,
++        "published_player_identities": False, "precollection_unknown": True,
++        "helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++    }
++    (output / "live-product-browser.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++    fresh = json.loads(module.RECEIPT.read_text())
++    assert fresh["image"] == receipt["image"] and fresh["canary_revision"] == active[0]["revisionName"]
++    fresh.update(live_browser=True, live_browser_receipt="live-product-browser.json")
++    temporary = module.RECEIPT.with_suffix(".live-browser.tmp")
++    temporary.write_text(json.dumps(fresh, indent=2) + "\n", encoding="utf-8")
++    os.replace(temporary, module.RECEIPT)
++    print(json.dumps({"live_browser": True, "checks": len(checks), "api_get_requests": len(requests),
++                      "product_reads_per_refresh": 1, "source_assets_verified": len(parity),
++                      "javascript_errors": 0, "api_writes": 0, "fixture_data": False}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/.tools/product_telemetry_finalize_20261011.py b/.tools/product_telemetry_finalize_20261011.py
+new file mode 100644
+--- /dev/null
++++ b/.tools/product_telemetry_finalize_20261011.py
+@@ -0,0 +1,111 @@
++"""Record completed deployment without including unrelated working-tree changes."""
++import difflib
++import hashlib
++import json
++import shutil
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / 'build/product-telemetry-deploy-2026-10-11'
++OUTPUT = ROOT / 'docs/evidence/product-telemetry-deploy-2026-10-11'
++BEFORE = WORK / 'doc-before'
++CHECKPOINT = OUTPUT / 'checkpoint'
++BEFORE.mkdir(exist_ok=True)
++CHECKPOINT.mkdir(exist_ok=True)
++receipt = json.loads((OUTPUT / 'rollout.json').read_text())
++assert receipt['completed'] and receipt['verify_live'] and receipt['live_browser']
++
++
++def sha(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def amend(relative, function):
++    path = ROOT / relative
++    original = path.read_bytes()
++    saved = BEFORE / relative
++    saved.parent.mkdir(parents=True, exist_ok=True)
++    if not saved.exists():
++        saved.write_bytes(original)
++    final = function(original.decode('utf-8')).replace('\r\n', '\n')
++    if b'\r\n' in original:
++        final = final.replace('\n', '\r\n')
++    path.write_bytes(final.encode())
++
++
++entry = ('2026-10-11 BMT-010-018/020-026/032/040-044/075/097/100-104/SC06/B05/B07/Q01: '
++    'owner authorizes telemetry deploy. Exactparent8146->98cf scoped25backend files preserves114game; '
++    'rehearsed23->24->25 with compatiblelap maintenance/supervisor/nice19/oneexistingworker CPU/noextra cloudinstance. '
++    'TwoSQLbackups, stoppedwriters,4311attempts/133boards/2886durable-2883visible minima/racePBhash unchanged/0invalid/0historicaltelemetry; '
++    '1960published public-development snapshots warmed. Canary thenrevision00033-jeq100%, runtimegrants/non-superuser/sevenassets/native-storage-schema/workerready/liveGETbrowser8 pass; '
++    'exactimageSQLite106+PG168/6skips/browser11/maintenance53/supervisor10+PID1 pass. '
++    'Collector signed-in enabled/guestunavailable/100event product batches/oneDBconnection; liveprojector watermark, nofabricated activity. '
++    'Temporarytagsremoved/receiptretained;20:19:32Helsinki complete/writewindow14m25s. '
++    'Updatedclient needed/D1-D7 actualmaturity; no phone test/export-install/storepublish/newvendor. '
++    'Commands/realcaptures/scopedcheckpoint/remaininglimits: docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md.\n\n')
++for relative in ('DEVELOPMENT_STATUS.md', 'docs/PHASE_0_PLAN.md'):
++    def insert(value):
++        if entry.strip() in value:
++            return value
++        first, rest = value.split('\n', 1)
++        return first + '\n\n' + entry + rest.lstrip('\r\n')
++    amend(relative, insert)
++
++followup = ('Authorized deployment follow-up: [the completed staging rollout](PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md) '
++    'now enables this signed-in collector on schema25 and revision00033-jeq. The local/default-off statements below '
++    'describe the original implementation task; guest coverage and the broader acceptance limits remain.\n\n')
++amend('docs/PRODUCT_TELEMETRY_2026_10_11.md', lambda value: value if followup.strip() in value else
++    value.split('\n', 1)[0] + '\n\n' + followup + value.split('\n', 1)[1].lstrip('\r\n'))
++
++def annotate(value):
++    data = json.loads(value)
++    data['deployed_telemetry_followup'] = {'report': 'docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md',
++        'image': receipt['image'], 'revision': receipt['canary_revision'], 'schema': '0025_product_telemetry',
++        'scope': 'Signed-in only; artificial players included; guest unavailable',
++        'activation': 'Enabled; separate low-priority product process on existing worker pool',
++        'production_verification': 'Retained staging verified; broader requirements and device acceptance remain partial'}
++    return json.dumps(data, indent=2, ensure_ascii=False) + '\n'
++amend('docs/backend-studio-requirements-2026-10-11.json', annotate)
++
++shutil.copyfile(ROOT / 'build/telemetry-analysis-2026-10-11/service-worker-tests.log', OUTPUT / 'supervisor-tests.log')
++shutil.copyfile(ROOT / 'build/telemetry-analysis-2026-10-11/service-worker-pid1/receipt.json', OUTPUT / 'supervisor-pid1.json')
++
++paths = ['backend/bmt_backend/service_worker.py', 'backend/tests/test_service_worker.py',
++    'backend/tests/service_worker_probe.py', '.tools/product_telemetry_rollout_20261011.py',
++    '.tools/product_telemetry_image_tests_20261011.py', '.tools/product_telemetry_live_browser_20261011.py',
++    '.tools/product_telemetry_finalize_20261011.py', 'docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md']
++paths += [p.relative_to(BEFORE).as_posix() for p in BEFORE.rglob('*') if p.is_file()]
++parts, files = [], []
++for relative in paths:
++    current = (ROOT / relative).read_bytes()
++    saved = BEFORE / relative
++    original = saved.read_bytes() if saved.exists() else None
++    old = (original or b'').decode()
++    new = current.decode()
++    parts.append(f'diff --git a/{relative} b/{relative}\n')
++    if original is None:
++        parts.append('new file mode 100644\n')
++    parts.extend(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
++        fromfile='a/' + relative if original is not None else '/dev/null', tofile='b/' + relative))
++    files.append({'path': relative, 'before_sha256': sha(original) if original is not None else None, 'after_sha256': sha(current)})
++(CHECKPOINT / 'workspace-task-only.patch').write_bytes(''.join(parts).encode())
++server = []
++for relative in receipt['overlay_files']:
++    parent = WORK / 'parent' / relative
++    current = WORK / 'image/source' / relative
++    old = parent.read_text(encoding='utf-8') if parent.exists() else ''
++    new = current.read_text(encoding='utf-8')
++    server.append(f'diff --git a/backend/bmt_backend/{relative} b/backend/bmt_backend/{relative}\n')
++    if not parent.exists():
++        server.append('new file mode 100644\n')
++    server.extend(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
++        fromfile='a/backend/bmt_backend/' + relative if parent.exists() else '/dev/null',
++        tofile='b/backend/bmt_backend/' + relative))
++(CHECKPOINT / 'exact-parent-server.patch').write_bytes(''.join(server).encode())
++proof = json.loads((OUTPUT / 'packaged-proof.json').read_text())
++manifest = {'source_files': files, 'candidate': receipt['image'], 'parent': receipt['parent'],
++    'game_files_unchanged': proof['canonical_files'], 'completed_utc': receipt['completed_utc'],
++    'evidence': [{'path':p.relative_to(ROOT).as_posix(),'sha256':sha(p.read_bytes())} for p in sorted(OUTPUT.rglob('*'))
++        if p.is_file() and CHECKPOINT not in p.parents]}
++(CHECKPOINT / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
++print('Completed deployment documentation and exact-parent/workspace review checkpoints saved')
+diff --git a/docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md b/docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md
+@@ -0,0 +1,161 @@
++# Telemetry deployment — 2026-10-11
++
++The owner explicitly requested deployment of the signed-in telemetry/product
++analysis slice. This rollout targets the existing retained staging service in
++`beat-my-track`, `europe-west1`, with owner
++`e7a444abdf684b7cbd228d9e7948c65e`. Guest coverage remains unavailable and Studio
++totals include artificial players. Provider payments/revenue and historical
++client activity are not inferred from race records.
++
++**Deployed and enabled** on the normal [Studio URL](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/admin#product).
++Revision `bmt-stg-e7a444ab-api-00033-jeq` serves100%, schema is
++`0025_product_telemetry`, and API/worker/migration/smoke/catalog use the same
++candidate digest. The new capability advertises signed-in-only collection with
++50-event/64KiB batches and explicit unavailable guest coverage. The product
++processor's live watermark advances; no received activity has been fabricated.
++Completed **20:19:32 Helsinki / 17:19:32 UTC**. The controlled write-maintenance
++window was **20:01:55–20:16:20 Helsinki**, approximately14m25s, covering the final
++stopped-writer backup, cloud migration/job startup, parity and both warm passes.
++
++## Frozen scope and prerequisite
++
++The candidate is built from the exact deployed Studio image
++`8146e3af2c3b61fc1b6053d4827cb668925334c4203f2563d1428217bd677d89`.
++Candidate digest:
++`98cf7793107461526ebb6da4d04b480979338c72378332c00e5f1d066ca78b93`.
++Its explicit 25-file backend overlay adds telemetry, Studio Product analytics,
++schema25 and a small worker supervisor. All **114 packaged game files** and
++every unrelated backend file remain identical to the deployed parent. Current
++workspace handling/art/client changes are not imported into server verification.
++[Package proof](evidence/product-telemetry-deploy-2026-10-11/packaged-proof.json)
++records the exact file list and protected hashes.
++
++Telemetry migration `0025_product_telemetry` follows
++`0024_lap_personal_bests`. Migration24 changes lap/histogram triggers and starts a
++bounded lap backfill, so this rollout includes its matching minimal models,
++reader, maintenance/retention and worker dependencies. Surgical source patches
++preserve the parent's other routes, expired-ticket behavior, heartbeat behavior
++and pinned game contracts. No whole dirty-workspace image is deployed.
++
++The existing worker pool retains its one CPU and memory/instance configuration.
++`bmt_backend.service_worker` starts competitive verification and a separate
++product process, with the product child at Linux **nice19**. The product process
++uses one DB connection and an initial **100-event** batch to shorten ingestion
++lock holds. TERM/INT forward to both children; failed children fail the service,
++and owned descendants are reaped after bounded shutdown. No additional always-on
++cloud instance, analytics vendor or runtime dependency is introduced.
++
++## Actual pre-deployment evidence
++
++- Fresh ownership/image/read-only inspection: schema23,395 inclusive players,
++  one ready worker and zero queued verification jobs. Database71MB,133 boards,
++  4,311 attempts (4,310 verified),2,883 race PBs and1,962 histogram snapshots.
++  [Aggregate baseline](evidence/product-telemetry-deploy-2026-10-11/database-before.json).
++- A bounded read-only repeatable-read snapshot retains only salted UUID aliases,
++  purpose/test-population/reset metadata, player boolean flags and numeric race
++  facts/PB references. No identities, subjects, names, credentials, content,
++  poses or entitlements are exported. Private facts stay in ignored build
++  storage; public evidence contains aggregates/hashes only.
++- Actual snapshot rehearsal on a newly owned local PostgreSQL17 database:
++  **2,886/2,886** durable minima and **2,883/2,883** eligible visible minima match;
++  all133 boards complete, zero invalid ordinary records, race PBs and attempt
++  counts unchanged, and zero historical telemetry rows. Migration0.204s;
++  bounded backfill plus offline parity7.879s. These are local timings, not a live
++  maintenance-duration guarantee. [Receipt](evidence/product-telemetry-deploy-2026-10-11/lap-rehearsal.json).
++- Exact candidate: **106 SQLite passes/3 skips**, **168 PostgreSQL passes/3
++  skips**, **53 maintenance-gate checks**, and **11 actual candidate browser
++  checks**. Browser bundle4,300 bytes for ten fixture days; one prepared query
++  per refresh, no idle polling, zero JavaScript errors. Owned containers and
++  networks removed. [Acceptance](evidence/product-telemetry-deploy-2026-10-11/exact-image-acceptance.json).
++- Supervisor:10 actual Linux subprocess checks and a real container PID1
++  TERM/nice check pass. Worker priority0/product19, clean grace and no orphan
++  remain. No live race or player is created for acceptance.
++- Fresh successful Cloud SQL backup **1791737979545** precedes maintenance;
++  final stopped-writer backup **1791738272531** precedes migration.
++  Backup success is not a rehearsed-restore guarantee.
++
++The browser harness initially needed a deeper frozen-test path for inherited PG
++fixtures, Playwright imports before a test-launcher interception, and an actual
++container listener/loopback port health wait. Frozen test bytes, candidate code
++and assertions were preserved. One delayed diagnostic log chunk was reread and
++the complete checksum validated before accepting the private snapshot.
++
++## Actual live outcome
++
++- Maintenance first blocked only `/v1/` writes with retryable503 and paused the
++  existing verification instance. Stopped-writer counts and race-PB hash matched
++  the pre-migration snapshot; race and track-validation queues were both empty.
++- Owned `cloud_setup` migrated23→24→25. Runtime role `bmt` has SELECT/INSERT/
++  UPDATE/DELETE on product and lap tables and remains non-superuser. Ownership
++  guard/secret bindings stay protected.
++- Live backfill inspected4,311 attempts in133 batches; **2,886 ledger minima**
++  and **2,883 eligible visible minima** matched the independently computed hashes.
++  All133 boards complete, zero invalid ordinary facts, and race PBs/runs/players
++  unchanged. Product-event table remained empty: history was not recast as
++  telemetry. Backfill plus parity14.863s; public warming/initial checks62.131s.
++- Public warming refreshed980 snapshots. A separate valid development diagnostic
++  warmed980 artificial-inclusive snapshots in63.137s; **all published snapshots
++  are available**. Two nonpublished snapshots remain invalidated and do not
++  represent published discovery data. The first private warm lacked its required
++  development settings; an isolated ephemeral key satisfied that invariant
++  without a listener, authentication session or live auth-setting change.
++- Zero-traffic canary ready25, bootstrap limits/guest flag, genuine precollection
++  unknown values and all seven exact UI asset hashes passed. It was then promoted
++  to100%; the original one worker instance resumed with separate nice19 product
++  processing and100-event batches. CPU/memory/secret/base configuration is guarded.
++- Existing native/storage/schema smoke passed; one competitive worker is ready.
++  Product `processor_observed_at` and `processed_through` are populated by the
++  live projector, with collection not yet started and zero pending events at the
++  recorded snapshot. No client activity or mature retention is invented.
++- **Eight GET-only live browser checks passed**, zero JavaScript errors/writes/
++  stored credentials. Four API GETs across the flow, one product read per refresh,
++  all seven asset hashes, genuine unknown/maturity rendering and1440/1280/390px
++  captures. [Receipt](evidence/product-telemetry-deploy-2026-10-11/live-product-browser.json).
++- Temporary maintenance/canary tags removed; all image/runtime/ownership guards
++  and100% traffic confirmed. [Completed rollout](evidence/product-telemetry-deploy-2026-10-11/rollout.json).
++
++Screenshots inspected: [live Product analytics](evidence/product-telemetry-deploy-2026-10-11/live-product-1440.png)
++and [narrow layout](evidence/product-telemetry-deploy-2026-10-11/live-product-390.png).
++They contain real aggregate responses, no seeded live fixture/player identity.
++
++## Rollout and rollback contract
++
++The temporary maintenance image changes only the request boundary. When its
++explicit maintenance flag is enabled, `/v1/` writes return retryable503 while
++GET/HEAD/OPTIONS continue; ordinary local gameplay and persisted uploads are not
++modified. The verification writer is paused/drained before migration. A backed-up
++`cloud_setup` execution applies the owned schema and grants the runtime role
++access to new tables while keeping it non-superuser and protecting the ownership
++guard. Initial lap backfill/parity and stored histogram warming finish before
++normal traffic reaches the new revision.
++
++Exact-schema readiness stays strict. The schema25 canary is started **after** the
++database migration; old schema23 readiness becomes unavailable during the
++controlled transition. `/health` alone is not deployment acceptance. The new
++canary receives zero ordinary traffic until ready25, bootstrap, data coverage,
++all seven UI asset bytes and pre-collection unknown states pass.
++
++Rollback before a committed migration can restore original23 traffic. After
++schema25, use the tested compatible candidate with collection disabled and no
++product child. Never blindly route schema23 code to schema25 or drop new data.
++The rollback procedure is prepared; it is not claimed to have been exercised on
++the retained live database.
++
++## Commands and remaining acceptance
++
++`.tools/backend-venv/Scripts/python.exe .tools/product_telemetry_rollout_20261011.py`
++provides explicit inspect/extract/database-inspect/snapshot/prepare/build/push/
++backup/maintenance/stopped-check/migrate/initialize/canary/promote/smoke/finish
++stages and schema-aware rollback. Frozen exact-image tests run through
++`.tools/product_telemetry_image_tests_20261011.py`. Live browser checks use
++`.tools/product_telemetry_live_browser_20261011.py` and issue GET requests only.
++
++Backend activation cannot supply menu/store/onboarding observations from older
++game binaries. The updated signed-in client must connect and negotiate the new
++bootstrap capability. D1/D7 need actual future eligible days; they are not filled
++with test observations or historical submissions. Android network/radio/battery
++and device frame measurements, larger-population capacity/soak, full privacy
++workflows, segmented/rolling analyses and real provider commerce remain the
++limits listed in [the implementation report](PRODUCT_TELEMETRY_2026_10_11.md).
++No phone test, Android export/install or store publication is part of this
++backend deployment.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,5 +1,7 @@
+-2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
+-
++2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
++
++2026-10-11 BMT-010-018/020-026/032/040-044/075/097/100-104/SC06/B05/B07/Q01: owner authorizes telemetry deploy. Exactparent8146->98cf scoped25backend files preserves114game; rehearsed23->24->25 with compatiblelap maintenance/supervisor/nice19/oneexistingworker CPU/noextra cloudinstance. TwoSQLbackups, stoppedwriters,4311attempts/133boards/2886durable-2883visible minima/racePBhash unchanged/0invalid/0historicaltelemetry; 1960published public-development snapshots warmed. Canary thenrevision00033-jeq100%, runtimegrants/non-superuser/sevenassets/native-storage-schema/workerready/liveGETbrowser8 pass; exactimageSQLite106+PG168/6skips/browser11/maintenance53/supervisor10+PID1 pass. Collector signed-in enabled/guestunavailable/100event product batches/oneDBconnection; liveprojector watermark, nofabricated activity. Temporarytagsremoved/receiptretained;20:19:32Helsinki complete/writewindow14m25s. Updatedclient needed/D1-D7 actualmaturity; no phone test/export-install/storepublish/newvendor. Commands/realcaptures/scopedcheckpoint/remaininglimits: docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md.
++
+ 2026-10-11 RLOAD07-RLOAD09/B01/R01/Q01: owner Race does not start/no feedback. Reproduced metadata cancellation29/3fail; specific account-car-track reasons, owning-overlay fences, missing-selection/empty-error recovery and disabled track/rivalry action states. Final metadata29/menu45/actualstart21/loading83/App99 =277checks/0fail; eight fixture captures. Doctor no attached devices; no phone test/Android export-install/fullValidate/physics-regression/livewrites/backend/deploy. Exact owner mode/track incident unconfirmed; restart/retry acceptance. Files/commands/task-only checkpoint/limits: docs/RACE_START_FEEDBACK.md.
+ 
+ 2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
+@@ -1634,4 +1636,4 @@
+ 2026-10-09 R01/WR01-WR02/Q01: Weekly Rivalry is now the default Race destination. game/core/app.gd initializes race_area_mode to rivalry, restores authenticated sessions into rivalry and routes Account Continue through the existing populated-overview entry. Required sign-in/username setup remains. Commands: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp (99 checks, zero failures); TestScript -ScriptPath res://tests/test_rivalry_entry.gd -Graphical (70 checks, zero failures), with BMT_RIVALRY_ENTRY_CAPTURE_DIR=build/rivalry-startup. Pinned Godot 4.7.2; overview-1280x720.png visually inspected, compact capture also saved. Initial script-policy and sandbox user-log access failures corrected with process-only execution-policy bypass and approved local access. Scoped before/patch: build/rivalry-startup/app-before.gd and change.patch. No phone attachment check/device test, Android export/install or deployment; actual saved-session startup remains an owner acceptance check.
+ 
+ 2026-10-10 R01/Q01/V06: carousel favorite centered; glyph28-to24px (~15% smaller), target48 retained. Focused graphical capture exit0/inspected outline-filled-focus. Broader menuquality23/3fail and menu capture1846/21fail remain unresolved (no baseline claim). No phone check/device/export-install/deploy. Files/commands/evidence: docs/CAROUSEL_FAVORITE_ALIGNMENT.md.
+-2026-10-11 WE01-WE12/WW20-WW23/V04/V05/G01/R01/Q01: owner reference-led Winter environment, then rejects asphalt-like road/smoothed banks. Final track-kit119 original ice-v2/1024px+mips and512px packed finish; restored prior chunky crest/tall deposits/detailed snow,900depositcap; warm sun/cool fill/real shadows/quiet coherent snow/instanced snow-coated props/red stakes/fixed-pool tire powder and polished trails. Wind7 world24mps/49ground36bank24air/three draws578tri max/opaque roof exact. Solid editable auto Winter kit<=48/clear splines-bridges/deletion/cache exact requires compiler23/new immutable published versions; no live migration/deploy. Final native95/MobileVulkan94/wind47 each/compiler29/raster8/ice69/hazards151/App99/driving72/backendverifier69 pass; actual driving/bridge/camera captures and provenance saved. Initial float-fixture/old-golden/roof-mask/logical-texture errors corrected without weakening contract/pixel/budget checks; replay bytes retained. Desktop12-19us/noisyGPU/393228sceneprimitives is not phone acceptance. ADB empty; no phone test/Android export-install/fullValidate/online writes/deploy. Restart; owner appearance/device acceptance and authorized compiler rollout/catalog republication remain. Files/commands/task-only checkpoint: docs/WINTER_ENVIRONMENT.md.
++2026-10-11 WE01-WE12/WW20-WW23/V04/V05/G01/R01/Q01: owner reference-led Winter environment, then rejects asphalt-like road/smoothed banks. Final track-kit119 original ice-v2/1024px+mips and512px packed finish; restored prior chunky crest/tall deposits/detailed snow,900depositcap; warm sun/cool fill/real shadows/quiet coherent snow/instanced snow-coated props/red stakes/fixed-pool tire powder and polished trails. Wind7 world24mps/49ground36bank24air/three draws578tri max/opaque roof exact. Solid editable auto Winter kit<=48/clear splines-bridges/deletion/cache exact requires compiler23/new immutable published versions; no live migration/deploy. Final native95/MobileVulkan94/wind47 each/compiler29/raster8/ice69/hazards151/App99/driving72/backendverifier69 pass; actual driving/bridge/camera captures and provenance saved. Initial float-fixture/old-golden/roof-mask/logical-texture errors corrected without weakening contract/pixel/budget checks; replay bytes retained. Desktop12-19us/noisyGPU/393228sceneprimitives is not phone acceptance. ADB empty; no phone test/Android export-install/fullValidate/online writes/deploy. Restart; owner appearance/device acceptance and authorized compiler rollout/catalog republication remain. Files/commands/task-only checkpoint: docs/WINTER_ENVIRONMENT.md.
+diff --git a/docs/backend-studio-requirements-2026-10-11.json b/docs/backend-studio-requirements-2026-10-11.json
+--- a/docs/backend-studio-requirements-2026-10-11.json
++++ b/docs/backend-studio-requirements-2026-10-11.json
+@@ -5436,5 +5436,14 @@
+     ],
+     "remaining": "Full registry, rolling retention, segmented explorer, device quality, providers/revenue, privacy workflows and deployed capacity remain incomplete.",
+     "evidence": "docs/evidence/telemetry-analysis-2026-10-11"
++  },
++  "deployed_telemetry_followup": {
++    "report": "docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md",
++    "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:98cf7793107461526ebb6da4d04b480979338c72378332c00e5f1d066ca78b93",
++    "revision": "bmt-stg-e7a444ab-api-00033-jeq",
++    "schema": "0025_product_telemetry",
++    "scope": "Signed-in only; artificial players included; guest unavailable",
++    "activation": "Enabled; separate low-priority product process on existing worker pool",
++    "production_verification": "Retained staging verified; broader requirements and device acceptance remain partial"
+   }
+ }
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-11 RLOAD07-RLOAD09/B01/R01/Q01: owner Race does not start/no feedback. Reproduced metadata cancellation29/3fail; specific account-car-track reasons, owning-overlay fences, missing-selection/empty-error recovery and disabled track/rivalry action states. Final metadata29/menu45/actualstart21/loading83/App99 =277checks/0fail; eight fixture captures. Doctor no attached devices; no phone test/Android export-install/fullValidate/physics-regression/livewrites/backend/deploy. Exact owner mode/track incident unconfirmed; restart/retry acceptance. Files/commands/task-only checkpoint/limits: docs/RACE_START_FEEDBACK.md.
++
++2026-10-11 BMT-010-018/020-026/032/040-044/075/097/100-104/SC06/B05/B07/Q01: owner authorizes telemetry deploy. Exactparent8146->98cf scoped25backend files preserves114game; rehearsed23->24->25 with compatiblelap maintenance/supervisor/nice19/oneexistingworker CPU/noextra cloudinstance. TwoSQLbackups, stoppedwriters,4311attempts/133boards/2886durable-2883visible minima/racePBhash unchanged/0invalid/0historicaltelemetry; 1960published public-development snapshots warmed. Canary thenrevision00033-jeq100%, runtimegrants/non-superuser/sevenassets/native-storage-schema/workerready/liveGETbrowser8 pass; exactimageSQLite106+PG168/6skips/browser11/maintenance53/supervisor10+PID1 pass. Collector signed-in enabled/guestunavailable/100event product batches/oneDBconnection; liveprojector watermark, nofabricated activity. Temporarytagsremoved/receiptretained;20:19:32Helsinki complete/writewindow14m25s. Updatedclient needed/D1-D7 actualmaturity; no phone test/export-install/storepublish/newvendor. Commands/realcaptures/scopedcheckpoint/remaininglimits: docs/PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md.
+ 
+ 2026-10-11 CH02/CH09-CH11/CH14/B01/R01/Q01: owner long challenge Checking time. Read-only source nine200/28.39-66.29ms/three401/19.71-28.08ms; small DB query/no replay. Real client-adapter held-upload and already-renewed-read baseline21/4fail; exact sourceGET joins independent race credential path, preserving account/rotation/owner locks/exact-ticket query. Final27/0 (stub expired20.488ms), race26/expired19/refreshed26/recovery28/challenge161/App99 pass; category-only debug profile. Owner exact coroutine/transport latency unconfirmed; restart/retry acceptance. No player/race writes/server-physics-UI change/phone-or-attachment test/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/limits: docs/CHALLENGE_SOURCE_LATENCY.md.
+ 
+@@ -1735,9 +1737,9 @@
+ ## Rims and twenty-times-slower background dirt, 2026-10-11
+ 
+ 2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
+-
+-
+-## Gentle scrubbing and bounded grime age, 2026-10-11
+-
+-2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
+-2026-10-11 WE01-WE12/WW20-WW23/V04/V05/G01/R01/Q01: Winter reference environment and owner road/bank correction implemented locally. Scuffed original ice-v2 plus baked roughness/slopes replaces flat dark road; earlier irregular crest/tall deposits/snow shading restored; warm winter sun, cool fill, sparse shared-world wind, instanced snow-coated props and real wheel presentation. Compiler23 pins solid/deletable automatic scenery; other biome geometry exact/new publication required/no live relabel or deploy. Native95/MobileVulkan94/wind47 each/compiler29/raster8/ice69/hazards151/App99/driving72/backend69 pass. Actual driving/bridge images/video, raw desktop profiles, original texture prompt/hash and scoped checkpoint: docs/WINTER_ENVIRONMENT.md. ADB empty/no phone test/Android export-install/fullValidate/deploy. Owner visual review, low-end device performance and authorized server/client/catalog rollout remain.
++
++
++## Gentle scrubbing and bounded grime age, 2026-10-11
++
++2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
++2026-10-11 WE01-WE12/WW20-WW23/V04/V05/G01/R01/Q01: Winter reference environment and owner road/bank correction implemented locally. Scuffed original ice-v2 plus baked roughness/slopes replaces flat dark road; earlier irregular crest/tall deposits/snow shading restored; warm winter sun, cool fill, sparse shared-world wind, instanced snow-coated props and real wheel presentation. Compiler23 pins solid/deletable automatic scenery; other biome geometry exact/new publication required/no live relabel or deploy. Native95/MobileVulkan94/wind47 each/compiler29/raster8/ice69/hazards151/App99/driving72/backend69 pass. Actual driving/bridge images/video, raw desktop profiles, original texture prompt/hash and scoped checkpoint: docs/WINTER_ENVIRONMENT.md. ADB empty/no phone test/Android export-install/fullValidate/deploy. Owner visual review, low-end device performance and authorized server/client/catalog rollout remain.
+diff --git a/docs/PRODUCT_TELEMETRY_2026_10_11.md b/docs/PRODUCT_TELEMETRY_2026_10_11.md
+--- a/docs/PRODUCT_TELEMETRY_2026_10_11.md
++++ b/docs/PRODUCT_TELEMETRY_2026_10_11.md
+@@ -1,4 +1,6 @@
+ # Signed-in telemetry and product analysis — 2026-10-11
++
++Authorized deployment follow-up: [the completed staging rollout](PRODUCT_TELEMETRY_DEPLOY_2026_10_11.md) now enables this signed-in collector on schema25 and revision00033-jeq. The local/default-off statements below describe the original implementation task; guest coverage and the broader acceptance limits remain.
+ 
+ The owner requested telemetry and product analysis with particular attention to
+ network traffic and computation. The first local slice collects signed-in

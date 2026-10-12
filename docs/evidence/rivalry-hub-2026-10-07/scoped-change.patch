@@ -1,0 +1,1369 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -151,3 +151,7 @@
+ ## Artificial test drivers override (2026-10-04)
+ 
+ The owner explicitly authorizes artificial development drivers for Weekly Rivalry. Persistent traits, canonical recorded input generation, verified submissions, focused 14-driver fixtures and larger 150-driver matching populations supersede the no-invented-entrant restriction for explicitly labeled test championships only. Keep the feature configured for development, isolate test boards/membership contracts, exclude artificial identities from public rankings, ratings and community eligibility, and reject their existing sessions when disabled. Normal rivalries still contain real entrants only. See docs/TEST_DRIVERS.md for tools, actual tests, evidence and remaining acceptance.
++
++## Automatic rivalry drivers and race hub override (2026-10-07)
++
++The owner requests test drivers without a separate enable step, running canonical races against the backend and returning verified results to the app. Development clients automatically enter the configured test population; the idle backend worker manages persistent test fields and their ordinary ticket/upload/verification flow. Keep test labels, development gates and public-population isolation. Overview must expose all five tracks immediately with direct race choices, using the supplied results screen as presentation guidance. This supersedes the manual Test Rivals selector and single-opportunity Overview. Normal results remain first. See docs/RIVALRY_HUB.md for actual commands, staging evidence and remaining acceptance.
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -10,6 +10,7 @@
+     environment: str = "production"
+     dev_auth_enabled: bool = False
+     test_drivers_enabled: bool = False
++    test_driver_api_url: str = ""
+     purchase_simulation_enabled: bool = False
+     dev_auth_key: str = ""
+     database_url: str = "postgresql+psycopg://bmt@localhost/bmt"
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -46,6 +46,7 @@
+     model_config = ConfigDict(extra="forbid")
+     vehicle_id: str = Field(min_length=1, max_length=80)
+     test_population: bool = False
++    automatic_test_drivers: bool = False
+ 
+ 
+ class Race(BaseModel):
+@@ -228,6 +229,7 @@
+               "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
+               "vehicle_id": group.vehicle_id, "placement": group.skill_band == -1, "driver_count": len(overall),
+               "test_population": group.test_population,
++              "automatic_test_drivers": bool(group.tracks[0].get("automatic_test_drivers", False)),
+               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
+               "points_policy": list(POINTS), "pending_runs": pending}
+     availability = dict(session.execute(select(TrackVersion.id,
+@@ -268,6 +270,9 @@
+ 
+ 
+ def commit_join(session, player_id, key, body, group_id):
++    if body.get("automatic_test_drivers"):
++        from .automatic_test_drivers import enroll
++        enroll(session, group_id)
+     saved=commit_response(session,player_id,"rivalry_join",key,body,
+         {"_rivalry_snapshot_pending":True,"group_id":group_id})
+     return finish_join_response(session,player_id,key,saved)
+@@ -298,7 +303,11 @@
+ @router.post("/rivalry/join")
+ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
+     check_scope(request, payload.test_population, player)
+-    body = payload.model_dump()
++    if payload.automatic_test_drivers and (not payload.test_population or player.is_test_driver):
++        raise HTTPException(422, "AUTOMATIC_DRIVERS_REQUIRE_HUMAN_TEST_RIVALRY")
++    body = payload.model_dump(exclude={"automatic_test_drivers"})
++    if payload.automatic_test_drivers:
++        body["automatic_test_drivers"] = True
+     old = replay_response(session, player.id, "rivalry_join", key, body)
+     if old is not None:
+         return finish_join_response(session,player.id,key,old)
+--- a/backend/bmt_backend/test_driver_generator.py
++++ b/backend/bmt_backend/test_driver_generator.py
+@@ -4,6 +4,7 @@
+ import re
+ import subprocess
+ import tempfile
++import time
+ from pathlib import Path
+ 
+ from .verifier import MAX_REQUEST_BYTES, GodotVerifier
+@@ -13,7 +14,7 @@
+     pass
+ 
+ 
+-def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False):
++def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False, stop_event=None):
+     verifier = GodotVerifier(settings)
+     verifier._check_engine()
+     with tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
+@@ -34,7 +35,7 @@
+             encoding="utf-8",
+         )
+         with (directory / "engine.log").open("wb") as log:
+-            process = subprocess.run(
++            process = subprocess.Popen(
+                 [
+                     verifier.binary,
+                     "--headless",
+@@ -49,9 +50,19 @@
+                 stdin=subprocess.DEVNULL,
+                 stdout=log,
+                 stderr=subprocess.STDOUT,
+-                timeout=verifier.timeout,
+-                check=False,
+             )
++            deadline = time.monotonic() + verifier.timeout
++            try:
++                while process.poll() is None:
++                    if stop_event is not None and stop_event.is_set():
++                        raise RuntimeError("Test controller stopped by worker shutdown")
++                    if time.monotonic() >= deadline:
++                        raise subprocess.TimeoutExpired(process.args, verifier.timeout)
++                    time.sleep(0.05)
++            finally:
++                if process.poll() is None:
++                    process.kill()
++                process.wait()
+         log_path = directory / "engine.log"
+         if log_path.stat().st_size > 65536 or re.search(
+             r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:",
+--- a/backend/bmt_backend/test_population_tool.py
++++ b/backend/bmt_backend/test_population_tool.py
+@@ -56,7 +56,7 @@
+ 
+ 
+ class API:
+-    def __init__(self, url, key):
++    def __init__(self, url, key, *, internal=False):
+         parsed = urlparse(url)
+         if (
+             parsed.username
+@@ -66,7 +66,7 @@
+             or not (
+                 parsed.scheme == "https"
+                 or parsed.scheme == "http"
+-                and parsed.hostname in ("127.0.0.1", "localhost")
++                and (parsed.hostname in ("127.0.0.1", "localhost") or internal and parsed.hostname == "api" and parsed.port == 8080)
+             )
+         ):
+             raise ValueError("Use HTTPS or an explicit local loopback development service")
+@@ -91,7 +91,7 @@
+             headers["Authorization"] = "Bearer " + self.tokens[subject][0]
+         if idempotency:
+             headers["Idempotency-Key"] = idempotency
+-        response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120)
++        response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120, allow_redirects=False)
+         if not response.ok:
+             # Do not print the response request: it contains credentials.
+             try:
+@@ -264,7 +264,8 @@
+     return plan
+ 
+ 
+-def recording(api, plan, job, profile, settings, state_path):
++def recording(api, plan, job, profile, settings, state_path, *, generator=None):
++    generator = generator or generate
+     cache = state_path.parent / (state_path.stem + "-recordings")
+     cache.mkdir(parents=True, exist_ok=True)
+     path = cache / (job["id"] + ".json")
+@@ -289,7 +290,7 @@
+             for _ in range(6):
+                 scale = (low + high) / 2
+                 try:
+-                    sample = generate(settings, document, plan["vehicle_id"], neutral, 0, scale)
++                    sample = generator(settings, document, plan["vehicle_id"], neutral, 0, scale)
+                 except DriverDidNotFinish:
+                     high = scale
+                     continue
+@@ -318,7 +319,7 @@
+         last_error = None
+         for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
+             try:
+-                result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate)
++                result = generator(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate)
+                 job["driven_pace_scale"] = candidate
+                 break
+             except DriverDidNotFinish as error:
+@@ -328,7 +329,7 @@
+             # Keep the faster route follower first; never waive collisions/gates.
+             for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
+                 try:
+-                    result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate, obstacle_detours=True)
++                    result = generator(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate, obstacle_detours=True)
+                     job["driven_pace_scale"] = candidate
+                     break
+                 except DriverDidNotFinish as error:
+@@ -342,7 +343,7 @@
+     return result
+ 
+ 
+-def tick(api, plan, settings, path, maximum=4):
++def tick(api, plan, settings, path, maximum=4, *, generator=None):
+     current = api.call("GET", "/dev/test-drivers/tracks?vehicle_id=" + plan["vehicle_id"], operator=True)
+     if build_contract(current["manifest"]) != build_contract(plan["manifest"]):
+         raise RuntimeError("Service build changed. Keep this plan for inspection and create a new one")
+@@ -419,7 +420,7 @@
+             continue
+         profile = by_subject[job["subject"]]
+         try:
+-            data = recording(api, plan, job, profile, settings, path)
++            data = recording(api, plan, job, profile, settings, path, **({"generator": generator} if generator else {}))
+         except DriverDidNotFinish as error:
+             # A failed drive records an honest noncompletion, never a made-up PB.
+             job["status"], job["failure_code"] = "uncompleted", str(error)
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -85,7 +85,10 @@
+             session.rollback()
+             if expire_unserviceable(app):
+                 return True
+-            return validate_one(app)
++            if validate_one(app):
++                return True
++            from .automatic_test_drivers import drive_idle
++            return drive_idle(app)
+         if stopping(app):
+             return False
+         if run.attempts >= maximum_attempts:
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -71,6 +71,7 @@
+     stop_grace_period: 30s
+     environment:
+       <<: *environment
++      BMT_TEST_DRIVER_API_URL: http://api:8080
+       BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+     restart: unless-stopped
+     command: [python, -m, bmt_backend.worker]
+--- a/backend/tests/test_cloud_client.py
++++ b/backend/tests/test_cloud_client.py
+@@ -39,6 +39,7 @@
+         environment="development", allow_sync_track_validation=True, dev_auth_enabled=True, dev_auth_key=key,
+         database_url=f"sqlite:///{(tmp_path / 'cloud.sqlite').as_posix()}",
+         object_dir=str(tmp_path / "objects"), godot_bin=binary,
++        public_base_url=f"http://127.0.0.1:{listener.getsockname()[1]}",
+         game_project=str(root / "game"), write_limit_per_minute=1000,
+         **(settings_overrides or {}),
+     ))
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-07 TD07-TD08/WR01-WR09/B01-B07/R01/V03-V05/Q01: owner-requested automatic development rivalry and five-track race hub implemented. No Test Rivals selector; persistent 14-member fields and idle backend canonical ticket/upload/verification, labeled/isolated from public results. Overview exposes every circuit with direct Race, PB/leader targets and reference-led podium/table; distinct Tracks/Standings and completed-week results. Final menu1091/verified-fixture503/lifecycle7/live-cloud26/App99/parser327 and backend41 pass/4 skip/15 deselected plus native HTTP5 pass. Retained staging updated from frozen current physics0.52/compiler22/rules19 after successful SQL backup1791388723672; all five circuits receive actual verified artificial PBs without a PC watcher. First all-five counts4/3/1/1/5, not all profiles complete; existing accounts/data preserved, isolated observer used after prior reserved-name conflict. Corrected intermediate fixture/encoding/manifest/footer/name failures; inspected real captures/scoped patch. DN2103 attached, no phone UI test/export/install/full Validate or production deployment. Files/commands/limits/acceptance: docs/RIVALRY_HUB.md.
++
++2026-10-07 STORE01-STORE07/PUR01-PUR08/B01-B07/RW05-RW07/Q01: owner-requested Store tab and purchase administration implemented. Five products/authoritative access, explicit payment-free debug simulation, pending/retry recovery and desktop/compact layout; four-tab navigation retains canonical racer. Owner-only development/test product toggles use CAS revisions/idempotent audits; new checkout rejects disabled items while existing access/pending payments survive. Per-player purchase/entitlement inspection is redacted/read-only and cursor-bounded/indexed. Separate generated admin key, Admin browser/clipboard launcher and debug console link preserve game credentials. Final SQLite/ownedPG backend66 pass/3 skip, graphicalStore17/browser7/App99 checks all zero failures; screenshots inspected, availability restored and owned PG removed. Migration0017 applied only to owned lab; catalog updated for existing .51/rules19. No actual store/payment/cloud rollout/phone check/device/export/full Validate. Commands/files/failures/scoped checkpoint/acceptance: docs/STORE_AND_ADMIN.md.
++
+ 2026-10-07 G01/T03: owner accepts smooth contacts and requests extra slowdown. Scrape friction0.15-to0.18 (+20%), physics0.52/local contract and oval expected pins; shape/slide/normals/recoil/yaw/feedback unchanged. Compact108km/h2deg tangent loss0.524-to0.629%, one-second speed100.057-to99.082km/h/progress28.680-to28.511m. Smooth-contact guard measures per-tick continuity plus retained85% travel instead of prior tune-specific final speed; energy/symmetry/corners/reverse/replay remain. New20024/diagnostic14820 and final canonical68 checks pass; broader backend116/46PG deselected. Full324 parses/core+UI pass then same8 known raster goldens fail; no full-green claim. Inspected native capture/unclipped PCM, scoped patch/hashes/commands retained. No phone attachment check/device test/export/install/live deployment; owner/device acceptance and matching backend rollout remain. Files/results: docs/SHALLOW_COLLISION_FIX.md (extra slowdown), docs/evidence/scrape-drag-2026-10-07.
+ 
+ 2026-10-07 MUS18-MUS19/MUS11-MUS17/G01/R01/Q01/V06: owner-rejected melancholic mix2 replaced by focused upbeat mix3: major cadences, rising piano motif, articulated bass/chords and opening pulse; menu108BPM, race120/exact64s and same adaptive observer. Hover/keyboard-focus hooks/cue removed; activation clip hashes unchanged, old masters/hover preserved. Soundtrack1065/graphical1070/App99/vehicle1434 and capture11 pass; 14 assets/32 combinations/eight actual captures unclipped, hover/pause exactly silent, full at61.929s. Matched old/new90s at-22LUFS and browser preview checks pass; shipping8,710,829 bytes. Concurrent app/physics0.52 changes preserved/excluded; final960-tick equality and App rerun pass. No phone attachment/audio test/export/install/full Validate/backend action; artistic/AAA acceptance pending. Actual files/commands/evidence/scoped checkpoint: docs/UPBEAT_SOUNDTRACK.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++2026-10-07 TD07-TD08/WR01-WR09/B01-B07/R01/V03-V05/Q01: owner-requested automatic development rivalry and five-track race hub implemented. No Test Rivals selector; persistent 14-member fields and idle backend canonical ticket/upload/verification, labeled/isolated from public results. Overview exposes every circuit with direct Race, PB/leader targets and reference-led podium/table; distinct Tracks/Standings and completed-week results. Final menu1091/verified-fixture503/lifecycle7/live-cloud26/App99/parser327 and backend41 pass/4 skip/15 deselected plus native HTTP5 pass. Retained staging updated from frozen current physics0.52/compiler22/rules19 after successful SQL backup1791388723672; all five circuits receive actual verified artificial PBs without a PC watcher. First all-five counts4/3/1/1/5, not all profiles complete; existing accounts/data preserved, isolated observer used after prior reserved-name conflict. Corrected intermediate fixture/encoding/manifest/footer/name failures; inspected real captures/scoped patch. DN2103 attached, no phone UI test/export/install/full Validate or production deployment. Files/commands/limits/acceptance: docs/RIVALRY_HUB.md.
++
++2026-10-07 STORE01-STORE07/PUR01-PUR08/B01-B07/RW05-RW07/Q01: owner-requested Store tab and purchase administration implemented. Five products/authoritative access, explicit payment-free debug simulation, pending/retry recovery and desktop/compact layout; four-tab navigation retains canonical racer. Owner-only development/test product toggles use CAS revisions/idempotent audits; new checkout rejects disabled items while existing access/pending payments survive. Per-player purchase/entitlement inspection is redacted/read-only and cursor-bounded/indexed. Separate generated admin key, Admin browser/clipboard launcher and debug console link preserve game credentials. Final SQLite/ownedPG backend66 pass/3 skip, graphicalStore17/browser7/App99 checks all zero failures; screenshots inspected, availability restored and owned PG removed. Migration0017 applied only to owned lab; catalog updated for existing .51/rules19. No actual store/payment/cloud rollout/phone check/device/export/full Validate. Commands/files/failures/scoped checkpoint/acceptance: docs/STORE_AND_ADMIN.md.
++
+ 2026-10-07 G01/T03: owner accepts smooth contacts and requests extra slowdown. Scrape friction0.15-to0.18 (+20%), physics0.52/local contract and oval expected pins; shape/slide/normals/recoil/yaw/feedback unchanged. Compact108km/h2deg tangent loss0.524-to0.629%, one-second speed100.057-to99.082km/h/progress28.680-to28.511m. Smooth-contact guard measures per-tick continuity plus retained85% travel instead of prior tune-specific final speed; energy/symmetry/corners/reverse/replay remain. New20024/diagnostic14820 and final canonical68 checks pass; broader backend116/46PG deselected. Full324 parses/core+UI pass then same8 known raster goldens fail; no full-green claim. Inspected native capture/unclipped PCM, scoped patch/hashes/commands retained. No phone attachment check/device test/export/install/live deployment; owner/device acceptance and matching backend rollout remain. Files/results: docs/SHALLOW_COLLISION_FIX.md (extra slowdown), docs/evidence/scrape-drag-2026-10-07.
+ 
+ 2026-10-07 G01/V04/V06/T03/Q01: owner-authorized shallow-contact steps1-4 implemented as physics0.51: refined exact-cell sliding/1mm skin, coherent exposed-face normals, impulse-scaled scrape friction and separate body/audio/impact feedback. Compact108km/h2deg tangent loss9.851-to0.524%, one-second coasting3.796m/stopped-to28.680m/100.057km/h; inspected original presenter screenshots and unclipped PCM. Final scrape20024/diagnostic14820, contacts167/bridgeexits2527, audio1434/desert25/history11 and selected backend115 pass/46PG deselected; full Validate324 parses and all preceding core/UI checks pass, stops on8 retained raster goldens independently reproduced at archived0.50; tail checks pass. Same-input historical .50 times preserved in export-excluded tests, current unfinished trajectory rejects; matching backend rollout remains. Circular base-script dependency and intermediate rail/normal/mock/capture errors repaired without weakened assertions. Existing unrelated work preserved; scoped patch/source hashes/logs retained. No phone attachment check/device test/export/install/deployment or full-green claim. Actual files, commands, results, limits and acceptance: docs/SHALLOW_COLLISION_FIX.md.
+--- a/docs/schemas/weekly-rivalry-v1.schema.json
++++ b/docs/schemas/weekly-rivalry-v1.schema.json
+@@ -23,6 +23,7 @@
+       "properties": {
+         "state": {"enum": ["active", "settling", "complete"]},
+         "test_population": {"type": "boolean", "default": false},
++        "automatic_test_drivers": {"type": "boolean", "default": false},
+         "group_id": {"type": "string", "minLength": 1, "maxLength": 36},
+         "self_id": {"type": "string", "minLength": 1, "maxLength": 36},
+         "week": {"type": "integer", "minimum": 1, "maximum": 53},
+--- a/docs/TEST_DRIVERS.md
++++ b/docs/TEST_DRIVERS.md
+@@ -1,3 +1,5 @@
++2026-10-07 follow-up: automatic development membership/backend driving and the five-track Overview supersede the manual test-rival switch and older Overview guidance below. See [current behavior and actual verification](RIVALRY_HUB.md).
++
+ # Artificial test drivers — 2026-10-04
+ 
+ PC Development logout follow-up: session renewal could reuse an obsolete credential after another client restored the same saved session. The client now coordinates renewal and uses the latest saved credential. Canonical rivalry races with Test Rivals ON pass expiry, same-process and separate-process restoration regressions while retaining identity. See [repair, actual verification and restart instructions](RIVALRY_SESSION_FIX.md). No test-driver population or server authentication rule changed in this repair.
+--- a/docs/WEEKLY_RIVALRY.md
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -1,3 +1,5 @@
++2026-10-07 follow-up: automatic development membership/backend driving and the five-track Overview supersede the manual test-rival switch and older Overview guidance below. See [current behavior and actual verification](RIVALRY_HUB.md).
++
+ # Weekly Rivalry — 2026-10-04
+ 
+ The owner authorizes a championship inside **Race**, selected with the left trophy icon. The confirmed defaults are five tracks, groups of roughly 10–20 real drivers, and Monday 00:00 to the following Monday 00:00 UTC. Shared typography, navy panels, original scenic art, yellow actions and the fixed Race/Create/Garage header connect it to Free Race; championship status and targeted rival gaps distinguish its purpose.
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -44,6 +44,7 @@
+ static func valid_snapshot(value: Dictionary) -> bool:
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+ 	if value.has("test_population") and not value.test_population is bool: return false
++	if value.has("automatic_test_drivers") and not value.automatic_test_drivers is bool: return false
+ 	if value.get("state") == "not_joined": return value.has_all(["week","ends_at","server_now"])
+ 	if not value.has_all(["group_id","self_id","week","tracks","standings"]): return false
+ 	if not value.tracks is Array or value.tracks.size() != 5 or not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
+@@ -73,6 +74,13 @@
+ 
+ func refresh() -> void:
+ 	if busy: return
++	# Development rivalries use the server capability automatically. Release
++	# and ordinary services retain the real-player population.
++	if OS.is_debug_build() and client.has_method("test_drivers_available"):
++		var automatic: bool = client.test_drivers_available()
++		if automatic != test_population:
++			test_population = automatic
++			reset()
+ 	if snapshot_scope != scope(): reset()
+ 	if not client.signed_in():
+ 		error = "Sign in to join Weekly Rivalry."
+@@ -82,7 +90,7 @@
+ 
+ func join() -> void:
+ 	if busy: return
+-	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population})
++	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
+ 
+ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
+ 	busy = true
+@@ -96,6 +104,10 @@
+ 	if response.ok and valid_snapshot(response.data):
+ 		model.apply_snapshot(response.data)
+ 		snapshot_scope = original
++		var needs_enrollment: bool = model.status == "not_joined" or (model.status == "active" and not bool(response.data.get("automatic_test_drivers",false)))
++		if test_population and needs_enrollment and path != "/rivalry/join":
++			await join()
++			return
+ 	else:
+ 		error = "Five eligible tracks are needed before a rivalry can open." if str(response.get("error","")) == "NOT_ENOUGH_ELIGIBLE_TRACKS" else "Rivalry unavailable. Check your connection and try again."
+ 	changed.emit()
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1017,17 +1017,6 @@
+ 	page.error = rivalry.error
+ 	page.signed_in = online.client.signed_in()
+ 	page.pending_result = rivalry_result_pending
+-	page.test_drivers_available = OS.is_debug_build() and online.client.signed_in() and bool(online.capabilities.get("test_drivers",false))
+-	page.test_population = rivalry.test_population
+-	page.test_population_requested.connect(func(enabled: bool) -> void:
+-		if is_instance_valid(game):
+-			remove_child(game)
+-			game.queue_free()
+-			game = null
+-			rivalry_racing = false
+-		rivalry_section = "overview"
+-		rivalry.set_test_population(enabled)
+-		rivalry.refresh())
+ 	page.section_requested.connect(func(section: String) -> void:
+ 		if is_instance_valid(game):
+ 			remove_child(game)
+@@ -1041,6 +1030,7 @@
+ 		rivalry_track = index
+ 		rivalry_section = "detail"
+ 		_rivalry())
++	page.track_selected.connect(func(index: int) -> void: rivalry_track = index)
+ 	page.race_requested.connect(_start_rivalry_race)
+ 	page.free_race_requested.connect(func() -> void:
+ 		if is_instance_valid(game):
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -60,6 +60,11 @@
+ func _map_row(row: Dictionary) -> Dictionary:
+ 	var mapped: Dictionary = row.duplicate(true)
+ 	mapped.driver_id = str(row.get("id",""))
++	mapped.points = int(row.get("points",0))
++	if row.has("completed"): mapped.completed = int(row.completed)
++	if row.get("rank") != null: mapped.rank = int(row.rank)
++	if bool(mapped.get("is_test_driver",false)) and str(mapped.get("name","")).contains(" #"):
++		mapped.name = str(mapped.name).get_slice(" #",0)
+ 	if mapped.driver_id == source_self:
+ 		mapped.id = SELF
+ 		mapped.name = "You"
+--- a/game/tests/test_test_driver_live.gd
++++ b/game/tests/test_test_driver_live.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Explicit HTTPS/loopback acceptance of the operator-created test field.
+-## Uses isolated client storage; never submits a human PB or changes membership.
++## Uses isolated client storage and automatic backend-created development membership.
+ var checks: int = 0
+ var failures: int = 0
+ var app: Node
+@@ -39,17 +39,16 @@
+ 		client._remember(await client._send("/auth/development",HTTPClient.METHOD_POST,{"subject":subject,"display_name":subject},false,"",PackedStringArray(["X-Dev-Auth-Key: "+OS.get_environment("BMT_DEV_AUTH_KEY")])))
+ 	check(app.online.client.signed_in(),"developer authenticates against the live local service")
+ 	check(app.online.capabilities.get("test_drivers",false),"live bootstrap advertises test drivers")
+-	app.rivalry.set_test_population(true)
+ 	await app.rivalry.refresh()
+ 	check(app.rivalry.model.status == "active" and app.rivalry.model.test_population,"live weekly test membership loads")
+-	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == 14,"live field has five tracks and fourteen drivers")
++	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() >= 14 and app.rivalry.model.standing().size() <= 20,"live automatic field has five tracks and fourteen to twenty drivers")
+ 	if app.rivalry.model.tracks.size() != 5:
+ 		quit(1)
+ 		return
+ 	var test_count: int = 0
+ 	for driver: Dictionary in app.rivalry.model.standing():
+ 		if driver.get("is_test_driver",false): test_count += 1
+-	check(test_count == 13,"thirteen rivals carry explicit test identity markers")
++	check(test_count >= 13 and test_count <= 19,"automatic rivals carry explicit test identity markers")
+ 	var ghost_slot: int = -1
+ 	var ghost_driver: String = ""
+ 	for slot: int in range(5):
+--- a/game/tests/test_test_driver_menu.gd
++++ b/game/tests/test_test_driver_menu.gd
+@@ -24,6 +24,8 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	evidence = ProjectSettings.globalize_path("res://../docs/evidence/test-drivers-2026-10-04")
+ 	var snapshot: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(evidence.path_join("verified-field.json")))
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-hub-2026-10-07/verified-fixture")
++	DirAccess.make_dir_recursive_absolute(evidence)
+ 	check(snapshot.get("driver_count") == 14,"actual HTTP field contains fourteen drivers")
+ 	check(snapshot.get("test_population",false),"server identifies the test population")
+ 	var adapter: Node = load("res://backend/weekly_rivalry_client.gd").new()
+@@ -43,6 +45,7 @@
+ 	app.online.client._access_token = "isolated-menu-fixture"
+ 	app.online.client.player = {"id":snapshot.self_id}
+ 	app.online.capabilities = {"test_drivers":true}
++	app.online.client._capabilities = app.online.capabilities
+ 	app.rivalry.test_population = true
+ 	app.rivalry.model.apply_snapshot(snapshot)
+ 	check(app.rivalry.model.test_population and app.rivalry.model.standing().size() == 14,"projection preserves server test markers")
+@@ -53,7 +56,7 @@
+ 			app.rivalry_section = section
+ 			app._rivalry()
+ 			await settle()
+-			check(app.root_ui.find_child("RivalryTestPopulation",true,false) != null,"development menu exposes an explicit selector")
++			check(app.root_ui.find_child("RivalryTestPopulation",true,false) == null,"development rivals need no separate enable selector")
+ 			var notice: Label = app.root_ui.find_child("RivalryDataNotice",true,false)
+ 			check(notice.text.begins_with("TEST RIVALRY"),"test championship is clearly marked")
+ 			inspect(app.root_ui)
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -41,7 +41,7 @@
+ 
+ func inspect(node: Node, bounds: Rect2) -> void:
+ 	if node is Control and node.name == "RivalryDataNotice":
+-		check(app.menu_body_slot.get_global_rect().grow(1).encloses(node.get_global_rect()),"rivalry status notice stays inside the clipped page")
++		check(app.menu_body_slot.get_global_rect().grow(1).encloses(node.get_global_rect()),"rivalry status notice fits "+str(app.rivalry_section)+" "+str(node.get_global_rect())+" within "+str(app.menu_body_slot.get_global_rect()))
+ 	if node is Button and node.is_visible_in_tree():
+ 		var rectangle: Rect2 = node.get_global_rect()
+ 		check(bounds.grow(1).encloses(rectangle),str(node.name)+" stays inside the viewport")
+@@ -52,7 +52,7 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/weekly-rivalry-2026-10-04")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-hub-2026-10-07/ui")
+ 	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
+ 	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
+ 	var fixture := WeeklyRivalry.new(true)
+@@ -97,9 +97,23 @@
+ 		await settle()
+ 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+ 		await capture("overview",dimensions)
+-		(app.root_ui.find_child("RivalryContinue",true,false) as Button).pressed.emit()
++		for slot: int in range(5):
++			var choose: Button = app.root_ui.find_child("SelectRivalryTrack_"+str(slot),true,false)
++			var race: Button = app.root_ui.find_child("RivalryRaceTrack_"+str(slot),true,false)
++			check(choose != null and race != null,"overview exposes every circuit and its direct Race action")
++			check(app.menu_body_slot.get_global_rect().encloses(choose.get_global_rect()),"all five circuits are visible immediately")
++			choose.pressed.emit()
++			var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++			check(page.selected == slot and page.race_selection.text.contains(str(page.model.tracks[slot].name).to_upper()),"selecting a circuit updates the main Race action")
++			var launch: Array[int] = []
++			page.race_requested.connect(func(index: int, _ghost: int) -> void: launch.append(index))
++			race.pressed.emit()
++			check(launch.back() == slot,"each overview Race action launches its own circuit")
++		(app.root_ui.find_child("RivalryTab_tracks",true,false) as Button).pressed.emit()
+ 		await settle()
+-		check(app.rivalry_section == "detail" and app.rivalry_track == app.rivalry.model.opportunity(),"Continue targets the closest opportunity")
++		(app.root_ui.find_child("OpenRivalryTrack_2",true,false) as Button).pressed.emit()
++		await settle()
++		check(app.rivalry_section == "detail" and app.rivalry_track == 2,"track details retain their selected circuit")
+ 		app.rivalry_track = 2
+ 		app._rivalry()
+ 		await settle()
+--- a/game/tests/test_weekly_rivalry_http.gd
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -43,12 +43,15 @@
+ 	check(login.ok,"isolated driver authenticates")
+ 	var expire_at_finish: bool = OS.get_environment("BMT_RIVALRY_EXPIRED_SESSION") == "true"
+ 	var restored_at_finish: bool = OS.get_environment("BMT_RIVALRY_SESSION_RESTORED") == "true"
+-	if expire_at_finish or restored_at_finish: app.rivalry.set_test_population(true)
+ 	app._open_rivalry()
+ 	while app.rivalry.busy: await process_frame
+-	check(app.rivalry.model.status == "not_joined" and app.rivalry.model.tracks.is_empty(),"no invented results before joining")
+-	await app.rivalry.join()
+-	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == 1,"server pins five eligible official tracks and real member")
++	var automatic: bool = app.online.client.test_drivers_available()
++	if automatic:
++		check(app.rivalry.model.status == "active" and app.rivalry.model.test_population,"development rivalry opens automatically")
++	else:
++		check(app.rivalry.model.status == "not_joined" and app.rivalry.model.tracks.is_empty(),"no invented results before joining")
++		await app.rivalry.join()
++	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == (14 if automatic else 1),"server pins five tracks and the requested real or automatic field")
+ 	check(not app.rivalry.model.sample,"shipping view uses the server field")
+ 	app.rivalry_section = "detail"
+ 	app._rivalry()
+@@ -97,7 +100,7 @@
+ 	for i: int in range(old_laps.size()): old_laps[i] += 0.2
+ 	check(records.record(game.native_track,game.handling,total+1.0,old_laps) == OK,"isolated prior PB fixture saves")
+ 	app._results()
+-	check(app.rivalry.model.last_result.get("provisional",false) and app.rivalry.model.last_result.get("points_delta") == 30,"finished race immediately projects weekly rank and points before verification")
++	check(app.rivalry.model.last_result.get("provisional",false) and int(app.rivalry.model.last_result.get("points_delta",0)) == app.rivalry.model.points_policy[int(app.rivalry.model.last_result.after.rank)-1],"finished race immediately projects weekly rank and points before verification")
+ 	var summary: RaceResults = app.root_ui.find_child("RaceResults",true,false) as RaceResults
+ 	check(app.rivalry_result_pending and app.rivalry_section == "race_results" and summary != null,"rivalry opens normal results while verification runs")
+ 	check(summary.saved and absf(summary.previous-total-1.0) < 0.001 and absf(summary.best-total) < 0.001,"rivalry saves the all-time personal best through normal results")
+@@ -133,7 +136,7 @@
+ 		print("WEEKLY_RIVALRY_HTTP_TESTS: %d checks, %d failures" % [checks,failures])
+ 		quit(1)
+ 		return
+-	check(not app.rivalry_result_pending and app.rivalry.model.last_result.get("points_delta") == 30,"verified result changes the championship points")
++	check(not app.rivalry_result_pending and int(app.rivalry.model.last_result.get("points_delta",0)) == app.rivalry.model.points_policy[int(app.rivalry.model.last_result.after.rank)-1],"verified result changes the championship points")
+ 	if not immediate_continue:
+ 		check(is_instance_valid(summary) and summary.is_visible_in_tree() and app.rivalry_section == "race_results","verification never replaces the normal results summary")
+ 		summary.select_lap(0)
+@@ -148,7 +151,7 @@
+ 	# Result confirmation deliberately precedes the independent board refresh.
+ 	while app.rivalry.busy: await process_frame
+ 	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.standing())
+-	check(own.points == 30 and own.rank == 1,"Overview reflects one best result")
++	check(own.points == WeeklyRivalry.self_row(app.rivalry.model.board(0)).points and own.rank != null,"Overview reflects one best result")
+ 	var recording: Dictionary = await app.rivalry.ghost(0,str(app.online.client.player.id))
+ 	check(not recording.is_empty() and not recording.has("replay"),"weekly ghost contains derived poses without raw driver controls")
+ 	check(not PersonalGhostRun.sample(recording,0.0).is_empty() and PersonalGhostRun.sample(recording,float(recording.get("ticks",0))+1.0).is_empty(),"verified recording is bounded without extrapolation")
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -1,15 +1,15 @@
+ class_name WeeklyRivalryPage
+ extends VBoxContainer
+-## One question per view, using the same scenic art and controls as Free Race.
++## Five immediately playable tracks and verified standings in one championship hub.
+ signal section_requested(section: String)
+ signal track_requested(index: int)
++signal track_selected(index: int)
+ signal race_requested(index: int, ghost_choice: int)
+ signal free_race_requested
+ signal join_requested
+ signal refresh_requested
+ signal continue_requested
+ signal retry_requested
+-signal test_population_requested(enabled: bool)
+ var model: WeeklyRivalry
+ var section: String = "overview"
+ var selected: int = 0
+@@ -17,15 +17,16 @@
+ var error: String = ""
+ var signed_in: bool = false
+ var pending_result: bool = false
+-var test_drivers_available: bool = false
+-var test_population: bool = false
+ var ghost_choice: int = 0
+ var clock_label: Label
++var track_rows: Array[Button] = []
++var race_selection: Button
+ const Badge = preload("res://ui/biome_badge.gd")
+ 
+ func _ready() -> void:
+ 	name = "WeeklyRivalryPage"
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	resized.connect(queue_redraw)
+ 	var row := HBoxContainer.new()
+ 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	add_child(row)
+@@ -44,12 +45,18 @@
+ 	var heading := MenuStyle.label("WEEKLY RIVALRY",30)
+ 	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	header.add_child(heading)
++	var navigation := PanelContainer.new()
++	navigation.add_theme_stylebox_override("panel",MenuStyle.box(Color("091721ed"),0))
++	header.add_child(navigation)
++	var tabs := HBoxContainer.new()
++	tabs.add_theme_constant_override("separation",0)
++	navigation.add_child(tabs)
+ 	for id: String in ["overview","tracks","standings"]:
+ 		var tab := MenuStyle.tab(id.to_upper(),func() -> void: section_requested.emit(id),section == id or (section == "detail" and id == "tracks"))
+ 		tab.name = "RivalryTab_"+id
+ 		tab.custom_minimum_size = Vector2(116,52)
+ 		tab.add_theme_font_size_override("font_size",19)
+-		header.add_child(tab)
++		tabs.add_child(tab)
+ 	var context := HBoxContainer.new()
+ 	main.add_child(context)
+ 	var week_label := MenuStyle.label("WEEK %02d" % model.week,16)
+@@ -77,18 +84,22 @@
+ 	else: _overview(body)
+ 	var footer := HBoxContainer.new()
+ 	main.add_child(footer)
+-	var notice: String = "TEST RIVALRY · Artificial drivers · Verified races" if model.test_population else ("Placement group · Building your pace profile" if model.placement else "Matched by verified pace")+"   ·   "+VehicleCatalog.title(model.vehicle_id)
++	var notice: String = ("TEST RIVALRY · Artificial drivers · Verified races" if model.test_population else "Placement group · Building your pace profile" if model.placement else "Matched by verified pace")+"   ·   "+VehicleCatalog.title(model.vehicle_id)
+ 	var foot := MenuStyle.label("CONCEPT PREVIEW · Sample drivers and results" if model.sample else notice,14,true)
+ 	foot.name = "RivalryDataNotice"
++	if not error.is_empty(): foot.text += "  -  "+error
++	foot.tooltip_text = foot.text
++	foot.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	foot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	footer.add_child(foot)
+-	if test_drivers_available:
+-		var toggle := MenuStyle.button("TEST RIVALS: ON" if test_population else "TEST RIVALS: OFF",func() -> void: test_population_requested.emit(not test_population))
+-		toggle.name = "RivalryTestPopulation"
+-		toggle.custom_minimum_size = Vector2(188,48)
+-		toggle.add_theme_font_size_override("font_size",15)
+-		toggle.disabled = busy or pending_result
+-		footer.add_child(toggle)
++
++func _draw() -> void:
++	var art: Texture2D = TrackTile.scenery_texture("winter")
++	var factor: float = maxf(size.x/art.get_width(),size.y/art.get_height())
++	var drawn: Vector2 = art.get_size()*factor
++	draw_texture_rect(art,Rect2((size-drawn)*0.5,drawn),false)
++	draw_rect(Rect2(Vector2.ZERO,size),Color(0.015,0.035,0.05,0.68))
++
+ 
+ func _card(parent: Control, theme_id: String = "", padding: int = 20) -> VBoxContainer:
+ 	var panel := PanelContainer.new()
+@@ -106,7 +117,7 @@
+ 		panel.add_child(art)
+ 		var overlay := TextureRect.new()
+ 		var gradient := Gradient.new()
+-		gradient.colors = PackedColorArray([Color("07152070"),Color("06121bd9"),Color("06121bfa")])
++		gradient.colors = PackedColorArray([Color("071520d9"),Color("06121be8"),Color("06121bfa")])
+ 		gradient.offsets = PackedFloat32Array([0.0,0.5,1.0])
+ 		var texture := GradientTexture2D.new()
+ 		texture.gradient = gradient
+@@ -210,51 +221,196 @@
+ 	_action(hero,"Refresh","RivalryRefresh",func() -> void: refresh_requested.emit()).disabled = busy
+ 
+ func _overview(parent: Control) -> void:
+-	var hero: VBoxContainer = _card(parent,"winter",26)
+-	hero.get_parent().size_flags_stretch_ratio = 1.6
+-	_copy(hero,"FIVE TRACKS. ONE RIVALRY.",18,MenuStyle.ACCENT)
+-	_copy(hero,"MAKE THIS\nYOUR WEEK.",56 if model.forming else 66)
+-	_copy(hero,"%d drivers · Best results count" % model.standing().size(),22,MenuStyle.MUTED)
+-	if model.forming: _copy(hero,"Your group is forming. More drivers can join this week.",17,MenuStyle.MUTED)
+-	_space(hero)
+-	var index: int = model.opportunity()
+-	_action(hero,"CONTINUE RIVALRY  →","RivalryContinue",func() -> void: track_requested.emit(index),true).disabled = model.status != "active"
+-	var opportunity := MenuStyle.button("",func() -> void: track_requested.emit(index))
+-	opportunity.name = "RivalryOpportunity"
+-	opportunity.custom_minimum_size.y = 78
+-	hero.add_child(opportunity)
++	_championship(parent,false)
++
++func _championship(parent: Control, finale: bool) -> void:
++	selected = clampi(selected,0,model.tracks.size()-1)
++	var field := VBoxContainer.new()
++	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	field.size_flags_stretch_ratio = 0.94
++	field.add_theme_constant_override("separation",10)
++	parent.add_child(field)
++	_podium(field)
++	var table: VBoxContainer = _card(field,"",12)
++	table.add_theme_constant_override("separation",6)
++	var title := HBoxContainer.new()
++	table.add_child(title)
++	_copy(title,"ALL DRIVERS",24).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_copy(title,"%d DRIVERS" % model.standing().size(),14,MenuStyle.MUTED)
++	var legend := HBoxContainer.new()
++	table.add_child(legend)
++	_copy(legend,"#",14,MenuStyle.MUTED).custom_minimum_size.x = 28
++	_copy(legend,"DRIVER",14,MenuStyle.MUTED).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_copy(legend,"POINTS   GAP",14,MenuStyle.MUTED)
++	var scroll := ScrollContainer.new()
++	scroll.name = "RivalryStandingsScroll"
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	table.add_child(scroll)
++	var rows := VBoxContainer.new()
++	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	rows.add_theme_constant_override("separation",3)
++	scroll.add_child(rows)
++	var standings: Array[Dictionary] = model.standing()
++	var leader_points: int = int(standings[0].points)
++	for row: Dictionary in standings:
++		_table_row(rows,row,str(row.points)+" pts  "+("—" if row.get("rank") == null or int(row.points) == leader_points else "−%d" % (leader_points-int(row.points))),true)
++		rows.get_child(-1).add_theme_stylebox_override("panel",_driver_style(row))
++	var own: Dictionary = WeeklyRivalry.self_row(standings)
++	var summary := HBoxContainer.new()
++	table.add_child(summary)
++	_copy(summary,"YOU  "+rank_text(own),20,MenuStyle.ACCENT).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_copy(summary,str(own.points)+" pts",20,MenuStyle.ACCENT)
++	var tracks: VBoxContainer = _card(parent,"",14)
++	tracks.get_parent().size_flags_stretch_ratio = 1.24
++	tracks.add_theme_constant_override("separation",7)
++	var heading := HBoxContainer.new()
++	tracks.add_child(heading)
++	_copy(heading,"TRACK RESULTS" if finale else "THIS WEEK'S TRACKS",26).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	var completed: int = 0
++	for index: int in range(model.tracks.size()):
++		if model.gaps(index).own.get("ms") != null: completed += 1
++	_copy(heading,"%d / 5 COMPLETED" % completed,15,MenuStyle.MUTED)
++	_copy(tracks,"Week complete · Your best results" if finale else "Choose a circuit. Your best result on each track counts.",16,MenuStyle.MUTED)
++	track_rows.clear()
++	for index: int in range(model.tracks.size()): _track_row(tracks,index,finale)
++	if finale:
++		_action(tracks,"CONTINUE TO NEXT WEEK  →","RivalryNextWeek",func() -> void: continue_requested.emit(),true).disabled = busy
++	else:
++		race_selection = _action(tracks,"","RivalryRaceSelected",func() -> void: race_requested.emit(selected,_default_ghost(selected)),true)
++		race_selection.icon = MenuIcon.texture("flag")
++		race_selection.add_theme_color_override("icon_normal_color",MenuStyle.INK)
++		race_selection.add_theme_color_override("icon_hover_color",MenuStyle.INK)
++		_select_track(selected)
++
++func _driver_style(row: Dictionary) -> StyleBoxFlat:
++	var style := MenuStyle.box(Color("ffd34812") if row.id == WeeklyRivalry.SELF else Color("081720bb"),6)
++	if row.id == WeeklyRivalry.SELF:
++		style.border_color = MenuStyle.ACCENT
++		style.set_border_width_all(1)
++	return style
++
++func _podium(parent: Control) -> void:
++	var podium := HBoxContainer.new()
++	podium.name = "RivalryPodium"
++	podium.custom_minimum_size.y = 120
++	podium.add_theme_constant_override("separation",8)
++	parent.add_child(podium)
++	var leaders: Array[Dictionary] = []
++	for row: Dictionary in model.standing():
++		if row.get("rank") != null and leaders.size() < 3: leaders.append(row)
++	if leaders.is_empty():
++		var intro: VBoxContainer = _card(podium,"winter",12)
++		_copy(intro,"THE WEEK STARTS HERE",28,MenuStyle.ACCENT)
++		_copy(intro,"Five circuits. Unlimited attempts.",17)
++		_copy(intro,"Set your first time to join the battle.",16,MenuStyle.MUTED)
++		return
++	for position: int in [1,0,2]:
++		if position >= leaders.size(): continue
++		var driver: Dictionary = leaders[position]
++		var color: Color = MenuStyle.ACCENT if position == 0 else Color("bbced8") if position == 1 else Color("c68b63")
++		var card: VBoxContainer = _card(podium,"",8)
++		var style: StyleBoxFlat = MenuStyle.card(8)
++		style.bg_color = Color("273024ee") if position == 0 else Color("132430ee")
++		style.border_color = color.darkened(0.3)
++		card.get_parent().add_theme_stylebox_override("panel",style)
++		card.add_theme_constant_override("separation",3)
++		var rank := HBoxContainer.new()
++		card.add_child(rank)
++		var icon := TextureRect.new()
++		icon.texture = MenuIcon.texture("trophy")
++		icon.custom_minimum_size = Vector2(22,22)
++		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		icon.modulate = color
++		rank.add_child(icon)
++		_copy(rank,rank_text(driver),29,color)
++		var driver_name: Label = _copy(card,str(driver.name),19)
++		driver_name.add_theme_font_override("font",MenuStyle.DISPLAY)
++		driver_name.autowrap_mode = TextServer.AUTOWRAP_OFF
++		driver_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		_copy(card,str(driver.points)+" pts",23,color)
++		_copy(card,"WEEK LEADER" if position == 0 else "CONTENDER",12,MenuStyle.MUTED)
++
++func _default_ghost(index: int) -> int:
++	var gap: Dictionary = model.gaps(index)
++	return 0 if not gap.ahead.is_empty() else 1 if not gap.leader.is_empty() and gap.leader.id != WeeklyRivalry.SELF else 2 if gap.own.get("ms") != null else 3
++
++func _track_row(parent: Control, index: int, finale: bool) -> void:
++	var track: Dictionary = model.tracks[index]
+ 	var line := HBoxContainer.new()
+-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	opportunity.add_child(line)
+-	MenuStyle.fill(line)
++	line.name = "RivalryTrackRow_"+str(index)
++	line.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	line.add_theme_constant_override("separation",6)
++	parent.add_child(line)
++	var row := MenuStyle.button("",func() -> void: _select_track(index))
++	row.name = "SelectRivalryTrack_"+str(index)
++	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	row.custom_minimum_size = Vector2(0,52)
++	row.tooltip_text = "Select "+str(track.name)
++	row.focus_entered.connect(func() -> void: _select_track(index))
++	line.add_child(row)
++	track_rows.append(row)
++	var content_row := HBoxContainer.new()
++	content_row.add_theme_constant_override("separation",10)
++	row.add_child(content_row)
++	content_row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	content_row.offset_left = 7
++	content_row.offset_right = -7
++	content_row.offset_top = 4
++	content_row.offset_bottom = -4
+ 	var art := TextureRect.new()
+-	art.texture = TrackTile.scenery_texture(model.tracks[index].theme)
+-	art.custom_minimum_size = Vector2(88,72)
++	art.texture = TrackTile.scenery_texture(str(track.theme))
++	art.custom_minimum_size.x = 64
+ 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	line.add_child(art)
++	content_row.add_child(art)
+ 	var copy := VBoxContainer.new()
++	copy.add_theme_constant_override("separation",1)
+ 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	line.add_child(copy)
+-	_copy(copy,str(model.tracks[index].name)+" is your next opportunity",20)
++	content_row.add_child(copy)
++	var title: Label = _copy(copy,str(track.name),21)
++	title.add_theme_font_override("font",MenuStyle.DISPLAY)
++	title.autowrap_mode = TextServer.AUTOWRAP_OFF
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	var gap: Dictionary = model.gaps(index)
+-	_copy(copy,(WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" to gain a position") if not gap.ahead.is_empty() else "Set your first time and enter the battle" if gap.own.get("ms") == null else "You're leading here. Push your best further.",16,MenuStyle.MUTED)
+-	_copy(line,"→",28,MenuStyle.ACCENT).size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	var side := VBoxContainer.new()
+-	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	parent.add_child(side)
+-	var position: VBoxContainer = _card(side)
+-	_copy(position,"YOUR POSITION",18,MenuStyle.MUTED)
+-	_rank(position,WeeklyRivalry.self_row(model.standing()),model.standing().size())
+-	_gaps(position)
+-	var leaders: VBoxContainer = _card(side)
+-	leaders.add_theme_constant_override("separation",6)
+-	_copy(leaders,"LEADING THE WEEK" if model.standing()[0].get("rank") != null else "THE FIELD",18,MenuStyle.MUTED)
+-	for row: Dictionary in model.standing().slice(0,3): _table_row(leaders,row,str(row.points))
+-	_space(leaders)
++	_copy(copy,"5 laps · "+str(int(gap.own.points))+" pts" if gap.own.get("ms") != null else "5 laps · No time yet",13,MenuStyle.MUTED)
++	var position: Label = _copy(content_row,rank_text(gap.own),22,MenuStyle.ACCENT if gap.own.get("rank") == 1 else MenuStyle.TEXT)
++	position.custom_minimum_size.x = 30
++	position.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var times := VBoxContainer.new()
++	times.custom_minimum_size.x = 96
++	times.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	times.add_theme_constant_override("separation",1)
++	content_row.add_child(times)
++	var time: Label = _copy(times,MenuStyle.time_text(int(gap.own.ms)/1000.0) if gap.own.get("ms") != null else MenuStyle.time_text(int(gap.leader.ms)/1000.0) if not gap.leader.is_empty() else "—",18)
++	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	var delta: Label = _copy(times,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms") != null and not gap.leader.is_empty() and gap.own.rank != 1 else "Leading" if gap.own.get("rank") == 1 else "Leader time" if not gap.leader.is_empty() else "Set a time",13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
++	delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	_ignore_tree(content_row)
++	var action: Button = _action(line,"›","RivalryRaceTrack_"+str(index),func() -> void:
++		if finale: track_requested.emit(index)
++		else: race_requested.emit(index,_default_ghost(index)))
++	action.text = ""
++	action.icon = MenuIcon.texture("arrow")
++	action.custom_minimum_size = Vector2(48,52)
++	action.size_flags_horizontal = Control.SIZE_FILL
++	action.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	action.tooltip_text = "View results" if finale else "Race "+str(track.name)
++	action.disabled = not finale and (busy or model.status != "active" or not bool(track.get("available",true)))
++
++func _select_track(index: int) -> void:
++	if selected != index: track_selected.emit(index)
++	selected = index
++	for slot: int in range(track_rows.size()):
++		var style: StyleBoxFlat = MenuStyle.box(Color("ffd34812") if slot == index else Color("0b1c27cc"),0)
++		style.border_color = MenuStyle.ACCENT if slot == index else MenuStyle.BORDER
++		style.set_border_width_all(1)
++		track_rows[slot].add_theme_stylebox_override("normal",style)
++	if is_instance_valid(race_selection):
++		race_selection.text = "RACE "+str(model.tracks[index].name).to_upper()+"  →"
++		race_selection.disabled = busy or model.status != "active" or not bool(model.tracks[index].get("available",true))
+ 
+ func _tracks(parent: Control) -> void:
+ 	for index: int in range(model.tracks.size()):
+@@ -287,6 +443,8 @@
+ 			_copy(card,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to #1" if gap.ahead.rank != 1 else "The lead is within reach",16,MenuStyle.MUTED)
+ 		_copy(card,"VIEW DUEL  →",16,MenuStyle.ACCENT)
+ 		_ignore_tree(card)
++		var race: Button = _action(card,"RACE","RivalryCardRace_"+str(index),func() -> void: race_requested.emit(index,_default_ghost(index)),true)
++		race.disabled = busy or model.status != "active" or not bool(track.get("available",true))
+ 
+ func _ignore_tree(node: Node) -> void:
+ 	if node is Control: node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -314,10 +472,10 @@
+ 		_copy(duel,str(gap.ahead.name).to_upper(),38)
+ 		_copy(duel,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" ahead of you",22,MenuStyle.ACCENT)
+ 	elif gap.own.get("ms") == null:
+-		_copy(duel,"SET THE PACE",38)
+-		_copy(duel,"Your first finish puts you on the board.",19,MenuStyle.MUTED)
++		_copy(duel,"SET THE PACE",32)
++		_copy(duel,"Your first finish puts you on the board.",17,MenuStyle.MUTED)
+ 	else:
+-		_copy(duel,"DEFEND THE LEAD",34)
++		_copy(duel,"DEFEND THE LEAD",32)
+ 		_copy(duel,"Push your best further.",19,MenuStyle.MUTED)
+ 	_space(duel)
+ 	_copy(duel,"Race with ghost",18,MenuStyle.MUTED)
+@@ -346,9 +504,14 @@
+ 	if not error.is_empty(): _copy(duel,error,15,MenuStyle.MUTED)
+ 
+ func _standings(parent: Control) -> void:
+-	var table: VBoxContainer = _card(parent,"",16)
+-	table.get_parent().size_flags_stretch_ratio = 1.1
+-	_copy(table,"OVERALL STANDINGS",32)
++	var field := VBoxContainer.new()
++	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	field.size_flags_stretch_ratio = 1.6
++	field.add_theme_constant_override("separation",10)
++	parent.add_child(field)
++	_podium(field)
++	var table: VBoxContainer = _card(field,"",14)
++	_copy(table,"OVERALL STANDINGS",28)
+ 	var scroll := ScrollContainer.new()
+ 	scroll.name = "RivalryStandingsScroll"
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -358,14 +521,18 @@
+ 	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	rows.add_theme_constant_override("separation",4)
+ 	scroll.add_child(rows)
+-	for row: Dictionary in model.standing(): _table_row(rows,row,str(row.points)+" pts")
+-	var context: VBoxContainer = _card(parent,"winter",26)
+-	_copy(context,"THE CHAMPIONSHIP",18,MenuStyle.MUTED)
+-	_rank(context,WeeklyRivalry.self_row(model.standing()),model.standing().size(),72)
++	for row: Dictionary in model.standing():
++		_table_row(rows,row,str(row.get("completed",0))+" / 5    "+str(row.points)+" pts")
++	var context: VBoxContainer = _card(parent,"winter",20)
++	_copy(context,"YOUR CHAMPIONSHIP",20,MenuStyle.MUTED)
++	var own: Dictionary = WeeklyRivalry.self_row(model.standing())
++	_rank(context,own,model.standing().size(),68)
++	_copy(context,str(own.points)+" POINTS",30,MenuStyle.ACCENT)
+ 	_gaps(context)
+ 	_space(context)
+-	_copy(context,"Every track is a chance\nto move up.",38)
+-	_action(context,"FIND YOUR NEXT DUEL  →","RivalryStandingsTracks",func() -> void: section_requested.emit("tracks"),true)
++	_copy(context,"Five circuits.
++Every best counts.",32)
++	_action(context,"CHOOSE YOUR NEXT TRACK","RivalryStandingsTracks",func() -> void: section_requested.emit("overview"),true)
+ 
+ func _result(parent: Control) -> void:
+ 	var index: int = clampi(selected,0,model.tracks.size()-1)
+@@ -403,30 +570,4 @@
+ 	_action(feedback,"BACK TO RIVALRY  →","RivalryResultHome",func() -> void: section_requested.emit("overview"),true)
+ 
+ func _finale(parent: Control) -> void:
+-	var body: VBoxContainer = _card(parent,"winter",20)
+-	_copy(body,"WEEK %02d COMPLETE" % model.week,40)
+-	var own: Dictionary = WeeklyRivalry.self_row(model.standing())
+-	_copy(body,"You finished "+rank_text(own)+" / "+str(model.standing().size()) if own.get("rank") != null else "Next week is another chance to set your pace.",22,MenuStyle.ACCENT)
+-	var podium := HBoxContainer.new()
+-	podium.name = "RivalryPodium"
+-	podium.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	body.add_child(podium)
+-	var leaders: Array[Dictionary] = []
+-	for driver: Dictionary in model.standing():
+-		if driver.get("rank") != null and leaders.size() < 3: leaders.append(driver)
+-	for position: int in [1,0,2]:
+-		if position >= leaders.size(): continue
+-		var column: VBoxContainer = _card(podium,"",12)
+-		_space(column)
+-		_copy(column,rank_text(leaders[position]),38,MenuStyle.ACCENT if position == 0 else MenuStyle.MUTED)
+-		_copy(column,str(leaders[position].name),26)
+-		_copy(column,str(leaders[position].points)+" pts",20,MenuStyle.ACCENT)
+-		if position == 0: _copy(column,"WEEKLY WINNER",14,MenuStyle.ACCENT)
+-	var summary := HBoxContainer.new()
+-	body.add_child(summary)
+-	_copy(summary,"%d track wins" % model.wins(),23)
+-	_copy(summary,"%d / 5 tracks completed" % int(own.get("completed",5 if model.sample else 0)),23,MenuStyle.MUTED)
+-	var actions := HBoxContainer.new()
+-	body.add_child(actions)
+-	_action(actions,"VIEW FULL RESULTS","RivalryFullResults",func() -> void: section_requested.emit("standings"))
+-	_action(actions,"CONTINUE  →","RivalryNextWeek",func() -> void: continue_requested.emit(),true).disabled = busy
++	_championship(parent,true)
+--- /dev/null
++++ b/backend/bmt_backend/automatic_test_drivers.py
+@@ -0,0 +1,149 @@
++"""Automatic development fields, driven through ordinary authenticated race APIs.
++
++No score is written here. The idle verifier worker records one real drive at a
++time, uploads it, and gives normal player verification jobs priority. Reboots
++recover the same memberships and upload keys; older build/week data is retained.
++"""
++from __future__ import annotations
++
++import logging
++import time
++import uuid
++from pathlib import Path
++
++from sqlalchemy import select, update
++
++from .identity_models import Identity, Player
++from .rivalry_models import RivalryGroup, RivalryMember
++from .test_driver_models import TestDriverProfile
++from .track_models import Board, digest, now
++
++logger = logging.getLogger("bmt.test_drivers")
++TARGET = 14
++
++
++def enroll(session, group_id):
++    """Reserve a bounded persistent field inside the human join transaction."""
++    from .test_drivers import profile
++
++    group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == group_id).with_for_update())
++    if not group.test_population or group.ends_at <= now():
++        return
++    group.tracks = [{**slot, "automatic_test_drivers": True} for slot in group.tracks]
++    seed = int(digest({"automatic_group": group.id})[:8], 16) & 0x7FFFFFFF
++    for ordinal in range(TARGET - 1):
++        if group.member_count >= TARGET:
++            break
++        subject = f"bmt-test-auto-{group.id}-{ordinal}"
++        driver = session.scalar(select(TestDriverProfile).where(TestDriverProfile.subject == subject))
++        if driver is None:
++            _, name, traits = profile(seed, ordinal, TARGET - 1, 0.42, 0.58)
++            player = Player(id=str(uuid.uuid5(uuid.NAMESPACE_URL, subject)),
++                            display_name=name.split(" T")[0]+" #"+group.id.replace("-", "")[:20]+str(ordinal), is_test_driver=True)
++            session.add(player)
++            session.flush()
++            session.add(Identity(player_id=player.id, provider="development", subject=subject))
++            driver = TestDriverProfile(player_id=player.id, fleet="auto-" + group.id,
++                                       ordinal=ordinal, subject=subject, traits=traits)
++            session.add(driver)
++            session.flush()
++        if session.get(RivalryMember, (group.id, driver.player_id)) is not None:
++            continue
++        reserved = session.execute(update(RivalryGroup).where(
++            RivalryGroup.id == group.id, RivalryGroup.member_count < TARGET
++        ).values(member_count=RivalryGroup.member_count + 1)).rowcount
++        if reserved:
++            session.add(RivalryMember(group_id=group.id, player_id=driver.player_id,
++                                     week_start=group.week_start, contract_key=group.contract_key, skill=None))
++            session.flush()
++            session.refresh(group)
++
++
++def plan_for(app, group_id, api):
++    from .rivalry import snapshot
++    from .test_population_tool import SCHEMA, add_jobs
++
++    with app.state.session_factory() as session:
++        group = session.get(RivalryGroup, group_id)
++        profiles = [{"player_id": player.id, "subject": driver.subject,
++                     "display_name": player.display_name, "is_test_driver": True, "traits": driver.traits}
++                    for driver, player in session.execute(select(TestDriverProfile, Player).join(Player).join(
++                        RivalryMember, RivalryMember.player_id == Player.id
++                    ).where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(
++                        TestDriverProfile.subject)).all()]
++        if not profiles:
++            return None
++        field = snapshot(session, group, profiles[0]["player_id"])
++        board = session.get(Board,
++                            group.tracks[0]["board_id"])
++        manifest = app.state.verifier.manifest()
++        from .runs import PINNED_FIELDS
++        if any(board.manifest.get(field) != manifest.get(field) for field in PINNED_FIELDS):
++            return None
++        vehicle = manifest.get("vehicles", {}).get(group.vehicle_id, {})
++        if board.manifest.get("config_hash") != vehicle.get("config_hash"):
++            return None
++        plan = {"schema": SCHEMA, "api": api.url, "fleet": "auto-" + group.id,
++                "profiles": profiles, "vehicle_id": group.vehicle_id, "mode": "automatic",
++                "week_start": group.week_start, "ends_at": group.ends_at,
++                "server_now": group.created_at, "manifest": manifest, "jobs": [],
++                "joined": [], "pace_scales": {}, "instant": True}
++        for driver in profiles:
++            add_jobs(plan, driver, [track["entry"] for track in field["tracks"]], group.id, instant=True)
++        return plan
++
++
++def drive_idle(app):
++    """One bounded attempt when no normal verification or track work is waiting."""
++    settings = app.state.settings
++    if not (settings.environment == "development" and settings.test_drivers_enabled
++            and settings.dev_auth_enabled and settings.godot_bin):
++        return False
++    if time.monotonic() < getattr(app.state, "next_automatic_drive", 0):
++        return False
++    app.state.next_automatic_drive = time.monotonic() + 3
++    from .test_driver_generator import generate
++    from .test_population_tool import API, acquire_plan_lock, atomic_save, load_plan, tick
++    from .worker_lifecycle import stopping
++
++    with app.state.session_factory() as session:
++        groups = session.scalars(select(RivalryGroup.id).where(
++            RivalryGroup.test_population.is_(True), RivalryGroup.ends_at > now(),
++            RivalryGroup.tracks[0]["automatic_test_drivers"].as_boolean().is_(True)
++        ).order_by(RivalryGroup.created_at).limit(100)).all()
++    if not groups or stopping(app):
++        return False
++    api = getattr(app.state, "automatic_driver_api", None)
++    if api is None:
++        api = app.state.automatic_driver_api = API(
++            settings.test_driver_api_url or settings.public_base_url, settings.dev_auth_key, internal=True)
++    folder = Path(settings.object_dir).parent / "automatic-test-drivers"
++    cursor = getattr(app.state, "automatic_driver_cursor", 0) % len(groups)
++    app.state.automatic_driver_cursor = cursor + 1
++    group_id = groups[cursor]
++    path = folder / (group_id + ".json")
++    try:
++        with acquire_plan_lock(path):
++            plan = load_plan(path, api) if path.exists() else plan_for(app, group_id, api)
++            if plan is None:
++                return False
++            atomic_save(path, plan)
++            if not any(job["status"] == "submitted" or job["status"] == "waiting" and job["due"] <= now()
++                       for job in plan["jobs"]):
++                return False
++            # Generation observes the same cooperative shutdown event as the
++            # verifier, then uploads ordinary input data for later verification.
++            def generator(*args, **kwargs):
++                if stopping(app):
++                    raise RuntimeError("Test driver worker is draining")
++                control = getattr(app.state, "worker_control", None)
++                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++
++            before = sum(job["status"] == "waiting" for job in plan["jobs"])
++            tick(api, plan, settings, path, maximum=1, generator=generator)
++            after = sum(job["status"] == "waiting" for job in plan["jobs"])
++            return before != after
++    except RuntimeError:
++        if not stopping(app):
++            logger.exception("automatic_test_driver_pass_failed", extra={"group_id": group_id})
++        return False
+--- /dev/null
++++ b/backend/tests/test_automatic_test_drivers.py
+@@ -0,0 +1,120 @@
++"""Automatic membership, ordinary proof processing, recovery and isolation."""
++import dataclasses
++import json
++import socket
++import threading
++import time
++
++import pytest
++import uvicorn
++from sqlalchemy import select
++from test_rivalry_http import seed
++from test_test_drivers import auth
++from test_test_drivers import drivers as _drivers
++from test_verifier import real_verifier as _real_verifier
++
++from bmt_backend.app import create_app
++from bmt_backend.automatic_test_drivers import drive_idle
++from bmt_backend.config import Settings
++from bmt_backend.migrate import upgrade
++from bmt_backend.rivalry_models import RivalryMember
++from bmt_backend.test_population_tool import API
++from bmt_backend.track_models import Run
++from bmt_backend.worker import process_one
++
++drivers = _drivers
++real_verifier = _real_verifier
++
++
++def test_automatic_join_is_idempotent_and_keeps_scores_empty_until_verification(drivers):
++    headers = auth(drivers.login)
++    body = {"vehicle_id": "compact", "test_population": True, "automatic_test_drivers": True}
++    response = drivers.client.post("/v1/rivalry/join", json=body, headers=headers)
++    assert response.status_code == 200, response.text
++    group = response.json()
++    assert group["driver_count"] == 14
++    assert sum(row["is_test_driver"] for row in group["standings"]) == 13
++    assert all(row["rank"] is None and row["points"] == 0 for row in group["standings"])
++    assert all(row["ms"] is None for track in group["tracks"] for row in track["entries"])
++    assert drivers.client.post("/v1/rivalry/join", json=body, headers=headers).json() == group
++    repeated = drivers.client.post("/v1/rivalry/join", json=body, headers=auth(drivers.login)).json()
++    assert repeated["group_id"] == group["group_id"] and repeated["driver_count"] == 14
++    with drivers.factory() as session:
++        assert len(session.scalars(select(RivalryMember).where(
++            RivalryMember.group_id == group["group_id"])).all()) == 14
++    ordinary = drivers.client.post("/v1/rivalry/join", json={"vehicle_id": "compact"},
++                                   headers=auth(drivers.login)).json()
++    assert ordinary["driver_count"] == 1 and not ordinary["test_population"]
++    assert not drive_idle(drivers.app)  # A fake/no-engine backend never fabricates a result.
++
++
++def test_automatic_population_requires_the_development_gate(drivers):
++    invalid = drivers.client.post("/v1/rivalry/join", json={"vehicle_id": "compact",
++        "automatic_test_drivers": True}, headers=auth(drivers.login))
++    assert invalid.status_code == 422
++    drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
++    blocked = drivers.client.post("/v1/rivalry/join", json={"vehicle_id": "compact",
++        "test_population": True, "automatic_test_drivers": True}, headers=auth(drivers.login))
++    assert blocked.status_code == 404 and not drive_idle(drivers.app)
++
++
++@pytest.mark.godot
++def test_idle_backend_drives_verifies_and_recovers_without_operator_plan(tmp_path, real_verifier):
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    url = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    key = "automatic-native-fixture-only-" * 3
++    settings = Settings(environment="development", dev_auth_enabled=True, test_drivers_enabled=True,
++        allow_sync_track_validation=True, dev_auth_key=key, public_base_url=url,
++        database_url=f"sqlite:///{(tmp_path/'automatic.sqlite').as_posix()}",
++        object_dir=str(tmp_path/'objects'), godot_bin=real_verifier.binary,
++        game_project=str(real_verifier.project), auth_limit_per_minute=1000, write_limit_per_minute=1000)
++    app = create_app(settings)
++    upgrade(app.state.engine)
++    seed(app)
++    server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
++    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
++    thread.start()
++    try:
++        for _ in range(200):
++            if server.started:
++                break
++            time.sleep(0.05)
++        api = API(url, key)
++        group = api.call("POST", "/rivalry/join", {"vehicle_id": "compact", "test_population": True,
++            "automatic_test_drivers": True}, subject="developer", idempotency="automatic-native-join")
++        assert group["driver_count"] == 14
++        assert process_one(app)  # Idle worker creates and uploads its own canonical drive.
++        with app.state.session_factory() as session:
++            uploaded = session.scalar(select(Run))
++            assert uploaded.status == "queued" and uploaded.time_ticks is None
++            run_id = uploaded.id
++        assert process_one(app)  # Queued proof has priority over the next driver.
++        view = api.call("GET", "/rivalry/"+group["group_id"], subject="developer")
++        finished = [(slot, row) for slot, track in enumerate(view["tracks"])
++                    for row in track["entries"] if row["ticks"] is not None]
++        assert len(finished) == 1 and finished[0][1]["is_test_driver"]
++        with app.state.session_factory() as session:
++            assert session.get(Run, run_id).status == "verified"
++        slot, driver = finished[0]
++        ghost = api.call("GET", f"/rivalry/{group['group_id']}/tracks/{slot}/ghosts/{driver['id']}",
++                         subject="developer")
++        assert len(ghost["recording"]["poses"]) > 2 and "replay" not in ghost
++        assert api.call("GET", "/track-versions/"+view["tracks"][slot]["entry"]["version_id"]+
++                        "/leaderboard?vehicle_id=compact")["population"] == 0
++        # Recover the same upload after complete loss of the ephemeral plan/cache.
++        import shutil
++        folder = tmp_path / "automatic-test-drivers"
++        shutil.rmtree(folder)
++        app.state.next_automatic_drive = 0
++        assert drive_idle(app)
++        with app.state.session_factory() as session:
++            assert len(session.scalars(select(Run)).all()) == 1
++        path = folder / (group["group_id"]+".json")
++        assert json.loads(path.read_text())["jobs"]
++    finally:
++        server.should_exit = True
++        thread.join(timeout=10)
++        listener.close()
++        app.state.verifier.close()
++        app.state.engine.dispose()
+--- /dev/null
++++ b/game/tests/test_automatic_rivalry_flow.gd
+@@ -0,0 +1,82 @@
++extends SceneTree
++## Automatic entry must preserve the finale and fence a disabled service.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Service extends Node:
++	var player: Dictionary = {"id":"observer"}
++	var enabled: bool = true
++	var state: String = "not_joined"
++	var automatic: bool = false
++	var joins: int = 0
++	var week: int = 41
++	var keys: int = 0
++	func base_url() -> String: return "http://127.0.0.1:18181"
++	func signed_in() -> bool: return true
++	func test_drivers_available() -> bool: return enabled
++	func new_operation_key() -> String:
++		keys += 1
++		return "fixture-key-"+str(keys)
++	func request_api(path: String, _method: int, payload: Dictionary, _key: String, _authorized: bool) -> Dictionary:
++		if path == "/rivalry/join":
++			assert(payload.test_population and payload.automatic_test_drivers)
++			joins += 1
++			state = "active"
++			automatic = true
++		elif path.ends_with("/continue"):
++			week += 1
++			state = "not_joined"
++			automatic = false
++		return {"ok":true,"data":snapshot()}
++	func snapshot() -> Dictionary:
++		var data: Dictionary = {"state":state,"week":week,"ends_at":604800,"server_now":0,"automatic_test_drivers":automatic,"test_population":enabled}
++		if state == "not_joined": return data
++		data.group_id = "fixture-group"
++		data.self_id = "observer"
++		data.vehicle_id = "compact"
++		data.standings = [{"id":"observer","name":"Observer","rank":null,"points":0}]
++		data.tracks = []
++		for slot: int in range(5):
++			data.tracks.append({"board_id":"board_"+str(slot),"entries":[{"id":"observer","name":"Observer","ms":null,"rank":null,"points":0}],"entry":{"name":"Circuit "+str(slot),"creator":"Beat my track","track_id":"track_"+str(slot),"version_id":"version_"+str(slot),"content_hash":"a".repeat(64),"points":[]}})
++		return data
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var service := Service.new()
++	var adapter: Node = Adapter.new()
++	adapter.client = service
++	adapter.add_child(service)
++	root.add_child(adapter)
++	await adapter.refresh()
++	check(adapter.test_population and adapter.model.status == "active" and service.joins == 1,"development service opens a test rivalry without a selector")
++	await adapter.refresh()
++	check(service.joins == 1,"an automatic field refresh never enrolls again")
++	service.automatic = false
++	await adapter.refresh()
++	check(service.joins == 2,"an existing manual test field is adopted automatically")
++	service.state = "complete"
++	service.automatic = false
++	await adapter.refresh()
++	check(adapter.model.completed and service.joins == 2,"an older completed week stays visible for finale review")
++	await adapter.continue_week()
++	check(adapter.model.week == 42 and adapter.model.status == "active" and service.joins == 3,"Continue automatically opens the new week's development field")
++	var old_scope: String = adapter.scope()
++	service.enabled = false
++	service.state = "not_joined"
++	await adapter.refresh()
++	check(not adapter.test_population and adapter.scope() != old_scope and adapter.model.tracks.is_empty() and service.joins == 3,"a disabled service fences the old test field and never enrolls fake entrants")
++	var malformed: Dictionary = service.snapshot()
++	malformed.automatic_test_drivers = "true"
++	check(not Adapter.valid_snapshot(malformed),"a malformed automatic marker cannot enter client state")
++	adapter.queue_free()
++	await process_frame
++	print("AUTOMATIC_RIVALRY_FLOW: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/RIVALRY_HUB.md
+@@ -0,0 +1,61 @@
++# Weekly Rivalry hub and automatic backend drivers - 2026-10-07
++
++The owner requests test drivers without a separate enable step, actual backend races/results, and a reference-led championship menu that exposes all five circuits immediately. This supersedes the former `TEST RIVALS: OFF / ON` interaction for the development slice. AAA is the visual target; owner and physical-device acceptance remain required.
++
++| Requirement | Behavior |
++|---|---|
++| WR01-WR02 / WR09 / R01 / V03-V05 | Overview is the race hub: five visible circuit rows, scenic thumbnails, own rank/PB/points or an explicitly labeled verified leader time, selected yellow Race action and a direct Race control on each row. Selecting a circuit persists through navigation. Tracks retains larger route previews and now also has direct Race actions. Standings is a distinct expanded table with the overall player target. |
++| WR08 / WR09 | Completed-week Overview uses the same podium, all-driver table and five track results, followed by Continue to the next week. Normal race results/PB/lap analysis still come first; Continue opens weekly feedback. |
++| TD07-TD08 / WR03-WR07 / B01-B07 | A signed-in debug client automatically selects a service advertising enabled test drivers and creates/loads its development membership. No test-rival switch remains. The authenticated join's optional `automatic_test_drivers` field enrolls persistent artificial drivers to a target of 14 total members, still capped at 20. Existing filled groups can also be adopted for automatic driving. |
++| TD02 / TD05 / TD08 / Q01 | The backend verification worker drives one canonical attempt at a time when the ordinary verification and track queues are empty. It records quantized controls, requests an ordinary rivalry ticket, uploads the replay and subsequently verifies it. Later attempts retain the existing weekly activity schedule. No time, PB, points or ghost is created by enrollment. |
++| TD06-TD08 | Existing development/server configuration gates remain. Artificial identities, boards and results stay labeled and separate from public rankings, rating/eligibility data and real championships. Disabling development test drivers still rejects their existing sessions. Release clients use the real population. |
++
++The worker discovers marked current-week groups automatically; there is no PC watcher or per-user fixture-fill command for this path. A human entering the next week/car/build creates or joins the matching group, which the worker then discovers. This does not pre-create weeks without entrants. It supports the five ordinary vehicle contracts; the live acceptance below uses compact.
++
++Plans and recordings use bounded ordinary files beside the backend object directory. The same group/profile/week/track/attempt always has the same upload key. Losing an ephemeral worker filesystem regenerates the same first recording and recovers the original committed upload without adding a second run. Canonical generation observes cooperative worker shutdown. A worker only services groups compatible with its own full build and selected vehicle configuration. Missing/slower/rejected results are never promoted to wins. Quiet profiles may leave a circuit unplayed and controller noncompletion remains visible in the plan.
++
++The API addition is optional and does not need a database migration of its own. Existing join requests keep their old idempotency request body when the new flag is absent/false. The snapshot/schema adds the optional boolean `automatic_test_drivers`. Internal group slot metadata marks automatic scheduling without changing road data, gates or the simulation. Test-driver names have unique server usernames; the menu presents their readable name beside the persistent TEST label.
++
++The retained Google Cloud environment was already explicitly configured for development authentication/test drivers. The task updates that owned staging environment, preserving its database, historical recordings/links, secrets and current resource limits. The existing updater takes a successful fresh SQL backup, checks an empty old queue, migrates the current schema, updates matching API/worker/jobs, validates native replay/storage/worker health, and adds compatible immutable official-track revisions. A frozen source copy avoids including later concurrent workspace edits in the rollout. This task does not modify canonical handling, physics, road geometry or camera; the backend image includes the existing current `arcade-planar-0.52`, compiler 22 and gates v19 so the app and verifier agree.
++
++## Changed files
++
++- Backend: `bmt_backend/automatic_test_drivers.py`, the optional join/snapshot addition in `rivalry.py`, idle dispatch in `worker.py`, generator shutdown in `test_driver_generator.py`, generator injection and internal worker-origin support in `test_population_tool.py`, the optional internal URL setting in `config.py`, and PC worker origin in `deploy/compose.pc.yaml`.
++- Client: `game/backend/weekly_rivalry_client.gd`, `game/ui/weekly_rivalry_page.gd`, rivalry signal integration in `game/core/app.gd`, and readable artificial names in `game/race/weekly_rivalry.gd`.
++- Checks: new `backend/tests/test_automatic_test_drivers.py`, the real HTTP peer origin in `backend/tests/test_cloud_client.py`, and native weekly/test-driver menu/HTTP/live fixtures.
++- Contracts/documentation: `docs/schemas/weekly-rivalry-v1.schema.json`, this document, `WEEKLY_RIVALRY.md`, `TEST_DRIVERS.md`, project instructions/status/phase plan and the scoped patch/evidence.
++
++Existing original winter/biome artwork, fonts and menu icons are reused. The owner's supplied results image is guidance and is not a shipping asset. No new image generation, external dependency or runtime AI call is introduced.
++
++## Actual checks
++
++Godot uses exact 4.7.2 stable ed1daf0bf through `scripts/dev.ps1`; Python uses `.tools/backend-venv/Scripts/python.exe`.
++
++| Actual command | Outcome |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical` | Final 1,091 checks, zero failures; Overview/Tracks/Standings/detail/pending/results/finale/forming/sign-in at 1280x720, 960x540 and 1600x720. All five circuit choices fit without scrolling, every row launches its own selected circuit, and touch targets remain at least 48 logical pixels. |
++| `TestScript -ScriptPath res://tests/test_test_driver_menu.gd -Graphical` | Final 503 checks, zero failures; actual canonically verified 14-driver HTTP fixture, permanent test notice, no enable selector, four sections/three dimensions. |
++| `-m pytest backend/tests/test_automatic_test_drivers.py backend/tests/test_test_drivers.py backend/tests/test_rivalry.py backend/tests/test_worker_lifecycle.py -k 'not postgres' -q --tb=short --show-capture=no` | Final 41 passed, four skipped, 15 deselected. Includes a real idle worker's canonical five-lap recording, queued proof priority, verification, derived ghost, zero public population, identical upload recovery after loss of plan/cache, idempotent enrollment and disabled gates. PostgreSQL-specific checks are not claimed passed. |
++| `-m pytest backend/tests/test_rivalry_http.py -q --tb=short --show-capture=no` | Final five passed. Native real race/upload/verification, normal results before weekly feedback, immediate Continue, expired access and same-/cross-process restoration all retain the player session. |
++| `TestApp` | 99 checks, zero failures. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | Final 327 scripts, zero failures. |
++| Ruff over the four new/affected driver source/test files | Passed. |
++| `Doctor` | Exact engine and matching templates found; DN2103 attached. No physical-device gameplay/UI test, export or install was performed. |
++
++Corrected intermediate failures are retained in the work record: Windows user-log/certificate sandbox access; a generator default captured before monkeypatching; loss of new Unicode glyphs through Windows stdin encoding; footer overflow in the completed-week view; unique artificial username collisions; a board's per-vehicle manifest compared with a full generator manifest; and the older native test helper advertising `localhost:8080` instead of its actual isolated HTTP listener. The session tests passed after correcting that peer origin; no scoring, replay, touch-size or timing assertion was removed to make them pass. Existing httpx/Starlette deprecation warnings remain.
++
++Visual evidence: [Overview](evidence/rivalry-hub-2026-10-07/ui/overview-1280x720.png), [compact Overview](evidence/rivalry-hub-2026-10-07/ui/overview-960x540.png), [Standings](evidence/rivalry-hub-2026-10-07/ui/standings-1280x720.png), [completed week](evidence/rivalry-hub-2026-10-07/ui/weekly-finale-960x540.png). These layout captures are explicitly labeled concept fixtures. [Verified field](evidence/rivalry-hub-2026-10-07/verified-fixture/overview-1280x720.png) uses the retained genuine backend-verification fixture. Live staging acceptance passes 26 native checks with zero failures, including automatic membership, actual standings, verified ghost download/end bounds, real race-ticket issue and eight screenshots: [live Overview](evidence/rivalry-hub-2026-10-07/live/live-overview-1280x720.png), [compact Overview](evidence/rivalry-hub-2026-10-07/live/live-overview-960x540.png), [live Standings](evidence/rivalry-hub-2026-10-07/live/live-standings-960x540.png).
++
++Remaining acceptance: owner visual/interaction approval, physical-phone readability/input/performance, other-car pace calibration, long-running contention/capacity and week turnover. Full physics regression/Validate, Android export/install and production deployment are not performed by this task.
++
++## Retained staging outcome
++
++The frozen current image rollout completed successfully, including fresh SQL backup `1791388723672`, existing schema migration, matching API/worker/jobs, replay/storage/readiness checks and immutable official-track revision refresh. [Deployment receipt](evidence/rivalry-hub-2026-10-07/deployment.json). The 41 staged canonical scripts still match the current workspace byte for byte. Existing resource counts/limits and development/Google separation are retained.
++
++A fresh isolated observer joined Week 41 automatically with 13 persistent artificial rivals. The backend worker, without any PC watcher, delivered verified finishes on all five selected circuits: Dust cloud, Spiral, Silmukka, Starter Circuit and Narrow night. The first all-five acceptance recorded 4/3/1/1/5 distinct verified artificial drivers by circuit; this is 14 verified driver/circuit PBs, not completion by every profile. The worker keeps servicing scheduled attempts. [Actual field](evidence/rivalry-hub-2026-10-07/live-field.json) and [bounded progress check](evidence/rivalry-hub-2026-10-07/live-progress.json) retain exact server values. Normal public rankings are not populated by these runs.
++
++The existing reserved Development username returned `USERNAME_TAKEN` during an initial operator probe, as in the preceding cloud-driver work. Acceptance therefore uses a fresh `rivalry-hub-observer` development identity and isolated app storage; no existing Google/Development account was renamed or its saved session read. Google clients use their own existing sign-in and are automatically enrolled when opening the updated rivalry. The actual owner Google session was not used for this test.
++
++`TestScript -ScriptPath res://tests/test_automatic_rivalry_flow.gd` passes seven checks: initial entry, no repeat enrollment, adoption of a manual field, preservation of an older completed week, automatic entry after Continue, disabled-service fencing and malformed-marker rejection. This tests lifecycle responses; actual calendar-week turnover and broader population/performance acceptance remain pending.
++
++Review checkpoint: [scoped source patch](evidence/rivalry-hub-2026-10-07/scoped-change.patch), rebased on the saved task-start source and latest unrelated changes in shared files. Reverse applicability and targeted whitespace checks are recorded. The mixed working tree is preserved; no combined Git commit is made.

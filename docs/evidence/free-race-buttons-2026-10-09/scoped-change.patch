@@ -1,0 +1,35 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -86,7 +86,8 @@
+ 	var hero_slot := Control.new()
+ 	hero_slot.name = "HeroSlot"
+ 	hero_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	hero_slot.custom_minimum_size.y = 200
++	# Leave room for complete charts, track cards and actions below the menu header.
++	hero_slot.custom_minimum_size.y = 160
+ 	hero_slot.clip_contents = true
+ 	main.add_child(hero_slot)
+ 	hero = PanelContainer.new()
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -60,6 +60,11 @@
+ 	root.size = Vector2i(1280,720)
+ 	root.add_child(browser)
+ 	MenuStyle.fill(browser)
++	# Match the space available below the real menu header and outer margins.
++	browser.offset_top = 112
++	browser.offset_bottom = -16
++	browser.offset_left = 18
++	browser.offset_right = -18
+ 	await settle()
+ 	var initial_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+ 	check(initial_chart == null or initial_chart.snapshot.get("bins",[]).is_empty(),"old coarse cache never flashes before the finer response")
+@@ -106,6 +111,8 @@
+ 		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 			root.size = dimensions
+ 			await settle()
++			var actions: Control = browser.find_child("PlayActions",true,false)
++			check(actions.get_global_rect().end.y <= browser.get_global_rect().end.y,"complete Free Race action row fits below the menu header")
+ 			await screenshot("discovery-%dx%d" % [dimensions.x,dimensions.y])
+ 	# A driver without either a local or verified PB still sees the complete field.
+ 	client.packet = client.packet.duplicate(true)

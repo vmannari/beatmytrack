@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="41" time="8.550" timestamp="2026-10-05T22:46:58.847662+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_gcp_staging" name="test_plan_is_concrete_private_bounded_and_has_no_credentials" time="0.010" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[api_max-3]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[worker_instances-3]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[budget_eur-0]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[disposable-False]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[public_api-True]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[cost_reviewed-False]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[example-True]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[estimated_hourly_eur-100]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_apply_requires_safe_caps_and_reviewed_real_configuration[estimated_hourly_eur-nan]" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_expiry_and_pricing_are_checked_before_apply" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_provision_is_idempotent_and_secret_values_never_enter_arguments" time="0.004" /><testcase classname="tests.test_gcp_staging" name="test_unowned_name_blocks_all_billed_creation_before_provision" time="0.002" /><testcase classname="tests.test_gcp_staging" name="test_bootstrap_precedes_api_and_same_digest_is_used_everywhere" time="0.010" /><testcase classname="tests.test_gcp_staging" name="test_changed_image_and_unowned_service_are_rejected_before_deploy" time="0.007" /><testcase classname="tests.test_gcp_staging" name="test_cleanup_preflights_every_resource_and_refuses_partial_deletion" time="0.002" /><testcase classname="tests.test_gcp_staging" name="test_cleanup_is_exact_owned_and_repeatable" time="0.005" /><testcase classname="tests.test_gcp_staging" name="test_smoke_never_forwards_token_to_tampered_receipt" time="0.011" /><testcase classname="tests.test_gcp_staging" name="test_smoke_uses_cloud_routable_paths_and_rejects_auth_bypasses" time="0.013" /><testcase classname="tests.test_gcp_staging" name="test_command_errors_do_not_echo_secrets" time="0.001" /><testcase classname="tests.test_gcp_staging" name="test_nested_job_templates_and_redeployment_keep_the_same_digest" time="0.018" /><testcase classname="tests.test_gcp_staging" name="test_preflight_requires_active_account_explicit_project_and_billing" time="0.003" /><testcase classname="tests.test_gcp_staging" name="test_current_cli_missing_worker_is_distinct_from_permission_failure" time="0.001" /><testcase classname="tests.test_readiness" name="test_coalesced_checks_reuse_ready_and_storage_success" time="0.592" /><testcase classname="tests.test_readiness" name="test_liveness_does_not_touch_dependencies[/health]" time="0.346"><failure message="Failed: Liveness accessed a dependency">auth_app = &lt;fastapi.applications.FastAPI object at 0x0000025CBDB18EE0&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000025CBDC66C20&gt;
+path = '/health'
+
+    @pytest.mark.parametrize("path", ["/health", "/healthz"])
+    def test_liveness_does_not_touch_dependencies(auth_app, monkeypatch, path):
+        def forbidden(*args, **kwargs):
+            pytest.fail("Liveness accessed a dependency")
+        monkeypatch.setattr(auth_app.state.engine, "connect", forbidden)
+        monkeypatch.setattr(auth_app.state.blobs, "put_json", forbidden)
+        async def exercise():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
+                result = await client.get(path)
+                assert result.status_code == 200 and result.json() == {"status": "ok"}
+&gt;       asyncio.run(exercise())
+
+backend\tests\test_readiness.py:59: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\asyncio\runners.py:44: in run
+    return loop.run_until_complete(main)
+C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py:649: in run_until_complete
+    return future.result()
+backend\tests\test_readiness.py:57: in exercise
+    result = await client.get(path)
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1768: in get
+    return await self.request(
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1540: in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1629: in send
+    response = await self._send_handling_auth(
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1657: in _send_handling_auth
+    response = await self._send_handling_redirects(
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1694: in _send_handling_redirects
+    response = await self._send_single_request(request)
+.tools\backend-venv\lib\site-packages\httpx\_client.py:1730: in _send_single_request
+    response = await transport.handle_async_request(request)
+.tools\backend-venv\lib\site-packages\httpx\_transports\asgi.py:170: in handle_async_request
+    await self.app(scope, receive, send)
+.tools\backend-venv\lib\site-packages\fastapi\applications.py:1163: in __call__
+    await super().__call__(scope, receive, send)
+.tools\backend-venv\lib\site-packages\starlette\applications.py:96: in __call__
+    await self.middleware_stack(scope, receive, send)
+.tools\backend-venv\lib\site-packages\starlette\middleware\errors.py:164: in __call__
+    await self.app(scope, receive, _send)
+backend\bmt_backend\middleware.py:241: in __call__
+    allowed = await self.read_budget(peer, limit, category) if category in ("read", "edge") else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
+backend\bmt_backend\middleware.py:140: in read_budget
+    if not await run_in_threadpool(check_budget, self.session_factory, peer, category, limit, batch):
+.tools\backend-venv\lib\site-packages\starlette\concurrency.py:34: in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+.tools\backend-venv\lib\site-packages\anyio\to_thread.py:65: in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+.tools\backend-venv\lib\site-packages\anyio\_backends\_asyncio.py:2706: in run_sync_in_worker_thread
+    return await future
+.tools\backend-venv\lib\site-packages\anyio\_backends\_asyncio.py:1100: in run
+    result = context.run(func, *args)
+backend\bmt_backend\middleware.py:41: in check_budget
+    value = budget_session.scalar(statement)
+.tools\backend-venv\lib\site-packages\sqlalchemy\orm\session.py:2421: in scalar
+    return self._execute_internal(
+.tools\backend-venv\lib\site-packages\sqlalchemy\orm\session.py:2261: in _execute_internal
+    conn = self._connection_for_bind(bind)
+.tools\backend-venv\lib\site-packages\sqlalchemy\orm\session.py:2113: in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+&lt;string&gt;:2: in _connection_for_bind
+    ???
+.tools\backend-venv\lib\site-packages\sqlalchemy\orm\state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+.tools\backend-venv\lib\site-packages\sqlalchemy\orm\session.py:1191: in _connection_for_bind
+    conn = bind.connect()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+args = (), kwargs = {}
+
+    def forbidden(*args, **kwargs):
+&gt;       pytest.fail("Liveness accessed a dependency")
+E       Failed: Liveness accessed a dependency
+
+backend\tests\test_readiness.py:52: Failed</failure></testcase><testcase classname="tests.test_readiness" name="test_liveness_does_not_touch_dependencies[/healthz]" time="0.391" /><testcase classname="tests.test_readiness" name="test_cloud_readiness_alias_preserves_dependency_failure" time="0.397" /><testcase classname="tests.test_readiness" name="test_ready_cache_cannot_extend_expired_storage_success" time="0.414" /><testcase classname="tests.test_readiness" name="test_probe_stall_has_bounded_wait_and_one_thread" time="1.511" /><testcase classname="tests.test_readiness" name="test_schema_mismatch_does_not_probe_storage" time="0.358" /><testcase classname="tests.test_readiness" name="test_dependency_failures_are_unavailable_and_do_not_leak[failure0]" time="0.407" /><testcase classname="tests.test_readiness" name="test_dependency_failures_are_unavailable_and_do_not_leak[failure1]" time="0.446" /><testcase classname="tests.test_readiness" name="test_dependency_failures_are_unavailable_and_do_not_leak[failure2]" time="0.406" /><testcase classname="tests.test_readiness" name="test_api_storage_failure_invalidates_a_successful_probe" time="0.452" /><testcase classname="tests.test_readiness" name="test_invalidation_during_probe_cannot_restore_stale_success" time="0.356" /><testcase classname="tests.test_readiness" name="test_shutdown_invalidates_probe_and_reopen_refreshes_dependencies" time="0.357" /><testcase classname="tests.test_readiness" name="test_repeated_invalidation_does_not_extend_request_deadline" time="1.398" /><testcase classname="tests.test_readiness" name="test_readiness_configuration_is_bounded[readiness_timeout_seconds-0]" time="0.001" /><testcase classname="tests.test_readiness" name="test_readiness_configuration_is_bounded[readiness_timeout_seconds-6]" time="0.001" /><testcase classname="tests.test_readiness" name="test_readiness_configuration_is_bounded[readiness_cache_seconds-6]" time="0.001" /><testcase classname="tests.test_readiness" name="test_readiness_configuration_is_bounded[readiness_storage_cache_seconds-61]" time="0.001" /></testsuite></testsuites>

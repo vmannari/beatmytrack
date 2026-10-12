@@ -1,0 +1,300 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -606,84 +606,49 @@
+ func _detail(parent: Control) -> void:
+ 	selected = clampi(selected,0,model.tracks.size()-1)
+ 	var track: Dictionary = model.tracks[selected]
+-	var scene: VBoxContainer = _card(parent,str(track.theme))
+-	scene.get_parent().size_flags_stretch_ratio = 1.25
+-	var back: Button = _action(scene,"←  BACK TO TRACKS","RivalryBackToOverview",func() -> void: section_requested.emit("overview"))
+-	back.custom_minimum_size.y = 48
++	var layout := VBoxContainer.new()
++	layout.name = "RivalryTrackDetail"
++	layout.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	layout.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	layout.add_theme_constant_override("separation",14)
++	parent.add_child(layout)
++	var cards := HBoxContainer.new()
++	cards.name = "RivalryDetailCards"
++	cards.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	cards.add_theme_constant_override("separation",14)
++	layout.add_child(cards)
++	var scene: VBoxContainer = _card(cards,str(track.theme))
++	scene.get_parent().name = "RivalryDetailTrackCard"
+ 	scene.add_child(Badge.view(str(track.theme),15))
+ 	_copy(scene,str(track.name).to_upper(),48)
+ 	_route(scene,selected,100,true)
+ 	if model.sample: apply_track_preview(track.document)
+-	else: detail_route.show_race_markers = false # Wait for the verified full document's start/direction.
++	else: detail_route.show_race_markers = false
+ 	_copy(scene,VehicleCatalog.title(model.vehicle_id),18,MenuStyle.MUTED)
+-	var board: VBoxContainer = _card(parent,"",14)
++	if not bool(track.get("available",true)): _copy(scene,"This track is unavailable for racing.",15,MenuStyle.MUTED)
++	if not error.is_empty(): _copy(scene,error,15,MenuStyle.MUTED)
++	var board: VBoxContainer = _card(cards,"",14)
++	board.get_parent().name = "RivalryDetailStandingsCard"
++	board.get_parent().size_flags_stretch_ratio = 1.14
++	board.add_theme_constant_override("separation",8)
+ 	_copy(board,"YOUR POSITION",18,MenuStyle.MUTED)
+ 	var gap: Dictionary = model.gaps(selected)
+-	_rank(board,gap.own,model.board(selected).size(),52)
++	_rank(board,gap.own,model.board(selected).size(),48)
+ 	var standings := preload("res://ui/rivalry_track_standings.gd").new()
+ 	standings.board = model.board(selected)
+ 	board.add_child(standings)
+-	var duel: VBoxContainer = _card(parent,"",16)
+-	_copy(duel,"YOUR NEXT RIVAL",18,MenuStyle.MUTED)
+-	if not gap.ahead.is_empty():
+-		var identity := HBoxContainer.new()
+-		duel.add_child(identity)
+-		identity.add_child(PlayerCountry.flag(str(gap.ahead.get("country_code","")),32))
+-		var rival_name: Label = _copy(identity,str(gap.ahead.name).to_upper(),38)
+-		rival_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		rival_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-		_copy(duel,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.ahead.ms))+" ahead of you",22,MenuStyle.ACCENT)
+-	elif gap.own.get("ms") == null:
+-		_copy(duel,"SET THE PACE",32)
+-		_copy(duel,"Your first finish puts you on the board.",17,MenuStyle.MUTED)
+-	else:
+-		_copy(duel,"DEFEND THE LEAD",32)
+-		_copy(duel,"Push your best further.",19,MenuStyle.MUTED)
+-	var closest: Dictionary = model.closest_challenger(selected)
+-	if not closest.is_empty():
+-		duel.add_child(HSeparator.new())
+-		_copy(duel,"Closest challenger",17,MenuStyle.MUTED)
+-		var challenger := HBoxContainer.new()
+-		challenger.add_theme_constant_override("separation",8)
+-		duel.add_child(challenger)
+-		challenger.add_child(PlayerCountry.flag(str(closest.get("country_code","")),30))
+-		_copy(challenger,rank_text(closest),18)
+-		var challenger_name: Label = _copy(challenger,_display_name(closest),18)
+-		challenger_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		challenger_name.clip_text = true
+-		challenger_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-		var challenger_time: Label = _copy(challenger,MenuStyle.time_text(int(closest.ms)/1000.0),22)
+-		challenger_time.name = "RivalryClosestChallengerTime"
+-		challenger_time.add_theme_font_override("font",MenuStyle.DISPLAY)
+-		var challenger_gap: Label = _copy(duel,"+%.3f behind you" % ((int(closest.ms)-int(gap.own.ms))/1000.0) if int(closest.ms) > int(gap.own.ms) else "Level with you",16,MenuStyle.MUTED)
+-		challenger_gap.name = "RivalryClosestChallengerGap"
+-	duel.add_child(HSeparator.new())
+-	_copy(duel,"Race with ghost",18,MenuStyle.MUTED)
+-	var selector := OptionButton.new()
+-	selector.name = "RivalryGhostSelector"
+-	selector.custom_minimum_size = Vector2(0,54)
+-	selector.fit_to_longest_item = false
+-	selector.add_theme_font_size_override("font_size",17)
+-	var target: Dictionary = model.ghost_target(selected,0)
+-	selector.add_item(_display_name(target)+" ("+rank_text(target)+")" if not target.is_empty() else "Rival · unavailable")
+-	selector.add_item("Leader: "+str(gap.leader.name) if not gap.leader.is_empty() else "Weekly leader · unavailable")
+-	selector.add_item("My weekly PB")
+-	selector.add_item("No ghost")
+-	selector.set_item_disabled(0,target.is_empty())
+-	selector.set_item_disabled(1,gap.leader.is_empty())
+-	selector.set_item_disabled(2,gap.own.get("ms") == null)
+-	if selector.is_item_disabled(ghost_choice): ghost_choice = 3
+-	selector.select(ghost_choice)
+-	duel.add_child(selector)
+-	var ghost_copy := _copy(duel,"Your recorded weekly best." if ghost_choice == 2 else "Drive without a ghost." if ghost_choice == 3 else "Race against their best time.",15,MenuStyle.MUTED)
+-	selector.item_selected.connect(func(index: int) -> void:
+-		ghost_choice = index
+-		ghost_copy.text = "Your recorded weekly best." if index == 2 else "Drive without a ghost." if index == 3 else "Race against their best time.")
+-	_space(duel)
+-	var race: Button = _action(duel,"RACE "+str(track.name).to_upper()+"  →","RivalryStartRace",func() -> void: race_requested.emit(selected,ghost_choice),true)
++	# The removed rival/ghost column keeps its existing target choice internally.
++	if model.ghost_target(selected,ghost_choice).is_empty(): ghost_choice = 3
++	var actions := HBoxContainer.new()
++	actions.name = "RivalryDetailActions"
++	actions.add_theme_constant_override("separation",14)
++	actions.custom_minimum_size.y = 64
++	layout.add_child(actions)
++	var back: Button = _action(actions,"←  BACK TO TRACKS","RivalryBackToOverview",func() -> void: section_requested.emit("overview"))
++	back.custom_minimum_size.y = 64
++	var race: Button = _action(actions,"RACE "+str(track.name).to_upper()+"  →","RivalryStartRace",func() -> void: race_requested.emit(selected,ghost_choice),true)
++	race.custom_minimum_size.y = 64
+ 	race.disabled = busy or model.completed or model.status != "active" or not bool(track.get("available",true))
+-	if not bool(track.get("available",true)): _copy(duel,"This track is unavailable for racing.",15,MenuStyle.MUTED)
+-	if not error.is_empty(): _copy(duel,error,15,MenuStyle.MUTED)
+ 
+ func _result(parent: Control) -> void:
+ 	var result_view := WeeklyRivalryResult.new()
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -52,7 +52,7 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-hub-compact-2026-10-09/ui")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-two-column-2026-10-09/hub")
+ 	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
+ 	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
+ 	var fixture := WeeklyRivalry.new(true)
+@@ -137,13 +137,12 @@
+ 			check(app.rivalry_section == "detail" and app.rivalry_track == slot and early_launch.is_empty(),"selecting a track opens its details without starting a race")
+ 			var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+ 			check(page.selected == slot and app.root_ui.find_child("RivalryFloatingNavigation",true,false) == null,"track detail keeps the chosen circuit without redundant tabs")
+-			var selector: OptionButton = app.root_ui.find_child("RivalryGhostSelector",true,false)
+-			selector.select(3)
+-			selector.item_selected.emit(3)
++			check(app.root_ui.find_child("RivalryGhostSelector",true,false) == null,"track detail has no third-column ghost selector")
++			var expected_ghost: int = page.ghost_choice
+ 			var launch: Array[int] = []
+ 			page.race_requested.connect(func(index: int, ghost: int) -> void: launch.append_array([index,ghost]))
+ 			(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
+-			check(launch == [slot,3],"detail starts the chosen track with the selected ghost option")
++			check(launch == [slot,expected_ghost],"detail starts the chosen track with its retained ghost target")
+ 			inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+ 			if slot == 2: await capture("track-detail",dimensions)
+ 			(app.root_ui.find_child("RivalryBackToOverview",true,false) as Button).pressed.emit()
+@@ -224,8 +223,8 @@
+ 		app._rivalry()
+ 		await settle()
+ 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+-		var selector: OptionButton = app.root_ui.find_child("RivalryGhostSelector",true,false)
+-		check(selector.selected == 3 and selector.is_item_disabled(0),"missing recordings start with No ghost")
++		var empty_page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		check(empty_page.ghost_choice == 3,"missing recordings start without a ghost")
+ 		app.rivalry.model.apply_snapshot(unranked)
+ 		app.rivalry_section = "overview"
+ 		app._rivalry()
+--- a/game/tests/test_rivalry_track_detail.gd
++++ b/game/tests/test_rivalry_track_detail.gd
+@@ -3,7 +3,7 @@
+ var checks: int = 0
+ var failures: int = 0
+ var app: Node
+-var evidence: String = "res://../docs/evidence/rivalry-track-detail-2026-10-09/ui"
++var evidence: String = "res://../docs/evidence/rivalry-two-column-2026-10-09/detail"
+ const Standings = preload("res://ui/rivalry_track_standings.gd")
+ 
+ class GhostProbe extends Node:
+@@ -76,14 +76,20 @@
+ 		await settle()
+ 		check_rows()
+ 		var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+-		var selector: OptionButton = page.find_child("RivalryGhostSelector",true,false)
+ 		var target: Dictionary = model.closest_challenger(1)
+-		check(selector.selected == 0 and selector.get_item_text(0) == str(target.name)+" (#2)","leader defaults to the actual closest challenger's ghost")
+-		check((page.find_child("RivalryClosestChallengerTime",true,false) as Label).text == MenuStyle.time_text(int(target.ms)/1000.0),"challenger shows the actual best race time")
+-		check((page.find_child("RivalryClosestChallengerGap",true,false) as Label).text == "+0.080 behind you","challenger gap retains milliseconds")
++		check(page.ghost_choice == 0 and model.ghost_target(1,page.ghost_choice) == target,"leader retains the actual closest challenger's ghost")
++		var cards: HBoxContainer = page.find_child("RivalryDetailCards",true,false)
++		var actions: HBoxContainer = page.find_child("RivalryDetailActions",true,false)
++		check(cards.get_child_count() == 2 and page.find_child("RivalryGhostSelector",true,false) == null,"detail consists of two cards without the rival/ghost column")
++		check(page.find_child("RivalryClosestChallengerTime",true,false) == null,"the removed column contributes no extra challenger text")
+ 		check(page.detail_route.show_race_markers and page.detail_route.fitted.size() > 2,"preview renders start and direction markers")
+ 		var button: Button = page.find_child("RivalryStartRace",true,false)
+-		check(app.menu_body_slot.get_global_rect().grow(1).encloses(button.get_global_rect()),"dense rival panel keeps Race within its bounds")
++		var back: Button = page.find_child("RivalryBackToOverview",true,false)
++		check(button.get_parent() == actions and back.get_parent() == actions and not cards.is_ancestor_of(button),"Race and Back share the footer outside both cards")
++		check(actions.get_global_rect().position.y >= cards.get_global_rect().end.y+10,"the action row sits below the cards with clear spacing")
++		check(absf(button.get_global_rect().size.x-back.get_global_rect().size.x) <= 1,"footer actions have equal widths")
++		check(app.menu_body_slot.get_global_rect().grow(1).encloses(button.get_global_rect()) and app.menu_body_slot.get_global_rect().grow(1).encloses(back.get_global_rect()),"both bottom actions fit within the viewport")
++		check(button.size.y >= 64 and back.size.y >= 64,"bottom actions retain large touch targets")
+ 		var list: VBoxContainer = table()
+ 		var board_before: Array[Dictionary] = model.board(1)
+ 		await capture("leader",dimensions)
+@@ -167,7 +173,7 @@
+ 		app.rivalry_track = 1
+ 		app._rivalry()
+ 		await settle()
+-		check((app.root_ui.find_child("RivalryClosestChallengerGap",true,false) as Label).text == "Level with you","tie never claims a rival is behind")
++		check(model.ghost_target(1,0) == model.closest_challenger(1),"tied-lead ghost still resolves the closest challenger")
+ 		await capture("tied-lead",dimensions)
+ 		for track: Dictionary in model.tracks:
+ 			for driver: Dictionary in track.entries: driver.ms = null
+@@ -181,8 +187,8 @@
+ 		await settle()
+ 		list = table()
+ 		check(app.root_ui.find_child("RivalryClosestChallengerTime",true,false) == null,"no invented challenger before anyone records a time")
+-		selector = app.root_ui.find_child("RivalryGhostSelector",true,false)
+-		check(selector.selected == 3 and selector.is_item_disabled(0),"unrecorded rivals retain the No ghost fallback")
++		page = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		check(page.ghost_choice == 3,"unrecorded rivals retain the no-ghost fallback")
+ 		for row: Control in list.rows.get_children():
+ 			check((row.find_child("Time",true,false) as Label).text == "—" and (row.find_child("Gap",true,false) as Label).text == "—","missing times have no invented gaps")
+ 		await capture("unranked",dimensions)
+--- a/game/tests/test_weekly_rivalry_http.gd
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -62,9 +62,8 @@
+ 	for _frame: int in range(5): await process_frame
+ 	check(app.rivalry_section == "detail" and app.rivalry_track == 0 and app.game == null and app.cloud_ticket.is_empty(),"track selection opens details before requesting a race ticket")
+ 	await capture("track-detail")
+-	var selector: OptionButton = app.root_ui.find_child("RivalryGhostSelector",true,false)
+-	selector.select(3)
+-	selector.item_selected.emit(3)
++	var detail: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++	check(detail.ghost_choice == 3 and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field starts without a ghost or a third column")
+ 	(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
+ 	while app.cloud_starting: await process_frame
+ 	check(app.game != null and app.rivalry_racing and not app.cloud_ticket.is_empty(),"pre-race starts with a rivalry-bound verified ticket")
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Rivalry two-card track view override (2026-10-09)
++The owner supplies a two-card track-detail reference, removes the third rival/challenger/ghost column, and moves Back to Tracks and Race to an equal-width bottom action row outside both cards. Keep the original scenic route/start-direction preview and the full eight-row scrolling standings with signed gaps and highlighted/sticky player. Retain existing ghost targets internally with a no-recording fallback, detail-only race start, overview return, completed/busy/unavailable gates, actual five laps and normal results first. This supersedes the earlier third-column and card-contained actions. See `docs/RIVALRY_TWO_COLUMN.md` for actual files, commands, captures and remaining device acceptance.
+ 
+ ## Rivalry compact hub correction (2026-10-09)
+ The owner removes the separate track arrows: each full-width track row opens detail. Explicit Rivalry entry must always open the overview with its five tracks and standings, including repeat activation and returns from primary menus; background refresh preserves the current detail/results. Compact the podium positions, remove their car pictures and expand the standings vertically while retaining the slightly taller gold winner, real rank/points, player highlight, remembered scrolling and aligned panels. This supersedes the arrows, remembered entry section and podium vehicle art in earlier overrides. Preserve populated first load, vertical Race transitions, detail-based race start, five laps, normal results first, best-only verified scoring and public isolation. See `docs/RIVALRY_HUB_COMPACT.md` for actual changes, checks and screenshots.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR02/WR07-WR10/R01/V03-V05/Q01: owner-reference track view now has preview/standings cards only; third rival/ghost column removed, equal-width64-logical-pixel Back/Race footer outside both cards. Eight complete rows/full14-20 field, signed gaps, sticky player, actual start/direction and internal ghost targets/no-recording fallback retained. Final native detail345/headless weekly1109/App99/disposable graphical HTTP40 checks pass; five legal laps/12757 ticks independently verified, normal results first/Race Again preserved. Footer arrow encoding corrected and24 final native captures refreshed; eight pre-label-fix HTTP flow captures retained. No phone attachment check/device test/export/install/full Validate/physics/backend or production deployment. Task-only checkpoint, exact files/commands/evidence and acceptance: docs/RIVALRY_TWO_COLUMN.md.
++
+ 2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
+ 
+ 2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR02/WR07-WR10/R01/V03-V05/Q01: owner-reference track view now has preview/standings cards only; third rival/ghost column removed, equal-width64-logical-pixel Back/Race footer outside both cards. Eight complete rows/full14-20 field, signed gaps, sticky player, actual start/direction and internal ghost targets/no-recording fallback retained. Final native detail345/headless weekly1109/App99/disposable graphical HTTP40 checks pass; five legal laps/12757 ticks independently verified, normal results first/Race Again preserved. Footer arrow encoding corrected and24 final native captures refreshed; eight pre-label-fix HTTP flow captures retained. No phone attachment check/device test/export/install/full Validate/physics/backend or production deployment. Task-only checkpoint, exact files/commands/evidence and acceptance: docs/RIVALRY_TWO_COLUMN.md.
++
+ 2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
+ 
+ 2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
+--- a/docs/RIVALRY_NAVIGATION.md
++++ b/docs/RIVALRY_NAVIGATION.md
+@@ -1,3 +1,5 @@
++2026-10-09 follow-up: the latest reference removes the third column and places Back/Race below the preview and standings cards. See [current two-card layout and actual verification](RIVALRY_TWO_COLUMN.md).
++
+ 2026-10-09 follow-up: separate track arrows and podium car pictures are removed; explicit Rivalry entry always opens the overview and a compact podium gives the standings more height. See [current compact hub and verification](RIVALRY_HUB_COMPACT.md).
+ 
+ # Rivalry track entry — 2026-10-09
+--- a/docs/RIVALRY_TRACK_DETAIL.md
++++ b/docs/RIVALRY_TRACK_DETAIL.md
+@@ -1,3 +1,5 @@
++2026-10-09 follow-up: the latest reference removes the third column and places Back/Race below the preview and standings cards. See [current two-card layout and actual verification](RIVALRY_TWO_COLUMN.md).
++
+ # Rivalry track detail reference correction — 2026-10-09
+ 
+ Requirements: WR06/WR09-WR10, R01, V03-V05, Q01; the owner's track-detail reference requests the existing three columns, eight standings rows, signed player-relative gaps, a sticky player, a closest challenger and an appropriate default ghost.
+--- /dev/null
++++ b/docs/RIVALRY_TWO_COLUMN.md
+@@ -0,0 +1,26 @@
++# Rivalry track view: two cards and bottom actions — 2026-10-09
++
++Requirements: WR02, WR07–WR10, R01, V03–V05, Q01. The owner's latest track-view reference explicitly removes the third column and moves Back/Race below both cards. It supersedes the separate next-rival/challenger/ghost panel and card-contained actions in earlier detail references.
++
++The left card contains the existing scenic track preview, biome, track name, original route outline, verified start/direction markers and car. The slightly wider right card contains actual position and the complete scrolling track standings. Eight complete rows, the yellow player row, signed millisecond gaps, sticky offscreen player, touch/wheel scrolling and continuation action are retained. Both cards align at the bottom. A separate full-width footer contains equal-width Back to Tracks and yellow Race actions with 64-logical-pixel touch targets. Back returns to the overview; Race starts the selected track. Busy, unavailable, inactive and completed-week race gates remain.
++
++The removed third column includes its ghost selector. The existing ghost choice stays internal: the same next-faster-rival/closest-challenger, leader or own-PB target is used when available, with no ghost when no recording exists. Race Again keeps its existing target refresh. No ghost API, canonical simulation, scoring, timing, track data, camera, asset or backend contract changes are made. Unavailable/error states remain actionable inside the preview card. No replacement explanatory text or diagnostic labels are added.
++
++Changed runtime: `game/ui/weekly_rivalry_page.gd`. Updated checks: `game/tests/test_rivalry_track_detail.gd`, `test_weekly_rivalry.gd` and `test_weekly_rivalry_http.gd`. Documentation: this report, current-guide notes, `AGENTS.md`, status and phase plan. The app controller, standings widget and canonical racer remain unchanged by this slice.
++
++Commands use pinned Godot `4.7.2.stable.official.ed1daf0bf` via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with isolated storage under `build/rivalry-two-column-2026-10-09/`. Approved execution allows existing Windows certificate-store reads; no certificate configuration or saved player session is changed.
++
++| Actual command | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_rivalry_track_detail.gd -Graphical` | **345 checks, zero failures**, repeated after correcting footer label encoding. 24 native captures at 1280×720, 960×540 and 1600×720. Covers exactly two cards, footer ancestry/placement/equal widths/bounds/touch height, eight complete rows, all 14/20 entrants, scrolling, sticky player, signed gaps, unchanged competitive data, route/start/direction geometry and preserved ghost targets. |
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd` | **1,109 checks, zero failures**, headless. All five track entries, Race/Back, absent selector and no-recording fallback, overview reentry, result cleanup, refresh, touch/layout bounds and completed/unavailable/busy gates. |
++| `TestApp` | **99 checks, zero failures**. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_http.py::test_weekly_rivalry_through_native_app -q -s --basetemp=build/rivalry-two-column-2026-10-09/pytest` | **One passed**, native graphical **40 checks, zero failures**, 26.99 seconds. Disposable API/SQLite/worker, real footer-button ticket, **five legal laps / 12,757 canonical ticks**, upload/server verification, personal PB/lap summary first, weekly feedback, bounded derived ghost, Race Again and sign-out fencing. Eight HTTP captures. One existing Starlette/httpx deprecation warning. `PYTHONPATH=backend`, isolated `APPDATA`, `BMT_CAPTURE_CLOUD=docs/evidence/rivalry-two-column-2026-10-09/http`. |
++
++Screenshot review caught shell-pipe encoding replacing the two new footer arrow characters with question marks. The source was corrected with a direct UTF-8 patch; the full graphical detail check was repeated successfully and all 24 final detail captures were refreshed. The backend flow captures precede that label-only correction and remain flow evidence, not the final visual reference. No functional assertion or competitive invariant was relaxed.
++
++Reviewed final [desktop detail](evidence/rivalry-two-column-2026-10-09/detail/leader-1280x720.png) and [compact detail](evidence/rivalry-two-column-2026-10-09/detail/leader-960x540.png). Ranked, unranked, tied, scrolled and 20-driver states are retained alongside them. These are isolated layout fixtures; reference example names/times are not inserted into a live championship. HTTP evidence uses one actual disposable entrant and the normal five-lap contract.
++
++The task-only review patch, before-source copies, actual native logs and verification record are retained under `docs/evidence/rivalry-two-column-2026-10-09/`. Reverse applicability, whitespace and exact source hashes are checked while preserving unrelated work.
++
++Remaining acceptance: owner visual/interaction review and physical-device touch, legibility and performance. No phone attachment check or physical-device test, Android export/install, full Validate, physics regression/merge, retained staging or production action was performed. Restart the app to load the revised scripts.

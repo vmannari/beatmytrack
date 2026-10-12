@@ -1,0 +1,191 @@
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,10 +2,11 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-111"
++const VERSION: String = "track-kit-112"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
++const WORN_ASPHALT_FINISH_COLORS: Array[Color] = [Color("b8b9ad"), Color("42494a")]
+ const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
+ const WINTER_ICE: Texture2D = preload("res://assets/textures/winter_ice_v1.png")
+ const WINTER_SNOW: Texture2D = preload("res://assets/textures/winter_snow_v1.png")
+@@ -37,6 +38,7 @@
+ var editor_cover: NativeTrackVisual
+ var editor_scenery: NativeTrackVisual
+ var _editor_scenery_sources: Array = []
++var _editor_object_revision: int = 0
+ var cache_road_meshes: bool = true
+ var persist_road_meshes: bool = true
+ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+@@ -93,19 +95,34 @@
+ 
+ 
+ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, sliced: bool = false) -> void:
++	_editor_object_revision += 1
++	var revision: int = _editor_object_revision
+ 	if theme_id == "night_city" and partition_night_ground and get_child_count() > 0 and get_child(0) is MeshInstance3D:
+ 		# Moving/scaling a lamp in the editor can expose the outer backdrop.
+ 		(get_child(0) as MeshInstance3D).layers = 2 if _lamps_inside_terrain(track) else 1
++	var objects := NativeTrackVisual.new()
++	objects.editor_preview = true
++	objects._menu_slices = sliced
++	objects._slice_started = Time.get_ticks_usec()
++	objects.theme_id = theme_id
++	objects.colors = colors
++	objects.visible = false
++	add_child(objects)
++	# Authored props are small, immediate edits. Generated scenery has its own
++	# stable batch, so placing one tyre does not recreate every meadow tree.
++	var authored := NativeTrack.new()
++	authored.metadata = {"creator_document":track.metadata.get("creator_document",{}),"scenery_objects":[]}
++	authored.tyre_origins = track.tyre_origins
++	await objects._build_placed_objects(authored)
++	if sliced and not is_inside_tree(): return
++	if revision != _editor_object_revision:
++		objects.queue_free()
++		return
+ 	if editor_objects != null:
+ 		remove_child(editor_objects)
+ 		editor_objects.queue_free()
+-	editor_objects = NativeTrackVisual.new()
+-	editor_objects.editor_preview = true
+-	editor_objects._menu_slices = sliced
+-	editor_objects._slice_started = Time.get_ticks_usec()
+-	editor_objects.theme_id = theme_id
+-	editor_objects.colors = colors
+-	add_child(editor_objects)
++	editor_objects = objects
++	objects.visible = true
+ 	if refresh_cover:
+ 		var cover := NativeTrackVisual.new()
+ 		cover.editor_preview = true
+@@ -117,34 +134,37 @@
+ 		add_child(cover)
+ 		await cover._build_low_cover(track)
+ 		if sliced and not is_inside_tree(): return
++		if revision != _editor_object_revision:
++			cover.queue_free()
++			return
+ 		if editor_cover != null:
+ 			remove_child(editor_cover)
+ 			editor_cover.queue_free()
+ 		editor_cover = cover
+ 		cover.visible = true
+-	# Authored props are small, immediate edits. Generated scenery has its own
+-	# stable batch, so placing one tyre does not recreate every meadow tree.
+-	var authored := NativeTrack.new()
+-	authored.metadata = {"creator_document":track.metadata.get("creator_document",{}),"scenery_objects":[]}
+-	authored.tyre_origins = track.tyre_origins
+-	await editor_objects._build_placed_objects(authored)
+-	if sliced and not is_inside_tree(): return
+ 	var scenery: Array = track.metadata.get("scenery_objects",[])
+ 	if editor_scenery == null or scenery != _editor_scenery_sources:
++		var scenery_batch := NativeTrackVisual.new()
++		scenery_batch.editor_preview = true
++		scenery_batch._menu_slices = sliced
++		scenery_batch._slice_started = Time.get_ticks_usec()
++		scenery_batch.theme_id = theme_id
++		scenery_batch.colors = colors
++		scenery_batch.visible = false
++		add_child(scenery_batch)
++		var generated := NativeTrack.new()
++		generated.metadata = {"creator_document":{"objects":[]},"scenery_objects":scenery}
++		await scenery_batch._build_placed_objects(generated)
++		if sliced and not is_inside_tree(): return
++		if revision != _editor_object_revision:
++			scenery_batch.queue_free()
++			return
+ 		if editor_scenery != null:
+ 			remove_child(editor_scenery)
+ 			editor_scenery.queue_free()
+-		editor_scenery = NativeTrackVisual.new()
+-		editor_scenery.editor_preview = true
+-		editor_scenery._menu_slices = sliced
+-		editor_scenery._slice_started = Time.get_ticks_usec()
+-		editor_scenery.theme_id = theme_id
+-		editor_scenery.colors = colors
+-		add_child(editor_scenery)
+-		var generated := NativeTrack.new()
+-		generated.metadata = {"creator_document":{"objects":[]},"scenery_objects":scenery}
++		editor_scenery = scenery_batch
++		scenery_batch.visible = true
+ 		_editor_scenery_sources = scenery.duplicate(true)
+-		await editor_scenery._build_placed_objects(generated)
+ 
+ 
+ func _build_terrain(track: NativeTrack) -> void:
+@@ -329,8 +349,7 @@
+ 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
+ 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points,axis_cache)
+ 					fringe_count += 1
+-					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
+-					# Continuous sand beneath the tapered kerb ends.
++					# Continuous sand transition around the road.
+ 					# Only the outer contour varies; road/paint stay fixed.
+ 					var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+ 					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+@@ -1213,12 +1232,6 @@
+ 
+ func _build_finish(track: NativeTrack) -> void:
+ 	var side := Vector2(track.finish_forward.y, -track.finish_forward.x)
+-	var light := SurfaceTool.new()
+-	var dark := SurfaceTool.new()
+-	light.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	dark.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	var counts: Array[int] = [0, 0]
+-	var size: float = 0.5
+ 	# Paint the local finish road, not every disconnected lane intersected by
+ 	# the deliberately broad practice gate. Gate timing data stays unchanged.
+ 	var road_kind: int = track.cell_at(track.finish_center)
+@@ -1231,42 +1244,20 @@
+ 			widths[0 if direction < 0 else 1] = distance
+ 	var authored: bool = not RoadPieces.road_frame(track.metadata.get("creator_document",{}).get("pieces",[]),track.finish_center,track.finish_forward).is_empty()
+ 	if authored: widths = Vector2.ONE*track.finish_half_width
+-	if theme_id in ["desert","winter"]:
+-		_build_faded_finish(track,side,widths)
+-		return
+-	for row: int in range(2):
+-		for i: int in range(ceili(track.finish_half_width * 2 / size)):
+-			var offset: float = -track.finish_half_width + (i + 0.5) * size
+-			if not authored and (offset - size * 0.5 < -widths.x or offset + size * 0.5 > widths.y):
+-				continue
+-			var low: float = maxf(-widths.x,offset-size*0.5)
+-			var high: float = minf(widths.y,offset+size*0.5)
+-			var point: Vector2 = track.finish_center + side * ((low+high)*0.5) + track.finish_forward * (row - 0.5) * size
+-			if not authored and track.cell_at(point) not in [0, 2, 5, 6]:
+-				continue
+-			var center: Vector3 = VisualGeometry.world(point) + Vector3.UP * 0.024
+-			var across_half: float = (high-low) * 0.5
+-			var along_half: float = size * 0.5
+-			var across: Vector3 = VisualGeometry.world(side) * across_half
+-			var along: Vector3 = VisualGeometry.world(track.finish_forward) * along_half
+-			var parity: int = (row+i)%2
+-			_quad(light if parity == 0 else dark, center-across-along, center+across-along, center+across+along, center-across+along)
+-			counts[parity] += 1
+-	if counts[0]: _commit(light, STANDARD_FINISH_COLORS[0], "FinishLight")
+-	if counts[1]: _commit(dark, STANDARD_FINISH_COLORS[1], "FinishDark")
++	_build_faded_finish(track,side,widths)
+ 
+ 
+ func _build_faded_finish(track: NativeTrack, side: Vector2, widths: Vector2) -> void:
+-	var palette: Array[Color] = WINTER_FINISH_COLORS if theme_id == "winter" else DESERT_FINISH_COLORS
+-	var prefix: String = "WinterSnowFinish" if theme_id == "winter" else "DesertSandFinish"
++	var palette: Array[Color] = WINTER_FINISH_COLORS if theme_id == "winter" else DESERT_FINISH_COLORS if theme_id == "desert" else WORN_ASPHALT_FINISH_COLORS
++	var prefix: String = "WinterSnowFinish" if theme_id == "winter" else "DesertSandFinish" if theme_id == "desert" else "WornAsphaltFinish"
+ 	var pale := SurfaceTool.new()
+ 	var dark := SurfaceTool.new()
+ 	pale.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	dark.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var cell: float = 0.54
+ 	var columns: int = ceili((widths.x+widths.y)/cell)
+-	# Muted mineral pigment is worked into the road surface. Small deterministic
+-	# gaps and uneven edges let the packed sand show through like a worn marking.
++	# Muted pigment is worked into the road surface in every biome. Small
++	# deterministic gaps and uneven edges reveal the surface under the paint.
+ 	for row: int in range(2):
+ 		for column: int in range(columns):
+ 			var low: float = -widths.x+column*cell

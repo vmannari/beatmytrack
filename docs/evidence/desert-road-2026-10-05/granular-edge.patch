@@ -1,0 +1,25 @@
+﻿diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index 4cfba04c..0156f4e8 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -64,7 +64,10 @@ void fragment() {
+ 		// curves never inherit the coarse canonical surface-grid staircase.
+ 		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
+ 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
+-		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.0,1.0,UV.y+(breakup-0.5)*0.80*4.0*UV.y*(1.0-UV.y)) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
++		// A short granular join reads as firm sand, rather than a broad hazy veil.
++		float sand_grain = texture(surface_factors,world_position.xz/8.0).r;
++		float sand_edge = UV.y+(breakup-0.5)*0.16+(sand_grain-0.5)*0.20;
++		float asphalt_coverage = packed_sand ? 1.0-smoothstep(0.42,0.66,sand_edge) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+ 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
+ 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+ 		wet_coverage *= asphalt_coverage;
+@@ -97,7 +100,7 @@ void fragment() {
+ 		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
+ 		if (packed_sand) {
+ 			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
+-			ALBEDO *= 1.0-contact*0.16;
++			ALBEDO *= 1.0-contact*0.10;
+ 			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
+ 		}
+ 		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);

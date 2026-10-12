@@ -1,0 +1,730 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,9 @@
+ # Project agent instructions
++
++## Unified histograms and restrained UI override (2026-10-08)
++The owner requires one histogram view containing every available comparable real and artificial driver, with the player's time marked in that same view. Do not offer Player data/Test data views, source selectors, TEST badges, simulated-driver descriptions or sample-count captions in discovery or results. Deduplicate each driver across the compatible public/development boards; keep artificial identities out of public competitive rankings, ratings and eligibility, and retain development configuration/session gates internally.
++
++Never add redundant player-facing UI text. Add a label only when it identifies a necessary action/value or communicates an actionable state that is not already clear from the layout, icon or another label. Do not surface implementation details, test/source classifications, diagnostic counts or repeated explanations in ordinary game screens. Keep such information in logs, documentation or explicitly requested diagnostic tools. Review new UI for redundant text before capturing evidence. This overrides earlier histogram source switches and visible test-data labeling requirements.
+ 
+ ## Illustrated menu art override (2026-09-14)
+ The owner rejected the procedural menu graphics and supplied a detailed inked/cel-shaded vehicle reference. Home and Garage now use an original generated fictional compact-car illustration with retained editable UI. This supersedes procedural menu scenery; it does not replace the gameplay vehicle mesh or camera. The source reference is not a shipping asset. See `docs/ILLUSTRATED_MENUS.md` and the saved generation prompt for actual assets, evidence and remaining acceptance.
+@@ -159,3 +164,7 @@
+ ## Weekly Rivalry reference presentation override (2026-10-07)
+ 
+ The owner supplies the corrected podium/standings reference and explicitly removes visible TEST badges, the TEST RIVALRY/debug footer and browsing lap-count labels. This supersedes earlier visible test-label requirements for this presentation; retain development-only configuration, raw server identity markers and public-population isolation. Pair Week/time beneath the title, float the tabs, emphasize the taller gold winner with fictional car art, show the player in the clean four-column standings and align the five-track panel/action. Actual rank/points/time/biome values remain data-driven; do not insert the reference examples into live scores. Actual races still use five laps. See docs/RIVALRY_REFERENCE.md for files, generated-asset provenance, commands, screenshots and remaining device/visual acceptance.
++
++## Stronger configurable speed zoom override (2026-10-08)
++
++The owner requests a stronger speed-dependent pullback and configurable effect strength. This supersedes the former 12% enabled-zoom bound: the local default is 30% extra linear world coverage, selectable from 0–50% in Camera Settings and the race pause menu. Keep the 1.15x low-speed/disabled baseline, whole-scene scaling, overhead/no-horizon view, HUD/physical scale and canonical simulation separation. See docs/CAMERA_OPTIONS.md for actual tests, screenshots and remaining owner/device acceptance.
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -37,7 +37,6 @@
+ var _working_serial: int = 0
+ var rng := RandomNumberGenerator.new()
+ var cloud: Node
+-var test_histograms: bool = true # Development capability only; public ranks stay separate.
+ var cloud_status: Label
+ var gallery: ScrollContainer
+ var gallery_content: Control
+@@ -602,44 +601,60 @@
+ 
+ func _load_cloud_detail(track: NativeTrack) -> void:
+ 	var serial: int = _selection_serial
++	var vehicle: String = VehicleCatalog.selected
++	var key: String = records.key_for(track,HandlingSelection.config())
+ 	cloud.client.cancel_public_reads(get_instance_id())
+-	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+VehicleCatalog.selected.uri_encode(),get_instance_id())
+-	if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
++	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
++	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
+ 	var standings: Array = []
+ 	if response.ok:
+ 		for item: Dictionary in response.data.items:
+ 			standings.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"country_code":str(item.get("country_code","")),"race_ms":float(item.time_ticks)*1000.0/120.0})
++	var snapshot: Dictionary = discovery.records_by_rules_key.get(key,{}).duplicate(true)
++	if snapshot.get("comparison_scope","") != "all":
++		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
++	snapshot.friends = standings
++	snapshot.board_error = "" if response.ok else str(response.error)
++	if cloud.client.signed_in():
++		var comparison: Dictionary = await cloud.client.request_api("/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS,HTTPClient.METHOD_GET,{},"",true)
++		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
++		if comparison.ok: _apply_cloud_comparison(snapshot,comparison.data,track)
++	discovery.records_by_rules_key[key] = snapshot
++	if is_inside_tree() and serial == _selection_serial: _show_detail()
++
++func _apply_cloud_comparison(snapshot: Dictionary, data: Dictionary, track: NativeTrack) -> bool:
++	if data.get("population_scope","") != "all" or not data.get("race") is Dictionary or not data.get("best_lap") is Dictionary: return false
++	var board: String = str(data.get("board_id",""))
++	if not RaceComplete._valid_distribution(data.race,"race",board) or not RaceComplete._valid_distribution(data.best_lap,"best_lap",board): return false
+ 	var key: String = records.key_for(track,HandlingSelection.config())
+-	discovery.records_by_rules_key[key] = {"friends":standings,"board_error":"" if response.ok else str(response.error)}
+-	if response.ok and int(response.data.population) > 0:
+-		var board: String = str(response.data.board_id)
+-		var histogram: Dictionary = await cloud.client.request_public("/boards/"+board+"/histogram",get_instance_id())
+-		if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
+-		if histogram.ok:
+-			var bins: Array = []
+-			for bin: Dictionary in histogram.data.bins: bins.append(int(bin.count))
+-			discovery.records_by_rules_key[key].race_distribution = {"bins":bins,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0}
+-		if cloud.client.signed_in():
+-			var own: Dictionary = await cloud.client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+-			if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
+-			if own.ok and own.data.player != null:
+-				discovery.records_by_rules_key[key].race_ms = float(own.data.player.time_ticks)*1000.0/120.0
+-				discovery.records_by_rules_key[key].race_rank = int(own.data.player.rank)
+-				discovery.records_by_rules_key[key].population = int(own.data.population)
+-				if own.data.faster_than_percent != null: discovery.records_by_rules_key[key].race_top_percent = 100.0-float(own.data.faster_than_percent)
+-				if histogram.ok:
+-					for index: int in range(histogram.data.bins.size()):
+-						var bin: Dictionary = histogram.data.bins[index]
+-						if int(own.data.player.time_ticks) >= int(bin.from_ticks) and int(own.data.player.time_ticks) < int(bin.to_ticks_exclusive): discovery.records_by_rules_key[key].race_distribution.player_bin = index
+-	if response.ok and test_histograms and cloud.client.test_drivers_available():
+-		var test_histogram: Dictionary = await cloud.client.request_api("/dev/test-drivers/track-versions/"+str(track.metadata.cloud_version)+"/histogram?vehicle_id="+VehicleCatalog.selected.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
+-		if test_histogram.ok and int(test_histogram.data.population) > 0:
+-			var test_bins: Array = []
+-			for bin: Dictionary in test_histogram.data.bins: test_bins.append(int(bin.count))
+-			discovery.records_by_rules_key[key].race_distribution = {"bins":test_bins,"min_ms":float(test_histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(test_histogram.data.maximum_ticks)*1000.0/120.0}
+-			discovery.records_by_rules_key[key].test_population = int(test_histogram.data.population)
+-	if is_inside_tree() and serial == _selection_serial: _show_detail()
++	var local: Dictionary = records.records.get(key,{})
++	for metric: String in ["race","best_lap"]:
++		var histogram: Dictionary = data[metric]
++		var counts: Array[int] = []
++		var edges: Array[float] = []
++		for bin: Dictionary in histogram.bins:
++			counts.append(int(bin.count))
++			edges.append(float(bin.from_ticks)*1000.0/VehicleSimulation.TICK_RATE)
++		if not histogram.bins.is_empty(): edges.append(float(histogram.bins[-1].to_ticks_exclusive)*1000.0/VehicleSimulation.TICK_RATE)
++		var own: float = float(local.get("race_ms" if metric == "race" else "flying_ms",0))
++		if histogram.get("own_best_ticks") != null:
++			var verified: float = float(histogram.own_best_ticks)*1000.0/VehicleSimulation.TICK_RATE
++			own = minf(own,verified) if own > 0 else verified
++		var markers: Array[Dictionary] = []
++		if own > 0: markers.append({"value_ms":roundi(own),"label":"YOU","color":MenuStyle.ACCENT})
++		var low: float = float(histogram.minimum_ticks) if histogram.get("minimum_ticks") != null else 0.0
++		var high: float = float(histogram.maximum_ticks) if histogram.get("maximum_ticks") != null else 0.0
++		var prefix: String = "race" if metric == "race" else "lap"
++		snapshot[prefix+"_distribution"] = {"bins":counts,"edges_ms":edges,"min_ms":low*1000.0/VehicleSimulation.TICK_RATE,"max_ms":high*1000.0/VehicleSimulation.TICK_RATE,"markers":markers}
++		if own > 0: snapshot[prefix+"_ms"] = roundi(own)
++		snapshot[prefix+"_comparison"] = histogram.get("comparison")
++		if metric == "race" and histogram.get("comparison") is Dictionary:
++			snapshot.race_rank = int(histogram.comparison.position)
++			snapshot.race_top_percent = int(histogram.comparison.top_percent)
++			snapshot.population = int(histogram.comparison.population)
++	snapshot.comparison_scope = "all"
++	snapshot.erase("test_population")
++	return true
+ 
+ func _open_scores() -> void:
+ 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
+@@ -760,10 +775,8 @@
+ 		timer.name = "LibraryBestTime"
+ 		timer.add_theme_color_override("font_color",MenuStyle.ACCENT)
+ 		personal_body.add_child(timer)
+-		if snapshot.has("race_rank"):
+-			personal_body.add_child(MenuStyle.label("Rank %d of %d" % [int(snapshot.race_rank),int(snapshot.population)],12,true))
+-		elif float(snapshot.get("race_top_percent",-1)) >= 0:
+-			personal_body.add_child(MenuStyle.label("Top %d%%" % ceili(float(snapshot.race_top_percent)),12,true))
++		var placement: String = RaceComplete._position_text(snapshot.get("race_comparison"))
++		if not placement.is_empty(): personal_body.add_child(MenuStyle.label(placement,12,true))
+ 		if int(pb.get("flying_ms",0)) > 0:
+ 			personal_body.add_child(MenuStyle.label("Best lap  "+MenuStyle.time_text(float(pb.flying_ms)/1000.0),16,true))
+ 	row.add_child(VSeparator.new())
+@@ -773,25 +786,12 @@
+ 	distribution.size_flags_stretch_ratio = 1.4
+ 	distribution.add_theme_constant_override("separation",2)
+ 	row.add_child(distribution)
+-	var distribution_heading: HBoxContainer = _heading(distribution,"WHERE YOU STAND","bars")
++	_heading(distribution,"WHERE YOU STAND","bars")
+ 	var distribution_body: VBoxContainer = _section_body(distribution)
+ 	var charts := HBoxContainer.new()
+ 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	charts.add_theme_constant_override("separation",8)
+ 	distribution_body.add_child(charts)
+-	if cloud != null and selected_track.metadata.has("cloud_version") and cloud.client.test_drivers_available():
+-		var histogram_mode := MenuStyle.button("Player data" if test_histograms else "Test data",func() -> void:
+-			test_histograms = not test_histograms
+-			_load_cloud_detail(selected_track))
+-		histogram_mode.name = "TestHistogramToggle"
+-		histogram_mode.custom_minimum_size = Vector2(92,32)
+-		histogram_mode.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-		histogram_mode.tooltip_text = "Switch between real player and simulated test-driver histograms"
+-		histogram_mode.add_theme_font_size_override("font_size",12)
+-		var spacer := Control.new()
+-		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		distribution_heading.add_child(spacer)
+-		distribution_heading.add_child(histogram_mode)
+ 	for metric: String in ["race"]:
+ 		var card := PanelContainer.new()
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -800,11 +800,6 @@
+ 		var column := VBoxContainer.new()
+ 		column.add_theme_constant_override("separation",4)
+ 		card.add_child(column)
+-		var percentile: float = float(snapshot.get(metric+"_top_percent",-1))
+-		var rank_text: String = "TOP %d%%" % ceili(percentile) if percentile >= 0 else "Not ranked yet"
+-		if metric == "race" and snapshot.has("race_rank"): rank_text = "RANK %d / %d" % [int(snapshot.race_rank),int(snapshot.population)]
+-		if snapshot.has("test_population"): rank_text = "TEST DATA · %d simulated drivers" % int(snapshot.test_population)
+-		column.add_child(MenuStyle.label(rank_text,13 if snapshot.has(metric+"_distribution") else 18, snapshot.has(metric+"_distribution")))
+ 		var histogram := TrackDistribution.new()
+ 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
+ 		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+@@ -812,7 +807,7 @@
+ 			histogram.hide()
+ 			_friendly_hint(column,"Share this track and set a time to see how you compare." if not selected_track.metadata.has("cloud_version") else "Set a time to see how you compare.")
+ 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+-		histogram.custom_minimum_size = Vector2(164,64)
++		histogram.custom_minimum_size = Vector2(164,96)
+ 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		column.add_child(histogram)
+ 	row.add_child(VSeparator.new())
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -22,7 +22,7 @@
+ var lap_best_caption: Label
+ var race_time_caption: Label
+ var lap_time_caption: Label
+-var comparison_scope: String = ""
++var comparison_scope: String = "all"
+ var last_comparison: Dictionary = {}
+ var refresh_again: bool = false
+ var comparison_refresh: Timer
+@@ -236,7 +236,6 @@
+ 		rating.cloud_sync = cloud_sync
+ 		body.add_child(rating)
+ 	if not cloud_version.is_empty():
+-		comparison_scope = "development" if cloud_client != null and cloud_client.test_drivers_available() else "public"
+ 		comparison_refresh = Timer.new()
+ 		comparison_refresh.one_shot = true
+ 		comparison_refresh.wait_time = 0.25
+@@ -299,12 +298,11 @@
+ 	var maximum: float = float(data.maximum_ticks) if data.get("maximum_ticks") != null else 0.0
+ 	chart.snapshot = {"bins":counts,"min_ms":minimum*1000.0/VehicleSimulation.TICK_RATE,"max_ms":maximum*1000.0/VehicleSimulation.TICK_RATE,"player_bin":own_bin,"edges_ms":edges,"markers":markers,"empty_text":"No comparison records","empty_detail":"Other drivers' best times"}
+ 	chart.queue_redraw()
+-	var comparison: String = "driver best laps" if chart == lap_chart else "personal bests"
+-	context.text = "%d verified %s / %s" % [int(data.population),"test drivers" if data.get("test_population",false) else "players",comparison]
+-	chart.tooltip_text = context.text
++	context.text = ""
++	chart.tooltip_text = ""
+ 	var position_label: Label = global_rank if chart == race_chart else lap_population
+ 	position_label.text = _position_text(data.get("comparison"))
+-	position_label.tooltip_text = context.text
++	position_label.tooltip_text = ""
+ 	_update_best_caption(race_best_caption if chart == race_chart else lap_best_caption,markers)
+ 
+ static func _position_text(comparison: Variant) -> String:
+@@ -363,9 +361,8 @@
+ 	if not cloud_client.signed_in():
+ 		_comparison_unavailable("Sign in to compare")
+ 		return
+-	if comparison_scope.is_empty(): comparison_scope = "development" if cloud_client.test_drivers_available() else "public"
+ 	standings_busy = true
+-	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d&test_population=%s" % [COMPARISON_BINS,"true" if comparison_scope == "development" else "false"]
++	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d" % COMPARISON_BINS
+ 	if results.total > 0: path += "&race_ticks=%d" % roundi(results.total*VehicleSimulation.TICK_RATE)
+ 	var flying: float = float(facts.get("flying",0))
+ 	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
+diff --git a/game/ui/track_distribution.gd b/game/ui/track_distribution.gd
+--- a/game/ui/track_distribution.gd
++++ b/game/ui/track_distribution.gd
+@@ -105,7 +105,8 @@
+ 
+ static func comparison_geometry(data: Dictionary, width: float) -> Dictionary:
+ 	var bins: Array = data.get("bins",[])
+-	var window: Vector2i = display_window(bins)
++	# Unified comparisons include every bin, including sparse human/outlier times.
++	var window := Vector2i(0,maxi(0,bins.size()-1))
+ 	var edges: Array = data.get("edges_ms",[]).duplicate()
+ 	if edges.size() != bins.size()+1:
+ 		edges.clear()
+diff --git a/game/tests/test_test_driver_live.gd b/game/tests/test_test_driver_live.gd
+--- a/game/tests/test_test_driver_live.gd
++++ b/game/tests/test_test_driver_live.gd
+@@ -106,12 +106,9 @@
+ 			await browser._load_cloud_detail(browser.selected_track)
+ 			var key: String = app.records.key_for(browser.selected_track,HandlingSelection.config())
+ 			var snapshot: Dictionary = browser.discovery.records_by_rules_key.get(key,{})
+-			check(int(snapshot.get("test_population",0)) > 0,"Race displays the labeled test histogram without inventing a public rank")
+-			check(browser.find_child("TestHistogramToggle",true,false) != null,"development Race can switch back to the real player histogram")
+-			browser.test_histograms = false
+-			await browser._load_cloud_detail(browser.selected_track)
+-			check(not browser.discovery.records_by_rules_key[key].has("test_population"),"real player histogram never inherits simulated data")
+-			browser.test_histograms = true
++			check(snapshot.get("comparison_scope","") == "all","Race uses one unified driver comparison")
++			check(browser.find_child("TestHistogramToggle",true,false) == null,"Race never exposes a driver-source switch")
++			check(not snapshot.has("test_population"),"Race cache has no test-data display caption")
+ 			await browser._load_cloud_detail(browser.selected_track)
+ 			for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
+ 				root.size = dimensions
+diff --git a/game/tests/test_race_results.gd b/game/tests/test_race_results.gd
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -21,7 +21,7 @@
+ 		if path.contains("/results-comparison"):
+ 			var race: Dictionary = {"board_id":"test-board","metric":"race","population":100,"minimum_ticks":100,"maximum_ticks":140,"own_best_ticks":120 if own != null else null,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":25},{"from_ticks":120,"to_ticks_exclusive":140,"count":45},{"from_ticks":140,"to_ticks_exclusive":160,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
+ 			var lap: Dictionary = {"board_id":"test-board","metric":"best_lap","population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
+-			return {"ok":true,"data":{"board_id":"test-board","population_scope":"development" if path.contains("test_population=true") else "public","race":race,"best_lap":lap}}
++			return {"ok":true,"data":{"board_id":"test-board","population_scope":"all","race":race,"best_lap":lap}}
+ 		if path.contains("/histogram"):
+ 			if path.contains("metric=best_lap"):
+ 				return {"ok":true,"data":{"metric":"best_lap","test_population":path.contains("/dev/"),"population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}]}}
+@@ -440,7 +440,7 @@
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.bins == [25,45,30], "verified histogram uses exact server counts")
+ 	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
+-	check(page.global_rank.text == "POSITION 2" and page.race_context.text.contains("100 verified players"), "position and histogram context use the same comparison field")
++	check(page.global_rank.text == "POSITION 2" and page.race_context.text.is_empty(), "position uses the comparison field without diagnostic labels")
+ 	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text == "POSITION 2", "best-lap chart loads every driver's PB rather than this race's flying laps")
+ 	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=8")), "results requests wider race-time bins")
+ 	check(page.race_chart.snapshot.markers.size() == 2 and page.race_chart.snapshot.markers[0].value_ms == 55000, "server comparison retains this race and the local personal-best markers")
+@@ -451,10 +451,10 @@
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.bins == [25,45,30] and page.global_rank.text == "POSITION 2", "pending upload compares the current result with the same field")
+ 	client.tests_available = true
+-	page.comparison_scope = "development"
++	page.comparison_scope = "all"
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.markers.size() == 2, "test population replacement retains both personal markers")
+-	check(page.lap_context.text.contains("100 verified players") and page.lap_chart.snapshot.bins == [25,45,30], "development comparison includes all verified test-driver best laps")
++	check(page.lap_context.text.is_empty() and page.lap_chart.snapshot.bins == [25,45,30], "combined comparison retains lap counts without diagnostic captions")
+ 	check(page.lap_chart.snapshot.edges_ms.size() == 4, "test lap histogram retains the exact server bin edges")
+ 	page.results.previous = 52.0
+ 	page.results.best = 52.0
+@@ -481,6 +481,7 @@
+ 	await page._refresh_rank()
+ 	check(page.global_rank.text == "TOP 20%" and page.lap_population.text == "TOP 20%","outside the top ten shows percentile for each metric")
+ 	check(client.paths.all(func(path: String) -> bool: return path.contains("/results-comparison")),"all result refreshes use one atomic endpoint")
++	check(client.paths.all(func(path: String) -> bool: return not path.contains("test_population")),"result requests never offer separate driver-source modes")
+ 	var invalid: Dictionary = page.last_comparison.duplicate(true)
+ 	invalid.best_lap.board_id = "unrelated-board"
+ 	race_before = page.race_chart.snapshot.duplicate(true)
+@@ -488,7 +489,7 @@
+ 	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"mixed-board packet is rejected before either chart changes")
+ 	invalid = page.last_comparison.duplicate(true)
+ 	invalid.population_scope = "public"
+-	check(not page._apply_comparison(invalid),"refresh cannot silently switch away from the chosen development population")
++	check(not page._apply_comparison(invalid),"refresh cannot substitute a split population for the unified field")
+ 	invalid = page.last_comparison.duplicate(true)
+ 	invalid.best_lap.bins[0].count = 999
+ 	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before,"incomplete or contradictory lap counts cannot partially replace the race chart")
+diff --git a/game/tests/test_results_histograms.gd b/game/tests/test_results_histograms.gd
+--- a/game/tests/test_results_histograms.gd
++++ b/game/tests/test_results_histograms.gd
+@@ -21,10 +21,10 @@
+ 	var source := RaceResults.new()
+ 	source.circuit = "Silmukka"
+ 	source.vehicle_name = "Compact / 01"
+-	source.laps = [22.451,17.286,16.423,16.008,15.239]
+-	source.total = 83.407
+-	source.previous = 81.552
+-	source.best = 81.552
++	source.laps = [19.828,16.959,16.808,16.350,16.239]
++	source.total = 86.184
++	source.previous = 86.130
++	source.best = 86.130
+ 	source.clean = true
+ 	root.add_child(source)
+ 	source.hide()
+@@ -48,14 +48,14 @@
+ 	MenuStyle.fill(margin)
+ 	var page := RaceComplete.new()
+ 	page.results = source
+-	page.facts = {"complete":true,"total":source.total,"previous":source.previous,"previous_lap":14.992,"flying":15.239}
++	page.facts = {"complete":true,"total":source.total,"previous":source.previous,"previous_lap":15.881,"flying":16.239}
+ 	var catalog := TrackCatalog.new(TrackLibrary.new("user://histogram_capture_empty"))
+ 	for entry: Dictionary in catalog.entries.slice(0,3):
+ 		var track: NativeTrack = catalog.resolve(entry)
+ 		if track == null: continue
+ 		page.recommendations.append({"name":entry.name,"entry":entry,"route":track.route,"laps":5,"estimated_seconds":110,"reason":"Different scenery / New challenge","category":"different_biome"})
+ 	margin.add_child(page)
+-	page.comparison_scope = "development"
++	page.comparison_scope = "all"
+ 	check(page._apply_comparison(data.packet),"capture applies both metrics and positions from the same packet")
+ 	await create_timer(1.8).timeout
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+@@ -66,7 +66,7 @@
+ 		await screenshot("comparison-%dx%d" % [dimensions.x,dimensions.y])
+ 	root.size = Vector2i(1280,720)
+ 	source.previous = 0
+-	source.best = 83.407
++	source.best = source.total
+ 	page.race_chart.snapshot.markers = page._comparison_markers("RACE TIME")
+ 	page._update_best_caption(page.race_best_caption,page.race_chart.snapshot.markers)
+ 	page.race_chart.queue_redraw()
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -451,6 +451,10 @@
+         BoardTimeCount.board_id == board_id, frequency > 0).subquery()
+     if metric == "best_lap":
+         entries = best_lap_frequencies(board_id, session, test_population=test_population)
++    return histogram_from_entries(board_id, session, bins, metric, entries)
++
++
++def histogram_from_entries(board_id, session, bins, metric, entries):
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+@@ -545,45 +549,43 @@
+ 
+ @router.get("/track-versions/{version_id}/results-comparison")
+ def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
+-                       bins: int = Query(8, ge=1, le=100), test_population: bool = False,
++                       bins: int = Query(8, ge=1, le=100),
+                        race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
+                        lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES)):
+-    """Both charts and exact placements from one population/database snapshot."""
+-    if test_population:
+-        from .test_population import require_enabled
+-        require_enabled(request)
++    """One deduplicated field of all available drivers, never a UI source choice."""
+     version = published_version(session, version_id)
+     pinned = board_manifest(version, vehicle_id)
+     public_id = digest({"version_id": version.id, **pinned})
+-    if test_population:
+-        pinned = {**pinned, "test_population": True}
+-    board_id = digest({"version_id": version.id, **pinned})
+-    field = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
+-    race_entries = select(BoardTimeCount.time_ticks, field.label("count")).where(
+-        BoardTimeCount.board_id == board_id, field > 0).subquery()
+-    laps = best_lap_times(board_id, session, test_population=test_population)
++    include_artificial = request.app.state.settings.test_drivers_enabled
++    test_id = digest({"version_id": version.id, **pinned, "test_population": True})
++    board_ids = [public_id, test_id] if include_artificial else [public_id]
++    race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
++        Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
++    if not include_artificial:
++        race_statement = race_statement.where(Player.is_test_driver.is_(False))
++    races = race_statement.group_by(PersonalBest.player_id).subquery()
++    race_entries = select(races.c.time_ticks, func.count().label("count")).group_by(races.c.time_ticks).subquery()
++    public_laps = best_lap_times(public_id, session)
++    laps = public_laps
++    if include_artificial:
++        test_laps = best_lap_times(test_id, session, test_population=True)
++        combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
++            select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
++        laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
+     lap_entries = select(laps.c.time_ticks, func.count().label("count")).group_by(laps.c.time_ticks).subquery()
+-    race_own = session.scalar(select(PersonalBest.time_ticks).where(
+-        PersonalBest.board_id == board_id, PersonalBest.player_id == player.id))
++    race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
+     lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
+-    race_best, lap_best = race_own, lap_own
+-    if test_population and public_id != board_id:
+-        public_race = session.scalar(select(PersonalBest.time_ticks).where(
+-            PersonalBest.board_id == public_id, PersonalBest.player_id == player.id))
+-        public_laps = best_lap_times(public_id, session)
+-        public_lap = session.scalar(select(public_laps.c.time_ticks).where(public_laps.c.player_id == player.id))
+-        race_best = min(t for t in (race_best, public_race) if t is not None) if race_best is not None or public_race is not None else None
+-        lap_best = min(t for t in (lap_best, public_lap) if t is not None) if lap_best is not None or public_lap is not None else None
+-    race = histogram_query(board_id, session, bins, test_population=test_population)
+-    lap = histogram_query(board_id, session, bins, test_population=test_population, metric="best_lap")
+-    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_best, race_own)
+-    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_best, lap_own)
+-    race["own_best_ticks"], lap["own_best_ticks"] = race_best, lap_best
++    board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
++    race = histogram_from_entries(board_id, session, bins, "race", race_entries)
++    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries)
++    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
++    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
++    race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own
+     race["opponent_count"] = race["population"] - int(race_own is not None)
+     lap["opponent_count"] = lap["population"] - int(lap_own is not None)
+-    board = session.get(Board, board_id)
+-    return {"board_id": board_id, "population_scope": "development" if test_population else "public",
+-            "stats_revision": board.stats_revision if board else 0, "race": race, "best_lap": lap}
++    revisions = session.scalars(select(Board.stats_revision).where(Board.id.in_(board_ids))).all()
++    return {"board_id": board_id, "population_scope": "all",
++            "stats_revision": sum(revisions), "race": race, "best_lap": lap}
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+diff --git a/backend/tests/test_domains.py b/backend/tests/test_domains.py
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -338,7 +338,7 @@
+     response = domain.client.get(path, params=params, headers=headers(domain))
+     assert response.status_code == 200, response.text
+     data = response.json()
+-    assert data["population_scope"] == "public"
++    assert data["population_scope"] == "all"
+     for metric in ("race", "best_lap"):
+         assert data[metric]["board_id"] == data["board_id"]
+         assert sum(b["count"] for b in data[metric]["bins"]) == data[metric]["population"] == 3
+diff --git a/backend/tests/test_test_drivers.py b/backend/tests/test_test_drivers.py
+--- a/backend/tests/test_test_drivers.py
++++ b/backend/tests/test_test_drivers.py
+@@ -451,19 +451,50 @@
+     assert data["minimum_ticks"] == 2000 and data["maximum_ticks"] == 2099
+     assert len(data["bins"]) <= 8
+     assert drivers.client.get(f"/v1/boards/{board_id}/histogram?metric=best_lap").status_code == 404
+-    comparison_route = f"/v1/track-versions/{version_id}/results-comparison?vehicle_id=compact&test_population=true&race_ticks=9500&lap_ticks=1900"
++    # Merge real public PBs and test-board PBs, counting a real driver present
++    # in both only once and choosing their better comparable race/lap.
++    with drivers.factory() as session:
++        manifest = board_manifest(session.get(TrackVersion,version_id),"compact")
++        public_id = digest({"version_id":version_id,**manifest})
++        if session.get(Board,public_id) is None:
++            session.add(Board(id=public_id,version_id=version_id,vehicle_id="compact",manifest=manifest))
++            session.flush()
++        other = Player(display_name="Real comparison driver")
++        session.add(other)
++        session.flush()
++        def add_record(player_id, target_board, ticks, splits):
++            ticket = RunTicket(player_id=player_id,board_id=target_board,expires_at=now()+7200)
++            session.add(ticket)
++            session.flush()
++            run = Run(ticket_id=ticket.id,player_id=player_id,board_id=target_board,replay_hash="0"*64,
++                      status="verified",time_ticks=ticks,lap_ticks=splits,finished_at=now())
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=target_board,player_id=player_id,run_id=run.id,time_ticks=ticks))
++        human = drivers.login["player"]["id"]
++        add_record(human,public_id,10500,[2300,1900,2100,2100,2100])
++        add_record(human,board_id,9900,[2100,1800,2000,2000,2000])
++        add_record(other.id,public_id,10400,[2300,1950,2050,2050,2050])
++        session.commit()
++    comparison_route = f"/v1/track-versions/{version_id}/results-comparison?vehicle_id=compact&race_ticks=9500&lap_ticks=1900"
+     assert drivers.client.get(comparison_route).status_code == 401
+     response = drivers.client.get(comparison_route,headers=auth(drivers.login))
+     assert response.status_code == 200,response.text
+     comparison = response.json()
+-    assert comparison["population_scope"] == "development"
++    assert comparison["population_scope"] == "all"
+     for metric in ("race","best_lap"):
+         assert comparison[metric]["board_id"] == comparison["board_id"]
++        assert comparison[metric]["population"] == 102
++        assert sum(bin["count"] for bin in comparison[metric]["bins"]) == 102
+         assert comparison[metric]["comparison"]["position"] == 1
+-        assert comparison[metric]["comparison"]["population"] == 101
++        assert comparison[metric]["comparison"]["population"] == 102
++    assert comparison["race"]["own_best_ticks"] == 9900
++    assert comparison["best_lap"]["own_best_ticks"] == 1800
++    assert drivers.client.get(f"/v1/boards/{public_id}").json()["population"] == 2
+     drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
+     assert drivers.client.get(route, headers=auth(drivers.login)).status_code == 404
+-    assert drivers.client.get(comparison_route,headers=auth(drivers.login)).status_code == 404
++    remaining = drivers.client.get(comparison_route,headers=auth(drivers.login)).json()
++    assert remaining["population_scope"] == "all" and remaining["race"]["population"] == remaining["best_lap"]["population"] == 2
+ 
+ 
+ def test_test_histogram_uses_verified_test_counts_and_stays_private(drivers):
+diff --git a/docs/schemas/results-comparison-v1.schema.json b/docs/schemas/results-comparison-v1.schema.json
+--- a/docs/schemas/results-comparison-v1.schema.json
++++ b/docs/schemas/results-comparison-v1.schema.json
+@@ -5,11 +5,11 @@
+   "required": ["board_id", "population_scope", "stats_revision", "race", "best_lap"],
+   "properties": {
+     "board_id": {"type": "string", "minLength": 1},
+-    "population_scope": {"enum": ["public", "development"]},
++    "population_scope": {"const": "all"},
+     "stats_revision": {"type": "integer", "minimum": 0},
+     "race": {"$ref": "time-histogram-v1.schema.json"},
+     "best_lap": {"$ref": "time-histogram-v1.schema.json"}
+   },
+   "additionalProperties": false,
+-  "description": "One database snapshot and pinned board for both charts. Exact candidate placement uses other drivers' verified personal bests, replacing a retained self entry. Candidate ticks are display-only and never write records. No opponents means null comparison. Top ten display position; remaining positions display the upward-rounded top-percent threshold."
++  "description": "One database snapshot for both charts, over all available comparable real and artificial drivers. Compatible public/development board entries are deduplicated by driver, choosing each driver's best race and flying lap. Artificial records remain development-gated and isolated from public competitive ranks. Exact placement replaces the player's retained entry with the display-only candidate, never writing records. No opponents means null comparison. Top ten display position; remaining positions show an upward-rounded top-percent threshold."
+ }
+diff --git a/docs/STABLE_RESULTS_COMPARISON.md b/docs/STABLE_RESULTS_COMPARISON.md
+--- a/docs/STABLE_RESULTS_COMPARISON.md
++++ b/docs/STABLE_RESULTS_COMPARISON.md
+@@ -1,4 +1,6 @@
+ # Stable results comparisons — 2026-10-08
++
++The owner's later **single histogram for all real/artificial drivers** and **no redundant UI labels** correction supersedes the separate backend population selection described here. Current behavior and evidence: [UNIFIED_DRIVER_HISTOGRAMS.md](UNIFIED_DRIVER_HISTOGRAMS.md).
+ 
+ Requirements: R01/R03, V03/V05, RR05/RR06, B05, TD06/TD08 and Q01. The owner rejects the jumping comparison, the rank from a different population, stacked marker captions and the local four-lap fallback. The latest request supersedes the presentation in [RESULTS_HISTOGRAMS.md](RESULTS_HISTOGRAMS.md).
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,11 @@
++2026-10-08 R01/V03/V05/RR06/B05/TD06-TD08/Q01: owner requires one histogram with all real/artificial drivers and no redundant UI. Discovery source switch/TEST captions/duplicate rank removed; same all-scope atomic endpoint in discovery/results deduplicates each driver across compatible public/development boards and renders every bin/player marker. Persistent no-redundant-text rule added to AGENTS; public ranks/ratings/eligibility and development gates retained. Final discovery46/results49/App99/pages269/parser362 and SQLite/ownedPG11 pass/one skip, lint/diff pass. 102-driver mixed/deduplicated backend fixture and actual100-driver-plus-player UI captures inspected/task-only patch retained; fixture input failures corrected. No phone check/device/export/install/full Validate/cloud change. Unbuilt overlay refreshed locally; earlier automatic repository-code upload rejection still awaits explicit development rollout approval. Files/commands/limits: docs/UNIFIED_DRIVER_HISTOGRAMS.md.
++
++2026-10-08 R01/T01-T04/V03-V05/Q01/RB01-RB02: owner screenshot's To the trees folded S-bend reproduced with two proper road/marking crossings and repaired through presentation-only exposed contours, shared mouths and bounded cosmetic kerbs. Kit116 invalidates baked meshes; compiler22 identity, exact surfaces/physical kerbs, authored data and ordinary four-biome meshes/joins/kerbs preserved. Final graphical96/pieces377/cache66/joins124/borders1107/parser360 and shoulder71+18 checks pass; final Import exits0. Inspected native desktop/compact/before captures, actual logs and task-only review patch retained. Intermediate join/equivalence/test errors corrected; concurrent browser parser interruption resolved independently. No player-file rewrite, phone attachment check/device test/export/install/full Validate/backend action. Owner/in-motion/mobile acceptance remains. Actual files/commands/evidence/limits: docs/TREE_ROAD_BENDS.md.
++
++2026-10-08 SND08-SND10/SND04-SND07/G01/R01/Q01/V06: owner-requested collision, grass and sand audio revision implemented locally. Severity-selected mechanical/body hits replace door/trunk slams; four selected-car wheel contacts blend off-track materials. Fuller grass, recorded granular/rolling sand and damped underside-stone taps follow speed, drive demand, measured acceleration and slip; separate debris voices preserve crash tails. 45-clip bank9,399,550 bytes/35 unchanged hashes/21 bounded voices; public CC0 preview provenance retained. Final surface67/vehicle1438/desert25/loops38/capture14/App99/rewind57/handling88 checks pass; final parser/import and capture levels in retained evidence. Exact960-tick equivalence and historical handling replays retained; initial queued capture rejected/preserved and capture PCM-getter inefficiency corrected. Concurrent track-browser parse error caused a final-import retry, no unrelated source repair by this slice. DN2103 attached; no phone listening/performance/export/install/full Validate/backend or production action. Owner realism/mix and phone acceptance remain. Actual commands/files/limitations/scoped checkpoint: docs/SURFACE_IMPACT_AUDIO.md.
++
++2026-10-08 V01/V03-V05/Q01: owner-requested stronger/configurable speed zoom implemented locally: default 12%→30% extra linear world coverage, 0–50% slider in staged Camera Settings and immediate race pause settings, drag-release persistence and finite schema-2 validation. Existing 30–160km/h/easing/1.15x disabled baseline retained; physics0.53/rules20/records unchanged. Final camera1499/Settings278/records54/rewind57/shake7/App99/parser360 pass; 39 camera captures plus three Settings sizes inspected. Camera fixture retains 29-instance shutdown warning; initial sandbox/API/input-fixture/focus capture failures corrected and documented. Scoped task-only checkpoint preserves unrelated work. No phone attachment check/device test/export/install/full Validate/replay gate/backend action. Requirements/files/actual commands/evidence/acceptance: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
++
+ 2026-10-08 MUS28-MUS30/MUS20-MUS27/G01/R01/Q01/V06: owner-rejected mellow clean band recomposed as original sports rock: muted/driven/chorus electric guitars, firmer acoustic/gated-room kit, bass riffs, quiet strings and original baked analog-style atmosphere. Race144/menu112 BPM, motif/five six-layer palettes/confidence/PB/breath/volume/hover contracts retained. Soundtrack1158/graphical1163/flow29/App99 and capture4/10/5/3 pass; 37 assets/160 combinations/18 real mixes unclipped, final59.964s, mono/loop/pause/hover checks pass. Equal-loudness old/new90s and browser9 previews retained; shipping audio21,664,144 bytes. Prior bank/sources preserved, no subjective/AAA approval; concurrent game changes excluded. No phone attachment/audio test/export/install/full Validate/backend/deployment. Requirements/files/actual commands/limits/checkpoint: docs/SPORTS_ROCK_SOUNDTRACK.md.
+ 
+ 2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-corrected results comparisons implemented locally: single atomic same-population endpoint, no public/test/local refresh switching, same-response exact positions1-10 then top percentile, compact PB/header legend and full-height bars. No four-local-lap fallback; retained100-driver lap bests/standing-start/reset/public isolation preserved. Final graphical48/App99/parser355 and SQLite/ownedPG11 pass/one skip, lint/diff pass; delayed/failed/identical/mixed packet stability and solo/ties proven. Five actual-field captures inspected/task-only patch retained. Prior broad-results/rules409 failures documented, no weakening. No phone check/device/export/install/full Validate/cloud change. Matching two-module overlay refreshed locally; prior automatic code-egress/development-upload rejection still requires explicit owner approval. Files/commands/evidence/limits: docs/STABLE_RESULTS_COMPARISON.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++2026-10-08 R01/T01-T04/V03-V05/Q01/RB01-RB02: owner screenshot's To the trees folded S-bend reproduced with two proper road/marking crossings and repaired through presentation-only exposed contours, shared mouths and bounded cosmetic kerbs. Kit116 invalidates baked meshes; compiler22 identity, exact surfaces/physical kerbs, authored data and ordinary four-biome meshes/joins/kerbs preserved. Final graphical96/pieces377/cache66/joins124/borders1107/parser360 and shoulder71+18 checks pass; final Import exits0. Inspected native desktop/compact/before captures, actual logs and task-only review patch retained. Intermediate join/equivalence/test errors corrected; concurrent browser parser interruption resolved independently. No player-file rewrite, phone attachment check/device test/export/install/full Validate/backend action. Owner/in-motion/mobile acceptance remains. Actual files/commands/evidence/limits: docs/TREE_ROAD_BENDS.md.
++
++2026-10-08 V01/V03-V05/Q01: stronger configurable speed zoom follows the owner's request: 30% default maximum pullback versus12%, 0–50% Camera/pause sliders with atomic saved strength and drag-release commits. Final camera1499/graphicalSettings278/records54/rewind57/shake7/App99/parser360 checks pass; 39 camera and three Settings-size captures inspected. Fixed baseline and canonical0.53/rules20/record keys retained, camera shutdown29-instance warning documented. No attachment/device/export/install/full Validate/replay gate/backend action; owner driving/mobile acceptance remains. Scoped patch, files, exact commands and initial corrected failures: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
++
+ 2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
+ 
+ 2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
+@@ -1282,3 +1286,10 @@
+ 
+ 2026-10-08 MUS28-MUS30/MUS20-MUS27/G01/R01/Q01/V06: mellow clean-band candidate replaced by original muted/driven/chorus-guitar sports rock, bass/backbeat/fills and quiet string/analog-style atmospheric support. Race144/menu112 and all existing adaptive/hover/volume contracts retained. Final soundtrack1158/graphical1163/flow29/App99 and capture4/10/5/3 pass; 37 assets/160 combinations/18 actual mixes unclipped, exact clocks/mono/loop/pause/hover and final59.964s verified. Equal-loudness comparison/browser9 previews, preserved old bank/sources and task-only patch retained. No agent subjective listening/AAA approval, phone attachment/audio test/export/install/full Validate/backend/deployment; owner/device listening remains. Actual commands/files/provenance/limitations: docs/SPORTS_ROCK_SOUNDTRACK.md.
+ 
++
++## Collision, grass and sand audio correction, 2026-10-08
++
++2026-10-08 SND08-SND10/SND04-SND07/G01/R01/Q01/V06: owner-requested collision, grass and sand audio revision implemented locally. Severity-selected mechanical/body hits replace door/trunk slams; four selected-car wheel contacts blend off-track materials. Fuller grass, recorded granular/rolling sand and damped underside-stone taps follow speed, drive demand, measured acceleration and slip; separate debris voices preserve crash tails. 45-clip bank9,399,550 bytes/35 unchanged hashes/21 bounded voices; public CC0 preview provenance retained. Final surface67/vehicle1438/desert25/loops38/capture14/App99/rewind57/handling88 checks pass; final parser/import and capture levels in retained evidence. Exact960-tick equivalence and historical handling replays retained; initial queued capture rejected/preserved and capture PCM-getter inefficiency corrected. Concurrent track-browser parse error caused a final-import retry, no unrelated source repair by this slice. DN2103 attached; no phone listening/performance/export/install/full Validate/backend or production action. Owner realism/mix and phone acceptance remain. Actual commands/files/limitations/scoped checkpoint: docs/SURFACE_IMPACT_AUDIO.md.
++
++
++2026-10-08 R01/V03/V05/RR06/B05/TD06-TD08/Q01: one real/artificial driver histogram in discovery/results, no source switch/TEST/sample captions, player marker and all bins retained. AGENTS adds persistent no-redundant-UI-text rule. Mixed-board per-driver best/dedup with public competition isolation; discovery46/results49/App99/pages269/parser362/SQLite+ownedPG11 pass/one skip and lint/diff pass. Captures/task-only patch retained. No phone check/device/export/install/full Validate/cloud change; previous automatic code-upload rejection remains pending explicit development deployment approval. Actual details: docs/UNIFIED_DRIVER_HISTOGRAMS.md.
+diff --git a/game/tests/test_unified_histograms.gd b/game/tests/test_unified_histograms.gd
+--- /dev/null
++++ b/game/tests/test_unified_histograms.gd
+@@ -0,0 +1,101 @@
++extends "res://tests/test_race_results.gd"
++## Discovery and results use one comparison field; no implementation captions in UI.
++
++class PreviewBrowser extends TrackBrowser:
++	func _load_catalog() -> void:
++		loading = false
++		_show_detail()
++
++class Client extends Node:
++	var packet: Dictionary
++	var paths: Array[String] = []
++	var hold: bool = false
++	func signed_in() -> bool: return true
++	func cancel_public_reads(_owner: int) -> void: pass
++	func request_public(path: String, _owner: int) -> Dictionary:
++		paths.append(path)
++		return {"ok":true,"data":{"items":[{"rank":1,"display_name":"You","time_ticks":10336}],"population":1},"error":""}
++	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		paths.append(path)
++		while hold: await get_tree().process_frame
++		return {"ok":true,"data":packet,"error":""}
++
++class Cloud extends Node:
++	signal changed
++	var client: Node
++	var discovery_pages: Node
++	var entries: Array[Dictionary] = []
++	func paged_discovery_available() -> bool: return false
++
++func run() -> void:
++	await test_completion_distributions()
++	var directory: String = OS.get_environment("BMT_RESULTS_EVIDENCE")
++	if directory.is_empty(): directory = ProjectSettings.globalize_path("res://../docs/evidence/unified-driver-histograms-2026-10-08")
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(directory.path_join("verified-silmukka-histograms.json")))
++	var client := Client.new()
++	client.packet = fixture.packet
++	root.add_child(client)
++	var cloud := Cloud.new()
++	cloud.client = client
++	root.add_child(cloud)
++	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	track.metadata.cloud_version = "unified-silmukka-fixture"
++	track.metadata.title = "Silmukka"
++	var browser := PreviewBrowser.new()
++	browser.theme = MenuStyle.theme()
++	browser.library = TrackLibrary.new("user://unified_histogram_fixture/drafts")
++	browser.catalog = TrackCatalog.new(browser.library)
++	browser.catalog.entries.append({"id":track.identity,"version_id":"unified-silmukka-fixture","source":"cloud","name":"Silmukka","creator":"Beat my track","theme":"pine"})
++	browser.records = LocalRecords.new("user://unified_histogram_fixture/records.json")
++	browser.records.records[browser.records.key_for(track,HandlingSelection.config())] = {"race_ms":86130,"flying_ms":15881}
++	browser.cloud = cloud
++	browser.selected_track = track
++	browser.state = {"sort":"name"}
++	root.content_scale_size = Vector2i(1280,720)
++	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
++	root.size = Vector2i(1280,720)
++	root.add_child(browser)
++	MenuStyle.fill(browser)
++	await settle()
++	await browser._load_cloud_detail(track)
++	var key: String = browser.records.key_for(track,HandlingSelection.config())
++	var snapshot: Dictionary = browser.discovery.record_snapshot(key)
++	check(snapshot.comparison_scope == "all","discovery uses the unified population")
++	var count: int = 0
++	for amount: int in snapshot.race_distribution.bins: count += amount
++	check(count == 101,"one discovery chart contains all 100 retained drivers and the player's fixture")
++	check(snapshot.race_distribution.markers.size() == 1 and snapshot.race_distribution.markers[0].value_ms == 86130,"player time is marked in the same chart")
++	var geometry: Dictionary = TrackDistribution.comparison_geometry(snapshot.race_distribution,500)
++	check(geometry.window == Vector2i(0,snapshot.race_distribution.bins.size()-1),"unified view renders every bin instead of cropping the sparse real-player tail")
++	check(browser.find_child("TestHistogramToggle",true,false) == null,"discovery has no driver-source selector")
++	check(not snapshot.has("test_population"),"no diagnostic population caption in the display cache")
++	var labels: String = ui_text(browser).to_lower()
++	for forbidden: String in ["test data","player data","simulated drivers","samples"]:
++		check(not labels.contains(forbidden),"ordinary discovery UI excludes "+forbidden)
++	var before: Dictionary = snapshot.duplicate(true)
++	client.hold = true
++	browser.call_deferred("_load_cloud_detail",track)
++	await settle()
++	check(browser.discovery.record_snapshot(key) == before,"pending discovery read preserves the complete unified chart")
++	client.hold = false
++	await settle()
++	check(browser.discovery.record_snapshot(key) == before,"identical discovery data stays stable")
++	check(client.paths.all(func(path: String) -> bool: return not path.contains("/histogram") and not path.contains("test_population")),"discovery never queries split histogram sources")
++	var chart: Control = browser.find_child("RaceDistribution",true,false)
++	check(chart != null and chart.size.y >= 90,"removed captions leave usable chart height")
++	if DisplayServer.get_name() != "headless":
++		capture = true
++		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++			root.size = dimensions
++			await settle()
++			await screenshot("discovery-%dx%d" % [dimensions.x,dimensions.y])
++	browser.free()
++	cloud.free()
++	client.free()
++	print("UNIFIED_HISTOGRAMS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
++
++func ui_text(node: Node) -> String:
++	var value: String = node.text if node is Label or node is Button else ""
++	for child: Node in node.get_children(): value += "\n"+ui_text(child)
++	return value
+diff --git a/docs/UNIFIED_DRIVER_HISTOGRAMS.md b/docs/UNIFIED_DRIVER_HISTOGRAMS.md
+--- /dev/null
++++ b/docs/UNIFIED_DRIVER_HISTOGRAMS.md
+@@ -0,0 +1,39 @@
++# One histogram for every available driver — 2026-10-08
++
++Requirements: R01/V03/V05/RR06/B05/TD06/TD08/Q01. The owner requires one histogram containing comparable real and artificial drivers, the player's time in that same view, no source selector and no test/sample captions. This supersedes the population selection and diagnostic labeling in the preceding histogram documents.
++
++The earlier work missed the **discovery** histogram shown in the latest screenshot. `game/ui/track_browser.gd` now removes its Player data/Test data button, `TEST DATA · … simulated drivers` caption and duplicate comparison-rank row. Discovery and Results both request `/results-comparison` with **no population selector**. The backend chooses every available compatible source, groups by driver ID and uses each driver's best time across those sources. A real driver with both public and development records appears once. The lap histogram uses one best verified flying lap per driver across comparable verified attempts. The player marker remains in the same chart. Unified charts render every bin, including sparse real-player/outlier bins; they do not crop the small real-driver cohort out of the larger field. Pending/failed requests retain the complete combined snapshot; old split-source cache fields are removed before hydration. Track/vehicle selection guards prevent late reads changing another selection.
++
++Both charts and their exact positions/percentiles still arrive in one database snapshot. Public/development display distinctions have been removed; the internal packet scope is always `all`. The server retains development configuration/session gates, reset protection and pinned vehicle/rules/version boundaries. When artificial drivers are disabled, the same endpoint returns available real-driver records. Public competitive rankings, ratings and community eligibility continue to exclude artificial identities. No migration or canonical physics/replay change was needed.
++
++The requested persistent rule is at the top of [AGENTS.md](../AGENTS.md): never add redundant player-facing text, source/test classifications, diagnostic counts or repeated explanations to ordinary game screens. Labels must identify a necessary action/value or communicate a distinct actionable state. Diagnostic details belong in logs/documentation or explicitly requested diagnostic tools. The rule explicitly supersedes the former source-switch/test-caption instructions.
++
++Changed files: `AGENTS.md`; `game/ui/track_browser.gd`, `race_complete.gd`, `track_distribution.gd`; `backend/bmt_backend/runs.py`; `game/tests/test_unified_histograms.gd`, `test_results_histograms.gd`, `test_race_results.gd`, `test_test_driver_live.gd`; `backend/tests/test_domains.py`, `test_test_drivers.py`; response schema, preceding/current documentation, status/plan and dated evidence. [Task-only patch](evidence/unified-driver-histograms-2026-10-08/unified-driver-histograms.patch) preserves the unrelated work already in the tree; no mixed-workspace commit was made.
++
++## Actual checks
++
++Commands use pinned Godot **4.7.2 stable ed1daf0bf** through `scripts/dev.ps1`, with `APPDATA=build/unified-results-user`. Graphical checks set `BMT_RESULTS_EVIDENCE` to this task's dated directory. Runtime checks received Windows certificate access; all saves/fixtures remain isolated.
++
++| Actual command | Actual result |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical` | **46 checks, zero failures**, covering combined discovery data/player marker, every histogram bin, forbidden UI captions/source selector, delayed/identical read stability, one comparison source, usable chart height and three captures. |
++| `TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical` | **49 checks, zero failures**, including the current Results field and five captures. |
++| `TestApp` | **99 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_discovery_pages.gd` | **269 checks, zero failures**, existing 5,000-track paging/search/selection/cache suite. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **362 scripts, zero failures**. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py -q -k 'histogram or results_comparison' --tb=short --show-capture=no --junitxml=docs/evidence/unified-driver-histograms-2026-10-08/backend-tests.xml` | **11 passed, 1 skipped, 59 deselected**, SQLite and owned PostgreSQL 17. The skip is the SQLite parameter of the PostgreSQL-only snapshot check. [Actual XML](evidence/unified-driver-histograms-2026-10-08/backend-tests.xml). |
++| `ruff check` for changed backend source/tests; scoped `git diff --check` | Passed. |
++
++The merged-field fixture explicitly verifies **102 distinct drivers: 100 artificial and two real**, with one real driver on both boards; the better race/lap is selected and public ranking population remains two. Disabling artificial drivers keeps the same response scope, removes their records and retains the two public real drivers. Existing standing-start exclusion and retired-history protection remain exercised.
++
++Initial discovery capture failures were fixture defects: a missing cloud capability method and a missing retained catalog entry made the selected track unavailable. Both fixture inputs were corrected; the chart-height assertion was retained. The final guard/internal-rank metadata adjustment was followed by a targeted graphical rerun. Prior broad-results/replay-rules failures remain documented in earlier reports; no full-green claim or weakened invariant. Full `Validate`/physics regression was not run for this UI/read-only-query change.
++
++## Evidence and deployment
++
++Discovery: [1280×720](evidence/unified-driver-histograms-2026-10-08/discovery-1280x720.png), [960×540](evidence/unified-driver-histograms-2026-10-08/discovery-960x540.png), [1600×720](evidence/unified-driver-histograms-2026-10-08/discovery-1600x720.png). Results: [1280×720](evidence/unified-driver-histograms-2026-10-08/comparison-1280x720.png), [960×540](evidence/unified-driver-histograms-2026-10-08/comparison-960x540.png), [percentile](evidence/unified-driver-histograms-2026-10-08/percentile-1280x720.png). Captures were inspected: no source button, test caption or sample label; one chart with the player's marker. All 100 comparison-driver times/laps are retained canonical verified reseed records. The extra player is an isolated UI fixture matching the owner's supplied times; it is not a new verified/uploaded record. [Fixture provenance/counts](evidence/unified-driver-histograms-2026-10-08/verified-silmukka-histograms.json).
++
++The labeled loopback PostgreSQL fixture on port 55448 (one CPU/512 MiB) was removed after testing. Existing services/databases and player files were preserved. The local, unbuilt two-module development overlay was refreshed to include the unified aggregation helper; no cloud upload/deployment was retried.
++
++**Backend activation still awaits the explicit development upload/deployment approval already requested.** Automatic approval review previously rejected sending repository code to the existing development registry without that authorization. This UI correction does not bypass that rejection. No cloud image/service/record/schema changed. The client-side selector/caption removal is ready locally; the merged live field requires the matching `/results-comparison` backend rollout. Until then it shows an honest unavailable comparison rather than presenting an old split field as combined.
++
++Remaining acceptance: approve/build/prove/backup/deploy/smoke the prepared update and verify the live combined data; owner visual review. Phone attachment was not checked; no physical-device test or Android export/install was performed.

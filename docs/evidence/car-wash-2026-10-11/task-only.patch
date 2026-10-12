@@ -1,0 +1,1068 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 189ae46..97e03c5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Persistent local car dirt and washing override (2026-10-11)
++The owner requests that accumulated dirt remain after races, retries and track changes. Snow melts away and smears dirt already on the car. Garage must provide manual washing. The owner explicitly requires cosmetic condition to be stored only locally, with no backend interaction. Preserve per-car persistence, optional/free racing, paint separation and canonical scoring. This supersedes race-owned clean-on-retry/biome-change weathering. See `docs/CAR_WASH.md` for implementation, actual tests/captures and remaining owner/device acceptance.
++
+ ## Trajectory-only verification override (2026-10-09)
+ The owner requires verification to be as simple as possible: a proper timestamped trajectory is sufficient; do not reproduce the whole game to accept races. The server checks start/finish, finite bounded positions, monotonic time, broad speed/continuity and every ordered gate/lap using prepared geometry. Ordinary races, creator laps and authorized rewind races use the same small checker. Remove automatic full replay fallback and control/traction/collision/hazard simulation from acceptance; keep canonical replay tools only as explicit offline diagnostics. Ghosts are optional presentation and cannot determine score eligibility. Preserve pinned contracts, five ordinary laps, exact completed-ticket results, normal results first, best-only scoring, authorized resume receipts, durable/idempotent uploads and public/artificial isolation. Deployments still require explicit authorization. See `docs/TRAJECTORY_VERIFICATION.md` for measured computation, files, commands and remaining acceptance. This supersedes the full-replay fallback in the lightweight override below.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index bd96773..7d56814 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 CW13-CW16/V06/G01/R01/Q01: owner persistent car dirt, snow melting into previous dirt and manual Garage Wash; explicitly local-only. Five independent optional schema2/version1 cosmetic saves/4096-byte wash volumes; retry-biome-finish-abandon-restart persistence, bounded mesh-hit mouse/touch washing, later re-coating and cached-page fencing. Compatibility1402+MobileVulkan1402/weathering600/livery115/view59/records54/App99 pass; actual app960-1280-1600 and dirty/partial captures inspected. Headless weathering shutdown68ObjectDB warning retained; initial JSON/theme/pixel fixture issues corrected without bypass. No backend/telemetry-upload/physics changes, phone test-or-attachment check/Android export-install/fullValidate/deploy. Restart client; owner/device appearance-input-performance acceptance remains. Files/commands/task-only Git checkpoint/limits: docs/CAR_WASH.md.
++
+ 2026-10-11 CH14/CH09-CH11/CH02-CH04/CH15/V03/V05/R01/Q01: owner challenge-creation reference alignment correction. Shared six-row label/control grid, 1.45:1 settings/preview, heading/preview top and settings/preview bottom aligned; brighter original scenic route/plaque/biome, four left-aligned summary values, separate bottom actions, logical52px selections. Existing verified PB/exact-ticket, Group, tries/durations/search/error gates retained; no new feature/assets/backend/physics. Final graphical182/App99 pass/21captures; initial restricted certificate-store error retained, final normal-access clean. No Android device-or-attachment check/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/owner-phone acceptance: docs/CHALLENGE_LAYOUT.md.
+ 
+ 2026-10-11 SND59/SND58/SND57/G01/R01/Q01: owner wants louder kerb thuds/further quieter grass. Kerb loop+entry cue1.5x/+3.52dB; entry0.15-0.36. Shared grass0.35-to0.20/another-4.86dB. Tone/speed/onset/silence/Engine-sidechain/other event gains and49WAVs exact. Existing grass absolute fixture floors scaled0.20/0.35 per explicit owner balance; timing/speed/snapshot/silence assertions retained. Native106/0fail/30captures; five-car gainratioexact/86.5% onset; Game kerb0.401-to0.601/two bumps/zero collisions. Kerb-grass mixes0.490-0.110/pausedtails0/no clipping. No new test/rebuild/phone listening-device test/export-install/fullValidate/deploy/physics-backend changes. Actual command/previews/audit/scoped checkpoint/restart-and-listen acceptance: docs/OWNER_GRASS_RUSTLE.md (SND59).
+diff --git a/docs/CAR_WASH.md b/docs/CAR_WASH.md
+new file mode 100644
+index 0000000..7e824b3
+--- /dev/null
++++ b/docs/CAR_WASH.md
+@@ -0,0 +1,45 @@
++# Persistent local car dirt and Garage washing
++
++Owner request, 2026-10-11. Requirements: CW13 (persistent per-car dirt), CW14 (melting snow smears existing dirt), CW15 (manual Garage washing), CW16 (local storage only), plus V06/G01/R01/Q01 presentation, race and validation boundaries. This supersedes the former race-owned clean-on-retry/biome-change lifecycle in `VEHICLE_WEATHERING.md`.
++
++Dirt now survives completed races, abandoned races, retry, track/biome changes, Garage paint resets, and application restarts. Each of the five cars has its own condition. Dirt colours blend as new material accumulates rather than replacing the previous coat; Winter snow is a separate overlay. Snow melts over up to eight seconds during the finish coast, in Garage, and while driving a non-Winter track. Melted snow smears existing dirt without adding dirt to a clean car. These are cosmetic presentation seconds; no wall clock or backend is involved.
++
++Garage has a **Wash** action beside its existing view controls. Holding/dragging on the actual visible mesh progressively cleans a small patch, with a blue brush indicator. One finger washes; two fingers rotate and pinch. A right mouse drag rotates, and existing wheel/buttons still zoom. **Done** returns to ordinary orbit. The player reaches other sides by rotating the car. Clicking empty background does not clean it; pressing Wash alone does not clean anything. Later driving gradually coats cleaned patches again. Washing is free and optional for racing and score eligibility.
++
++## Local persistence and cost
++
++`vehicle_conditions` is an additive, validated settings field in the existing atomic local-records schema 2. Entries use cosmetic version 1 and contain bounded dirt/snow/wetness/mud/smudge values, a colour and an exact 4,096-byte wash volume encoded in Base64. Five cars use roughly 28 KB plus small scalar metadata. Existing saves lacking this optional field start clean; no player file is removed. Condition stays within the local guest/player profile. No new telemetry, request, backend endpoint, race-proof field, upload, ghost condition, reward, handling or score rule is introduced.
++
++The finish uses the existing opaque material and actual car geometry. Its 16-cubed wash volume is packed into a shared 256x16 R8 texture with two interpolated slice reads; there is no additional mesh/draw pass, screen read or runtime asset. Brush work visits only nearby voxels. Garage lazily caches model triangles for closest-hit ray picking. Local saves occur when a wash stroke ends, Done is pressed, snow finishes melting, Garage exits, a race finishes/retries/exits, or the app loses focus; active race checkpointing is every five seconds, active washing/melting every two seconds. Unchanged entries skip saves. Cached/outgoing Garage pages cannot overwrite newer race wear. Save failures retain unsaved presentation for retry and use the existing storage-error path.
++
++Changed runtime files: `game/vehicle/vehicle_condition.gd` (+UID), `vehicle_weathering.gd`, `vehicle_weathering.gdshader`, `game/ui/car_showroom.gd`, `garage_page.gd`, `game/core/game.gd`, `app.gd` (generalized existing Garage save-error wording), and `game/persistence/local_records.gd`. Updated `game/tests/test_vehicle_weathering.gd` changes only the superseded clean-on-retry/biome assertions; explicit diagnostic resets, contacts, tick/FPS and canonical checks remain. Added `game/tests/test_car_wash.gd` (+UID). Documentation: this file, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the weathering lifecycle follow-up.
++
++## Actual commands and outcomes
++
++All Godot commands use `scripts/dev.ps1` and the pinned `4.7.2.stable.official.ed1daf0bf`, not the old PATH alias:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_vehicle_weathering.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRecords
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++python build/checkpoint_car_wash.py
++```
++
++Final Compatibility and Mobile/Vulkan wash runs each pass **1,402 checks / zero failures**, covering all five independent saves, exact wash-mask/palette persistence, float recovery within 1e-9, local patch/opposite-side isolation, later re-coating, clean/dirty snow melting, actual Game retry/finish/exit and unchanged scored snapshots, mesh-hit mouse/touch washing, cancellation, original-paint revelation, cached-page fencing, paint-reset separation, and actual app action/input ownership at 960/1280/1600 widths. The original blue door pixel's blue channel rises from 0.0784 to 0.3373 on Compatibility and 0.1294 to 0.3451 on Mobile, with the brush hidden for that comparison.
++
++Other actual passes: weathering **600**, Garage livery **115**, view controls **59**, records **54**, app **99**, all zero failures. The headless weathering test reports an ObjectDB shutdown warning (68 instances on the final run); it is recorded, not represented as a warning-free run. Initial direct PowerShell launch was blocked by execution policy; the process-scoped Bypass launcher resolves it. Restricted Godot import failed to read the Windows root certificate store; normal Windows tool access resolves it. Initial wash fixtures exposed ordinary JSON floating-point rounding (exact mask/palette assertions retained; scalar tolerance 1e-9), a missing Desert fixture theme, and a wrong red-channel expectation for washing the blue car. Corrected fixtures retain actual dirty-to-clean pixel and canonical assertions. No failed invariant was bypassed.
++
++Inspected actual renders: [dirty car](evidence/car-wash-2026-10-11/garage-dirty.png), [partly washed](evidence/car-wash-2026-10-11/garage-partly-washed.png), [actual app at 960](evidence/car-wash-2026-10-11/garage-app-960.png), [1280](evidence/car-wash-2026-10-11/garage-app-1280.png), [1600](evidence/car-wash-2026-10-11/garage-app-1600.png), and equivalent Mobile/Vulkan captures under `evidence/car-wash-2026-10-11/mobile/`. Test saves and app captures use isolated local directories; no owner save or competitive result is written.
++
++## Review and remaining acceptance
++
++A task-only two-commit Git checkpoint lives in `build/car_wash/checkpoint-repo`, with `task-only.patch`, SHA256 ledger and actual logs in `docs/evidence/car-wash-2026-10-11/`. It preserves the main repository branch/index and unrelated pre-existing work.
++
++Restart the local client to load the new behavior. Manual acceptance: finish/abandon on dirt, retry/change biome/car/restart the app, confirm each car's retained dirt; drive Winter after mud, confirm snow melts into smears; hold/drag to wash a patch, rotate with two fingers/right mouse, wash other sides, release/leave/reopen, then drive through dirt again. Confirm narrow-phone touch precision, the eight-second melt and brush size/speed are comfortable, and prolonged driving/washing remains smooth. The current implementation approximates smears and deposition cosmetically; it does not simulate fluid flow. A forced crash may lose at most the last periodic checkpoint interval. Phone performance and human visual/input acceptance remain open.
++
++No physical-device test or phone-attachment check, Android export/install, full Validate, physics regression/merge, backend operation, production deployment or new asset generation was performed. Desktop Mobile/Vulkan is not a device-performance claim.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 1a1463e..f263582 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1716,3 +1716,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Previous soft Winter shape with faster wind, 2026-10-11
+ 
+ 2026-10-11 WW17-WW19/V04/V05/G01/R01/Q01: owner prefers previous soft Winter shape with increased speed. Revision5 restores revision3 shader byte-exact/controller exact except version+6-24mps speed; 81ground/36bank wisps/world-lit source-to-road/two draws/594tri max/522 actual. Parity/headless33/native44/MobileVulkan33 pass; headless51ObjectDB shutdown warning retained. 24mps exact/static741/moving709-713-709 roof unchanged/canonical exact; grain-only coverage cap superseded by explicit shape choice. 120frame30FPS driving+curve inspected/desktop14-17us/no phone test-or-attachment check/export-install/fullValidate/app-physics regression/backend/deploy. Restart client; owner visual acceptance pending. Files/commands/limits/scoped checkpoint: docs/WINTER_SOFT_FAST.md.
++
++
++## Persistent local car dirt and washing, 2026-10-11
++
++2026-10-11 CW13-CW16/V06/G01/R01/Q01: owner persistent car dirt, snow melting into previous dirt and manual Garage Wash; explicitly local-only. Five independent optional schema2/version1 cosmetic saves/4096-byte wash volumes; retry-biome-finish-abandon-restart persistence, bounded mesh-hit mouse/touch washing, later re-coating and cached-page fencing. Compatibility1402+MobileVulkan1402/weathering600/livery115/view59/records54/App99 pass; actual app960-1280-1600 and dirty/partial captures inspected. Headless weathering shutdown68ObjectDB warning retained; initial JSON/theme/pixel fixture issues corrected without bypass. No backend/telemetry-upload/physics changes, phone test-or-attachment check/Android export-install/fullValidate/deploy. Restart client; owner/device appearance-input-performance acceptance remains. Files/commands/task-only Git checkpoint/limits: docs/CAR_WASH.md.
+diff --git a/docs/VEHICLE_WEATHERING.md b/docs/VEHICLE_WEATHERING.md
+index 065d031..2f320a2 100644
+--- a/docs/VEHICLE_WEATHERING.md
++++ b/docs/VEHICLE_WEATHERING.md
+@@ -93,3 +93,8 @@ python build/checkpoint_grass_mud_color.py
+ Both native runs pass **664 checks / 0 failures**, including the existing all-five-car road/off-road, persistence, pause/retry, canonical-snapshot and exact side-reset checks. Original paint/records remain unchanged. Actual Compatibility white-car lower-door colour change increases from 0.398 to 0.462, with upper change 0.070; the retained dense-lower-band assertion passes. Desert's 0.142/0.011 values remain exact. The first Mobile run failed five original-paint clean/reset comparisons while every white-paint comparison passed; allowing asynchronous studio preparation to settle before the baseline resolved this previously observed fixture issue. Exact assertions remain unchanged. [Grass mud on the original car](evidence/grass-mud-color-2026-10-11/original-pine-75s.png), [white comparison](evidence/grass-mud-color-2026-10-11/white-pine-75s.png), [rear corner](evidence/grass-mud-color-2026-10-11/original-pine-rear.png) and normal-camera pairs were inspected; desktop Mobile/Vulkan equivalents are under `mobile/`. These are controlled actual-car renders, not completed races or phone recordings.
+ 
+ CW12 changes only the colour constant, test capture destination, this document and status/plan. The task-only checkpoint is under `build/grass_mud_color/checkpoint-repo`; main index/branch and unrelated changes are preserved. No new shader, assets, handling, backend, deployment, Android export/install or physical-device test. Phone appearance and owner preference for the darker mud remain acceptance checks.
++
++
++## Persistent local dirt and Garage washing (CW13-CW16), 2026-10-11
++
++The owner supersedes the race-owned reset behavior: retained per-car dirt, snow melting into smears of previous dirt, and manual Garage washing. All condition is local only. See [CAR_WASH.md](CAR_WASH.md) for the additive save contract, changed files, actual commands/results/screenshots, task-only Git checkpoint and remaining acceptance. Explicit offline/diagnostic clean resets remain available; race retry and biome changes retain dirt.
+diff --git a/game/core/app.gd b/game/core/app.gd
+index c075b83..a8a7d70 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1632,7 +1632,7 @@ func _garage(parent: VBoxContainer = null) -> void:
+ 	page.vehicle_selected.connect(_select_vehicle)
+ 	page.race_requested.connect(func() -> void: _start_race(selected_track,false))
+ 	page.circuit_requested.connect(_open_library.bind("all"))
+-	page.save_failed.connect(func() -> void: _notice("Paint could not be saved. Check free storage space."))
++	page.save_failed.connect(func() -> void: _notice("Garage changes could not be saved. Check free storage space."))
+ 	parent.add_child(page)
+ 	var selector: OptionButton = page.find_child("VehicleSelector",true,false) as OptionButton
+ 	if selector != null: selector.get_popup().about_to_popup.connect(func() -> void: _telemetry_observe_car_offer.call_deferred(selector))
+diff --git a/game/core/game.gd b/game/core/game.gd
+index 2268525..91adb89 100644
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -74,6 +74,7 @@ var frame := DriveFrame.new()
+ var recorder := HandlingRecorder.new()
+ var car: CarVisual
+ var car_weathering := VehicleWeathering.new()
++var condition_save_elapsed: float = 0.0
+ var contact_shadow: MeshInstance3D
+ var cloud_shadow: MeshInstance3D
+ var cloud_elapsed: float = 0.0
+@@ -193,6 +194,7 @@ func _ready() -> void:
+ 	contact_shadow = ContactShading.car_shadow(world)
+ 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
+ 	car_weathering.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine", handling)
++	car_weathering.restore(VehicleCondition.read(preference_records, vehicle_id))
+ 	trails = SkidTrails.new()
+ 	trails.wheelbase = handling.wheelbase
+ 	trails.track_width = handling.track_width
+@@ -372,6 +374,8 @@ func _physics_process(_delta: float) -> void:
+ 
+ 
+ func _begin_finish() -> void:
++	car_weathering.present(sim.state, native_track, false)
++	_save_condition()
+ 	race_cues.reset()
+ 	# A separate simulation coasts visually; scored state and telemetry stay at the line.
+ 	finish_sim = VehicleSimulation.new(handling)
+@@ -412,6 +416,7 @@ func _advance_finish() -> void:
+ 
+ func _complete_finish() -> void:
+ 	if paused: return
++	_save_condition()
+ 	paused = true
+ 	if is_instance_valid(cloud_rating): cloud_rating.abandon()
+ 	race_cues.reveal_results()
+@@ -448,6 +453,10 @@ func _process(delta: float) -> void:
+ 	if profile_enabled: profile_water_us += Time.get_ticks_usec() - water_start
+ 	car.present(point, heading, presented.state, frame)
+ 	car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
++	if finish_sim != null and not paused: car_weathering.melt(delta)
++	condition_save_elapsed += delta
++	if condition_save_elapsed >= 5.0:
++		_save_condition()
+ 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
+ 	var audio_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0)
+@@ -553,7 +562,8 @@ func restart() -> void:
+ 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
+ 	track_session = TrackSession.new()
+ 	if vehicle_audio != null: vehicle_audio.reset()
+-	car_weathering.reset()
++	_save_condition()
++	car_weathering.last_tick = -1
+ 	if grass_birds != null: grass_birds.reset()
+ 	if grass_nature != null: grass_nature.reset()
+ 	if desert_ambience != null: desert_ambience.reset()
+@@ -827,7 +837,14 @@ static func render_scale_for(theme: String, base_scale: float, mobile: bool, pix
+ 	return scale
+ 
+ 
++func _save_condition() -> void:
++	condition_save_elapsed = 0.0
++	if preference_records != null and car != null:
++		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot())
++		if error != OK: push_warning("Local car condition save failed: " + error_string(error))
++
+ func _exit_tree() -> void:
++	_save_condition()
+ 	if is_instance_valid(cloud_rating): cloud_rating.abandon()
+ 	GameSoundtrack.instance().leave_race(self)
+ 	if is_instance_valid(_render_viewport):
+@@ -848,6 +865,7 @@ func cycle_track() -> void:
+ 
+ func _notification(what: int) -> void:
+ 	if sim != null and what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
++		_save_condition()
+ 		if not paused:
+ 			toggle_pause()
+ 
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+index 1b4e0d1..b924bb9 100644
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -147,6 +147,8 @@ static func _normalize(data: Variant) -> Dictionary:
+ 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+ 		elif field == "selected_car":
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
++		elif field == "vehicle_conditions":
++			if not VehicleCondition.valid_collection(preferences[field]): return {}
+ 		elif field == "vehicle_liveries":
+ 			if not VehicleLivery.valid_collection(preferences[field]): return {}
+ 		elif field == "camera_mode":
+diff --git a/game/tests/test_car_wash.gd b/game/tests/test_car_wash.gd
+new file mode 100644
+index 0000000..fefed9d
+--- /dev/null
++++ b/game/tests/test_car_wash.gd
+@@ -0,0 +1,261 @@
++extends SceneTree
++## Isolated local storage; real models, race lifecycle, hit-tested mouse/touch washing.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/car-wash-2026-10-11"
++var records: LocalRecords
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func settle() -> void:
++	for i: int in range(10): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
++	var directory: String = "user://car_wash_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	records = LocalRecords.new(directory.path_join("records.json"))
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		root.add_child(car)
++		var effect := VehicleWeathering.new()
++		effect.configure(car, "pine", VehicleCatalog.config(id))
++		effect.dirt_amount = 0.8
++		effect.mud_amount = 1.0
++		effect.deposit_color = VehicleWeathering.COLORS.pine
++		effect.snow_amount = 0.7
++		effect.melt(2.0)
++		check(is_equal_approx(effect.snow_amount, 0.45) and effect.smudge > 0.0 and effect.dirt_amount == 0.8, id + " snow melts into existing dirt")
++		effect.melt(8.0)
++		check(effect.snow_amount == 0.0 and effect.dirt_amount == 0.8 and effect.smudge > 0.4, id + " snow disappears without removing dirt")
++		var point: Vector3 = effect.bounds.position + effect.bounds.size * Vector3(1.0, 0.2, 0.6)
++		var before: PackedByteArray = effect.wash_image.get_data()
++		effect.wash(point, 0.15)
++		var partial: PackedByteArray = effect.wash_image.get_data()
++		check(partial != before, id + " local wash changes volume")
++		var cleaned: int = 0
++		for index: int in range(partial.size()):
++			if partial[index] > 0: cleaned += 1
++		check(cleaned > 0 and cleaned < VehicleCondition.CELLS / 4, id + " wash is a patch")
++		for z: int in range(16):
++			for y: int in range(16): check(partial[y * 256 + z * 16] == 0, id + " opposite side remains dirty")
++		effect.wash(point, 0.8)
++		check(effect.wash_image.get_data() != partial, id + " continued washing cleans progressively")
++		var saved: Dictionary = effect.snapshot()
++		check(VehicleCondition.save(records, id, saved) == OK, id + " atomic local save")
++		var reopened := LocalRecords.new(records.path)
++		reopened.load_records()
++		var recovered: Dictionary = VehicleCondition.read(reopened, id)
++		check(recovered.get("wash") == saved.wash and recovered.get("color") == saved.color and recovered.get("version") == saved.version, id + " restart preserves exact wash and palette")
++		for field: String in ["dirt", "snow", "wetness", "mud", "smudge"]:
++			check(absf(float(recovered.get(field, -1)) - float(saved[field])) < 0.000000001, id + " restart preserves " + field)
++		effect.configure(car, "desert", VehicleCatalog.config(id))
++		check(effect.snapshot() == saved, id + " biome change retains condition")
++		var state := VehicleState.new()
++		state.velocity = Vector2(0, 20)
++		var track := NativeTrack.new()
++		track.metadata = {"theme": "desert"}
++		track.cell_size = 10.0
++		track.grid_width = 10
++		track.grid_height = 10
++		track.half_extent = Vector2(50, 50)
++		track.cells.resize(100)
++		track.cells.fill(0)
++		track.deck_cells.resize(100)
++		track.deck_cells.fill(-1)
++		effect.present(state, track, false)
++		state.tick = 120
++		var canonical: Array = state.snapshot().duplicate(true)
++		effect.present(state, track, false)
++		check(effect.wash_image.get_data() != partial and effect.wash_image.get_data() != Marshalls.base64_to_raw(saved.wash), id + " later driving coats washed areas again")
++		check(state.snapshot() == canonical, id + " re-coating does not change canonical state")
++		effect.reset()
++		effect.snow_amount = 0.6
++		effect.melt(8.0)
++		check(effect.smudge == 0.0 and effect.dirt_amount == 0.0 and not effect.installed, id + " clean car snow melts without inventing dirt")
++		car.queue_free()
++		await process_frame
++	check(records.settings.vehicle_conditions.size() == 5 and records.records.is_empty(), "five independent cars; no PB writes")
++	var invalid: Dictionary = records.settings.vehicle_conditions.duplicate(true)
++	invalid.compact.dirt = INF
++	check(not VehicleCondition.valid_collection(invalid), "reject nonfinite local dirt")
++	invalid = records.settings.vehicle_conditions.duplicate(true)
++	invalid.compact.version = 2
++	check(not VehicleCondition.valid_collection(invalid), "reject unknown cosmetic version")
++	await race_lifecycle()
++	await garage()
++	if DisplayServer.get_name() != "headless": await app_capture()
++	print("CAR_WASH: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func race_lifecycle() -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = loop_track()
++	game.vehicle_id = "compact"
++	game.preference_records = records
++	game.production_mode = true
++	root.add_child(game)
++	game.set_process(false)
++	game.set_physics_process(false)
++	var before: Dictionary = game.car_weathering.snapshot()
++	check(before == VehicleCondition.read(records, "compact"), "race restores local condition")
++	game.restart()
++	check(game.car_weathering.snapshot() == before, "retry preserves cosmetic condition")
++	game.car_weathering.snow_amount = 0.5
++	var canonical: Array = game.sim.state.snapshot().duplicate(true)
++	game._begin_finish()
++	game.car_weathering.melt(8.0)
++	game._complete_finish()
++	check(game.sim.state.snapshot() == canonical, "finish/melt never changes scored state")
++	check(VehicleCondition.read(records, "compact").snow == 0.0, "completed race persists melted snow")
++	game.car_weathering.dirt_amount = 0.92
++	game.queue_free()
++	await process_frame
++	check(VehicleCondition.read(records, "compact").dirt == 0.92, "abandoned race saves before next menu")
++
++func garage() -> void:
++	root.size = Vector2i(1280, 720)
++	VehicleCatalog.selected = "compact"
++	var page := GaragePage.new()
++	page.records = records
++	page.circuit_title = "CIRCUIT / 5 LAPS"
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	var view: CarShowroom = page.showroom
++	view.set_process(false)
++	view.yaw = -PI * 0.5
++	view.elevation = 0.12
++	view.set_zoom(0.85)
++	check(view.weathering.snapshot() == VehicleCondition.read(records, "compact"), "garage displays raced condition")
++	page._toggle_wash()
++	check(view.wash_mode and page.wash_button.text == "Done", "explicit wash mode")
++	var target: Vector3 = Vector3(-0.9, 0.50, 0.1)
++	var pixel: Vector2 = view.camera.unproject_position(view.car.body.global_transform * target) * view.size / Vector2(view.showroom_viewport.size)
++	check(view.pick_body_point(pixel) != null, "ray hits actual door mesh")
++	check(view.pick_body_point(Vector2(-100, -100)) == null, "missed car cannot wash")
++	var mask: PackedByteArray = view.weathering.wash_image.get_data()
++	var motion := InputEventMouseMotion.new()
++	motion.position = pixel
++	motion.relative = Vector2(12, 0)
++	motion.button_mask = MOUSE_BUTTON_MASK_LEFT
++	var yaw: float = view.yaw
++	view.gui_input.emit(motion)
++	check(view.yaw == yaw, "wash drag does not orbit")
++	var dirty_image: Image
++	if DisplayServer.get_name() != "headless":
++		view.wash_pointer_valid = false
++		await settle()
++		dirty_image = root.get_texture().get_image()
++	if DisplayServer.get_name() != "headless": await capture("garage-dirty", page)
++	var press := InputEventMouseButton.new()
++	press.button_index = MOUSE_BUTTON_LEFT
++	press.position = pixel
++	press.pressed = true
++	view.gui_input.emit(press)
++	for i: int in range(20): view._process(0.05)
++	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
++	if DisplayServer.get_name() != "headless":
++		view.wash_pointer_valid = false
++		await settle()
++		var washed_image: Image = root.get_texture().get_image()
++		var actual: Vector2i = Vector2i(view.get_global_rect().position + pixel)
++		print("WASH_PIXEL: ", actual, " ", dirty_image.get_pixelv(actual), " -> ", washed_image.get_pixelv(actual))
++		check(dirty_image.get_pixelv(actual).b < washed_image.get_pixelv(actual).b - 0.02, "washing visibly reveals original blue door paint")
++		view.wash_pointer_valid = true
++	if DisplayServer.get_name() != "headless": await capture("garage-partly-washed", page)
++	press.pressed = false
++	view.gui_input.emit(press)
++	check(VehicleCondition.read(records, "compact") == view.weathering.snapshot(), "mouse release commits wash")
++	var touch := InputEventScreenTouch.new()
++	touch.index = 0
++	touch.position = pixel
++	touch.pressed = true
++	view.gui_input.emit(touch)
++	check(view.washing, "one finger washes")
++	touch.index = 1
++	touch.position = pixel + Vector2(80, 0)
++	view.gui_input.emit(touch)
++	check(not view.washing, "second finger switches to orbit")
++	var drag := InputEventScreenDrag.new()
++	drag.index = 1
++	drag.position = pixel + Vector2(100, 10)
++	view.gui_input.emit(drag)
++	check(view.yaw != yaw, "two fingers rotate in wash mode")
++	touch.canceled = true
++	view.gui_input.emit(touch)
++	check(not view.washing and view.touches.is_empty(), "canceled touch stops washing")
++	var newer: Dictionary = VehicleCondition.read(records, "compact")
++	newer.dirt = 0.97
++	check(VehicleCondition.save(records, "compact", newer) == OK, "newer local race state")
++	page._save_condition()
++	check(VehicleCondition.read(records, "compact").dirt == 0.97, "cached garage never overwrites newer condition")
++	page._reset()
++	check(view.weathering.dirt_amount == 0.97, "reset paint does not wash dirt")
++	page.queue_free()
++	await process_frame
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(VehicleCondition.read(reopened, "compact").dirt == 0.97, "garage exit retains local condition")
++
++func capture(label: String, page: GaragePage) -> void:
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label + ".png")) == OK, label + " screenshot")
++	for dimensions: Vector2i in [Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = dimensions
++		await settle()
++		check(page.wash_button.get_global_rect().end.x <= root.size.x, "wash action fits " + str(dimensions.x))
++		check(root.get_texture().get_image().save_png(output.path_join(label + "-" + str(dimensions.x) + ".png")) == OK, label + " responsive capture")
++	root.size = Vector2i(1280, 720)
++	await settle()
++
++func loop_track() -> NativeTrack:
++	var document: Dictionary = TrackDocument.create_blank()
++	document.theme = "desert"
++	var point := Vector2(-28, -18)
++	var heading: float = 0.0
++	for kind: String in ["straight", "hairpin", "straight", "hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind, point, heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		document.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		point = pose.position
++		heading = pose.heading
++	document = RoadPieces.route_from_pieces(document).document
++	document.start_line = {"position": [0.0, -18.0], "heading": 0.0}
++	return TrackCompiler.compile(JSON.parse_string(JSON.stringify(document)))
++
++func app_capture() -> void:
++	var directory: String = records.path.get_base_dir()
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = records
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	app._show_screen("garage")
++	await settle()
++	var button: Button = app.root_ui.find_child("GarageWash", true, false)
++	button.pressed.emit()
++	var view: CarShowroom = app.root_ui.find_child("GarageShowroom", true, false)
++	check(view.wash_mode, "real app enters Wash")
++	var swipe: Node = app.root_ui.get_node("MenuPageSwipe")
++	check(swipe._owns_gesture(app.root_ui, view.get_global_rect().get_center()), "wash owns gestures over menu paging")
++	for dimensions: Vector2i in [Vector2i(1280, 720), Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = dimensions
++		await settle()
++		check(root.get_visible_rect().encloses(button.get_global_rect()), "real app Wash action fits " + str(dimensions.x))
++		check(root.get_texture().get_image().save_png(output.path_join("garage-app-" + str(dimensions.x) + ".png")) == OK, "real app capture " + str(dimensions.x))
++	app.queue_free()
++	await process_frame
+diff --git a/game/tests/test_car_wash.gd.uid b/game/tests/test_car_wash.gd.uid
+new file mode 100644
+index 0000000..f2bc45c
+--- /dev/null
++++ b/game/tests/test_car_wash.gd.uid
+@@ -0,0 +1 @@
++uid://vwuardlak0jq
+diff --git a/game/tests/test_vehicle_weathering.gd b/game/tests/test_vehicle_weathering.gd
+index 5fe711f..b615687 100644
+--- a/game/tests/test_vehicle_weathering.gd
++++ b/game/tests/test_vehicle_weathering.gd
+@@ -87,7 +87,7 @@ func run() -> void:
+ 			check(car.livery == livery_before and car.paint_materials.body.albedo_color == original_paint, "original livery and paint retained")
+ 			check(effect.materials[0].shader.code.find("ALPHA") == -1, "opaque finish retains dust/depth occlusion")
+ 			effect.reset()
+-			check(effect.amount == 0.0 and effect.wetness == 0.0 and not effect.installed, "retry cleans car")
++			check(effect.amount == 0.0 and effect.wetness == 0.0 and not effect.installed, "explicit diagnostic reset cleans car")
+ 			for binding: Dictionary in effect.bindings:
+ 				check(binding.node.get_active_material(binding.index) is StandardMaterial3D, "reset restores original material")
+ 		var exposure: Array[float] = []
+@@ -147,10 +147,10 @@ func integration() -> void:
+ 	game.call("_process", 0.0)
+ 	check(game.car_weathering.amount == amount, "actual Game pause freezes buildup")
+ 	game.restart()
+-	check(game.car_weathering.amount == 0.0 and not game.car_weathering.installed, "actual restart cleans finish")
++	check(game.car_weathering.amount == amount and game.car_weathering.installed, "actual restart retains finish")
+ 	game.native_track.metadata.theme = "winter"
+ 	game.call("_update_weather")
+-	check(game.car_weathering.theme == "winter" and game.car_weathering.amount == 0.0, "actual biome change resets and selects finish")
++	check(game.car_weathering.theme == "winter" and game.car_weathering.amount == amount, "actual biome change retains previous dirt")
+ 	game.queue_free()
+ 	await process_frame
+ 
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index 91d91c8..13a3f4e 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -1,6 +1,16 @@
+ class_name CarShowroom
+ extends SubViewportContainer
+ ## Menu-only orbit camera over the actual race model. No simulation ownership.
++signal condition_changed
++var condition: Dictionary = {}
++var weathering := VehicleWeathering.new()
++var wash_mode: bool = false
++var washing: bool = false
++var wash_pointer := Vector2.ZERO
++var wash_previous := Vector2.ZERO
++var wash_pointer_valid: bool = false
++var wash_elapsed: float = 0.0
++var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
+ var livery: Dictionary = {}
+ var car: CarVisual
+@@ -35,6 +45,8 @@ func _ready() -> void:
+ 	car.livery = livery
+ 	world.add_child(car)
+ 	ShowroomStudio.build(world,car)
++	weathering.configure(car, "pine", VehicleCatalog.config(vehicle_id))
++	weathering.restore(condition)
+ 	camera = Camera3D.new()
+ 	world.add_child(camera)
+ 	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+@@ -53,6 +65,9 @@ func _orbit() -> void:
+ 	camera.look_at(Vector3(0, 0.55, 0))
+ 
+ func _drag(event: InputEvent) -> void:
++	if wash_mode and _wash_input(event):
++		accept_event()
++		return
+ 	if event is InputEventScreenTouch:
+ 		if event.canceled:
+ 			_clear_gesture()
+@@ -110,6 +125,8 @@ func _finger_distance() -> float:
+ 	return (points[0] as Vector2).distance_to(points[1] as Vector2)
+ 
+ func _clear_gesture() -> void:
++	washing = false
++	wash_pointer_valid = false
+ 	touches.clear()
+ 	pointer = -1
+ 	pinch_distance = 0.0
+@@ -117,4 +134,128 @@ func _clear_gesture() -> void:
+ 
+ func apply_livery(value: Dictionary) -> void:
+ 	livery = value.duplicate(true)
+-	if is_instance_valid(car): car.apply_livery(livery)
++	if is_instance_valid(car):
++		car.apply_livery(livery)
++		weathering.refresh_paint()
++
++func set_wash_mode(enabled: bool) -> void:
++	_clear_gesture()
++	washing = false
++	wash_pointer_valid = false
++	wash_mode = enabled
++	queue_redraw()
++
++func _wash_input(event: InputEvent) -> bool:
++	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.device != InputEvent.DEVICE_ID_EMULATION:
++		washing = event.pressed and touches.is_empty()
++		wash_pointer = event.position
++		wash_previous = wash_pointer
++		wash_pointer_valid = washing
++		if not washing: condition_changed.emit()
++		queue_redraw()
++		return true
++	if event is InputEventMouseMotion and event.device != InputEvent.DEVICE_ID_EMULATION and touches.is_empty():
++		if event.button_mask & MOUSE_BUTTON_MASK_RIGHT:
++			rotate_view(event.relative)
++			return true
++		wash_pointer = event.position
++		wash_pointer_valid = true
++		return true
++	if event is InputEventScreenTouch:
++		if event.canceled:
++			_clear_gesture()
++			washing = false
++			wash_pointer_valid = false
++			condition_changed.emit()
++		elif event.pressed:
++			if touches.size() < 2: touches[event.index] = event.position
++			pointer = int(touches.keys()[0])
++			washing = touches.size() == 1
++			wash_pointer = event.position
++			wash_previous = wash_pointer
++			wash_pointer_valid = washing
++			pinch_distance = _finger_distance()
++		else:
++			touches.erase(event.index)
++			washing = false # Lift and press again after orbiting to resume washing.
++			wash_pointer_valid = false
++			pointer = int(touches.keys()[0]) if not touches.is_empty() else -1
++			condition_changed.emit()
++		return true
++	if event is InputEventScreenDrag and touches.has(event.index):
++		var previous: Vector2 = touches[event.index]
++		touches[event.index] = event.position
++		if touches.size() == 2:
++			rotate_view((event.position - previous) * 0.5)
++			var distance: float = _finger_distance()
++			if distance > 1.0 and pinch_distance > 1.0: set_zoom(zoom * pinch_distance / distance)
++			pinch_distance = distance
++		elif washing:
++			wash_pointer = event.position
++		return true
++	return false
++
++func _process(delta: float) -> void:
++	if not is_visible_in_tree():
++		washing = false
++		return
++	if weathering.snow_amount > 0.0:
++		weathering.melt(delta)
++		wash_elapsed += delta
++		if wash_elapsed >= 2.0 or weathering.snow_amount == 0.0:
++			wash_elapsed = 0.0
++			condition_changed.emit()
++	if washing and wash_mode:
++		# Interpolate a fast swipe to avoid unwashed gaps between render frames.
++		var steps: int = clampi(ceili(wash_previous.distance_to(wash_pointer) / 12.0), 1, 32)
++		for index: int in range(steps):
++			wash_at(wash_previous.lerp(wash_pointer, float(index + 1) / steps), minf(delta, 0.1) / steps)
++		wash_previous = wash_pointer
++		wash_elapsed += delta
++		if wash_elapsed >= 2.0:
++			wash_elapsed = 0.0
++			condition_changed.emit()
++	if wash_mode: queue_redraw()
++
++func _draw() -> void:
++	if wash_mode and wash_pointer_valid:
++		draw_circle(wash_pointer, 20.0, Color(0.5, 0.85, 1.0, 0.12 if not washing else 0.25))
++		draw_arc(wash_pointer, 20.0, 0.0, TAU, 32, Color(0.65, 0.9, 1.0, 0.9), 2.0, true)
++
++func _cache_pick_meshes(node: Node3D) -> void:
++	if node is MeshInstance3D and node.mesh != null:
++		var faces: PackedVector3Array = node.mesh.get_faces()
++		if not faces.is_empty(): pick_meshes.append({"node": node, "faces": faces, "bounds": node.mesh.get_aabb()})
++	for child: Node in node.get_children():
++		if child is Node3D: _cache_pick_meshes(child)
++
++func pick_body_point(location: Vector2) -> Variant:
++	if camera == null or size.x <= 0.0 or size.y <= 0.0 or not Rect2(Vector2.ZERO, size).has_point(location): return null
++	if pick_meshes.is_empty(): _cache_pick_meshes(car.body)
++	var pixel: Vector2 = location * Vector2(showroom_viewport.size) / size
++	var origin: Vector3 = camera.project_ray_origin(pixel)
++	var direction: Vector3 = camera.project_ray_normal(pixel)
++	var nearest: float = INF
++	var result: Variant = null
++	for entry: Dictionary in pick_meshes:
++		var node: MeshInstance3D = entry.node
++		var inverse: Transform3D = node.global_transform.affine_inverse()
++		var local_origin: Vector3 = inverse * origin
++		var local_direction: Vector3 = (inverse.basis * direction).normalized()
++		if not (entry.bounds as AABB).intersects_ray(local_origin, local_direction): continue
++		var faces: PackedVector3Array = entry.faces
++		for index: int in range(0, faces.size(), 3):
++			var hit: Variant = Geometry3D.ray_intersects_triangle(local_origin, local_direction, faces[index], faces[index+1], faces[index+2])
++			if hit == null: continue
++			var world: Vector3 = node.global_transform * (hit as Vector3)
++			var distance: float = origin.distance_squared_to(world)
++			if distance < nearest:
++				nearest = distance
++				result = car.body.global_transform.affine_inverse() * world
++	return result
++
++func wash_at(location: Vector2, seconds: float) -> bool:
++	var point: Variant = pick_body_point(location)
++	if point == null: return false
++	weathering.wash(point, seconds)
++	return true
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index 0f3bb3f..b81f10d 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -11,6 +11,9 @@ var draft: Dictionary
+ var pickers: Dictionary = {}
+ var vehicle_id: String = VehicleCatalog.selected
+ var circuit_title: String = ""
++var wash_button: Button
++var view_hint: Label
++var _condition_saved: Dictionary = {}
+ 
+ func _ready() -> void:
+ 	resized.connect(queue_redraw)
+@@ -24,12 +27,18 @@ func _ready() -> void:
+ 	showroom.name = "GarageShowroom"
+ 	showroom.vehicle_id = vehicle_id
+ 	showroom.livery = draft
++	showroom.condition = VehicleCondition.read(records, vehicle_id)
++	_condition_saved = showroom.condition.duplicate(true)
++	showroom.condition_changed.connect(_save_condition)
+ 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.add_child(showroom)
+ 	var view_controls := HBoxContainer.new()
+ 	view_controls.name = "GarageViewControls"
+ 	preview.add_child(view_controls)
+ 	var hint := MenuStyle.label("Drag to rotate", 16, true)
++	view_hint = hint
++	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	hint.tooltip_text = "In Wash mode, rotate with two fingers or a right mouse drag."
+ 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	view_controls.add_child(hint)
+ 	var zoom_out := MenuStyle.button("-", showroom.zoom_by.bind(1.15))
+@@ -51,6 +60,10 @@ func _ready() -> void:
+ 	reset_view.custom_minimum_size = Vector2(48,48)
+ 	reset_view.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
+ 	view_controls.add_child(reset_view)
++	wash_button = MenuStyle.button("Wash", _toggle_wash)
++	wash_button.name = "GarageWash"
++	wash_button.custom_minimum_size = Vector2(88, 48)
++	view_controls.add_child(wash_button)
+ 	var circuit := MenuFeature.new()
+ 	circuit.name = "GarageCircuit"
+ 	circuit.heading = circuit_title
+@@ -147,3 +160,34 @@ func _reset() -> void:
+ 	showroom.apply_livery(draft)
+ 	_update_pickers()
+ 	_save()
++
++func _toggle_wash() -> void:
++	showroom.set_wash_mode(not showroom.wash_mode)
++	wash_button.text = "Done" if showroom.wash_mode else "Wash"
++	view_hint.text = "Drag to wash / Two fingers to rotate" if showroom.wash_mode else "Drag to rotate"
++	if not showroom.wash_mode: _save_condition()
++
++func _save_condition() -> void:
++	if showroom == null: return
++	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
++	# Prepared/outgoing garage pages must never overwrite newer race wear.
++	if current != _condition_saved:
++		showroom.weathering.restore(current)
++		_condition_saved = current.duplicate(true)
++		return
++	var value: Dictionary = showroom.weathering.snapshot()
++	if value == _condition_saved: return
++	if VehicleCondition.save(records, vehicle_id, value) != OK:
++		save_failed.emit()
++	else:
++		_condition_saved = value.duplicate(true)
++
++func _process(_delta: float) -> void:
++	if showroom == null or not is_visible_in_tree(): return
++	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
++	if current != _condition_saved:
++		showroom.weathering.restore(current)
++		_condition_saved = current.duplicate(true)
++
++func _exit_tree() -> void:
++	_save_condition()
+diff --git a/game/vehicle/vehicle_condition.gd b/game/vehicle/vehicle_condition.gd
+new file mode 100644
+index 0000000..7fb2568
+--- /dev/null
++++ b/game/vehicle/vehicle_condition.gd
+@@ -0,0 +1,30 @@
++class_name VehicleCondition
++extends RefCounted
++## Local cosmetic data only. Never enters a race contract or upload.
++const GRID: int = 16
++const CELLS: int = GRID * GRID * GRID
++
++static func read(records: LocalRecords, id: String) -> Dictionary:
++	if records == null: return {}
++	return records.settings.get("vehicle_conditions", {}).get(id, {}).duplicate(true)
++
++static func save(records: LocalRecords, id: String, value: Dictionary) -> Error:
++	if records == null: return OK
++	if read(records, id) == value: return OK
++	var collection: Dictionary = records.settings.get("vehicle_conditions", {}).duplicate(true)
++	collection[id] = value.duplicate(true)
++	records.settings.vehicle_conditions = collection
++	return records.save_records()
++
++static func valid_collection(value: Variant) -> bool:
++	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	for id: Variant in value:
++		if id not in VehicleCatalog.IDS or not value[id] is Dictionary: return false
++		var entry: Dictionary = value[id]
++		if entry.size() != 8 or entry.get("version") != 1: return false
++		for field: String in ["dirt", "snow", "wetness", "mud", "smudge"]:
++			var number: Variant = entry.get(field)
++			if not (number is int or number is float) or not is_finite(float(number)) or float(number) < 0.0 or float(number) > 1.0: return false
++		if not entry.get("color") is String or not Color.html_is_valid(entry.color): return false
++		if not entry.get("wash") is String or entry.wash.length() > 5464 or Marshalls.base64_to_raw(entry.wash).size() != CELLS: return false
++	return true
+diff --git a/game/vehicle/vehicle_condition.gd.uid b/game/vehicle/vehicle_condition.gd.uid
+new file mode 100644
+index 0000000..ddf1c09
+--- /dev/null
++++ b/game/vehicle/vehicle_condition.gd.uid
+@@ -0,0 +1 @@
++uid://c0ltcm8d45fqh
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+index 3beea39..eb74a18 100644
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -1,12 +1,22 @@
+ class_name VehicleWeathering
+ extends RefCounted
+-## Race-owned cosmetic exposure. Never writes simulation, livery or records.
++## Cosmetic exposure and local wash volume. Never writes canonical simulation or livery.
+ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
+ const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
+ const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48}
+ static var toon_finish: Shader
+ var theme: String = ""
+-var amount: float = 0.0
++var dirt_amount: float = 0.0
++var snow_amount: float = 0.0
++var amount: float:
++	get: return 1.0 - (1.0 - dirt_amount) * (1.0 - snow_amount)
++var deposit_color: Color = COLORS.pine
++var mud_amount: float = 0.0
++var smudge: float = 0.0
++var wash_image: Image
++var wash_texture: ImageTexture
++var bounds := AABB(Vector3(-2, 0, -4), Vector3(4, 3, 8))
++var _mask_travel: float = 0.0
+ var wetness: float = 0.0
+ var last_tick: int = -1
+ var bindings: Array[Dictionary] = []
+@@ -18,6 +28,7 @@ var wheel_half_span: float = 0.83
+ var wheel_radius: float = 0.37
+ 
+ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
++	var retained: Dictionary = snapshot()
+ 	reset()
+ 	bindings.clear()
+ 	materials.clear()
+@@ -27,11 +38,20 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
+ 	wheel_half_span = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
+ 	wheel_radius = float({"compact": 0.37, "pickup": 0.44, "classic": 0.34, "formula": 0.34, "kart": 0.22}.get(car.vehicle_id, 0.37))
+ 	if not COLORS.has(theme): return
++	deposit_color = COLORS[theme]
+ 	var paints: Array[StandardMaterial3D] = []
+ 	for surface: StandardMaterial3D in car.paint_materials.values(): paints.append(surface)
+ 	if car.accent_roof != null: paints.append(car.accent_roof)
+ 	for variant: Dictionary in car.paint_variants: paints.append(variant.material)
+ 	_bind(car.body, car.body.global_transform.affine_inverse(), paints, float(HEIGHTS.get(car.vehicle_id, 1.5)), {})
++	var first: bool = true
++	for binding: Dictionary in bindings:
++		var node: MeshInstance3D = binding.node
++		var box: AABB = (car.body.global_transform.affine_inverse() * node.global_transform) * node.mesh.get_aabb()
++		bounds = box if first else bounds.merge(box)
++		first = false
++	bounds = bounds.grow(0.08)
++	restore(retained)
+ 
+ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D], height: float, cache: Dictionary) -> void:
+ 	if node is MeshInstance3D and node.mesh != null:
+@@ -59,7 +79,7 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
+ 				surface.set_shader_parameter("paint_clearcoat", source.clearcoat if source.clearcoat_enabled else 0.0)
+ 				surface.set_shader_parameter("paint_clearcoat_roughness", source.clearcoat_roughness)
+ 				surface.set_shader_parameter("deposit_color", COLORS[theme])
+-				surface.set_shader_parameter("snow", 1.0 if theme == "winter" else 0.0)
++				surface.set_shader_parameter("snow", snow_amount)
+ 				surface.set_shader_parameter("mud", 1.0 if theme in ["pine", "night_city", "storm"] else 0.0)
+ 				surface.set_shader_parameter("roof_height", height)
+ 				surface.set_shader_parameter("axle_half", axle_half)
+@@ -69,7 +89,7 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
+ 				surface.set_shader_parameter("mesh_to_body", transform)
+ 				materials.append(surface)
+ 				cache[key] = surface
+-			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key]})
++			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key], "source": source})
+ 	for child: Node in node.get_children():
+ 		if child is Node3D: _bind(child, inverse, paints, height, cache)
+ 
+@@ -92,16 +112,98 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 		"storm":
+ 			exposure = travel * (0.00075 + off_road * 0.0030)
+ 			wetness = 1.0 - (1.0 - wetness) * exp(-seconds / 18.0)
+-	amount = 1.0 - (1.0 - amount) * exp(-exposure)
+-	if amount <= 0.00001 and wetness <= 0.00001: return
++	if theme == "winter":
++		snow_amount = 1.0 - (1.0 - snow_amount) * exp(-exposure)
++	else:
++		melt(seconds)
++		var added: float = (1.0 - dirt_amount) * (1.0 - exp(-exposure))
++		if added > 0.0:
++			deposit_color = deposit_color.lerp(COLORS.get(theme, COLORS.pine), added / maxf(dirt_amount + added, 0.00001))
++			mud_amount = lerpf(mud_amount, 1.0 if theme in ["pine", "night_city", "storm"] else 0.0, added / maxf(dirt_amount + added, 0.00001))
++			dirt_amount += added
++	# New road exposure gradually coats previously washed spots again.
++	_mask_travel += exposure
++	if _mask_travel >= 0.02:
++		var bytes: PackedByteArray = wash_image.get_data()
++		for index: int in range(bytes.size()): bytes[index] = roundi(bytes[index] * exp(-_mask_travel * 4.0))
++		wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
++		wash_texture.update(wash_image)
++		_mask_travel = 0.0
++	_update_finish()
++
++func melt(seconds: float) -> void:
++	var before: float = snow_amount
++	snow_amount = maxf(0.0, snow_amount - maxf(seconds, 0.0) / 8.0)
++	if dirt_amount > 0.0:
++		smudge = clampf(smudge + (before - snow_amount) * 0.75, 0.0, 1.0)
++	_update_finish()
++
++func _update_finish() -> void:
++	if amount <= 0.00001 and wetness <= 0.00001:
++		if installed:
++			for binding: Dictionary in bindings:
++				if not is_instance_valid(binding.node): continue
++				if binding.override: binding.node.material_override = binding.original
++				else: binding.node.set_surface_override_material(binding.index, binding.original)
++		installed = false
++		return
+ 	if not installed:
+ 		for binding: Dictionary in bindings:
+ 			if binding.override: binding.node.material_override = binding.finish
+ 			else: binding.node.set_surface_override_material(binding.index, binding.finish)
+ 		installed = true
+ 	for material: ShaderMaterial in materials:
+-		material.set_shader_parameter("amount", amount)
++		material.set_shader_parameter("amount", dirt_amount)
++		material.set_shader_parameter("snow", snow_amount)
++		material.set_shader_parameter("deposit_color", deposit_color)
++		material.set_shader_parameter("mud", mud_amount)
++		material.set_shader_parameter("smudge", smudge)
+ 		material.set_shader_parameter("wetness", wetness)
++		material.set_shader_parameter("wash_volume", wash_texture)
++		material.set_shader_parameter("wash_min", bounds.position)
++		material.set_shader_parameter("wash_size", bounds.size)
++
++func snapshot() -> Dictionary:
++	if wash_image == null:
++		wash_image = Image.create(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8)
++		wash_image.fill(Color.BLACK)
++	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data())}
++
++func restore(value: Dictionary) -> void:
++	if value.is_empty(): value = snapshot()
++	dirt_amount = float(value.get("dirt", 0.0))
++	snow_amount = float(value.get("snow", 0.0))
++	wetness = float(value.get("wetness", 0.0))
++	deposit_color = Color(str(value.get("color", COLORS.get(theme, COLORS.pine).to_html(false))))
++	mud_amount = float(value.get("mud", 0.0))
++	smudge = float(value.get("smudge", 0.0))
++	var bytes: PackedByteArray = Marshalls.base64_to_raw(str(value.get("wash", "")))
++	if bytes.size() != VehicleCondition.CELLS:
++		bytes.resize(VehicleCondition.CELLS)
++		bytes.fill(0)
++	wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
++	wash_texture = ImageTexture.create_from_image(wash_image)
++	_mask_travel = 0.0
++	last_tick = -1
++	_update_finish()
++
++func wash(point: Vector3, seconds: float) -> void:
++	if wash_image == null or seconds <= 0.0: return
++	var radius: float = 0.48
++	var grid: int = VehicleCondition.GRID
++	var bytes: PackedByteArray = wash_image.get_data()
++	var lower: Vector3 = ((point - Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).floor().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
++	var upper: Vector3 = ((point + Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).ceil().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
++	for z: int in range(int(lower.z), int(upper.z) + 1):
++		for y: int in range(int(lower.y), int(upper.y) + 1):
++			for x: int in range(int(lower.x), int(upper.x) + 1):
++				var centre: Vector3 = bounds.position + Vector3(float(x), float(y), float(z)) / float(grid - 1) * bounds.size
++				var distance: float = centre.distance_to(point)
++				if distance >= radius: continue
++				var index: int = y * grid * grid + z * grid + x
++				bytes[index] = mini(255, bytes[index] + ceili(255.0 * seconds * 3.0 * (1.0 - distance / radius)))
++	wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, bytes)
++	wash_texture.update(wash_image)
+ 
+ func reset() -> void:
+ 	if installed:
+@@ -110,6 +212,16 @@ func reset() -> void:
+ 			if binding.override: binding.node.material_override = binding.original
+ 			else: binding.node.set_surface_override_material(binding.index, binding.original)
+ 	installed = false
+-	amount = 0.0
++	dirt_amount = 0.0
++	snow_amount = 0.0
++	smudge = 0.0
++	mud_amount = 0.0
++	wash_image = null
++	wash_texture = null
+ 	wetness = 0.0
+ 	last_tick = -1
++
++func refresh_paint() -> void:
++	for binding: Dictionary in bindings:
++		var source: StandardMaterial3D = binding.source
++		(binding.finish as ShaderMaterial).set_shader_parameter("paint_color", source.albedo_color)
+diff --git a/game/vehicle/vehicle_weathering.gdshader b/game/vehicle/vehicle_weathering.gdshader
+index 9f219dd..2f07a02 100644
+--- a/game/vehicle/vehicle_weathering.gdshader
++++ b/game/vehicle/vehicle_weathering.gdshader
+@@ -13,6 +13,10 @@ uniform float amount = 0.0;
+ uniform float wetness = 0.0;
+ uniform float snow = 0.0;
+ uniform float mud = 0.0;
++uniform float smudge = 0.0;
++uniform sampler2D wash_volume : filter_linear, repeat_disable;
++uniform vec3 wash_min;
++uniform vec3 wash_size = vec3(1.0);
+ uniform float roof_height = 1.5;
+ uniform float axle_half = 1.28;
+ uniform float wheel_half_span = 0.83;
+@@ -70,8 +74,17 @@ void vertex() {
+ 	body_normal = normalize(mat3(mesh_to_body) * NORMAL);
+ }
+ 
++float wash_mask(vec3 point) {
++	vec3 p = clamp((point - wash_min) / wash_size, vec3(0.0), vec3(1.0)) * 15.0;
++	float slice = floor(p.z);
++	vec2 uv = vec2((slice * 16.0 + p.x + 0.5) / 256.0, (p.y + 0.5) / 16.0);
++	vec2 next_uv = vec2((min(slice + 1.0, 15.0) * 16.0 + p.x + 0.5) / 256.0, uv.y);
++	return 1.0 - mix(texture(wash_volume, uv).r, texture(wash_volume, next_uv).r, fract(p.z));
++}
++
+ void fragment() {
+ 	vec3 n = normalize(body_normal);
++	float remaining = wash_mask(body_point);
+ 	float side = abs(n.x);
+ 	float upward = max(n.y, 0.0);
+ 	float mottling = weather_noise(body_point * vec3(18.0, 26.0, 18.0));
+@@ -96,21 +109,24 @@ void fragment() {
+ 	// Reference-led dense sill/lower-door band. Fine splash scatter becomes
+ 	// sparse upward, with the existing diagonal fans raising it behind tires.
+ 	float side_band = near_wheels * (0.65 + side * 0.35) * road_film * 0.94;
+-	float coverage = clamp(max(side_band, side_spray * 0.72) * upper_fade + snow * upward * 0.38, 0.0, 1.0);
++	float coverage = clamp(max(side_band, side_spray * 0.72) * upper_fade, 0.0, 1.0);
+ 	coverage = mix(max(coverage, rear_wake), rear_wake, rear_only);
+ 	float surface_wetness = wetness * mix(1.0, rear_face, rear_only);
+ 	float streaks = weather_noise(body_point * vec3(36.0, 2.0, 36.0));
+-	float texture_weight = mix(mottling, streaks, surface_wetness * 0.45);
++	float texture_weight = mix(mottling, streaks, max(surface_wetness * 0.45, smudge * 0.85));
+ 	float film = (0.24 + road_film * 0.68) * (0.68 + texture_weight * 0.40) * (1.0 + mud * 0.65);
+ 	float splashes = speckles * (0.42 + road_film * 0.34);
+-	float deposit = clamp(amount * coverage * (film + splashes), 0.0, 0.94);
++	float deposit = clamp(amount * coverage * (film + splashes + smudge * streaks * 0.35) * remaining, 0.0, 0.94);
+ 	// Dense grains in the lower film are darker than the loose upper dust;
+ 	// Winter retains its snowy palette while using the same deposition shape.
+-	float grain_darkening = mix(0.32, 0.08, snow) * road_film;
+-	float packed_lower = road_film * (0.20 * (1.0 - snow) + mud * 0.25);
++	float grain_darkening = 0.32 * road_film;
++	float packed_lower = road_film * (0.20 + mud * 0.25);
+ 	vec3 residue = deposit_color.rgb * (0.87 + mottling * 0.18 - grain_darkening * speckles) * (1.0 - packed_lower);
+ 	ALBEDO = mix(paint_color.rgb * (1.0 - surface_wetness * 0.10), residue, deposit);
+-	float icy = snow * smoothstep(0.7, 0.9, speckles);
++	float snow_coat = clamp(snow * max(coverage, upward * 0.38 * (1.0 - rear_only)) * (film + splashes) * remaining, 0.0, 0.94);
++	ALBEDO = mix(ALBEDO, vec3(0.8627, 0.9098, 0.9294) * (0.87 + mottling * 0.18), snow_coat);
++	float icy = snow_coat * smoothstep(0.7, 0.9, speckles);
++	deposit = max(deposit, snow_coat);
+ 	ROUGHNESS = mix(paint_roughness, mix(0.90, 0.42, icy), deposit);
+ 	ROUGHNESS = mix(ROUGHNESS, 0.19 + streaks * 0.09, surface_wetness * 0.85);
+ 	METALLIC = paint_metallic * (1.0 - deposit);

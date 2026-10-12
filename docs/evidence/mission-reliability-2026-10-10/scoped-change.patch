@@ -1,0 +1,1017 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 MR01-MR13/B05/B07/R01/Q01/HOPT06-HOPT07/SC06-SC07: owner asks unusual mission-reliability tests. Added22backendfunctions/25scenarios per engine plus native11checks: post-commit lost acknowledgements (runs/points/resumes), real connection loss/lease reassignment, all-process restarts, fresh-write storage/read-only DB, bounded gray failures,32players/64runs/192successful repeated uploads,4-slot backpressure, expiry/rollover, skewed stale workers, corrupt-track isolation, pinned-build/schema safety, isolatedSQLite restore/crashed backup GCguard, actual scoped outbox account switch, hot-track maintenance. Frozenbefore4failures prove3defects fixed: accepted expiry recovery410, reused storage-probe false green, schema-only DB false green. Readiness now committed diagnostic row/fresh nonce create-read/cleanup with no probe accumulation; trajectory/scoring contracts retained. BroadSQLite140(12skip)/PG77; final exact-image87(8skip)/77 plus distinct extraSQLite1/PG2 =88/79; native11/Ruff/scoped checks pass, owned containers removed. Local58a44db0 schema0024 overlays10backendfiles/preserves114canonical/allotherbackend; fresh d16a4a17/schema0023 liveReady remains, no account/race/schema/deploy changes. No actual managed/zone/region failover/PITR, long soak, full-suite/percentage claim, phone/device/APK/UI/physics/fullValidate/imageupload/deploy. Provider/permissions/latency and rollout/backfill acceptance remain. Commands/limitations/receipts/task-only checkpoint: docs/MISSION_RELIABILITY_TESTS_2026_10_10.md.
++
+ 2026-10-10 SND42/G01/R01/Q01: owner Desert wind/dunes. Two race-owned Vehicle voices: original offline37s open wind/29s fine blowing sand; linked smooth randomized3.5-7s gusts/holds/phase/balance per Retry, at-rest/countdown ambience. Two-second opening/0.6s finish, pause/background/biome/exit isolated from driving; existing vehicle sand/Grass assets unchanged. Two PCM masters5821288bytes/rebuild hashes exact/zero endpoint step/no join dip. Import/headless97/native109/Grass107/vehicle-desert28/App99 pass; actual two loop crossings, two varied20s mixes peaks0.0821-0.0865/no clipping/sand11.761dB below sampledwind/exact pause-mute-finish silence. OPD2403 tablet attached/no phone/device listening-performance/export-install/fullValidate/physics/backend/deploy. Files/commands/provenance/previews/scoped Git checkpoint/owner acoustic acceptance: docs/DESERT_AMBIENCE.md.
+ 
+ 2026-10-10 CG11/CG09/V06/R01/Q01: owner amber side lamp overlaps door joint. Both markers move16cm forward (z-0.83 to-0.99m), about11cm clear of seam, lateral mount follows rolled fender; size/height/colour retained. Existing native side-profile252 checks pass; left/right/front screenshots inspected, no new tests or baked asset/physics/camera changes. TabletOPD2403 attached/no phone/device/export-install/fullValidate/backend/deploy. Actual command/files/captures/scoped checkpoint/owner-device acceptance: docs/COMPACT_SIDE_PROFILE.md (CG11 follow-up).
+--- a/backend/bmt_backend/readiness.py
++++ b/backend/bmt_backend/readiness.py
+@@ -1,12 +1,19 @@
+ """Coalesced dependency probes with bounded HTTP waits and one IO thread per API."""
+ import asyncio
++import hashlib
++import logging
+ import threading
+ import time
++import uuid
+ 
+ from sqlalchemy import text
+ from sqlalchemy.exc import SQLAlchemyError
+ 
+ from .migrate import SCHEMA_HEAD
++from .storage import canonical_json
++from .track_models import OperationState, now
++
++logger = logging.getLogger("bmt.readiness")
+ 
+ 
+ class DependencyFailure(Exception):
+@@ -40,7 +47,7 @@
+                 self.storage_expires_at = 0
+ 
+     def _dependencies(self, storage_needed):
+-        with self.app.state.engine.connect() as connection:
++        with self.app.state.engine.begin() as connection:
+             if connection.dialect.name == "postgresql":
+                 # Transaction-local; never weaken the application's normal SQL limits.
+                 connection.execute(text("SELECT set_config('statement_timeout', :timeout, true)"),
+@@ -48,11 +55,36 @@
+             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+             if revision != SCHEMA_HEAD:
+                 raise DependencyFailure("SCHEMA_NOT_READY")
++            # A successful schema SELECT does not establish write availability
++            # during read-only failover, disk exhaustion or permission changes.
++            from sqlalchemy.dialects.postgresql import insert as pg_insert
++            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
++            insert = sqlite_insert if connection.dialect.name == "sqlite" else pg_insert
++            probe = insert(OperationState).values(id="readiness-write",updated_at=now(),details={"schema":revision})
++            connection.execute(probe.on_conflict_do_update(index_elements=[OperationState.id],
++                set_={"updated_at":probe.excluded.updated_at,"details":probe.excluded.details}))
+         if storage_needed:
+             blobs = self.app.state.blobs
+-            expected = {"storage_probe": "bmt-v1"}
+-            if blobs.get_json(blobs.put_json(expected)) != expected:
+-                raise DependencyFailure("DEPENDENCY_UNAVAILABLE")
++            # Force an actual create/fsync/read, rather than re-reading the same
++            # immutable object forever after storage becomes full/read-only.
++            expected = {"storage_probe":"bmt-v1","nonce":uuid.uuid4().hex}
++            digest = hashlib.sha256(canonical_json(expected)).hexdigest()
++            try:
++                if blobs.put_json(expected) != digest or blobs.get_json(digest) != expected:
++                    raise DependencyFailure("DEPENDENCY_UNAVAILABLE")
++            finally:
++                # This unique reserved-format object has no gameplay reference.
++                # Cleanup failure never turns failed IO into a successful probe.
++                try:
++                    blobs.delete(digest)
++                except Exception:  # noqa: BLE001 - optional cleanup; age-based GC remains available
++                    logger.warning("readiness_object_cleanup_failed")
++                release = getattr(blobs,"release_probe_pin",None)
++                if release:
++                    try:
++                        release(digest)
++                    except Exception:  # noqa: BLE001 - failed DB cleanup is recovered by pin expiry
++                        logger.warning("readiness_pin_cleanup_failed")
+         return {"status": "ready", "schema": revision}
+ 
+     def _run(self, job, storage_needed):
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -215,8 +215,6 @@
+     ticket = session.get(RunTicket, payload.ticket_id)
+     if ticket is None or ticket.player_id != player.id:
+         raise HTTPException(404, "Run ticket not found")
+-    if ticket.expires_at <= now():
+-        raise HTTPException(410, "Run ticket expired")
+     board = session.get(Board, ticket.board_id)
+     check_scope(request, bool(board.manifest.get("test_population")), player)
+     existing = session.scalar(select(Run).where(Run.ticket_id == ticket.id))
+@@ -224,6 +222,10 @@
+         if existing.replay_hash != body["replay_hash"]:
+             raise HTTPException(409, "Ticket already submitted with different replay content")
+         return commit_response(session, player.id, "submit_run", key, body, run_payload(existing))
++    # Expiry prevents first admission, never recovery of an already accepted
++    # immutable submission after a lost response or prolonged network outage.
++    if ticket.expires_at <= now():
++        raise HTTPException(410, "Run ticket expired")
+     check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+     from .resumes import validate_receipts
+     validate_receipts(session, ticket.id, payload.replay)
+--- a/backend/bmt_backend/storage.py
++++ b/backend/bmt_backend/storage.py
+@@ -153,6 +153,17 @@
+         self._pin(digest)
+         return self.store.get_json(digest)
+ 
++    def release_probe_pin(self, digest: str) -> None:
++        """Remove only the caller's ephemeral readiness-object pin after IO."""
++        from sqlalchemy import delete
++
++        from .object_models import ObjectPin
++        if not re.fullmatch(r"[0-9a-f]{64}", digest):
++            raise ValueError("Invalid probe digest")
++        with self.factory() as session:
++            session.execute(delete(ObjectPin).where(ObjectPin.digest == digest))
++            session.commit()
++
+ 
+ def make_blob_store(settings, factory):
+     if settings.object_backend == "s3":
+--- a/backend/tests/replica_process_probe.py
++++ b/backend/tests/replica_process_probe.py
+@@ -15,7 +15,7 @@
+ from bmt_backend.app import create_app
+ from bmt_backend.config import Settings
+ from bmt_backend.db import make_engine
+-from bmt_backend.worker import process_one
++from bmt_backend.worker import process_one, process_worker_job
+ from bmt_backend.worker_lifecycle import run_worker
+ 
+ 
+@@ -81,6 +81,10 @@
+         def verify_run(self, *args, **kwargs):
+             if config.get("pause"):
+                 Path(str(prefix) + ".claimed").touch()
++                if engine.dialect.name == "postgresql":
++                    with engine.connect() as connection:
++                        pid = connection.scalar(text("SELECT pg_backend_pid()"))
++                    Path(str(prefix) + ".backend-pid").write_text(str(pid))
+                 while not Path(str(prefix) + ".release").exists():
+                     threading.Event().wait(0.02)
+             result = super().verify_run(*args, **kwargs)
+@@ -116,7 +120,7 @@
+             if statement.startswith("UPDATE runs SET") and "verified" in str(parameters):
+                 raise OperationalError("Injected finalization failure", {}, Exception("disposable fault"))
+         event.listen(engine, "before_cursor_execute", fault)
+-    run_worker(app, process_one, once=True)
++    run_worker(app, process_worker_job if config.get("continuous") else process_one, once=not config.get("continuous",False))
+ 
+ 
+ if __name__ == "__main__":
+--- /dev/null
++++ b/backend/tests/test_mission_processes.py
+@@ -0,0 +1,187 @@
++"""Real loopback processes and many-player recovery; never deploy these helpers."""
++import threading
++import time
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++
++import pytest
++from sqlalchemy import select, text
++from test_replica_failures import auth, payload, port, published, race_ticket, sign_in, worker
++from test_replica_failures import replicas as replicas_fixture
++
++from bmt_backend.track_models import LapPersonalBest, PersonalBest, QueueCapacity, Run
++
++replicas = replicas_fixture
++
++
++def until(predicate,timeout=25):
++    deadline=time.monotonic()+timeout
++    while time.monotonic()<deadline:
++        if predicate():return
++        threading.Event().wait(.05)
++    raise AssertionError("Owned process recovery deadline exceeded")
++
++
++def drained(r):
++    with r.factory() as session:return session.get(QueueCapacity,1).pending==0
++
++
++def complete(r,submissions):
++    with r.factory() as session:
++        return all(session.get(Run,row).status=="verified" for row in submissions)
++
++
++def saved_request(child,token,data,key,*,return_queue_full=False):
++    """Model durable client retry on explicitly advertised admission pressure."""
++    for attempt in range(12):
++        reply=child.client.post("/v1/runs",headers=auth(token,key),json=data)
++        if reply.status_code==202 or return_queue_full and reply.status_code==429:return reply
++        detail=reply.json().get("detail","")
++        assert reply.status_code==429 or reply.status_code==503 and detail=="REQUEST_VALIDATION_BUSY",reply.text
++        delay=float(reply.headers.get("retry-after","1"))
++        # Stable per-operation jitter disperses reconnecting clients; retries
++        # retain the exact original key/body rather than minting new attempts.
++        jitter=(sum(key.encode())%17)/100
++        threading.Event().wait(min(2,max(.05,delay))+jitter)
++    raise AssertionError("Owned saved submission did not recover within bounded retries")
++
++
++def test_all_api_and_worker_processes_restart_with_accepted_jobs(replicas):
++    version=published(replicas)
++    players=[sign_in(replicas,f"Restart driver {i}") for i in range(6)]
++    saved=[]
++    for i,token in enumerate(players):
++        issued=race_ticket(replicas,version,token)
++        response=replicas.a.client.post("/v1/runs",headers=auth(token,f"restart-save-{i}"),json=payload(issued))
++        assert response.status_code==202;saved.append((token,issued,response.json()["run_id"]))
++    paused=worker(replicas,pause=True)
++    until(lambda:Path(str(paused.prefix)+".claimed").exists(),10)
++    for child in (replicas.a,replicas.b,paused):replicas.processes.stop(child,kill=True)
++    with replicas.factory() as session:
++        for row in session.scalars(select(Run).where(Run.status=="verifying")):row.lease_until=0
++        session.commit()
++    replicas.a=replicas.processes.start("api",api_port=port())
++    replicas.b=replicas.processes.start("api",api_port=port())
++    replicas.processes.start("worker",continuous=True)
++    for i,(token,issued,run_id) in enumerate(saved):
++        retried=replicas.b.client.post("/v1/runs",headers=auth(token,f"restart-save-{i}"),json=payload(issued))
++        assert retried.status_code==202 and retried.json()["run_id"]==run_id
++        assert replicas.a.client.get("/v1/me",headers=auth(token)).status_code==200
++    until(lambda:complete(replicas,[row for _,_,row in saved]) and drained(replicas))
++    with replicas.factory() as session:
++        for token,_,run_id in saved:
++            p=token["player"]["id"];run=session.get(Run,run_id)
++            assert session.get(PersonalBest,(run.board_id,p)).run_id==run_id
++            assert session.get(LapPersonalBest,(run.board_id,p)).time_ticks==20
++
++
++def test_slow_replica_storage_is_bounded_and_recovers_without_restart(replicas):
++    version=published(replicas);token=sign_in(replicas,"Slow storage driver")
++    issued=race_ticket(replicas,version,token)
++    replicas.a.fault.write_text("stall")
++    assert replicas.a.client.get("/__fixture/invalidate-readiness").status_code==200
++    try:
++        with ThreadPoolExecutor(max_workers=10) as pool:
++            reads=[pool.submit(replicas.a.client.get,"/readyz") for _ in range(10)]
++            until(lambda:Path(str(replicas.a.fault)+".stalled").exists(),5)
++            assert replicas.a.client.get("/healthz").status_code==200
++            accepted=replicas.b.client.post("/v1/runs",headers=auth(token,"healthy-during-stall"),json=payload(issued))
++            assert accepted.status_code==202
++            replies=[job.result(timeout=5) for job in reads]
++            assert all(reply.status_code==503 for reply in replies)
++            assert replicas.a.client.get("/__fixture/probe-threads").json()["count"]==1
++    finally:replicas.a.fault.unlink(missing_ok=True)
++    until(lambda:replicas.a.client.get("/readyz").status_code==200,12)
++    worker(replicas)
++    with replicas.factory() as session:assert session.get(Run,accepted.json()["run_id"]).status=="verified"
++
++
++def test_connection_loss_during_paused_verification_and_lease_reassignment(replicas):
++    if not replicas.postgres:pytest.skip("PostgreSQL dropped connection plus real worker processes")
++    version=published(replicas);token=sign_in(replicas,"Disconnected worker driver")
++    issued=race_ticket(replicas,version,token)
++    accepted=replicas.a.client.post("/v1/runs",headers=auth(token,"connection-loss-save"),json=payload(issued))
++    assert accepted.status_code==202
++    run_id=accepted.json()["run_id"]
++    old=worker(replicas,pause=True)
++    marker=Path(str(old.prefix)+".backend-pid")
++    try:
++        until(marker.exists,10)
++        with replicas.factory() as session:
++            assert session.scalar(text("SELECT pg_terminate_backend(:pid)"),{"pid":int(marker.read_text())})
++            row=session.get(Run,run_id);assert row.status=="verifying"
++            row.lease_until=0;session.commit()
++        worker(replicas)
++        Path(str(old.prefix)+".release").touch()
++        assert old.process.wait(timeout=8)==0
++        with replicas.factory() as session:
++            run=session.get(Run,run_id)
++            assert run.status=="verified" and run.time_ticks==100
++            assert session.get(PersonalBest,(run.board_id,token["player"]["id"])).time_ticks==100
++            assert session.get(LapPersonalBest,(run.board_id,token["player"]["id"])).time_ticks==20
++            assert session.get(QueueCapacity,1).pending==0
++    finally:replicas.processes.stop(old,kill=True)
++
++
++def test_reconnection_wave_many_players_repeated_uploads_and_workers(replicas):
++    if not replicas.postgres:pytest.skip("Concurrent production submissions require PostgreSQL")
++    version=published(replicas)
++    players=[sign_in(replicas,f"Recovery wave {i}") for i in range(32)]
++    workers=[replicas.processes.start("worker",continuous=True) for _ in range(2)]
++    observed=[]
++    for round_number in range(2):
++        jobs=[]
++        for i,token in enumerate(players):
++            issued=race_ticket(replicas,version,token)
++            data=payload(issued);data["replay"]["frames"]=[[0,255,0]]*(25-round_number*5)
++            jobs.append((token,data,f"wave-{round_number}-{i}"))
++        def send(index,round_jobs=jobs):
++            token,data,key=round_jobs[index//3]
++            child=(replicas.a,replicas.b)[index%2]
++            reply=saved_request(child,token,data,key)
++            return index//3,reply.json()["run_id"]
++        with ThreadPoolExecutor(max_workers=12) as pool:replies=list(pool.map(send,range(len(jobs)*3)))
++        unique={i:{row for owner,row in replies if owner==i} for i in range(len(jobs))}
++        assert all(len(rows)==1 for rows in unique.values())
++        run_ids=[next(iter(unique[i])) for i in range(len(jobs))];observed.extend(run_ids)
++        until(lambda ids=run_ids:complete(replicas,ids) and drained(replicas),35)
++    with replicas.factory() as session:
++        assert len(set(observed))==64
++        assert all(session.get(Run,run_id).status=="verified" for run_id in observed)
++        for token in players:
++            pb=session.scalar(select(PersonalBest).where(PersonalBest.player_id==token["player"]["id"]))
++            lap=session.get(LapPersonalBest,(pb.board_id,pb.player_id))
++            assert pb.time_ticks==100 and lap.time_ticks==20
++        assert session.get(QueueCapacity,1).pending==0
++    assert all(child.process.poll() is None for child in workers)
++
++
++def test_low_capacity_backpressure_preserves_each_saved_attempt(replicas):
++    if not replicas.postgres:pytest.skip("Concurrent queue admission needs PostgreSQL")
++    from dataclasses import replace
++    version=published(replicas)
++    replicas.processes.stop(replicas.a);replicas.processes.stop(replicas.b)
++    replicas.processes.settings=replace(replicas.processes.settings,max_queued_runs=4)
++    replicas.a=replicas.processes.start("api",api_port=port())
++    replicas.b=replicas.processes.start("api",api_port=port())
++    players=[sign_in(replicas,f"Backpressure {i}") for i in range(8)]
++    saved=[(token,payload(race_ticket(replicas,version,token)),f"bounded-save-{i}") for i,token in enumerate(players)]
++    def send(i):
++        token,data,key=saved[i]
++        return saved_request(replicas.a,token,data,key,return_queue_full=True)
++    with ThreadPoolExecutor(max_workers=8) as pool:replies=list(pool.map(send,range(8)))
++    codes=[(r.status_code,r.json().get("detail","")) for r in replies]
++    assert sum(reply.status_code==202 for reply in replies)==4,codes
++    assert sum(reply.status_code==429 for reply in replies)==4,codes
++    with replicas.factory() as session:assert session.get(QueueCapacity,1).pending==4
++    replicas.processes.start("worker",continuous=True)
++    until(lambda:drained(replicas))
++    results=[]
++    for i,reply in enumerate(replies):
++        if reply.status_code==429:
++            until(lambda:drained(replicas))
++            reply=send(i)
++        assert reply.status_code==202
++        results.append(reply.json()["run_id"])
++    until(lambda:complete(replicas,results) and drained(replicas))
++    assert len(set(results))==8
+--- /dev/null
++++ b/backend/tests/test_mission_reliability.py
+@@ -0,0 +1,469 @@
++"""Unusual failure sequences; synthetic verification, real durable SQL/blob paths."""
++import asyncio
++import errno
++import os
++import shutil
++import sqlite3
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import event, func, select, text
++from sqlalchemy.exc import OperationalError
++from sqlalchemy.orm import Session, sessionmaker
++from test_domains import FakeVerifier, headers, public_course, race, submit, ticket, upload
++from test_domains import domain as domain_fixture
++
++from bmt_backend.app import create_app
++from bmt_backend.db import get_session, make_engine, make_session_factory
++from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++from bmt_backend.identity_models import Player
++from bmt_backend.maintenance import retain
++from bmt_backend.readiness import DependencyFailure
++from bmt_backend.storage import LocalBlobStore
++from bmt_backend.track_models import (
++    LapPersonalBest,
++    PersonalBest,
++    QueueCapacity,
++    Run,
++    RunTicket,
++    TrackVersion,
++    now,
++)
++from bmt_backend.worker import process_one
++
++domain = domain_fixture
++
++
++def body(issued, frames=20):
++    return {"ticket_id":issued["ticket_id"],"replay":{"schema":"bmt-replay-v1","frames":[[0,255,0]]*frames}}
++
++
++def assert_bests(d,board,player,run_id,ticks):
++    with d.factory() as session:
++        pb=session.get(PersonalBest,(board,d.players[player]))
++        lap=session.get(LapPersonalBest,(board,d.players[player]))
++        assert (pb.run_id,pb.time_ticks,lap.run_id,lap.time_ticks)==(run_id,ticks*5,run_id,ticks)
++
++
++@pytest.mark.parametrize("phase",["upload","verification"])
++def test_commit_succeeds_but_acknowledgement_is_lost(domain,monkeypatch,phase):
++    version,board=public_course(domain)
++    issued=ticket(domain,version,"Alice")
++    payload=body(issued)
++    if phase=="verification":queued=submit(domain,issued,"Alice")
++    lost=[]
++    class AmbiguousSession(Session):
++        def flush(self,*args,**kwargs):
++            target="queued" if phase=="upload" else "verified"
++            if any(isinstance(row,Run) and row.player_id==domain.players["Alice"] and (
++                   row.status==target or phase=="upload" and row in self.new and row.status is None)
++                   for row in list(self.new)+list(self.dirty)):
++                self.info["lost_commit_target"]=True
++            return super().flush(*args,**kwargs)
++        def commit(self):
++            super().commit()  # Deliberately lose the acknowledgement AFTER durable commit.
++            if self.info.pop("lost_commit_target",False) and not lost:
++                lost.append(True)
++                raise OperationalError("owned lost commit acknowledgement",{},Exception("connection disappeared"))
++    replacement=sessionmaker(domain.app.state.engine,class_=AmbiguousSession,expire_on_commit=False)
++    monkeypatch.setattr(domain.app.state,"session_factory",replacement)
++    def unreliable_session():
++        with replacement() as session:yield session
++    domain.app.dependency_overrides[get_session]=unreliable_session
++    calls=[];original=domain.app.state.verifier.verify_run
++    def counted(*args,**kwargs):calls.append(True);return original(*args,**kwargs)
++    monkeypatch.setattr(domain.app.state.verifier,"verify_run",counted)
++    if phase=="upload":
++        result=domain.client.post("/v1/runs",headers=headers(domain,"Alice","lost-upload-ack"),json=payload)
++        assert result.status_code==503
++        with domain.factory() as session:
++            run=session.scalar(select(Run).where(Run.ticket_id==issued["ticket_id"]))
++            assert run and run.status=="queued"
++            run_id=run.id
++        retry=domain.client.post("/v1/runs",headers=headers(domain,"Alice","lost-upload-ack"),json=payload)
++        assert retry.status_code==202 and retry.json()["run_id"]==run_id
++        assert process_one(domain.app)
++    else:
++        with pytest.raises(OperationalError):process_one(domain.app)
++        run_id=queued["run_id"]
++        assert_bests(domain,board,"Alice",run_id,20)
++        assert not process_one(domain.app)  # Resolve the committed result, no repeated verification.
++    assert lost==[True] and len(calls)==1
++    assert_bests(domain,board,"Alice",run_id,20)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(Run).where(Run.ticket_id==issued["ticket_id"]))==1
++        assert session.get(QueueCapacity,1).pending==0
++
++
++def test_accepted_upload_can_be_recovered_after_ticket_expiry(domain):
++    version,board=public_course(domain)
++    issued=ticket(domain,version,"Alice")
++    payload=body(issued)
++    first=domain.client.post("/v1/runs",headers=headers(domain,"Alice","before-outage"),json=payload)
++    assert first.status_code==202
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        session.get(RunTicket,issued["ticket_id"]).expires_at=now()-1;session.commit()
++    retry=domain.client.post("/v1/runs",headers=headers(domain,"Alice","after-outage-new-key"),json=payload)
++    assert retry.status_code==202,retry.text
++    assert retry.json()["run_id"]==first.json()["run_id"] and retry.json()["status"]=="verified"
++    assert retry.json()["time_ticks"]==100 and retry.json()["lap_ticks"]==[20]*5
++    conflict=domain.client.post("/v1/runs",headers=headers(domain,"Alice"),json=body(issued,21))
++    assert conflict.status_code==409
++    assert_bests(domain,board,"Alice",first.json()["run_id"],20)
++
++
++def test_lost_resume_commit_acknowledgement_does_not_spend_twice(domain):
++    from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
++    from bmt_backend.resumes import grant_verified
++    _,_=public_course(domain)
++    with domain.factory() as session:
++        grant_verified(session,domain.players["Alice"],"award","mission-resume-award",2);session.commit()
++    begun=domain.client.post("/v1/resume-races",headers=headers(domain,"Alice"),json={})
++    assert begun.status_code==201
++    lost=[]
++    class LostResumeAck(Session):
++        def commit(self):
++            target=any(isinstance(row,ResumeReceipt) for row in list(self.new)+list(self.identity_map.values()))
++            super().commit()
++            if target and not lost:
++                lost.append(True);raise OperationalError("owned committed resume ack lost",{},Exception("fixture"))
++    factory=sessionmaker(domain.app.state.engine,class_=LostResumeAck,expire_on_commit=False)
++    def unreliable():
++        with factory() as session:yield session
++    domain.app.dependency_overrides[get_session]=unreliable
++    path=f"/v1/resume-races/{begun.json()['race_id']}/resumes"
++    selection={"ordinal":1,"input_offset":120,"from_tick":120,"to_tick":0}
++    first=domain.client.post(path,headers=headers(domain,"Alice","unknown-resume-commit"),json=selection)
++    assert first.status_code==503
++    recovered=domain.client.post(path,headers=headers(domain,"Alice","unknown-resume-commit"),json=selection)
++    assert recovered.status_code==200 and lost==[True]
++    with domain.factory() as session:
++        assert session.get(ResumeWallet,domain.players["Alice"]).balance==1
++        assert session.scalar(select(func.count()).select_from(ResumeReceipt))==1
++
++
++def test_lost_competitive_commit_acknowledgement_preserves_exact_points(domain,monkeypatch):
++    from test_rivalry import join, rivalry_ticket, seed
++
++    from bmt_backend.rivalry_models import RivalryBest, RivalryTicket
++    seed(domain);group=join(domain)
++    issued=rivalry_ticket(domain,group["group_id"]);queued=submit(domain,issued,"Alice")
++    lost=[]
++    class LostPointsAck(Session):
++        def commit(self):
++            target=any(isinstance(row,Run) and row.id==queued["run_id"] and row.status=="verified"
++                for row in self.identity_map.values())
++            super().commit()
++            if target and not lost:
++                lost.append(True);raise OperationalError("owned committed score ack lost",{},Exception("fixture"))
++    monkeypatch.setattr(domain.app.state,"session_factory",
++        sessionmaker(domain.app.state.engine,class_=LostPointsAck,expire_on_commit=False))
++    with pytest.raises(OperationalError):process_one(domain.app)
++    with domain.factory() as session:
++        outcome=session.get(RivalryTicket,issued["ticket_id"]).outcome
++        assert outcome and outcome["points_delta"]>0
++    assert not process_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(RivalryTicket,issued["ticket_id"]).outcome==outcome
++        assert session.scalar(select(func.count()).select_from(RivalryBest).where(RivalryBest.run_id==queued["run_id"]))==1
++
++
++@pytest.mark.parametrize("old_clock_shift",[-3600,3600])
++def test_suspended_worker_with_clock_jump_cannot_overwrite_replacement(domain,monkeypatch,old_clock_shift):
++    from bmt_backend import worker as worker_module
++    version,board=public_course(domain)
++    queued=submit(domain,ticket(domain,version,"Alice"),"Alice")
++    stamp=now();clocks=threading.local();entered=threading.Event();released=threading.Event()
++    monkeypatch.setattr(worker_module,"now",lambda:getattr(clocks,"value",stamp))
++    original=domain.app.state.verifier.verify_run
++    def paused(*args,**kwargs):
++        entered.set();assert released.wait(10)
++        clocks.value=stamp+old_clock_shift
++        return {**original(*args,**kwargs),"time_ticks":5,"lap_ticks":[1]*5}
++    monkeypatch.setattr(domain.app.state.verifier,"verify_run",paused)
++    replacement=create_app(domain.app.state.settings,engine=domain.app.state.engine,verifier=FakeVerifier())
++    try:
++        with ThreadPoolExecutor(max_workers=1) as pool:
++            old=pool.submit(process_one,domain.app)
++            assert entered.wait(5)
++            clocks.value=stamp+domain.app.state.settings.job_lease_seconds+1
++            assert process_one(replacement)
++            assert_bests(domain,board,"Alice",queued["run_id"],20)
++            released.set();assert old.result(timeout=5)
++    finally:released.set()
++    assert_bests(domain,board,"Alice",queued["run_id"],20)
++
++
++def test_never_accepted_expired_ticket_is_explicit_and_does_not_publish(domain):
++    version,_=public_course(domain)
++    issued=ticket(domain,version,"Alice");saved=body(issued)
++    with domain.factory() as session:
++        session.get(RunTicket,issued["ticket_id"]).expires_at=now()-1;session.commit()
++    response=domain.client.post("/v1/runs",headers=headers(domain,"Alice"),json=saved)
++    assert response.status_code==410 and saved["replay"]["frames"]
++    with domain.factory() as session:
++        assert session.scalar(select(Run).where(Run.ticket_id==issued["ticket_id"])) is None
++        assert session.get(QueueCapacity,1).pending==0
++
++
++@pytest.mark.parametrize("error_number",[errno.EACCES,errno.ENOSPC])
++def test_existing_objects_readable_but_fresh_storage_write_is_unavailable(domain,monkeypatch,error_number):
++    version,_=public_course(domain)
++    issued=ticket(domain,version,"Alice")
++    probe=domain.app.state.readiness
++    assert asyncio.run(probe.check())["status"]=="ready"
++    with domain.factory() as session:
++        retained=session.get(TrackVersion,version["version_id"]).content_hash
++    original=os.link
++    def unavailable(*_args,**_kwargs):raise OSError(error_number,"owned storage write failure")
++    with monkeypatch.context() as patch:
++        patch.setattr(os,"link",unavailable)
++        assert domain.app.state.blobs.get_json(retained)["shape"]=="oval"
++        probe.invalidate(storage=True)
++        response=domain.client.get("/readyz")
++        assert response.status_code==503,response.text
++        assert domain.client.get("/healthz").status_code==200
++        failed=domain.client.post("/v1/runs",headers=headers(domain,"Alice","saved-on-disk-failure"),json=body(issued))
++        assert failed.status_code==503
++    assert os.link is original
++    probe.invalidate(storage=True)
++    assert domain.client.get("/readyz").status_code==200
++    retry=domain.client.post("/v1/runs",headers=headers(domain,"Alice","saved-on-disk-failure"),json=body(issued))
++    assert retry.status_code==202 and process_one(domain.app)
++
++
++def test_schema_reads_succeed_but_commit_capability_is_unavailable(domain):
++    probe=domain.app.state.readiness;clock=[100.0];probe.clock=lambda:clock[0]
++    assert asyncio.run(probe.check())["status"]=="ready"
++    clock[0]+=3  # Only the database probe is due; storage success is still fresh.
++    def readonly(_conn,_cursor,sql,parameters,*_):
++        if "INSERT INTO operation_state" in sql and "readiness-write" in str(parameters):
++            raise OperationalError("owned read-only database",{},Exception("writes unavailable"))
++    event.listen(domain.app.state.engine,"before_cursor_execute",readonly)
++    try:
++        with pytest.raises(DependencyFailure):asyncio.run(probe.check())
++        assert domain.client.get("/healthz").status_code==200
++    finally:event.remove(domain.app.state.engine,"before_cursor_execute",readonly)
++    probe.invalidate()
++    assert asyncio.run(probe.check())["status"]=="ready"
++
++
++def test_fresh_readiness_probes_do_not_accumulate_objects_or_pins(domain):
++    from bmt_backend.object_models import ObjectPin
++    public_course(domain)
++    raw=domain.app.state.blobs.store
++    files={str(p) for p in raw.root.rglob("*.json")}
++    with domain.factory() as session:pins=set(session.scalars(select(ObjectPin.digest)))
++    for _ in range(3):
++        domain.app.state.readiness.invalidate(storage=True)
++        assert asyncio.run(domain.app.state.readiness.check())["status"]=="ready"
++    assert {str(p) for p in raw.root.rglob("*.json")}==files
++    with domain.factory() as session:assert set(session.scalars(select(ObjectPin.digest)))==pins
++
++
++def test_postgres_read_only_primary_transition_is_not_reported_ready(domain):
++    if not domain.postgres:pytest.skip("PostgreSQL transaction read-only simulation")
++    probe=domain.app.state.readiness;clock=[100.0];probe.clock=lambda:clock[0]
++    assert asyncio.run(probe.check())["status"]=="ready"
++    clock[0]+=3
++    def read_only(connection,_record,_proxy):connection.read_only=True
++    event.listen(domain.app.state.engine,"checkout",read_only)
++    try:
++        with pytest.raises(DependencyFailure):asyncio.run(probe.check())
++    finally:
++        event.remove(domain.app.state.engine,"checkout",read_only);domain.app.state.engine.dispose()
++    probe.invalidate()
++    assert asyncio.run(probe.check())["status"]=="ready"
++
++
++def test_killed_postgres_connections_recover_durable_jobs(domain):
++    if not domain.postgres:pytest.skip("PostgreSQL connection-loss simulation, not managed failover")
++    version,board=public_course(domain)
++    queued=submit(domain,ticket(domain,version,"Alice"),"Alice")
++    # Kill only this owned fixture pool's idle connection using a separate engine.
++    connection=domain.app.state.engine.connect();pid=connection.scalar(text("SELECT pg_backend_pid()"));connection.close()
++    admin=make_engine(domain.app.state.settings.database_url)
++    try:
++        with admin.begin() as other:assert other.scalar(text("SELECT pg_terminate_backend(:pid)"),{"pid":pid})
++        response=domain.client.get(f"/v1/runs/{queued['run_id']}",headers=headers(domain,"Alice"))
++        assert response.status_code in (200,503)
++        assert domain.client.get(f"/v1/runs/{queued['run_id']}",headers=headers(domain,"Alice")).status_code==200
++        assert process_one(domain.app)
++        assert_bests(domain,board,"Alice",queued["run_id"],20)
++    finally:admin.dispose()
++
++
++def test_corrupt_track_cannot_starve_healthy_track_or_become_cheating_rejection(domain):
++    bad,_=public_course(domain)
++    good=upload(domain,"Bob",document={"shape":"healthy-other-track"})
++    race(domain,good,"Bob",frames=60)
++    published=domain.client.post(f"/v1/track-versions/{good['version_id']}/publish",headers=headers(domain,"Bob"))
++    assert published.status_code==200
++    bad_runs=[submit(domain,ticket(domain,bad,"Alice"),"Alice",frames=20+i) for i in range(4)]
++    healthy=[submit(domain,ticket(domain,good,"Carol"),"Carol",frames=30+i) for i in range(4)]
++    raw=domain.app.state.blobs.store
++    with domain.factory() as session:damaged=session.get(TrackVersion,bad["version_id"]).content_hash
++    path=raw._path(damaged);original=path.read_bytes();path.write_bytes(b"owned corrupt fixture")
++    try:
++        for _ in range(12):
++            process_one(domain.app)
++            with domain.factory() as session:
++                if all(session.get(Run,row["run_id"]).status=="verified" for row in healthy):break
++        with domain.factory() as session:
++            assert all(session.get(Run,row["run_id"]).status=="verified" for row in healthy)
++            assert all(session.get(Run,row["run_id"]).status!="rejected" for row in bad_runs)
++            assert all(session.get(Run,row["run_id"]).attempts<=domain.app.state.settings.max_job_attempts for row in bad_runs)
++    finally:path.write_bytes(original)
++    with domain.factory() as session:
++        for row in bad_runs:session.get(Run,row["run_id"]).lease_until=0
++        session.commit()
++    for _ in bad_runs:assert process_one(domain.app)
++    with domain.factory() as session:
++        assert all(session.get(Run,row["run_id"]).status=="verified" for row in bad_runs)
++
++
++def test_accepted_rivalry_job_finishes_after_week_rollover_exactly_once(domain,monkeypatch):
++    from test_rivalry import join, rivalry_ticket, seed
++
++    from bmt_backend import rivalry
++    from bmt_backend.rivalry_models import RivalryBest, RivalryGroup, RivalryTicket
++    seed(domain);group=join(domain)
++    issued=rivalry_ticket(domain,group["group_id"])
++    queued=submit(domain,issued,"Alice")
++    with domain.factory() as session:
++        g=session.get(RivalryGroup,group["group_id"])
++        ended=g.ends_at;session.get(Run,queued["run_id"]).created_at=ended-1;session.commit()
++    monkeypatch.setattr(rivalry,"now",lambda:ended+300)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        outcome=session.get(RivalryTicket,issued["ticket_id"]).outcome
++        assert outcome and outcome["points_delta"]>0
++        assert session.scalar(select(func.count()).select_from(RivalryBest).where(RivalryBest.run_id==queued["run_id"]))==1
++    retry=domain.client.post("/v1/runs",headers=headers(domain,"Alice"),json=body(issued))
++    assert retry.status_code==202 and retry.json()["run_id"]==queued["run_id"]
++    assert not process_one(domain.app)
++    with domain.factory() as session:assert session.get(RivalryTicket,issued["ticket_id"]).outcome==outcome
++
++
++def test_old_ticket_waits_for_matching_worker_and_unknown_schema_fails_closed(domain):
++    version,board=public_course(domain)
++    queued=submit(domain,ticket(domain,version,"Alice"),"Alice")
++    original=domain.app.state.verifier
++    class NextBuild(FakeVerifier):
++        def manifest(self):return {**super().manifest(),"physics_version":"next-unrelated-contract"}
++    domain.app.state.verifier=NextBuild()
++    assert not process_one(domain.app)
++    with domain.factory() as session:
++        run=session.get(Run,queued["run_id"])
++        assert run.status=="queued" and run.attempts==0
++    domain.app.state.verifier=original
++    assert process_one(domain.app);assert_bests(domain,board,"Alice",queued["run_id"],20)
++    with domain.app.state.engine.begin() as connection:
++        head=connection.scalar(text("SELECT version_num FROM alembic_version"))
++        connection.execute(text("UPDATE alembic_version SET version_num='unknown_future'"))
++    try:
++        domain.app.state.readiness.invalidate()
++        assert domain.client.get("/readyz").status_code==503
++        assert domain.client.get("/healthz").status_code==200
++    finally:
++        with domain.app.state.engine.begin() as connection:
++            connection.execute(text("UPDATE alembic_version SET version_num=:head"),{"head":head})
++        domain.app.state.readiness.invalidate()
++    assert domain.client.get("/readyz").status_code==200
++
++
++def test_hot_track_many_pbs_survive_histogram_refresh_and_retention(domain):
++    if not domain.postgres:pytest.skip("Concurrent production writers require PostgreSQL")
++    version,board=public_course(domain)
++    names=[f"Mission driver {i}" for i in range(24)]
++    with domain.factory() as session:
++        for name in names:
++            p=Player(display_name=name);session.add(p);session.flush();domain.players[name]=p.id
++        session.commit()
++    submissions=[]
++    for round_number in range(2):
++        for name in names:
++            submissions.append((name,submit(domain,ticket(domain,version,name),name,frames=30-round_number*5)))
++    def verify():
++        for _ in range(len(submissions)):
++            process_one(domain.app)
++            with domain.factory() as session:
++                if session.get(QueueCapacity,1).pending==0:return
++    def maintenance():
++        for _ in range(3):
++            refresh_all_for_diagnostics(domain.app)
++            retain(domain.factory,domain.app.state.blobs,apply=True,offline=False,online=True)
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs=[pool.submit(verify),pool.submit(verify),pool.submit(maintenance)]
++        for job in jobs:job.result(timeout=30)
++    with domain.factory() as session:
++        assert all(session.get(Run,row["run_id"]).status=="verified" for _,row in submissions)
++        assert session.get(QueueCapacity,1).pending==0
++        for name in names:
++            assert session.get(PersonalBest,(board,domain.players[name])).time_ticks==125
++            assert session.get(LapPersonalBest,(board,domain.players[name])).time_ticks==25
++
++
++def test_crashed_backup_guard_blocks_gc_but_not_new_race_progress(domain):
++    from bmt_backend.backup_guard import begin, end
++    version,board=public_course(domain)
++    token=begin(domain.factory)
++    restarted_factory=make_session_factory(domain.app.state.engine)
++    try:
++        result=race(domain,version,"Alice",frames=20)
++        assert_bests(domain,board,"Alice",result["run_id"],20)
++        with pytest.raises(RuntimeError,match="already active"):begin(restarted_factory)
++        with pytest.raises(RuntimeError,match="paused"):
++            retain(restarted_factory,domain.app.state.blobs,apply=True,online=True)
++        with pytest.raises(RuntimeError,match="token"):end(restarted_factory,"wrong-owner-token")
++    finally:end(restarted_factory,token)
++    assert retain(restarted_factory,domain.app.state.blobs,apply=True,online=True)["applied"]
++    assert_bests(domain,board,"Alice",result["run_id"],20)
++
++
++def test_isolated_sqlite_restore_detects_missing_evidence_then_recovers(domain,tmp_path):
++    if domain.postgres:pytest.skip("SQLite backup API drill; PostgreSQL provider restore remains separate")
++    version,board=public_course(domain)
++    completed=race(domain,version,"Alice",frames=20)
++    issued=ticket(domain,version,"Bob")
++    queued=submit(domain,issued,"Bob",frames=25)
++    target=tmp_path/"restored.sqlite"
++    source=domain.app.state.engine.raw_connection()
++    destination=sqlite3.connect(target)
++    try:source.driver_connection.backup(destination)
++    finally:destination.close();source.close()
++    objects=tmp_path/"restored-objects";shutil.copytree(domain.app.state.blobs.store.root,objects)
++    store=LocalBlobStore(str(objects))
++    engine=make_engine("sqlite:///"+target.as_posix());factory=make_session_factory(engine)
++    def missing():
++        with factory() as session:
++            hashes=set(session.scalars(select(TrackVersion.content_hash)))|set(session.scalars(select(Run.replay_hash)))
++        failures=[]
++        for value in hashes:
++            try:store.get_json(value)
++            except (OSError,ValueError):failures.append(value)
++        return failures
++    try:
++        assert missing()==[]
++        with factory() as session:essential=session.get(Run,queued["run_id"]).replay_hash
++        retained=store._path(essential).read_bytes();store.delete(essential)
++        assert missing()==[essential]  # A valid DB/backup marker alone is insufficient.
++        store._path(essential).write_bytes(retained)
++        assert missing()==[]
++        settings=replace(domain.app.state.settings,database_url="sqlite:///"+target.as_posix(),object_dir=str(objects))
++        restored=create_app(settings,engine=engine,verifier=FakeVerifier())
++        restored.dependency_overrides=domain.app.dependency_overrides.copy()
++        with TestClient(restored) as client:
++            assert process_one(restored)
++            response=client.post("/v1/runs",headers=headers(domain,"Bob"),json=body(issued,25))
++            assert response.status_code==202 and response.json()["run_id"]==queued["run_id"]
++        with factory() as session:
++            assert session.get(PersonalBest,(board,domain.players["Alice"])).run_id==completed["run_id"]
++            assert session.get(PersonalBest,(board,domain.players["Bob"])).run_id==queued["run_id"]
++            assert session.get(LapPersonalBest,(board,domain.players["Bob"])).time_ticks==25
++            assert session.get(QueueCapacity,1).pending==0
++    finally:engine.dispose()
+--- a/backend/tests/test_replica_failures.py
++++ b/backend/tests/test_replica_failures.py
+@@ -37,10 +37,10 @@
+         self.root, self.settings, self.schema = root, settings, schema
+         self.children = []
+ 
+-    def start(self, role, *, api_port=None, pause=False, fault="", finalize_failure=False):
++    def start(self, role, *, api_port=None, pause=False, fault="", finalize_failure=False, continuous=False):
+         prefix = self.root / (role + "-" + uuid.uuid4().hex)
+         config = {"role": role, "settings": asdict(self.settings), "schema": self.schema,
+-            "prefix": str(prefix), "pause": pause, "finalize_failure": finalize_failure}
++            "prefix": str(prefix), "pause": pause, "finalize_failure": finalize_failure, "continuous":continuous}
+         if api_port:
+             config["port"] = api_port
+         config_path = Path(str(prefix) + ".json")
+--- a/docs/HISTOGRAM_RECOVERY_TESTS_2026_10_10.md
++++ b/docs/HISTOGRAM_RECOVERY_TESTS_2026_10_10.md
+@@ -1,4 +1,6 @@
+ # Histogram and lap-PB recovery tests — 2026-10-10
++
++Follow-up: [mission-reliability tests](MISSION_RELIABILITY_TESTS_2026_10_10.md) add failure sequences and fixes, superseding the ad0ace93 local candidate below with **58a44db0**. Earlier receipts remain historical; no deployment has occurred.
+ 
+ Requirements: **HOPT07/SC07** (implement and run the ten identified missing cases), HOPT06/SC06/B05/B07/R01/Q01/TD06/TD08. The owner explicitly requests implementation/testing. This slice adds **13 test functions, 23 parameterized scenarios per database engine**, fixes two reproduced reset races, and refreshes the local release candidate. It performs no deployment, live pruning or player-record writes.
+ 
+--- /dev/null
++++ b/docs/MISSION_RELIABILITY_TESTS_2026_10_10.md
+@@ -0,0 +1,75 @@
++# Mission-reliability failure tests â€” 2026-10-10
++
++Requirements **MR01â€“MR13**, B05/B07/R01/Q01/HOPT06â€“HOPT07/SC06â€“SC07. The owner asks for tests of the thirteen unusual failure scenarios discussed in chat. This local slice creates **22 backend test functions / 25 scenarios per database engine**, plus an actual Godot outbox test with **11 checks**. It fixes three defects found by the tests. It does not promise 100% availability or perform destructive cloud drills.
++
++## Scenarios and evidence boundaries
++
++| Requirement | Automated coverage | Boundary |
++| --- | --- | --- |
++| MR01: commit succeeds, acknowledgement disappears | Real SQL commit followed by injected transport-equivalent error for upload, verification, resume spending and Rivalry points. Exact retries preserve one run/receipt/effect; computed results are not reverified. | Lost acknowledgement is injected after commit; not a physical packet-drop proxy. |
++| MR02: database transition/failover | PostgreSQL becomes transaction-read-only; an owned idle connection is terminated; a paused worker loses its connection, its lease is reassigned, then it reconnects with observably stale output. | Real connections/processes, but not a managed HA standby promotion or zonal outage. |
++| MR03: simultaneous service restarts | Two API processes and a paused worker are killed before replacements start. Six acknowledged jobs, sessions, PBs and lap minima recover from the shared durable database/objects. | Explicit lease expiry in the disposable fixture models recovery after the expiry deadline. |
++| MR04: existing objects readable, new writes fail | Actual local publication fails with EACCES/ENOSPC while retained track data remains readable. Readiness must fail, upload is not acknowledged, saved submission recovers after repair. | Filesystem publication failure is injected; no real host disk is filled. |
++| MR05: slow dependency | One real API's storage stalls. Concurrent readiness requests are bounded, one probe thread remains, liveness and the second API stay responsive, and recovery needs no process restart. | A controlled storage boundary stall, not an uncontrolled network blackhole. |
++| MR06: reconnect wave | **32 distinct players, two API processes, two workers, two races each, three identical successful submissions per race: 64 distinct verified runs / 192 successful upload responses.** Explicit validation-busy responses use bounded backoff/jitter with original keys/bodies. A separate eight-player/four-slot case proves 429 does not discard saved attempts. | Functional burst/retry test, not a thousands-of-players capacity or uptime claim. |
++| MR07: outage crosses expiry/competition end | Accepted ticket can recover its exact verified result after expiry; a never-admitted expired ticket remains 410 without publication. A pre-deadline accepted Rivalry job verified after rollover produces exactly one outcome. | Existing admission/eligibility policy is preserved; no new grace policy for never-accepted late races. |
++| MR08: suspended/skewed worker | Replacement finishes after lease expiry; the old worker resumes with its clock one hour ahead/behind and a deliberately better fake time. It cannot overwrite either PB. | Clock/lease logic simulation, not OS suspend or NTP manipulation. |
++| MR09: corrupt shared track object | Four jobs using a damaged track do not starve four jobs using another track. Failure is infrastructure/retryable, not cheating rejection; original evidence is retained and jobs recover after repair. | Test-only blob corruption in an owned directory. |
++| MR10: mixed builds/schema | A changed verifier cannot claim/rescore an old pinned ticket; the matching verifier later completes it. Unknown schema makes readiness unavailable and never silently compatible. | Does not prove a zero-downtime rolling schema migration; that requires the compatibility rollout from the previous plan. |
++| MR11: restore looks successful but evidence is missing | SQLite backup restores into another database/object directory; a referenced object is deliberately missing and detected before starting the restored API. After object repair, pending work/retries/PBs recover without duplication. A crashed backup guard continues blocking GC across a new factory while races progress; only its owner token releases it. | SQLite restore drill, not live PostgreSQL PITR or regional restoration. The semantic object audit is part of this test, not a newly deployed restore service. |
++| MR12: account changes during upload | Actual `CloudTracks` disk outbox receives a delayed response after switching Alice to Bob. Bob gains no job/result; Alice's original ticket/key/evidence survive adapter restart and recover the same accepted run. | Pinned Godot engine with controlled transport responses; no real account/device/network. |
++| MR13: hot-track PBs and maintenance | 24 players submit two improving races each. Two verifier threads run while background snapshots and online retention inspect the same field. Every accepted job verifies, the queue drains, and race/flying PBs are exact. | Recent records are retained; this case runs concurrent maintenance, not a full concurrent backup export or destructive pruning of those recent jobs. |
++
++New files: `backend/tests/test_mission_reliability.py`, `backend/tests/test_mission_processes.py`, `game/tests/test_mission_outbox.gd`.
++
++Existing test-only process helpers now support continuous workers and record an owned PostgreSQL backend PID at the pause barrier: `backend/tests/test_replica_failures.py`, `backend/tests/replica_process_probe.py`. These helpers remain outside the deployment package. No new dependencies or runtime AI calls were added.
++
++## Defects found and changes
++
++1. **Accepted ticket recovery after expiry returned 410.** `backend/bmt_backend/runs.py` checked expiry before looking for an existing accepted run. It now checks ownership/scope/content and returns the stored run before applying expiry to first admission. Changed replay content still conflicts; never-admitted expired tickets still fail; no replacement attempt is minted.
++2. **Storage readiness could be green on full/read-only storage.** The constant immutable probe object was reused, so local storage only read the existing object. `backend/bmt_backend/readiness.py` now creates, verifies and removes a unique reserved-format probe. `backend/bmt_backend/storage.py` releases its ephemeral pin. Repeated checks do not accumulate successful probe objects/pins; failed cleanup can fall back to expiry/age-based maintenance and is logged.
++3. **Database readiness tested reads but not commit capability.** A schema-only refresh could succeed during a read-only primary transition. Readiness now commits a small upsert to one existing `OperationState` row, `readiness-write`, after strict schema validation. It never touches player/results data. PostgreSQL probe timeouts remain transaction-local; existing cache/coalescing/deadline/liveness checks pass.
++
++Readiness still has the existing bounded request deadline, one IO thread, caching and deep-probe cadence. The extra work occurs at probe cadence, not inside trajectory computation. The database write and optional object/pin cleanup introduce small bounded operational IO; live-provider latency/permissions should be checked before rollout. No new IAM privileges were granted.
++
++The initial suite had five failures: four represented the three defects above; the upload-ack injection initially missed ORM's unset pre-flush status default. That fixture now intercepts the actual committed upload. The slow-storage fixture explicitly invalidates cached storage health before forcing a stall. Burst fixtures retry only advertised admission pressure rather than treating every initial request as guaranteed 202. Unexpected database/storage errors in the healthy burst remain failures. No integrity assertion was weakened.
++
++The four defect assertions also fail against frozen pre-fix source, with no mutation of the shared runtime. [Frozen-source receipt](evidence/mission-reliability-2026-10-10/frozen-before.log), [initial SQLite receipt](evidence/mission-reliability-2026-10-10/sqlite-initial.xml). The native fixture's initial incorrect mock method was corrected to the adapter's real `submit_run` signature; the game runtime needed no change.
++
++## Actual verification
++
++Python: `.tools/backend-venv/Scripts/python.exe`, `PYTHONPATH=backend`, `PYTHONUTF8=1`. Each PostgreSQL runner creates a unique local container/fixture schema, checks ownership before stopping and leaves deployed services untouched. Actor credentials/database configuration stay in disposable private fixtures, not evidence files.
++
++| Actual command/run | Outcome |
++| --- | --- |
++| `python -m pytest backend/tests/test_mission_reliability.py -k 'not postgres' -q --tb=short` | **15 passed, 1 skipped** before the later no-probe-leak and crashed-backup cases. |
++| Broader selected SQLite run below | **140 passed, 12 skipped**, before the final combined-process and crashed-backup additions. |
++| `python build/mission-reliability-2026-10-10/owned_postgres.py` | Corrected mission domain/process cases **17 passed**; broader final selected PostgreSQL run **77 passed**. Includes real 32-player HTTP retries and worker recovery. Owned containers removed. |
++| `python build/mission-reliability-2026-10-10/test_image.py` | Exact candidate main suite **87 SQLite passed, 8 skipped; 77 PostgreSQL passed**. |
++| Additional exact-candidate tests | Combined connection-loss/reassignment and crashed-backup cases: [PostgreSQL receipt](evidence/mission-reliability-2026-10-10/image-extra.log); crashed-backup SQLite **1 passed**; extra PostgreSQL **2 passed**. Combined final candidate totals are **88 SQLite passed / 8 skipped and 79 PostgreSQL passed**, because these extra cases were absent from the main-run collection. |
++| Pinned native outbox command below | **11 checks, zero failures**. |
++| Scoped Ruff and whitespace/patch checks | Passed; existing Starlette/httpx deprecation and CRLF normalization notices remain. |
++
++Broader command actually run:
++
++```powershell
++$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_mission_reliability.py backend/tests/test_readiness.py backend/tests/test_mission_processes.py backend/tests/test_exception_recovery.py backend/tests/test_histogram_recovery.py backend/tests/test_lap_bests.py backend/tests/test_histogram_snapshots.py backend/tests/test_population_batch.py backend/tests/test_test_drivers.py backend/tests/test_worker_lifecycle.py backend/tests/test_maintenance.py backend/tests/test_loadtest.py -k 'not postgres' -m 'not godot' -q --tb=short --junitxml=build/mission-reliability-2026-10-10/sqlite-final.xml
++```
++
++Native command actually run, with isolated application data:
++
++```powershell
++$env:APPDATA=(Join-Path (Get-Location) 'build/mission-outbox-user')
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_mission_outbox.gd -CommandTimeoutSeconds 90
++```
++
++Engine: **Godot 4.7.2 stable ed1daf0bf**, exact pinned executable through `scripts/dev.ps1`. No phone attachment check, phone/device test, APK/export or full Godot validation. Backend verification uses declared synthetic adapters in these reliability tests; this does not establish new native trajectory/anti-cheat coverage. No visible UI change or screenshot requirement. Counts overlap across runs; no line/branch coverage percentage was measured and the complete backend/native suite was not claimed green.
++
++## Candidate, checkpoint and outstanding drills
++
++Fresh deployment inspection remains development image `d16a4a17â€¦`, schema **0023**, readiness 200; no account/race/schema changes were made. Local candidate **`bmt-mission-recovery:20261010`**, image ID **`sha256:58a44db0afd1547aceb0515d725b6bb2dbd6e1613729674ce29fa1154249a107`**, includes the previous undeployed lap-PB/reset fixes plus this slice. It changes **ten backend files** on the exact development parent and preserves every unrelated backend file and all **114 canonical game files byte for byte**. [Image proof](evidence/mission-reliability-2026-10-10/image-proof.json). The prior `ad0ace93â€¦` candidate is superseded; schema 0024 remains undeployed.
++
++This task does **not** perform real zone/region loss, managed database failover/PITR, restoration of the deployed backup, long-duration soak, live DNS/certificate/identity outages or an actual mixed-schema rolling deployment. Those require an explicitly authorized isolated infrastructure drill, defined availability/recovery/data-loss objectives and measured production resource/connection limits. Local passing tests do not imply a 100% uptime guarantee. The rollout/backfill/rollback preflight from [the lap-PB document](LAP_PERSONAL_BESTS_2026_10_10.md) still applies; readiness now also needs live write/create/delete-cleanup permission and latency acceptance. No image upload, migration or deployment was performed.
++
++Task-only [patch](evidence/mission-reliability-2026-10-10/scoped-change.patch), [exact-parent server patch](evidence/mission-reliability-2026-10-10/server-image.patch), sanitized test/build receipts and local runner source are retained. The shared worktree contains unrelated changes; they are not included in this checkpoint or image.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 MR01-MR13/B05/B07/R01/Q01/HOPT06-HOPT07/SC06-SC07: owner asks unusual mission-reliability tests. Added22backendfunctions/25scenarios per engine plus native11checks: post-commit lost acknowledgements (runs/points/resumes), real connection loss/lease reassignment, all-process restarts, fresh-write storage/read-only DB, bounded gray failures,32players/64runs/192successful repeated uploads,4-slot backpressure, expiry/rollover, skewed stale workers, corrupt-track isolation, pinned-build/schema safety, isolatedSQLite restore/crashed backup GCguard, actual scoped outbox account switch, hot-track maintenance. Frozenbefore4failures prove3defects fixed: accepted expiry recovery410, reused storage-probe false green, schema-only DB false green. Readiness now committed diagnostic row/fresh nonce create-read/cleanup with no probe accumulation; trajectory/scoring contracts retained. BroadSQLite140(12skip)/PG77; final exact-image87(8skip)/77 plus distinct extraSQLite1/PG2 =88/79; native11/Ruff/scoped checks pass, owned containers removed. Local58a44db0 schema0024 overlays10backendfiles/preserves114canonical/allotherbackend; fresh d16a4a17/schema0023 liveReady remains, no account/race/schema/deploy changes. No actual managed/zone/region failover/PITR, long soak, full-suite/percentage claim, phone/device/APK/UI/physics/fullValidate/imageupload/deploy. Provider/permissions/latency and rollout/backfill acceptance remain. Commands/limitations/receipts/task-only checkpoint: docs/MISSION_RELIABILITY_TESTS_2026_10_10.md.
++
+ 2026-10-10 SND42/G01/R01/Q01: owner Desert wind/dunes. Two race-owned Vehicle voices: original offline37s open wind/29s fine blowing sand; linked smooth randomized3.5-7s gusts/holds/phase/balance per Retry, at-rest/countdown ambience. Two-second opening/0.6s finish, pause/background/biome/exit isolated from driving; existing vehicle sand/Grass assets unchanged. Two PCM masters5821288bytes/rebuild hashes exact/zero endpoint step/no join dip. Import/headless97/native109/Grass107/vehicle-desert28/App99 pass; actual two loop crossings, two varied20s mixes peaks0.0821-0.0865/no clipping/sand11.761dB below sampledwind/exact pause-mute-finish silence. OPD2403 tablet attached/no phone/device listening-performance/export-install/fullValidate/physics/backend/deploy. Files/commands/provenance/previews/scoped Git checkpoint/owner acoustic acceptance: docs/DESERT_AMBIENCE.md.
+ 
+ 2026-10-10 CG11/CG09/V06/R01/Q01: owner amber side lamp overlaps door joint. Both markers move16cm forward (z-0.83 to-0.99m), about11cm clear of seam, lateral mount follows rolled fender; size/height/colour retained. Existing native side-profile252 checks pass; left/right/front screenshots inspected, no new tests or baked asset/physics/camera changes. TabletOPD2403 attached/no phone/device/export-install/fullValidate/backend/deploy. Actual command/files/captures/scoped checkpoint/owner-device acceptance: docs/COMPACT_SIDE_PROFILE.md (CG11 follow-up).
+--- /dev/null
++++ b/game/tests/test_mission_outbox.gd
+@@ -0,0 +1,86 @@
++extends SceneTree
++## Actual durable CloudTracks outbox with controlled delayed transport responses.
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++
++class HeldClient extends Node:
++	signal respond
++	var player: Dictionary = {"id":"mission-alice"}
++	var origin: String = "http://127.0.0.1:1"
++	var held: bool = true
++	var requests: Array[Dictionary] = []
++	var _capabilities: Dictionary = {}
++	func signed_in() -> bool: return not player.is_empty()
++	func base_url() -> String: return origin
++	func server_now() -> int: return 1000
++	func new_operation_key() -> String: return "mission-retry-key-unchanged"
++	func _background(work: Callable) -> Variant: return work.call()
++	func submit_run(ticket_id: String, _frames: Array, key: String, _rewinds: Array = [], _proof: Dictionary = {}, _ghost: Dictionary = {}) -> Dictionary:
++		requests.append({"owner":player.id,"origin":origin,"ticket":ticket_id,"key":key})
++		if held: await respond
++		return {"ok":true,"status":202,"data":{"run_id":"mission-accepted-run","status":"verified","time_ticks":100,"lap_ticks":[20,20,20,20,20]}}
++	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _data: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		return {"ok":true,"status":200,"data":{"run_id":"mission-accepted-run","status":"verified","time_ticks":100,"lap_ticks":[20,20,20,20,20]}}
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func finish_flush(cloud: Node, state: Dictionary) -> void:
++	await cloud.flush_outbox()
++	state.done = true
++
++func run() -> void:
++	var client := HeldClient.new()
++	root.add_child(client)
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = "user://mission_outbox_"+TrackLibrary.unique_id()
++	root.add_child(cloud)
++	var saved_root: String = cloud.root_override
++	var ticket_data: Dictionary = {"ticket_id":"mission-original-ticket","_owner_id":"mission-alice","_origin":client.origin,"_submit_key":"mission-original-key"}
++	check(cloud.queue_run(ticket_data,[[0,255,0],[0,255,0]]),"original owner replay saved atomically")
++	var alice_path: String = cloud.outbox_path()
++	var state: Dictionary = {"done":false}
++	finish_flush(cloud,state)
++	for attempt: int in range(100):
++		if not client.requests.is_empty(): break
++		await process_frame
++	check(client.requests.size() == 1,"upload reached controlled in-flight barrier")
++	client.player = {"id":"mission-bob"}
++	check(cloud.outbox_path() != alice_path,"account switch uses a separate durable scope")
++	client.respond.emit()
++	for attempt: int in range(100):
++		if state.done: break
++		await process_frame
++	check(state.done,"late response completed without blocking the new account")
++	check(cloud.upload_jobs().is_empty(),"late Alice response creates no Bob job or result")
++	client.player = {"id":"mission-alice"}
++	var pending: Array[Dictionary] = cloud.upload_jobs()
++	check(pending.size() == 1 and not pending[0].has("done"),"original owner evidence remains pending after account switch")
++	check(pending.size() == 1 and pending[0].key == "mission-original-key","original operation identity retained")
++	cloud.queue_free()
++	await process_frame
++	# Recreate the actual adapter to prove the job is on disk, not only in memory.
++	var restored := Cloud.new()
++	restored.client = client
++	restored.root_override = saved_root
++	root.add_child(restored)
++	client.held = false
++	await restored.flush_outbox()
++	var completed: Array[Dictionary] = restored.upload_jobs()
++	check(completed.size() == 1 and completed[0].get("done",false),"original owner recovers the saved race after adapter restart")
++	check(client.requests.size() == 2 and client.requests[0] == client.requests[1],"retry preserves original account/origin/ticket/key")
++	check(completed.size() == 1 and completed[0].run_id == "mission-accepted-run","same accepted server run recovered")
++	client.player = {"id":"mission-bob"}
++	check(restored.upload_jobs().is_empty(),"verified Alice result remains absent from Bob history")
++	print("MISSION_OUTBOX ",checks," checks, ",failures," failures")
++	restored.queue_free()
++	client.queue_free()
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_mission_outbox.gd.uid
+@@ -0,0 +1 @@
++uid://dd4u1mvngaosp

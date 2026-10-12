@@ -1,0 +1,79 @@
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -454,7 +454,7 @@
+     return histogram_from_entries(board_id, session, bins, metric, entries)
+ 
+ 
+-def histogram_from_entries(board_id, session, bins, metric, entries):
++def histogram_from_entries(board_id, session, bins, metric, entries, *, candidate=None, frame_from=None, frame_to=None):
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+@@ -470,14 +470,20 @@
+             "bins": [],
+             "metric": metric,
+         }
+-    width = max(1, math.ceil((maximum - minimum + 1) / bins))
+-    bucket = cast(func.floor((entries.c.time_ticks - minimum) / width), Integer)
++    # Reserve the completed result's domain before its PB upload verifies. It
++    # changes only the bin geometry, never the verified population/counts.
++    start = min(minimum, candidate if candidate is not None else minimum,
++                frame_from if frame_from is not None else minimum)
++    end = max(maximum + 1, candidate + 1 if candidate is not None else maximum + 1,
++              frame_to if frame_to is not None else maximum + 1)
++    width = max(1, math.ceil((end - start) / bins))
++    bucket = cast(func.floor((entries.c.time_ticks - start) / width), Integer)
+     grouped = {int(bucket): int(frequency) for bucket, frequency in
+         session.execute(
+             select(bucket.label("bucket"), func.sum(entries.c.count)).select_from(entries).group_by(bucket)
+         ).all()
+     }
+-    occupied_bins = (maximum - minimum) // width + 1
++    occupied_bins = (end - start - 1) // width + 1
+     return {
+         "board_id": board_id,
+         "metric": metric,
+@@ -486,8 +492,8 @@
+         "maximum_ticks": maximum,
+         "bins": [
+             {
+-                "from_ticks": minimum + i * width,
+-                "to_ticks_exclusive": minimum + (i + 1) * width,
++                "from_ticks": start + i * width,
++                "to_ticks_exclusive": start + (i + 1) * width,
+                 "count": grouped.get(i, 0),
+             }
+             for i in range(occupied_bins)
+@@ -549,10 +555,17 @@
+ 
+ @router.get("/track-versions/{version_id}/results-comparison")
+ def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
+-                       bins: int = Query(8, ge=1, le=100),
++                       bins: int = Query(16, ge=1, le=100),
+                        race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
+-                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES)):
++                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       race_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       race_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
++                       lap_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2)):
+     """One deduplicated field of all available drivers, never a UI source choice."""
++    for start, end in ((race_from_ticks, race_to_ticks), (lap_from_ticks, lap_to_ticks)):
++        if (start is None) != (end is None) or start is not None and end <= start:
++            raise HTTPException(422, "Histogram frame requires ordered start/end bounds")
+     version = published_version(session, version_id)
+     pinned = board_manifest(version, vehicle_id)
+     public_id = digest({"version_id": version.id, **pinned})
+@@ -576,8 +589,10 @@
+     race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
+     lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
+     board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
+-    race = histogram_from_entries(board_id, session, bins, "race", race_entries)
+-    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries)
++    race = histogram_from_entries(board_id, session, bins, "race", race_entries,
++                                  candidate=race_ticks, frame_from=race_from_ticks, frame_to=race_to_ticks)
++    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries,
++                                 candidate=lap_ticks, frame_from=lap_from_ticks, frame_to=lap_to_ticks)
+     race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
+     lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
+     race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own

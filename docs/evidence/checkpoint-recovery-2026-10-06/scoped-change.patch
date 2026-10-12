@@ -1,0 +1,154 @@
+diff --git a/game/race/track_session.gd b/game/race/track_session.gd
+index 264efa0e..9c91d93f 100644
+--- a/game/race/track_session.gd
++++ b/game/race/track_session.gd
+@@ -27,6 +27,7 @@ var _centers := PackedVector2Array()
+ var _directions := PackedVector2Array()
+ var _progress := PackedFloat32Array()
+ var _notice_reach := PackedFloat32Array()
++var _route_hints := PackedInt32Array()
+ var _start_progress: float = 0.0
+ var _layers: Array[bool] = []
+ var _finish_elevated: bool = false
+@@ -116,6 +117,7 @@ func _configure(track: NativeTrack) -> void:
+ 			# Running wide costs distance; keep inside shortcut limits separate.
+ 			widths[1-inside] += 6.0*smoothstep(0.01,0.08,turn)
+ 		_centers.append(center)
++		_route_hints.append(low)
+ 		_directions.append(direction)
+ 		_progress.append(distance)
+ 		_widths.append(widths)
+@@ -298,14 +300,23 @@ func _route_progress_near(track: NativeTrack, point: Vector2, hint: int) -> floa
+ 	# nearest-vertex search can jump to a future bridge at the same position.
+ 	var best: float = INF
+ 	var progress: float = last_progress
+-	for offset: int in range(-1,2):
+-		var i: int = posmod(hint+offset,track.route.size())
+-		var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
+-		var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
+-		var distance: float = point.distance_squared_to(track.route[i]+edge*t)
+-		if distance < best:
+-			best = distance
+-			progress = track.route_cumulative[i]+edge.length()*t
++	var hints: Array[int] = [hint]
++	# A shortcut return can reach the required gate while the collision hint
++	# still follows a distant branch. The last accepted gate anchors the
++	# notice read model to the recovered road when it is physically closer.
++	# Keep the simulation branch on ties at overlapping roads; never change
++	# the collision resolver or use historical maximum progress for notices.
++	if next_checkpoint > 0 and next_checkpoint-1 < _route_hints.size():
++		hints.append(_route_hints[next_checkpoint-1])
++	for candidate: int in hints:
++		for offset: int in range(-1,2):
++			var i: int = posmod(candidate+offset,track.route.size())
++			var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
++			var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
++			var distance: float = point.distance_squared_to(track.route[i]+edge*t)
++			if distance < best-0.000001:
++				best = distance
++				progress = track.route_cumulative[i]+edge.length()*t
+ 	return progress
+ 
+ func _update_display_progress(track: NativeTrack, point: Vector2, hint: int) -> void:
+diff --git a/game/tests/capture_checkpoints.gd b/game/tests/capture_checkpoints.gd
+index 49719a6d..2f1f356b 100644
+--- a/game/tests/capture_checkpoints.gd
++++ b/game/tests/capture_checkpoints.gd
+@@ -14,8 +14,11 @@ func run() -> void:
+ 	var bridge_entry: bool = "--screen=bridge-entry" in OS.get_cmdline_user_args()
+ 	var late_notice: bool = "--screen=late-notice" in OS.get_cmdline_user_args()
+ 	var bridge_exit: bool = "--screen=bridge-exit" in OS.get_cmdline_user_args()
++	var return_recovery: bool = "--screen=return-recovery" in OS.get_cmdline_user_args()
+ 	var document: Dictionary
+-	if dust_cloud:
++	if return_recovery:
++		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
++	elif dust_cloud:
+ 		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json"))
+ 	elif bridge_entry or late_notice or bridge_exit:
+ 		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+@@ -43,6 +46,7 @@ func run() -> void:
+ 	# Pick a bend with a wide recovery extension for visual evidence.
+ 	for index: int in range(session.checkpoint_count()):
+ 		session.next_checkpoint = index
++		if return_recovery: break
+ 		if bridge_entry or late_notice:
+ 			if index == (15 if late_notice else 13): break
+ 			continue
+@@ -110,7 +114,7 @@ func run() -> void:
+ 		check(is_equal_approx(game.checkpoint_marker.position.y,0.12),"underpass marker is drawn at ground height")
+ 	await RenderingServer.frame_post_draw
+ 	root.get_texture().get_image().save_png("res://../build/checkpoint-late-notice-missed.png" if late_notice else "res://../build/checkpoint-bridge-entry-missed.png" if bridge_entry else "res://../build/checkpoint-missed.png")
+-	if not dust_cloud and not sharp_join and not bridge_entry and not late_notice:
++	if not dust_cloud and not sharp_join and not bridge_entry and not late_notice and not return_recovery:
+ 		await bearing_cases(game,road_center)
+ 		# Restore the actual driving view before accepting the missed gate.
+ 		game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0.0,true)
+@@ -132,6 +136,14 @@ func run() -> void:
+ 		game.race_cues.hide()
+ 		check(game.sim.state.track_elevated,"actual fast recovery enters the upper ramp in this tick")
+ 		check(session.next_checkpoint == 14,"runtime accepts the gate crossed before ramp entry")
++	elif return_recovery:
++		var ahead: Vector2 = track._race_route_point(session._start_progress+session._progress[selected_gate+3])
++		var stale_hint: int = track.nearest_route(ahead)
++		session._update_display_progress(track,ahead,stale_hint)
++		session.advance(track,road_center-direction*0.05,road_center+direction*0.05,stale_hint,session.checkpoint_elevated())
++		check(session.next_checkpoint == selected_gate+1 and session.missed_checkpoint == -1,"return recovery clears the miss despite a distant collision route hint")
++		game.sim.state.position = road_center+direction*0.05
++		game.previous_position = game.sim.state.position
+ 	else:
+ 		session.advance(track,recovery_point-direction*2,recovery_point+direction*2,0)
+ 	if dust_cloud:
+@@ -146,6 +158,9 @@ func run() -> void:
+ 		await RenderingServer.frame_post_draw
+ 		root.get_texture().get_image().save_png("res://../build/checkpoint-late-notice-cleared.png")
+ 	check(not notice.visible,"recovery also clears the direction hint")
++	if return_recovery:
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png("res://../build/checkpoint-return-recovery-cleared.png")
+ 	if dust_cloud:
+ 		check(session.next_checkpoint == 9,"ground-level driving accepts the reported gate")
+ 		await RenderingServer.frame_post_draw
+diff --git a/game/tests/test_checkpoint_notices.gd b/game/tests/test_checkpoint_notices.gd
+index ebd93f92..c413af84 100644
+--- a/game/tests/test_checkpoint_notices.gd
++++ b/game/tests/test_checkpoint_notices.gd
+@@ -13,9 +13,38 @@ func run() -> void:
+ 	_unrelated_bridge_crossing()
+ 	_lateral_notices()
+ 	_finish_notices()
++	_return_to_missed_gate()
+ 	print("CHECKPOINT_NOTICE_TESTS: ",checks," checks, ",failures," failures")
+ 	quit(0 if failures == 0 else 1)
+ 
++func _return_to_missed_gate() -> void:
++	for name: String in ["silmukka","dust_cloud","over_and_under"]:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+name+".json"))
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var configured := TrackSession.new(120,1)
++		configured._configure(track)
++		for gate: int in range(configured.checkpoint_count()-3):
++			var session := TrackSession.new(120,1)
++			session._configure(track)
++			session.next_checkpoint = gate
++			session.missed_checkpoint = gate
++			var ahead: Vector2 = track._race_route_point(session._start_progress+session._progress[gate+3])
++			session._update_display_progress(track,ahead,track.nearest_route(ahead))
++			var center: Vector2 = session._centers[gate]
++			var direction: Vector2 = session._directions[gate]
++			var hint: int = track.nearest_route(center)
++			session.advance(track,center-direction*0.05,center+direction*0.05,hint,session._layers[gate])
++			check(session.next_checkpoint == gate+1 and session.missed_checkpoint == -1,"return from three gates ahead clears only the recovered miss %s/%d" % [name,gate])
++			var stale := TrackSession.new(120,1)
++			stale._configure(track)
++			stale.next_checkpoint = gate
++			stale.missed_checkpoint = gate
++			var stale_hint: int = track.nearest_route(ahead)
++			stale.advance(track,center-direction*0.05,center+direction*0.05,stale_hint,stale._layers[gate])
++			check(stale.next_checkpoint == gate+1 and stale.missed_checkpoint == -1,"shortcut return with a distant route hint does not mark the upcoming gate missed %s/%d" % [name,gate])
++			stale.advance(track,center+direction*0.05,center+direction*0.1,stale_hint,stale._layers[gate])
++			check(stale.next_checkpoint == gate+1 and stale.missed_checkpoint == -1,"following tick stays clear while the route hint catches up %s/%d" % [name,gate])
++
+ func _wrong_layer_notices() -> void:
+ 	for name: String in ["dust_cloud","over_and_under"]:
+ 		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+name+".json"))

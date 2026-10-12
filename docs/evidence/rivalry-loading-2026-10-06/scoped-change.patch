@@ -1,0 +1,116 @@
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -56,6 +56,8 @@
+         raise ValueError("Choose public_api explicitly; private IAM ingress is the default")
+     if type(config.get("api_max")) is not int or not 1 <= config["api_max"] <= 2:
+         raise ValueError("Initial staging allows at most two API replicas")
++    if type(config.get("api_min", 0)) is not int or not 0 <= config.get("api_min", 0) <= min(1, config["api_max"]):
++        raise ValueError("Staging permits zero or one warm API instance within the replica cap")
+     if type(config.get("worker_instances")) is not int or not 1 <= config["worker_instances"] <= 2:
+         raise ValueError("Initial staging allows one or two workers")
+     # Zero overflow, full revision overlap plus operations and spare DB connections.
+@@ -140,7 +142,7 @@
+             *job, "--args=-m,bmt_backend.cloud_setup"),
+         "migrate_execute": command(config, "run", "jobs", "execute", n["migrate"], "--region=" + region, "--wait"),
+         "api": command(config, "run", "deploy", n["api"], *common("api", "runtime", "app_secret"),
+-            "--port=8080", "--concurrency=16", "--min=0", "--max=" + str(config["api_max"]),
++            "--port=8080", "--concurrency=16", "--min=" + str(config.get("api_min", 0)), "--max=" + str(config["api_max"]),
+             "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
+             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
+             "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
+--- a/backend/tests/test_gcp_staging.py
++++ b/backend/tests/test_gcp_staging.py
+@@ -344,3 +344,15 @@
+     with pytest.raises(RuntimeError, match="Remote owner data-retention"):
+         staging.Staging(c, tmp_path, runner).cleanup()
+     assert not any("delete" in argv or "rm" in argv for argv in runner.calls)
++
++
++def test_warm_api_minimum_keeps_instance_and_connection_caps(tmp_path):
++    c = config()
++    c["api_min"] = 1
++    staging.validate(c, apply=True)
++    commands = staging.deployment_commands(c, pinned(c), tmp_path)
++    assert "--min=1" in commands["api"] and "--max=2" in commands["api"]
++    for value in (2, -1, True, "1"):
++        c["api_min"] = value
++        with pytest.raises(ValueError, match="warm API"):
++            staging.validate(c, apply=True)
+--- a/backend/deploy/gcp/README.md
++++ b/backend/deploy/gcp/README.md
+@@ -1,4 +1,6 @@
+ # Google Cloud staging
++
++October 6 latency follow-up: the retained API now keeps one service-level instance warm, with maximum two, after an observed 15.9-second first rivalry request. Optional api_min remains zero by default for new disposable staging and permits only zero/one. Actual min=1 adds about €0.38/day idle before credits/free tier; current image/auth/data are unchanged. [Commands, timings and limits](../../../docs/RIVALRY_LOADING_2026_10_06.md).
+ 
+ October 6 retention override: the owner requested keeping the previous tracks. All 27 official tracks and 34 original published links were copied with stable IDs/content; 26 current-build revisions preserve older rules snapshots. [Actual migration, retention and continuing costs](../../../docs/GCP_TRACK_RETENTION_2026_10_06.md). Automatic deletion is disabled, and local/remote retention guards reject cleanup. SQL deletion protection/seven daily backups and seven-day GCS recovery are enabled. The earlier testing deadline no longer authorizes deleting this data. The server remains retained staging.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 WR03-WR08/B19-B20/B23/Q01: slow rivalry discovery traced to retained API scale-to-zero startup: initial frontend15.917s versus app63.6ms, recovered authenticated200 requests61-86ms. Owner confirms eventual Join view; isolated50ms response clears adapter/visible-page busy normally. Applied service minimum1/max2, same pinned image/auth/data/DB pool limits; optional api_min0/1 validated and persisted. Warm HTTPS health180/readiness452/unauth rivalry40196ms; native real-cloud21 checks and scaling27/ruff pass. Idle additional EUR0.38/day before credits/free tier, no commitment. No game/UI/physics/schema change, saved-session access, forced cold restart, Android/device test or attachment check. Actual commands, timings, price evidence, limits and scoped checkpoint: docs/RIVALRY_LOADING_2026_10_06.md. Concurrent work preserved.
++
+ 2026-10-06 B01-B07/B19-B20/B23/R01/Q01: owner-requested previous tracks retained in cloud after successful Google sign-in. 27 official logical tracks preserve IDs/names/authoring/content; all 34 original published links hash-match. Real native validator adds 26 immutable current-build revisions for old 0.49/v14 heads; 60 total revisions/34 documents, no original rewrites. Live 27/60 insert then 0/0 retry. Google account/session data retained; no development identities, fake drivers, times/ratings/resources copied. Automatic deletion disabled, local/remote retention guards, SQL deletion protection/seven daily backups, successful before/after manual backups and seven-day GCS recovery. Final unit34/ruff pass; graphical real cloud catalog167 checks pass with all downloads/compilations/geometry/rules and Race enabled; screenshot inspected. Existing WSL data/services unchanged; source snapshot retained. Current image/schema/simulation unchanged; no Android export/device test or attachment check, full races, old-score mapping, capacity/restore/NAS/production acceptance. Retained hosting uses credits (rough EUR2.4/day baseline before credits/variable extras); EUR10 alert is not a cap. Actual commands, corrected launch/lint failures, files, protection/receipts and scoped checkpoint: docs/GCP_TRACK_RETENTION_2026_10_06.md. Concurrent work preserved.
+ 
+ 2026-10-06 B01-B07/B19-B20/B23/Q01: owner-added exact Avast exception verified; installed Windows app backend.cfg now targets the Google Cloud staging origin using normal TLS/Google Trust Services certificate. Private atomic config backup retained, cloud config development key removed; no custom CA applied. Pinned native Windows live API 21 checks and real account-controller config 8 checks pass; post-renew repeat 8 pass (overlap). API/worker Ready, SQL RUNNABLE, all compute retain same digest. Original overnight cleanup did not run; same-owner lease/9 remote expiry labels renewed to 15:36:57 Helsinki, watcher restarted and actual desktop-user scheduled fallback at 15:41:57 exercised read-only (result0, ownership/authentication passed) then restored to expiry-guarded cleanup. EUR10 alert persists, local cleanup/estimates are not spending caps. No WSL data/service import/delete, unsafe TLS, backend image/schema/physics change, Android export/device test or phone attachment check. Real interactive Google and OAuth origin registration remain unverified. Files, actual commands/results, limitation and scoped source/docs checkpoint: docs/GCP_PC_CONNECTION_2026_10_06.md. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 WR03-WR08/B19-B20/B23/Q01: slow rivalry discovery traced to retained API scale-to-zero startup: initial frontend15.917s versus app63.6ms, recovered authenticated200 requests61-86ms. Owner confirms eventual Join view; isolated50ms response clears adapter/visible-page busy normally. Applied service minimum1/max2, same pinned image/auth/data/DB pool limits; optional api_min0/1 validated and persisted. Warm HTTPS health180/readiness452/unauth rivalry40196ms; native real-cloud21 checks and scaling27/ruff pass. Idle additional EUR0.38/day before credits/free tier, no commitment. No game/UI/physics/schema change, saved-session access, forced cold restart, Android/device test or attachment check. Actual commands, timings, price evidence, limits and scoped checkpoint: docs/RIVALRY_LOADING_2026_10_06.md. Concurrent work preserved.
++
+ 2026-10-06 B01-B07/B19-B20/B23/R01/Q01: owner-requested previous tracks retained in cloud after successful Google sign-in. 27 official logical tracks preserve IDs/names/authoring/content; all 34 original published links hash-match. Real native validator adds 26 immutable current-build revisions for old 0.49/v14 heads; 60 total revisions/34 documents, no original rewrites. Live 27/60 insert then 0/0 retry. Google account/session data retained; no development identities, fake drivers, times/ratings/resources copied. Automatic deletion disabled, local/remote retention guards, SQL deletion protection/seven daily backups, successful before/after manual backups and seven-day GCS recovery. Final unit34/ruff pass; graphical real cloud catalog167 checks pass with all downloads/compilations/geometry/rules and Race enabled; screenshot inspected. Existing WSL data/services unchanged; source snapshot retained. Current image/schema/simulation unchanged; no Android export/device test or attachment check, full races, old-score mapping, capacity/restore/NAS/production acceptance. Retained hosting uses credits (rough EUR2.4/day baseline before credits/variable extras); EUR10 alert is not a cap. Actual commands, corrected launch/lint failures, files, protection/receipts and scoped checkpoint: docs/GCP_TRACK_RETENTION_2026_10_06.md. Concurrent work preserved.
+ 
+ 2026-10-06 B01-B07/B19-B20/B23/Q01: owner-added exact Avast exception verified; installed Windows app backend.cfg now targets the Google Cloud staging origin using normal TLS/Google Trust Services certificate. Private atomic config backup retained, cloud config development key removed; no custom CA applied. Pinned native Windows live API 21 checks and real account-controller config 8 checks pass; post-renew repeat 8 pass (overlap). API/worker Ready, SQL RUNNABLE, all compute retain same digest. Original overnight cleanup did not run; same-owner lease/9 remote expiry labels renewed to 15:36:57 Helsinki, watcher restarted and actual desktop-user scheduled fallback at 15:41:57 exercised read-only (result0, ownership/authentication passed) then restored to expiry-guarded cleanup. EUR10 alert persists, local cleanup/estimates are not spending caps. No WSL data/service import/delete, unsafe TLS, backend image/schema/physics change, Android export/device test or phone attachment check. Real interactive Google and OAuth origin registration remain unverified. Files, actual commands/results, limitation and scoped source/docs checkpoint: docs/GCP_PC_CONNECTION_2026_10_06.md. Concurrent work preserved.
+--- /dev/null
++++ b/docs/RIVALRY_LOADING_2026_10_06.md
+@@ -0,0 +1,35 @@
++# Weekly Rivalry cold-start delay — 2026-10-06
++
++Requirements WR03–WR08/B19/B20/B23/Q01. The owner reported a long “Finding this week's rivalry” wait and confirmed that it eventually finishes with Join this week.
++
++Cloud logs identify the delay: the first expired-session request took **15.917747 seconds at the Cloud Run frontend**, while the application handled it in 63.6 ms and returned 401. Normal session recovery then produced a 200 current-rivalry response in 85.7 ms; later authenticated requests took 84.41 and 61.75 ms. The large initial difference is consistent with the API's configured scale-to-zero startup, including its pinned native-verifier/readiness warmup. Startup CPU boost was already enabled.
++
++The retained staging API now has a **service-level minimum of one warm instance**, retaining the service maximum of two, existing 1 CPU/1 GiB resource limits and zero-overflow connection budget. Its immutable image, API URL, worker, authentication, tracks, accounts, database schema and canonical simulation are unchanged. No client release/build or sign-in reset is required. [Cloud Run minimum instances](https://docs.cloud.google.com/run/docs/configuring/min-instances).
++
++The repeatable staging command now accepts optional api_min (default zero), strictly permitting integer zero/one within the replica cap. The actual retained private configuration sets api_min=1; previous disposable defaults remain zero. Updating a service-level scaling setting does not require a source/image rollout. No expired review lease or retention guard was weakened to apply this narrowly scoped metadata change.
++
++## Actual checks and commands
++
++- An isolated pinned app diagnostic used a 50 ms authenticated fixture response. One request completed, adapter busy became false, model returned not_joined and the visible page busy became false. The exploratory fixture was removed after confirming the loading UI works normally; its observed log is retained. No saved player session/cloud data was touched.
++- Scaling regression: **27 passed**. It preserves the default zero minimum, permits one warm instance and rejects two/negative/boolean/string minimums without increasing max/DB caps. Ruff passed.
++- Actual owned cloud service describe verifies minScale=1/maxScale=2 and the unchanged image digest sha256:bec69858e2a6d2494d96a0169076f8e2f497c84f9d36e0ebb5dd02a8c0fdbca0.
++- Post-update verified HTTPS: health 200 in **180.15 ms**, readiness 200 in **452.29 ms**, and an unauthenticated rivalry-current request correctly returned 401 in **95.96 ms**. The last test proves warm routing/auth rejection, not an authenticated standings response; the real authenticated 60–85 ms requests are separately recorded in the sanitized cloud logs.
++- Pinned Windows real-cloud client diagnostic: **21 checks, zero failures**, including TLS health/readiness, normal guest reads, protected endpoint/development-login rejection and unused Google handoff cancellation.
++
++~~~powershell
++# SDK invoked through its installed bundled Python/lib/gcloud.py, with explicit project:
++gcloud --project=beat-my-track run services update bmt-stg-e7a444ab-api --region=europe-west1 --min=1 --max=2 --quiet
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_gcp_staging.py -q
++& .tools/backend-venv/Scripts/ruff.exe check backend/deploy/gcp/staging.py backend/tests/test_gcp_staging.py
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_cloud_staging.gd -CommandTimeoutSeconds 120
++~~~
++
++Latency evidence includes only route/status/duration/timestamp fields; no tokens, request bodies or player names. The CLI used existing operator credentials and the existing Windows-trusted public-root bundle. Godot used normal TLS trust after the owner's exact-host Avast exception.
++
++## Cost, files and limits
++
++The official regional EUR SKU catalog reviewed October 5 gives minimum-instance idle CPU SKU 7EBB-8579-2C98 and memory SKU 740D-08F2-7A11, each EUR0.000002199 per CPU/GiB-second. One CPU plus 1 GiB for 86400 idle seconds yields **EUR0.3799872/day**, approximately €0.38 additional idle cost before credits/free-tier allowances. Active requests are charged at their corresponding active rates. No commitment/account upgrade was made; the €10 project alert and retained-data protections remain.
++
++Source changes: backend/deploy/gcp/staging.py and backend/tests/test_gcp_staging.py. Documentation: this report, staging runbook, DEVELOPMENT_STATUS.md and docs/PHASE_0_PLAN.md. Ignored staging configs/helper receipts persist the actual floor. [Sanitized timings, price calculation, test logs and scoped checkpoint](evidence/rivalry-loading-2026-10-06/README.md).
++
++This reduces ordinary idle scale-to-zero waits; provider instance replacement/restart and heavy-load delays are still possible. It is not a production availability/capacity guarantee. No UI/camera/physics/rules/auth code or schema changed, so no UI screenshot or broad simulation regression was required. No Android export/device test or phone attachment check was performed. A deliberately forced production cold restart and real Google-session rotation were not executed during this change; existing authenticated server logs and an isolated UI fixture provide the observed evidence.
+--- /dev/null
++++ b/docs/evidence/rivalry-loading-2026-10-06/README.md
+@@ -0,0 +1,12 @@
++# Weekly Rivalry loading evidence
++
++See [requirements, diagnosis, applied scaling change, commands/outcomes and costs](../../RIVALRY_LOADING_2026_10_06.md).
++
++- cloud-timings.json: owned min/max settings, same digest, post-change verified HTTPS samples and sanitized actual authenticated rivalry logs, including the initial 15.917747-second frontend request.
++- idle-cost.json: regional EUR minimum-instance CPU/memory rates and €0.3799872/day idle calculation.
++- scaling.xml: 27 passing staging orchestration/guard checks.
++- native-cloud.log: actual pinned Windows cloud client, 21 checks passed, no saved player session loaded.
++- loading-ui-probe.log: isolated 50 ms response clears the adapter and visible page busy state; diagnostic source was removed.
++- before-* files, scoped-change.patch and source-hashes.json: task-only source/docs checkpoint preserving previous shared work.
++
++The 95.96 ms post-change rivalry probe is unauthenticated and correctly receives 401. Real authenticated 200 response timings are independent log observations. No claims of changed player membership, scores, provider SSO or forced cold-start benchmarking are made.

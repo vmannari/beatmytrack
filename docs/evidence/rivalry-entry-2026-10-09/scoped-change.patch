@@ -1,0 +1,296 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -773,7 +773,9 @@
+ 	_slide_menu_page(signi(direction), offset)
+ 
+ func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> void:
+-	if destination == "garage":
++	if destination == "rivalry":
++		_rivalry(column)
++	elif destination == "garage":
+ 		var circuit: MenuFeature = column.find_child("GarageCircuit",true,false)
+ 		if circuit != null:
+ 			var title: String = track_title(selected_track).to_upper()+" · 5 LAPS"
+@@ -1273,13 +1275,18 @@
+ func _open_rivalry() -> void:
+ 	race_area_mode = "rivalry"
+ 	if rivalry.snapshot_scope != rivalry.scope() and not rivalry.model.sample: rivalry.reset()
++	if not rivalry.model.sample: rivalry.refresh()
+ 	_navigate_menu_page("rivalry")
+-	if not rivalry.model.sample: rivalry.refresh()
+ 
+ func _rivalry_changed() -> void:
+ 	if rivalry.result_ticket.is_empty() or rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
+ 	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
+ 		_rivalry()
++	# Swipe previews must follow the same membership state as the visible page.
++	for neighbor: Dictionary in menu_neighbors.values():
++		if neighbor.screen == "rivalry": _rivalry(neighbor.content)
++	if returning_menu_neighbor.get("screen","") == "rivalry" and is_instance_valid(returning_menu_neighbor.get("content")):
++		_rivalry(returning_menu_neighbor.content)
+ 
+ func _rivalry(parent: VBoxContainer = null) -> void:
+ 	if parent == null: parent = content
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -101,7 +101,9 @@
+ 	body.name = "RivalryBody"
+ 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	main.add_child(body)
+-	if model.tracks.is_empty(): _empty(body)
++	# An unresolved membership is not a confirmed invitation to join.
++	if model.tracks.is_empty() and signed_in and error.is_empty() and (busy or model.received_msec == 0): _loading(body)
++	elif model.tracks.is_empty(): _empty(body)
+ 	elif section == "result": _result(body)
+ 	elif section == "overview" and model.completed: _finale(body)
+ 	elif section == "detail": _detail(body)
+@@ -213,6 +215,44 @@
+ 	driver.clip_text = true
+ 	driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_copy(line,value,18 if not compact else 16,color)
++
++func _loading(parent: Control) -> void:
++	parent.name = "RivalryLoading"
++	parent.add_theme_constant_override("separation",14)
++	var field := VBoxContainer.new()
++	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	field.add_theme_constant_override("separation",12)
++	parent.add_child(field)
++	var podium := HBoxContainer.new()
++	podium.custom_minimum_size.y = 170
++	podium.add_theme_constant_override("separation",10)
++	field.add_child(podium)
++	for _position: int in range(3): _loading_block(podium,148).size_flags_vertical = Control.SIZE_SHRINK_END
++	var standings: VBoxContainer = _card(field,"",12)
++	_copy(standings,"STANDINGS",27)
++	_copy(standings,"Loading…",18,MenuStyle.MUTED)
++	_space(standings)
++	var right := VBoxContainer.new()
++	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	right.size_flags_stretch_ratio = 1.13
++	right.add_theme_constant_override("separation",6)
++	parent.add_child(right)
++	var flourish_space := Control.new()
++	flourish_space.custom_minimum_size.y = 30
++	right.add_child(flourish_space)
++	var tracks: VBoxContainer = _card(right,"",12)
++	tracks.add_theme_constant_override("separation",6)
++	_copy(tracks,"THIS WEEK'S TRACKS",26)
++	for _slot: int in range(5): _loading_block(tracks,48).size_flags_vertical = Control.SIZE_EXPAND_FILL
++
++func _loading_block(parent: Control, height: int) -> Control:
++	var block := PanelContainer.new()
++	block.custom_minimum_size.y = height
++	block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	block.add_theme_stylebox_override("panel",MenuStyle.box(Color("29425266"),6))
++	parent.add_child(block)
++	return block
+ 
+ func _empty(parent: Control) -> void:
+ 	var hero: VBoxContainer = _card(parent,"winter",28)
+--- /dev/null
++++ b/game/tests/test_rivalry_entry.gd
+@@ -0,0 +1,149 @@
++extends SceneTree
++## Frame-by-frame entry and warmed-page regression with isolated, delayed responses.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var service: Service
++var evidence: String = ""
++
++class Service extends Node:
++	signal reply_ready
++	var player: Dictionary = {"id":"you"}
++	var development: bool = false
++	var response: Dictionary = {}
++	var pending_path: String = ""
++	func base_url() -> String: return "http://fixture"
++	func signed_in() -> bool: return true
++	func test_drivers_available() -> bool: return development
++	func new_operation_key() -> String: return "fixture-key"
++	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _authorized: bool) -> Dictionary:
++		pending_path = path
++		await reply_ready
++		pending_path = ""
++		return response.duplicate(true)
++	func respond(value: Dictionary) -> void:
++		response = value
++		reply_ready.emit()
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func snapshot() -> Dictionary:
++	var fixture := WeeklyRivalry.new(true)
++	var value: Dictionary = {"state":"active","group_id":"fixture-group","self_id":"you","week":41,
++		"server_now":0,"ends_at":604800,"vehicle_id":"compact","standings":fixture.standing(),"tracks":[],
++		"test_population":service.development,"automatic_test_drivers":service.development}
++	for slot: int in range(5):
++		var track: Dictionary = fixture.tracks[slot]
++		value.tracks.append({"board_id":"board_"+str(slot),"entries":fixture.board(slot),
++			"entry":{"name":track.name,"theme":track.theme,"creator":"Beat my track","track_id":"track_"+str(slot),
++				"version_id":"version_"+str(slot),"content_hash":"a".repeat(64),"points":track.document.points}})
++	return value
++
++func settle() -> void:
++	for _frame: int in range(5): await process_frame
++
++func capture(id: String, dimensions: Vector2i) -> void:
++	if evidence.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id+" evidence")
++
++func no_join_frames(column: Control, message: String) -> void:
++	for frame: int in range(5):
++		await process_frame
++		check(column.find_child("RivalryJoin",true,false) == null,message+" frame "+str(frame))
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = OS.get_environment("BMT_RIVALRY_ENTRY_CAPTURE_DIR")
++	if not evidence.is_empty(): DirAccess.make_dir_recursive_absolute(evidence)
++	var directory: String = "user://rivalry_entry_test_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	service = Service.new()
++	app.add_child(service)
++	app.rivalry.client = service
++	app.online.client.player = service.player
++	app.online.client._access_token = "fixture"
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		app.rivalry.reset()
++		app._show_screen("tracks")
++		await settle()
++		app._open_rivalry()
++		check(app.content.find_child("RivalryLoading",true,false) != null,"first entry immediately builds the rivalry loading layout")
++		check(app.content.find_child("RivalryJoin",true,false) == null,"first entry never offers Join before membership is known")
++		await no_join_frames(app.content,"delayed membership has no join flash")
++		await capture("loading",dimensions)
++		service.respond({"ok":true,"data":snapshot()})
++		check(app.content.find_child("RivalryTracksPanel",true,false) != null,"membership response immediately shows actual tracks")
++		check(app.content.find_child("RivalryLoading",true,false) == null,"membership resolves the loading state")
++		await settle()
++		await capture("overview",dimensions)
++		app._open_rivalry()
++		check(app.content.find_child("RivalryTracksPanel",true,false) != null,"repeat entry keeps loaded standings while refreshing")
++		await no_join_frames(app.content,"refresh retains the known rivalry")
++		service.respond({"ok":true,"data":snapshot()})
++		service.player.id = "another-player"
++		app._open_rivalry()
++		check(app.content.find_child("RivalryLoading",true,false) != null and app.content.find_child("RivalryTracksPanel",true,false) == null,"account changes immediately fence the previous standings")
++		service.respond({"ok":true,"data":snapshot()})
++		service.player.id = "you"
++		# Warm a page while membership is unresolved, then update it offscreen.
++		app.rivalry.reset()
++		app._show_screen("garage")
++		app._finish_menu_page_slide()
++		await settle()
++		check(app.menu_neighbors.has(-2),"Garage prepares its rivalry neighbor")
++		if not app.menu_neighbors.has(-2):
++			quit(1)
++			return
++		var neighbor: Dictionary = app.menu_neighbors[-2]
++		check(neighbor.screen == "rivalry" and neighbor.content.find_child("RivalryLoading",true,false) != null,"warmed rivalry starts with unresolved membership")
++		app.rivalry.refresh()
++		service.respond({"ok":true,"data":snapshot()})
++		check(neighbor.content.find_child("RivalryTracksPanel",true,false) != null,"offscreen response refreshes the warmed rivalry")
++		app._open_rivalry()
++		check(app.content == neighbor.content and app.content.find_child("RivalryTracksPanel",true,false) != null,"entry promotes the updated warmed page immediately")
++		service.respond({"ok":true,"data":snapshot()})
++		app._finish_menu_page_slide()
++		await settle()
++		if not service.pending_path.is_empty(): service.respond({"ok":true,"data":snapshot()})
++		# A confirmed nonmember must still receive the real Join action.
++		app.rivalry.reset()
++		app._open_rivalry()
++		service.respond({"ok":true,"data":{"state":"not_joined","week":41,"ends_at":604800,"server_now":0}})
++		check(app.content.find_child("RivalryJoin",true,false) != null,"confirmed nonmembers can join")
++		# Development auto-enrollment's intermediate not_joined response is hidden.
++		service.development = true
++		app._open_rivalry()
++		service.respond({"ok":true,"data":{"state":"not_joined","week":41,"ends_at":604800,"server_now":0,"test_population":true}})
++		check(service.pending_path == "/rivalry/join","automatic membership issues its normal join request")
++		await no_join_frames(app.content,"automatic enrollment has no intermediate join flash")
++		service.respond({"ok":true,"data":snapshot()})
++		check(app.content.find_child("RivalryTracksPanel",true,false) != null,"automatic enrollment opens the actual field")
++		service.development = false
++		app.rivalry.reset()
++		app._open_rivalry()
++		service.respond({"ok":false,"error":"UNAVAILABLE","data":{}})
++		check(app.content.find_child("RivalryRefresh",true,false) != null and app.content.find_child("RivalryLoading",true,false) == null,"failed membership remains retryable")
++		app.online.client._access_token = ""
++		app.rivalry.reset()
++		app._rivalry()
++		check(app.content.find_child("RivalryJoin",true,false) != null,"guests keep the sign-in action")
++		app.online.client._access_token = "fixture"
++	app.queue_free()
++	await process_frame
++	await create_timer(0.1).timeout
++	print("RIVALRY_ENTRY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_rivalry_entry.gd.uid
+@@ -0,0 +1 @@
++uid://cnmvqy1kuwn5k
+--- a/docs/WEEKLY_RIVALRY.md
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -124,3 +124,30 @@
+ Inspected evidence: [20-driver pending comparison](evidence/rivalry-feedback-speed-2026-10-04/provisional-1280x720.png), [compact comparison](evidence/rivalry-feedback-speed-2026-10-04/provisional-960x540.png), [real HTTP pending result](evidence/rivalry-feedback-speed-2026-10-04/provisional-feedback-1280x720.png), [compact HTTP pending result](evidence/rivalry-feedback-speed-2026-10-04/provisional-feedback-960x540.png), [confirmed result](evidence/rivalry-feedback-speed-2026-10-04/rivalry-feedback-1280x720.png), [compact confirmed result](evidence/rivalry-feedback-speed-2026-10-04/rivalry-feedback-960x540.png), and [verification summary](evidence/rivalry-feedback-speed-2026-10-04/verification-summary.json). The 20-driver image is an explicit UI test fixture; HTTP screenshots use a disposable server and a real canonically verified single-human championship. Shipping uses actual downloaded membership only.
+ 
+ **No phone/emulator driving test, Android export or installation was performed for this change.** No live human run was submitted, service restarted, migration applied, NAS/production deployment or full physics regression performed. Existing user data and local services were preserved. Restart the PC game to load the client changes; the backend needs no rollout. Owner acceptance, physical-device latency and behavior during concurrent rival updates remain outstanding. The 22 ms and 552 µs values are separate desktop fixture samples, not mobile benchmarks or a server-verification speedup. Final standings still require replay verification.
++
++## Immediate rivalry page on entry, 2026-10-09
++
++WR01–WR03 / WR08 / TD08 / B05 / R01 / V03–V05 / Q01: the owner reported a different view appearing before the weekly status. An empty client model previously rendered the Join introduction while membership was unresolved, including during automatic enrollment. Prepared swipe pages could also retain that introduction after a background response.
++
++The first signed-in frame now uses the championship's existing backdrop and standings/five-track layout with empty loading shapes and one loading status. Actual downloaded standings remain visible during refreshes. Join appears only for guests or a resolved nonmember/error state. Refresh starts before explicit navigation; offscreen and returning rivalry pages follow membership changes, and promotion rebuilds their content from the current model. Existing account/server/car scope fences remain active. No invented driver, time or score is displayed during loading. Concurrent removal of redundant section tabs and Overview race actions is preserved.
++
++Changed files: `game/core/app.gd`, `game/ui/weekly_rivalry_page.gd`, `game/tests/test_rivalry_entry.gd` and its generated UID, this document, `DEVELOPMENT_STATUS.md`, and `docs/PHASE_0_PLAN.md`. This changes presentation/navigation only; no API/save schema, golden replay, canonical physics, scoring or population contract changes.
++
++All successful Godot commands below used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with the pinned `4.7.2.stable.official.ed1daf0bf` engine.
++
++| Actual action/arguments | Outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_entry.gd -Graphical -CommandTimeoutSeconds 60`, with `BMT_RIVALRY_ENTRY_CAPTURE_DIR` pointing to this evidence directory | Final **64 checks, zero failures**. Inspect the first frame and five subsequent frames with delayed responses, repeat refreshes, account changes, offscreen updates/page promotion, confirmed nonmembers, automatic enrollment, errors and guests. Four captures at 1280×720/960×540. |
++| `-Action TestScript -ScriptPath res://tests/test_automatic_rivalry_flow.gd -CommandTimeoutSeconds 45` | **Seven checks, zero failures**; enrollment, finale and disabled-service isolation. |
++| `-Action TestApp -CommandTimeoutSeconds 120` | **99 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 120` | **1,196 checks, zero failures**, using the current concurrent menu correction. |
++| `-Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -CommandTimeoutSeconds 120` | **234 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **388 scripts, zero failures**. |
++| `-Action Doctor` | Pinned engine/templates found; **OnePlus Pad 2 OPD2403, serial f0ba474a attached and authorized**. No physical-device test performed for this fix. |
++| `.tools/backend-venv/Scripts/python.exe docs/evidence/rivalry-entry-2026-10-09/build_checkpoint.py`, `git apply --reverse --check --whitespace=error-all docs/evidence/rivalry-entry-2026-10-09/scoped-change.patch`, and targeted `git diff --check` | Seven-file task-only patch generated; reverse applicability and whitespace checks pass. |
++
++Inspected [initial loading layout](evidence/rivalry-entry-2026-10-09/ui/loading-1280x720.png), [compact loading layout](evidence/rivalry-entry-2026-10-09/ui/loading-960x540.png), [resolved Overview](evidence/rivalry-entry-2026-10-09/ui/overview-1280x720.png) and [compact Overview](evidence/rivalry-entry-2026-10-09/ui/overview-960x540.png). Resolved screenshots use an explicit isolated UI fixture; shipping receives server data only. The loading screen contains no fixture values or new art assets.
++
++Initial direct script invocation hit Windows execution policy; the documented process-scoped invocation succeeded. Sandbox Godot log/ADB directory access initially failed; normal desktop access succeeded without an automatic approval rejection. The first transition test accessed a neighbor before the existing menu slide completed; the fixture now finishes that slide before inspecting its prepared pages, retaining the immediate-entry/frame assertions. An initial `CheckScript` invocation omitted `-ScriptPath` and started the app instead of checking scripts; only its owned process was stopped and the dedicated parser fixture was run. These attempts are not counted as passed checks.
++
++First entry after starting the app still requires a membership request; it displays the correct rivalry loading layout while awaiting actual data. No live backend race, device UI test, Android export/install, full Validate, backend rollout or production action was performed. Owner review on the attached tablet and real-network entry latency remain acceptance checks. [Scoped review checkpoint](evidence/rivalry-entry-2026-10-09/scoped-change.patch) preserves unrelated workspace changes.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR01-WR03/WR08/TD08/B05/R01/V03-V05/Q01: Weekly Rivalry now opens directly in its championship layout while membership loads, preserving known standings on refresh and updating prepared/returning pages before promotion. No transient Join introduction or invented values during authenticated enrollment; confirmed nonmembers/guests/errors remain actionable and account fences retained. Final graphical entry64/automatic7/App99/weekly1196/swipes234/parser388 checks pass; four desktop/compact captures inspected. Initial sandbox/execution-policy, premature-neighbor fixture and missing-parser-path attempts corrected and recorded. OnePlus Pad 2 attached/authorized; no change-specific device test/export/install/full Validate/backend or production action. Scoped checkpoint preserves concurrent menu corrections and other work. Files, commands, screenshots, limits and acceptance: docs/WEEKLY_RIVALRY.md (Immediate rivalry page on entry).
++
+ 2026-10-09 Q01/V03/V05/G01/R01: unlocked OnePlus Pad 2 measurements verify ~6x improvement on Ajorata (118ms original to19.6ms optimized; p95 24.05ms, not locked60FPS). Terrain shader specialization preserves shadows/detail; equal-resolution frozen captures are byte-identical. Mobile1.5MP world cap/native HUD and dry-map presentation cache retained; canonical physics/framing unchanged. Final budget479 checks pass; camera1499/soil163/App99 and focused export checks pass. Biomes has five pre-existing failures reproduced with before-task sources. Ineffective backdrop experiments removed. Actual commands, changed files, device comparisons and remaining acceptance: docs/TABLET_PERFORMANCE_2026_10_08.md.
+ 
+ 2026-10-08 CH01-CH08/R01/V03/R05/G05/T03/T05/B01-B07/TD06-TD08/Q01: owner-accepted Race challenges implemented locally: Beat my time/Group creation, verified source-race return, global track search, pinned five-lap car/rules/version contracts, code/native sharing, browser preview, ghost races, best-only standings and reverse invitations. Normal PB/lap/unified-histogram summary remains first; all-driver comparison reuses existing logic without repeated labels. Final SQLite/ownedPG29 pass/one skip, graphical native HTTP42/46, challenge60/headless72/graphical, App99, histograms36/unified46, existing weekly HTTP and final export72/21/48 pass. Broad backend31 pass/5 skip retains one historical rules-upgrade409 failure, without weakened rules. Android debug241123700 bytes/SHA256557482AF0239FBA3F65E3B7CF53C532F6E2BA0B24E2C2736413635536B4959FC; native bridge/URI manifest compiled and inspected. Tablet f0ba474a unauthorized; no install/physical-device test/full Validate/retained cloud migration-deploy or production action. Optional HTTPS association and owner/device acceptance remain. Scoped review checkpoint preserves concurrent work. Files, commands, screenshots, known failures and rollout: docs/CHALLENGES.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR01-WR03/WR08/TD08/B05/R01/V03-V05/Q01: Weekly Rivalry now opens directly in its championship layout while membership loads, preserving known standings on refresh and updating prepared/returning pages before promotion. No transient Join introduction or invented values during authenticated enrollment; confirmed nonmembers/guests/errors remain actionable and account fences retained. Final graphical entry64/automatic7/App99/weekly1196/swipes234/parser388 checks pass; four desktop/compact captures inspected. Initial sandbox/execution-policy, premature-neighbor fixture and missing-parser-path attempts corrected and recorded. OnePlus Pad 2 attached/authorized; no change-specific device test/export/install/full Validate/backend or production action. Scoped checkpoint preserves concurrent menu corrections and other work. Files, commands, screenshots, limits and acceptance: docs/WEEKLY_RIVALRY.md (Immediate rivalry page on entry).
++
+ 2026-10-09 Q01/V03/V05/G01/R01: unlocked OnePlus Pad 2 measurements verify ~6x improvement on Ajorata (118ms original to19.6ms optimized; p95 24.05ms, not locked60FPS). Terrain shader specialization preserves shadows/detail; equal-resolution frozen captures are byte-identical. Mobile1.5MP world cap/native HUD and dry-map presentation cache retained; canonical physics/framing unchanged. Final budget479 checks pass; camera1499/soil163/App99 and focused export checks pass. Biomes has five pre-existing failures reproduced with before-task sources. Ineffective backdrop experiments removed. Actual commands, changed files, device comparisons and remaining acceptance: docs/TABLET_PERFORMANCE_2026_10_08.md.
+ 
+ 2026-10-08 CH01-CH08/R01/V03/R05/G05/T03/T05/B01-B07/TD06-TD08/Q01: owner-accepted Race challenges implemented locally: Beat my time/Group creation, verified source-race return, global track search, pinned five-lap car/rules/version contracts, code/native sharing, browser preview, ghost races, best-only standings and reverse invitations. Normal PB/lap/unified-histogram summary remains first; all-driver comparison reuses existing logic without repeated labels. Final SQLite/ownedPG29 pass/one skip, graphical native HTTP42/46, challenge60/headless72/graphical, App99, histograms36/unified46, existing weekly HTTP and final export72/21/48 pass. Broad backend31 pass/5 skip retains one historical rules-upgrade409 failure, without weakened rules. Android debug241123700 bytes/SHA256557482AF0239FBA3F65E3B7CF53C532F6E2BA0B24E2C2736413635536B4959FC; native bridge/URI manifest compiled and inspected. Tablet f0ba474a unauthorized; no install/physical-device test/full Validate/retained cloud migration-deploy or production action. Optional HTTPS association and owner/device acceptance remain. Scoped review checkpoint preserves concurrent work. Files, commands, screenshots, known failures and rollout: docs/CHALLENGES.md.

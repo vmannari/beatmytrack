@@ -1,0 +1,725 @@
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -15,6 +15,10 @@
+ var standings_busy: bool = false
+ var race_chart: TrackDistribution
+ var race_context: Label
++var lap_chart: TrackDistribution
++var lap_context: Label
++var lap_population: Label
++const COMPARISON_BINS: int = 8
+ var vehicle_id: String = "compact"
+ var facts: Dictionary
+ var recommendations: Array[Dictionary] = []
+@@ -172,10 +176,13 @@
+ 			if prior > 0: values.append(prior)
+ 			context.text = "This race + previous PB" if prior > 0 else "First recorded race"
+ 		else:
++			lap_chart = chart
++			lap_context = context
+ 			for index: int in range(1,results.laps.size()):
+ 				if results.result.laps[index].valid: values.append(results.laps[index])
+ 			context.text = "This race / %d flying laps" % values.size()
+ 		chart.snapshot = _local_distribution(values,value)
++		chart.snapshot.markers = _comparison_markers(kind)
+ 		chart.snapshot.marker_label = "THIS RACE" if kind == "RACE TIME" else "BEST LAP"
+ 		chart.snapshot.empty_text = "No completed race time" if kind == "RACE TIME" else "No valid flying laps"
+ 		chart.snapshot.empty_detail = "Finish a timed race to compare"
+@@ -189,7 +196,8 @@
+ 			card.add_child(global_status)
+ 			global_status.hide()
+ 		else:
+-			card.add_child(MenuStyle.label("Your flying laps / %d samples" % values.size(),13,true))
++			lap_population = MenuStyle.label("Your flying laps / %d samples" % values.size(),13,true)
++			card.add_child(lap_population)
+ 	body.add_child(HSeparator.new())
+ 	if rating_records != null and not results.editor:
+ 		var rating := TrackRating.new()
+@@ -211,11 +219,50 @@
+ 	var low: float = rounded.min()
+ 	var high: float = rounded.max()
+ 	var bins: Array[int] = []
+-	bins.resize(12)
++	bins.resize(mini(COMPARISON_BINS,maxi(1,ceili(sqrt(rounded.size())))))
+ 	bins.fill(0)
+ 	var span: float = maxf(high-low,0.001)
+-	for value: float in rounded: bins[clampi(int((value-low)/span*11),0,11)] += 1
+-	return {"bins":bins,"min_ms":low*1000.0,"max_ms":high*1000.0,"player_bin":clampi(int((marker-low)/span*11),0,11)}
++	for value: float in rounded: bins[clampi(int((value-low)/span*bins.size()),0,bins.size()-1)] += 1
++	var edges: Array[float] = []
++	for index: int in range(bins.size()+1): edges.append((low+span*index/bins.size())*1000.0)
++	return {"bins":bins,"min_ms":low*1000.0,"max_ms":high*1000.0,"edges_ms":edges,"player_bin":clampi(int((marker-low)/span*bins.size()),0,bins.size()-1)}
++
++func _comparison_markers(kind: String) -> Array[Dictionary]:
++	var current: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
++	var best: float = results.best if kind == "RACE TIME" else float(facts.get("previous_lap",0))
++	if kind == "RACE TIME" and best <= 0: best = results.previous
++	if results.clean and not results.editor and current > 0:
++		best = minf(best,current) if best > 0 else current
++	var markers: Array[Dictionary] = []
++	if current > 0: markers.append({"value_ms":roundi(current*1000.0),"label":"THIS RACE","color":MenuStyle.ACCENT})
++	if best > 0: markers.append({"value_ms":roundi(best*1000.0),"label":"YOUR BEST","color":Color("b8e3f4")})
++	return markers
++
++func _show_distribution(chart: TrackDistribution, data: Dictionary, context: Label, own_ticks: int = -1) -> void:
++	var counts: Array[int] = []
++	var edges: Array[float] = []
++	var own_bin: int = -1
++	for index: int in range(data.bins.size()):
++		var bin: Dictionary = data.bins[index]
++		counts.append(int(bin.count))
++		edges.append(float(bin.from_ticks)*1000.0/VehicleSimulation.TICK_RATE)
++		if own_ticks >= int(bin.from_ticks) and own_ticks < int(bin.to_ticks_exclusive): own_bin = index
++	edges.append(float(data.bins[-1].to_ticks_exclusive)*1000.0/VehicleSimulation.TICK_RATE)
++	var markers: Array = chart.snapshot.get("markers",[])
++	if chart == race_chart and own_ticks > 0:
++		var verified_ms: float = own_ticks*1000.0/VehicleSimulation.TICK_RATE
++		var found: bool = false
++		for marker: Dictionary in markers:
++			if marker.label == "YOUR BEST":
++				marker.value_ms = mini(int(marker.value_ms),roundi(verified_ms))
++				found = true
++		if not found: markers.append({"value_ms":roundi(verified_ms),"label":"YOUR BEST","color":Color("b8e3f4")})
++	chart.snapshot = {"bins":counts,"min_ms":float(data.minimum_ticks)*1000.0/VehicleSimulation.TICK_RATE,"max_ms":float(data.maximum_ticks)*1000.0/VehicleSimulation.TICK_RATE,"player_bin":own_bin,"edges_ms":edges,"markers":markers}
++	chart.queue_redraw()
++	var comparison: String = "driver best laps" if chart == lap_chart else "personal bests"
++	context.text = "%d verified %s / %s" % [int(data.population),"test drivers" if data.get("test_population",false) else "players",comparison]
++	chart.tooltip_text = context.text
++	if chart == lap_chart: lap_population.text = context.text
+ 
+ static func _section(parent: Control, padding: int) -> VBoxContainer:
+ 	var body: VBoxContainer = RaceResults._card(parent,padding)
+@@ -233,26 +280,17 @@
+ 	if not is_inside_tree(): return
+ 	if response.ok and int(response.data.population) > 0:
+ 		var board: String = str(response.data.board_id)
+-		var histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=24")
++		var histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=%d" % COMPARISON_BINS)
+ 		if not is_inside_tree(): return
+ 		response = await cloud_client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
+ 		if not is_inside_tree(): return
+ 		if histogram.ok and not histogram.data.bins.is_empty():
+-			var counts: Array[int] = []
+-			var edges: Array[float] = []
+-			var own_bin: int = -1
+-			for index: int in range(histogram.data.bins.size()):
+-				var bin: Dictionary = histogram.data.bins[index]
+-				counts.append(int(bin.count))
+-				edges.append(float(bin.from_ticks)*1000.0/120.0)
+-				if response.ok and response.data.player != null:
+-					var ticks: int = int(response.data.player.time_ticks)
+-					if ticks >= int(bin.from_ticks) and ticks < int(bin.to_ticks_exclusive): own_bin = index
+-			edges.append(float(histogram.data.bins[-1].to_ticks_exclusive)*1000.0/120.0)
+-			race_chart.snapshot = {"bins":counts,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":own_bin,"edges_ms":edges}
+-			race_chart.queue_redraw()
+-			race_context.text = "%d verified players / personal bests" % int(histogram.data.population)
+-			race_chart.tooltip_text = race_context.text
++			var own_ticks: int = int(response.data.player.time_ticks) if response.ok and response.data.player != null else -1
++			_show_distribution(race_chart,histogram.data,race_context,own_ticks)
++		var lap_histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=%d&metric=best_lap" % COMPARISON_BINS)
++		if not is_inside_tree(): return
++		if lap_histogram.ok and lap_histogram.data.get("metric","") == "best_lap" and int(lap_histogram.data.population) > 0:
++			_show_distribution(lap_chart,lap_histogram.data,lap_context)
+ 		if response.ok and response.data.player != null:
+ 			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
+ 			global_rank.add_theme_color_override("font_color",MenuStyle.ACCENT)
+@@ -265,15 +303,16 @@
+ 	else:
+ 		global_rank.text = "UNRANKED"
+ 		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
+-	if response.ok and cloud_client.test_drivers_available():
+-		var test_histogram: Dictionary = await cloud_client.request_api("/dev/test-drivers/track-versions/"+cloud_version+"/histogram?vehicle_id="+vehicle_id.uri_encode()+"&bins=24",HTTPClient.METHOD_GET,{},"",true)
++	if cloud_client.test_drivers_available():
++		var test_path: String = "/dev/test-drivers/track-versions/"+cloud_version+"/histogram?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d" % COMPARISON_BINS
++		var test_histogram: Dictionary = await cloud_client.request_api(test_path,HTTPClient.METHOD_GET,{},"",true)
+ 		if not is_inside_tree(): return
+ 		if test_histogram.ok and int(test_histogram.data.population) > 0:
+-			var counts: Array[int] = []
+-			for bin: Dictionary in test_histogram.data.bins: counts.append(int(bin.count))
+-			race_chart.snapshot = {"bins":counts,"min_ms":float(test_histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(test_histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":-1}
+-			race_chart.queue_redraw()
+-			race_context.text = "TEST DATA · %d simulated drivers / verified PBs" % int(test_histogram.data.population)
++			_show_distribution(race_chart,test_histogram.data,race_context)
++		var test_laps: Dictionary = await cloud_client.request_api(test_path+"&metric=best_lap",HTTPClient.METHOD_GET,{},"",true)
++		if not is_inside_tree(): return
++		if test_laps.ok and test_laps.data.get("metric","") == "best_lap" and int(test_laps.data.population) > 0:
++			_show_distribution(lap_chart,test_laps.data,lap_context)
+ 	standings_busy = false
+ 
+ func _recommendations() -> void:
+diff --git a/game/ui/track_distribution.gd b/game/ui/track_distribution.gd
+--- a/game/ui/track_distribution.gd
++++ b/game/ui/track_distribution.gd
+@@ -13,6 +13,9 @@
+ 	if bins.is_empty():
+ 		draw_string(MenuStyle.BODY,Vector2(4,size.y*0.5),str(snapshot.get("empty_text","No comparison data")),HORIZONTAL_ALIGNMENT_LEFT,size.x-8,13,MenuStyle.MUTED)
+ 		draw_string(MenuStyle.BODY,Vector2(4,size.y*0.5+22),str(snapshot.get("empty_detail","Online records required")),HORIZONTAL_ALIGNMENT_LEFT,size.x-8,12,MenuStyle.MUTED)
++		return
++	if snapshot.has("markers"):
++		_draw_comparison(bins)
+ 		return
+ 	var window: Vector2i = display_window(bins)
+ 	var first: int = window.x
+@@ -53,6 +56,74 @@
+ 		var label_width: float = MenuStyle.BODY.get_string_size(right_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
+ 		draw_string(MenuStyle.BODY,Vector2(size.x-label_width-8,size.y-3),right_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
+ 
++func _draw_comparison(bins: Array) -> void:
++	var geometry: Dictionary = comparison_geometry(snapshot,size.x)
++	var window: Vector2i = geometry.window
++	var edges: Array = geometry.edges
++	var markers: Array = snapshot.get("markers",[])
++	var baseline: float = size.y-24
++	var top: float = 52
++	var maximum: float = 1.0
++	for index: int in range(window.x,window.y+1): maximum = maxf(maximum,float(bins[index]))
++	var current: float = float(markers[0].value_ms) if not markers.is_empty() else -1.0
++	for index: int in range(window.x,window.y+1):
++		var left: float = _time_x(float(edges[index]),geometry.low,geometry.high,size.x)
++		var right: float = _time_x(float(edges[index+1]),geometry.low,geometry.high,size.x)
++		var height: float = maxf(0,float(bins[index]))/maximum*maxf(1,baseline-top)
++		var color: Color = MenuStyle.ACCENT if current >= float(edges[index]) and current < float(edges[index+1]) else bar_color
++		draw_rect(Rect2(left+1.5,baseline-height,maxf(1,right-left-3),height),color)
++	draw_line(Vector2(8,baseline),Vector2(size.x-8,baseline),MenuStyle.BORDER)
++	var tied: bool = markers.size() == 2 and roundi(float(markers[0].value_ms)) == roundi(float(markers[1].value_ms))
++	for index: int in range(markers.size()):
++		if tied and index > 0: continue
++		var marker: Dictionary = markers[index]
++		var x: float = float(geometry.marker_x[index])
++		var color: Color = marker.get("color",MenuStyle.ACCENT)
++		var caption: String = ("THIS RACE / YOUR BEST" if tied else str(marker.label))+"  "+MenuStyle.time_text(float(marker.value_ms)/1000.0)
++		var label_width: float = MenuStyle.BODY.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
++		draw_string(MenuStyle.BODY,Vector2(clampf(x-label_width*0.5,4,maxf(4,size.x-label_width-4)),14+index*18),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,12,color)
++		if index == 0:
++			draw_line(Vector2(x,top-7),Vector2(x,baseline),color,2.5,true)
++			draw_colored_polygon(PackedVector2Array([Vector2(x-5,top-10),Vector2(x+5,top-10),Vector2(x,top-3)]),color)
++		else:
++			draw_dashed_line(Vector2(x,top-7),Vector2(x,baseline),color,2.0,5,true)
++			draw_circle(Vector2(x,top-6),4,color,true,-1,true)
++		draw_circle(Vector2(x,baseline),3.5,color,true,-1,true)
++	var low_text: String = ("< " if window.x > 0 else "")+MenuStyle.time_text(float(geometry.low)/1000.0)
++	var high_text: String = MenuStyle.time_text(float(geometry.high)/1000.0)+(" >" if window.y < bins.size()-1 else "")
++	draw_string(MenuStyle.BODY,Vector2(8,size.y-3),low_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
++	var high_width: float = MenuStyle.BODY.get_string_size(high_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
++	draw_string(MenuStyle.BODY,Vector2(size.x-high_width-8,size.y-3),high_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
++
++static func comparison_geometry(data: Dictionary, width: float) -> Dictionary:
++	var bins: Array = data.get("bins",[])
++	var window: Vector2i = display_window(bins)
++	var edges: Array = data.get("edges_ms",[]).duplicate()
++	if edges.size() != bins.size()+1:
++		edges.clear()
++		for index: int in range(bins.size()+1):
++			edges.append(lerpf(float(data.get("min_ms",0)),float(data.get("max_ms",0)),float(index)/maxi(1,bins.size())))
++	var markers: Array = data.get("markers",[])
++	for marker: Dictionary in markers:
++		for index: int in range(bins.size()):
++			if float(marker.value_ms) >= float(edges[index]) and float(marker.value_ms) < float(edges[index+1]):
++				window.x = mini(window.x,index)
++				window.y = maxi(window.y,index)
++	var low: float = float(edges[window.x])
++	var high: float = float(edges[window.y+1])
++	for marker: Dictionary in markers:
++		low = minf(low,float(marker.value_ms))
++		high = maxf(high,float(marker.value_ms))
++	var padding: float = maxf(1,(high-low)*0.025)
++	low = maxf(0,low-padding)
++	high += padding
++	var marker_x: Array[float] = []
++	for marker: Dictionary in markers: marker_x.append(_time_x(float(marker.value_ms),low,high,width))
++	return {"window":window,"low":low,"high":high,"edges":edges,"marker_x":marker_x}
++
++static func _time_x(value: float, low: float, high: float, width: float) -> float:
++	return 8+(width-16)*clampf((value-low)/maxf(1,high-low),0,1)
++
+ static func display_window(bins: Array) -> Vector2i:
+ 	# Crop only the view. Counts, population and rank remain untouched.
+ 	var total: int = 0
+diff --git a/game/tests/test_race_results.gd b/game/tests/test_race_results.gd
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -7,9 +7,15 @@
+ 
+ class StandingsClient extends Node:
+ 	var own: Variant = {"rank":2,"time_ticks":120}
++	var tests_available: bool = false
++	var paths: Array[String] = []
+ 	func signed_in() -> bool: return true
++	func test_drivers_available() -> bool: return tests_available
+ 	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		paths.append(path)
+ 		if path.contains("/histogram"):
++			if path.contains("metric=best_lap"):
++				return {"ok":true,"data":{"metric":"best_lap","test_population":path.contains("/dev/"),"population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}]}}
+ 			return {"ok":true,"data":{"population":3,"minimum_ticks":100,"maximum_ticks":140,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":1},{"from_ticks":120,"to_ticks_exclusive":140,"count":1},{"from_ticks":140,"to_ticks_exclusive":160,"count":1}]}}
+ 		if path.ends_with("/around-me"):
+ 			return {"ok":true,"data":{"population":3,"player":own,"faster_than_percent":50.0 if own != null else null}}
+@@ -427,9 +433,28 @@
+ 	check(page.race_chart.snapshot.player_bin == 1, "verified player on bin boundary uses exclusive upper edge")
+ 	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
+ 	check(page.global_rank.text == "RANK 2 OF 3" and page.race_context.text.contains("3 verified players"), "rank and histogram context identify the real population")
++	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text.contains("100 verified players"), "best-lap chart loads every driver's PB rather than this race's flying laps")
++	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=8")), "results requests wider race-time bins")
++	check(page.race_chart.snapshot.markers.size() == 2 and page.race_chart.snapshot.markers[0].value_ms == 55000, "server comparison retains this race and the local personal-best markers")
++	check(page.race_chart.snapshot.markers[1].value_ms == 1000, "verified personal best from another device updates the best marker")
++	var geometry: Dictionary = TrackDistribution.comparison_geometry(page.race_chart.snapshot,400)
++	check(geometry.high > 55000 and geometry.marker_x[0] > 8 and geometry.marker_x[0] < 392, "current race outside the server range remains visible at its real time")
+ 	client.own = null
+ 	await page._refresh_rank()
+ 	check(page.race_chart.snapshot.player_bin == -1 and page.global_rank.text == "AWAITING VERIFIED SCORE", "pending upload shows distribution without inventing player placement")
++	client.tests_available = true
++	await page._refresh_rank()
++	check(page.race_chart.snapshot.markers.size() == 2, "test population replacement retains both personal markers")
++	check(page.lap_population.text.contains("100 verified test drivers") and page.lap_chart.snapshot.bins == [25,45,30], "development comparison includes all verified test-driver best laps")
++	check(page.lap_chart.snapshot.edges_ms.size() == 4, "test lap histogram retains the exact server bin edges")
++	page.results.previous = 52.0
++	page.results.best = 52.0
++	var separate: Array[Dictionary] = page._comparison_markers("RACE TIME")
++	check(separate[0].value_ms == 55000 and separate[1].value_ms == 52000, "slower current race and faster personal best have independent markers")
++	var tail_snapshot: Dictionary = {"bins":[10,20,30,25,15],"min_ms":97000.0,"max_ms":110000.0,"markers":separate}
++	geometry = TrackDistribution.comparison_geometry(tail_snapshot,400)
++	check(geometry.marker_x[1] < geometry.marker_x[0] and geometry.low < 52000, "both faster markers extend the domain without changing population counts")
++	check(tail_snapshot.bins == [10,20,30,25,15], "markers never add samples to the driver population")
+ 	page.free()
+ 	client.free()
+ 	source.free()
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -7,7 +7,7 @@
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import Integer, cast, func, select, text, tuple_
++from sqlalchemy import Integer, cast, func, or_, select, text, tuple_
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
+@@ -23,6 +23,7 @@
+ from .track_models import (
+     Board,
+     BoardTimeCount,
++    OperationState,
+     PersonalBest,
+     Run,
+     RunTicket,
+@@ -435,20 +436,27 @@
+ 
+ 
+ @router.get("/boards/{board_id}/histogram")
+-def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100)) -> dict:
++def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100),
++              metric: Literal["race", "best_lap"] = "race") -> dict:
+     board = public_board(session, board_id)
++    # A slower race can improve a lap without changing the race-PB revision.
++    if metric == "best_lap":
++        return histogram_query(board_id, session, bins, metric=metric)
+     return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
+ 
+ 
+-def histogram_query(board_id, session, bins, *, test_population=False):
++def histogram_query(board_id, session, bins, *, test_population=False, metric="race"):
+     frequency = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
+     entries = select(BoardTimeCount.time_ticks, frequency.label("count")).where(
+         BoardTimeCount.board_id == board_id, frequency > 0).subquery()
++    if metric == "best_lap":
++        entries = best_lap_frequencies(board_id, session, test_population=test_population)
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+         )
+     ).one()
++    count = int(count)
+     if count == 0:
+         return {
+             "board_id": board_id,
+@@ -456,17 +464,19 @@
+             "minimum_ticks": None,
+             "maximum_ticks": None,
+             "bins": [],
++            "metric": metric,
+         }
+     width = max(1, math.ceil((maximum - minimum + 1) / bins))
+     bucket = cast(func.floor((entries.c.time_ticks - minimum) / width), Integer)
+-    grouped = dict(
++    grouped = {int(bucket): int(frequency) for bucket, frequency in
+         session.execute(
+             select(bucket.label("bucket"), func.sum(entries.c.count)).select_from(entries).group_by(bucket)
+         ).all()
+-    )
++    }
+     occupied_bins = (maximum - minimum) // width + 1
+     return {
+         "board_id": board_id,
++        "metric": metric,
+         "population": count,
+         "minimum_ticks": minimum,
+         "maximum_ticks": maximum,
+@@ -479,6 +489,35 @@
+             for i in range(occupied_bins)
+         ],
+     }
++
++
++def best_lap_frequencies(board_id, session, *, test_population=False):
++    """One best verified flying lap per active driver, across comparable attempts."""
++    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
++    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
++    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
++        Player, Player.id == Run.player_id).join(PersonalBest,
++        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
++        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
++        *(lap > 0 for lap in laps))
++    if not test_population:
++        statement = statement.where(Player.is_test_driver.is_(False))
++    else:
++        # Retained audit runs from an owner-requested test-record reset must not
++        # restore retired lap records. Real players are never part of that reset.
++        board = session.get(Board, board_id)
++        if board:
++            resets = session.scalars(select(OperationState).where(
++                OperationState.id.startswith("test-pop-batch:"),
++                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
++            cutoff = max((row.details.get("created_at", 0) for row in resets
++                          if row.details.get("request", {}).get("clear_test_records")
++                          and any(entry.get("version_id") == board.version_id
++                                  for entry in row.details.get("tracks", []))), default=0)
++            if cutoff:
++                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
++    bests = statement.group_by(Run.player_id).subquery()
++    return select(bests.c.time_ticks, func.count().label("count")).group_by(bests.c.time_ticks).subquery()
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+diff --git a/backend/bmt_backend/test_drivers.py b/backend/bmt_backend/test_drivers.py
+--- a/backend/bmt_backend/test_drivers.py
++++ b/backend/bmt_backend/test_drivers.py
+@@ -6,7 +6,7 @@
+ import random
+ import secrets
+ import uuid
+-from typing import Annotated
++from typing import Annotated, Literal
+ 
+ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+@@ -18,6 +18,7 @@
+ from .middleware import ParsedJSONRoute
+ from .rivalry import GROUP_CAPACITY, active_contract, eligible_versions, require_member, snapshot
+ from .rivalry_models import RivalryGroup, RivalryMember
++from .runs import BoardDB
+ from .test_driver_models import TestDriverProfile
+ from .test_population import require_enabled
+ from .track_models import IdempotencyRecord, Run, Track, digest, now
+@@ -55,15 +56,16 @@
+ 
+ 
+ @router.get("/dev/test-drivers/track-versions/{version_id}/histogram")
+-def test_histogram(version_id: str, vehicle_id: str, request: Request, session: DB,
+-                   player: Auth, bins: int = Query(24, ge=1, le=100)):
++def test_histogram(version_id: str, vehicle_id: str, request: Request, session: BoardDB,
++                   player: Auth, bins: int = Query(24, ge=1, le=100),
++                   metric: Literal["race", "best_lap"] = "race"):
+     from .runs import board_manifest, histogram_query
+     from .tracks import published_version
+     require_enabled(request)
+     version = published_version(session, version_id)
+     pinned = {**board_manifest(version, vehicle_id), "test_population": True}
+     board_id = digest({"version_id": version.id, **pinned})
+-    result = histogram_query(board_id, session, bins, test_population=True)
++    result = histogram_query(board_id, session, bins, test_population=True, metric=metric)
+     result["test_population"] = True
+     result["label"] = "Simulated test drivers / verified personal bests"
+     result["vehicle_id"] = vehicle_id
+diff --git a/backend/tests/test_domains.py b/backend/tests/test_domains.py
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -296,6 +296,36 @@
+     assert domain.client.put(path, json={"score": True}, headers=headers(domain, "Bob")).status_code == 422
+ 
+ 
++def test_best_lap_histogram_counts_each_driver_once_across_verified_attempts(domain):
++    version, board = public_course(domain)
++    alice = race(domain, version, "Alice", frames=20)
++    slower = race(domain, version, "Alice", frames=25)
++    race(domain, version, "Bob", frames=30)
++    with domain.factory() as session:
++        # Deliberately fast standing starts must never become flying-lap PBs.
++        session.get(Run, alice["run_id"]).lap_ticks = [1, 24, 25, 25, 25]
++        session.get(Run, slower["run_id"]).lap_ticks = [1, 19, 35, 35, 35]
++        session.commit()
++    path = f"/v1/boards/{board}/histogram"
++    result = domain.client.get(path, params={"metric": "best_lap", "bins": 8})
++    assert result.status_code == 200, result.text
++    data = result.json()
++    assert data["metric"] == "best_lap" and data["population"] == 3
++    assert data["minimum_ticks"] == 19 and data["maximum_ticks"] == 60
++    assert sum(b["count"] for b in data["bins"]) == 3
++    with domain.factory() as session:
++        session.get(Run, slower["run_id"]).lap_ticks = [1, 18, 36, 35, 35]
++        session.commit()
++    assert domain.client.get(path, params={"metric": "best_lap"}).json()["minimum_ticks"] == 18
++    assert domain.client.get(path, params={"metric": "unknown"}).status_code == 422
++    with domain.factory() as session:
++        session.get(Run, slower["run_id"]).status = "failed"
++        session.get(Player, domain.players["Bob"]).disabled = True
++        session.commit()
++    data = domain.client.get(path, params={"metric": "best_lap"}).json()
++    assert data["population"] == 2 and data["minimum_ticks"] == 24
++
++
+ def test_pb_ties_histogram_neighbours_and_ghost_share_population(domain):
+     version, board = public_course(domain)
+     alice = race(domain, version, "Alice", frames=20)
+diff --git a/backend/tests/test_test_drivers.py b/backend/tests/test_test_drivers.py
+--- a/backend/tests/test_test_drivers.py
++++ b/backend/tests/test_test_drivers.py
+@@ -410,6 +410,51 @@
+         assert all(j["group_id"] is None for j in jobs)
+ 
+ 
++def test_best_lap_histogram_includes_all_test_drivers_and_respects_record_reset(drivers):
++    from bmt_backend.runs import board_manifest
++    from bmt_backend.track_models import OperationState, Run, RunTicket, TrackVersion, digest
++    version_id = group(drivers)["tracks"][0]["entry"]["version_id"]
++    with drivers.factory() as session:
++        pinned = {**board_manifest(session.get(TrackVersion, version_id), "compact"), "test_population": True}
++        board_id = digest({"version_id": version_id, **pinned})
++        ids = []
++        for index in range(100):
++            player = Player(display_name=f"Lap driver {index}", is_test_driver=True)
++            session.add(player)
++            session.flush()
++            issued = RunTicket(player_id=player.id, board_id=board_id, expires_at=now()+7200)
++            session.add(issued)
++            session.flush()
++            run = Run(ticket_id=issued.id, player_id=player.id, board_id=board_id, replay_hash="0"*64,
++                      status="verified", time_ticks=10000+index*5, lap_ticks=[1, 2000+index, 2100, 2200, 2300],
++                      created_at=100, finished_at=101)
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=board_id, player_id=player.id, run_id=run.id, time_ticks=run.time_ticks))
++            ids.append(player.id)
++        # Raw pre-reset history remains stored, but cannot revive its retired PB.
++        issued = RunTicket(player_id=ids[0], board_id=board_id, expires_at=now()+7200)
++        session.add(issued)
++        session.flush()
++        session.add(Run(ticket_id=issued.id, player_id=ids[0], board_id=board_id, replay_hash="0"*64,
++                        status="verified", time_ticks=10, lap_ticks=[1, 2, 2, 2, 3], created_at=1, finished_at=2))
++        session.add(OperationState(id="test-pop-batch:lap-reset", details={"vehicle_id":"compact",
++                    "request":{"clear_test_records":True}, "created_at":50, "tracks":[{"version_id":version_id}]}))
++        session.commit()
++    route = f"/v1/dev/test-drivers/track-versions/{version_id}/histogram?vehicle_id=compact&metric=best_lap&bins=8"
++    assert drivers.client.get(route).status_code == 401
++    response = drivers.client.get(route, headers=auth(drivers.login))
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data["metric"] == "best_lap" and data["test_population"] is True
++    assert data["population"] == sum(b["count"] for b in data["bins"]) == 100
++    assert data["minimum_ticks"] == 2000 and data["maximum_ticks"] == 2099
++    assert len(data["bins"]) <= 8
++    assert drivers.client.get(f"/v1/boards/{board_id}/histogram?metric=best_lap").status_code == 404
++    drivers.app.state.settings = dataclasses.replace(drivers.app.state.settings, test_drivers_enabled=False)
++    assert drivers.client.get(route, headers=auth(drivers.login)).status_code == 404
++
++
+ def test_test_histogram_uses_verified_test_counts_and_stays_private(drivers):
+     from bmt_backend.runs import board_manifest
+     from bmt_backend.track_models import BoardTimeCount, TrackVersion, digest
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-requested results histogram correction implemented locally: eight bins, exact current-race/own-PB markers and one verified flying-lap best per driver across comparable attempts. Standing starts/public artificial identities/unverified runs/retired test records excluded; exact edges/counts retained. Final graphical36/App99/parser351 pass; histogram SQL7 pass/1 skip, broad backend143 pass/5 skip/two existing rules-upgrade409 failures, task-start baseline reproduced. Broad results recommendation/timing fixture remains failing. Inspected100-real-driver desktop/compact/wide and tied-marker captures; task-only checkpoint preserves unrelated work. No phone check/device/export/install/full Validate/cloud state change. Development overlay prepared; automatic approval review rejected image build/push because exact repository-code egress/rollout authorization is absent; owner approval pending. Files/commands/evidence/limits: docs/RESULTS_HISTOGRAMS.md.
++
+ 2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
+ 
+ 2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1271,3 +1271,6 @@
+ ## Locked-in band world and 144 BPM steering, 2026-10-07
+ 
+ 2026-10-07 MUS20-MUS27/G01/R01/Q01/V06: owner-directed "music locks in" band world and higher tempo integrated: signature D-E-A-F#, recorded guitar/bass/acoustic kit, five related six-layer palettes, race144/menu112BPM; confidence uses clean gates/line/streak and recorded personal/rival pace, no raw-speed normalization. Reserved soar at recorded59.982s, musical setbacks/rebuild, once-per-lap two-beat PB breath and real-results motif/PB sting. Final soundtrack1158/graphical1163/flow29, App99/ghost38/rewind57/vehicle1434 checks pass; ghost fixture27 warnings retained. 37 assets/160 combinations/18 real captures unclipped; exact loops/breath/pause/hover, browser9 previews validated. Earlier tempo/renders preserved; targeted tremolo-seam/sparse-backtrack/decoder fixes retain failing evidence. Canonical concurrent work excluded, no phone test/export/install/full Validate/backend action; artist/AAA approval pending. Commands/files/source licences/scoped checkpoint: docs/LOCKED_IN_SOUNDTRACK.md.
++
++
++2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: results histograms use eight bins, two retained timed markers and all-driver verified flying-lap bests. Graphical36/App99/parser351 pass; SQLite/ownedPG histogram7 pass/one skip; broad143 pass/5 skip/two baseline rules409 failures, old broad-results fixture remains failing. Actual100-driver captures inspected/scoped checkpoint retained. No phone check/device/export/install/full Validate/cloud change. Two-module development rollout prepared; image build/push rejected by automatic approval review pending explicit code-egress/development-rollout approval. Details: docs/RESULTS_HISTOGRAMS.md.
+diff --git a/game/tests/test_results_histograms.gd b/game/tests/test_results_histograms.gd
+--- /dev/null
++++ b/game/tests/test_results_histograms.gd
+@@ -0,0 +1,76 @@
++extends "res://tests/test_race_results.gd"
++## Focused histogram acceptance; the broader results fixture has unrelated catalog assumptions.
++
++func run() -> void:
++	var requested_capture: bool = capture or (DisplayServer.get_name() != "headless" and not OS.get_environment("BMT_RESULTS_EVIDENCE").is_empty())
++	capture = false
++	await test_completion_distributions()
++	await test_histogram_tails()
++	capture = requested_capture
++	if capture: await capture_comparisons()
++	print("RESULTS_HISTOGRAMS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
++
++func capture_comparisons() -> void:
++	root.content_scale_size = Vector2i(1280,720)
++	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
++	var evidence: String = OS.get_environment("BMT_RESULTS_EVIDENCE")
++	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(evidence.path_join("verified-silmukka-histograms.json")))
++	check(data is Dictionary,"capture uses retained verified driver times and flying laps")
++	if not data is Dictionary: return
++	var source := RaceResults.new()
++	source.circuit = "Silmukka"
++	source.vehicle_name = "Compact / 01"
++	source.laps = [22.451,17.286,16.423,16.008,15.239]
++	source.total = 83.407
++	source.previous = 81.552
++	source.best = 81.552
++	source.clean = true
++	root.add_child(source)
++	source.hide()
++	var shell := Control.new()
++	shell.theme = MenuStyle.theme()
++	root.add_child(shell)
++	MenuStyle.fill(shell)
++	var backdrop := TextureRect.new()
++	backdrop.texture = TrackTile.scenery_texture("pine")
++	backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	backdrop.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	shell.add_child(backdrop)
++	MenuStyle.fill(backdrop)
++	var tint := ColorRect.new()
++	tint.color = Color(0.015,0.03,0.04,0.60)
++	shell.add_child(tint)
++	MenuStyle.fill(tint)
++	var margin := MarginContainer.new()
++	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,24)
++	shell.add_child(margin)
++	MenuStyle.fill(margin)
++	var page := RaceComplete.new()
++	page.results = source
++	page.facts = {"complete":true,"total":source.total,"previous":source.previous,"previous_lap":14.992,"flying":15.239}
++	var catalog := TrackCatalog.new(TrackLibrary.new("user://histogram_capture_empty"))
++	for entry: Dictionary in catalog.entries.slice(0,3):
++		var track: NativeTrack = catalog.resolve(entry)
++		if track == null: continue
++		page.recommendations.append({"name":entry.name,"entry":entry,"route":track.route,"laps":5,"estimated_seconds":110,"reason":"Different scenery / New challenge","category":"different_biome"})
++	margin.add_child(page)
++	page._show_distribution(page.race_chart,data.race,page.race_context)
++	page._show_distribution(page.lap_chart,data.best_lap,page.lap_context)
++	page.global_rank.text = "YOUR PERSONAL BEST  "+MenuStyle.time_text(source.best)
++	await create_timer(1.8).timeout
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		check(shell.get_global_rect().encloses(page.get_global_rect()),"results charts fit %s" % dimensions)
++		check(page.race_chart.size.y >= 100 and page.lap_chart.size.y >= 100,"both marker lanes and bars remain visible %s" % dimensions)
++		await screenshot("comparison-%dx%d" % [dimensions.x,dimensions.y])
++	root.size = Vector2i(1280,720)
++	source.previous = 0
++	source.best = 83.407
++	page.global_rank.text = "YOUR PERSONAL BEST  "+MenuStyle.time_text(source.best)
++	page.race_chart.snapshot.markers = page._comparison_markers("RACE TIME")
++	page.race_chart.queue_redraw()
++	await screenshot("new-personal-best-1280x720")
++	shell.free()
++	source.free()
+diff --git a/docs/RESULTS_HISTOGRAMS.md b/docs/RESULTS_HISTOGRAMS.md
+--- /dev/null
++++ b/docs/RESULTS_HISTOGRAMS.md
+@@ -0,0 +1,57 @@
++# Results histogram correction — 2026-10-08
++
++Owner request: use wider race-time bins, clearly show the just-completed race and the player's best, and include all test drivers' best laps in the lap comparison.
++
++Requirements: R01/R03, V03/V05, RR05/RR06, B05, TD06/TD08 and Q01. RR06 is this correction's comparison-data/marker contract.
++
++## Implemented behavior
++
++Results requests **eight bins**, replacing 24 for race time. Local fallback uses at most eight bins and scales its bin count to actual sample size. The race and lap charts preserve exact server bin edges/counts; markers do not create comparison samples.
++
++**THIS RACE** is yellow, with a solid line and triangle; **YOUR BEST** is pale blue, with a dashed line and circle. Each label includes its time. Equal millisecond times share a `THIS RACE / YOUR BEST` marker. The horizontal time domain includes both markers, including races faster/slower than the comparison field; they remain positioned by their actual time. The public verified race PB can update a local PB from another device. Pending uploads retain the current race marker without inventing a verified rank. Development comparison refresh no longer removes the markers.
++
++Both histogram endpoints accept `metric=race|best_lap` (default `race`) and bounded `bins=1..100`. `best_lap` reads canonical verified five-lap splits, excludes the standing start, and contributes **one shortest flying lap per active driver across comparable verified attempts**, including slower races that improved a lap. Drivers must still have a retained PB in that pinned board. Public data excludes artificial identities; development board access remains authenticated/capability-gated. Old raw artificial runs preceding the latest applicable record reset cannot restore retired lap records. Real players are outside that reset. No migration, replay/physics change or player-file rewrite is needed.
++
++Lap queries deliberately do not use the race-PB cache revision: a lap can improve without improving race time. PostgreSQL count aggregates are explicitly converted to integers. Development histogram reads now use the same database snapshot boundary as public boards. The response contract is [time-histogram-v1.schema.json](schemas/time-histogram-v1.schema.json).
++
++An older backend that ignores the new metric must not feed race times into the lap chart: the client requires `metric=best_lap` in the response and keeps its local fallback otherwise. Consequently, live all-driver lap data requires the matching backend update.
++
++## Files and review checkpoint
++
++- `game/ui/race_complete.gd`: wider requests, lap comparison loading, marker retention, local and verified PB handling, development fallback independent of public board availability.
++- `game/ui/track_distribution.gd`: separate timed marker rendering, exact bin edges, bounds including both personal times, retained original rendering for other chart callers.
++- `backend/bmt_backend/runs.py`, `test_drivers.py`: metric contract, database aggregate, development reset protection and snapshot boundary.
++- `game/tests/test_race_results.gd`, new `test_results_histograms.gd`; `backend/tests/test_domains.py`, `test_test_drivers.py`: focused marker, population, SQL-dialect, privacy and reset checks.
++- This document, response schema, development status/phase plan and dated evidence.
++
++The working tree already contains extensive unrelated work. [Task-only Git patch](evidence/results-histograms-2026-10-08/results-histograms.patch) records only changes against snapshots taken before this task. No mixed-workspace commit was made. Private capture/overlay preparation helpers remain under `.tools/results-histograms`; they are outside the game/export root and contain no credentials.
++
++## Actual verification
++
++All Godot commands use pinned **4.7.2 stable ed1daf0bf** through `scripts/dev.ps1`. `APPDATA` was redirected to `build/results-histograms-user` for isolated test saves. Windows certificate access required an approved sandbox escalation for runtime checks.
++
++| Command | Actual outcome |
++| --- | --- |
++| `CheckScript -ScriptPath res://ui/race_complete.gd` | Passed after redirecting the initial denied user-log path. |
++| `TestScript -ScriptPath res://tests/test_results_histograms.gd` | Initial focused run: 24 checks, zero failures; final graphical run includes the additional verified-PB assertion. |
++| `TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical`, with `BMT_RESULTS_EVIDENCE` set | **36 checks, zero failures**, final; includes four captures and three measured landscape sizes. |
++| `TestApp` | **99 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **351 scripts, zero failures**. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py -k histogram -q --tb=short --show-capture=no` | **7 passed, 1 skipped, 59 deselected**, against SQLite and an owned PostgreSQL 17 database. Skip is the PostgreSQL-only snapshot test's SQLite parameter. |
++| Same Python; `pytest backend/tests/test_domains.py backend/tests/test_test_drivers.py backend/tests/test_review_reliability.py -q -k 'not godot' --tb=short --show-capture=no --junitxml=docs/evidence/results-histograms-2026-10-08/backend-tests.xml` | **143 passed, 5 skipped, 2 failed**. Both failures are the existing `test_checkpoint_rules_upgrade_keeps_track_and_historical_board` 409, one per SQL dialect. [Actual XML](evidence/results-histograms-2026-10-08/backend-tests.xml). |
++| Baseline-copy `pytest backend/tests/test_domains.py -k 'checkpoint_rules_upgrade and not postgres' -q --tb=short --show-capture=no` | Same 409 reproduced using the task-start `runs.py` and `test_drivers.py`; no source changes were reverted in the shared workspace. [Baseline XML](evidence/results-histograms-2026-10-08/baseline-rule-failure.xml). |
++| `ruff check` for the four changed backend source/test files; scoped `git diff --check` | Passed. |
++
++The owned PostgreSQL container used a task label, loopback port 55448, one CPU and 512 MiB, and was removed after testing. Existing services/databases were not changed. The first histogram-only Python invocation accidentally selected an unavailable older local PostgreSQL fixture and reported two connection-timeout errors; the owned fixture replaced that unavailable test connection. The first actual PostgreSQL lap test exposed numeric serialization as a string; that was corrected and the final dialect checks pass.
++
++The broad Godot `TestResults` still fails existing rating timing/viewport/touch/recommendation assumptions and stops on its recommendation button index. The recommendation-catalog problem is already recorded in [RESULTS_CONNECTION_NOTICE.md](RESULTS_CONNECTION_NOTICE.md). No assertions or canonical gates were weakened. The first sandboxed attempt also could not read Windows certificates; only its owned blocked engine process was stopped. The focused suite reuses the original distribution/tail assertions and passes, but the broad results suite is **not** reported green.
++
++## Visual evidence and deployment status
++
++[Desktop 1280×720](evidence/results-histograms-2026-10-08/comparison-1280x720.png), [compact 960×540](evidence/results-histograms-2026-10-08/comparison-960x540.png), [wide 1600×720](evidence/results-histograms-2026-10-08/comparison-1600x720.png), and [equal current/PB marker](evidence/results-histograms-2026-10-08/new-personal-best-1280x720.png) were captured and inspected. The comparison field uses all **100 actual verified Silmukka compact-driver records and their lap splits** from the retained reseed CSV. Player times reproduce the owner's screenshot as an explicitly illustrative UI fixture; they are not new submitted/server records. The isolated empty catalog is why these captures have no recommendation cards. [Source/count/bin receipt](evidence/results-histograms-2026-10-08/verified-silmukka-histograms.json).
++
++A two-module development overlay is concretely prepared for the existing retained `beat-my-track` / `europe-west1` backend. It applies only exact-matching histogram functions/imports to the current immutable parent image, and requires a proof that every packaged canonical file is unchanged, a fresh successful SQL backup and the existing ownership/image guards before deployment. It performs no migration or reseed. [Preparation receipt](evidence/results-histograms-2026-10-08/development-rollout.json).
++
++**Cloud build/push/rollout is pending explicit owner approval.** Automatic approval review rejected the attempted image build/push because the current trusted instructions authorize backend implementation but do not explicitly authorize this repository-code egress and rollout destination. No image was built/pushed and no cloud service, record or schema was modified by this task. The exact intended destination is the existing development Artifact Registry repository `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend` and its retained development API/worker, not production.
++
++Remaining acceptance: approve and run the prepared development rollout, verify live lap populations, and review the chart while racing. Phone attachment was not checked; no physical-device UI test, Android export/install or full `Validate` was performed.
+diff --git a/docs/schemas/time-histogram-v1.schema.json b/docs/schemas/time-histogram-v1.schema.json
+--- /dev/null
++++ b/docs/schemas/time-histogram-v1.schema.json
+@@ -0,0 +1,32 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Verified time histogram",
++  "type": "object",
++  "required": ["board_id", "metric", "population", "minimum_ticks", "maximum_ticks", "bins"],
++  "properties": {
++    "board_id": {"type": "string"},
++    "metric": {"enum": ["race", "best_lap"]},
++    "population": {"type": "integer", "minimum": 0},
++    "minimum_ticks": {"type": ["integer", "null"], "minimum": 1},
++    "maximum_ticks": {"type": ["integer", "null"], "minimum": 1},
++    "test_population": {"type": "boolean"},
++    "label": {"type": "string"},
++    "vehicle_id": {"type": "string"},
++    "bins": {
++      "type": "array",
++      "maxItems": 100,
++      "items": {
++        "type": "object",
++        "required": ["from_ticks", "to_ticks_exclusive", "count"],
++        "properties": {
++          "from_ticks": {"type": "integer", "minimum": 1},
++          "to_ticks_exclusive": {"type": "integer", "minimum": 2},
++          "count": {"type": "integer", "minimum": 0}
++        },
++        "additionalProperties": false
++      }
++    }
++  },
++  "additionalProperties": false,
++  "description": "120 Hz canonical ticks. Race uses one verified race PB per driver; best_lap uses each driver's shortest verified flying lap across comparable attempts. Standing lap excluded. Empty populations have null extrema and no bins. Public and development populations remain separate."
++}

@@ -1,0 +1,393 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 3891b64..87f819d 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
++
+ 2026-10-11 RLOAD07-RLOAD09/B01/R01/Q01: owner Race does not start/no feedback. Reproduced metadata cancellation29/3fail; specific account-car-track reasons, owning-overlay fences, missing-selection/empty-error recovery and disabled track/rivalry action states. Final metadata29/menu45/actualstart21/loading83/App99 =277checks/0fail; eight fixture captures. Doctor no attached devices; no phone test/Android export-install/fullValidate/physics-regression/livewrites/backend/deploy. Exact owner mode/track incident unconfirmed; restart/retry acceptance. Files/commands/task-only checkpoint/limits: docs/RACE_START_FEEDBACK.md.
+ 
+ 2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
+diff --git a/docs/CAR_WASH.md b/docs/CAR_WASH.md
+index 30fcdb3..2499f4f 100644
+--- a/docs/CAR_WASH.md
++++ b/docs/CAR_WASH.md
+@@ -4,11 +4,11 @@ Owner request, 2026-10-11. Requirements: CW13 (persistent per-car dirt), CW14 (m
+ 
+ Dirt now survives completed races, abandoned races, retry, track/biome changes, Garage paint resets, and application restarts. Each of the five cars has its own condition. Dirt colours blend as new material accumulates rather than replacing the previous coat; Winter snow is a separate overlay. Snow melts over up to eight seconds during the finish coast, in Garage, and while driving a non-Winter track. Melted snow smears existing dirt without adding dirt to a clean car. These are cosmetic presentation seconds; no wall clock or backend is involved.
+ 
+-Garage has a **Wash** action beside its existing view controls. Holding/dragging on the actual visible mesh progressively cleans a small patch, with a blue brush indicator. One finger washes; two fingers rotate and pinch. A right mouse drag rotates, and existing wheel/buttons still zoom. **Done** returns to ordinary orbit. The player reaches other sides by rotating the car. Clicking empty background does not clean it; pressing Wash alone does not clean anything. Later driving gradually coats cleaned patches again. Washing is free and optional for racing and score eligibility.
++Garage has a **Wash** action beside its existing view controls. Holding/dragging on the actual visible mesh progressively cleans a small patch, with a blue brush indicator. A quick swipe leaves dirt; modest repeated passes clean it. Older grime grows resistance over active dirty driving, capped at 40% more work after roughly fifteen minutes. Fully cleaned patches start soft again, while untouched dirt retains its age. One finger washes; two fingers rotate and pinch. A right mouse drag rotates, and existing wheel/buttons still zoom. **Done** returns to ordinary orbit. The player reaches other sides by rotating the car. Clicking empty background does not clean it; pressing Wash alone does not clean anything. Later driving gradually coats cleaned patches again. Washing is free and optional for racing and score eligibility.
+ 
+ ## Local persistence and cost
+ 
+-`vehicle_conditions` is an additive, validated settings field in the existing atomic local-records schema 2. Entries use cosmetic version 1 and contain bounded dirt/snow/wetness/mud/smudge values, a colour and an exact 4,096-byte wash volume encoded in Base64. CW17–CW19 adds bounded slow dirt/snow, a second 4,096-byte wash volume and a small pending re-coating remainder, with original eight-field entries retained. Five cars now use roughly 56 KB plus small scalar metadata. Existing saves lacking this optional field start clean; no player file is removed. Condition stays within the local guest/player profile. No new telemetry, request, backend endpoint, race-proof field, upload, ghost condition, reward, handling or score rule is introduced. See [rims and twenty-times-slower coating](RIM_SLOW_WEATHERING.md) for the follow-up's exact rate, commands and captures.
++`vehicle_conditions` is an additive, validated settings field in the existing atomic local-records schema 2. Entries use cosmetic version 1 and contain bounded dirt/snow/wetness/mud/smudge values, a colour and an exact 4,096-byte wash volume encoded in Base64. CW17–CW19 adds bounded slow dirt/snow, a second 4,096-byte wash volume and a small pending re-coating remainder. CW20–CW22 adds a 4,096-byte per-patch grime-age map and bounded ageing remainder; earlier eight/eleven/twelve-field entries remain valid and retain their exact wash masks, with zero new age. Final entries have fourteen fields. Five cars now use roughly 84 KB plus small scalar metadata. Existing saves lacking this optional field start clean; no player file is removed. Condition stays within the local guest/player profile. No new telemetry, request, backend endpoint, race-proof field, upload, ghost condition, reward, handling or score rule is introduced. See [rims and twenty-times-slower coating](RIM_SLOW_WEATHERING.md) and [gentle scrubbing](GENTLE_SCRUBBING.md) for exact rates, commands and captures.
+ 
+ The finish uses the existing opaque material and actual car geometry. The primary and slow 16-cubed wash volumes are each packed into a shared 256x16 R8 texture, with two interpolated slice reads each; there is no additional mesh/draw pass, screen read or runtime asset. Brush work visits only nearby voxels. Garage lazily caches model triangles for closest-hit ray picking, now including the rims. Local saves occur when a wash stroke ends, Done is pressed, snow finishes melting, Garage exits, a race finishes/retries/exits, or the app loses focus; active race checkpointing is every five seconds, active washing/melting every two seconds. Unchanged entries skip saves. Cached/outgoing Garage pages cannot overwrite newer race wear. Save failures retain unsaved presentation for retry and use the existing storage-error path.
+ 
+diff --git a/docs/GENTLE_SCRUBBING.md b/docs/GENTLE_SCRUBBING.md
+new file mode 100644
+index 0000000..1a29663
+--- /dev/null
++++ b/docs/GENTLE_SCRUBBING.md
+@@ -0,0 +1,43 @@
++# Modest scrubbing and gently ageing grime
++
++Owner request, 2026-10-11. CW20 requires several modest passes rather than a one-swipe clean. CW21 adds a little more work for long-unwashed dirt, without becoming annoying. CW22 preserves local per-car dirt/washing persistence and the existing body/rim/slow-coat behavior, with G01/R01/V06/Q01 boundaries.
++
++The base brush rate falls from 3.0 to **0.85 normalized clean units per second** at its centre. Its existing 0.48-metre soft radial falloff is retained. A 0.2-second quick pass can remove at most about 17% of the dirt at a directly covered voxel, less toward the edge. Repeated passes or a short hold progressively finish a patch. Existing one-finger/left-mouse washing, two-finger/right-mouse orbit, zoom and Done controls remain.
++
++Old grime adds **at most 40% more work** at the same brush location. Each existing wash-volume voxel has a bounded age byte; visible/potential dirt ages while driving with dirt, reaching its cap after about fifteen minutes of active use. Pause/countdown and time with the app closed do not age it. This deliberately keeps returning players from facing an offline-time penalty. Age persists across races and app restarts. Once both dirt layers are fully cleaned at a voxel, its age resets to zero; cleaning one patch does not soften untouched old dirt elsewhere. Values are local tuning defaults awaiting owner feel acceptance.
++
++The previous code rounded every small brush sample upward, so fast interpolated swipes could accumulate excessive cleaning. Fractional byte progress is now retained separately for the primary and slow masks, then committed only when a full byte is earned. One pass split into 100 small samples gives the same visual mask as the unsplit pass in the all-car fixture. The unsaved fractional remainder is less than one byte; exact visible R8 wash progress remains persisted.
++
++## Files, persistence and cost
++
++- `game/vehicle/vehicle_weathering.gd`: modest rate, bounded per-patch resistance/age, fractional scrub progress and age reset on full cleaning. Main dirt/slow dirt/rim/snow deposition, twenty-times-slower exposure and melting rules are retained.
++- `game/vehicle/vehicle_condition.gd`: two optional version-1 fields, `grime_age` (exact 4,096-byte Base64 map) and `grime_elapsed` (bounded age-step remainder). Eight/eleven/twelve-field entries remain valid; fourteen-field entries are validated. Existing masks/palette remain exact and old entries start gently with no invented age. Local-records schema stays 2; no deletion or network write.
++- `game/tests/test_gentle_scrubbing.gd` / `.uid`: actual all-car first-pass work, sample splitting, fresh/aged effort cap, comfortable completion, patch-specific reset, atomic reboot persistence, legacy upgrade and pause/age bounds; native actual-model views.
++- `game/tests/test_rim_slow_weathering.gd`: its legacy fixture removes the two new optional fields along with previous optional slow fields to continue testing the original eight-field format; all prior assertions remain.
++- Status/plan, `docs/CAR_WASH.md` and this document record actual results. No shader, geometry, camera, UI labels/actions, handling, scoring or backend change.
++
++Age visits the bounded 4,096-cell map approximately every 3.53 seconds of active dirty driving. It stays CPU-side: no new texture or fragment lookup. Per-active-car working memory adds a 4 KB age map and two 16 KB fractional buffers; persisted data adds about 28 KB across all five cars (roughly 84 KB total condition payload including previous masks and small metadata). Existing body/wheel wash coordinates and mask dimensions are retained. Save cadence/error handling stays unchanged.
++
++## Actual verification
++
++All engine commands use pinned `4.7.2.stable.official.ed1daf0bf` via the launcher, isolated test records and disabled backend access:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_gentle_scrubbing.gd
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_gentle_scrubbing.gd -Graphical -TestArgument @('--capture')"
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_gentle_scrubbing.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument @('--capture')"
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rim_slow_weathering.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRecords
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++python build/checkpoint_gentle_scrubbing.py
++```
++
++Final native Compatibility and Mobile/Vulkan focused runs pass **223 checks / 0 failures** each. Existing wash regression passes 1,383 headless checks; rims/slow coat 195; records 54; app 99. Exact byte-mask/palette/age persistence and previous legacy/gesture/score boundaries remain. Initial focused run found the 900-second ageing boundary one byte short because of floating-point accumulation; a tiny interval-comparison tolerance fixes the implementation, retaining the exact cap assertion. The first existing-wash launch encountered a concurrently added Winter texture missing its import cache; Import resolved it. No failing assertion was removed or weakened.
++
++Actual views: [fresh dirt after one pass](evidence/gentle-scrubbing-2026-10-11/fresh-one-pass.png), [fresh after five passes](evidence/gentle-scrubbing-2026-10-11/fresh-five-passes.png), [aged after five passes](evidence/gentle-scrubbing-2026-10-11/aged-five-passes.png), [aged patch finished](evidence/gentle-scrubbing-2026-10-11/aged-finished.png), and desktop Mobile/Vulkan equivalents. They use the actual Garage picker/model and repeated controlled 0.2-second brush doses, not a completed race or physical-device recording. Adjacent dirt remains intact after washing the central patch.
++
++## Remaining acceptance and checkpoint
++
++The task-only checkpoint under `build/gentle_scrubbing/checkpoint-repo` preserves the main index/branch and unrelated work. Patch/hashes/logs are beside the evidence. **No phone test or attachment check, Android export/install, full Validate, physics regression/merge, backend operation, deployment or asset generation.** Owner acceptance of the base rate and 40% cap, touch precision, whole-car cleaning comfort and phone performance remain. Manual acceptance: make a quick swipe, repeat a few passes on the same patch, compare old grime with fresh dirt, clean a patch fully and re-dirty it, then restart and verify retained ageing/progress. Washing remains optional and free, with no race/score gate.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index cbc7329..34c1b8f 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1735,3 +1735,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Rims and twenty-times-slower background dirt, 2026-10-11
+ 
+ 2026-10-11 CW17-CW19/CW13-CW16/V06/G01/R01/Q01: owner dirty rims and exactly20x slower outside-pattern accumulation. Allfive wheel-rest radial coatings/picking/washing; independent slow dirt-snow/recoat volumes plus saved remainder, fresh wash clears old debt. Version1 optional12fields/original8 retained/exact old body-mask mapping/local-only; primary exposure/physics/score unchanged. Import0/finalhead195/nativeCompatibility249+MobileVulkan249/earlierweathering860/wash1383/records54/App99 pass; ratio0.05/allcar atomic legacy-restart/canonical/exact resets/visible rim wash. 75-to1500s controlled previews inspected; no phone test-or-attachment/Android export-install/fullValidate/physics-regression/backend/deploy. Files/commands/scoped checkpoint/limits/owner-device acceptance: docs/RIM_SLOW_WEATHERING.md.
++
++
++## Gentle scrubbing and bounded grime age, 2026-10-11
++
++2026-10-11 CW20-CW22/CW13-CW19/V06/G01/R01/Q01: owner modest scrub and a little more effort for old dirt. Rate3.0->0.85/centre, fractional primary-slow progress removes per-sample ceil inflation; per-patch active dirty-driving age15min/cap40%morework/fullclean resets that patch. Version1 optional14fields/exact prior8-11-12 masks retained/CPU age/local-only/no shader or physics change. Import0/nativeCompatibility223+MobileVulkan223/wash1383/rimslow195/records54/App99 pass; exact100split/onepass/cap/finish/age-reboot/legacy/pause checks. First age-cap5fail fixed interval float boundary/assertion retained; concurrent Winter import issue resolved. Actual fresh-aged1-5-20pass views saved; no phone test-or-attachment/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-feel-device acceptance: docs/GENTLE_SCRUBBING.md.
+diff --git a/game/tests/test_gentle_scrubbing.gd b/game/tests/test_gentle_scrubbing.gd
+new file mode 100644
+index 0000000..a1d1992
+--- /dev/null
++++ b/game/tests/test_gentle_scrubbing.gd
+@@ -0,0 +1,117 @@
++extends "res://tests/test_vehicle_weathering.gd"
++## Actual brush splitting, bounded age resistance and saved per-patch grime.
++func _initialize() -> void: verify.call_deferred()
++
++func make_effect(car: CarVisual, aged: bool = false) -> VehicleWeathering:
++	var effect := VehicleWeathering.new()
++	effect.configure(car, "pine", VehicleCatalog.config(car.vehicle_id))
++	effect.dirt_amount = 0.85
++	effect.slow_dirt_amount = 0.3
++	effect.mud_amount = 1.0
++	effect.deposit_color = VehicleWeathering.COLORS.pine
++	if aged: effect.grime_age.fill(255)
++	effect._update_finish()
++	return effect
++
++func peak(bytes: PackedByteArray) -> int:
++	var result: int = 0
++	for value: int in bytes: result = maxi(result, value)
++	return result
++
++func verify() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	var directory: String = "user://gentle_scrub_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		root.add_child(car)
++		var fresh: VehicleWeathering = make_effect(car)
++		var point: Vector3 = fresh.bounds.position + fresh.bounds.size * Vector3(1, 0.25, 0.6)
++		fresh.wash(point, 0.2)
++		var one_pass: PackedByteArray = fresh.wash_image.get_data()
++		check(peak(one_pass) > 0 and peak(one_pass) < 60, id + " one quick swipe leaves dirt")
++		fresh.reset()
++		var split: VehicleWeathering = make_effect(car)
++		for sample: int in range(100): split.wash(point, 0.002)
++		check(split.wash_image.get_data() == one_pass, id + " many tiny brush samples cannot inflate cleaning")
++		split.reset()
++		fresh = make_effect(car)
++		fresh.wash(point, 0.8)
++		var fresh_progress: int = peak(fresh.wash_image.get_data())
++		fresh.reset()
++		var aged: VehicleWeathering = make_effect(car, true)
++		aged.wash(point, 0.8)
++		var aged_progress: int = peak(aged.wash_image.get_data())
++		check(aged_progress > 0 and aged_progress < fresh_progress and float(fresh_progress)/aged_progress < 1.45, "old dirt takes a little more effort, capped")
++		for pass_index: int in range(20): aged.wash(point, 0.2)
++		check(peak(aged.wash_image.get_data()) == 255, "repeated modest scrubbing comfortably finishes")
++		var clean_cells: int = 0
++		var remaining_old: int = 0
++		for index: int in range(VehicleCondition.CELLS):
++			if aged.wash_image.get_data()[index] == 255:
++				clean_cells += 1
++				check(aged.grime_age[index] == 0, "cleaned patch starts soft again")
++			elif aged.grime_age[index] == 255: remaining_old += 1
++		check(clean_cells > 0 and remaining_old > 0, "cleaning one patch does not reset all old dirt")
++		var saved: Dictionary = aged.snapshot()
++		check(VehicleCondition.save(records, id, saved) == OK, "save dirt age and partial scrubbing")
++		var reopened := LocalRecords.new(records.path)
++		reopened.load_records()
++		var recovered: Dictionary = VehicleCondition.read(reopened, id)
++		check(recovered.grime_age == saved.grime_age and recovered.wash == saved.wash, "reboot retains exact age and wash progress")
++		var legacy: Dictionary = saved.duplicate(true)
++		legacy.erase("grime_age")
++		legacy.erase("grime_elapsed")
++		check(VehicleCondition.valid_collection({id: legacy}), "previous twelve-field conditions remain valid")
++		aged.restore(legacy)
++		check(peak(aged.grime_age) == 0 and aged.snapshot().wash == legacy.wash, "old saves retain strokes and start with gentle age")
++		aged.reset()
++		var dirty: VehicleWeathering = make_effect(car)
++		var state := VehicleState.new()
++		state.velocity = Vector2(0, 20)
++		expose(dirty, state, soil("pine", 1), 900.0)
++		check(peak(dirty.grime_age) == 255, "driving old dirt reaches bounded maximum age")
++		var old_age: PackedByteArray = dirty.grime_age.duplicate()
++		expose(dirty, state, soil("pine", 1), 10.0, 2, true)
++		check(dirty.grime_age == old_age, "pause cannot age grime")
++		dirty.reset()
++		car.queue_free()
++		await process_frame
++	if "--capture" in OS.get_cmdline_user_args(): await preview()
++	print("GENTLE_SCRUBBING: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func preview() -> void:
++	output = "res://../docs/evidence/gentle-scrubbing-2026-10-11"
++	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280, 720)
++	var view := CarShowroom.new()
++	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(view)
++	view.set_process(false)
++	view.yaw = -PI * 0.5
++	view.elevation = 0.16
++	view._orbit()
++	for warm: int in range(60): await RenderingServer.frame_post_draw
++	await create_timer(1.0).timeout
++	for label: String in ["fresh", "aged"]:
++		view.weathering.dirt_amount = 0.85
++		view.weathering.slow_dirt_amount = 0.3
++		view.weathering.mud_amount = 1.0
++		view.weathering.grime_age.fill(255 if label == "aged" else 0)
++		view.weathering._update_finish()
++		var pixel: Vector2 = view.camera.unproject_position(view.car.body.global_transform * Vector3(-0.9, 0.65, 0.1))
++		await save(label + "-dirty")
++		check(view.wash_at(pixel, 0.2), "actual surface brush hits door")
++		await save(label + "-one-pass")
++		for pass_index: int in range(4): view.wash_at(pixel, 0.2)
++		await save(label + "-five-passes")
++		for pass_index: int in range(15): view.wash_at(pixel, 0.2)
++		await save(label + "-finished")
++		view.weathering.reset()
++		view.weathering.configure(view.car, "pine", VehicleCatalog.config("compact"))
++	view.queue_free()
++	await process_frame
+diff --git a/game/tests/test_gentle_scrubbing.gd.uid b/game/tests/test_gentle_scrubbing.gd.uid
+new file mode 100644
+index 0000000..319153f
+--- /dev/null
++++ b/game/tests/test_gentle_scrubbing.gd.uid
+@@ -0,0 +1 @@
++uid://be2we7h0stln6
+diff --git a/game/tests/test_rim_slow_weathering.gd b/game/tests/test_rim_slow_weathering.gd
+index 5051f92..4178c0b 100644
+--- a/game/tests/test_rim_slow_weathering.gd
++++ b/game/tests/test_rim_slow_weathering.gd
+@@ -50,7 +50,7 @@ func verify() -> void:
+ 			check(recovered.slow_wash == saved.slow_wash and absf(float(recovered.slow_dirt)-saved.slow_dirt) < 1e-9 and absf(float(recovered.slow_snow)-saved.slow_snow) < 1e-9, "slow exposure and wash volume survive restart")
+ 			check(absf(float(recovered.slow_recoat)-saved.slow_recoat) < 1e-9, "pending slow re-coating survives short races and restart")
+ 			var legacy: Dictionary = saved.duplicate(true)
+-			for field: String in ["slow_dirt", "slow_snow", "slow_wash", "slow_recoat"]: legacy.erase(field)
++			for field: String in ["slow_dirt", "slow_snow", "slow_wash", "slow_recoat", "grime_age", "grime_elapsed"]: legacy.erase(field)
+ 			check(VehicleCondition.valid_collection({id: legacy}), "original eight-field local saves remain valid")
+ 			effect.restore(legacy)
+ 			check(effect.slow_dirt_amount == 0.0 and effect.slow_snow_amount == 0.0 and effect.snapshot().wash == legacy.wash, "legacy upgrade retains exact existing wash strokes without inventing slow dirt")
+diff --git a/game/vehicle/vehicle_condition.gd b/game/vehicle/vehicle_condition.gd
+index 26300da..3dd525b 100644
+--- a/game/vehicle/vehicle_condition.gd
++++ b/game/vehicle/vehicle_condition.gd
+@@ -21,7 +21,7 @@ static func valid_collection(value: Variant) -> bool:
+ 	for id: Variant in value:
+ 		if id not in VehicleCatalog.IDS or not value[id] is Dictionary: return false
+ 		var entry: Dictionary = value[id]
+-		if entry.size() not in [8, 11, 12] or entry.get("version") != 1: return false
++		if entry.size() not in [8, 11, 12, 14] or entry.get("version") != 1: return false
+ 		var fields: Array[String] = ["dirt", "snow", "wetness", "mud", "smudge"]
+ 		if entry.size() >= 11: fields.append_array(["slow_dirt", "slow_snow"])
+ 		for field: String in fields:
+@@ -30,7 +30,11 @@ static func valid_collection(value: Variant) -> bool:
+ 		if not entry.get("color") is String or not Color.html_is_valid(entry.color): return false
+ 		if not entry.get("wash") is String or entry.wash.length() > 5464 or Marshalls.base64_to_raw(entry.wash).size() != CELLS: return false
+ 		if entry.size() >= 11 and (not entry.get("slow_wash") is String or entry.slow_wash.length() > 5464 or Marshalls.base64_to_raw(entry.slow_wash).size() != CELLS): return false
+-		if entry.size() == 12:
++		if entry.size() >= 12:
+ 			var debt: Variant = entry.get("slow_recoat")
+ 			if not (debt is int or debt is float) or not is_finite(float(debt)) or float(debt) < 0.0 or float(debt) > 0.02: return false
++		if entry.size() == 14:
++			if not entry.get("grime_age") is String or entry.grime_age.length() > 5464 or Marshalls.base64_to_raw(entry.grime_age).size() != CELLS: return false
++			var elapsed: Variant = entry.get("grime_elapsed")
++			if not (elapsed is int or elapsed is float) or not is_finite(float(elapsed)) or float(elapsed) < 0.0 or float(elapsed) > 900.0 / 255.0: return false
+ 	return true
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+index 4b30c26..6947cae 100644
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -5,6 +5,10 @@ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
+ const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
+ const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48}
+ const SLOW_RATE: float = 1.0 / 20.0
++const SCRUB_RATE: float = 0.85
++const MAX_SCRUB_RESISTANCE: float = 0.40
++const GRIME_AGE_SECONDS: float = 900.0
++const GRIME_AGE_STEP: float = GRIME_AGE_SECONDS / 255.0
+ static var toon_finish: Shader
+ var theme: String = ""
+ var dirt_amount: float = 0.0
+@@ -23,6 +27,10 @@ var slow_wash_texture: ImageTexture
+ var bounds := AABB(Vector3(-2, 0, -4), Vector3(4, 3, 8))
+ var _mask_travel: float = 0.0
+ var _slow_mask_travel: float = 0.0
++var grime_age := PackedByteArray()
++var _grime_elapsed: float = 0.0
++var _scrub_fraction := PackedFloat32Array()
++var _slow_scrub_fraction := PackedFloat32Array()
+ var _body: Node3D
+ var _wheel_frames: Array[Dictionary] = []
+ var wetness: float = 0.0
+@@ -124,6 +132,8 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 	if not is_finite(speed): return
+ 	contacts.sample_contacts(state, track, grounded)
+ 	var travel: float = minf(speed, 55.0) * seconds if grounded and speed > 0.5 else 0.0
++	if travel > 0.0 and maxf(dirt_amount, slow_dirt_amount) > 0.02:
++		_age_grime(seconds)
+ 	var off_road: float = clampf(contacts.grass + contacts.sand + contacts.gravel + contacts.water, 0.0, 1.0)
+ 	var exposure: float = 0.0
+ 	match theme:
+@@ -152,15 +162,28 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+ 		for index: int in range(bytes.size()): bytes[index] = roundi(bytes[index] * exp(-_mask_travel * 4.0))
+ 		wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
+ 		wash_texture.update(wash_image)
++		_scrub_fraction.fill(0.0)
+ 		_mask_travel = 0.0
+ 	if _slow_mask_travel >= 0.02:
+ 		var bytes: PackedByteArray = slow_wash_image.get_data()
+ 		for index: int in range(bytes.size()): bytes[index] = roundi(bytes[index] * exp(-_slow_mask_travel * 4.0))
+ 		slow_wash_image = Image.create_from_data(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8, bytes)
+ 		slow_wash_texture.update(slow_wash_image)
++		_slow_scrub_fraction.fill(0.0)
+ 		_slow_mask_travel = 0.0
+ 	_update_finish()
+ 
++func _age_grime(seconds: float) -> void:
++	_grime_elapsed += seconds
++	if _grime_elapsed + 0.00000001 < GRIME_AGE_STEP: return
++	var steps: int = floori((_grime_elapsed + 0.00000001) / GRIME_AGE_STEP)
++	_grime_elapsed = maxf(0.0, _grime_elapsed - steps * GRIME_AGE_STEP)
++	var primary: PackedByteArray = wash_image.get_data()
++	var slow: PackedByteArray = slow_wash_image.get_data()
++	for index: int in range(grime_age.size()):
++		if (dirt_amount > 0.02 and primary[index] < 255) or (slow_dirt_amount > 0.02 and slow[index] < 255):
++			grime_age[index] = mini(255, grime_age[index] + steps)
++
+ func melt(seconds: float) -> void:
+ 	var before: float = snow_amount
+ 	snow_amount = maxf(0.0, snow_amount - maxf(seconds, 0.0) / 8.0)
+@@ -202,7 +225,10 @@ func snapshot() -> Dictionary:
+ 		wash_image = Image.create(VehicleCondition.GRID * VehicleCondition.GRID, VehicleCondition.GRID, false, Image.FORMAT_R8)
+ 		wash_image.fill(Color.BLACK)
+ 	if slow_wash_image == null: slow_wash_image = wash_image.duplicate() as Image
+-	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "slow_dirt": slow_dirt_amount, "slow_snow": slow_snow_amount, "slow_recoat": _slow_mask_travel, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data()), "slow_wash": Marshalls.raw_to_base64(slow_wash_image.get_data())}
++	if grime_age.size() != VehicleCondition.CELLS:
++		grime_age.resize(VehicleCondition.CELLS)
++		grime_age.fill(0)
++	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "slow_dirt": slow_dirt_amount, "slow_snow": slow_snow_amount, "slow_recoat": _slow_mask_travel, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data()), "slow_wash": Marshalls.raw_to_base64(slow_wash_image.get_data()), "grime_age": Marshalls.raw_to_base64(grime_age), "grime_elapsed": _grime_elapsed}
+ 
+ func restore(value: Dictionary) -> void:
+ 	if value.is_empty(): value = snapshot()
+@@ -228,11 +254,20 @@ func restore(value: Dictionary) -> void:
+ 	slow_wash_texture = ImageTexture.create_from_image(slow_wash_image)
+ 	_mask_travel = 0.0
+ 	_slow_mask_travel = float(value.get("slow_recoat", 0.0))
++	grime_age = Marshalls.base64_to_raw(str(value.get("grime_age", "")))
++	if grime_age.size() != VehicleCondition.CELLS:
++		grime_age.resize(VehicleCondition.CELLS)
++		grime_age.fill(0)
++	_grime_elapsed = float(value.get("grime_elapsed", 0.0))
++	_scrub_fraction.resize(VehicleCondition.CELLS)
++	_scrub_fraction.fill(0.0)
++	_slow_scrub_fraction.resize(VehicleCondition.CELLS)
++	_slow_scrub_fraction.fill(0.0)
+ 	last_tick = -1
+ 	_update_finish()
+ 
+ func wash(point: Vector3, seconds: float) -> void:
+-	if wash_image == null or seconds <= 0.0: return
++	if wash_image == null or seconds <= 0.0 or not is_finite(seconds): return
+ 	var radius: float = 0.48
+ 	var grid: int = VehicleCondition.GRID
+ 	var bytes: PackedByteArray = wash_image.get_data()
+@@ -248,12 +283,22 @@ func wash(point: Vector3, seconds: float) -> void:
+ 				if distance >= radius: continue
+ 				touched = true
+ 				var index: int = y * grid * grid + z * grid + x
+-				bytes[index] = mini(255, bytes[index] + ceili(255.0 * seconds * 3.0 * (1.0 - distance / radius)))
+-				slow_bytes[index] = mini(255, slow_bytes[index] + ceili(255.0 * seconds * 3.0 * (1.0 - distance / radius)))
++				var resistance: float = 1.0 + MAX_SCRUB_RESISTANCE * float(grime_age[index]) / 255.0
++				var progress: float = 255.0 * seconds * SCRUB_RATE * (1.0 - distance / radius) / resistance
++				var primary_work: float = _scrub_fraction[index] + progress
++				var slow_work: float = _slow_scrub_fraction[index] + progress
++				var primary_steps: int = floori(primary_work)
++				var slow_steps: int = floori(slow_work)
++				bytes[index] = mini(255, bytes[index] + primary_steps)
++				slow_bytes[index] = mini(255, slow_bytes[index] + slow_steps)
++				_scrub_fraction[index] = primary_work - primary_steps if bytes[index] < 255 else 0.0
++				_slow_scrub_fraction[index] = slow_work - slow_steps if slow_bytes[index] < 255 else 0.0
++				if bytes[index] == 255 and slow_bytes[index] == 255: grime_age[index] = 0
+ 	if not touched: return
+ 	# Exposure earned before a fresh wash must not re-coat the new stroke.
+ 	_mask_travel = 0.0
+ 	_slow_mask_travel = 0.0
++	_grime_elapsed = 0.0
+ 	wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, bytes)
+ 	wash_texture.update(wash_image)
+ 	slow_wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, slow_bytes)
+@@ -284,6 +329,10 @@ func reset() -> void:
+ 	slow_wash_image = null
+ 	slow_wash_texture = null
+ 	wetness = 0.0
++	grime_age.clear()
++	_grime_elapsed = 0.0
++	_scrub_fraction.clear()
++	_slow_scrub_fraction.clear()
+ 	_mask_travel = 0.0
+ 	_slow_mask_travel = 0.0
+ 	last_tick = -1

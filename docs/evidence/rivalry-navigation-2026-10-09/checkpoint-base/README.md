@@ -1,0 +1,1 @@
+The original task-start source remains under before/. This checkpoint base preserves concurrent route-marker, full-detail standings, ghost-target and spacing changes while reversing only this task's navigation edits in memory. Diffing it against the current page isolates this task without reverting or attributing concurrent work.

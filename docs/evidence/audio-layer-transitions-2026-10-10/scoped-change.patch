@@ -1,0 +1,375 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -118,11 +118,15 @@
+ 	last_jump_velocity = 0.0
+ 	was_silent = true
+ 	active = true
+-	for player: AudioStreamPlayer in engine_load+engine_coast:
+-		player.stop()
+-		player.volume_linear = 0.0
+-		player.stream_paused = false
+-		player.play()
++	for i: int in range(3):
++		for player: AudioStreamPlayer in [engine_load[i],engine_coast[i]]:
++			player.stop()
++			player.volume_linear = 0.0
++			player.stream_paused = false
++			# All recorded orders represent one engine. Start even muted voices
++			# at that engine's idle frequency, rather than their native bank RPM.
++			player.pitch_scale = model.rpm/model.anchors[i]
++			player.play()
+ 	for layer: String in layers:
+ 		var player: AudioStreamPlayer = layers[layer]
+ 		player.stop()
+@@ -220,19 +224,20 @@
+ 	var dt: float = minf(maxf(delta,0.0),0.1)
+ 	var changed: bool = model.advance(state,frame,dt)
+ 	if changed and not countdown and not was_silent: _event("chassis",0.12,1.32)
+-	var weights: Vector3 = model.weights()
++	var weights: Vector3 = EngineAudioBlend.rpm_gains(model.weights())
+ 	var load_blend: float = clampf(model.load_amount,0.08,1.0)
++	var load_gains: Vector2 = EngineAudioBlend.load_gains(load_blend)
+ 	var engine_level: float = lerpf(0.31,0.72,load_blend)
+ 	if model.shift_remaining>0.0: engine_level *= 0.56
+ 	engine_envelope = lerpf(engine_envelope,engine_level,1.0-exp(-dt*22.0))
+ 	for i: int in range(3):
+-		# All sustained banks share an order/RPM ratio within their vehicle.
+-		# Cover every neighboring-anchor overlap without flattening a live layer.
+-		var pitch: float = clampf(model.rpm/model.anchors[i],0.35,2.85)
++		# Muted banks must track the same engine too: clipping their rate would
++		# let their phase diverge before they reenter the audible blend.
++		var pitch: float = model.rpm/model.anchors[i]
+ 		engine_load[i].pitch_scale = pitch
+ 		engine_coast[i].pitch_scale = pitch
+-		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(load_blend)*engine_envelope))
+-		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(1.0-load_blend)*engine_envelope*0.84))
++		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.x*engine_envelope))
++		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.y*engine_envelope))
+ 	var speed: float = state.velocity.length()
+ 	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown
+ 	_layer("scrape",pending_scrape*0.10,0.62+clampf(pending_scrape_speed/46.0,0.0,1.0)*0.26,dt,not grounded or was_silent)
+diff --git a/game/vehicle/engine_audio_blend.gd b/game/vehicle/engine_audio_blend.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/engine_audio_blend.gd
+@@ -0,0 +1,11 @@
++class_name EngineAudioBlend
++extends RefCounted
++## Coherent recorded sustains require constant-amplitude, not unrelated-power fades.
++
++static func rpm_gains(weights: Vector3) -> Vector3:
++	return weights/maxf(weights.x+weights.y+weights.z,0.000001)
++
++static func load_gains(load_amount: float) -> Vector2:
++	var loaded: float = sqrt(clampf(load_amount,0.0,1.0))
++	var coasting: float = sqrt(1.0-clampf(load_amount,0.0,1.0))
++	return Vector2(loaded,coasting*0.84)/maxf(loaded+coasting,0.000001)
+diff --git a/game/vehicle/engine_audio_blend.gd.uid b/game/vehicle/engine_audio_blend.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/engine_audio_blend.gd.uid
+@@ -0,0 +1 @@
++uid://cen1rbx0qjuxn
+diff --git a/game/tests/test_audio_loops.gd b/game/tests/test_audio_loops.gd
+--- a/game/tests/test_audio_loops.gd
++++ b/game/tests/test_audio_loops.gd
+@@ -35,7 +35,7 @@
+ 		var prepared: AudioStreamWAV = PcmAudioLoop.prepare(source)
+ 		verify(source,prepared,"constant stereo="+str(stereo))
+ 		check(source.data==pcm and source.loop_mode==AudioStreamWAV.LOOP_DISABLED,"preparation leaves original resource intact")
+-		for pitch: float in [0.35,0.73,1.0,1.85,2.85]:
++		for pitch: float in [0.16,0.35,0.73,1.0,1.85,2.85,6.2]:
+ 			var playback: AudioStreamPlayback = prepared.instantiate_playback()
+ 			playback.start()
+ 			var mixed: PackedVector2Array = playback.mix_audio(pitch,20000)
+diff --git a/game/tests/capture_audio_layer_transitions.gd b/game/tests/capture_audio_layer_transitions.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_audio_layer_transitions.gd
+@@ -0,0 +1,73 @@
++extends SceneTree
++## Compare exact pre-change/runtime mixes while sweeping RPM/load; sources unchanged.
++const OUTPUT: String = "res://../docs/evidence/audio-layer-transitions-2026-10-10"
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	var prior := GDScript.new()
++	var text: String = FileAccess.get_file_as_string(OUTPUT.path_join("before/game/vehicle/vehicle_audio.gd"))
++	prior.source_code = text.substr(text.find("\n")+1) # Test-only Node script, without duplicate global class name.
++	if prior.reload()!=OK:
++		quit(1)
++		return
++	var bus: int = AudioServer.get_bus_index("Engine")
++	var recorder := AudioEffectRecord.new()
++	recorder.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,recorder)
++	var reports: Array[Dictionary] = []
++	for variant: String in ["before","after"]:
++		for fixture: String in ["low_mid","mid_high","full_range","load_coast"]:
++			var audio: Node = prior.new() if variant=="before" else VehicleAudio.new()
++			root.add_child(audio)
++			audio.call("configure","compact",VehicleCatalog.config("compact"))
++			var model: VehicleAudioModel = audio.get("model")
++			var state := VehicleState.new()
++			state.velocity = Vector2(0,20)
++			var elapsed: float = 0.0
++			var clock_us: int = Time.get_ticks_usec()
++			var telemetry: Array[Dictionary] = []
++			var starting_streams: int = (audio.get("streams") as Dictionary).size()
++			# Settle the first native mixer startup before starting wall-time evidence.
++			await create_timer(0.5).timeout
++			clock_us = Time.get_ticks_usec()
++			recorder.set_recording_active(true)
++			while elapsed<15.0:
++				await process_frame
++				var now: int = Time.get_ticks_usec()
++				elapsed += float(now-clock_us)/1000000.0
++				clock_us = now
++				# Endpoint holds 0-2/6-8/12-14; two slow traversals between.
++				var blend: float = clampf((elapsed-2.0)/4.0,0,1) if elapsed<8.0 else clampf((12.0-elapsed)/4.0,0,1)
++				var rpm: float = 6000.0 if fixture=="load_coast" else lerpf(1200.0,3000.0,blend) if fixture=="low_mid" else lerpf(1200.0,6000.0,blend) if fixture=="full_range" else lerpf(3000.0,6000.0,blend)
++				model.rpm = rpm
++				model.load_amount = blend if fixture=="load_coast" else 1.0
++				model.shift_cooldown = 1.0
++				audio.set("engine_envelope",0.6)
++				state.tick += 1
++				var canonical: Array = state.snapshot()
++				audio.call("present",state,DriveFrame.sample(0,1,0),null,0.0,elapsed>=14.0)
++				if state.snapshot()!=canonical: failures += 1
++				if telemetry.is_empty() or elapsed-float(telemetry[-1].seconds)>=0.05:
++					telemetry.append({"seconds":elapsed,"rpm":rpm,"blend":blend,"load":model.load_amount})
++			recorder.set_recording_active(false)
++			var recording: AudioStreamWAV = recorder.get_recording()
++			if recording==null or recording.get_length()<14.5:
++				failures += 1
++				print("INVALID_NATIVE_RECORDING: ",variant," ",fixture," seconds=",recording.get_length() if recording!=null else -1)
++			if recording!=null and recording.save_to_wav(OUTPUT.path_join(variant+"-"+fixture+".wav"))!=OK: failures += 1
++			if model.shifts!=0 or audio.get("event_count")!=0: failures += 1
++			if (audio.get("streams") as Dictionary).size()!=starting_streams: failures += 1
++			reports.append({"variant":variant,"fixture":fixture,"shifts":model.shifts,"events":audio.get("event_count"),"streams":starting_streams,"telemetry":telemetry})
++			audio.free()
++			print("LAYER_TRANSITION_CAPTURE: ",variant," ",fixture)
++	AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	var file := FileAccess.open(OUTPUT.path_join("native-capture.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"reports":reports,"failures":failures},"\t"))
++	file.close()
++	print("LAYER_TRANSITION_NATIVE: failures=",failures)
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_audio_layer_transitions.gd.uid b/game/tests/capture_audio_layer_transitions.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_audio_layer_transitions.gd.uid
+@@ -0,0 +1 @@
++uid://mu8xavdkq3dp
+diff --git a/scripts/review_audio_layer_transitions.py b/scripts/review_audio_layer_transitions.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_audio_layer_transitions.py
+@@ -0,0 +1,72 @@
++"""Check gain bumps during native runtime transitions, with identical sound files."""
++from pathlib import Path
++import hashlib
++import json
++import wave
++import numpy as np
++
++ROOT=Path(__file__).resolve().parents[1]
++OUT=ROOT/"docs/evidence/audio-layer-transitions-2026-10-10"
++
++
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate,channels=handle.getframerate(),handle.getnchannels()
++        x=np.frombuffer(handle.readframes(handle.getnframes()),"<i2").astype(float)/32768
++    return x.reshape(-1,channels),rate
++
++
++def main():
++    baseline=json.loads((OUT/"before-audio-hashes.json").read_text())
++    changes=[p for p,digest in baseline.items() if hashlib.sha256((ROOT/p).read_bytes()).hexdigest()!=digest]
++    # A separate live workspace edit changed the unused thunder one-shot.
++    # Preserve it and report it explicitly; it never enters this Engine-bus
++    # fixture, whose events are required to remain zero. Every input bank stays pinned.
++    assert not any(p.startswith("game/assets/audio/vehicles/") for p in changes),"Keep every captured source file unchanged"
++    assert set(changes)<= {"game/assets/audio/storm_thunder.wav"},"Unexpected concurrent audio changes"
++    capture=json.loads((OUT/"native-capture.json").read_text())
++    assert capture["failures"]==0 and len(capture["reports"])==8
++    rows=[]
++    for item in capture["reports"]:
++        p=OUT/f'{item["variant"]}-{item["fixture"]}.wav'
++        x,rate=read(p)
++        assert len(x)/rate>14.5 and .02<np.max(abs(x))<.9
++        assert np.max(abs(x[-rate//2:]))==0
++        windows=[]
++        for start in np.arange(.5,13.4,.1):
++            block=x[round(start*rate):round((start+.1)*rate)]
++            windows.append((float(start),float(np.sqrt(np.mean(block**2)))))
++        times=np.array([t for t,rms in windows]);levels=np.array([rms for t,rms in windows])
++        low=float(np.median(levels[(times>.7)&(times<1.7)]))
++        high=float(np.median(levels[(times>6.5)&(times<7.5)]))
++        sweep=(times>2.2)&(times<5.8)|(times>8.2)&(times<11.8)
++        peak=float(np.max(levels[sweep]))
++        bump=float(20*np.log10(peak/max(low,high)))
++        dip=float(20*np.log10(float(np.min(levels[sweep]))/min(low,high)))
++        assert np.min(levels)>np.median(levels)*.1,p.name+": dropout"
++        rows.append({"variant":item["variant"],"fixture":item["fixture"],"low_endpoint_rms":low,"high_endpoint_rms":high,
++                     "overlap_peak_rms":peak,"overlap_bump_db":bump,"overlap_dip_db":dip,"peak":float(np.max(abs(x))),"paused_tail_peak":0,
++                     "shifts":item["shifts"],"events":item["events"],"stream_count":item["streams"]})
++    for fixture in ("low_mid","mid_high","full_range","load_coast"):
++        before=next(r for r in rows if r["fixture"]==fixture and r["variant"]=="before")
++        after=next(r for r in rows if r["fixture"]==fixture and r["variant"]=="after")
++        assert after["overlap_bump_db"]<.75,(fixture,"transition gain bump remains")
++        # Distinct recorded pulse shapes allow a modest sub-dB RMS dip; a
++        # larger hole reveals destructive interference on layer reentry.
++        assert after["overlap_dip_db"]>-1.0,(fixture,"transition phase cancellation remains")
++        if fixture=="load_coast":
++            assert before["overlap_bump_db"]>1.0 and before["overlap_bump_db"]-after["overlap_bump_db"]>1.0
++        elif fixture in ("low_mid","full_range"):
++            assert before["overlap_dip_db"]<-1.5 and after["overlap_dip_db"]-before["overlap_dip_db"]>1.0
++    report={"audio_files_unchanged":len(baseline)-len(changes),"vehicle_input_files_unchanged":47,"concurrent_audio_changes":changes,"native_transitions":rows,
++            "limitation":"Confirmed gain bumps corrected; owner's exact remaining artefact and triggering situation still require listening."}
++    (OUT/"review.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++    cards=[]
++    for fixture,label in [("low_mid","Low/mid RPM layers"),("mid_high","Mid/high RPM layers"),("full_range","Low to high RPM and return"),("load_coast","Throttle/coast layers")]:
++        cards.append(f'<article><h2>{label}</h2><p>Before</p><audio controls preload="metadata" src="before-{fixture}.wav"></audio><p>After</p><audio controls preload="metadata" src="after-{fixture}.wav"></audio></article>')
++    page='''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Engine layer transitions</title><style>body{background:#101b27;color:#eee5d6;font:17px/1.5 system-ui;margin:0}main{max-width:780px;margin:40px auto;padding:24px}article{padding:20px;border:1px solid #405466;border-radius:12px;margin:20px 0}h2{color:#ffd667}audio{width:100%}small{color:#b4bfcc}</style><main><h1>Engine layer transitions</h1><p>Matched native runtime captures, identical sound files and a fixed presentation envelope. Each holds an endpoint, moves across the blend, holds the other endpoint, returns, then pauses.</p><p>These isolate already-playing engine layers; no shifts, body cues, tyres or weather are present. Final engine recordings retain Nox Sound Design CC0 provenance and original offline texture design.</p>'''+"".join(cards)+'''<small>RMS analysis confirms the overlap gain correction. Exact owner artefact and device listening remain unconfirmed. Natural tone changes between layers remain.</small></main><script>document.querySelectorAll('audio').forEach(p=>p.addEventListener('play',()=>document.querySelectorAll('audio').forEach(q=>{if(p!==q)q.pause()})))</script></html>'''
++    (OUT/"audition.html").write_text(page,encoding="utf-8")
++    print(json.dumps(report,indent=2))
++
++
++if __name__=="__main__":main()
+diff --git a/docs/AUDIO_LAYER_TRANSITIONS.md b/docs/AUDIO_LAYER_TRANSITIONS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/AUDIO_LAYER_TRANSITIONS.md
+@@ -0,0 +1,106 @@
++# Runtime engine-layer transition correction — 2026-10-10
++
++The owner still hears artefacts and now suspects another audio track entering
++the mix. **SND37** investigates runtime layer introduction; **SND02–SND06,
++SND33–SND36/G01/R01/Q01** preserve bank provenance, lifecycle, source loop repair
++and canonical isolation. The triggering situation/platform question remains
++unanswered; the exact reported sound still requires owner listening.
++
++No new file loads during ordinary engine blending: all six engine voices already
++play at muted/variable gains. The controlled captures retain the same **22 cached
++streams**, with no shifts or body events. Two actual mixing defects were found:
++
++1. Earlier bank changes made the recorded firing pulses coherent, but playback
++   still used equal-power fades intended for unrelated signals. Ideal aligned
++   neighboring banks rose by roughly **2.43–2.96 dB** at their midpoint. The load
++   and coast variants had the same overlap-gain problem. The previous sound work
++   left this incompatible gain rule in place.
++2. Voices started at native bank pitch instead of the engine's idle pitch, and
++   muted banks clipped their rate to 0.35–2.85. They could drift out of phase while
++   inaudible, then partially cancel the current bank when reentering the mix.
++   A gain-only candidate exposed a roughly **6.18 dB** low/mid dip and was not
++   accepted as the final correction.
++
++`EngineAudioBlend` now normalizes RPM weights and load/coast gains for coherent
++signals. Full-load gain and the 0.84 coast attenuation remain at their endpoints;
++overlap no longer boosts their sum. `VehicleAudio.reset` assigns the idle ratio
++before every engine voice starts. All engine voices, including muted ones,
++continuously follow `model.rpm / model.anchors[i]` without the clipping that
++changed their clocks. Valid sound-model bounds keep ratios positive, approximately
++0.1615–6.19 across all five cars. The cyclic PCM regression now tests 0.16–6.2 too.
++
++The abstract drivetrain's equal-power weight contract remains unchanged; the
++normalization applies at playback. Physical handling, simulation, car configs,
++controls, timing, camera, RPM/gears/shift timing, body/gear cues, surface gating,
++audio buses and every vehicle waveform remain unchanged. No new voice, asset,
++runtime synthesis or dependency is added.
++
++[Listen to the exact before/after runtime transition captures](evidence/audio-layer-transitions-2026-10-10/audition.html).
++[Numerical review](evidence/audio-layer-transitions-2026-10-10/review.json).
++Four cases hold endpoints, traverse the blend, hold, return and pause: low/mid,
++mid/high, full low-to-high-and-return, and throttle/coast. All eight native
++15-second recordings are audible/unclipped, end with a digitally silent
++half-second and preserve state snapshots. A fixed envelope and zero virtual
++shift cooldown progression isolate the blend; these are synthetic presentation
++states, not a completed race or acoustic microphone captures.
++
++| Measured defect | Before | Final after |
++| --- | --- | --- |
++| Low/mid handover RMS dip | -2.098 dB | -0.737 dB |
++| Full RPM excursion/reentry RMS dip | -2.278 dB | -0.673 dB |
++| Throttle/coast overlap gain | +1.591 dB | -0.461 dB (no overshoot) |
++| Mid/high overlap gain in initial startup run | +2.911 dB | +0.020 dB in final run |
++
++The old midpoint result depends on initial phase; a later warmed baseline
++mid/high run happens to be nearly flat. That does not contradict the reproduced
++gain/phase defects. The final cases all stay below +0.75 dB overshoot and above
++-1 dB dip relative to endpoint RMS. Distinct recorded pulse shapes allow modest
++sub-dB variation; the correction is not merely a blanket volume reduction.
++
++All **47 vehicle audio files** match their original SHA-256, and **101/102** total
++audio files match the turn's starting ledger. A separate concurrent edit changed
++the unused `storm_thunder.wav` one-shot; its before/current hashes are recorded in
++`concurrent-audio-changes.json`. It is preserved and is not part of these Engine
++bus captures (all event counts are zero). The original ledger remains intact;
++the report explicitly separates this external change from the pinned inputs.
++No sound file was regenerated or changed by this task.
++
++Changed files: `game/vehicle/vehicle_audio.gd`;
++new `game/vehicle/engine_audio_blend.gd`/UID;
++`game/tests/test_audio_loops.gd` (expanded actual pitch-range regression);
++new `game/tests/capture_audio_layer_transitions.gd`/UID;
++`scripts/review_audio_layer_transitions.py`; this document,
++`DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and task evidence.
++The shared index/unrelated work is preserved; a task-only Git-format patch and
++artifact hashes provide the review checkpoint.
++
++Actual commands, pinned `4.7.2.stable.official.ed1daf0bf` via `scripts/dev.ps1`:
++
++| Command | Actual result |
++| --- | --- |
++| Local recorded-bank correlation/RMS comparison | All ten adjacent pairs 0.751–0.976 correlation; ideal old midpoint gains +2.433–2.959 dB. |
++| `… dev.ps1 Import` | Exit 0; helper and native fixture registered. No audio imports changed by this task. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/capture_audio_layer_transitions.gd -Graphical` | Final **eight captures, zero failures**, unchanged stream counts, zero shifts/events and preserved snapshots. |
++| `python scripts/review_audio_layer_transitions.py` | Final bump/dip, continuity/headroom/pause and pinned input-source checks pass; concurrent unused thunder change reported. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | Final **1,446 checks, zero failures**, including exact 960-tick simulation equivalence and real race/retry lifecycle. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_audio_loops.gd` | **212 checks, zero failures**, including new muted-bank extreme pitches, mono/stereo and all PCM factories. |
++| Scoped `git diff --check` and task patch reverse-check | Exit 0. |
++
++Initial capture had one unusable first recording; a 0.5-second native mixer settle
++and retained invalid-record diagnostics corrected the fixture without weakening
++duration requirements. Initial gain-only captures are retained separately. A
++diagnostic Python one-liner had an extra parenthesis and was corrected. One full
++vehicle run hit an in-progress unrelated `_dust_car` parse error; the untouched
++concurrent dust edit settled and the full rerun passed. The original global audio
++hash assertion flagged concurrent thunder editing; all capture inputs stay pinned,
++the external change remains explicit, and no original hashes were rewritten.
++
++No visible UI changed; playable sound is the presentation evidence. No phone
++attachment check, device listening/performance test, Android export/install,
++full Validate, backend operation or deployment occurred. Restart the local game
++to load the runtime correction; installed Android builds remain unchanged.
++Remaining acceptance: owner identifies the exact sound/trigger and compares the
++previews with real acceleration, lift-off, repeated bank reentry, slides/surfaces,
++pause/retry/rewind and device speakers/headphones. Actual gear/contact cues remain
++possible separate sources; the measured correction does not establish that every
++remaining audible artefact has been identified.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND37/SND02-SND06/SND33-SND36/G01/R01/Q01: owner suspects incoming audio layers. Coherent banks retained unrelated-power fade (+2.43-2.96dB ideal bump); muted clocks started native/clipped rates causing phase cancellation. Playback amplitude normalization/endpoint coast0.84 retained; idle ratios before play and continuous unclipped0.1615-6.19 ratios align reentry. Final eight native runtime sweeps: low/mid dip-2.098 to-0.737/fullrange-2.278 to-0.673/load bump+1.591 to-0.461dB; counts22/no shifts-events/state writes/paused0. Vehicle1446/exact960 ticks and wider PCM212 pass; no wave edits/47 vehicle hashes exact. Concurrent thunder changes1/102 explicitly preserved/reported; transient unrelated dust parse/first invalid fixture corrected and initial gain-only6.18dB dip not accepted. No phone check/device listening/performance/export-install/fullValidate/backend/deploy; exact owner case/trigger open, restartlocal/Android unchanged. Files/commands/AB/scoped checkpoint: docs/AUDIO_LAYER_TRANSITIONS.md.
++
+ 2026-10-10 MOV01-MOV02/V04/V05/R01/Q01: owner Ajorata tires render static. Canonical collisions still move tires1.946m/cones5.641m; both visual updates accidentally profiling-only. Native-track guard restores ordinary/cached/earlier-snapshot/finish/restart presentation and safe playground; physics/rules unchanged. Orphan dust17 car-clip functions referencing removed fields blocked initial compilation; leftovers removed with current dust/bridge behavior retained. Final graphical37/prepared73/App99/rewind61/parser458 pass; paired1280x720 tire captures inspected. Initial sandbox/log and compile failures, seven baseline assertions/null-track crash retained; independent fixture reset corrected. No phone attachment check/device test/APK export-install/fullValidate/backend/deploy/score writes. Restart/rebuild and owner actual-drive/device acceptance remain. Files/commands/scoped checkpoint/evidence: docs/MOVING_PROP_REGRESSION_2026_10_10.md.
+ 
+ 2026-10-10 SND37/SND34/MUS35/V04-V05/G01/R01/Q01/V06: owner stronger flash/louder rumble. Peak0.32-to0.90/world multiplier13-to20/overlay0.40-to0.55, broad timing/normalized smoothness retained; frozen native world3.463x overcast/state-camera exact/restored base light, images inspected. Six-second source rolling body+4.744dB, same1.2s cosine tail/0.18s old-voice fade/fresh starts/rain0.28/thunder1.0/music off. Asset66210f9e/529244bytes; import/flash9/nativeaudio19/rapid21/review pass, storm94 retains two prior spray failures. Initial peak-capped lift/NumPy bool report corrected; unowned concurrent vehicle-audio changes preserved/rebased with hashes. No phone attachment/device visual-acoustic test/export-install/full Validate/physics/backend/deploy. Commands/files/images/audio/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (stronger flash/rumble).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND37/SND02-SND06/SND33-SND36/G01/R01/Q01: owner suspects incoming audio layers. Coherent banks retained unrelated-power fade (+2.43-2.96dB ideal bump); muted clocks started native/clipped rates causing phase cancellation. Playback amplitude normalization/endpoint coast0.84 retained; idle ratios before play and continuous unclipped0.1615-6.19 ratios align reentry. Final eight native runtime sweeps: low/mid dip-2.098 to-0.737/fullrange-2.278 to-0.673/load bump+1.591 to-0.461dB; counts22/no shifts-events/state writes/paused0. Vehicle1446/exact960 ticks and wider PCM212 pass; no wave edits/47 vehicle hashes exact. Concurrent thunder changes1/102 explicitly preserved/reported; transient unrelated dust parse/first invalid fixture corrected and initial gain-only6.18dB dip not accepted. No phone check/device listening/performance/export-install/fullValidate/backend/deploy; exact owner case/trigger open, restartlocal/Android unchanged. Files/commands/AB/scoped checkpoint: docs/AUDIO_LAYER_TRANSITIONS.md.
++
+ 2026-10-10 HSTART01-HSTART02/HOPT02/RR06/R01/B07/Q01/V03/V05: owner startup Free Race histogram loads forever. Reproduced restored selection and promoted menu rendering Loading without issuing any comparison request. Visible detail now initializes once, promotion hydrates, missing snapshot recovers, synchronous replies re-read; preview/no-polling/error/guest/account gates and race actions retained. Baseline21/11fail; finalstartup26/unified150/speed30/loading39/discovery18/App99/parser449 and Import pass. Four captures saved/initial pair inspected; unrelated EngineAudioBlend registry and cleared-cache fixture issues corrected with assertions retained. No phone check/device/export-install/fullValidate/live requests/backend/deploy/player writes; client restart/rebuild and actual installed saved-session/device acceptance remain. Files/commands/evidence/scoped checkpoint: docs/STARTUP_HISTOGRAM_2026_10_10.md.
+ 
+ 2026-10-10 SND36/SND02-SND06/SND19/SND24-SND35/G01/R01/Q01/V06: owner all-loop audit covers85 assets (44PCM/41Ogg, incl inactive legacy rain). Native fractional-pitch PCM padding defect reproduced; shared mono/stereo cyclic guard fixes vehicle/tire/menu/rain/cicada factories. All30 engine banks sustained/coherent, 10 texture joins leveled/power-preserving/longer, tire quiet zero crossing replaces short fade with pinned zeros, same owner rain power join/legacy rain-only repair. Final85 audit0fail, guard208/vehicle1446/music1156/wet41/night25/App99/handling88/parser445 pass; native5cars repeated wraps/no gaps/clipping/paused0 and exact960-tick simulation.38audio changed/64 exact incl music/cicadas/all17oneshots/compact prior4; repeat102 hashes exact, bank31301752bytes/+17.6MiB acrosscars. No phone attachment/device listening-memory/export-install/fullValidate/backend/deploy; subjective/device acceptance open, restartlocal/Android unchanged. Files/commands/playable85-wrap+native+matched-wind evidence/scoped checkpoint: docs/ALL_AUDIO_LOOPS.md.

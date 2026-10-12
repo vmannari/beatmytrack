@@ -1,0 +1,773 @@
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -12,6 +12,7 @@
+ from sqlalchemy.orm import Session
+ 
+ from .board_cache import cached
++from .histogram_population import HistogramPopulation
+ from .contracts import current_manifest
+ from .cursors import decode_cursor, encode_cursor
+ from .db import get_session
+@@ -445,10 +446,15 @@
+ def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100),
+               metric: Literal["race", "best_lap"] = "race") -> dict:
+     board = public_board(session, board_id)
+-    # A slower race can improve a lap without changing the race-PB revision.
+-    if metric == "best_lap":
+-        return histogram_query(board_id, session, bins, metric=metric)
+-    return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
++    from .histogram_snapshots import load_snapshot
++    snapshot = load_snapshot(session, board.version_id, board.vehicle_id, False)
++    if snapshot is None:
++        raise HTTPException(503, "Comparison snapshot is being prepared")
++    generation, _, populations = snapshot
++    result = population_comparison(session, ("public-histogram", board_id, generation),
++        populations[0 if metric == "race" else 1], board_id, metric, bins, "", None, None, None)
++    return {**{name: result[name] for name in ("population", "minimum_ticks", "maximum_ticks", "bins", "metric")},
++            "board_id": board_id}
+ 
+ 
+ def histogram_query(board_id, session, bins, *, test_population=False, metric="race"):
+@@ -578,35 +584,19 @@
+     include_artificial = request.app.state.settings.test_drivers_enabled
+     test_id = digest({"version_id": version.id, **pinned, "test_population": True})
+     board_ids = [public_id, test_id] if include_artificial else [public_id]
+-    race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
+-        Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
+-    if not include_artificial:
+-        race_statement = race_statement.where(Player.is_test_driver.is_(False))
+-    races = race_statement.group_by(PersonalBest.player_id).subquery()
+-    race_entries = select(races.c.time_ticks, func.count().label("count")).group_by(races.c.time_ticks).subquery()
+-    public_laps = best_lap_times(public_id, session)
+-    laps = public_laps
+-    if include_artificial:
+-        test_laps = best_lap_times(test_id, session, test_population=True)
+-        combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
+-            select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
+-        laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
+-    lap_entries = select(laps.c.time_ticks, func.count().label("count")).group_by(laps.c.time_ticks).subquery()
+-    race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
+-    lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
++    from .histogram_snapshots import load_snapshot
++    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial)
++    if snapshot is None:
++        raise HTTPException(503, "Comparison snapshot is being prepared")
++    generation, revision, (races, laps) = snapshot
++    population_key = ("comparison-population", public_id, test_id if include_artificial else None, generation)
+     board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
+-    race = histogram_from_entries(board_id, session, bins, "race", race_entries,
+-                                  candidate=race_ticks, frame_from=race_from_ticks, frame_to=race_to_ticks)
+-    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries,
+-                                 candidate=lap_ticks, frame_from=lap_from_ticks, frame_to=lap_to_ticks)
+-    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
+-    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
+-    race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own
+-    race["opponent_count"] = race["population"] - int(race_own is not None)
+-    lap["opponent_count"] = lap["population"] - int(lap_own is not None)
+-    revisions = session.scalars(select(Board.stats_revision).where(Board.id.in_(board_ids))).all()
++    race = population_comparison(session, population_key, races, board_id, "race", bins, player.id,
++                                 race_ticks, race_from_ticks, race_to_ticks)
++    lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
++                                lap_ticks, lap_from_ticks, lap_to_ticks)
+     return {"board_id": board_id, "population_scope": "all",
+-            "stats_revision": sum(revisions), "race": race, "best_lap": lap}
++            "stats_revision": revision, "race": race, "best_lap": lap}
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+@@ -632,3 +622,39 @@
+     replay_hash = run.replay_hash
+     session.commit()  # Release the snapshot connection before storage pin/IO.
+     return {**result, "replay": request.app.state.blobs.get_json(replay_hash)}
++
++
++def comparison_populations(session, board_ids, public_id, test_id, include_artificial):
++    """Reconstruct the deduplicated field only on a database revision change."""
++    race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
++        Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
++    if not include_artificial:
++        race_statement = race_statement.where(Player.is_test_driver.is_(False))
++    races = race_statement.group_by(PersonalBest.player_id).subquery()
++    public_laps = best_lap_times(public_id, session)
++    laps = public_laps
++    if include_artificial:
++        test_laps = best_lap_times(test_id, session, test_population=True)
++        combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
++            select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
++        laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
++    return (HistogramPopulation.from_rows(session.execute(select(races)).all()),
++            HistogramPopulation.from_rows(session.execute(select(laps)).all()))
++
++
++def population_comparison(session, key, population, board_id, metric, bins, player_id, candidate, start, end):
++    start, end = population.frame(candidate, start, end)
++    stored = population.stored_grid
++    stored_bins = stored["bins"] if stored else []
++    compatible = bins == 16 and (not stored_bins or
++        start == stored_bins[0]["from_ticks"] and end in (population.ticks[-1]+1, stored_bins[-1]["to_ticks_exclusive"]))
++    grid = stored if stored is not None and compatible else cached(
++        session, ("comparison-grid", key, metric, bins, start, end),
++        lambda: population.histogram(board_id, metric, bins, start, end))
++    # Never put a player's markers/placement in the shared cached grid.
++    result = {**grid, "bins": [dict(item) for item in grid["bins"]]}
++    own = population.own.get(player_id)
++    result["own_best_ticks"] = own
++    result["opponent_count"] = result["population"] - int(own is not None)
++    result["comparison"] = population.position(candidate or own, own)
++    return result
+diff --git a/backend/bmt_backend/board_cache.py b/backend/bmt_backend/board_cache.py
+--- a/backend/bmt_backend/board_cache.py
++++ b/backend/bmt_backend/board_cache.py
+@@ -8,15 +8,15 @@
+ _flights = WeakKeyDictionary()
+ 
+ 
+-def cached(session, key, compute):
++def cached(session, key, compute, *, namespace="default", max_entries=2048, max_weight=None, weight=None):
+     bind = session.get_bind()
+     engine = getattr(bind, "engine", bind)
+     with _lock:
+-        cache = _caches.setdefault(engine, OrderedDict())
++        cache = _caches.setdefault(engine, {}).setdefault(namespace, OrderedDict())
+         if key in cache:
+             cache.move_to_end(key)
+             return cache[key]
+-        flights = _flights.setdefault(engine, {})
++        flights = _flights.setdefault(engine, {}).setdefault(namespace, {})
+         flight = flights.setdefault(key, Lock())
+     with flight:
+         with _lock:
+@@ -27,7 +27,8 @@
+             with _lock:
+                 cache[key] = value
+                 cache.move_to_end(key)
+-                while len(cache) > 2048: cache.popitem(last=False)
++                while len(cache) > max_entries or (max_weight is not None and sum(weight(item) for item in cache.values()) > max_weight):
++                    cache.popitem(last=False)
+             return value
+         finally:
+             with _lock:
+diff --git a/backend/bmt_backend/histogram_population.py b/backend/bmt_backend/histogram_population.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/histogram_population.py
+@@ -0,0 +1,58 @@
++"""Shared immutable driver frequencies, with cheap per-result overlays."""
++from bisect import bisect_left
++from collections import Counter
++from dataclasses import dataclass
++from types import MappingProxyType
++
++
++@dataclass(frozen=True)
++class HistogramPopulation:
++    own: object
++    ticks: tuple
++    counts: tuple
++    cumulative: tuple
++    stored_grid: object = None
++
++    @classmethod
++    def from_rows(cls, rows, stored_grid=None):
++        own = dict(rows)
++        frequencies = sorted(Counter(own.values()).items())
++        cumulative = [0]
++        for _, count in frequencies:
++            cumulative.append(cumulative[-1] + count)
++        return cls(MappingProxyType(own), tuple(t for t, _ in frequencies),
++                   tuple(c for _, c in frequencies), tuple(cumulative), stored_grid)
++
++    def frame(self, candidate, start, end):
++        if not self.ticks:
++            return None, None
++        return (min(self.ticks[0], candidate or self.ticks[0], start or self.ticks[0]),
++                max(self.ticks[-1] + 1, candidate + 1 if candidate else 0, end or 0))
++
++    def histogram(self, board_id, metric, bins, start, end):
++        result = {"board_id": board_id, "metric": metric,
++                  "population": self.cumulative[-1],
++                  "minimum_ticks": self.ticks[0] if self.ticks else None,
++                  "maximum_ticks": self.ticks[-1] if self.ticks else None, "bins": []}
++        if not self.ticks:
++            return result
++        width = max(1, (end - start + bins - 1) // bins)
++        counts = [self.cumulative[bisect_left(self.ticks, start+(i+1)*width)] -
++                  self.cumulative[bisect_left(self.ticks, start+i*width)]
++                  for i in range((end-start-1)//width+1)]
++        result["bins"] = [{"from_ticks": start + i * width,
++                           "to_ticks_exclusive": start + (i + 1) * width, "count": count}
++                          for i, count in enumerate(counts)]
++        return result
++
++    def position(self, ticks, own_ticks):
++        if ticks is None:
++            return None
++        opponents = self.cumulative[-1] - int(own_ticks is not None)
++        if opponents <= 0:
++            return None
++        faster = self.cumulative[bisect_left(self.ticks, ticks)] - int(own_ticks is not None and own_ticks < ticks)
++        position, population = faster + 1, opponents + 1
++        return {"position": position, "population": population,
++                "top_percent": max(1, (position * 100 + population - 1) // population),
++                "candidate_ticks": ticks}
+diff --git a/backend/bmt_backend/histogram_snapshots.py b/backend/bmt_backend/histogram_snapshots.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/histogram_snapshots.py
+@@ -0,0 +1,129 @@
++"""Throttled durable histogram refreshes, performed by the idle worker."""
++import logging
++import math
++from types import MappingProxyType
++
++from sqlalchemy import or_, select, update
++
++from .board_cache import cached
++from .histogram_population import HistogramPopulation
++from .track_models import Board, HistogramSnapshot, TrackVersion, digest, new_id, now
++
++logger = logging.getLogger("bmt.histograms")
++
++
++def refresh_interval(population, base=900):
++    # 1,000 drivers: 15 minutes by default. Smaller fields refresh sooner;
++    # large fields reach an hour. Never rebuild in response to a GET.
++    return max(60, min(3600, math.ceil(base * math.sqrt(max(1, population) / 1000))))
++
++
++def snapshot_key(version_id, vehicle_id, include_artificial):
++    return {"version_id": version_id, "vehicle_id": vehicle_id, "include_artificial": include_artificial}
++
++
++def load_snapshot(session, version_id, vehicle_id, include_artificial):
++    key = snapshot_key(version_id, vehicle_id, include_artificial)
++    metadata = session.execute(select(HistogramSnapshot.generation, HistogramSnapshot.source_revision,
++                                     HistogramSnapshot.invalidated).filter_by(**key)).first()
++    if metadata is None or not metadata.generation or metadata.invalidated:
++        return None
++    def load():
++        payload = session.scalar(select(HistogramSnapshot.payload).filter_by(**key))
++        return tuple(HistogramPopulation(MappingProxyType(payload[metric]["own"]),
++            tuple(payload[metric]["ticks"]), tuple(payload[metric]["counts"]), tuple(payload[metric]["cumulative"]),
++            payload[metric]["histogram"]) for metric in ("race", "best_lap"))
++    populations = cached(session, ("durable", version_id, vehicle_id, include_artificial, metadata.generation), load,
++                         namespace="histogram-snapshots", max_entries=4, max_weight=128*1024*1024,
++                         weight=lambda fields: sum(len(field.own)*180+len(field.ticks)*96 for field in fields))
++    return metadata.generation, metadata.source_revision, populations
++
++
++def refresh_one(app, *, clock=None):
++    from .runs import board_manifest, comparison_populations
++    clock = now() if clock is None else clock
++    token = new_id()
++    with app.state.session_factory() as session:
++        query = select(HistogramSnapshot).join(TrackVersion, TrackVersion.id == HistogramSnapshot.version_id).where(
++            TrackVersion.state == "published", HistogramSnapshot.next_refresh_at <= clock,
++            HistogramSnapshot.lease_until <= clock, or_(HistogramSnapshot.dirty.is_(True), HistogramSnapshot.invalidated.is_(True)))
++        if not app.state.settings.test_drivers_enabled:
++            query = query.where(HistogramSnapshot.include_artificial.is_(False))
++        row = session.scalar(query.order_by(HistogramSnapshot.next_refresh_at, HistogramSnapshot.version_id,
++            HistogramSnapshot.vehicle_id, HistogramSnapshot.include_artificial).with_for_update(skip_locked=True, of=HistogramSnapshot).limit(1))
++        if row is None:
++            return False
++        key = snapshot_key(row.version_id, row.vehicle_id, row.include_artificial)
++        # A lease survives worker death; conditional finalization fences old workers.
++        claimed = session.execute(update(HistogramSnapshot).filter_by(**key).where(
++            HistogramSnapshot.lease_until <= clock).values(lease_token=token, lease_until=clock+240))
++        if claimed.rowcount != 1:
++            session.rollback()
++            return False
++        source, previous_generation, invalidated, population = row.source_fingerprint, row.generation, row.invalidated, row.population
++        session.commit()
++    try:
++        with app.state.session_factory() as session:
++            if app.state.engine.dialect.name == "postgresql":
++                session.connection(execution_options={"isolation_level":"REPEATABLE READ"})
++            version = session.get(TrackVersion, key["version_id"])
++            version_digest = digest(version.manifest)
++            pinned = board_manifest(version, key["vehicle_id"])
++            public_id = digest({"version_id": version.id, **pinned})
++            test_id = digest({"version_id": version.id, **pinned, "test_population": True})
++            board_ids = [public_id, test_id] if key["include_artificial"] else [public_id]
++            revisions = session.execute(select(Board.id, Board.stats_revision, Board.lap_revision).where(
++                Board.id.in_(board_ids)).order_by(Board.id)).all()
++            revision = sum(stats + laps for _, stats, laps in revisions)
++            fingerprint = digest([list(row) for row in revisions])
++            payload = None
++            if not previous_generation or invalidated or source != fingerprint:
++                races, laps = comparison_populations(session, board_ids, public_id, test_id, key["include_artificial"])
++                board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
++                payload = {}
++                for metric, field in (("race", races), ("best_lap", laps)):
++                    start, end = field.frame(None, None, None)
++                    payload[metric] = {"own": dict(field.own), "ticks": field.ticks, "counts":field.counts,
++                        "cumulative":field.cumulative, "histogram": field.histogram(board_id, metric, 16, start, end)}
++                population = races.cumulative[-1]
++        with app.state.session_factory() as session:
++            values = {"lease_token":None, "lease_until":0,
++                      "next_refresh_at":clock+refresh_interval(population, app.state.settings.histogram_refresh_seconds)}
++            if payload is not None:
++                values.update(payload=payload, generation=new_id(), source_revision=revision,
++                              source_fingerprint=fingerprint, population=population, updated_at=clock, invalidated=False)
++            # Hold the snapshot row while checking invalidation in a fresh READ
++            # COMMITTED statement. Administrative invalidation during generation
++            # causes a retry rather than clearing its safety flag with old data.
++            current = session.scalar(select(HistogramSnapshot).filter_by(**key).with_for_update())
++            if current.lease_token == token:
++                latest = session.execute(select(Board.id, Board.stats_revision, Board.lap_revision).where(
++                    Board.id.in_(board_ids)).order_by(Board.id)).all()
++                changed = digest([list(row) for row in latest]) != fingerprint
++                manifest_changed = digest(session.scalar(select(TrackVersion.manifest).where(TrackVersion.id == key["version_id"]))) != version_digest
++                values["dirty"] = changed or manifest_changed
++                if (current.invalidated and changed) or manifest_changed:
++                    values = {"lease_token":None,"lease_until":0,"next_refresh_at":clock,"dirty":True}
++                session.execute(update(HistogramSnapshot).filter_by(**key).where(
++                    HistogramSnapshot.lease_token == token).values(**values))
++                session.commit()
++        return True
++    except Exception:
++        with app.state.session_factory() as session:
++            session.execute(update(HistogramSnapshot).filter_by(**key).where(HistogramSnapshot.lease_token == token).values(
++                lease_token=None, lease_until=0, next_refresh_at=clock+30))
++            session.commit()
++        logger.exception("histogram_refresh_failed", extra={"version_id":key["version_id"], "vehicle_id":key["vehicle_id"]})
++        return False
++
++
++def refresh_all_for_diagnostics(app, *, clock=None):
++    """Explicit offline/test refresh; never called from a request or normal race."""
++    clock = now() if clock is None else clock
++    with app.state.session_factory() as session:
++        session.execute(update(HistogramSnapshot).values(next_refresh_at=clock, dirty=True))
++        session.commit()
++    count = 0
++    while refresh_one(app, clock=clock):
++        count += 1
++    return count
+diff --git a/backend/bmt_backend/track_models.py b/backend/bmt_backend/track_models.py
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -97,6 +97,7 @@
+     manifest: Mapped[dict] = mapped_column(JSON)
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+     stats_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    lap_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+     public_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+     all_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+ 
+@@ -239,3 +240,23 @@
+             409, "Concurrent write; retry this request with the same Idempotency-Key"
+         ) from None
+     return response
++
++
++class HistogramSnapshot(Base):
++    """Durable comparison field, rebuilt by the idle worker, never a GET."""
++    __tablename__ = "histogram_snapshots"
++    __table_args__ = (Index("ix_histogram_snapshots_dirty_due", "dirty", "next_refresh_at", "lease_until"),)
++    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
++    vehicle_id: Mapped[str] = mapped_column(String(80), primary_key=True)
++    include_artificial: Mapped[bool] = mapped_column(Boolean, primary_key=True)
++    generation: Mapped[str] = mapped_column(String(36), default="", server_default="")
++    source_revision: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
++    source_fingerprint: Mapped[str] = mapped_column(String(64), default="", server_default="")
++    population: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    updated_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    next_refresh_at: Mapped[int] = mapped_column(Integer, default=0, server_default="0", index=True)
++    lease_until: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
++    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    invalidated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
++    dirty: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
++    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+diff --git a/backend/bmt_backend/config.py b/backend/bmt_backend/config.py
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -40,6 +40,7 @@
+     readiness_cache_seconds: int = 2
+     readiness_storage_cache_seconds: int = 30
+     readiness_timeout_seconds: int = 2
++    histogram_refresh_seconds: int = 900
+     retention_days: int = 90
+     backup_marker_path: str = ""
+     database_pool_size: int = 4
+@@ -73,6 +74,7 @@
+         if self.google_web_client_id and self.google_web_client_id not in self.google_client_ids:
+             raise ValueError("Google web client ID must also be in BMT_GOOGLE_CLIENT_IDS")
+         for name in (
++            "histogram_refresh_seconds",
+             "verifier_timeout_seconds",
+             "job_lease_seconds",
+             "max_job_attempts",
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -36,7 +36,7 @@
+     """An existing ticket belongs to another verifier/rules build."""
+ 
+ 
+-def process_one(app) -> bool:
++def process_one(app, *, refresh_histograms=False) -> bool:
+     """Claim at most one job; keep the expensive verifier outside DB transactions."""
+     if stopping(app):
+         return False
+@@ -88,6 +88,10 @@
+                 return True
+             if validate_one(app):
+                 return True
++            if refresh_histograms:
++                from .histogram_snapshots import refresh_one as refresh_histogram
++                if refresh_histogram(app):
++                    return True
+             from .test_population_batch import drive_idle as drive_batch
+             if drive_batch(app):
+                 return True
+@@ -300,6 +304,12 @@
+     return True
+ 
+ 
++def process_worker_job(app) -> bool:
++    # The long-running service performs background presentation work. Explicit
++    # single-race diagnostic calls retain their verification-only behavior.
++    return process_one(app, refresh_histograms=True)
++
++
+ def main() -> None:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--once", action="store_true", help="Process at most one currently eligible job")
+@@ -307,7 +317,7 @@
+     from .app import create_app
+ 
+     app = create_app()
+-    run_worker(app, process_one, once=args.once)
++    run_worker(app, process_worker_job, once=args.once)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/backend/bmt_backend/migrations/versions/0021_challenge_attempts.py b/backend/bmt_backend/migrations/versions/0021_challenge_attempts.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0021_challenge_attempts.py
+@@ -0,0 +1,26 @@
++"""Optional per-driver challenge attempt limits; existing challenges stay unlimited."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0021_challenge_attempts"
++down_revision = "0020_challenges"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.add_column("challenges", sa.Column("attempt_limit", sa.Integer(), nullable=True))
++    op.add_column("challenge_members", sa.Column("attempts_used", sa.Integer(), nullable=False, server_default="0"))
++    # Backfill prior starts and seeded creator finishes without changing unlimited contracts.
++    op.execute("UPDATE challenge_members SET attempts_used = "
++               "(SELECT COUNT(*) FROM challenge_tickets JOIN run_tickets ON run_tickets.id = challenge_tickets.ticket_id "
++               "WHERE challenge_tickets.challenge_id = challenge_members.challenge_id "
++               "AND run_tickets.player_id = challenge_members.player_id) + "
++               "CASE WHEN EXISTS (SELECT 1 FROM challenges WHERE challenges.id = challenge_members.challenge_id "
++               "AND challenges.creator_id = challenge_members.player_id AND challenges.target_run_id IS NOT NULL) "
++               "THEN 1 ELSE 0 END")
++
++
++def downgrade():
++    op.drop_column("challenge_members", "attempts_used")
++    op.drop_column("challenges", "attempt_limit")
+diff --git a/backend/bmt_backend/migrations/versions/0022_histogram_cache.py b/backend/bmt_backend/migrations/versions/0022_histogram_cache.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0022_histogram_cache.py
+@@ -0,0 +1,187 @@
++"""Invalidate shared comparisons for verified lap changes and test resets."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0022_histogram_cache"
++down_revision = "0021_challenge_attempts"
++branch_labels = None
++depends_on = None
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def upgrade():
++    op.add_column("boards", sa.Column("lap_revision", sa.Integer(), nullable=False, server_default="0"))
++    op.create_table("histogram_snapshots",
++        sa.Column("version_id", sa.String(36), sa.ForeignKey("track_versions.id"), primary_key=True),
++        sa.Column("vehicle_id", sa.String(80), primary_key=True),
++        sa.Column("include_artificial", sa.Boolean(), primary_key=True),
++        sa.Column("generation", sa.String(36), nullable=False, server_default=""),
++        sa.Column("source_revision", sa.Integer(), nullable=False, server_default="-1"),
++        sa.Column("source_fingerprint", sa.String(64), nullable=False, server_default=""),
++        sa.Column("population", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("updated_at", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("next_refresh_at", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("lease_until", sa.Integer(), nullable=False, server_default="0"),
++        sa.Column("lease_token", sa.String(36)),
++        sa.Column("invalidated", sa.Boolean(), nullable=False, server_default=sa.false()),
++        sa.Column("dirty", sa.Boolean(), nullable=False, server_default=sa.true()),
++        sa.Column("payload", sa.JSON(), nullable=False, server_default=sa.text("'{}'")))
++    op.create_index("ix_histogram_snapshots_next_refresh_at", "histogram_snapshots", ["next_refresh_at"])
++    op.create_index("ix_histogram_snapshots_dirty_due", "histogram_snapshots", ["dirty", "next_refresh_at", "lease_until"])
++    for scope in ("false", "true"):
++        sql(f"""INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++            SELECT DISTINCT version_id,vehicle_id,{scope} FROM boards""")
++    if op.get_bind().dialect.name == "sqlite":
++        sql("""CREATE TRIGGER histogram_board_dirty AFTER UPDATE OF stats_revision,lap_revision ON boards
++            WHEN OLD.stats_revision IS NOT NEW.stats_revision OR OLD.lap_revision IS NOT NEW.lap_revision BEGIN
++            UPDATE histogram_snapshots SET dirty=true WHERE version_id=NEW.version_id AND vehicle_id=NEW.vehicle_id; END""")
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER lap_revision_{event.lower()} AFTER {event} ON runs
++                WHEN {ref}.status='verified' BEGIN
++                UPDATE boards SET lap_revision=lap_revision+1 WHERE id={ref}.board_id; END""")
++        sql("""CREATE TRIGGER lap_revision_update AFTER UPDATE ON runs
++            WHEN (OLD.status='verified' OR NEW.status='verified') AND
++            (OLD.status IS NOT NEW.status OR OLD.lap_ticks IS NOT NEW.lap_ticks OR
++             OLD.board_id IS NOT NEW.board_id OR OLD.player_id IS NOT NEW.player_id OR OLD.created_at IS NOT NEW.created_at)
++            BEGIN UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN (OLD.board_id,NEW.board_id); END""")
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER lap_reset_{event.lower()} AFTER {event} ON operation_state
++                WHEN {ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1
++                BEGIN UPDATE boards SET lap_revision=lap_revision+1; END""")
++        changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                              for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++        sql(f"""CREATE TRIGGER lap_reset_update AFTER UPDATE ON operation_state
++            WHEN (OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND
++            (json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1)
++            AND (OLD.id IS NOT NEW.id OR {changed})
++            BEGIN UPDATE boards SET lap_revision=lap_revision+1; END""")
++    else:
++        sql("""CREATE FUNCTION bmt_histogram_dirty() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            UPDATE histogram_snapshots SET dirty=true WHERE version_id=NEW.version_id AND vehicle_id=NEW.vehicle_id;
++            RETURN NULL; END $$""")
++        sql("""CREATE TRIGGER histogram_board_dirty AFTER UPDATE OF stats_revision,lap_revision ON boards FOR EACH ROW
++            WHEN (OLD.stats_revision IS DISTINCT FROM NEW.stats_revision OR OLD.lap_revision IS DISTINCT FROM NEW.lap_revision)
++            EXECUTE FUNCTION bmt_histogram_dirty()""")
++        sql("""CREATE FUNCTION bmt_lap_revision() RETURNS trigger LANGUAGE plpgsql AS $$
++            BEGIN
++            IF TG_OP='INSERT' THEN
++              IF NEW.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=NEW.board_id; END IF;
++            ELSIF TG_OP='DELETE' THEN
++              IF OLD.status='verified' THEN UPDATE boards SET lap_revision=lap_revision+1 WHERE id=OLD.board_id; END IF;
++            ELSIF (OLD.status='verified' OR NEW.status='verified') AND
++              (OLD.status IS DISTINCT FROM NEW.status OR OLD.lap_ticks::text IS DISTINCT FROM NEW.lap_ticks::text OR
++               OLD.board_id IS DISTINCT FROM NEW.board_id OR OLD.player_id IS DISTINCT FROM NEW.player_id OR
++               OLD.created_at IS DISTINCT FROM NEW.created_at) THEN
++              UPDATE boards SET lap_revision=lap_revision+1 WHERE id IN (OLD.board_id,NEW.board_id);
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_revision AFTER INSERT OR UPDATE OR DELETE ON runs FOR EACH ROW EXECUTE FUNCTION bmt_lap_revision()")
++        sql("""CREATE FUNCTION bmt_lap_reset() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE previous jsonb; current_data jsonb; previous_id text; current_id text;
++            BEGIN
++              IF TG_OP<>'INSERT' THEN previous=OLD.details::jsonb; previous_id=OLD.id; END IF;
++              IF TG_OP<>'DELETE' THEN current_data=NEW.details::jsonb; current_id=NEW.id; END IF;
++              IF (previous_id LIKE 'test-pop-batch:%' OR current_id LIKE 'test-pop-batch:%') AND
++                (previous#>>'{request,clear_test_records}'='true' OR current_data#>>'{request,clear_test_records}'='true') AND
++                (previous_id IS DISTINCT FROM current_id OR previous#>'{request,clear_test_records}' IS DISTINCT FROM current_data#>'{request,clear_test_records}' OR
++                 previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                 previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN
++                UPDATE boards SET lap_revision=lap_revision+1;
++              END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER lap_reset AFTER INSERT OR UPDATE OR DELETE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_lap_reset()")
++    snapshot_triggers()
++
++
++def snapshot_triggers():
++    invalidate = "UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0;"
++    if op.get_bind().dialect.name == "sqlite":
++        for scope in ("false", "true"):
++            sql(f"""INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT v.id,j.key,{scope} FROM track_versions v,json_each(v.manifest,'$.vehicles') j WHERE v.state='published'""")
++        for event in ("INSERT", "UPDATE OF state,manifest"):
++            name = "insert" if event == "INSERT" else "update"
++            sql(f"""CREATE TRIGGER histogram_version_{name} AFTER {event} ON track_versions WHEN NEW.state='published' BEGIN
++                INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,key,false FROM json_each(NEW.manifest,'$.vehicles');
++                INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,key,true FROM json_each(NEW.manifest,'$.vehicles');
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE version_id=NEW.id; END""")
++        sql("""CREATE TRIGGER histogram_board_insert AFTER INSERT ON boards BEGIN
++            INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES(NEW.version_id,NEW.vehicle_id,false);
++            INSERT OR IGNORE INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES(NEW.version_id,NEW.vehicle_id,true); END""")
++        conditions = [("player", "UPDATE OF disabled,is_test_driver ON players", "OLD.disabled IS NOT NEW.disabled OR OLD.is_test_driver IS NOT NEW.is_test_driver"),
++                      ("pb", "DELETE ON personal_bests", "1"),
++                      ("run_delete", "DELETE ON runs", "OLD.status='verified'"),
++                      ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'")]
++        for name, event, condition in conditions:
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} WHEN {condition} BEGIN {invalidate} END")
++        # Reset rows can change eligibility even when the retained PB did not.
++        for event, ref in (("INSERT", "NEW"), ("DELETE", "OLD")):
++            sql(f"""CREATE TRIGGER histogram_reset_{event.lower()} AFTER {event} ON operation_state
++                WHEN {ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1
++                BEGIN {invalidate} END""")
++        changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                              for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++        sql(f"""CREATE TRIGGER histogram_reset_update AFTER UPDATE ON operation_state
++            WHEN (OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND
++            (json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1)
++            AND ({changed} OR OLD.id IS NOT NEW.id) BEGIN {invalidate} END""")
++    else:
++        for scope in ("false", "true"):
++            sql(f"""INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT v.id,j.key,{scope} FROM track_versions v CROSS JOIN LATERAL json_each(v.manifest->'vehicles') j
++                WHERE v.state='published' ON CONFLICT DO NOTHING""")
++        sql("""CREATE FUNCTION bmt_histogram_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            IF NEW.state='published' THEN
++                INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial)
++                SELECT NEW.id,j.key,s.scope FROM json_each(NEW.manifest->'vehicles') j CROSS JOIN (VALUES(false),(true)) s(scope)
++                ON CONFLICT DO NOTHING;
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE version_id=NEW.id;
++            END IF; RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_version AFTER INSERT OR UPDATE OF state,manifest ON track_versions FOR EACH ROW EXECUTE FUNCTION bmt_histogram_version()")
++        sql("""CREATE FUNCTION bmt_histogram_board() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
++            INSERT INTO histogram_snapshots(version_id,vehicle_id,include_artificial) VALUES
++                (NEW.version_id,NEW.vehicle_id,false),(NEW.version_id,NEW.vehicle_id,true) ON CONFLICT DO NOTHING;
++            RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_board_insert AFTER INSERT ON boards FOR EACH ROW EXECUTE FUNCTION bmt_histogram_board()")
++        sql(f"CREATE FUNCTION bmt_histogram_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {invalidate} RETURN NULL; END $$")
++        for name, event, condition in [
++            ("player", "UPDATE OF disabled,is_test_driver ON players", "OLD.disabled IS DISTINCT FROM NEW.disabled OR OLD.is_test_driver IS DISTINCT FROM NEW.is_test_driver"),
++            ("pb", "DELETE ON personal_bests", "true"),
++            ("run_delete", "DELETE ON runs", "OLD.status='verified'"),
++            ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'")]:
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} FOR EACH ROW WHEN ({condition}) EXECUTE FUNCTION bmt_histogram_invalidate()")
++        # The reset revision trigger already distinguishes reset metadata from progress.
++        sql(f"""CREATE FUNCTION bmt_histogram_reset() RETURNS trigger LANGUAGE plpgsql AS $$
++            DECLARE previous jsonb; current_data jsonb;
++            BEGIN
++              IF TG_OP<>'INSERT' AND OLD.id LIKE 'test-pop-batch:%' THEN previous=OLD.details::jsonb; END IF;
++              IF TG_OP<>'DELETE' AND NEW.id LIKE 'test-pop-batch:%' THEN current_data=NEW.details::jsonb; END IF;
++              IF (previous#>>'{{request,clear_test_records}}'='true' OR current_data#>>'{{request,clear_test_records}}'='true') AND
++                (previous#>'{{request,clear_test_records}}' IS DISTINCT FROM current_data#>'{{request,clear_test_records}}' OR
++                 previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                 previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN {invalidate} END IF;
++              RETURN NULL; END $$""")
++        sql("CREATE TRIGGER histogram_reset AFTER INSERT OR UPDATE OR DELETE ON operation_state FOR EACH ROW EXECUTE FUNCTION bmt_histogram_reset()")
++
++
++def downgrade():
++    if op.get_bind().dialect.name == "sqlite":
++        for name in ("board_insert", "board_dirty", "version_insert", "version_update", "player", "pb", "run_delete", "run_retire", "reset_insert", "reset_update", "reset_delete"):
++            sql(f"DROP TRIGGER histogram_{name}")
++        for prefix in ("lap_revision", "lap_reset"):
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER {prefix}_{event}")
++    else:
++        for name, table in (("board_insert", "boards"), ("board_dirty", "boards"), ("version", "track_versions"), ("player", "players"), ("pb", "personal_bests"), ("run_delete", "runs"), ("run_retire", "runs"), ("reset", "operation_state")):
++            sql(f"DROP TRIGGER histogram_{name} ON {table}")
++        for name in ("board", "dirty", "version", "invalidate", "reset"):
++            sql(f"DROP FUNCTION bmt_histogram_{name}()")
++        sql("DROP TRIGGER lap_revision ON runs")
++        sql("DROP TRIGGER lap_reset ON operation_state")
++        sql("DROP FUNCTION bmt_lap_revision()")
++        sql("DROP FUNCTION bmt_lap_reset()")
++    op.drop_column("boards", "lap_revision")
++    op.drop_table("histogram_snapshots")
+diff --git a/backend/bmt_backend/migrations/versions/0023_operational_read_indexes.py b/backend/bmt_backend/migrations/versions/0023_operational_read_indexes.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0023_operational_read_indexes.py
+@@ -0,0 +1,99 @@
++"""Bound operational reads and restrict histogram invalidation to affected tracks."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0023_operational_read_indexes"
++down_revision = "0022_histogram_cache"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_index("ix_run_created_at", "runs", ["created_at"])
++    op.create_index("ix_operation_state_updated_at", "operation_state", ["updated_at"])
++    invalidate_triggers(scoped=True)
++
++
++def downgrade():
++    invalidate_triggers(scoped=False)
++    op.drop_index("ix_operation_state_updated_at", table_name="operation_state")
++    op.drop_index("ix_run_created_at", table_name="runs")
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def invalidate_triggers(*, scoped):
++    if op.get_bind().dialect.name == "sqlite":
++        for name, event, guard, target in (
++            ("player", "UPDATE OF disabled,is_test_driver ON players",
++             "OLD.disabled IS NOT NEW.disabled OR OLD.is_test_driver IS NOT NEW.is_test_driver",
++             "(version_id,vehicle_id) IN (SELECT b.version_id,b.vehicle_id FROM personal_bests p JOIN boards b ON b.id=p.board_id WHERE p.player_id=NEW.id)"),
++            ("pb", "DELETE ON personal_bests", "1", board_region("OLD")),
++            ("run_delete", "DELETE ON runs", "OLD.status='verified'", board_region("OLD")),
++            ("run_retire", "UPDATE OF status ON runs", "OLD.status='verified' AND NEW.status!='verified'", board_region("OLD")),
++        ):
++            sql(f"DROP TRIGGER histogram_{name}")
++            where = " WHERE " + target if scoped else ""
++            sql(f"CREATE TRIGGER histogram_{name} AFTER {event} WHEN {guard} BEGIN "
++                f"UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0{where}; END")
++        for prefix in ("lap_reset", "histogram_reset"):
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER {prefix}_{event}")
++            table, values = ("boards", "lap_revision=lap_revision+1") if prefix == "lap_reset" else (
++                "histogram_snapshots", "invalidated=true,next_refresh_at=0")
++            flag = "json_extract(manifest,'$.test_population')=1" if table == "boards" else "include_artificial=true"
++            for event, refs in (("INSERT", ["NEW"]), ("DELETE", ["OLD"]), ("UPDATE", ["OLD", "NEW"])):
++                if event == "UPDATE":
++                    changed = " OR ".join(f"json_extract(OLD.details,'$.{p}') IS NOT json_extract(NEW.details,'$.{p}')"
++                        for p in ("request.clear_test_records", "created_at", "vehicle_id", "tracks"))
++                    guard = f"(OLD.id LIKE 'test-pop-batch:%' OR NEW.id LIKE 'test-pop-batch:%') AND " \
++                        f"(json_extract(OLD.details,'$.request.clear_test_records')=1 OR json_extract(NEW.details,'$.request.clear_test_records')=1) AND (OLD.id IS NOT NEW.id OR {changed})"
++                else:
++                    ref = refs[0]
++                    guard = f"{ref}.id LIKE 'test-pop-batch:%' AND json_extract({ref}.details,'$.request.clear_test_records')=1"
++                regions = " OR ".join(reset_region(ref + ".details", sqlite=True) for ref in refs)
++                where = f" WHERE {flag} AND ({regions})" if scoped else ""
++                sql(f"CREATE TRIGGER {prefix}_{event.lower()} AFTER {event} ON operation_state WHEN {guard} "
++                    f"BEGIN UPDATE {table} SET {values}{where}; END")
++    else:
++        if scoped:
++            body = """IF TG_TABLE_NAME='players' THEN
++                UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE (version_id,vehicle_id) IN
++                  (SELECT b.version_id,b.vehicle_id FROM personal_bests p JOIN boards b ON b.id=p.board_id WHERE p.player_id=NEW.id);
++              ELSE UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0 WHERE (version_id,vehicle_id) IN
++                  (SELECT version_id,vehicle_id FROM boards WHERE id=OLD.board_id); END IF;"""
++        else:
++            body = "UPDATE histogram_snapshots SET invalidated=true,next_refresh_at=0;"
++        sql(f"CREATE OR REPLACE FUNCTION bmt_histogram_invalidate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NULL; END $$")
++        for name, table, values, flag in (
++            ("bmt_lap_reset", "boards", "lap_revision=lap_revision+1", "manifest->>'test_population'='true'"),
++            ("bmt_histogram_reset", "histogram_snapshots", "invalidated=true,next_refresh_at=0", "include_artificial=true"),
++        ):
++            regions = " OR ".join(reset_region(ref, sqlite=False) for ref in ("previous", "current_data"))
++            where = f" WHERE {flag} AND ({regions})" if scoped else ""
++            sql(f"""CREATE OR REPLACE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$
++                DECLARE previous jsonb; current_data jsonb; previous_id text; current_id text;
++                BEGIN
++                IF TG_OP<>'INSERT' THEN previous=OLD.details::jsonb; previous_id=OLD.id; END IF;
++                IF TG_OP<>'DELETE' THEN current_data=NEW.details::jsonb; current_id=NEW.id; END IF;
++                IF (previous_id LIKE 'test-pop-batch:%' OR current_id LIKE 'test-pop-batch:%') AND
++                  (previous#>>'{{request,clear_test_records}}'='true' OR current_data#>>'{{request,clear_test_records}}'='true') AND
++                  (previous_id IS DISTINCT FROM current_id OR previous#>'{{request,clear_test_records}}' IS DISTINCT FROM current_data#>'{{request,clear_test_records}}' OR
++                   previous->'created_at' IS DISTINCT FROM current_data->'created_at' OR previous->'vehicle_id' IS DISTINCT FROM current_data->'vehicle_id' OR
++                   previous->'tracks' IS DISTINCT FROM current_data->'tracks') THEN
++                    UPDATE {table} SET {values}{where};
++                END IF; RETURN NULL; END $$""")
++
++
++def board_region(ref):
++    return f"(version_id,vehicle_id) IN (SELECT version_id,vehicle_id FROM boards WHERE id={ref}.board_id)"
++
++
++def reset_region(ref, *, sqlite):
++    if sqlite:
++        return f"(vehicle_id=json_extract({ref},'$.vehicle_id') AND version_id IN " \
++            f"(SELECT json_extract(value,'$.version_id') FROM json_each({ref},'$.tracks')))"
++    return f"(vehicle_id={ref}->>'vehicle_id' AND version_id IN " \
++        f"(SELECT item->>'version_id' FROM jsonb_array_elements(COALESCE({ref}->'tracks','[]'::jsonb)) item))"

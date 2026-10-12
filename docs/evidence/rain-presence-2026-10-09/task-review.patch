@@ -1,0 +1,268 @@
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -5,7 +5,7 @@
+ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
+ const MIN_INTERVAL: float = 9.0
+ const MAX_INTERVAL: float = 16.0
+-const RAIN_LEVEL: float = 0.13
++const RAIN_LEVEL: float = 0.55
+ const RAIN_FADE_SECONDS: float = 0.75
+ var elapsed: float = 0.0
+ var until_lightning: float = 6.0
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -15,7 +15,7 @@
+ Outdoor rural rain field recording, public HQ MP3 preview decoded offline by
+ pinned Godot 4.7.2. Four25-second regions mixed into diffuse rainfall, mono
+ 44.1kHz16-bit PCM,100Hz-2.2kHz distance softening, soft transient limiting and
+-one-second cyclic crossfade into a24-second loop. Quiet Vehicle playback .13.
++one-second cyclic crossfade into a24-second loop. Quiet Vehicle playback .55.
+ This overhead perspective is sound design from a ground recording, not an
+ aerial recording. Source/decoded/derivative hashes: storm_rain_manifest.json;
+ rebuild: scripts/build_storm_rain.py and tests/decode_storm_rain_source.gd.
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -1,7 +1,8 @@
+ # Storm wet-asphalt tire rolling, 2026-10-09
+ 
+ Current state: the owner rejected wet rolling and moved it to the wishlist.
+-Storm asphalt rolling is disabled; the quiet distant rain remains. The
++Storm asphalt rolling is disabled; distant rain now has stronger background
++presence at 0.55 gain after the owner could not hear the earlier 0.13 mix. The
+ implementation history below is superseded by the final deferral section.
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+@@ -278,3 +279,48 @@
+ physical-device listening, Android export/install, full Validate, backend or
+ deployment. No visible UI change. Owner confirmation in normal play remains;
+ the two earlier storm visual-test failures are outside this change.
++
++## Distant rain presence correction
++
++The owner cannot hear rain after wet tire removal. SND25 raises the existing
++soft distant rain gain from 0.13 to 0.55 (+12.529 dB configured). The recording,
++filtering/distant texture, wet-tire deferral, wishlist, engine gains and existing
++fade/pause/background/finish lifecycle remain. No new asset or bus in the game;
++extra reference buses exist only in the diagnostic capture.
++
++Changed files: `game/track/storm_weather.gd` (one level constant),
++`game/assets/audio/ambience/NOTICE.txt` (current playback level),
++`game/tests/capture_rain_presence.gd` and UID,
++`scripts/review_rain_presence.py`, this page, `DEVELOPMENT_STATUS.md`,
++`docs/PHASE_0_PLAN.md`. The rain WAV, deferred wet mixer and wishlist hashes
++match the actual before-task snapshot.
++
++Actual pinned `scripts/dev.ps1` commands:
++
++- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`: 39 checks,
++  zero failures, including wet silence and rain pause/focus/finish guards.
++- `TestScript -ScriptPath res://tests/capture_rain_presence.gd -Graphical`:
++  final 26 checks, zero failures, clean exit. The actual Game scene/presentation
++  runs at held 86.4 km/h with default race music/engine settings; canonical
++  stepping is disabled, so this is a foreground presentation fixture, not
++  a completed race or actual player-driving acceptance.
++- `python scripts/review_rain_presence.py`: zero failures; measured increase
++  12.524 dB, rain -30.245 dBFS versus engine -20.147 dBFS (10.098 dB below).
++  Default music is present, output stays below the limiter ceiling, all paused
++  PCM is zero, and Vehicle mute leaves only music (0.022 dB RMS difference
++  after accounting for the actual 0.7 Music bus gain).
++
++Initial capture used a Node-only timing method on SceneTree and then encountered
++desktop auto-pause plus an incorrect `playing` assertion on paused playback.
++The final fixture explicitly drives foreground `Game._process` with the proper
++paused-stream check. Initial mute review compared pre-volume music against
++final output; the corrected comparison uses the recorded Music bus gain without
++relaxing the mute invariant. Those receipts are retained. One automatic approval
++review timed out before execution; its permitted retry succeeded.
++
++Evidence/source checkpoint and [default engine/music listening comparison](evidence/rain-presence-2026-10-09/review.html):
++`docs/evidence/rain-presence-2026-10-09/`. No phone attachment check,
++physical-device listening, APK export/install, full Validate, physics change,
++backend or deployment. Owner audible-background/distant-texture approval and
++device/music listening remain; the two earlier visual spray failures remain
++outside this gain-only change.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 SND25/SND22-SND24/SND05/G01/R01/Q01/V06: owner cannot hear rain; existing distant field gain0.13-to0.55/native+12.524dB now10.098dB below engine with default race music. Soft rain WAV/deferred wet mixer/wishlist hashes exact; fade/pause/focus/finish retained. Focused39/actualGame-presentation native26/review checks pass; paused PCM zero and Vehicle mute matches remaining0.7-gain music within0.022dB. Held86.4km/h fixture is not a completed/player-driven race. Initial parser/desktop auto-pause/paused getter/pre-volume comparison corrected and receipts retained; automatic review timeout retry succeeds. No phone attachment/device listening/APK export-install/full Validate/physics/backend/deployment. Commands/files/listening/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (rain presence).
++
+ 2026-10-09 RR06/V03/V05/Q01: Free Race bottom actions no longer overflow the menu content height; hero minimum200-to160 preserves180px charts/140px carousel/60px actions. Pinned graphical histogram suite144 checks/zero failures at1280x720,960x540,1600x720 with actual header/margin allowance; native capture inspected. Initial sandbox certificate-store denial corrected by permitted local rerun. No phone attachment check/device test/export-install/backend/deployment. Files, commands, evidence and task-only checkpoint: docs/FREE_RACE_BUTTONS.md.
+ 
+ 2026-10-09 SND-DC01/SND05/SND14-SND18/G01/R01/Q01/V06: owner clarifies direct hits; symptom remains unresolved. Six real-time Game/rendered head-on18/54/108km/h/control hits allactualRAW, onecue/30 review checks; cue-to-software-output36.53-45.53ms, no acoustic-zero claim. Cached last-selection Slippery/compact eight54/108 outer-wall hits cue firsttouch/exact snapshots; four18 coasting cases never hit and not passed collisions. Optional debug deferred per-hit route/context logging adds no physics/sound behavior or account telemetry. Trace9/timing43/native16/launcher/parser414 pass; normal diagnostic app120sec exits0 with no actual user-hit trace. Initial vector parse error/cached33 shutdown warning retained. No phone attachment/physical Android/mic/new acoustic measurement/export/fullValidate/physics/backend/deploy. Need actual track/car/object/live trace to locate remaining delay; scoped checkpoint and files/commands/captures/limits: docs/DIRECT_COLLISION_TIMING.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1424,3 +1424,8 @@
+ ## Wet tire audio deferral, 2026-10-09
+ 
+ 2026-10-09 SND24/SND19/SND21-SND23/SND05/G01/R01/Q01/V06: owner rejects wet tire rolling; dedicated wet loop no longer loaded/selected and Storm road voice immediately silent without dry-road substitution. Better wet-asphalt audio added to docs/WISHLIST.md as deferred; distant rain, ordinary dry/other surfaces and actual puddles retained. Focused39/native52/vehicle1446 checks pass, exact960-tick equivalence;47 vehicle WAVs/rain WAV/weather source hashes exact. No phone attachment/device listening/export-install/full Validate/backend/deploy. Actual files/commands/evidence/scoped checkpoint/remaining owner acceptance: docs/WET_ROAD_AUDIO.md (deferral).
++
++
++## Distant rain presence correction, 2026-10-09
++
++2026-10-09 SND25/SND22-SND24/SND05/G01/R01/Q01/V06: owner cannot hear rain; existing distant field gain0.13-to0.55/native+12.524dB now10.098dB below engine with default race music. Soft rain WAV/deferred wet mixer/wishlist hashes exact; fade/pause/focus/finish retained. Focused39/actualGame-presentation native26/review checks pass; paused PCM zero and Vehicle mute matches remaining0.7-gain music within0.022dB. Held86.4km/h fixture is not a completed/player-driven race. Initial parser/desktop auto-pause/paused getter/pre-volume comparison corrected and receipts retained; automatic review timeout retry succeeds. No phone attachment/device listening/APK export-install/full Validate/physics/backend/deployment. Commands/files/listening/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (rain presence).
+diff --git a/game/tests/capture_rain_presence.gd b/game/tests/capture_rain_presence.gd
+--- /dev/null
++++ b/game/tests/capture_rain_presence.gd
+@@ -0,0 +1,96 @@
++extends SceneTree
++## Actual race presentation, held speed, default music, raw rain and engine references.
++const OUT: String = "res://../docs/evidence/rain-presence-2026-10-09"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	check(DisplayServer.get_name()!="headless","native output required")
++	if DisplayServer.get_name()=="headless":
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.initial_track.metadata.theme = "storm"
++	root.add_child(game)
++	game.set_physics_process(false) # Held presentation, no race completion or record writes.
++	game.set_process(false) # Drive actual presentation explicitly as a foreground fixture.
++	game.countdown_ticks = 0
++	game.sim.state.velocity = game.sim.state.forward()*24.0
++	game.frame = DriveFrame.sample(0,0.7,0)
++	var weather: StormWeather = game.storm_weather
++	weather.until_lightning = 9999.0
++	check(weather!=null and weather.visible,"actual storm race installs visible weather")
++	var bus: int = AudioServer.get_bus_count()
++	AudioServer.add_bus()
++	AudioServer.set_bus_name(bus,"RainPresenceReview")
++	AudioServer.set_bus_send(bus,"Vehicle")
++	var source_bus: int = AudioServer.get_bus_count()
++	AudioServer.add_bus()
++	AudioServer.set_bus_name(source_bus,"RainPresenceSource")
++	AudioServer.set_bus_send(source_bus,"RainPresenceReview")
++	weather.rain_audio.bus = "RainPresenceSource"
++	var buses: Array[int] = [0,AudioServer.get_bus_index("Engine"),AudioServer.get_bus_index("Music"),bus]
++	var names: Array[String] = ["mix","engine","music","rain"]
++	var records: Array[AudioEffectRecord] = []
++	for index: int in buses:
++		var record := AudioEffectRecord.new()
++		record.format = AudioStreamWAV.FORMAT_16_BITS
++		AudioServer.add_bus_effect(index,record)
++		records.append(record)
++	var rows: Array[Dictionary] = []
++	for scene: String in ["before","after","paused","muted"]:
++		game.paused = scene=="paused"
++		AudioServer.set_bus_mute(AudioServer.get_bus_index("Vehicle"),scene=="muted")
++		# A separate parent gain reproduces .13 without racing the player's
++		# instantaneous volume; use the same unchanged rain PCM in both mixes.
++		AudioServer.set_bus_volume_linear(source_bus,0.13/StormWeather.RAIN_LEVEL if scene=="before" else 1.0)
++		weather.rain_audio.play(0.0)
++		var elapsed: float = 0.0
++		while elapsed<1.0:
++			await process_frame
++			game.paused = scene=="paused"
++			game.frame = DriveFrame.sample(0,0.7,0)
++			weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			GameSoundtrack.instance()._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			game._process(root.get_process_delta_time())
++			elapsed += root.get_process_delta_time()
++		check(weather.rain_audio.stream_paused if scene=="paused" else weather.rain_audio.playing,"race rain obeys foreground/pause playback: "+scene)
++		check(float(game.vehicle_audio.levels.road)==0 and not game.vehicle_audio.streams.has("wet_road"),"wet rolling stays deferred: "+scene)
++		for record: AudioEffectRecord in records: record.set_recording_active(true)
++		elapsed = 0.0
++		var duration: float = 3.0 if scene in ["before","after"] else 1.0
++		while elapsed<duration:
++			await process_frame
++			game.paused = scene=="paused"
++			game.frame = DriveFrame.sample(0,0.7,0)
++			weather._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			GameSoundtrack.instance()._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++			game._process(root.get_process_delta_time())
++			elapsed += root.get_process_delta_time()
++		for i: int in range(records.size()):
++			records[i].set_recording_active(false)
++			check(records[i].get_recording().save_to_wav(OUT.path_join(scene+"-"+names[i]+".wav"))==OK,"native race audio: "+scene+" "+names[i])
++		rows.append({"scene":scene,"rain_gain":weather.rain_gain,"rain_review_gain":AudioServer.get_bus_volume_linear(source_bus),"paused":game.paused,"music_mode":GameSoundtrack.instance().mode,"music_bus_gain":AudioServer.get_bus_volume_linear(AudioServer.get_bus_index("Music"))})
++	var file := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t")+"\n")
++	file.close()
++	game.paused = true
++	AudioServer.set_bus_mute(AudioServer.get_bus_index("Vehicle"),false)
++	weather.rain_audio.bus = "Vehicle"
++	game.free()
++	GameSoundtrack.instance().show_menu()
++	await create_timer(.15).timeout
++	for index: int in buses: AudioServer.remove_bus_effect(index,AudioServer.get_bus_effect_count(index)-1)
++	AudioServer.remove_bus(source_bus)
++	AudioServer.remove_bus(bus)
++	print("RAIN_PRESENCE_CAPTURE: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_rain_presence.gd.uid b/game/tests/capture_rain_presence.gd.uid
+--- /dev/null
++++ b/game/tests/capture_rain_presence.gd.uid
+@@ -0,0 +1 @@
++uid://dk4krsdjl0snv
+diff --git a/scripts/review_rain_presence.py b/scripts/review_rain_presence.py
+--- /dev/null
++++ b/scripts/review_rain_presence.py
+@@ -0,0 +1,52 @@
++"""Same-clock actual race rain/engine/music audibility, pause and mute review."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++
++ROOT=Path(__file__).resolve().parents[1]
++OUT=ROOT/'docs/evidence/rain-presence-2026-10-09'
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate=handle.getframerate();channels=handle.getnchannels()
++        values=np.frombuffer(handle.readframes(handle.getnframes()),dtype='<i2').astype(np.float64)/32768.0
++    values=values.reshape(-1,channels)
++    return values[round(rate*.15):-round(rate*.15)],rate
++def db(values): return 20*math.log10(max(float(np.sqrt(np.mean(values**2))),1e-9))
++report={'captures':[],'failures':[]}
++audio={}
++for scene in ['before','after','paused','muted']:
++    row={'scene':scene}
++    for layer in ['mix','engine','music','rain']:
++        values,rate=read(OUT/(scene+'-'+layer+'.wav'))
++        audio[scene,layer]=values
++        row[layer+'_dbfs']=db(values)
++        row[layer+'_peak']=float(np.max(np.abs(values)))
++        if row[layer+'_peak']>=.95: report['failures'].append('Capture lacks headroom: '+scene+' '+layer)
++        if scene=='paused' and row[layer+'_peak']!=0: report['failures'].append('Pause is not digitally silent: '+layer)
++    report['captures'].append(row)
++old,new=report['captures'][:2]
++report['gain_db']=new['rain_dbfs']-old['rain_dbfs']
++report['rain_relative_engine_db']=new['rain_dbfs']-new['engine_dbfs']
++report['rain_relative_music_db']=new['rain_dbfs']-new['music_dbfs']
++if not 11.8<report['gain_db']<13.3: report['failures'].append('Rain increase should be about12.5dB')
++if not -15<report['rain_relative_engine_db']<-5: report['failures'].append('Rain should be present below the engine')
++if new['music_peak']<.001: report['failures'].append('Mix must include actual default race music')
++# With Vehicle muted, only default music reaches the output. Compare RMS;
++# source buses are recorded before mute and retain their raw references.
++muted=report['captures'][3]
++capture=json.loads((OUT/'capture.json').read_text())
++music_gain=float(next(row['music_bus_gain'] for row in capture if row['scene']=='muted'))
++report['music_bus_gain']=music_gain
++report['muted_output_relative_music_db']=muted['mix_dbfs']-muted['music_dbfs']-20*math.log10(music_gain)
++if abs(report['muted_output_relative_music_db'])>1: report['failures'].append('Vehicle mute output should match the remaining music')
++previous=json.loads((OUT/'before/preserved.json').read_text())
++report['preserved']=[{'path':p,'matches':hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==digest} for p,digest in previous.items()]
++if not all(row['matches'] for row in report['preserved']): report['failures'].append('Rain source, deferred wet mixer or wishlist changed')
++(OUT/'review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++cards=''.join('<article><h2>'+label+'</h2><audio controls preload="metadata" src="'+name+'.wav"></audio></article>' for label,name in [('Previous rain level with engine and music','before-mix'),('Stronger distant rain with engine and music','after-mix'),('Distant rain alone at the revised level','after-rain')])
++(OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Distant rain presence</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}audio{width:100%}</style><h1>Distant rain presence</h1><p>Actual race presentation at a held86.4km/h, with default engine/music settings. Wet road rolling remains disabled. The same soft rain recording plays at the stronger level.</p>'+cards,encoding='utf-8')
++print(json.dumps(report,indent=2))
++raise SystemExit(bool(report['failures']))

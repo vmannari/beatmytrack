@@ -1,0 +1,444 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+index 04be4e61..d643f795 100644
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -31,6 +31,11 @@ var grit_cooldown: float = 0.0
+ var grit_count: int = 0
+ var pending_scrape: float = 0.0
+ var pending_scrape_speed: float = 0.0
++var scrape_hold: float = 0.0
++var held_scrape: float = 0.0
++var held_scrape_speed: float = 0.0
++var contact_radius: float = 1.0
++const RUBBING_SKIN: float = 0.025
+ var debris_index: int = 0
+ var impact_count: int = 0
+ var countdown_active: bool = false
+@@ -83,6 +88,7 @@ func _stream(clip: String, looping: bool) -> AudioStreamWAV:
+ func configure(id: String, config: HandlingConfig, car: Node3D = null) -> void:
+ 	model.configure(id,config.maximum_speed)
+ 	surface_model.configure(config)
++	contact_radius = config.collision_radius
+ 	if car!=null: visible_contact.configure(car)
+ 	else: visible_contact.outline = PackedVector2Array()
+ 	# Only the selected vehicle's six engine loops are retained by this race.
+@@ -112,6 +118,9 @@ func reset() -> void:
+ 	grit_count = 0
+ 	pending_scrape = 0.0
+ 	pending_scrape_speed = 0.0
++	scrape_hold = 0.0
++	held_scrape = 0.0
++	held_scrape_speed = 0.0
+ 	last_tick = -1
+ 	last_jump = 0.0
+ 	last_jump_velocity = 0.0
+@@ -157,6 +166,27 @@ func resolved_contact(state: VehicleState, track: NativeTrack, incoming: Vector2
+ 		var incidence: float = inward/maxf(incoming.length(),0.001)
+ 		if inward>0.08:
+ 			scrape((1.0-smoothstep(0.25,0.75,incidence))*clampf(inward/2.0,0.08,1.0),tangent)
++	# The resolver removes inward motion as the car aligns with a rail. Its
++	# force cue can then become zero while the body continues sliding along it.
++	# Read the actual current collision layer within 25mm of the physical body;
++	# a nearby pass, leaving the face or crossing below a deck cannot rub it.
++	if pending_scrape==0.0 and track!=null and state.jump_height<=0.0 and state.roll_ticks==0 and incoming.length()>0.5:
++		var rubbing_normal: Vector2 = track.collision_normal(state.position,contact_radius+RUBBING_SKIN,state.track_elevated)
++		if rubbing_normal!=Vector2.ZERO:
++			# A raster rail corner has a small along-span component even on a
++			# straight fence. Use its authored face for rubbing direction only;
++			# actual occupied cells must still confirm the physical contact.
++			var span_index: int = CreatorBridges.span_at(track.creator_bridges,state.position) if state.track_elevated else -1
++			if span_index>=0:
++				var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(track.creator_bridges[span_index].heading)))
++				if absf(axis.dot(rubbing_normal))<0.25:
++					var face: Vector2 = axis.orthogonal()
++					rubbing_normal = face if face.dot(rubbing_normal)>0.0 else -face
++			var outward: float = incoming.dot(rubbing_normal)
++			var tangent: float = absf(incoming.cross(rubbing_normal))
++			var incidence: float = maxf(0.0,-outward)/maxf(incoming.length(),0.001)
++			if outward<=0.10 and incidence<0.60:
++				scrape(lerpf(0.24,0.65,smoothstep(0.0,0.45,incidence)),tangent)
+ 	if state.collision_impulse!=Vector2.ZERO:
+ 		if not visible_contact.duplicate_physical(state.collision_impulse):
+ 			var before: int = impact_count
+@@ -232,6 +262,9 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta:
+ 	if silent:
+ 		pending_scrape = 0.0
+ 		pending_scrape_speed = 0.0
++		scrape_hold = 0.0
++		held_scrape = 0.0
++		held_scrape_speed = 0.0
+ 		levels.scrape = 0.0
+ 		(layers.scrape as AudioStreamPlayer).volume_linear = 0.0
+ 		last_tick = state.tick
+@@ -262,8 +295,16 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta:
+ 		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.y*engine_envelope))
+ 	var speed: float = state.velocity.length()
+ 	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown
+-	var scrape_motion: float = smoothstep(0.5,14.0,pending_scrape_speed)
+-	_layer("scrape",sqrt(pending_scrape)*scrape_motion*0.52,0.80+clampf(pending_scrape_speed/40.0,0.0,1.0)*0.42,dt,not grounded)
++	if pending_scrape>0.0:
++		held_scrape = pending_scrape
++		held_scrape_speed = pending_scrape_speed
++		scrape_hold = 0.06 # Bridge adjacent ticks and render frames between physics ticks.
++	else:
++		scrape_hold = maxf(0.0,scrape_hold-dt)
++	if not grounded: scrape_hold = 0.0
++	var scrape_motion: float = smoothstep(0.5,4.0,held_scrape_speed)
++	var scrape_gain: float = sqrt(maxf(held_scrape,0.18))*scrape_motion*0.82 if scrape_hold>0.0 else 0.0
++	_layer("scrape",scrape_gain,0.80+clampf(held_scrape_speed/40.0,0.0,1.0)*0.42,dt,not grounded)
+ 	pending_scrape = 0.0
+ 	pending_scrape_speed = 0.0
+ 	var rolling: float = smoothstep(0.4,22.0,speed) if grounded else 0.0
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 12ddb93d..402df9b6 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND41/SND40/SND08/SND05/G01/R01/Q01: owner bridge screech inaudible. Real creator parallel rail baseline609/60fail and native friction0 reproduce alignment gap. Read-only25mm body/current-layer contact plus authored rail normal, motion gain4m/s/0.82/minimum rubbing/60ms hold restore sustained sound. Final native611/headless602/directional231/vehicle1450/shallow20268/contact65 pass; actualGame46of48audibleticks/peak0.402. Full vehicle mix friction2.67-2.90dB below engine at4/12/24m/s, unclipped/pausedtail0/all48WAV hashes exact. Raster reverse16fail and post-Game menu-music capture contamination corrected with retained assertions/logs. OPD2403tablet/no phone/no device listening/export-install/fullValidate/backend/deploy/physics changes. Files/commands/previews/scoped checkpoint/owner acceptance: docs/BRIDGE_SCREECH.md.
++
+ 2026-10-10 SND41/SND39/G01/R01/Q01: owner subtle Grass nature. Two race-owned Vehicle voices: unchanged cleared40s insects at0.035-0.075/slow variable swells/random retry phase; sparse recorded leaf rustles0.09-0.15/8-20s gaps, independent RNG. Pause/background/retry/finish/biome/exit/simulation separation retained; birds unchanged. New cleared CC0 leaf123720bytes/hash99846838; repeat mastering exact. Import/headless107/native119/birds295/night25/App99 pass. Native insects/leaves14.541/16.533dB below sampled birds, actual loop crossing/two varied20s full mixes/no clipping/pause-mute-finish exact silence. Initial native loop failure caused by fast-forward decoder queue; output suppressed only for logical fixture then real capture rerun119pass, same assertion. OPD2403 tablet attached/no phone/device listening/export-install/fullValidate/backend/deploy. Files/actual commands/audio/scoped Git checkpoint/owner acoustic acceptance: docs/GRASS_NATURE.md.
+ 
+ 2026-10-10 CG09/CG01-CG08/GL01-GL06/V06/R01/Q01: owner side-profile correction. Cabin-derived windows share sill/top rails,70mm pillar and matching dark seals. Metal door about30%wider/29%taller reaches rocker, clears wheel arches and continues around window; rear seam/handle aligned to same pillar. Native glass heights exact both panes/both sides, metal boundsy0.427/zspan1.54212m. Final side252/studio75/batch35/front116/livery115/parser481 pass;6 actual-app profiles/angles/recolor captures inspected. All50v3 assets SHA-256 exact711101bytes;97136tri/48meshes/68548UV. Desktop322.31ms construction/concurrent RTX3090 CPU0.761/GPU0.179ms median (not mobile/whole-app/AAA acceptance). TabletOPD2403 attached/no phone/device/export-install/fullValidate/physics/backend/deploy. Files/actual commands/scoped checkpoint/provenance/owner-device acceptance: docs/COMPACT_SIDE_PROFILE.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index a7ed74a2..d8aee0fc 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND41/SND40/SND08/SND05/G01/R01/Q01: owner bridge screech inaudible. Real creator parallel rail baseline609/60fail and native friction0 reproduce alignment gap. Read-only25mm body/current-layer contact plus authored rail normal, motion gain4m/s/0.82/minimum rubbing/60ms hold restore sustained sound. Final native611/headless602/directional231/vehicle1450/shallow20268/contact65 pass; actualGame46of48audibleticks/peak0.402. Full vehicle mix friction2.67-2.90dB below engine at4/12/24m/s, unclipped/pausedtail0/all48WAV hashes exact. Raster reverse16fail and post-Game menu-music capture contamination corrected with retained assertions/logs. OPD2403tablet/no phone/no device listening/export-install/fullValidate/backend/deploy/physics changes. Files/commands/previews/scoped checkpoint/owner acceptance: docs/BRIDGE_SCREECH.md.
++
+ 2026-10-10 SND41/SND39/G01/R01/Q01: owner subtle Grass nature. Two race-owned Vehicle voices: unchanged cleared40s insects at0.035-0.075/slow variable swells/random retry phase; sparse recorded leaf rustles0.09-0.15/8-20s gaps, independent RNG. Pause/background/retry/finish/biome/exit/simulation separation retained; birds unchanged. New cleared CC0 leaf123720bytes/hash99846838; repeat mastering exact. Import/headless107/native119/birds295/night25/App99 pass. Native insects/leaves14.541/16.533dB below sampled birds, actual loop crossing/two varied20s full mixes/no clipping/pause-mute-finish exact silence. Initial native loop failure caused by fast-forward decoder queue; output suppressed only for logical fixture then real capture rerun119pass, same assertion. OPD2403 tablet attached/no phone/device listening/export-install/fullValidate/backend/deploy. Files/actual commands/audio/scoped Git checkpoint/owner acoustic acceptance: docs/GRASS_NATURE.md.
+ 
+ 2026-10-10 CG09/CG01-CG08/GL01-GL06/V06/R01/Q01: owner side-profile correction. Cabin-derived windows share sill/top rails,70mm pillar and matching dark seals. Metal door about30%wider/29%taller reaches rocker, clears wheel arches and continues around window; rear seam/handle aligned to same pillar. Native glass heights exact both panes/both sides, metal boundsy0.427/zspan1.54212m. Final side252/studio75/batch35/front116/livery115/parser481 pass;6 actual-app profiles/angles/recolor captures inspected. All50v3 assets SHA-256 exact711101bytes;97136tri/48meshes/68548UV. Desktop322.31ms construction/concurrent RTX3090 CPU0.761/GPU0.179ms median (not mobile/whole-app/AAA acceptance). TabletOPD2403 attached/no phone/device/export-install/fullValidate/physics/backend/deploy. Files/actual commands/scoped checkpoint/provenance/owner-device acceptance: docs/COMPACT_SIDE_PROFILE.md.
+diff --git a/docs/DIRECTIONAL_COLLISION_AUDIO.md b/docs/DIRECTIONAL_COLLISION_AUDIO.md
+index ecbb8a92..c6a71a5c 100644
+--- a/docs/DIRECTIONAL_COLLISION_AUDIO.md
++++ b/docs/DIRECTIONAL_COLLISION_AUDIO.md
+@@ -1,5 +1,9 @@
+ # Directional collision audio — 2026-10-10
+ 
++The owner's bridge follow-up fixes silent parallel contact after alignment and
++raises friction against the engine. [Current trigger, mix and actual creator-rail
++checks](BRIDGE_SCREECH.md) supersede the bridge rubbing acceptance below.
++
+ Owner request: improve collisions so fence/bridge side scrapes screech, while
+ head-on hits crash more strongly. **SND40**, refining SND08/SND04-SND06 and
+ supporting G01/R01/Q01/V06. This is a local sound presentation change.
+diff --git a/game/tests/test_bridge_scrape_audio.gd b/game/tests/test_bridge_scrape_audio.gd
+new file mode 100644
+index 00000000..547ff73f
+--- /dev/null
++++ b/game/tests/test_bridge_scrape_audio.gd
+@@ -0,0 +1,168 @@
++extends SceneTree
++## Real creator rail geometry, parallel contact, separation and full native mix.
++const OUT: String = "res://../docs/evidence/bridge-screech-2026-10-10"
++var checks: int = 0
++var failures: int = 0
++var baseline: bool = false
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func rail_position(track: NativeTrack, span: Dictionary, config: HandlingConfig, side: float) -> Vector2:
++	var origin := Vector2(span.position[0],span.position[1])
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
++	var normal: Vector2 = axis.orthogonal()*side
++	var center: Vector2 = origin+axis*float(span.length)*.5
++	var lo: float = 0.0
++	var hi: float = float(span.width)*.5
++	for iteration: int in range(24):
++		var mid: float = (lo+hi)*.5
++		if track.overlaps_obstacle(center+normal*mid,config.collision_radius,true): hi = mid
++		else: lo = mid
++	return center+normal*(lo-.001)
++
++func run() -> void:
++	baseline = OS.get_cmdline_user_args().has("--baseline")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/knit_bridge_regression.json"))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var span: Dictionary = track.creator_bridges[0]
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
++	var audio := VehicleAudio.new()
++	audio.use_windows_impacts = false
++	root.add_child(audio)
++	var rows: Array[Dictionary] = []
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		audio.configure(id,config)
++		for side: float in [-1.0,1.0]:
++			var away: Vector2 = -axis.orthogonal()*side
++			for reverse: bool in [false,true]:
++				for speed: float in [4.0,10.0,24.0]:
++					audio.reset()
++					var state := VehicleState.new()
++					state.position = rail_position(track,span,config,side)
++					state.heading = atan2(axis.x,axis.y)
++					state.track_elevated = true
++					state.velocity = axis*speed*(-1.0 if reverse else 1.0)
++					var snapshot: Array = state.snapshot()
++					for frame: int in range(12):
++						audio.begin_physics_feedback()
++						audio.resolved_contact(state,track,state.velocity)
++						audio.present(state,DriveFrame.sample(0,1,0),track,1.0/60.0,false)
++					var level: float = float(audio.levels.scrape)
++					check(level>.30,"parallel creator bridge rail has clear screech: "+id+str(side)+str(reverse)+str(speed))
++					check(audio.impact_count==0 and state.snapshot()==snapshot,"parallel screech creates no crash or canonical mutation")
++					var face: Vector2 = track.collision_normal(state.position,config.collision_radius+.025,true)
++					rows.append({"car":id,"side":side,"reverse":reverse,"speed":speed,"level":level,"normal":[face.x,face.y],"outward":state.velocity.dot(face)})
++					# Moving away, even while still in contact range, stops rubbing.
++					state.velocity += away*2.0
++					for frame: int in range(36):
++						audio.begin_physics_feedback()
++						audio.resolved_contact(state,track,state.velocity)
++						audio.present(state,DriveFrame.new(),track,1.0/60.0,false)
++					check(float(audio.levels.scrape)<.0001,"steering away releases screech")
++					# A nearby pass and a crossing below the deck are silent.
++					for context: String in ["nearby","underpass","stationary","air","roll","countdown","pause"]:
++						audio.reset()
++						state.position = rail_position(track,span,config,side)+away*(.12 if context=="nearby" else 0.0)
++						state.track_elevated = context!="underpass"
++						state.velocity = Vector2.ZERO if context=="stationary" else axis*speed
++						state.jump_height = 1.0 if context=="air" else 0.0
++						state.roll_ticks = 1 if context=="roll" else 0
++						audio.begin_physics_feedback()
++						audio.resolved_contact(state,track,state.velocity)
++						audio.present(state,DriveFrame.new(),track,.016,context=="pause",context=="countdown")
++						check(float(audio.levels.scrape)==0.0,"no false bridge screech: "+context)
++					await process_frame
++	var report := FileAccess.open(OUT.path_join("baseline-matrix.json" if baseline else "contact-matrix.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(rows,"\t"))
++	report.close()
++	if DisplayServer.get_name()!="headless": await capture(audio,track,span)
++	# Capture the vehicle mix before Game exit can resume the unrelated menu music.
++	await game_bridge_slide(track,span)
++	audio.free()
++	await create_timer(.15).timeout
++	print("BRIDGE_SCRAPE_AUDIO: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
++
++func game_bridge_slide(track: NativeTrack, span: Dictionary) -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.vehicle_id = "compact"
++	game.initial_track = track
++	root.add_child(game)
++	game.set_process(false)
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	game.production_mode = false
++	game.vehicle_audio.use_windows_impacts = false
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
++	game.sim.reset(rail_position(track,span,game.handling,1),atan2(axis.x,axis.y))
++	game.sim.state.track_elevated = true
++	game.sim.state.velocity = axis*12.0
++	game.previous_position = game.sim.state.position
++	game.previous_heading = game.sim.state.heading
++	var audible_ticks: int = 0
++	var peak: float = 0.0
++	for tick: int in range(48):
++		game._physics_process(VehicleSimulation.STEP)
++		game._process(VehicleSimulation.STEP)
++		peak = maxf(peak,float(game.vehicle_audio.levels.scrape))
++		if float(game.vehicle_audio.levels.scrape)>.20: audible_ticks += 1
++		if tick%6==0: await process_frame
++	check(peak>.30 and audible_ticks>20,"actual Game callbacks keep parallel bridge contact audible")
++	check(game.sim.state.track_elevated,"real drive remains above the bridge")
++	print("GAME_BRIDGE_SCRAPE: ",JSON.stringify({"peak":peak,"audible_ticks":audible_ticks,"position":[game.sim.state.position.x,game.sim.state.position.y]}))
++	game.free()
++	await process_frame
++
++func capture(audio: VehicleAudio, track: NativeTrack, span: Dictionary) -> void:
++	var friction_bus: int = AudioServer.get_bus_count()
++	AudioServer.add_bus()
++	AudioServer.set_bus_name(friction_bus,"ScrapeReview")
++	AudioServer.set_bus_send(friction_bus,"Vehicle")
++	(audio.layers.scrape as AudioStreamPlayer).bus = "ScrapeReview"
++	var records: Array[AudioEffectRecord] = []
++	for bus: int in [0,AudioServer.get_bus_index("Engine"),friction_bus]:
++		var record := AudioEffectRecord.new()
++		record.format = AudioStreamWAV.FORMAT_16_BITS
++		AudioServer.add_bus_effect(bus,record)
++		records.append(record)
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
++	for speed: float in [4.0,12.0,24.0]:
++		audio.configure("compact",VehicleCatalog.config("compact"))
++		var state := VehicleState.new()
++		state.position = rail_position(track,span,VehicleCatalog.config("compact"),1)
++		state.velocity = axis*speed
++		state.heading = atan2(axis.x,axis.y)
++		state.track_elevated = true
++		for warm: int in range(30):
++			audio.begin_physics_feedback()
++			audio.resolved_contact(state,track,state.velocity)
++			audio.present(state,DriveFrame.sample(0,1,0),track,.05,false)
++		await create_timer(.15).timeout
++		for record: AudioEffectRecord in records: record.set_recording_active(true)
++		var elapsed: float = 0.0
++		var last_us: int = Time.get_ticks_usec()
++		while elapsed<3.0:
++			await process_frame
++			var now: int = Time.get_ticks_usec()
++			var delta: float = minf(float(now-last_us)/1000000.0,.1)
++			last_us = now
++			elapsed += delta
++			audio.begin_physics_feedback()
++			audio.resolved_contact(state,track,state.velocity)
++			audio.present(state,DriveFrame.sample(0,1,0),track,delta,elapsed>2.6)
++		for index: int in range(3):
++			records[index].set_recording_active(false)
++			var sample: AudioStreamWAV = records[index].get_recording()
++			var name: String = "%s-%d-%s.wav"%["before" if baseline else "after",int(speed),["mix","engine","scrape"][index]]
++			check(sample.save_to_wav(OUT.path_join(name))==OK,"native full-mix recording saved: "+name)
++	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
++	var engine_bus: int = AudioServer.get_bus_index("Engine")
++	AudioServer.remove_bus_effect(engine_bus,AudioServer.get_bus_effect_count(engine_bus)-1)
++	AudioServer.remove_bus(friction_bus)
+diff --git a/game/tests/test_bridge_scrape_audio.gd.uid b/game/tests/test_bridge_scrape_audio.gd.uid
+new file mode 100644
+index 00000000..64143170
+--- /dev/null
++++ b/game/tests/test_bridge_scrape_audio.gd.uid
+@@ -0,0 +1 @@
++uid://jl02nih3p3j3
+diff --git a/scripts/review_bridge_scrape_audio.py b/scripts/review_bridge_scrape_audio.py
+new file mode 100644
+index 00000000..abdb3b8f
+--- /dev/null
++++ b/scripts/review_bridge_scrape_audio.py
+@@ -0,0 +1,44 @@
++"""Measure bridge screech against the same-clock native engine and full mix."""
++import hashlib
++import json
++from pathlib import Path
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/bridge-screech-2026-10-10"
++
++
++def measure(path):
++    with wave.open(str(path)) as source:
++        rate = source.getframerate()
++        channels = source.getnchannels()
++        pcm = np.frombuffer(source.readframes(source.getnframes()),dtype="<i2").astype(float)/32768.0
++    pcm = pcm.reshape(-1,channels)
++    segment = pcm[round(.35*rate):round(2.35*rate)]
++    return {"rms":float(np.sqrt(np.mean(segment**2))),"peak":float(np.max(np.abs(pcm))),
++            "tail_peak":float(np.max(np.abs(pcm[-round(.2*rate):]))),"seconds":len(pcm)/rate}
++
++
++rows = []
++for speed in [4,12,24]:
++    row = {"speed_mps":speed}
++    for version in ["before","after"]:
++        stats = {name:measure(OUT / f"{version}-{speed}-{name}.wav") for name in ["mix","engine","scrape"]}
++        row[version] = stats
++        assert stats["mix"]["peak"] < .94, "mix clipping"
++        assert all(item["tail_peak"]==0 for item in stats.values()), "paused tail is audible"
++        if version=="before":
++            assert stats["scrape"]["peak"]==0, "baseline must reproduce absent parallel friction"
++        else:
++            ratio = 20*np.log10(max(stats["scrape"]["rms"],1e-9)/stats["engine"]["rms"])
++            row["scrape_vs_engine_db"] = float(ratio)
++            assert -8 < ratio < 8, "screech should be audible against the normal engine"
++    rows.append(row)
++before = json.loads((OUT / "before-hashes.json").read_text(encoding="utf-8-sig"))
++for item in before:
++    file = ROOT / "game/assets/audio/vehicles" / Path(item["Path"]).name
++    assert hashlib.sha256(file.read_bytes()).hexdigest().upper()==item["Hash"], "no WAV edit intended"
++report = {"captures":rows,"unchanged_vehicle_wavs":len(before)}
++(OUT / "native-mix-review.json").write_text(json.dumps(report,indent=2)+"\n")
++print(json.dumps(report,indent=2))
+diff --git a/docs/BRIDGE_SCREECH.md b/docs/BRIDGE_SCREECH.md
+new file mode 100644
+index 00000000..992dc0ab
+--- /dev/null
++++ b/docs/BRIDGE_SCREECH.md
+@@ -0,0 +1,82 @@
++# Continuous bridge-fence screech — 2026-10-10
++
++Owner follow-up: driving along a bridge fence still produces little noticeable
++screech. **SND41**, refining SND40/SND08/SND05 and supporting G01/R01/Q01.
++This supersedes the prior bridge scrape trigger/mix acceptance in
++[Directional collision audio](DIRECTIONAL_COLLISION_AUDIO.md).
++
++The earlier tests covered inward rubbing and isolated friction playback. They
++missed **parallel contact after alignment**: canonical force feedback becomes
++zero when the resolver removes inward velocity, and the visible-contact branch
++required further inward movement. A real creator-bridge rail fixture reproduces
++zero scrape audio at 4/12/24m/s, even with a loud engine playing normally.
++
++`VehicleAudio` now also reads the current track collision layer within **25mm**
++of the configured physical body radius. Actual occupied geometry must confirm
++contact. Tangential travel along the face sustains rubbing after inward motion
++ends. A creator rail's authored direction corrects small along-span components
++in its raster contact normal, for presentation only; occupied-cell confirmation
++still applies. The extra geometry query runs only when the current observer has
++not already queued friction, while moving and grounded. It does not modify the
++collision solver, car dimensions, track geometry, physics/rules or snapshots.
++
++The friction mix reaches its motion gain at 4m/s rather than 14m/s, has a bounded
++minimum audible rubbing strength, and increases its nominal gain from 0.52 to
++0.82. A **60ms** hold bridges missing contact ticks and render frames between
++physics steps, followed by the existing fast release. Pause/countdown,
++air/rollover, retry/rewind and moving away clear or release the sound. A nearby
++pass 12cm clear of the rail, standing still and driving below the deck stay
++silent. Direct crash clips, gain/cooldown/routing and all **48 WAV hashes** are
++unchanged. No player-facing UI or additional audio player is introduced.
++
++Changed files: `game/vehicle/vehicle_audio.gd`,
++`game/tests/test_bridge_scrape_audio.gd`, `scripts/review_bridge_scrape_audio.py`,
++this document, the prior collision document, `DEVELOPMENT_STATUS.md` and
++`docs/PHASE_0_PLAN.md`.
++
++Actual commands use pinned **4.7.2.stable.official.ed1daf0bf** through
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Actual command / suffix | Outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_bridge_scrape_audio.gd -Graphical -TestArgument '--baseline'` | **609 checks/60 failures**, reproduces all five cars/both sides/forward-reverse/three speeds; nine native baseline recordings. |
++| Same bridge fixture without `--baseline`, `-Graphical` | Final **611 checks/zero failures**, nine native mix/engine/friction recordings and actual Game integration. |
++| Same bridge fixture without `-Graphical` | **602 checks/zero failures** before the final equivalent-query optimization; actual Game physics/presentation integration remains in the final native fixture. |
++| `-Action TestScript -ScriptPath res://tests/test_directional_collision_audio.gd` | Final **231 checks/zero failures**, exact ordinary/deck driving comparisons and collision lifecycle. |
++| `-Action TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1,450 checks/zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_shallow_collisions.gd` | **20,268 checks/zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_contact_escalation_audio.gd` | **65 checks/zero failures**, escalation and duplicate protection retained. |
++| `python scripts/review_bridge_scrape_audio.py` | Baseline friction exactly silent; corrected friction **2.668/2.897/2.848dB below engine** at 4/12/24m/s. All 48 WAV hashes exact. Vehicle mix peaks about **0.412–0.415**, paused last 200ms exactly silent. |
++| Configured SDK `adb devices -l` | OPD2403 tablet attached; **no phone attached**. |
++
++The actual compact Game callback test takes 48 ticks along the compiled creator
++rail: **46 audible ticks**, peak scrape gain **0.402**, stays above the bridge.
++The 60-case matrix uses the compiled Knit creator document, selected-car body
++radius and both rail sides, unlike the preceding synthetic deck-wall fixture.
++It also checks moving away, nearby pass, underpass, stationary, airborne,
++rollover, countdown and pause contexts. The native preview holds the real
++contact position/movement to compare the full vehicle mix; it is not a completed
++race or subjective owner listening approval.
++
++The initial proximity correction still rejected 16 reverse cases because a
++raster corner normal projected 0.228–0.419m/s outward from truly parallel motion;
++authored rail direction fixes these cases without relaxing departure tests.
++The first native capture after adding Game integration included menu music
++resumed by Game exit: its vehicle channels were silent on pause, but the full
++mix check correctly failed. Final capture runs before that independent Game
++exit; the same pause assertion passes. These failed logs are retained, and no
++product mute, runtime invariant or existing physics assertion was weakened.
++Existing contact/shallow tests still emit ObjectDB cleanup warnings at exit.
++
++Evidence: `docs/evidence/bridge-screech-2026-10-10/` contains runtime baseline,
++60-case before/after matrices, actual logs, 18 native WAVs, mix report and a
++task-only Git-format checkpoint plus hashes. Listen to the full vehicle mix
++[before](evidence/bridge-screech-2026-10-10/before-12-mix.wav) and
++[after](evidence/bridge-screech-2026-10-10/after-12-mix.wav).
++
++No Android export/install, phone/tablet listening, full Validate, backend work,
++deployment, handling/camera change or score write was performed. Restart the
++local game to hear the correction; the installed Android build is unchanged.
++The owner's exact track/car was not supplied during this turn. Remaining
++acceptance is hearing the fix on that client/track and checking tablet/mobile
++balance and the bounded proximity query's cost during actual driving.

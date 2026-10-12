@@ -1,0 +1,255 @@
+--- a/backend/bmt_backend/cloud_smoke.py
++++ b/backend/bmt_backend/cloud_smoke.py
+@@ -17,6 +17,15 @@
+ from .verifier import GodotVerifier
+ 
+ 
++def check_comparison_route(app):
++    """Reject a client/backend mismatch even when canonical replay still passes."""
++    path = "/v1/track-versions/{version_id}/results-comparison"
++    operation = app.openapi().get("paths", {}).get(path, {}).get("get", {})
++    parameters = {item["name"] for item in operation.get("parameters", [])}
++    if not {"version_id", "vehicle_id", "bins", "race_ticks", "lap_ticks"} <= parameters:
++        raise RuntimeError("Results comparison API is missing or incompatible")
++
++
+ def check(settings, owner, fixture_path=Path("/opt/bmt/acceptance/verified_oval.json")):
+     if settings.object_backend != "gcs" or not re.fullmatch(r"[0-9a-f]{32}", owner):
+         raise ValueError("This diagnostic is restricted to explicitly owned GCS staging")
+@@ -25,6 +34,13 @@
+     store = GCSBlobStore(replace(settings, gcs_prefix="bmt-contract/" + owner + "/" + uuid.uuid4().hex))
+     keys = []
+     try:
++        from .app import create_app
++
++        app = create_app(settings, verifier=verifier)
++        try:
++            check_comparison_route(app)
++        finally:
++            app.state.engine.dispose()
+         with engine.connect() as connection:
+             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == SCHEMA_HEAD
+             role = connection.execute(text("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=current_user")).one()
+@@ -51,7 +67,7 @@
+         if cursor or {row["digest"] for row in rows} != set(keys):
+             raise RuntimeError("Staging object listing differs from publications")
+         return {"status": "passed", "schema": SCHEMA_HEAD, "storage_objects": len(keys),
+-            "canonical_ticks": result["time_ticks"], "player_writes": 0}
++            "canonical_ticks": result["time_ticks"], "player_writes": 0, "results_comparison_route": True}
+     finally:
+         try:
+             for key in keys:
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -7,7 +7,7 @@
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import Integer, cast, func, select, text, tuple_
++from sqlalchemy import Integer, case, cast, func, or_, select, text, tuple_
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ 
+@@ -23,6 +23,7 @@
+ from .track_models import (
+     Board,
+     BoardTimeCount,
++    OperationState,
+     PersonalBest,
+     Run,
+     RunTicket,
+@@ -435,20 +436,31 @@
+ 
+ 
+ @router.get("/boards/{board_id}/histogram")
+-def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100)) -> dict:
++def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100),
++              metric: Literal["race", "best_lap"] = "race") -> dict:
+     board = public_board(session, board_id)
++    # A slower race can improve a lap without changing the race-PB revision.
++    if metric == "best_lap":
++        return histogram_query(board_id, session, bins, metric=metric)
+     return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
+ 
+ 
+-def histogram_query(board_id, session, bins, *, test_population=False):
++def histogram_query(board_id, session, bins, *, test_population=False, metric="race"):
+     frequency = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
+     entries = select(BoardTimeCount.time_ticks, frequency.label("count")).where(
+         BoardTimeCount.board_id == board_id, frequency > 0).subquery()
++    if metric == "best_lap":
++        entries = best_lap_frequencies(board_id, session, test_population=test_population)
++    return histogram_from_entries(board_id, session, bins, metric, entries)
++
++
++def histogram_from_entries(board_id, session, bins, metric, entries):
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+         )
+     ).one()
++    count = int(count)
+     if count == 0:
+         return {
+             "board_id": board_id,
+@@ -456,17 +468,19 @@
+             "minimum_ticks": None,
+             "maximum_ticks": None,
+             "bins": [],
++            "metric": metric,
+         }
+     width = max(1, math.ceil((maximum - minimum + 1) / bins))
+     bucket = cast(func.floor((entries.c.time_ticks - minimum) / width), Integer)
+-    grouped = dict(
++    grouped = {int(bucket): int(frequency) for bucket, frequency in
+         session.execute(
+             select(bucket.label("bucket"), func.sum(entries.c.count)).select_from(entries).group_by(bucket)
+         ).all()
+-    )
++    }
+     occupied_bins = (maximum - minimum) // width + 1
+     return {
+         "board_id": board_id,
++        "metric": metric,
+         "population": count,
+         "minimum_ticks": minimum,
+         "maximum_ticks": maximum,
+@@ -479,6 +493,99 @@
+             for i in range(occupied_bins)
+         ],
+     }
++
++
++def best_lap_frequencies(board_id, session, *, test_population=False):
++    bests = best_lap_times(board_id, session, test_population=test_population)
++    return select(bests.c.time_ticks, func.count().label("count")).group_by(bests.c.time_ticks).subquery()
++
++
++def best_lap_times(board_id, session, *, test_population=False):
++    """One best verified flying lap per active driver, across comparable attempts."""
++    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
++    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
++    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
++        Player, Player.id == Run.player_id).join(PersonalBest,
++        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
++        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
++        *(lap > 0 for lap in laps))
++    if not test_population:
++        statement = statement.where(Player.is_test_driver.is_(False))
++    else:
++        # Retained audit runs from an owner-requested test-record reset must not
++        # restore retired lap records. Real players are never part of that reset.
++        board = session.get(Board, board_id)
++        if board:
++            resets = session.scalars(select(OperationState).where(
++                OperationState.id.startswith("test-pop-batch:"),
++                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
++            cutoff = max((row.details.get("created_at", 0) for row in resets
++                          if row.details.get("request", {}).get("clear_test_records")
++                          and any(entry.get("version_id") == board.version_id
++                                  for entry in row.details.get("tracks", []))), default=0)
++            if cutoff:
++                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
++    return statement.group_by(Run.player_id).subquery()
++
++
++def comparison_position(entries, session, ticks, own_ticks):
++    if ticks is None:
++        return None
++    total, faster = session.execute(select(
++        func.coalesce(func.sum(entries.c.count), 0),
++        func.coalesce(func.sum(case((entries.c.time_ticks < ticks, entries.c.count), else_=0)), 0)
++    )).one()
++    # Compare the result with other drivers, replacing the player's existing
++    # contribution rather than counting them twice when this race is slower.
++    opponents = int(total) - int(own_ticks is not None)
++    if opponents <= 0:
++        return None
++    faster = int(faster) - int(own_ticks is not None and own_ticks < ticks)
++    position, population = faster + 1, opponents + 1
++    return {"position": position, "population": population,
++            "top_percent": max(1, math.ceil(position * 100 / population)),
++            "candidate_ticks": ticks}
++
++
++@router.get("/track-versions/{version_id}/results-comparison")
++def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
++                       bins: int = Query(8, ge=1, le=100),
++                       race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
++                       lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES)):
++    """One deduplicated field of all available drivers, never a UI source choice."""
++    version = published_version(session, version_id)
++    pinned = board_manifest(version, vehicle_id)
++    public_id = digest({"version_id": version.id, **pinned})
++    include_artificial = request.app.state.settings.test_drivers_enabled
++    test_id = digest({"version_id": version.id, **pinned, "test_population": True})
++    board_ids = [public_id, test_id] if include_artificial else [public_id]
++    race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
++        Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
++    if not include_artificial:
++        race_statement = race_statement.where(Player.is_test_driver.is_(False))
++    races = race_statement.group_by(PersonalBest.player_id).subquery()
++    race_entries = select(races.c.time_ticks, func.count().label("count")).group_by(races.c.time_ticks).subquery()
++    public_laps = best_lap_times(public_id, session)
++    laps = public_laps
++    if include_artificial:
++        test_laps = best_lap_times(test_id, session, test_population=True)
++        combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
++            select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
++        laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
++    lap_entries = select(laps.c.time_ticks, func.count().label("count")).group_by(laps.c.time_ticks).subquery()
++    race_own = session.scalar(select(races.c.time_ticks).where(races.c.player_id == player.id))
++    lap_own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == player.id))
++    board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
++    race = histogram_from_entries(board_id, session, bins, "race", race_entries)
++    lap = histogram_from_entries(board_id, session, bins, "best_lap", lap_entries)
++    race["comparison"] = comparison_position(race_entries, session, race_ticks or race_own, race_own)
++    lap["comparison"] = comparison_position(lap_entries, session, lap_ticks or lap_own, lap_own)
++    race["own_best_ticks"], lap["own_best_ticks"] = race_own, lap_own
++    race["opponent_count"] = race["population"] - int(race_own is not None)
++    lap["opponent_count"] = lap["population"] - int(lap_own is not None)
++    revisions = session.scalars(select(Board.stats_revision).where(Board.id.in_(board_ids))).all()
++    return {"board_id": board_id, "population_scope": "all",
++            "stats_revision": sum(revisions), "race": race, "best_lap": lap}
+ 
+ 
+ def tick_count(session, board_id, *conditions):
+--- a/backend/bmt_backend/test_drivers.py
++++ b/backend/bmt_backend/test_drivers.py
+@@ -6,7 +6,7 @@
+ import random
+ import secrets
+ import uuid
+-from typing import Annotated
++from typing import Annotated, Literal
+ 
+ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+@@ -18,6 +18,7 @@
+ from .middleware import ParsedJSONRoute
+ from .rivalry import GROUP_CAPACITY, active_contract, eligible_versions, require_member, snapshot
+ from .rivalry_models import RivalryGroup, RivalryMember
++from .runs import BoardDB
+ from .test_driver_models import TestDriverProfile
+ from .test_population import require_enabled
+ from .track_models import IdempotencyRecord, Run, Track, digest, now
+@@ -55,15 +56,16 @@
+ 
+ 
+ @router.get("/dev/test-drivers/track-versions/{version_id}/histogram")
+-def test_histogram(version_id: str, vehicle_id: str, request: Request, session: DB,
+-                   player: Auth, bins: int = Query(24, ge=1, le=100)):
++def test_histogram(version_id: str, vehicle_id: str, request: Request, session: BoardDB,
++                   player: Auth, bins: int = Query(24, ge=1, le=100),
++                   metric: Literal["race", "best_lap"] = "race"):
+     from .runs import board_manifest, histogram_query
+     from .tracks import published_version
+     require_enabled(request)
+     version = published_version(session, version_id)
+     pinned = {**board_manifest(version, vehicle_id), "test_population": True}
+     board_id = digest({"version_id": version.id, **pinned})
+-    result = histogram_query(board_id, session, bins, test_population=True)
++    result = histogram_query(board_id, session, bins, test_population=True, metric=metric)
+     result["test_population"] = True
+     result["label"] = "Simulated test drivers / verified personal bests"
+     result["vehicle_id"] = vehicle_id

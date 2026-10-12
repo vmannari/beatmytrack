@@ -1,0 +1,303 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2795,6 +2795,7 @@
+ 	game = GAME_SCENE.instantiate()
+ 	game.process_mode = Node.PROCESS_MODE_DISABLED
+ 	game.set_meta("soundtrack_rivalry", rivalry_racing)
++	game.set_meta("race_offline_only", offline_only)
+ 	game.set("initial_track", track)
+ 	game.set("production_mode", true)
+ 	game.set("resume_client",online.client)
+@@ -3070,7 +3071,7 @@
+ 	selected_track = next_track
+ 	_start_race(next_track,false)
+ 
+-func _retry_race() -> void:
++func _retry_race(offline_only: bool = false) -> void:
+ 	if cloud_starting or not is_instance_valid(game): return
+ 	if not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+@@ -3080,14 +3081,26 @@
+ 	var origin: String = str(online.client.base_url())
+ 	var track: NativeTrack = game.get("native_track")
+ 	var replacement: Dictionary = {}
+-	if track.metadata.has("cloud_version") and online.client.signed_in():
++	var retry_offline: bool = (offline_only or bool(game.get_meta("race_offline_only",false))) and not (rivalry_racing or challenge_racing)
++	if not retry_offline and track.metadata.has("cloud_version") and online.client.signed_in():
+ 		cloud_starting = true
+ 		var issued: Dictionary = await challenges.ticket() if challenge_racing else await rivalry.ticket(rivalry_track) if rivalry_racing else {}
+ 		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"),issued) if not (rivalry_racing or challenge_racing) or not issued.is_empty() else {}
+ 		cloud_starting = false
+ 		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+ 		if replacement.is_empty():
+-			_notice("Could not start verified retry: "+(challenges.error if challenge_racing else cloud.last_error))
++			if rivalry_racing or challenge_racing:
++				_notice("Could not start verified retry: "+(challenges.error if challenge_racing else cloud.last_error))
++			else:
++				var offline_dialog := ConfirmationDialog.new()
++				offline_dialog.title = "Online race unavailable"
++				offline_dialog.dialog_text = cloud.last_error+"\nRestart offline with a local time? This attempt will not enter the online leaderboard."
++				offline_dialog.ok_button_text = "Race offline"
++				_own_dialog(offline_dialog)
++				offline_dialog.confirmed.connect(func() -> void:
++					if game == active_game and is_instance_valid(active_game) and str(online.client.player.get("id","")) == account_id and str(online.client.base_url()) == origin:
++						_retry_race(true))
++				offline_dialog.popup_centered()
+ 			return
+ 	if challenge_racing:
+ 		challenge_recording = await challenges.ghost()
+@@ -3115,6 +3128,7 @@
+ 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
+ 	game.set("preference_records",records) # A confirmed restart begins a new attempt.
+ 	game.set("rating_records",null if track.metadata.has("cloud_version") else records)
++	game.set_meta("race_offline_only",retry_offline)
+ 	# Retry reuses the Game node but starts a new scored attempt. Keep duplicate
+ 	# finish signals idempotent within an attempt, without suppressing its retry.
+ 	_result_game_id = 0
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 R01/R03/B07/Q01: Free Race offline restart preserves explicit offline entry instead of requesting a server ticket; verified retry failure offers explicit Race offline with same-game/account/server fences, ticket clearing and fresh five-lap countdown. Before focused8/2fail; final graphical20/App99/review-followups86 pass, captures inspected and task-only checkpoint retained. Initial launcher/log/Window-test issues corrected; no physics/backend/score contract change, fullValidate/Android export-install/device test or phone attachment check. Exact owner symptom/platform confirmation remains. Files/commands/evidence: docs/FREE_RACE_RESTART.md.
++
+ 2026-10-10 START01-START03/RR06/V03/V05/B07/R01/Q01: owner reports startup No tracks found flash and authorizes preloading. Discovery primes during account/service startup; identical pending reads coalesce with Free Race activation. Bounded20-card/3-query/24h atomic server-account-query cache restores original total/cards while fresh cursor-free first page loads; successful response replaces old pages, different queries/accounts stay fenced. Unknown/error/confirmed-empty states remain distinct and stale loading controls removed; Connect prompt suppressed with cached/loading cards. Native graphical21/paging269(5000tracks1733.436ms)/App99/loading39/parser428 pass; three inspected captures/task-only checkpoint. No phone attachment/device test/export-install/fullValidate/backend/deploy/player-score writes; first genuinely uncached page still requires network, client rebuild/restart and device acceptance remain. Files/commands/evidence: docs/STARTUP_DISCOVERY_2026_10_10.md.
+ 
+ 2026-10-10 MUS35/SND33/SND05/G01/R01/Q01/V06: owner removes background music from all5 driving biomes/practice. No race synchronized streams/decoders or menu fade leak; pause/retry/rewind/finish coast remain silent, race breath suppressed, actual results restore menu music/PB cue. Vehicle/weather/interface retained; preferences/rules/scoring unchanged. Soundtrack1156/flow29/native5-biome52/App99 checks pass; independent Music PCM0, Audio1280 capture inspected. Full Audio-inclusive settings284 has one retained camera touch-strength fixture failure; ineffective input experiment reverted, no runtime camera edit/weakening. No phone attachment/device listening/export-install/full Validate/backend/deploy. Files/commands/captures/task-only checkpoint/acceptance: docs/BIOME_MUSIC_OFF.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 R01/R03/B07/Q01: Free Race offline restart preserves explicit offline entry instead of requesting a server ticket; verified retry failure offers explicit Race offline with same-game/account/server fences, ticket clearing and fresh five-lap countdown. Before focused8/2fail; final graphical20/App99/review-followups86 pass, captures inspected and task-only checkpoint retained. Initial launcher/log/Window-test issues corrected; no physics/backend/score contract change, fullValidate/Android export-install/device test or phone attachment check. Exact owner symptom/platform confirmation remains. Files/commands/evidence: docs/FREE_RACE_RESTART.md.
++
+ 2026-10-10 START01-START03/RR06/V03/V05/B07/R01/Q01: owner reports startup No tracks found flash and authorizes preloading. Discovery primes during account/service startup; identical pending reads coalesce with Free Race activation. Bounded20-card/3-query/24h atomic server-account-query cache restores original total/cards while fresh cursor-free first page loads; successful response replaces old pages, different queries/accounts stay fenced. Unknown/error/confirmed-empty states remain distinct and stale loading controls removed; Connect prompt suppressed with cached/loading cards. Native graphical21/paging269(5000tracks1733.436ms)/App99/loading39/parser428 pass; three inspected captures/task-only checkpoint. No phone attachment/device test/export-install/fullValidate/backend/deploy/player-score writes; first genuinely uncached page still requires network, client rebuild/restart and device acceptance remain. Files/commands/evidence: docs/STARTUP_DISCOVERY_2026_10_10.md.
+ 
+ 2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
+diff --git a/game/tests/test_free_race_restart.gd b/game/tests/test_free_race_restart.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_free_race_restart.gd
+@@ -0,0 +1,185 @@
++extends SceneTree
++## Actual pause-menu input and race reset; fictional tickets and isolated storage.
++const Client = preload("res://backend/backend_client.gd")
++const App = preload("res://core/app.gd")
++const Account = preload("res://backend/account_controller.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++var capture_directory: String = ""
++
++class RestartApp extends App:
++	func _ready() -> void: pass
++
++class RestartAccount extends Account:
++	func _ready() -> void: pass
++
++class TicketClient extends Client:
++	var document: Dictionary
++	var tickets: int = 0
++	var fail_ticket: bool = false
++	func race_ticket(_version: String, vehicle: String, _key: String, _purpose: String = "race") -> Dictionary:
++		tickets += 1
++		await get_tree().create_timer(0.03).timeout
++		if fail_ticket: return {"ok":false,"status":503,"error":"Race service unavailable","data":{}}
++		return {"ok":true,"status":201,"error":"","data":{"ticket_id":"restart-fixture-%d" % tickets,"manifest":TrackLifecycle._contract(document,vehicle)}}
++	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		return {"ok":true,"status":200,"error":"","data":{"free":1,"balance":0,"ad_preview_available":true,"ads_available":false,"purchases_available":false}}
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + message)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--capture-restart="): capture_directory = argument.trim_prefix("--capture-restart=")
++	var folder: String = ProjectSettings.globalize_path("res://../build/free-race-restart-" + TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var client := TicketClient.new()
++	client.document = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json")).document
++	var account := RestartAccount.new()
++	account.client.free()
++	account.client = client
++	account.add_child(client)
++	var app := RestartApp.new()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.online = account
++	app.add_child(account)
++	app.root_ui = Control.new()
++	app.add_child(app.root_ui)
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	app.cloud = cloud
++	app.add_child(cloud)
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.lifecycle = TrackLifecycle.new()
++	app.lifecycle.cloud = cloud
++	app.lifecycle.library = app.library
++	app.add_child(app.lifecycle)
++	root.add_child(app)
++	client.configure("http://127.0.0.1:18181")
++	app.selected_track = TrackCompiler.compile(client.document)
++	app.selected_track.metadata.cloud_version = "restart-fixture-version"
++	VehicleCatalog.selected = "compact"
++	await app._start_race(app.selected_track,false,true)
++	var game: Node = app.game
++	check(game != null and bool(game.get_meta("race_offline_only",false)),"The actual offline start preserves its restart policy")
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	game.sim.state.tick = 120
++	game.sim.state.position += Vector2(2,4)
++	game.toggle_pause()
++	await frames()
++	await tap_restart(game)
++	check(not game.paused and not game.hud.pause_menu.visible and game.hud.touch.enabled,"Guest pause Restart closes the drawer and restores controls")
++	check(game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5,"Guest restart resets timing with a fresh five-lap countdown")
++	for tick: int in range(370): game._physics_process(1.0/120.0)
++	check(game.countdown_ticks == 0 and game.sim.state.tick == 10,"Restarted race advances past the countdown into active timing")
++	client._access_token = "fictional-access"
++	client.player = {"id":"restart-fixture-player"}
++	# Explicitly accepted offline races must remain restartable without the service.
++	client.fail_ticket = true
++	game.countdown_ticks = 0
++	game.sim.state.tick = 180
++	game.toggle_pause()
++	await frames()
++	await tap_restart(game)
++	while app.cloud_starting: await process_frame
++	check(client.tickets == 0,"An explicitly offline Free Race restart makes no ticket request")
++	check(not game.paused and game.sim.state.tick == 0 and game.countdown_ticks == 360,"Signed-in offline Restart resets immediately while the service is unavailable")
++	for child: Node in app.root_ui.get_children():
++		if child is AcceptDialog: child.queue_free()
++	await process_frame
++	# Recover independently so a broken offline case cannot hide online coverage.
++	if game.paused: game.toggle_pause()
++	game.set_meta("race_offline_only",false)
++	client.fail_ticket = false
++	client.tickets = 0
++	app.cloud_ticket = {"ticket_id":"original-ticket"}
++	game.countdown_ticks = 0
++	game.sim.state.tick = 240
++	game.toggle_pause()
++	await frames()
++	await tap_restart(game)
++	while app.cloud_starting: await process_frame
++	check(client.tickets == 1 and app.cloud_ticket.get("ticket_id","") == "restart-fixture-1","Signed-in pause Restart obtains a fresh server ticket")
++	check(not game.paused and not game.hud.pause_menu.visible and game.sim.state.tick == 0 and game.countdown_ticks == 360,"Verified restart closes pause and resets the car and countdown")
++	await capture("restarted")
++	client.fail_ticket = true
++	game.countdown_ticks = 0
++	game.sim.state.tick = 360
++	game.toggle_pause()
++	await frames()
++	await tap_restart(game)
++	while app.cloud_starting: await process_frame
++	check(game.paused and game.sim.state.tick == 360 and app.cloud_ticket.get("ticket_id","") == "restart-fixture-1","Ticket failure preserves the paused attempt and its ticket")
++	var notice: AcceptDialog
++	for child: Node in app.root_ui.get_children():
++		if child is AcceptDialog: notice = child
++	check(notice != null and notice.visible,"Restart failure is visible above the hidden menu root")
++	check(notice is ConfirmationDialog and notice.get_ok_button().text == "Race offline","Failed verified Free Race offers an explicit offline retry")
++	await capture("restart-error")
++	if notice is ConfirmationDialog:
++		notice.canceled.emit()
++		await frames()
++		check(game.paused and game.sim.state.tick == 360 and app.cloud_ticket.get("ticket_id","") == "restart-fixture-1","Canceling offline retry preserves the current attempt")
++		await app._retry_race()
++		for child: Node in app.root_ui.get_children():
++			if child is ConfirmationDialog: notice = child
++		# A response must never restart a replacement game after navigation.
++		app.game = null
++		notice.confirmed.emit()
++		await frames()
++		check(game.paused and game.sim.state.tick == 360,"A stale offline confirmation cannot restart a game after navigation")
++		app.game = game
++		await app._retry_race()
++		for child: Node in app.root_ui.get_children():
++			if child is ConfirmationDialog: notice = child
++		var tickets_before: int = client.tickets
++		notice.confirmed.emit()
++		await frames()
++		check(not game.paused and game.sim.state.tick == 0 and game.countdown_ticks == 360,"Accepting offline retry closes pause and starts a fresh countdown")
++		check(app.cloud_ticket.is_empty() and game.resume_ticket_id.is_empty() and bool(game.get_meta("race_offline_only",false)),"Offline retry clears competitive and resume tickets and remembers the offline choice")
++		check(client.tickets == tickets_before,"Offline retry does not repeat the unavailable server request")
++		await capture("offline-restarted")
++		game.countdown_ticks = 0
++		game.sim.state.tick = 480
++		game.toggle_pause()
++		await frames()
++		await tap_restart(game)
++		check(not game.paused and game.sim.state.tick == 0 and client.tickets == tickets_before,"Subsequent offline restarts remain free of server requests")
++	app.free()
++	await process_frame
++	print("FREE_RACE_RESTART: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func frames() -> void:
++	for index: int in range(4): await process_frame
++
++func tap_restart(game: Node) -> void:
++	var button: Button = game.hud.pause_menu.find_child("Restart",true,false)
++	if DisplayServer.get_name() == "headless":
++		button.pressed.emit()
++	else:
++		var down := InputEventMouseButton.new()
++		down.button_index = MOUSE_BUTTON_LEFT
++		down.position = button.get_global_rect().get_center()
++		down.pressed = true
++		Input.parse_input_event(down)
++		await process_frame
++		var up: InputEventMouseButton = down.duplicate()
++		up.pressed = false
++		Input.parse_input_event(up)
++	await frames()
++
++func capture(label: String) -> void:
++	if capture_directory.is_empty() or DisplayServer.get_name() == "headless": return
++	DirAccess.make_dir_recursive_absolute(capture_directory)
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(capture_directory.path_join(label+".png")) == OK,"restart evidence saved: " + label)
+diff --git a/game/tests/test_free_race_restart.gd.uid b/game/tests/test_free_race_restart.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_free_race_restart.gd.uid
+@@ -0,0 +1 @@
++uid://doa66tmxsdky5
+diff --git a/docs/FREE_RACE_RESTART.md b/docs/FREE_RACE_RESTART.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FREE_RACE_RESTART.md
+@@ -0,0 +1,27 @@
++# Free Race restart, 2026-10-10
++
++Requirements: R01/R03/B07/Q01 and the unlimited ordinary racing, five-lap, pinned verification, durable result and normal-results-first contracts in AGENTS.md.
++
++The actual desktop pause-menu button resets guest and verified races successfully. The reproduced defect is signed-in offline Free Race: `_start_race(..., offline_only=true)` did not retain the offline choice, so `_retry_race()` requested a server ticket and left the race paused when the service was unavailable. The owner has not yet confirmed whether this is the exact reported case or identified the platform.
++
++`game/core/app.gd` now remembers explicit offline entry on the Game node and keeps subsequent Free Race restarts local. A failed verified Free Race retry offers the same explicit **Race offline** choice as initial race entry. Cancel preserves the current paused attempt; accepting starts a fresh countdown and clears competitive/resume tickets. Confirmation is fenced to the same game, account and server. Rivalry and Challenges continue to require verified tickets. Fresh verified tickets, pinned car/handling, five laps, result lifecycle reset and durable completed-result handling remain intact. No physics, rules, backend or score eligibility contract changed.
++
++`game/tests/test_free_race_restart.gd` and its UID exercise the actual offline entry, Game/HUD composition, graphical mouse dispatch to Restart, successful guest/verified resets, unavailable-service offline resets, post-countdown tick advancement, failed verified retry, cancel, stale navigation confirmation, explicit offline acceptance and subsequent offline restarts. Responses are fictional and records/tracks/cloud cache use unique directories under `build/free-race-restart-*`; no live race/score writes are performed.
++
++Actual commands, all using pinned Godot `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_free_race_restart.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_free_race_restart.gd -Graphical -TestArgument '--capture-restart=C:/Codes/Godot/Beat my track/docs/evidence/free-race-restart-2026-10-10/after'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_review_followups.gd
++git diff --check -- game/core/app.gd
++```
++
++Before the fix, the focused regression reported **8 checks, 2 failures**: an explicitly offline restart contacted the server and did not reset. The initial graphical button-path probe passed 8 checks and showed the old blocking error; this only established that the ordinary button was connected. Final graphical regression: **20 checks, zero failures**. App: **99 checks, zero failures**. Existing review followups: **86 checks, zero failures**. Diff check: exit 0 (existing CRLF-to-LF advisory).
++
++The first direct PowerShell invocation was blocked by execution policy; explicit `-ExecutionPolicy Bypass` corrected the launcher invocation. A restricted Godot run failed opening its Windows user log; normal Windows access corrected that. An initial test used the Control-only `is_visible_in_tree()` on an AcceptDialog Window; changed to its `visible` property and inspected the actual rendered dialog. These were test/launcher corrections, not weakened race assertions.
++
++Evidence: [before/after and logs](evidence/free-race-restart-2026-10-10/results.json), [failed retry recovery](evidence/free-race-restart-2026-10-10/after/restart-error.png), [accepted offline restart](evidence/free-race-restart-2026-10-10/after/offline-restarted.png), [verified restart](evidence/free-race-restart-2026-10-10/after/restarted.png), [task-only Git-format checkpoint](evidence/free-race-restart-2026-10-10/scoped-change.patch). The final desktop captures were inspected. No changes to the normal pause-menu layout or generated art.
++
++No Android export/install or physical-device test was performed; phone attachment was not checked. No full Validate, production/backend deployment, real service outage or live authenticated race was exercised. Remaining acceptance: owner retry in the reported platform/build and confirmation of the exact symptom. Android needs a rebuilt client to receive the fix.

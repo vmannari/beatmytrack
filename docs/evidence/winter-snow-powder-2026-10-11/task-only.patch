@@ -1,0 +1,402 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 9a987b5..8c00344 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 WW13-WW16/WW01-WW12/V04/V05/G01/R01/Q01: owner wants snow dust instead of fog and harsher wind speed. Revision4 removes broad sheets; 486ground+216bank capped world-lit grains/short trails/low bank lift, GPU analytic motion. Full-gust shared speed24mps vs5.5, individual20-28mps; real wind envelope retained. Two draws/1404tri max (1332 actual), membership/grid-only uploads/no CPU grain stepping; conservative card area102vs2391m2. Finalheadless33/native45/MobileVulkan33/App99 pass; coverage1395/70325=1.98%, lighting135.424/unlit0/static741/moving709-713-709 roof unchanged/canonical exact. 120-frame30FPS driving+curve inspected; desktop0.059-0.085ms/noisyGPU not phone proof. Density4f8b0ee6 exact/no new assets; settledADB no devices/no device test/Android export-install/fullValidate/physics-regression/backend/deploy. Restart client; owner visual acceptance pending. Files/commands/provenance/task-only checkpoint: docs/WINTER_SNOW_POWDER.md.
++
+ 2026-10-11 SND56/SND55: owner selects Soundsnap Ground Interaction - Car Tires Rolling - Onboard - on Grass - Details. Exact canonical page verified HTTP200/title/description; Raw WAV permission subscribed. No authenticated download session or matching local Downloads file; no audio downloaded/replacement/purchase/gate bypass/game-device test/export-install/deploy. Await licensed WAV attachment/local path; existing repaired mixer and accepted kerbs unchanged. Source/actual checks/limits: docs/SOUNDSNAP_GRASS_SOURCE.md.
+ 
+ 2026-10-11 CW12/CW01-CW11/V06/G01/R01/Q01: owner darker Grass off-track mud. Only pine deposit colour806247->463225; prior contact gates/gradual accumulation/reference side-rear pattern/shading/lifecycle/physics/score unchanged; otherbiome colours exact. Existing test gains output destination/studio baseline settling; Compatibility664+MobileVulkan664 pass/all-five-car contacts/canonical/pixel-exact resets; white lower-door delta0.398->0.462/Desert exact. Actual original-white/rear/normal-camera previews saved; no phone test/Android export-install/newassets/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/VEHICLE_WEATHERING.md (CW12).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 54dd78a..b66156f 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1694,3 +1694,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Darker Grass mud, 2026-10-11
+ 
+ 2026-10-11 CW12/CW01-CW11/V06/G01/R01/Q01: owner darker Grass off-track mud. Only pine deposit colour806247->463225; prior contact gates/gradual accumulation/reference side-rear pattern/shading/lifecycle/physics/score unchanged; otherbiome colours exact. Existing test gains output destination/studio baseline settling; Compatibility664+MobileVulkan664 pass/all-five-car contacts/canonical/pixel-exact resets; white lower-door delta0.398->0.462/Desert exact. Actual original-white/rear/normal-camera previews saved; no phone test/Android export-install/newassets/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/VEHICLE_WEATHERING.md (CW12).
++
++
++## Fine Winter powder and harsh wind, 2026-10-11
++
++2026-10-11 WW13-WW16/WW01-WW12/V04/V05/G01/R01/Q01: owner wants snow dust instead of fog and harsher wind speed. Revision4 removes broad sheets; 486ground+216bank capped world-lit grains/short trails/low bank lift, GPU analytic motion. Full-gust shared speed24mps vs5.5, individual20-28mps; real wind envelope retained. Two draws/1404tri max (1332 actual), membership/grid-only uploads/no CPU grain stepping; conservative card area102vs2391m2. Finalheadless33/native45/MobileVulkan33/App99 pass; coverage1395/70325=1.98%, lighting135.424/unlit0/static741/moving709-713-709 roof unchanged/canonical exact. 120-frame30FPS driving+curve inspected; desktop0.059-0.085ms/noisyGPU not phone proof. Density4f8b0ee6 exact/no new assets; settledADB no devices/no device test/Android export-install/fullValidate/physics-regression/backend/deploy. Restart client; owner visual acceptance pending. Files/commands/provenance/task-only checkpoint: docs/WINTER_SNOW_POWDER.md.
+diff --git a/docs/WINTER_SNOW_POWDER.md b/docs/WINTER_SNOW_POWDER.md
+new file mode 100644
+index 0000000..fcb881d
+--- /dev/null
++++ b/docs/WINTER_SNOW_POWDER.md
+@@ -0,0 +1,49 @@
++# Fine winter powder and harsh wind — 2026-10-11
++
++The owner rejects the fog-like broad sheets and asks for faster motion that reads as harsh wind. Revision 4 uses separate rounded powder grains and short wind trails, with visible clear space between them. Grains leave actual bank crests, lift briefly and skim the road; source contact, scene lighting and the world wind direction remain. Owner visual acceptance is still pending.
++
++Requirements WW13 (powder grains instead of fog coverage), WW14 (harsh gust speed), WW15 (world contact, lighting and car readability), WW16 (bounded modest computation), plus WW01–WW12, V04/V05, G01/R01 and Q01. Physics, five laps, race clocks/scores/uploads, car handling/geometry, audio and the driving-camera contract are unchanged by this task.
++
++## Files and behavior
++
++- `game/track/winter_snow_wind.gd`: `winter-wind-4`, two MultiMesh batches containing at most 486 ground grains and 216 bank grains (six per 6 m cell, eighteen per source, twelve sources). Replaces the large sheets with small QuadMeshes. Source lookup stays local at 4 Hz; membership reuse skips uploads when nearby sources merely change rank. Ground buffers change only at spatial-grid transitions. There is no CPU motion integration per grain.
++- `game/track/winter_snow_wind.gdshader`: staggered finite grain lifetimes, fixed-world downwind motion, small crosswind variation, a brief bank lift followed by road-height travel. Rounded soft edges use pixel derivatives to reduce harsh subpixel outlines. Strong gusts lengthen the short trail proxies. A shared advected field varies cluster opacity without filling the air between grains. The existing snow albedo, real ambient/directional/shadow light, depth intersections and no-shadow-casting policy remain. Removes all broad haze-sheet coverage.
++- `game/tests/test_winter_snow_wind.gd`: retains canonical/lifecycle/lighting/static-and-moving-car checks; updates the bounded geometry test for fine grains. Adds the measured full-gust world travel and an image-space sparse-coverage check. Both driving and curve previews now contain 120 frames at 30 fps/four seconds so fast motion is reviewable. The driving preview still uses a separate canonical simulation and restores the original race without tickets, score writes or uploads.
++- `docs/WINTER_WIND_GROUNDING.md`, this document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`: owner feedback, actual commands/results and acceptance limits.
++
++The shared advection speed is **24 m/s at full gust**, up from 5.5 m/s. Individual grain speeds vary approximately ±15%, so strong-gust travel is about 20–28 m/s. The interpolation constants are 6–24 m/s; the existing 0.24 settled visual intensity floor gives 10.32 m/s before individual variation. Real races continue to use the recorded wind's smooth gust envelope; a controlled strong/calm cycle is used only for review captures. This is presentation motion, not a wind force applied to the vehicle.
++
++Restart the local client so the new grain meshes and larger instance buffers are created. No new bitmap/audio asset or dependency; existing density PNG remains SHA256 `4f8b0ee626af36a174cd23e8a9275bac144ff2d91fb9126aeefa59627583f0e9`. Original shader/code, existing texture provenance and prior offline recipe are retained.
++
++## Cost and actual checks
++
++The maximum is **702 small grains, two draw calls and 1,404 triangles**. The actual capture has ten source banks, 666 grains and **1,332 additional triangles** (362,431 off/363,763 on). This uses more vertices than the prior sheets, but a much smaller transparent footprint. At maximum proxy scales/trail lengths, the summed horizontal card area is bounded at about 102 m² versus the prior 2,391 m² before culling/alpha shaping; this is a geometric bound, not a measured GPU-overdraw or phone-speedup claim. The shader uses one density lookup rather than the earlier two, plus existing snow/depth sampling and normal scene lighting.
++
++Measured desktop presentation updates were approximately **0.059–0.085 ms** across recorded runs. Final four 120-frame GPU medians (off/on/on/off) were 1.326/1.613/1.994/2.408 ms; render-CPU medians 1.789/1.767/1.776/1.816 ms on RTX 3090 Compatibility. Timing drift/shared-machine activity prevents a precise incremental-cost conclusion. Raw [profile.json](evidence/winter-snow-powder-2026-10-11/profile.json) is saved; no phone-performance claim.
++
++Actual results: final headless **33/0**, Compatibility capture/driving **45/0**, desktop Mobile/Vulkan drawn-shader/lifecycle **33/0**, app lifecycle **99/0**, scoped whitespace check clean and density hash unchanged. Full-gust shared travel covers exactly 24 world metres in one test second. Powder affects **1,395 of 70,325 sampled world pixels (1.98%)** at the comparison threshold, below the 8% clear-air bound; that is one fixture at strong gust, not an all-scenes coverage promise. Lighting-difference sum is 135.424 in the lit world and zero with illumination/reflections disabled. Frozen opaque roof: **741 sampled pixels, zero changed**. Moving roof: **709/713/709 sampled pixels, zero changed in all three frames**. Actual simulation snapshots, road cells and contact geometry stay exact.
++
++### Actual commands
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_snow_wind.gd
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_winter_snow_wind.gd -Graphical -TestArgument @('--capture','--video')"
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_snow_wind.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++git diff --check -- game/track/winter_snow_wind.gd game/track/winter_snow_wind.gdshader game/tests/test_winter_snow_wind.gd
++Get-FileHash -LiteralPath game/assets/textures/winter_wind_flow_v1.png -Algorithm SHA256
++& 'C:/Users/ville/AppData/Local/Android/Sdk/platform-tools/adb.exe' start-server
++Start-Sleep -Seconds 2
++& 'C:/Users/ville/AppData/Local/Android/Sdk/platform-tools/adb.exe' devices -l
++python build/checkpoint_winter_powder.py
++```
++
++All engine commands use pinned `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`. No focused failure occurred. Initial headless 32/0 preceded the speed assertion; capture 44/0 preceded the added sparse image check, with final 45/0 including both. Bank allocation/budget expectations change to the explicit bounded grain design; canonical, exact-roof and lifecycle requirements are retained. No full Validate, physics regression, Android export/install, backend work or deployment was performed.
++
++## Evidence and remaining acceptance
++
++[Four-second 30 fps driving preview](evidence/winter-snow-powder-2026-10-11/driving-motion.html), [driving still](evidence/winter-snow-powder-2026-10-11/driving.png), [strong-gust still](evidence/winter-snow-powder-2026-10-11/gust.png), [without wind](evidence/winter-snow-powder-2026-10-11/before.png), [curve](evidence/winter-snow-powder-2026-10-11/bend.png), [30 fps curve motion](evidence/winter-snow-powder-2026-10-11/motion.html), [rotated view](evidence/winter-snow-powder-2026-10-11/rotated.png), [compact viewport](evidence/winter-snow-powder-2026-10-11/compact.png) and [unlit check](evidence/winter-snow-powder-2026-10-11/unlit-lighting-check.png) are actual Godot renders. Both previews have 120 unique frames and contain a controlled strong/calm review gust. The driving preview is a short canonical fixture, not a completed player race. Captures were inspected for distinct grains, short trails, clear road/car and faster sideways movement. Earlier fog-like revisions remain preserved.
++
++The task-only patch/checkpoint manifest and actual logs are saved alongside this evidence, using an isolated repository under `build/winter_powder/checkpoint-repo`; main branch/index and unrelated work are untouched.
++
++The settled ADB check returned **no connected devices**. **No physical-device test was performed.** Owner approval of powder size/density and harsh-wind motion, phone frame pacing/thermal/CPU upload cost, fast-grain aliasing on different render scales, Mali/Adreno depth/MSAA and every track/bridge combination remain. Drawing proxies are sized for overhead visibility, not literal physical snow-grain dimensions. No higher airborne snowfall, fluid simulation, car wind force or score-contract change is introduced.
+diff --git a/docs/WINTER_WIND_GROUNDING.md b/docs/WINTER_WIND_GROUNDING.md
+index c326b7c..26273a1 100644
+--- a/docs/WINTER_WIND_GROUNDING.md
++++ b/docs/WINTER_WIND_GROUNDING.md
+@@ -1,5 +1,7 @@
+ # Winter wind grounding — 2026-10-11
+ 
++The owner found this version fog-like and its motion too gentle for harsh wind. It is superseded by [fine powder and faster gusts](WINTER_SNOW_POWDER.md); the world lighting and bank contact are retained, while the broad sheets are removed.
++
+ The owner accepted the direction as much better and asked for the wind to feel connected to the world. Revision 3 retains the soft, broken density while replacing bright camera-facing puffs with low continuous flow from the bank crests onto the road. Current owner visual acceptance remains pending.
+ 
+ Requirements WW09 (connected source-to-surface flow), WW10 (snow palette and scene lighting), WW11 (one continuous camera-independent world field), WW12 (bounded modest computation), plus WW01–WW08, V04/V05, G01/R01 and Q01. Canonical handling, five laps, race clocks, scores, ghosts, upload eligibility, audio, car meshes and the camera contract are unchanged by this task.
+diff --git a/game/tests/test_winter_snow_wind.gd b/game/tests/test_winter_snow_wind.gd
+index 0abf2c0..1b9774a 100644
+--- a/game/tests/test_winter_snow_wind.gd
++++ b/game/tests/test_winter_snow_wind.gd
+@@ -1,5 +1,5 @@
+ extends SceneTree
+-const OUT: String = "res://../docs/evidence/winter-wind-grounding-2026-10-11"
++const OUT: String = "res://../docs/evidence/winter-snow-powder-2026-10-11"
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -37,9 +37,9 @@ func run() -> void:
+ 	wind.configure(track)
+ 	check(wind.get_child_count() == 2 and wind.anchors.size() > 0, "two batches and prepared exposed bank anchors")
+ 	wind.present(2.0, Vector2(0, -18), 1.0, false, false)
+-	check(wind.ground.multimesh.instance_count == 81 and wind.powder.multimesh.instance_count == 36, "fixed 81 ground / 36 source instances independent of track size")
+-	check(wind.powder.multimesh.mesh is PlaneMesh and (wind.powder.multimesh.mesh as PlaneMesh).subdivide_width == 5, "six connected crest-to-road spans per bank sheet")
+-	check(wind._basis(true) == wind._basis(false), "bank sheets stay in world surface orientation")
++	check(wind.ground.multimesh.instance_count == 486 and wind.powder.multimesh.instance_count == 216, "fixed 486 ground / 216 bank-grain budget independent of track size")
++	check(wind.powder.multimesh.mesh is QuadMesh and (wind.powder.multimesh.mesh as QuadMesh).size.length() < 0.25, "bank powder consists of small grain geometry")
++	check(wind._basis(true) == wind._basis(false), "powder retains world surface orientation")
+ 	check(wind.active_banks.size() > 0 and wind.active_banks.size() <= 12, "nearby bank pool bounded")
+ 	for at: Vector3 in wind.active_banks:
+ 		check(track.snow_banks.height_at(Vector2(at.x, -at.z)) > 0.19 and at.y < 0.5, "powder source lies on real low snowbank")
+@@ -54,11 +54,14 @@ func run() -> void:
+ 	check(wind.elapsed == start[0], "invalid delta cannot poison visual uniforms")
+ 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
+ 	var strong: float = wind.intensity
++	var gust_start: float = wind.travel
++	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
++	check(is_equal_approx(wind.travel - gust_start, 24.0), "harsh gust carries powder 24 world metres per second")
+ 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 0.0, false, false)
+ 	check(strong > 0.95 and is_equal_approx(wind.intensity, 0.24), "smooth gust strengthens both effects with light calm floor")
+-	var pinned: Transform3D = wind.ground.multimesh.get_instance_transform(40)
++	var pinned: Transform3D = wind.ground.multimesh.get_instance_transform(240)
+ 	wind.present(0.01, Vector2(0.5, -18), 0.0, false, false)
+-	check(wind.ground.multimesh.get_instance_transform(40) == pinned, "sub-cell camera-follow motion cannot drag snow across world")
++	check(wind.ground.multimesh.get_instance_transform(240) == pinned, "sub-cell camera-follow motion cannot drag snow across world")
+ 	check(wind._basis().x.dot(VisualGeometry.world(WinterSnowWind.WIND)) > 0.999, "shared world wind direction")
+ 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2.ZERO, 1.0, false, true)
+ 	check(wind.intensity == 0, "finish fades visuals out")
+@@ -148,12 +151,12 @@ func capture(game: Node, fx: WinterSnowWind) -> void:
+ 		root.size = Vector2i(640, 360)
+ 		for frame: int in range(3): await RenderingServer.frame_post_draw
+ 		var frames: Array[String] = []
+-		for frame: int in range(48):
+-			fx.present(1.0 / 12.0, Vector2(34, -10), 1.0 if frame < 36 else 0.0, false, false)
++		for frame: int in range(120):
++			fx.present(1.0 / 30.0, Vector2(34, -10), 1.0 if frame < 75 else 0.0, false, false)
+ 			await RenderingServer.frame_post_draw
+ 			frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.90)))
+ 		var preview := FileAccess.open(OUT + "/motion.html", FileAccess.WRITE)
+-		preview.store_string("<!doctype html><meta charset='utf-8'><title>Winter wind experiment</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter wind experiment</h1><p>Actual Godot captures · 4 seconds · world-space road drift and bank powder</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/12)</script>")
++		preview.store_string("<!doctype html><meta charset='utf-8'><title>Winter powder wind</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter powder wind</h1><p>Actual Godot captures · 4 seconds at 30 fps · fine grains in harsh gusts</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
+ 		preview.close()
+ 		root.size = Vector2i(1280, 720)
+ 	camera.position = focus + Vector3(18, 20, 0)
+@@ -204,12 +207,20 @@ func lighting_capture(game: Node, fx: WinterSnowWind) -> void:
+ 		for i: int in range(3): await RenderingServer.frame_post_draw
+ 		var with_snow: Image = root.get_texture().get_image()
+ 		var difference: float = 0.0
++		var affected: int = 0
++		var samples: int = 0
+ 		for y: int in range(210, 500, 2):
+ 			for x: int in range(140, 1110, 2):
+ 				var a: Color = base.get_pixel(x, y)
+ 				var b: Color = with_snow.get_pixel(x, y)
+-				difference += absf(a.r - b.r) + absf(a.g - b.g) + absf(a.b - b.b)
++				var delta: float = absf(a.r - b.r) + absf(a.g - b.g) + absf(a.b - b.b)
++				difference += delta
++				samples += 1
++				if delta > 0.005: affected += 1
+ 		deltas.append(difference)
++		if not dark:
++			print("WINTER_POWDER_COVERAGE: ", affected, "/", samples, " fraction=", float(affected) / samples)
++			check(affected > 0 and float(affected) / samples < 0.08, "discrete powder leaves clear air instead of a continuous haze")
+ 		if dark: with_snow.save_png(OUT + "/unlit-lighting-check.png")
+ 	light.light_energy = energy
+ 	environment.ambient_light_energy = ambient
+@@ -233,19 +244,19 @@ func driving_preview(game: Node, fx: WinterSnowWind) -> void:
+ 	var input: DriveFrame = DriveFrame.sample(0, 0.35, 0)
+ 	game.paused = false
+ 	# Actual canonical straight-line driving fixture. No tickets/uploads/results.
+-	for frame: int in range(60):
+-		for tick: int in range(10): game.sim.step(input, game.native_track)
++	for frame: int in range(120):
++		for tick: int in range(4): game.sim.step(input, game.native_track)
+ 		game.previous_position = game.sim.state.position
+ 		game.previous_heading = game.sim.state.heading
+ 		game.frame = input
+ 		# Force a strong/calm visual cycle for review, independently of the
+ 		# random recorded-wind opening. Runtime still shares its real envelope.
+-		fx.present(1.0 / 12.0, game.sim.state.position, 1.0 if frame < 36 else 0.0, false, false)
++		fx.present(1.0 / 30.0, game.sim.state.position, 1.0 if frame < 75 else 0.0, false, false)
+ 		game.call("_process", 0.0)
+-		game.camera.follow(game.sim.state.position, game.sim.state.velocity, game.sim.state.heading, 1.0 / 12.0)
+-		game.hud.update_values(game.sim.state, input, 1.0 / 12.0, false, false)
++		game.camera.follow(game.sim.state.position, game.sim.state.velocity, game.sim.state.heading, 1.0 / 30.0)
++		game.hud.update_values(game.sim.state, input, 1.0 / 30.0, false, false)
+ 		await RenderingServer.frame_post_draw
+-		if frame % 20 == 0:
++		if frame % 40 == 0:
+ 			var with_wind: Image = root.get_texture().get_image()
+ 			fx.visible = false
+ 			await RenderingServer.frame_post_draw
+@@ -265,9 +276,9 @@ func driving_preview(game: Node, fx: WinterSnowWind) -> void:
+ 			print("WINTER_MOVING_ROOF: frame=", frame, " samples=", samples, " changed=", changed)
+ 			check(samples > 70 and changed == 0, "moving opaque car stays clear through wind: " + str(frame))
+ 		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.92)))
+-		if frame == 30: check(root.get_texture().get_image().save_png(OUT + "/driving.png") == OK, "actual moving-car wind screenshot")
++		if frame == 60: check(root.get_texture().get_image().save_png(OUT + "/driving.png") == OK, "actual moving-car wind screenshot")
+ 	var output := FileAccess.open(OUT + "/driving-motion.html", FileAccess.WRITE)
+-	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter wind driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter wind driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 5 seconds at 12 fps</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/12)</script>")
++	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter powder driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter powder driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 4 seconds at 30 fps · harsh powder gust</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
+ 	output.close()
+ 	game.paused = true
+ 	game.sim = original_sim
+diff --git a/game/track/winter_snow_wind.gd b/game/track/winter_snow_wind.gd
+index 86cca33..efa1d9b 100644
+--- a/game/track/winter_snow_wind.gd
++++ b/game/track/winter_snow_wind.gd
+@@ -3,12 +3,15 @@ extends Node3D
+ ## Bounded, world-space presentation. No simulation, input or race-clock writes.
+ const WIND: Vector2 = Vector2(0.91, 0.414608)
+ const GRID: int = 9
++const GRAINS_PER_CELL: int = 6
+ const SPACING: float = 6.0
+ const BANK_SLOTS: int = 12
+-const WISPS: int = 3
++const WISPS: int = 18
+ const BUCKET: float = 6.0
+ const REFRESH: float = 0.25
+-const VERSION: String = "winter-wind-3"
++const VERSION: String = "winter-wind-4"
++const CALM_SPEED: float = 6.0
++const GUST_SPEED: float = 24.0
+ var ground: MultiMeshInstance3D
+ var powder: MultiMeshInstance3D
+ var ground_material: ShaderMaterial
+@@ -41,7 +44,7 @@ func configure(track: NativeTrack, visual: Node3D = null) -> void:
+ 		source_track = null
+ 		return
+ 	if ground == null:
+-		ground = _batch("GroundDrifts", GRID * GRID, false)
++		ground = _batch("GroundGrains", GRID * GRID * GRAINS_PER_CELL, false)
+ 		powder = _batch("BankPowder", BANK_SLOTS * WISPS, true)
+ 		ground_material = ground.material_override
+ 		powder_material = powder.material_override
+@@ -125,7 +128,7 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished:
+ 	elapsed += step
+ 	# Share the existing recorded wind's smooth gust envelope, without new audio.
+ 	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.24, 1.0, clampf(gust, 0.0, 1.0)), step * 1.5)
+-	travel += step * lerpf(2.0, 5.5, intensity)
++	travel += step * lerpf(CALM_SPEED, GUST_SPEED, intensity)
+ 	var next_center: Vector2 = (focus / SPACING).floor() * SPACING
+ 	if center != next_center:
+ 		center = next_center
+@@ -148,13 +151,10 @@ func _batch(label: String, count: int, bank: bool) -> MultiMeshInstance3D:
+ 	var node := MultiMeshInstance3D.new()
+ 	node.name = label
+ 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-	var mesh: PlaneMesh = PlaneMesh.new() if bank else QuadMesh.new()
++	var mesh := QuadMesh.new()
+ 	mesh.orientation = PlaneMesh.FACE_Y
+-	mesh.size = Vector2(7.5, 1.8) if bank else Vector2(8.4, 2.8)
+-	if bank:
+-		# Six short spans let a connected sheet descend from crest to road.
+-		# One reusable mesh, no per-frame surface queries or billboard rotation.
+-		mesh.subdivide_width = 5
++	# Small rounded motes and short wind trails, never broad transparent sheets.
++	mesh.size = Vector2(0.18, 0.13) if bank else Vector2(0.34, 0.10)
+ 	var instances := MultiMesh.new()
+ 	instances.transform_format = MultiMesh.TRANSFORM_3D
+ 	instances.use_custom_data = true
+@@ -180,12 +180,15 @@ func _place_ground() -> void:
+ 	for y: int in range(-4, 5):
+ 		for x: int in range(-4, 5):
+ 			var point: Vector2 = center + Vector2(x, y) * SPACING
+-			var seed: float = _hash(point)
+-			var at: Vector3 = VisualGeometry.world(point + Vector2(seed - 0.5, _hash(point + Vector2.ONE) - 0.5) * 3.5)
+-			at.y = 0.065
+-			ground.multimesh.set_instance_transform(index, Transform3D(_basis(), at))
+-			ground.multimesh.set_instance_custom_data(index, Color(seed, _hash(point + Vector2(3, 7)), 0, 1))
+-			index += 1
++			for grain: int in range(GRAINS_PER_CELL):
++				var key: Vector2 = point + Vector2(grain * 19.31, grain * 7.77)
++				var seed: float = _hash(key)
++				var spread: float = _hash(key + Vector2(3, 7))
++				var at: Vector3 = VisualGeometry.world(point + Vector2(seed - 0.5, spread - 0.5) * SPACING)
++				at.y = 0.065
++				ground.multimesh.set_instance_transform(index, Transform3D(_basis(), at))
++				ground.multimesh.set_instance_custom_data(index, Color(seed, spread, _hash(key + Vector2(13, 9)), 1))
++				index += 1
+ 	ground.multimesh.visible_instance_count = index
+ 	ground.multimesh.custom_aabb = AABB(VisualGeometry.world(center) + Vector3(-36, -1, -36), Vector3(72, 5, 72))
+ 
+@@ -199,14 +202,22 @@ func _place_banks(focus: Vector2) -> void:
+ 			if anchors.has(key): candidates.append(anchors[key])
+ 	var world_focus: Vector3 = VisualGeometry.world(focus)
+ 	candidates.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.distance_squared_to(world_focus) < b.distance_squared_to(world_focus))
+-	active_banks.clear()
++	var next := PackedVector3Array()
++	for i: int in range(mini(BANK_SLOTS, candidates.size())): next.append(candidates[i])
++	var same_membership: bool = next.size() == active_banks.size()
++	if same_membership:
++		for at: Vector3 in next:
++			if not active_banks.has(at):
++				same_membership = false
++				break
++	if same_membership: return # Reordering nearest sources cannot upload every mote.
++	active_banks = next
+ 	var index: int = 0
+-	for i: int in range(mini(BANK_SLOTS, candidates.size())):
+-		var at: Vector3 = candidates[i]
+-		active_banks.append(at)
++	for at: Vector3 in active_banks:
+ 		for wisp: int in range(WISPS):
+ 			powder.multimesh.set_instance_transform(index, Transform3D(_basis(true), at))
+-			powder.multimesh.set_instance_custom_data(index, Color(_hash(Vector2(at.x, at.z) + Vector2.ONE * wisp), float(wisp) / WISPS, 0, 1))
++			var key: Vector2 = Vector2(at.x, at.z) + Vector2(wisp * 11.7, wisp * 23.1)
++			powder.multimesh.set_instance_custom_data(index, Color(_hash(key), _hash(key + Vector2(3, 7)), _hash(key + Vector2(13, 9)), 1))
+ 			index += 1
+ 	powder.multimesh.visible_instance_count = index
+ 	powder.multimesh.custom_aabb = AABB(world_focus + Vector3(-38, -1, -38), Vector3(76, 6, 76))
+diff --git a/game/track/winter_snow_wind.gdshader b/game/track/winter_snow_wind.gdshader
+index 927c561..f99b08c 100644
+--- a/game/track/winter_snow_wind.gdshader
++++ b/game/track/winter_snow_wind.gdshader
+@@ -10,44 +10,45 @@ uniform sampler2D snow_albedo : source_color, filter_linear_mipmap, repeat_enabl
+ uniform sampler2D scene_depth : hint_depth_texture, filter_nearest, repeat_disable;
+ varying vec3 world_position;
+ varying float variation;
+-varying float along_source;
++varying float life_alpha;
+ 
+ void vertex() {
+ 	variation = INSTANCE_CUSTOM.y;
++	float seed = INSTANCE_CUSTOM.x;
++	float spread = INSTANCE_CUSTOM.z;
++	float distance = bank ? 5.5 + variation * 2.0 : 9.0;
++	float phase = fract(travel / distance * (0.85 + variation * 0.30) + seed);
++	life_alpha = smoothstep(0.0, 0.12, phase) * (1.0 - smoothstep(0.68, 1.0, phase));
++	VERTEX.xz *= 0.65 + variation * 0.85;
++	VERTEX.x *= mix(1.0, bank ? 1.8 : 2.2, strength);
+ 	if (bank) {
+-		// The source stays on the visible crest while density flows downhill.
+-		VERTEX.x += 3.75;
+-		along_source = VERTEX.x;
++		// Each mote leaves a visible bank, lifts briefly, then skims the road.
++		float along_source = phase * distance;
++		VERTEX.x += along_source;
+ 		float drop = smoothstep(0.0, 2.0, along_source);
+ 		float crest = MODEL_MATRIX[3].y;
+ 		VERTEX.y = mix(0.0, 0.065 - crest, drop);
+-		VERTEX.y += sin(clamp(along_source / 7.5, 0.0, 1.0) * PI) * variation * 0.09;
+-		VERTEX.z += (variation - 0.3333) * 0.70;
+-		float u = clamp(along_source / 2.0, 0.0, 1.0);
+-		float slope = (0.065 - crest) * 3.0 * u * (1.0 - u);
+-		NORMAL = normalize(vec3(-slope, 1.0, 0.0));
++		VERTEX.y += sin(phase * PI) * (0.06 + spread * 0.12);
++		VERTEX.z += (spread - 0.5) * (0.35 + phase * 1.4);
+ 	} else {
+-		along_source = 0.0;
++		VERTEX.x += (phase - 0.5) * distance;
++		VERTEX.z += sin(elapsed * 1.4 + seed * 19.0) * (0.06 + spread * 0.12);
++		VERTEX.y += sin(phase * PI) * 0.025;
+ 	}
+ 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+ }
+ 
+ void fragment() {
+-	// One advected world field crosses card/source boundaries continuously.
++	// Sparse grain clusters share one advected wind field; no cloud coverage.
+ 	vec2 wind = vec2(0.91, -0.414608);
+ 	vec2 side = vec2(-wind.y, wind.x);
+ 	vec2 field = vec2(dot(world_position.xz, wind) - travel, dot(world_position.xz, side));
+-	vec3 curl = texture(flow_texture, field * vec2(0.027, 0.060)).rgb;
+-	vec2 flow_uv = field * vec2(0.052, 0.155) + vec2(0.0, (curl.g - 0.5) * 0.30);
+-	vec3 density = texture(flow_texture, flow_uv).rgb;
++	vec3 density = texture(flow_texture, field * vec2(0.045, 0.12)).rgb;
+ 	vec2 p = UV * 2.0 - 1.0;
+-	float cross_fade = 1.0 - smoothstep(0.12, 1.0, abs(p.y));
+-	float ends = bank ? 1.0 - smoothstep(3.0, 7.5, along_source) : 1.0 - smoothstep(0.1, 1.0, abs(p.x));
+-	float breakup = smoothstep(0.20, 0.82, density.r);
+-	float shape = cross_fade * ends * breakup;
+-	bool grains = bank && variation > 0.5;
+-	if (grains) shape *= smoothstep(0.58, 0.85, density.b);
+-	else shape *= mix(0.86, 1.0, density.b);
++	float radius = length(p);
++	float edge = max(fwidth(radius), 0.10);
++	float shape = 1.0 - smoothstep(0.60 - edge, 1.0 + edge, radius);
++	float cluster = mix(0.30, 1.0, smoothstep(0.28, 0.74, density.r));
+ 	float distance_fade = 1.0 - smoothstep(23.0, 30.0, length(world_position.xz - focus.xz));
+ 	// Soft opaque intersections (terrain/car), with renderer-correct depth reconstruction.
+ 	float depth = texture(scene_depth, SCREEN_UV).r;
+@@ -58,12 +59,12 @@ void fragment() {
+ #endif
+ 	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+ 	float gap = -view.z / view.w + VERTEX.z;
+-	float intersection = smoothstep(0.0, bank ? 0.10 : 0.03, gap);
++	float intersection = smoothstep(0.0, bank ? 0.06 : 0.025, gap);
+ 	// Share the snowbanks' colour and actual directional/ambient/shadow light.
+ 	vec3 snow = texture(snow_albedo, world_position.xz / 11.0).rgb;
+-	ALBEDO = snow * mix(0.70, 0.83, density.r);
++	ALBEDO = snow * mix(0.86, 0.97, variation);
+ 	ROUGHNESS = 1.0;
+ 	SPECULAR = 0.0;
+-	float opacity = bank ? (grains ? 0.34 : mix(0.30, 0.16, variation)) : 0.28;
+-	ALPHA = opacity * strength * shape * distance_fade * intersection;
++	float opacity = bank ? 0.76 : 0.58;
++	ALPHA = opacity * strength * life_alpha * shape * cluster * distance_fade * intersection;
+ }

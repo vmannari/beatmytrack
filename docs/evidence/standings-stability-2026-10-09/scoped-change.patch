@@ -1,0 +1,344 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -22,6 +22,7 @@
+ const RACE_MODE_PAGES: Array[String] = ["rivalry", "tracks", "challenges"]
+ var _race_mode_request: int = 0
+ var _rivalry_entry_pending: bool = false
++var rivalry_standings_view: Dictionary = {}
+ var menu_edge_motion: Tween
+ var menu_drag_offset: float = 0.0
+ var content: VBoxContainer
+@@ -287,6 +288,7 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	if screen == "rivalry": _remember_rivalry_standings(content)
+ 	_close_race_loading()
+ 	if challenge_racing and challenge_result_view and next != "challenges" and is_instance_valid(game):
+ 		remove_child(game)
+@@ -337,6 +339,9 @@
+ 	if is_instance_valid(root_ui):
+ 		if slide:
+ 			outgoing_menu_page = menu_body
++			var departing_size: Vector2 = outgoing_menu_page.size
++			outgoing_menu_page.set_anchors_preset(Control.PRESET_TOP_LEFT)
++			outgoing_menu_page.size = departing_size
+ 			outgoing_menu_page.position.x = drag_offset
+ 			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+ 			outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
+@@ -613,6 +618,19 @@
+ 	menu_page_motion.tween_property(menu_body,"position:y",0.0,0.32)
+ 	menu_page_motion.tween_property(outgoing_menu_page,"position:y",-distance,0.32)
+ 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
++	var page: WeeklyRivalryPage = content.find_child("WeeklyRivalryPage",true,false)
++	if page != null and not page.standings_ready:
++		menu_page_motion.pause()
++		_start_prepared_race_mode.call_deferred(_navigation_generation,menu_page_motion)
++
++func _start_prepared_race_mode(generation: int, motion: Tween) -> void:
++	# Set the initial table scroll while the incoming page is still offscreen.
++	while generation == _navigation_generation and motion == menu_page_motion:
++		var page: WeeklyRivalryPage = content.find_child("WeeklyRivalryPage",true,false)
++		if page == null or page.standings_ready:
++			motion.play()
++			return
++		await get_tree().process_frame
+ 
+ func _request_race_mode(mode: String) -> void:
+ 	if mode == "rivalry": _open_rivalry()
+@@ -781,7 +799,9 @@
+ 		control.remove_meta("page_mouse_filter")
+ 
+ func _commit_menu_neighbor(direction: int) -> void:
++	if screen == "rivalry": _remember_rivalry_standings(content)
+ 	var neighbor: Dictionary = menu_neighbors[direction]
++	if neighbor.screen == "rivalry": _reset_rivalry_entry_view()
+ 	_refresh_cached_menu_page(neighbor.screen, neighbor.content)
+ 	var offset: float = menu_body.position.x
+ 	_stop_menu_page_motion()
+@@ -851,6 +871,7 @@
+ func _navigate_menu_page(next: String) -> void:
+ 	# Explicit refreshes still use _show_screen. User navigation promotes the same
+ 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
++	if next == "rivalry": _reset_rivalry_entry_view()
+ 	if menu_page_motion != null: _finish_menu_page_slide()
+ 	if not is_instance_valid(menu_body) or not menu_body.is_inside_tree() or not root_ui.is_ancestor_of(menu_body):
+ 		_show_screen(next)
+@@ -1330,6 +1351,14 @@
+ 	challenge_result_view = false
+ 	await _start_race(track,false,guest,issued)
+ 
++func _reset_rivalry_entry_view() -> void:
++	if rivalry_racing and rivalry_section in ["race_results","result"] and is_instance_valid(game):
++		remove_child(game)
++		game.queue_free()
++		game = null
++		rivalry_racing = false
++	rivalry_section = "overview"
++
+ func _open_rivalry() -> void:
+ 	if _rivalry_entry_pending: return
+ 	_race_mode_request += 1
+@@ -1379,11 +1408,15 @@
+ 
+ func _rivalry(parent: VBoxContainer = null) -> void:
+ 	if parent == null: parent = content
++	if parent == content and screen == "rivalry": _remember_rivalry_standings(parent)
+ 	for child: Node in parent.get_children():
+ 		parent.remove_child(child)
+ 		child.queue_free()
+ 	var page := WeeklyRivalryPage.new()
+ 	page.model = rivalry.model
++	page.standings_identity = rivalry.scope()+"/"+rivalry.model.group_id+"/"+str(rivalry.model.week)
++	if rivalry_standings_view.get("key","") == page.standings_identity:
++		page.standings_scroll_offset = int(rivalry_standings_view.offset)
+ 	page.section = rivalry_section
+ 	page.selected = rivalry_track
+ 	page.ghost_choice = rivalry_ghost_choice
+@@ -1429,6 +1462,12 @@
+ 	_keep_race_mode_rail_fixed(page)
+ 	if page.section == "detail" and not rivalry.model.sample and not rivalry.model.tracks.is_empty():
+ 		_prepare_rivalry_track_preview(page,rivalry_track)
++
++func _remember_rivalry_standings(parent: Control) -> void:
++	if not is_instance_valid(parent): return
++	var page: WeeklyRivalryPage = parent.find_child("WeeklyRivalryPage",true,false)
++	if page == null or not page.standings_ready or not is_instance_valid(page.standings_scroll): return
++	rivalry_standings_view = {"key":page.standings_identity,"offset":page.standings_scroll.scroll_vertical}
+ 
+ func _prepare_rivalry_track_preview(page: WeeklyRivalryPage, index: int) -> void:
+ 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -21,6 +21,10 @@
+ var race_details: Dictionary = {}
+ var ghost_choice: int = 0
+ var clock_label: Label
++var standings_identity: String = ""
++var standings_scroll_offset: int = -1
++var standings_scroll: ScrollContainer
++var standings_ready: bool = false
+ var track_rows: Array[Button] = []
+ var track_markers: Array[ColorRect] = []
+ var detail_route: LapRouteView
+@@ -108,6 +112,7 @@
+ 	elif section == "overview" and model.completed: _finale(body)
+ 	elif section == "detail": _detail(body)
+ 	else: _overview(body)
++	if standings_scroll == null: standings_ready = true
+ 
+ func _draw() -> void:
+ 	var art: Texture2D = WINTER_ART
+@@ -347,6 +352,7 @@
+ 	_copy(heading,title,27).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_copy(heading,"%d DRIVERS" % model.standing().size(),14,MenuStyle.MUTED)
+ 	var scroll := ScrollContainer.new()
++	standings_scroll = scroll
+ 	scroll.name = "RivalryStandingsScroll"
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+@@ -414,6 +420,11 @@
+ 		gap.custom_minimum_size.x = 54
+ 		gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 		if own: own_panel = panel
++	if standings_scroll_offset >= 0:
++		# Seed the real range before its first draw, rather than painting at zero
++		# and restoring the remembered rows a few frames later.
++		scroll.get_v_scroll_bar().max_value = rows.get_combined_minimum_size().y
++		scroll.scroll_vertical = standings_scroll_offset
+ 	if own_panel != null: _reveal_player.call_deferred(scroll,own_panel)
+ 
+ func _reveal_player(scroll: ScrollContainer, player: Control) -> void:
+@@ -427,7 +438,8 @@
+ 
+ func _ensure_player_visible(scroll: ScrollContainer, player: Control) -> void:
+ 	if is_inside_tree() and is_instance_valid(scroll) and is_instance_valid(player):
+-		scroll.ensure_control_visible(player)
++		if standings_scroll_offset < 0: scroll.ensure_control_visible(player)
++		standings_ready = true
+ 
+ func _display_name(row: Dictionary) -> String:
+ 	var value: String = str(row.name)
+--- /dev/null
++++ b/game/tests/test_standings_stability.gd
+@@ -0,0 +1,128 @@
++extends SceneTree
++## Row geometry is measured within the table, independent of carousel translation.
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var evidence: String = ""
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func snapshot() -> Dictionary:
++	var drivers: Array = []
++	for index: int in range(20):
++		drivers.append({"id":"you" if index == 19 else "driver_"+str(index),"name":"You" if index == 19 else "Driver "+str(index+1),"rank":index+1,"points":100-index,"completed":5})
++	var value: Dictionary = {"state":"active","group_id":"stability-fixture","self_id":"you","vehicle_id":"compact","week":41,"ends_at":604800,"server_now":0,"standings":drivers,"tracks":[]}
++	var document: Dictionary = TrackDocument.create_default()
++	for slot: int in range(5):
++		var entries: Array = drivers.duplicate(true)
++		for row: Dictionary in entries: row.ms = 80000+int(row.rank)*1000
++		value.tracks.append({"board_id":"board_"+str(slot),"entries":entries,"entry":{"name":"Circuit "+str(slot+1),"theme":"pine","creator":"Beat my track","track_id":"track_"+str(slot),"version_id":"version_"+str(slot),"content_hash":"a".repeat(64),"points":document.points}})
++	return value
++
++func table_state(page: Control) -> Dictionary:
++	var scroll: ScrollContainer = page.find_child("RivalryStandingsScroll",true,false)
++	var row: Control = page.find_child("Driver_you",true,false)
++	return {"offset":scroll.scroll_vertical,"position":row.get_global_position()-scroll.get_global_position(),"size":row.size,"viewport":scroll.size}
++
++func same_table(before: Dictionary, after: Dictionary) -> bool:
++	# Moving global float coordinates may subtract with subpixel rounding error.
++	return before.offset == after.offset and before.position.distance_to(after.position) < 0.01 and before.size.distance_to(after.size) < 0.01 and before.viewport.distance_to(after.viewport) < 0.01
++
++func settle() -> void:
++	for _frame: int in range(5): await process_frame
++	while app.menu_page_motion != null: await process_frame
++
++func capture(id: String, dimensions: Vector2i) -> void:
++	if evidence.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = OS.get_environment("BMT_STANDINGS_STABILITY_CAPTURE_DIR")
++	if not evidence.is_empty(): DirAccess.make_dir_recursive_absolute(evidence)
++	var directory: String = "user://standings_stability_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		app._show_screen("tracks")
++		await settle()
++		app.rivalry_standings_view.clear()
++		app.rivalry.model.apply_snapshot(snapshot())
++		app._show_screen("rivalry")
++		var page: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)
++		check(app.menu_page_motion != null and not app.menu_page_motion.is_running(),"incoming carousel waits for the table's initial layout and player reveal")
++		while not page.standings_ready: await process_frame
++		var incoming_motion: Tween = app.menu_page_motion
++		incoming_motion.pause()
++		var incoming_state: Dictionary = table_state(app.content)
++		for frame: int in range(5):
++			await process_frame
++			incoming_motion.custom_step(0.03)
++			check(same_table(incoming_state,table_state(app.content)),"incoming rows stay fixed within their table at frame "+str(frame))
++		await capture("arriving",dimensions)
++		incoming_motion.play()
++		await settle()
++		var own: Control = app.content.find_child("Driver_you",true,false)
++		var scroll: ScrollContainer = app.content.find_child("RivalryStandingsScroll",true,false)
++		check(scroll.get_global_rect().grow(1).encloses(own.get_global_rect()),"initial entry still reveals the twentieth-place player")
++		var before: Dictionary = table_state(app.content)
++		var outgoing: Control = app.menu_body
++		app._open_free_race()
++		check(same_table(before,table_state(outgoing)),"departing table keeps its geometry while being reparented")
++		var motion: Tween = app.menu_page_motion
++		motion.pause()
++		for frame: int in range(6):
++			await process_frame
++			motion.custom_step(0.03)
++			var after: Dictionary = table_state(outgoing)
++			check(same_table(before,after),"departing rows retain their table-relative positions at frame %d: before=%s after=%s" % [frame,before,after])
++		await capture("departing",dimensions)
++		app._finish_menu_page_slide()
++		await settle()
++		app._show_screen("rivalry")
++		await settle()
++		scroll = app.content.find_child("RivalryStandingsScroll",true,false)
++		scroll.scroll_vertical = 160
++		await process_frame
++		var manual: Dictionary = table_state(app.content)
++		app.rivalry.changed.emit()
++		for frame: int in range(5):
++			if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++			else:
++				await process_frame
++				await process_frame
++			check(same_table(manual,table_state(app.content)),"refresh shows the remembered rows from rendered frame "+str(frame))
++		await settle()
++		check(same_table(manual,table_state(app.content)),"ordinary refresh retains the user's scroll and row geometry")
++		app._open_free_race()
++		await settle()
++		app._show_screen("rivalry")
++		await settle()
++		check(same_table(manual,table_state(app.content)),"returning to Rivalry retains the same standings rows")
++		await capture("returned",dimensions)
++		var other: Dictionary = snapshot()
++		other.group_id = "another-group"
++		app.rivalry.model.apply_snapshot(other)
++		app._rivalry()
++		await settle()
++		own = app.content.find_child("Driver_you",true,false)
++		scroll = app.content.find_child("RivalryStandingsScroll",true,false)
++		check(scroll.get_global_rect().grow(1).encloses(own.get_global_rect()) and scroll.scroll_vertical != int(manual.offset),"a different championship gets its own initial player reveal")
++	app.queue_free()
++	await process_frame
++	await create_timer(0.1).timeout
++	print("STANDINGS_STABILITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_standings_stability.gd.uid
+@@ -0,0 +1 @@
++uid://bcodnyu0speyt
+--- a/docs/RACE_MODE_CAROUSEL.md
++++ b/docs/RACE_MODE_CAROUSEL.md
+@@ -32,3 +32,29 @@
+ Initial animation assertions used an 80ms wall wait, which could overshoot under simultaneous first-frame rendering; deterministic midpoint inspection retains the direction/bounds assertions. Image review then caught anchored outgoing sizes being cleared during reparenting, limiting travel to the gap: height is now captured from the departing viewport, with a new complete-height assertion. Existing weekly layout/focus checks initially inspected moving/offscreen controls; their settle helper now waits for the authorized transition, without weakening any bounds/focus assertion. Animation activation also revealed an unnecessary guest refresh that cleared isolated fixture data; authenticated refresh now requires sign-in. The first HTTP setup lacked its parent directory; it was created before the successful rerun. These initial failed attempts are retained, not counted as passed tests.
+ 
+ First entry still needs actual server data; prefetching and retaining the current page remove the empty Rivalry flash instead of fabricating values. Network failure resolves to the existing actionable error view. No persistent membership cache, new vertical swipe gesture, runtime dependency, backend deployment, migration, Android export/install, full Validate or production action was added/performed. Owner motion/latency review, slow-network testing on the tablet, and physical gesture acceptance remain. [Scoped review checkpoint](evidence/race-mode-carousel-2026-10-09/scoped-change.patch) preserves concurrent Rivalry detail, audio, tablet and other workspace work.
++
++## Standings row stability correction, 2026-10-09
++
++RMC02 / RMC04 / R01 / WR02 / WR08 / V03–V05 / Q01: the owner reports standings rows shifting during page changes. A dedicated native regression reproduced six failures: outgoing table geometry changed on its first reparented frame, and ordinary refresh/return reset the manually selected standings scroll.
++
++The departing page now retains its laid-out size using fixed top-left anchors before it moves into the new viewport. Incoming Rivalry movement waits for the initial table layout/player reveal while still offscreen. A single transient view entry remembers the standings offset under server/player/car/population/group/week identity, including overview/detail returns and prepared-page promotion. Rebuilds seed the real scrollbar range/offset before their first draw and retain the user's subsequent choice; the delayed reveal no longer resets remembered rows. A different championship receives its own initial player reveal. No displayed standings, scores or data contracts change. Concurrent compact-podium/track-row presentation edits are preserved.
++
++Changed files: `game/core/app.gd`, `game/ui/weekly_rivalry_page.gd`, `game/tests/test_standings_stability.gd` and its imported UID, this report, `DEVELOPMENT_STATUS.md`, and `docs/PHASE_0_PLAN.md`. No save/API schema, canonical replay, physics/rules, asset or backend change.
++
++Actual commands use the same pinned engine and `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` entry point. All fixtures use unique isolated storage.
++
++| Actual arguments | Outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_standings_stability.gd -Graphical -CommandTimeoutSeconds 60`, with `BMT_STANDINGS_STABILITY_CAPTURE_DIR=docs/evidence/standings-stability-2026-10-09/ui` | Final **50 checks, zero failures** at 1280×720/960×540. Table-relative position, row size, viewport and exact scroll offset remain stable through incoming/outgoing movement and every rendered refresh frame. Initial twentieth-place visibility, manual scroll, return and different-group isolation retained. Six captures. |
++| `-Action TestScript -ScriptPath res://tests/test_race_mode_carousel.gd -Graphical -CommandTimeoutSeconds 60` | **42 checks, zero failures**, without capture environment variables. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 120` | **1,235 checks, zero failures** during this task. |
++| `-Action TestApp -CommandTimeoutSeconds 120` | **99 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_entry.gd -CommandTimeoutSeconds 60` | **66 checks, zero failures**, headless. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **395 scripts, zero failures**. |
++| `-Action Import -CommandTimeoutSeconds 90` | Passed; new regression UID generated. |
++| `-Action Doctor` | Pinned engine/templates found; **tablet f0ba474a offline**. No physical-device test performed. |
++| `.tools/backend-venv/Scripts/python.exe docs/evidence/standings-stability-2026-10-09/build_checkpoint.py`, `git apply --reverse --check --whitespace=error-all docs/evidence/standings-stability-2026-10-09/scoped-change.patch`, and targeted `git diff --check` | Seven-file scoped checkpoint generated; reverse applicability and whitespace checks pass. |
++
++Inspected [incoming rows](evidence/standings-stability-2026-10-09/ui/arriving-960x540.png), [departing rows](evidence/standings-stability-2026-10-09/ui/departing-960x540.png), and [remembered manual scroll](evidence/standings-stability-2026-10-09/ui/returned-1280x720.png). These are explicit isolated 20-driver UI fixtures, not live scores. Tests distinguish whole-page translation from row movement by measuring within the table. Coordinates tolerate only 0.01 logical pixels for floating-point subtraction; scrollbar offset remains exact. An initial strict dictionary comparison reported identical rounded coordinates with subpixel float error; this is recorded separately from the six real baseline failures. Independent viewport cases clear the prior fixture's remembered view after leaving it, retaining initial-player visibility checks.
++
++No phone/tablet UI test, Android export/install, full Validate, live backend race, service rollout or production action was performed for this correction. Owner visual acceptance and physical-device behavior remain. [Task-only review checkpoint](evidence/standings-stability-2026-10-09/scoped-change.patch) excludes concurrent menu, audio and tablet work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
++
+ 2026-10-09 SND16-SND17/SND05/SND08/SND11/SND14-SND15/G01/R01/Q01/V06: owner Windows collision delay reproduced through own-process WASAPI output: 130-144ms/median138.16 despite reported10ms; requested3ms ineffective. New bounded RAW Windows impact adapter/minimum one queued period gives actual Game wall39-46ms/median43.95, visible/audio62 physical81 and one cue. Native calibration separates capture/render clocks; no zero-acoustic claim. Four shared body slots, volume/mute/pause/reset/callback/fallback guards retained; final output9/native16/headless2/timing43/attack22/wall167/vehicle1442/desert28/App99/rewind57/parser394 checks pass. Reproducible1470270-byte DLL/CC10E916, existing bindings/compiler only; Android1220-file content ZIP excludes all Windows modules, three checks pass. Contaminated wall capture rejected/repeated; initial compiler/activation/timeout/locked-DLL failures retained and corrected without killing owner editor. Attack83 shutdown references retained. No phone attachment check/physical Android audio/APK install/full Validate/physics merge/backend/production action. Restart/owner connected-speaker-Bluetooth/device-switch acceptance remains. Files/actual commands/captures/limits/scoped checkpoint: docs/WINDOWS_COLLISION_LATENCY.md.
+ 
+ 2026-10-09 RMC01-RMC04/R01/V03-V05/Q01/WR01-WR03/WR08/TD08: owner-requested vertical Race carousel and populated first Rivalry entry implemented locally. Full viewport/0.32s rail-order slides retain fixed header/rail, asynchronous refresh and rapid interruption; authenticated startup/sign-in/car preloading reuses scoped requests and keeps the current menu until actual membership/error is ready. No empty rivalry/Join flash or invented data; account/new-choice fences retained. Final carousel52/entry70/automatic7/App99/weekly1235/headlessswipes240/parser394/Import pass; disposable native HTTP39/five-lap12757-tick verification pass. Fourteen layout/transition and eight HTTP captures inspected; initial timing/anchored-height/settle/guest-refresh/fixture-directory failures corrected without weakened assertions. Tablet f0ba474a offline; no physical-device test/Android export-install/full Validate/live deployment/production action. Scoped checkpoint preserves concurrent work. Files/commands/evidence/limits/acceptance: docs/RACE_MODE_CAROUSEL.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
++
+ 2026-10-09 SND16-SND17/SND05/SND08/SND11/SND14-SND15/G01/R01/Q01/V06: owner Windows collision delay reproduced through own-process WASAPI output: 130-144ms/median138.16 despite reported10ms; requested3ms ineffective. New bounded RAW Windows impact adapter/minimum one queued period gives actual Game wall39-46ms/median43.95, visible/audio62 physical81 and one cue. Native calibration separates capture/render clocks; no zero-acoustic claim. Four shared body slots, volume/mute/pause/reset/callback/fallback guards retained; final output9/native16/headless2/timing43/attack22/wall167/vehicle1442/desert28/App99/rewind57/parser394 checks pass. Reproducible1470270-byte DLL/CC10E916, existing bindings/compiler only; Android1220-file content ZIP excludes all Windows modules, three checks pass. Contaminated wall capture rejected/repeated; initial compiler/activation/timeout/locked-DLL failures retained and corrected without killing owner editor. Attack83 shutdown references retained. No phone attachment check/physical Android audio/APK install/full Validate/physics merge/backend/production action. Restart/owner connected-speaker-Bluetooth/device-switch acceptance remains. Files/actual commands/captures/limits/scoped checkpoint: docs/WINDOWS_COLLISION_LATENCY.md.
+ 
+ 2026-10-09 RMC01-RMC04/R01/V03-V05/Q01/WR01-WR03/WR08/TD08: owner-requested vertical Race carousel and populated first Rivalry entry implemented locally. Full viewport/0.32s rail-order slides retain fixed header/rail, asynchronous refresh and rapid interruption; authenticated startup/sign-in/car preloading reuses scoped requests and keeps the current menu until actual membership/error is ready. No empty rivalry/Join flash or invented data; account/new-choice fences retained. Final carousel52/entry70/automatic7/App99/weekly1235/headlessswipes240/parser394/Import pass; disposable native HTTP39/five-lap12757-tick verification pass. Fourteen layout/transition and eight HTTP captures inspected; initial timing/anchored-height/settle/guest-refresh/fixture-directory failures corrected without weakened assertions. Tablet f0ba474a offline; no physical-device test/Android export-install/full Validate/live deployment/production action. Scoped checkpoint preserves concurrent work. Files/commands/evidence/limits/acceptance: docs/RACE_MODE_CAROUSEL.md.

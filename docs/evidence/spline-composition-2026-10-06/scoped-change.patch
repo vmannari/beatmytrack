@@ -1,0 +1,325 @@
+diff --git a/game/track/visual_road_join.gd b/game/track/visual_road_join.gd
+--- a/game/track/visual_road_join.gd
++++ b/game/track/visual_road_join.gd
+@@ -14,8 +14,15 @@
+ 		var other: int = int(partner[0])
+ 		if pieces[other].kind == "bridge": continue
+ 		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other,topology)
+-		var other_polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin,topology),other_cuts)
+-		other_polygon = fair_contour(other_polygon,other_cuts)
++		var other_polygon := PackedVector2Array()
++		if pieces[other].kind == "spline":
++			for contour: PackedVector2Array in RoadEdges.section_contours(pieces,other,margin,topology):
++				if Geometry2D.is_polygon_clockwise(contour): continue
++				other_polygon = contour
++				if Geometry2D.is_point_in_polygon(cut.point,contour): break
++		else:
++			other_polygon = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin,topology),other_cuts)
++			other_polygon = fair_contour(other_polygon,other_cuts)
+ 		var ends: Array[Vector2] = []
+ 		for i: int in range(polygon.size()):
+ 			var corner: Vector2 = polygon[i]
+@@ -108,14 +115,17 @@
+ 	for index: int in range(pieces.size()):
+ 		if yield_budget.is_valid() and not await yield_budget.call(): return []
+ 		if pieces[index].kind == "bridge": continue
+-		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index,0.0,topology)
+-		var bounds := Rect2(polygon[0],Vector2.ZERO)
+-		for point: Vector2 in polygon: bounds = bounds.expand(point)
+-		outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
++		var contours: Array[PackedVector2Array] = []
++		if pieces[index].kind == "spline": contours = RoadEdges.section_contours(pieces,index,0.0,topology)
++		else: contours.append(RoadPieces.section_outline(pieces,index,0.0,topology))
++		for polygon: PackedVector2Array in contours:
++			var bounds := Rect2(polygon[0],Vector2.ZERO)
++			for point: Vector2 in polygon: bounds = bounds.expand(point)
++			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
+ 	var segments: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
+ 		if yield_budget.is_valid() and not await yield_budget.call(): return []
+-		if pieces[index].kind == "bridge": continue
++		if pieces[index].kind in ["bridge","spline"]: continue
+ 		var shape: Dictionary = build(pieces,index,-0.2,topology)
+ 		var polygon: PackedVector2Array = shape.polygon
+ 		var cuts: Array[Dictionary] = shape.cuts
+@@ -142,6 +152,13 @@
+ 				if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces,topology): continue
+ 				if RoadEdges._on_join_plane(a,b,cuts) or RoadEdges._inner_bend_distance(middle,points) < 0: continue
+ 				segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
++	# Splines keep exactly the same swept contours, curvature classification
++	# and bounded kerb offsets used by their solitary/canonical renderer.
++	var has_spline: bool = false
++	for piece: Dictionary in pieces: has_spline = has_spline or piece.kind == "spline"
++	if has_spline:
++		if yield_budget.is_valid() and not await yield_budget.call(): return []
++		segments.append_array(RoadKerbs.creator_segments(document,"spline"))
+ 	var visual := RoadKerbs.new()
+ 	var first: int = 0
+ 	while first < segments.size():
+@@ -154,7 +171,7 @@
+ 			last += 1
+ 		var origin: float = segments[first].start
+ 		var length: float = segments[last].end-origin
+-		if length < 2.0:
++		if length < 2.0 and pieces[int(segments[first].piece)].kind != "spline":
+ 			first = last+1
+ 			continue # Omit isolated decorative kerb slivers at offset inflections.
+ 		for i: int in range(first,last+1):
+diff --git a/game/track/road_kerbs.gd b/game/track/road_kerbs.gd
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -82,7 +82,7 @@
+ 
+ 
+ 
+-static func creator_segments(document: Dictionary) -> Array[Dictionary]:
++static func creator_segments(document: Dictionary, selected_kind: String = "") -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+ 	if document.get("surface","asphalt") == "dirt": return result
+ 	var pieces: Array = document.get("pieces",[])
+@@ -101,6 +101,7 @@
+ 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
++		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+ 		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+ 		for polygon: PackedVector2Array in RoadEdges.section_contours(pieces,index,-0.20,topology):
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-113"
++const VERSION: String = "track-kit-114"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -158,6 +158,7 @@
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_road.gd') 'spline-road-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_borders.gd') 'spline-border-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_composition.gd') 'spline-composition-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/profile_editor_performance.gd') 'editor-performance-tests.log'
+diff --git a/docs/SPLINE_BORDER_FIX.md b/docs/SPLINE_BORDER_FIX.md
+--- a/docs/SPLINE_BORDER_FIX.md
++++ b/docs/SPLINE_BORDER_FIX.md
+@@ -1,4 +1,6 @@
+ # Smooth spline borders and kerbs — 2026-10-06
++
++Follow-up: [spline preservation with other road blocks](SPLINE_COMPOSITION_FIX.md) fixes the separate multi-piece kerb renderer and uses visual kit114, preserving compiler22 and canonical contacts.
+ 
+ Owner correction: steep spline curves produced crossed white borders and triangular kerb tips inside the road. Requirement IDs: R01, T01–T04, V03–V05, Q01, SP01–SP03; SP04 (simple exposed spline boundary), SP05 (smooth curved kerbs). This supersedes the folded-offset limitation in [SPLINE_ROADS.md](SPLINE_ROADS.md).
+ 
+diff --git a/game/tests/test_spline_composition.gd b/game/tests/test_spline_composition.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_spline_composition.gd
+@@ -0,0 +1,138 @@
++extends SceneTree
++## Reproduce the one-piece/multiple-piece kerb renderer transition.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var folder: String
++var evidence: String
++
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func spline() -> Dictionary:
++	var piece: Dictionary = RoadPieces.create("spline",Vector2(-42,-12),0.0,12.0)
++	piece.spline_points = [[0.0,0.0],[42.0,-26.0],[39.0,29.0],[58.0,-7.0],[70.0,68.0]]
++	return piece
++
++func document(pieces: Array) -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "spline_composition"; doc.name = "Spline with other roads"; doc.pieces = pieces
++	return doc
++
++func mesh_signature(node: Node) -> Array:
++	var result: Array = []
++	if node is MeshInstance3D and node.mesh != null:
++		for surface: int in range(node.mesh.get_surface_count()): result.append(node.mesh.surface_get_arrays(surface))
++	for child: Node in node.get_children(): result.append_array(mesh_signature(child))
++	return result
++
++func rendered_kerbs(native: NativeTrack) -> Array:
++	var visual := NativeTrackVisual.new()
++	root.add_child(visual)
++	await visual._build_kerbs(native)
++	var result: Array = mesh_signature(visual)
++	visual.free()
++	return result
++
++func geometry_checks() -> void:
++	var road: Dictionary = spline()
++	var other: Dictionary = RoadPieces.create("straight",Vector2(60,55),0.0,12.0)
++	var alone: Dictionary = document([road])
++	var together: Dictionary = document([road,other])
++	var first: NativeTrack = TrackCompiler.compile(alone)
++	var second: NativeTrack = TrackCompiler.compile(together)
++	check(first != null and second != null,"standalone and separate-road fixtures compile")
++	check(first.kerbs.triangles == second.kerbs.triangles,"unrelated road leaves canonical spline kerbs identical")
++	var baseline := GDScript.new()
++	baseline.source_code = FileAccess.get_file_as_string("res://../docs/evidence/spline-composition-2026-10-06/before/game/track/road_kerbs.gd").replace("\r\n","\n").replace("class_name RoadKerbs\n","")
++	check(baseline.reload() == OK,"task-start physical kerb builder compiles")
++	var original_contacts: RefCounted = baseline.new()
++	original_contacts.call("build",second)
++	check(original_contacts.get("triangles") == second.kerbs.triangles and original_contacts.get("blocked") == second.kerbs.blocked,"rendering fix preserves exact task-start physical kerb triangles and masks")
++	var visual_triangles: Array[Dictionary] = await VisualRoadJoin.kerb_triangles(together)
++	print("SPLINE_COMPOSITION_TRIANGLES canonical=",second.kerbs.triangles.size()," decorative=",visual_triangles.size())
++	check(visual_triangles == second.kerbs.triangles,"multiple-piece renderer keeps exact clean spline triangles")
++	check(await rendered_kerbs(first) == await rendered_kerbs(second),"adding a separate road preserves every rendered spline kerb vertex/normal/UV")
++	var reordered: Dictionary = document([other,road])
++	check(await VisualRoadJoin.kerb_triangles(reordered) == first.kerbs.triangles,"spline appearance is independent of piece order")
++	var native_order: NativeTrack = TrackCompiler.compile(reordered)
++	check(await rendered_kerbs(native_order) == await rendered_kerbs(first),"spline-last scene renders the same clean kerbs")
++	# Connected mouths and mixed curved pieces use clean contour construction.
++	var pose: Dictionary = RoadPieces.end_pose(road)
++	for kind: String in ["straight","curve","hairpin","spline"]:
++		var piece: Dictionary = RoadPieces.create(kind,pose.position,pose.heading,12.0)
++		if kind in ["straight","hairpin"]: piece.length = 12.0 if kind == "straight" else 0.0
++		var mixed: Dictionary = document([road,piece])
++		var native: NativeTrack = TrackCompiler.compile(mixed)
++		check(native != null,"connected "+kind+" fixture compiles")
++		if native == null: continue
++		var clean: Array[Dictionary] = await VisualRoadJoin.kerb_triangles(mixed)
++		check(not clean.is_empty(),"connected "+kind+" retains visible smooth kerbs")
++		var finite: bool = true
++		for triangle: Dictionary in clean:
++			for point: Vector2 in triangle.points: finite = finite and point.is_finite()
++		check(finite,"all mixed-road kerb coordinates remain finite")
++		check(mixed.pieces[0] == road,"adding "+kind+" preserves all five spline points and widths")
++	# Crossing a straight road suppresses covered spline kerbs using the same
++	# full-map exposure checks as contacts, rather than restoring old folds.
++	var crossing: Dictionary = RoadPieces.create("straight",Vector2(-22,21),0.0,12.0)
++	crossing.length = 64.0
++	var crossed: Dictionary = document([road,crossing])
++	var crossed_native: NativeTrack = TrackCompiler.compile(crossed)
++	var crossed_visual: Array[Dictionary] = await VisualRoadJoin.kerb_triangles(crossed)
++	check(crossed_visual == crossed_native.kerbs.triangles,"crossing another road uses the same exposed spline kerbs as contacts")
++	check(crossed_visual.size() < first.kerbs.triangles.size(),"covered kerbs are removed at the actual crossing")
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"real editor finishes rebuilding the mixed-road scene")
++	await process_frame
++
++func shot(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(name+".png")) == OK,"save "+name)
++
++func run() -> void:
++	await geometry_checks()
++	root.size = Vector2i(1280,720)
++	folder = "user://spline_composition_test_"+TrackLibrary.unique_id()
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/spline-composition-2026-10-06").simplify_path()
++	DirAccess.make_dir_recursive_absolute(evidence)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder+"/records.json")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = document([spline()]); app.canvas = null; app.editor_view.clear(); app.call("_show_screen","create")
++	await settle()
++	app.canvas.fit(); app.canvas.zoom_by(1.35,app.canvas.to_screen(Vector2(3,-7)))
++	await shot("one-spline")
++	var original: Dictionary = app.document.pieces[0].duplicate(true)
++	app.canvas.choose_piece("straight")
++	app.canvas.snap_enabled = false; app.canvas.ghost.position = [60.0,55.0]; app.canvas.ghost.heading = 0.0
++	app.canvas.confirm_piece()
++	await settle()
++	check(app.document.pieces.size() == 2 and app.document.pieces[0] == original,"placing an unrelated second block preserves authored spline")
++	await shot("separate-road")
++	app.call("_undo"); await settle(); await shot("undo-second-road")
++	check(app.document.pieces.size() == 1,"undo returns to the one-spline scene")
++	app.call("_redo"); await settle(); await shot("redo-second-road")
++	check(app.document.pieces.size() == 2,"redo restores the mixed-road scene")
++	app.call("_undo"); await settle()
++	app.canvas.snap_enabled = true; app.canvas.choose_piece("straight"); app.canvas.ghost.length = 12.0; app.canvas.confirm_piece()
++	await settle(); await shot("connected-road")
++	check(app.document.pieces[0] == original,"connecting a second road preserves authored spline")
++	root.size = Vector2i(960,540); await process_frame; app.canvas.fit(); await shot("connected-960x540")
++	app.queue_free(); await process_frame
++	cleanup(folder)
++	print("SPLINE_COMPOSITION_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func cleanup(path: String) -> void:
++	if not DirAccess.dir_exists_absolute(path): return
++	for child: String in DirAccess.get_directories_at(path): cleanup(path.path_join(child))
++	for file: String in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))
++	DirAccess.remove_absolute(path)
+diff --git a/game/tests/test_spline_composition.gd.uid b/game/tests/test_spline_composition.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_spline_composition.gd.uid
+@@ -0,0 +1 @@
++uid://c7gapua1cg57p
+diff --git a/docs/SPLINE_COMPOSITION_FIX.md b/docs/SPLINE_COMPOSITION_FIX.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SPLINE_COMPOSITION_FIX.md
+@@ -0,0 +1,33 @@
++# Spline preservation when adding other roads — 2026-10-06
++
++Owner report: a single spline looked acceptable, but adding any other road broke it. Owner clarified that the second road can be completely separate. Requirement IDs: R01, T01–T04, V03–V05, Q01, SP04–SP05; SP06 (stable spline presentation in multi-piece documents).
++
++The second block triggered a different kerb-rendering path: `NativeTrackVisual._build_kerbs` uses canonical kerbs for a solitary piece, then switches to `VisualRoadJoin.kerb_triangles` for multi-piece maps. That decorative helper still constructed spline kerbs from the old folded centreline offsets. A completely separate straight road changed the reproduction fixture from **3,258 clean canonical kerb triangles to 732 old decorative triangles**, losing the curved kerbs and restoring triangular slivers inside the spline. Four independent triangle/mesh/piece-order assertions reproduced the failure before fixing it; before/after real editor captures are retained.
++
++Multi-piece rendering now uses the same clean spline segment construction, curvature classification, bounded offsets and taper as the solitary/canonical path. Other road types retain their cosmetic join fairing and short-sliver rule. Spline kerbs are not subjected to that legacy sliver rule. Masks use cleaned spline contours and respect genuine holes, so unrelated roads preserve the spline exactly and crossing roads hide only kerbs they actually cover. Legacy pieces meeting a spline consult its clean neighbour contour rather than its folded raw outline.
++
++`RoadKerbs.creator_segments` gains an optional internal kind filter so the visual helper can reuse spline segments while retaining all other pieces for exposure/join checks. Its default construction is unchanged. Direct comparison with the task-start physical builder proves exact equality of contact triangles and exclusion masks. **Compiler22, native content identities, physics/rules, authoring schema, point widths and existing recordings are unchanged.** Only **track-kit-114** invalidates previously baked broken meshes. No matching backend rollout is needed for this presentation correction, and no live service was changed.
++
++## Actual verification
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, through `scripts/dev.ps1`; Windows desktop Compatibility/OpenGL on RTX 3090.
++
++- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_spline_composition.gd -Graphical`: final **42 checks, zero failures**. Multiple-piece output now contains the same **3,258 triangles** as contacts; a separate straight preserves every spline kerb vertex, normal and UV. Checks cover spline-first/spline-last ordering, connected straight/curve/hairpin/spline pieces, covered-kerb suppression at a real crossing, exact old/new contact triangles and masks, and actual editor placement/undo/redo at 1280×720 and 960×540. Authored spline coordinates and widths remain identical. Before the fix, the first run had **four failures** (15,226 checks included per-vertex finite assertions); these finite assertions were aggregated without changing their coverage in subsequent runs.
++- `... TestScript -ScriptPath res://tests/test_spline_borders.gd`: **1,107 headless checks, zero failures**, including steep contours, smooth kerbs, hole preservation and all four legacy-biome renderer comparisons.
++- `... TestScript -ScriptPath res://tests/test_spline_road.gd`: **476 checks, zero failures**; five laps, **13,517 ticks / zero contacts**, exact recorded-input replay, point editing/widths, persistence and undo/redo.
++- `... TestShoulders`: union-area/triangle checks pass; **71 visual-join** and **18 internal-contour checks**, zero failures. Existing joined legacy roads and decorative sliver handling remain covered.
++- `... TestPieces`: **377 checks, zero failures**, including five-lap road races and exact replay.
++- `... TestRoadCache`: **66 checks, zero failures**.
++- `... TestWorkflow`: **252 checks, zero failures**.
++- `... Import`: exit 0 and generates the new test UID. Final `... TestScript -ScriptPath res://tests/test_script_parse.gd`: **312 scripts, zero failures**.
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q -k 'standalone_verifier or real_five_lap'`: **2 passed / 61 deselected**, including unchanged pinned manifests, the packaged canonical project and retained verified five-lap recordings/times. Existing Starlette deprecation warning retained.
++
++An intermediate crossing assertion failed because its synthetic straight crossed a straight portion with no kerbs to suppress. Moving that fixture over the actual kerb-bearing bend makes the original suppression assertion pass; the assertion was retained. No full Validate, Android export/install or physical-device test was run. Older full-validation/desert-golden limitations remain documented in [SPLINE_BORDER_FIX.md](SPLINE_BORDER_FIX.md) and are not reported as fixed by this task.
++
++## Files, evidence and acceptance
++
++Runtime: `game/track/visual_road_join.gd`, `road_kerbs.gd`, `native_track_visual.gd` (visual version only). Verification: new `game/tests/test_spline_composition.gd` and UID; `scripts/dev.ps1` adds it to Validate. Documentation: this file, the follow-up link in `docs/SPLINE_BORDER_FIX.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Evidence under `docs/evidence/spline-composition-2026-10-06/`: [before](evidence/spline-composition-2026-10-06/before-captures/separate-road.png), [after adding a separate road](evidence/spline-composition-2026-10-06/separate-road.png), [one spline](evidence/spline-composition-2026-10-06/one-spline.png), [connected road](evidence/spline-composition-2026-10-06/connected-road.png), undo/redo and compact captures, copied command logs, task-start source snapshots and a scoped review patch. Screenshots were inspected. The remaining issue badges in these synthetic open-road fixtures indicate unconnected lap routes, independently of spline presentation.
++
++No phone attachment check or device test was performed. Owner visual acceptance on the reported map and physical-phone performance remain outstanding. Player files, live backend/cloud data/services and existing racing contracts were not modified. Concurrent source changes are preserved outside the scoped patch.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 R01/T01-T04/V03-V05/Q01/SP06: second separate road reproduced a switch from clean spline kerbs3258 to legacy decorative732, causing four visual/triangle/order failures. Multi-piece helper now reuses clean spline segments and masks while retaining legacy join fairing; kit114 invalidates old bakes. Final graphical composition42, borders1107, spline476/exact five-lap13517 ticks, shoulders71+18, roads377, cache66, workflow252, parser312 and canonical backend2 pass. Exact task-start physical triangles/masks and compiler22/identities preserved; no rollout needed. Before/after screenshots inspected, scoped patch/logs retained. No phone attachment check/device test/export/install or backend/cloud change/full Validate. Owner/map/phone acceptance remains. Commands, files, corrected fixture and evidence: docs/SPLINE_COMPOSITION_FIX.md.
++
+ 2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
+ 
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP04-SP05: owner-corrected steep spline borders now use clean exposed swept contours, rounded inward corners and continuous curve kerbs that taper before folding. Shared editor/render/contact boundaries retain five points/widths and genuine islands; local caches bounded. Compiler22/kit113 and packaged verifier helper updated; authoring schema unchanged. Final graphical border1111, spline479/final headless476, kerb31, road377, creator113, workflow252, cache66, parser311 and focused backend10 pass; exact five-lap spline13517 ticks/zero contacts. Four legacy-biome arrays equal actual task-start renderer; older desert golden failure retained, no full Validate claim. Screenshots inspected and scoped patch retained. No phone attachment check/device test/export/install or backend deployment; owner/mobile/matching rollout acceptance remains. Actual commands, files, failed intermediate runs and evidence: docs/SPLINE_BORDER_FIX.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 R01/T01-T04/V03-V05/Q01/SP06: second separate road reproduced a switch from clean spline kerbs3258 to legacy decorative732, causing four visual/triangle/order failures. Multi-piece helper now reuses clean spline segments and masks while retaining legacy join fairing; kit114 invalidates old bakes. Final graphical composition42, borders1107, spline476/exact five-lap13517 ticks, shoulders71+18, roads377, cache66, workflow252, parser312 and canonical backend2 pass. Exact task-start physical triangles/masks and compiler22/identities preserved; no rollout needed. Before/after screenshots inspected, scoped patch/logs retained. No phone attachment check/device test/export/install or backend/cloud change/full Validate. Owner/map/phone acceptance remains. Commands, files, corrected fixture and evidence: docs/SPLINE_COMPOSITION_FIX.md.
++
+ 2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
+ 
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP04-SP05: owner-corrected steep spline borders now use clean exposed swept contours, rounded inward corners and continuous curve kerbs that taper before folding. Shared editor/render/contact boundaries retain five points/widths and genuine islands; local caches bounded. Compiler22/kit113 and packaged verifier helper updated; authoring schema unchanged. Final graphical border1111, spline479/final headless476, kerb31, road377, creator113, workflow252, cache66, parser311 and focused backend10 pass; exact five-lap spline13517 ticks/zero contacts. Four legacy-biome arrays equal actual task-start renderer; older desert golden failure retained, no full Validate claim. Screenshots inspected and scoped patch retained. No phone attachment check/device test/export/install or backend deployment; owner/mobile/matching rollout acceptance remains. Actual commands, files, failed intermediate runs and evidence: docs/SPLINE_BORDER_FIX.md.

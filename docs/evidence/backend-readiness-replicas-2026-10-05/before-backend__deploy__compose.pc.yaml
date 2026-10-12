@@ -1,0 +1,76 @@
+# Local PC development only. Separate project/volumes from production and test fixtures.
+name: bmt-pc-dev
+x-runtime: &runtime
+  image: bmt-backend:local
+  user: "10001:10001"
+  init: true
+  working_dir: /app
+  environment: &environment
+    BMT_ENVIRONMENT: development
+    BMT_DEV_AUTH_ENABLED: "true"
+    BMT_TEST_DRIVERS_ENABLED: ${BMT_TEST_DRIVERS_ENABLED:-false}
+    BMT_DEV_AUTH_KEY: ${BMT_DEV_AUTH_KEY:?Run BackendStart to generate local configuration}
+    BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD}@db:5432/bmt
+    BMT_PUBLIC_BASE_URL: http://127.0.0.1:18181
+    BMT_ADMIN_OWNER_KEY: ${BMT_ADMIN_OWNER_KEY:-}
+    BMT_ADMIN_ANALYST_KEY: ${BMT_ADMIN_ANALYST_KEY:-}
+    BMT_GOOGLE_CLIENT_IDS: ${BMT_GOOGLE_CLIENT_IDS:-}
+    BMT_GOOGLE_WEB_CLIENT_ID: ${BMT_GOOGLE_WEB_CLIENT_ID:-}
+    BMT_OBJECT_DIR: /var/lib/bmt/objects
+  volumes:
+    - ../bmt_backend:/app/bmt_backend:ro
+    - objects:/var/lib/bmt/objects
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: "2"}
+
+services:
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bmt
+      POSTGRES_DB: bmt
+      POSTGRES_PASSWORD: ${BMT_DB_PASSWORD:?Run BackendStart first}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U bmt -d bmt"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  migrate:
+    <<: *runtime
+    command: [python, -m, bmt_backend.migrate]
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    <<: *runtime
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+      args:
+        GODOT_SHA256: 8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e
+    restart: unless-stopped
+    ports: ["127.0.0.1:18181:8080"]
+    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=3).close()"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+  worker:
+    <<: *runtime
+    stop_grace_period: 30s
+    environment:
+      <<: *environment
+      BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+    restart: unless-stopped
+    command: [python, -m, bmt_backend.worker]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+volumes:
+  postgres_data:
+  objects:

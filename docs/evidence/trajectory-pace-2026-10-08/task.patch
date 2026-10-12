@@ -1,0 +1,721 @@
+diff --git a/backend/bmt_backend/test_driver_generator.py b/backend/bmt_backend/test_driver_generator.py
+--- a/backend/bmt_backend/test_driver_generator.py
++++ b/backend/bmt_backend/test_driver_generator.py
+@@ -11,7 +11,7 @@
+ 
+ from .verifier import MAX_REQUEST_BYTES, GodotVerifier
+ 
+-CONTROLLER_VERSION = "profiled-trajectory-4"
++CONTROLLER_VERSION = "profiled-trajectory-5"
+ MAX_TRAJECTORY_CACHE_FILES = 128
+ 
+ 
+diff --git a/game/input/profiled_route_driver.gd b/game/input/profiled_route_driver.gd
+--- a/game/input/profiled_route_driver.gd
++++ b/game/input/profiled_route_driver.gd
+@@ -1,6 +1,6 @@
+ class_name ProfiledRouteDriver
+ extends RefCounted
+-const VERSION: String = "profiled-trajectory-4"
++const VERSION: String = "profiled-trajectory-5"
+ ## Offline development controller. It only emits ordinary quantized inputs.
+ ## The conservative regression RouteDriver and canonical simulation are unchanged.
+ var rng := RandomNumberGenerator.new()
+diff --git a/game/input/racing_trajectory.gd b/game/input/racing_trajectory.gd
+--- a/game/input/racing_trajectory.gd
++++ b/game/input/racing_trajectory.gd
+@@ -1,9 +1,12 @@
+ class_name RacingTrajectory
+ extends RefCounted
+ ## Derived development data only. Never changes track, rules or handling hashes.
+-const VERSION: String = "racing-trajectory-2"
++const VERSION: String = "racing-trajectory-3"
+ const SPACING: float = 0.5
+ const MAX_SAMPLES: int = 8192
++const LATERAL_UTILIZATION: float = 0.88
++const DRIVE_UTILIZATION: float = 0.90
++const BRAKE_UTILIZATION: float = 0.82
+ var points := PackedVector2Array()
+ var centers := PackedVector2Array()
+ var normals := PackedVector2Array()
+@@ -27,6 +30,7 @@
+ var strategy: String = "minimum_curvature"
+ var pilot_ticks: int = 0
+ var pilot_candidates: Array = []
++var _planning_config: HandlingConfig
+ 
+ static func identity(track: NativeTrack, config: HandlingConfig) -> String:
+ 	return JSON.stringify([VERSION,track.content_hash,TrackCompiler.VERSION,VehicleSimulation.PHYSICS_VERSION,RaceRules.KEY,config.snapshot()],"",true).sha256_text()
+@@ -34,6 +38,7 @@
+ func build(track: NativeTrack, config: HandlingConfig, method: String = "minimum_curvature") -> void:
+ 	cache_key = identity(track,config)
+ 	strategy = method
++	_planning_config = config
+ 	length = track.route_length
+ 	var count: int = clampi(ceili(length/SPACING),16,MAX_SAMPLES)
+ 	spacing = length/count
+@@ -89,7 +94,7 @@
+ 		grips[i] = factors.x*(1.0-dirt)
+ 		resistance[i] = factors.y
+ 	curvature_before = _energy()
+-	var best_energy: float = curvature_before
++	var best_energy: float = _objective_energy()
+ 	var best_points: PackedVector2Array = points.duplicate()
+ 	var best_offsets: PackedFloat32Array = offsets.duplicate()
+ 	# Bounded coordinate Newton descent on integral squared geometric curvature.
+@@ -103,7 +108,7 @@
+ 					offsets[i] = clampf(offsets[i]-0.15*bend.dot(normals[i]),lower[i],upper[i])
+ 					points[i] = centers[i]+normals[i]*offsets[i]
+ 		best_points = points.duplicate(); best_offsets = offsets.duplicate()
+-	for radius: int in ([8,4,2,1] if method == "minimum_curvature" else []):
++	for radius: int in ([8,4,2,1] if method in ["minimum_curvature","minimum_time"] else []):
+ 		for sweep: int in range(45):
+ 			for i: int in range(count):
+ 				if upper[i]-lower[i] < 0.00001: continue
+@@ -124,7 +129,7 @@
+ 						offsets[i] = next; accepted = true; break
+ 					delta *= 0.4
+ 				if not accepted: points[i] = centers[i]+normals[i]*old
+-		var energy: float = _energy()
++		var energy: float = _objective_energy()
+ 		if energy < best_energy:
+ 			best_energy = energy; best_points = points.duplicate(); best_offsets = offsets.duplicate()
+ 	points = best_points; offsets = best_offsets
+@@ -139,25 +144,22 @@
+ 		var incoming: Vector2 = points[i]-a
+ 		var outgoing: Vector2 = b-points[i]
+ 		curvature[i] = -2.0*incoming.cross(outgoing)/maxf(incoming.length()*outgoing.length()*a.distance_to(b),0.00001)
+-		var k: float = absf(curvature[i])
+-		var grip: float = config.lateral_grip*minf(config.front_grip,config.rear_grip)*grips[i]*0.68
+-		var bound: float = minf(config.maximum_speed*0.97,sqrt(grip/maxf(k,0.0001)))
+-		bound = minf(bound,config.maximum_yaw_rate*0.88/maxf(k,0.0001))
+-		# Steering reduction can make a radius infeasible even below the grip limit.
+-		for reduction: int in range(30):
+-			var angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(bound/24.0,0.0,1.0))
+-			if k <= tan(angle)*config.front_grip/config.rear_grip/config.wheelbase*0.92: break
+-			bound *= 0.9
+-		speeds[i] = maxf(1.0,bound)
++		# Re-evaluate the final line, rather than using the seed's surface.
++		probe.position = points[i]; probe.track_elevated = bool(layers[i])
++		probe.velocity = Vector2(sin(headings[i]),cos(headings[i]))*20.0
++		var factors: Vector2 = track.surface_factors(probe)
++		grips[i] = factors.x*(1.0-(config.dirty_tire_grip_loss if track.tire_pickup(probe) > 0.0 else 0.0))
++		resistance[i] = factors.y
++		speeds[i] = maxf(1.0,corner_speed(config,absf(curvature[i]),grips[i]))
+ 	# Multiple cyclic passes propagate seam braking and acceleration constraints.
+ 	for sweep: int in range(8):
+ 		for i: int in range(count):
+ 			var j: int = (i+1)%count
+-			var a: float = drive_acceleration(config,speeds[i],grips[i],resistance[i])*0.8
++			var a: float = drive_acceleration(config,speeds[i],grips[i],resistance[i],curvature[i])*DRIVE_UTILIZATION
+ 			speeds[j] = minf(speeds[j],sqrt(maxf(1.0,speeds[i]*speeds[i]+2.0*a*points[i].distance_to(points[j]))))
+ 		for i: int in range(count-1,-1,-1):
+ 			var j: int = (i+1)%count
+-			var brake: float = minf(config.braking_force/config.mass,config.longitudinal_grip*grips[i])*0.72
++			var brake: float = braking_acceleration(config,speeds[i],grips[i],curvature[i])*BRAKE_UTILIZATION
+ 			speeds[i] = minf(speeds[i],sqrt(speeds[j]*speeds[j]+2.0*brake*points[i].distance_to(points[j])))
+ 	reference_seconds = 0.0
+ 	for i: int in range(count): reference_seconds += 2.0*points[i].distance_to(points[(i+1)%count])/maxf(0.1,speeds[i]+speeds[(i+1)%count])
+@@ -166,10 +168,30 @@
+ 	for i: int in range(count): lower[i] -= offsets[i]; upper[i] -= offsets[i]
+ 	offsets.fill(0.0)
+ 
+-static func drive_acceleration(config: HandlingConfig, speed: float, grip: float, drag_rate: float) -> float:
++static func longitudinal_budget(config: HandlingConfig, speed: float, grip: float, k: float) -> float:
++	var usage: float = clampf(speed*speed*absf(k)/maxf(0.01,config.lateral_grip*grip),0.0,1.0)
++	return config.longitudinal_grip*grip*sqrt(maxf(0.25,1.0-usage*usage*0.65))
++
++static func braking_acceleration(config: HandlingConfig, speed: float, grip: float, k: float) -> float:
++	return minf(config.braking_force/config.mass,longitudinal_budget(config,speed,grip,k))
++
++static func drive_acceleration(config: HandlingConfig, speed: float, grip: float, drag_rate: float, k: float = 0.0) -> float:
+ 	var force: float = config.engine_force/config.mass*(1.0-0.45*clampf(speed/config.maximum_speed,0.0,1.0))
+ 	var drag: float = (config.drag*speed*speed+config.rolling_resistance)/config.mass+drag_rate
+-	return maxf(0.1,minf(force,config.longitudinal_grip*grip)-drag)
++	return maxf(0.1,minf(force,longitudinal_budget(config,speed,grip,k))-drag)
++
++static func steering_speed(config: HandlingConfig, k: float) -> float:
++	# Exact inverse of the canonical linear speed reduction, including the
++	# flat region above 24 m/s. The old 0.9 loop unnecessarily discarded speed.
++	var required: float = atan(k*config.wheelbase*config.rear_grip/(config.front_grip*0.92))
++	if required >= config.steering_angle: return 0.0
++	if required <= config.steering_angle*(1.0-config.high_speed_steering_reduction): return config.maximum_speed
++	return maxf(0.0,24.0*(1.0-required/config.steering_angle)/maxf(0.00001,config.high_speed_steering_reduction))
++
++static func corner_speed(config: HandlingConfig, k: float, grip_factor: float) -> float:
++	var grip: float = config.lateral_grip*minf(config.front_grip,config.rear_grip)*grip_factor*LATERAL_UTILIZATION
++	var bound: float = minf(config.maximum_speed*0.97,sqrt(grip/maxf(k,0.0001)))
++	return minf(bound,minf(config.maximum_yaw_rate*0.88/maxf(k,0.0001),steering_speed(config,k)))
+ 
+ func _energy() -> float:
+ 	var value: float = 0.0
+@@ -184,8 +206,27 @@
+ 	var k: float = 2.0*incoming.cross(outgoing)/maxf(incoming.length()*outgoing.length()*a.distance_to(b),0.00001)
+ 	return k*k*(incoming.length()+outgoing.length())*0.5
+ 
++func _planning_cost(i: int, radius: int) -> float:
++	if strategy != "minimum_time": return _curvature_cost(i,radius)
++	var a: Vector2 = points[posmod(i-radius,points.size())]
++	var b: Vector2 = points[(i+radius)%points.size()]
++	var incoming: Vector2 = points[i]-a
++	var outgoing: Vector2 = b-points[i]
++	var k: float = absf(2.0*incoming.cross(outgoing)/maxf(incoming.length()*outgoing.length()*a.distance_to(b),0.00001))
++	var ds: float = (incoming.length()+outgoing.length())*0.5
++	var bound: float = corner_speed(_planning_config,k,grips[i])
++	var impossible: float = maxf(0.0,k-tan(_planning_config.steering_angle)*_planning_config.front_grip/_planning_config.rear_grip/_planning_config.wheelbase*0.92)
++	return ds/maxf(bound,1.0)+ds*impossible*impossible*20.0
++
++func _objective_energy() -> float:
++	var value: float = 0.0
++	var reach: int = maxi(1,roundi(2.0/spacing)) if strategy == "minimum_time" else 1
++	for i: int in range(points.size()): value += _planning_cost(i,reach)/reach
++	return value
++
+ func _local_energy(i: int, radius: int) -> float:
+-	return _curvature_cost(posmod(i-radius,points.size()),radius)+_curvature_cost(i,radius)+_curvature_cost((i+radius)%points.size(),radius)
++	if strategy == "minimum_time": radius = maxi(radius,maxi(1,roundi(2.0/spacing)))
++	return _planning_cost(posmod(i-radius,points.size()),radius)+_planning_cost(i,radius)+_planning_cost((i+radius)%points.size(),radius)
+ 
+ func at(s: float) -> Dictionary:
+ 	var location: float = fposmod(s,length)/spacing
+@@ -215,8 +256,8 @@
+ 
+ func restore(data: Dictionary, track: NativeTrack, config: HandlingConfig) -> bool:
+ 	if data.get("version") != VERSION or data.get("key") != identity(track,config) or not data.get("rows") is Array: return false
+-	if data.get("strategy") not in ["minimum_curvature","smoothing","center"] or not data.get("pilot_candidates") is Array: return false
+-	if data.pilot_candidates.size() > 3 or (not data.get("pilot_ticks") is int and not data.get("pilot_ticks") is float): return false
++	if data.get("strategy") not in ["minimum_curvature","smoothing","center","minimum_time"] or not data.get("pilot_candidates") is Array: return false
++	if data.pilot_candidates.size() > 4 or (not data.get("pilot_ticks") is int and not data.get("pilot_ticks") is float): return false
+ 	if not is_finite(float(data.pilot_ticks)) or float(data.pilot_ticks) < 0.0 or float(data.pilot_ticks) > 15000.0: return false
+ 	var rows: Array = data.rows
+ 	if rows.size() < 16 or rows.size() > MAX_SAMPLES: return false
+diff --git a/game/input/trajectory_mpc.gd b/game/input/trajectory_mpc.gd
+--- a/game/input/trajectory_mpc.gd
++++ b/game/input/trajectory_mpc.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Bounded LTV Frenet MPC. Five states: lateral/heading/yaw/lateral-velocity/
+ ## speed error. Steering and acceleration controls; canonical physics is external.
+-const VERSION: String = "frenet-ltv-mpc-1"
++const VERSION: String = "frenet-ltv-mpc-2"
+ const HORIZON: int = 16
+ const DT: float = 0.1
+ const UPDATE_TICKS: int = 12 # 10 Hz against canonical 120 Hz.
+@@ -56,8 +56,18 @@
+ 		ref.dv = next_speed-travel_speed
+ 		var steer_angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(travel_speed/24.0,0.0,1.0))
+ 		var ratio: float = config.front_grip/config.rear_grip
+-		var feed_angle: float = atan(config.wheelbase*ref.curvature/ratio)
+-		var yaw: float = travel_speed*ref.curvature
++		ref.yaw_bound = minf(config.maximum_yaw_rate,config.lateral_grip*ref.grip/maxf(travel_speed,2.0))*0.92
++		var nominal_yaw: float = clampf(travel_speed*ref.curvature,-ref.yaw_bound*0.95,ref.yaw_bound*0.95)
++		var raw_nominal: float = nominal_yaw
++		if config.progressive_handling:
++			var yaw_capacity: float = maxf(0.1,config.lateral_grip*config.front_grip*ref.grip/maxf(travel_speed,1.0))
++			nominal_yaw = clampf(nominal_yaw,-yaw_capacity*0.90,yaw_capacity*0.90)
++			raw_nominal = nominal_yaw/pow(1.0-pow(absf(nominal_yaw)/yaw_capacity,6),1.0/6.0)
++		# Linearize at a physically feasible steer, even when the current car
++		# is too fast for a reference bend. Otherwise the saturated affine
++		# model can have no admissible input interval at all.
++		var feed_angle: float = clampf(atan(raw_nominal*config.wheelbase/maxf(travel_speed,1.0)/ratio),-steer_angle,steer_angle)
++		var yaw: float = travel_speed/config.wheelbase*tan(feed_angle)*ratio
+ 		var derivative: float = maxf(2.0,travel_speed)/config.wheelbase*steer_angle*ratio/pow(cos(feed_angle),2)
+ 		if config.progressive_handling:
+ 			var demand: float = absf(yaw)/maxf(0.1,config.lateral_grip*config.front_grip*ref.grip/maxf(travel_speed,1.0))
+@@ -72,14 +82,17 @@
+ 		ref.yaw = travel_speed*ref.curvature
+ 		ref.heading_goal = atan(ref.yaw/config.lateral_response)
+ 		ref.side_goal = -travel_speed*ref.yaw/config.lateral_response
+-		ref.limit = minf(1.0,minf(config.maximum_yaw_rate,config.lateral_grip*ref.grip/maxf(travel_speed,2.0))*0.92/ref.gain)
++		# Invert the complete affine model. Dropping its bias clipped usable
++		# steering on tight bends and made feasible reference lines run wide.
++		ref.steer_lower = maxf(-1.0,(-ref.yaw_bound-ref.bias)/ref.gain)
++		ref.steer_upper = minf(1.0,(ref.yaw_bound-ref.bias)/ref.gain)
+ 		references.append(ref)
+ 		s += travel_speed*DT
+ 		travel_speed = next_speed
+ 	if steering.size() != HORIZON:
+ 		steering.resize(HORIZON); acceleration.resize(HORIZON)
+ 		for i: int in range(HORIZON):
+-			steering[i] = clampf(references[i].yaw/references[i].gain,-references[i].limit,references[i].limit)
++			steering[i] = clampf((references[i].yaw-references[i].bias)/references[i].gain,references[i].steer_lower,references[i].steer_upper)
+ 			acceleration[i] = clampf(references[i].dv/DT+2.0*(references[i].speed-state.velocity.length()),-references[i].brake,references[i].drive)
+ 	else:
+ 		for i: int in range(HORIZON-1): steering[i] = steering[i+1]; acceleration[i] = acceleration[i+1]
+@@ -93,16 +106,15 @@
+ 			var trial_accel: PackedFloat64Array = acceleration.duplicate()
+ 			var last: float = previous_steering
+ 			for i: int in range(HORIZON):
+-				var limit: float = references[i].limit
+-				var low: float = maxf(-limit,last-config.steering_rate*DT)
+-				var high: float = minf(limit,last+config.steering_rate*DT)
++				var low: float = maxf(references[i].steer_lower,last-config.steering_rate*DT)
++				var high: float = minf(references[i].steer_upper,last+config.steering_rate*DT)
+ 				var alow: float = -references[i].brake
+ 				var ahigh: float = references[i].drive
+ 				if i == 0:
+ 					# Keep the linearization local during sharp corners/recovery.
+ 					low = maxf(low,guidance_steering-0.12); high = minf(high,guidance_steering+0.12)
+ 					alow = maxf(alow,guidance_acceleration-1.5); ahigh = minf(ahigh,guidance_acceleration+1.5)
+-				if low > high: low = clampf(guidance_steering,-limit,limit); high = low
++				if low > high: low = clampf(guidance_steering,references[i].steer_lower,references[i].steer_upper); high = low
+ 				if alow > ahigh: alow = clampf(guidance_acceleration,-references[i].brake,references[i].drive); ahigh = alow
+ 				trial_steer[i] = clampf(trial_steer[i]-step*gradients[0][i],low,high)
+ 				trial_accel[i] = clampf(trial_accel[i]-step*gradients[1][i]*12.0,alow,ahigh)
+@@ -114,7 +126,7 @@
+ 		if not accepted: break
+ 	last_cost = cost
+ 	updates += 1
+-	previous_steering = clampf(clampf(steering[0],guidance_steering-0.12,guidance_steering+0.12),-references[0].limit,references[0].limit)
++	previous_steering = clampf(clampf(steering[0],guidance_steering-0.12,guidance_steering+0.12),references[0].steer_lower,references[0].steer_upper)
+ 	previous_acceleration = clampf(clampf(acceleration[0],guidance_acceleration-1.5,guidance_acceleration+1.5),-references[0].brake,references[0].drive)
+ 	var frame := DriveFrame.new()
+ 	frame.steer = clampi(roundi((previous_steering+disturbance)*127.0),-127,127)
+diff --git a/game/input/trajectory_planner.gd b/game/input/trajectory_planner.gd
+--- a/game/input/trajectory_planner.gd
++++ b/game/input/trajectory_planner.gd
+@@ -1,20 +1,25 @@
+ class_name TrajectoryPlanner
+ extends RefCounted
++const MAX_PILOT_CONTACTS: int = 4
++const CONTACT_COST_TICKS: float = 36.0
+ ## Offline qualification prevents a minimum-curvature heuristic selecting a
+ ## slower/impossible line. Pilot laps are diagnostics, never scores or uploads.
+ static func prepare(track: NativeTrack, config: HandlingConfig) -> RacingTrajectory:
+ 	var winner: RacingTrajectory
+ 	var score: float = INF
+ 	var candidates: Array = []
+-	for method: String in ["minimum_curvature","smoothing","center"]:
++	for method: String in ["minimum_curvature","smoothing","center","minimum_time"]:
+ 		var trajectory := RacingTrajectory.new()
+ 		trajectory.build(track,config,method)
+ 		var result: Dictionary = _pilot(track,config,trajectory)
+-		candidates.append({"strategy":method,"finished":result.finished,"ticks":result.ticks,"contacts":result.contacts,"missed_gate":result.missed_gate})
+-		# Contact is an explicit planner cost, never added to competitive timing.
+-		var candidate_score: float = result.ticks+result.contacts*12.0 if result.finished else INF
++		candidates.append({"strategy":method,"finished":result.finished,"ticks":result.ticks,"contacts":result.contacts,"missed_gate":result.missed_gate,"standing_ticks":result.standing_ticks,"flying_ticks":result.flying_ticks,"estimated_race_ticks":result.estimated_race_ticks,"diagnostic_laps":2})
++		# Standing-only qualification missed hot entries across the lap seam.
++		# Reject repeated impacts; isolated glances have an explicit planner cost.
++		# This cost never changes the actual recorded/verified race time.
++		var qualified: bool = result.finished and result.contacts <= MAX_PILOT_CONTACTS
++		var candidate_score: float = result.estimated_race_ticks+result.contacts*CONTACT_COST_TICKS if qualified else INF
+ 		if winner == null or candidate_score < score:
+-			winner = trajectory; score = candidate_score; winner.pilot_ticks = result.ticks if result.finished else 0
++			winner = trajectory; score = candidate_score; winner.pilot_ticks = roundi(result.estimated_race_ticks/5.0) if qualified else 0
+ 	winner.pilot_candidates = candidates
+ 	# Canonicalize the derived data through the exact persisted representation.
+ 	# JSON rounds float64 spacing/corridors: cold and warm control must see the
+@@ -32,12 +37,12 @@
+ 	sim.state.route_index = track.nearest_route(sim.state.position)
+ 	sim.state.track_elevated = track.elevated_at(sim.state.position,sim.state.route_index)
+ 	if CreatorBridges.at_any(track.creator_bridges,sim.state.position): sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
+-	var session := TrackSession.new(VehicleSimulation.TICK_RATE,1)
++	var session := TrackSession.new(VehicleSimulation.TICK_RATE,2)
+ 	var mpc := TrajectoryMPC.new()
+ 	var held := DriveFrame.new()
+ 	var gate: int = -1
+ 	var progressed: int = 0
+-	for tick: int in range(15000):
++	for tick: int in range(30000):
+ 		if tick%TrajectoryMPC.UPDATE_TICKS == 0:
+ 			var s: float = trajectory.project(sim.state.position,track.route_progress(sim.state.position,sim.state.route_index))
+ 			held = mpc.control(sim.state,trajectory,s,config,0.9225,0.5)
+@@ -47,4 +52,6 @@
+ 		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
+ 		if session.next_checkpoint != gate: gate = session.next_checkpoint; progressed = tick
+ 		if session.finished or session.missed_checkpoint >= 0 or tick-progressed > 1800: break
+-	return {"finished":session.finished,"ticks":session.elapsed_ticks,"contacts":sim.state.collision_count,"missed_gate":session.missed_checkpoint}
++	var standing: int = roundi(session.lap_times[0]*VehicleSimulation.TICK_RATE) if not session.lap_times.is_empty() else 0
++	var flying: int = roundi(session.lap_times[1]*VehicleSimulation.TICK_RATE) if session.lap_times.size() > 1 else 0
++	return {"finished":session.finished,"ticks":session.elapsed_ticks,"contacts":sim.state.collision_count,"missed_gate":session.missed_checkpoint,"standing_ticks":standing,"flying_ticks":flying,"estimated_race_ticks":standing+4*flying}
+diff --git a/game/tests/benchmark_test_drivers.gd b/game/tests/benchmark_test_drivers.gd
+--- a/game/tests/benchmark_test_drivers.gd
++++ b/game/tests/benchmark_test_drivers.gd
+@@ -39,7 +39,7 @@
+ 		var row: Dictionary = {"name":document.name,"finished":session.finished,"ticks":session.elapsed_ticks,"laps":session.completed_laps,"lap_seconds":session.lap_times,"collisions":sim.state.collision_count,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"controller":driver.VERSION,"manifest":compiled.manifest,"trace":trace}
+ 		row.tracking = {"rms_m":sqrt(driver.lateral_error_sum/maxi(1,driver.tracking_samples)),"max_m":driver.max_lateral_error,"fallback_ticks":driver.fallback_ticks,"updates":driver.mpc.updates}
+ 		if driver.trajectory != null:
+-			row.reference = {"lap_seconds":driver.trajectory.reference_seconds,"blocked":driver.trajectory.blocked_samples,"curvature_before":driver.trajectory.curvature_before,"curvature_after":driver.trajectory.curvature_after,"points":[]}
++			row.reference = {"lap_seconds":driver.trajectory.reference_seconds,"blocked":driver.trajectory.blocked_samples,"strategy":driver.trajectory.strategy,"pilot_candidates":driver.trajectory.pilot_candidates,"curvature_before":driver.trajectory.curvature_before,"curvature_after":driver.trajectory.curvature_after,"points":[]}
+ 			for i: int in range(driver.trajectory.points.size()): row.reference.points.append([i*driver.trajectory.spacing,driver.trajectory.points[i].x,driver.trajectory.points[i].y,driver.trajectory.speeds[i],driver.trajectory.curvature[i],driver.trajectory.layers[i]])
+ 		results.append(row)
+ 		if not frames.is_empty():
+diff --git a/game/tests/test_predictive_driver.gd b/game/tests/test_predictive_driver.gd
+--- a/game/tests/test_predictive_driver.gd
++++ b/game/tests/test_predictive_driver.gd
+@@ -13,6 +13,7 @@
+ 	var config: HandlingConfig = VehicleCatalog.config("compact")
+ 	var trajectory := RacingTrajectory.new()
+ 	trajectory.build(track,config)
++	_test_envelope(config)
+ 	check(trajectory.spacing <= 0.501,"half-metre trajectory sampling")
+ 	check(trajectory.curvature_after < trajectory.curvature_before,"curvature surrogate reduced")
+ 	check(trajectory.blocked_samples == 0,"oval has a feasible clearance corridor")
+@@ -21,7 +22,7 @@
+ 		check(is_finite(trajectory.speeds[i]) and trajectory.speeds[i] <= config.maximum_speed,"finite bounded reference speed")
+ 		var j: int = (i+1)%trajectory.points.size()
+ 		var ds: float = trajectory.points[i].distance_to(trajectory.points[j])
+-		var braking: float = minf(config.braking_force/config.mass,config.longitudinal_grip*trajectory.grips[i])*0.72
++		var braking: float = RacingTrajectory.braking_acceleration(config,trajectory.speeds[i],trajectory.grips[i],trajectory.curvature[i])*RacingTrajectory.BRAKE_UTILIZATION
+ 		check(trajectory.speeds[i]*trajectory.speeds[i] <= trajectory.speeds[j]*trajectory.speeds[j]+2.0*braking*ds+0.001,"cyclic braking including seam")
+ 	var cached: Dictionary = JSON.parse_string(JSON.stringify(trajectory.serialize()))
+ 	var restored := RacingTrajectory.new()
+@@ -50,6 +51,9 @@
+ 	sim.state.velocity = sim.state.forward()*12.0
+ 	var mpc := TrajectoryMPC.new()
+ 	mpc.control(sim.state,trajectory,progress,config,0.9,0.5)
++	for stage: Dictionary in mpc.references:
++		check(stage.steer_lower >= -1.0 and stage.steer_upper <= 1.0 and stage.steer_lower <= stage.steer_upper,"feasible normalized steering interval")
++		check(absf(stage.gain*stage.steer_lower+stage.bias) <= stage.yaw_bound+0.000001 and absf(stage.gain*stage.steer_upper+stage.bias) <= stage.yaw_bound+0.000001,"affine steering endpoints respect yaw and grip bound")
+ 	mpc._rollout(mpc.steering,mpc.acceleration,true)
+ 	var gradient: Array[PackedFloat64Array] = mpc._gradient()
+ 	for control: int in range(2):
+@@ -64,6 +68,17 @@
+ 			var numerical: float = (mpc._rollout(plus_u,plus_a,false)-mpc._rollout(minus_u,minus_a,false))/(2.0*epsilon)
+ 			check(absf(numerical-gradient[control][i]) < 0.001*maxf(1.0,absf(numerical)),"MPC adjoint matches numerical derivative")
+ 	check(ref.speed > 0.0,"positive reference speed")
++
++func _test_envelope(config: HandlingConfig) -> void:
++	for k: float in [0.0,0.05,0.10,0.15,0.20,0.28,0.40]:
++		var bound: float = RacingTrajectory.steering_speed(config,k)
++		if bound > 0.0:
++			var available: float = tan(config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(bound/24.0,0.0,1.0)))*config.front_grip/config.rear_grip/config.wheelbase*0.92
++			check(k <= available+0.000001,"exact inverse respects steering curvature capacity")
++	for speed: float in [0.0,10.0,20.0,30.0]:
++		var straight: float = RacingTrajectory.longitudinal_budget(config,speed,1.0,0.0)
++		var corner: float = RacingTrajectory.longitudinal_budget(config,speed,1.0,0.1)
++		check(corner <= straight and straight <= config.longitudinal_grip,"cornering consumes shared longitudinal traction")
+ 
+ func _drive_with_disturbance(track: NativeTrack, vehicle: String) -> void:
+ 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
+diff --git a/backend/tools/report_predictive_drivers.py b/backend/tools/report_predictive_drivers.py
+--- a/backend/tools/report_predictive_drivers.py
++++ b/backend/tools/report_predictive_drivers.py
+@@ -44,6 +44,11 @@
+                "final_finished": len(compared), "independently_verified": len(compared),
+                "median_improvement_percent": statistics.median(r["gain_percent"] for r in compared
+                                                                if r["gain_percent"] is not None),
++               "mean_improvement_percent": statistics.mean(r["gain_percent"] for r in compared
++                                                           if r["gain_percent"] is not None),
++               "aggregate_improvement_percent": 100*(1-sum(r["new_ticks"] for r in compared)
++                                                      /sum(r["old_ticks"] for r in compared)),
++               "faster_tracks": sum(r["gain_percent"] is not None and r["gain_percent"] > 0 for r in compared),
+                "old_contacts": sum(r["old_contacts"] for r in compared),
+                "new_contacts": sum(r["new_contacts"] for r in compared), "results": compared}
+     (args.evidence / "verified-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+diff --git a/backend/tools/render_driver_comparison.ps1 b/backend/tools/render_driver_comparison.ps1
+--- a/backend/tools/render_driver_comparison.ps1
++++ b/backend/tools/render_driver_comparison.ps1
+@@ -31,7 +31,9 @@
+         }
+         $bmtGraphics.DrawString($bmtLabel,$bmtSmall,$bmtInk,805,$bmtY+10)
+     }
+-    $bmtGraphics.DrawString('Reference/actual telemetry and exact inputs accompany the report. Desktop measurement; four tracks remain slower.',$bmtFont,$bmtInk,28,1010)
++    $bmtSlower = @($bmtRows | Where-Object { $_.gain_percent -and [double]$_.gain_percent -lt 0 }).Count
++    $bmtNote = if ($bmtSlower -eq 0) { 'Every circuit completes faster.' } else { "$bmtSlower circuits remain slower." }
++    $bmtGraphics.DrawString("Reference/actual telemetry and exact inputs accompany the report. Desktop measurement; $bmtNote",$bmtFont,$bmtInk,28,1010)
+     $bmtBitmap.Save((Join-Path (Resolve-Path -LiteralPath $Evidence) 'comparison.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+ } finally {
+     $bmtGraphics.Dispose(); $bmtBitmap.Dispose()
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
++
+ 2026-10-07 MUS20-MUS27/G01/R01/Q01/V06: owner-directed "music locks in" band world and higher tempo integrated: signature D-E-A-F#, recorded guitar/bass/acoustic kit, five related six-layer palettes, race144/menu112BPM; confidence uses clean gates/line/streak and recorded personal/rival pace, no raw-speed normalization. Reserved soar at recorded59.982s, musical setbacks/rebuild, once-per-lap two-beat PB breath and real-results motif/PB sting. Final soundtrack1158/graphical1163/flow29, App99/ghost38/rewind57/vehicle1434 checks pass; ghost fixture27 warnings retained. 37 assets/160 combinations/18 real captures unclipped; exact loops/breath/pause/hover, browser9 previews validated. Earlier tempo/renders preserved; targeted tremolo-seam/sparse-backtrack/decoder fixes retain failing evidence. Canonical concurrent work excluded, no phone test/export/install/full Validate/backend action; artist/AAA approval pending. Commands/files/source licences/scoped checkpoint: docs/LOCKED_IN_SOUNDTRACK.md.
+ 
+ 2026-10-07 TD02-TD03/TD05-TD06/TD08-TD09/T01-T04/Q01: owner-proposed precomputed trajectories and predictive artificial drivers implemented locally as profiled-trajectory-4. Half-metre connected corridors/bridge hints, geometric curvature and cyclic speed envelopes, canonical pilot qualification, bounded Frenet LTV MPC10Hz/1.6s and persistent derived cache; ordinary physics120Hz/five ordered laps unchanged. Final27/27 independently verified vs26/27, median21.1% faster and recorded contacts8346-to5 on identical physics0.53/compiler22/rules20; four circuits remain slower. Native1382/parse347/App99 and affected backend49 pass/4 skip/15 deselected, lint pass; five-car disturbed recovery and sharp Star/spline proofs pass. Bridge cache planning4082.5-to1.3ms, mean update0.78ms and exact cold/warm controls. Development-only committed-upload recovery preserves older controller results after cache loss; errors stop only owned processes. Inspected comparison chart, source hashes/scoped patch and normalized records retained. No cloud/backend rollout, migration, phone attachment check/device test, Android export/install/full Validate or new population. Commands/files/corrected failures/limitations: docs/PREDICTIVE_TEST_DRIVERS.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 TD02-TD03/TD05/TD08-TD09/T01-T04/Q01: owner-requested further trajectory pace implemented as controller5/trajectory3/MPC2. Minimum-time line proxy, exact steering inverse, canonical shared traction, final-line surfaces and standing/flying qualification; feasible affine steering model retains physics0.53/compiler22/rules20/configs/five ordered laps. Final27/27 independently verified and faster: mean10.1%, median8.4%, aggregate11.2% shorter vsv4; contact counter5-to8, no repeat-contact final failure. Native1424/parse349 and backend8+41 pass/4 skip/15 deselected; exact cold/warm controls, sharp Star/spline, five-car recovery and development isolation pass. Inspected chart/full input evidence and scoped checkpoint retained. Initial865-contact Speedy candidate rejected via hot-lap checks; conservative/zero-contact/model/test-shadow attempts corrected without weakening physical/gate/replay checks. No cloud/backend rollout/migration/phone attachment check/device test/export/install/full Validate/new fleet; neutral compact average, not universal10% acceptance. Actual commands/files/limits: docs/TRAJECTORY_PACE_2026_10_08.md.
++
+ 2026-10-07 TD02-TD03/TD05-TD06/TD08-TD09/T01-T04/Q01: owner-proposed precomputed trajectories and predictive artificial drivers implemented locally as profiled-trajectory-4. Half-metre connected corridors/bridge hints, geometric curvature and cyclic speed envelopes, canonical pilot qualification, bounded Frenet LTV MPC10Hz/1.6s and persistent derived cache; ordinary physics120Hz/five ordered laps unchanged. Final27/27 independently verified vs26/27, median21.1% faster and recorded contacts8346-to5 on identical physics0.53/compiler22/rules20; four circuits remain slower. Native1382/parse347/App99 and affected backend49 pass/4 skip/15 deselected, lint pass; five-car disturbed recovery and sharp Star/spline proofs pass. Bridge cache planning4082.5-to1.3ms, mean update0.78ms and exact cold/warm controls. Development-only committed-upload recovery preserves older controller results after cache loss; errors stop only owned processes. Inspected comparison chart, source hashes/scoped patch and normalized records retained. No cloud/backend rollout, migration, phone attachment check/device test, Android export/install/full Validate or new population. Commands/files/corrected failures/limitations: docs/PREDICTIVE_TEST_DRIVERS.md.
+ 
+ 2026-10-07 CTRY01-CTRY04/B01/B07/WR01/WR09/R01/V03-V05/Q01: owner-requested player countries and standings flags implemented. Authenticated profile/onboarding picker, shared 249-country offline allowlist, non-destructive migration0018, live profile/board fields and fictional development-driver countries; neutral legacy fallback preserves real identities. Rivalry tables/podium/nearby/result rows, discovery high scores/full/around-me and account settings show flags. MIT SVG provenance/imports/export catalog/license retained; actual texture data4,078,620 bytes. Final graphical656/rivalry1070/App99/parser347 and affected backend86/native HTTP2/practice1 pass; broader104 passes retains unrelated rules-upgrade409 reproduced using task-start runs.py. Failed sandbox/fixture/layout attempts recorded; inspected desktop/compact screenshots and scoped review checkpoint. No phone attachment check/device test/export/install/full Validate/live account write/backend rollout/production deployment. Matching migration/API/worker and owner/device acceptance remain. Files, commands, results and limits: docs/PLAYER_COUNTRIES.md.
+diff --git a/docs/PREDICTIVE_TEST_DRIVERS.md b/docs/PREDICTIVE_TEST_DRIVERS.md
+--- a/docs/PREDICTIVE_TEST_DRIVERS.md
++++ b/docs/PREDICTIVE_TEST_DRIVERS.md
+@@ -82,3 +82,7 @@
+ 
+ Phone attachment was not checked; **no phone/emulator driving, Android export/install or mobile performance test was performed**. There is no visible app UI change requiring new menu captures. Full `Validate`, PostgreSQL-specific checks, a new 150/200-driver population, long-running worker throughput and cross-platform deterministic equality were not run. The four slower circuits, extreme/unfinishable creator geometry, moving-obstacle recovery and final skill calibration against real human PBs remain acceptance work. Cache planning currently adds cold worker latency; publishing-time precomputation and a true minimum-lap-time optimizer are future extensions, not completed features.
+ 
++
++## Further pace improvement - 2026-10-08
++
++The owner-requested follow-up improves the v4 neutral-profile benchmark by 10.1% on average, with all 27 circuits faster and independently verified. Controller5/trajectory3/MPC2 use time-aware geometry, exact steering/shared traction and standing/flying qualification. Recorded contacts rise slightly from5 to8. See [Trajectory pace follow-up](TRAJECTORY_PACE_2026_10_08.md) for actual tests, evidence, scoped changes and rollout/device limits.
+diff --git a/docs/TEST_DRIVERS.md b/docs/TEST_DRIVERS.md
+--- a/docs/TEST_DRIVERS.md
++++ b/docs/TEST_DRIVERS.md
+@@ -131,3 +131,7 @@
+ 
+ New local generation now uses cached constrained trajectories and bounded Frenet LTV MPC. The final corpus finishes 27/27 verified five-lap races, with median 21.1% improvement; four circuits remain slower. Old committed uploads can recover after a controller upgrade without regenerating their inputs. Actual architecture, tests, telemetry, cache timings and limitations are in [Predictive test drivers](PREDICTIVE_TEST_DRIVERS.md). This task has not rolled the new controller into the active cloud worker.
+ 
++
++## Further pace improvement - 2026-10-08
++
++The owner-requested follow-up improves the v4 neutral-profile benchmark by 10.1% on average, with all 27 circuits faster and independently verified. Controller5/trajectory3/MPC2 use time-aware geometry, exact steering/shared traction and standing/flying qualification. Recorded contacts rise slightly from5 to8. See [Trajectory pace follow-up](TRAJECTORY_PACE_2026_10_08.md) for actual tests, evidence, scoped changes and rollout/device limits.
+diff --git a/backend/schemas/racing-trajectory-v3.schema.json b/backend/schemas/racing-trajectory-v3.schema.json
+new file mode 100644
+--- /dev/null
++++ b/backend/schemas/racing-trajectory-v3.schema.json
+@@ -0,0 +1,182 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Private derived racing trajectory cache v3",
++  "description": "Computed from immutable geometry and a canonical vehicle contract. Not a track document, race result or public API payload. SI units; reference time is an estimate.",
++  "type": "object",
++  "required": [
++    "version",
++    "key",
++    "length",
++    "spacing",
++    "reference_seconds",
++    "curvature_before",
++    "curvature_after",
++    "blocked_samples",
++    "strategy",
++    "pilot_ticks",
++    "pilot_candidates",
++    "rows"
++  ],
++  "additionalProperties": false,
++  "properties": {
++    "version": {
++      "const": "racing-trajectory-3"
++    },
++    "key": {
++      "type": "string",
++      "pattern": "^[0-9a-f]{64}$"
++    },
++    "length": {
++      "type": "number",
++      "exclusiveMinimum": 0
++    },
++    "spacing": {
++      "type": "number",
++      "exclusiveMinimum": 0
++    },
++    "reference_seconds": {
++      "type": "number",
++      "minimum": 0
++    },
++    "curvature_before": {
++      "type": "number",
++      "minimum": 0
++    },
++    "curvature_after": {
++      "type": "number",
++      "minimum": 0
++    },
++    "blocked_samples": {
++      "type": "integer",
++      "minimum": 0,
++      "maximum": 8192
++    },
++    "strategy": {
++      "enum": [
++        "minimum_curvature",
++        "smoothing",
++        "center",
++        "minimum_time"
++      ]
++    },
++    "pilot_ticks": {
++      "type": "integer",
++      "minimum": 0,
++      "maximum": 15000
++    },
++    "pilot_candidates": {
++      "type": "array",
++      "maxItems": 4,
++      "items": {
++        "type": "object",
++        "required": [
++          "strategy",
++          "finished",
++          "ticks",
++          "contacts",
++          "missed_gate",
++          "standing_ticks",
++          "flying_ticks",
++          "estimated_race_ticks",
++          "diagnostic_laps"
++        ],
++        "additionalProperties": false,
++        "properties": {
++          "strategy": {
++            "enum": [
++              "minimum_curvature",
++              "smoothing",
++              "center",
++              "minimum_time"
++            ]
++          },
++          "finished": {
++            "type": "boolean"
++          },
++          "ticks": {
++            "type": "integer",
++            "minimum": 0,
++            "maximum": 30000
++          },
++          "contacts": {
++            "type": "integer",
++            "minimum": 0
++          },
++          "missed_gate": {
++            "type": "integer",
++            "minimum": -1
++          },
++          "standing_ticks": {
++            "type": "integer",
++            "minimum": 0,
++            "maximum": 30000
++          },
++          "flying_ticks": {
++            "type": "integer",
++            "minimum": 0,
++            "maximum": 30000
++          },
++          "estimated_race_ticks": {
++            "type": "integer",
++            "minimum": 0,
++            "maximum": 150000
++          },
++          "diagnostic_laps": {
++            "const": 2
++          }
++        }
++      }
++    },
++    "rows": {
++      "description": "x,y,heading,filtered curvature,target v,grip,resistance,left corridor,right corridor,elevated layer; s=index*spacing",
++      "type": "array",
++      "minItems": 16,
++      "maxItems": 8192,
++      "items": {
++        "type": "array",
++        "minItems": 10,
++        "maxItems": 10,
++        "items": false,
++        "prefixItems": [
++          {
++            "type": "number"
++          },
++          {
++            "type": "number"
++          },
++          {
++            "type": "number"
++          },
++          {
++            "type": "number"
++          },
++          {
++            "type": "number",
++            "exclusiveMinimum": 0
++          },
++          {
++            "type": "number",
++            "exclusiveMinimum": 0
++          },
++          {
++            "type": "number"
++          },
++          {
++            "type": "number",
++            "maximum": 0
++          },
++          {
++            "type": "number",
++            "minimum": 0
++          },
++          {
++            "enum": [
++              0,
++              1
++            ]
++          }
++        ]
++      }
++    }
++  }
++}
+diff --git a/docs/TRAJECTORY_PACE_2026_10_08.md b/docs/TRAJECTORY_PACE_2026_10_08.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRAJECTORY_PACE_2026_10_08.md
+@@ -0,0 +1,70 @@
++# Faster artificial-driver trajectories - 2026-10-08
++
++The owner requested about another 10% of artificial-driver pace, focusing on trajectory calculation. `profiled-trajectory-5`, `racing-trajectory-3` and `frenet-ltv-mpc-2` achieve **10.1% shorter race times on average** against the previous v4 controller on the same 27 circuits, profiles and canonical contracts. All 27 circuits improve and all final five-lap recordings independently verify.
++
++Requirements: **TD02 / TD03 / TD05 / TD08 / TD09 / T01-T04 / Q01**. Physics **0.53**, compiler **22**, rules **v20**, vehicle configuration, profile traits, race length and verified timing are unchanged. No power/speed/configuration is added to the car, and no reported time is rescaled.
++
++## What improved
++
++The minimum-curvature line can be needlessly wide: reducing curvature alone does not minimize the distance/time through a bend. The planner now also searches a **minimum-time proxy**, using local distance divided by the feasible corner speed, plus a penalty for physically impossible curvature. Its final objective uses the same two-metre spatial filter as the reference tangent/curvature; isolated raster/chord kinks no longer dominate that optimization. Existing curvature, smoothing and center candidates remain available.
++
++The speed envelope now inverts the actual speed-dependent steering reduction analytically. The old loop reduced speed by 10% at a time and could undershoot the feasible result. Lateral reference utilization rises from 0.68 to 0.88; acceleration/braking use the canonical shared traction budget rather than independent constant grip budgets. Drive utilization is 0.90 and braking utilization 0.82. These are **planner margins**, not vehicle changes. The final optimized line's surfaces are re-evaluated before its speed profile is built. The cyclic forward/backward passes still propagate braking through the lap seam.
++
++Higher speed exposed a standing-start qualification flaw on Speedy: a candidate looked good on lap one and repeatedly touched barriers on later laps. Every candidate now drives **two diagnostic laps**, recording the standing and flying times. Selection considers `standing + 4*flying`, and rejects candidates with more than four recorded contacts during those two diagnostic laps. Isolated contacts incur a 36-tick **selection cost**; this never alters actual race/leaderboard timing. This is a bounded heuristic, not proof of an optimal or universally safe line. Ordinary generated races still complete five ordered laps.
++
++The follower also clipped steering using only the linearized yaw gain. Its affine bias was omitted from the input-bound transformation. Bounds now use `(allowed_yaw - bias)/gain` on each side. Linearization is centered on a feasible steer/yaw, including inversion of progressive grip saturation; excessively fast entries cannot create an empty admissible input interval. The prediction horizon, update rate, skill parameters and canonical car model remain intact.
++
++Derived cache v3 invalidates older trajectory caches. Normalization through the persisted numeric representation preserves exact fresh/cached quantized controls. The cache schema records standing/flying diagnostics explicitly. Previously committed v4 uploads, personal records and player files are preserved by the existing recovery flow.
++
++## Actual comparison
++
++Benchmark: compact, seed 27, skill 0.5, consistency 1.0, aggression 0.5, learning 0.5, pace scale 1.0; the same 27 original local track documents. Before/after manifests are exactly equal on every circuit. Evidence began on October 7 and was completed on October 8.
++
++| Measurement | Actual result |
++| --- | --- |
++| Completed and independently verified | 27/27 five-lap recordings |
++| Average of per-track time reductions | **10.1001%** |
++| Median reduction | **8.4342%** |
++| Combined race-time reduction | **11.1517%** |
++| Circuits faster | **27/27** |
++| Individual reductions | **5.4423%-28.8027%** |
++| Recorded contacts | **5 before, 8 after** |
++
++The strongest improvements are Saw (28.8%), Dust cloud (22.7%), Narrow night (18.4%) and Knit (16.1%). The final eight contact counter entries are on Over and under, Ellipse and Ajorata. This is a small contact increase, not an improvement in contact count; repeated-contact candidates were rejected. Contacts are not counts of distinct crashes or physics ticks.
++
++Actual artifacts:
++
++- [Inspected comparison chart](evidence/trajectory-pace-2026-10-08/comparison.png) and [SVG](evidence/trajectory-pace-2026-10-08/comparison.svg).
++- [Verified summary](evidence/trajectory-pace-2026-10-08/verified-summary.json) and [per-track CSV](evidence/trajectory-pace-2026-10-08/comparison.csv).
++- [Complete final inputs/documents](evidence/trajectory-pace-2026-10-08/verified-recordings.json.gz), [reference/actual telemetry](evidence/trajectory-pace-2026-10-08/final-telemetry.json), and the preserved v4 baseline/inputs in the same evidence directory.
++- [Task-start source snapshots](evidence/trajectory-pace-2026-10-08/before-hashes.json), [scoped source hashes](evidence/trajectory-pace-2026-10-08/source-hashes.json), [Git patch](evidence/trajectory-pace-2026-10-08/task.patch) and [checkpoint description](evidence/trajectory-pace-2026-10-08/checkpoint.json). Existing unrelated workspace work is preserved. The scoped patch passes `git apply --reverse --check --ignore-space-change`; the flag handles Windows CRLF working files.
++
++## Actual validation and commands
++
++| Command/check | Actual outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_predictive_driver.gd` | **1,424 checks, zero failures**. Exact steering inverse, shared traction, affine yaw endpoints, numerical MPC derivatives, cache identity/round trip, cyclic braking, and all five vehicles recovering a 1.1 m / 0.12 rad disturbance without contacts. |
++| `BMT_DRIVER_REPLAYS=1`; same entry point with `res://tests/benchmark_test_drivers.gd -CommandTimeoutSeconds 900` | Real final 27-track five-lap input/telemetry capture; all finished. |
++| `...python.exe backend/tools/report_predictive_drivers.py --report build/driver-benchmark.json --evidence docs/evidence/trajectory-pace-2026-10-08 --godot 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --project game` | **27 independently verified**, exact recorded/verified ticks, five laps and equal before/after manifests. |
++| `...python.exe -m pytest backend/tests/test_predictive_drivers.py backend/tests/test_test_drivers_integration.py::test_profiles_generate_repeatable_distinct_verified_five_lap_races -q --tb=short --show-capture=no` | **8 passed**. Includes exact cold/warm oval and bridge recordings, stale/corrupt cache recovery, packaged worker, skill ordering, and the sharp Star / five-point spline fixtures. |
++| `...python.exe -m pytest backend/tests/test_test_drivers.py backend/tests/test_automatic_test_drivers.py backend/tests/test_worker_lifecycle.py backend/tests/test_rivalry.py -k 'not postgres' -q --tb=short --show-capture=no` | **41 passed, four skipped, 15 deselected**. Actual idle generation/upload/verification and loss-of-cache recovery, development isolation, matching and shutdown. |
++| Same native entry point with `res://tests/test_script_parse.gd` | **349 scripts, zero failures**. |
++| Ruff on affected controller/tests/report Python | Passed. |
++| `backend/tools/render_driver_comparison.ps1 -Evidence docs/evidence/trajectory-pace-2026-10-08` | Final PNG generated and inspected. |
++
++The existing Starlette deprecation warning remains. The intermediate 0.82 envelope gained only 6.8% at the median; it was not reported as the final 10% result. The faster standing-only candidate accumulated 865 Speedy contacts; it was rejected after warm-lap qualification. A too-strict zero-contact selection discarded a fast line for a 22% slower alternative; bounded contact eligibility and an explicit selection cost replaced that experimental policy. A newly added test's variable-shadow parse error was corrected before the final passes. No failing physical/gate/replay invariant was removed.
++
++## Changed files and limits
++
++- `game/input/racing_trajectory.gd`: time objective, exact steering limit, shared acceleration/braking budget, revised margins, final-line surfaces and cache v3.
++- `game/input/trajectory_planner.gd`: standing/flying qualification and contact eligibility/cost.
++- `game/input/trajectory_mpc.gd`: feasible nominal steer, progressive saturation inverse and complete affine yaw-bound transformation.
++- `game/input/profiled_route_driver.gd` and `backend/bmt_backend/test_driver_generator.py`: controller version 5.
++- `game/tests/test_predictive_driver.gd` and `benchmark_test_drivers.gd`: meaningful envelope/model checks and candidate diagnostics.
++- `backend/schemas/racing-trajectory-v3.schema.json`: new derived-cache contract; v2 retained.
++- `backend/tools/report_predictive_drivers.py`, `render_driver_comparison.ps1`: mean/aggregate counts and accurate chart notes.
++- This document, current status/plan and historical driver follow-up links; scoped checkpoint/evidence.
++
++No cloud/backend rollout, database migration, player-file deletion, production deployment, phone/emulator test, Android export/install or full `Validate` was performed. Phone attachment was not checked. This task has no visible app UI change. The currently deployed cloud worker still needs the validated controller update before these gains appear there.
++
++The 10.1% result is the arithmetic mean of per-track reductions for the specified neutral compact profile, not a guarantee of 10% on every circuit/driver/car. Other profiles retain their actual skill ordering and all five vehicle recovery checks pass, but a full fleet/population, every car on every circuit, physical-device/cloud CPU throughput and matching against actual human PBs remain untested. Cold planning costs more because of four candidates and flying-lap checks; subsequent drivers reuse the bounded cache. Trajectory spacing/progress still use the canonical route parameter, and the time solver remains a local proxy with pilot qualification rather than a global minimum-lap-time solver.

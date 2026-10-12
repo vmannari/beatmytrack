@@ -1,0 +1,772 @@
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -511,6 +511,13 @@
+ 		_set_section_offset(0.0)
+ 		hero.modulate.a = 1.0
+ 		records_panel.modulate.a = 1.0
++		if entry.source == "cloud":
++			# Public route metadata is enough to draw the hero before downloading
++			# or compiling the race geometry. Old scores must not follow it.
++			_show_hero(str(entry.name).to_upper(),str(entry.get("theme","pine")))
++			detail.hide()
++			pending_records.text = "Loading..."
++			pending_records.show()
+ 	for tile: Node in grid.get_children():
+ 		if tile is TrackTile:
+ 			var chosen: bool = tile.entry.id == entry.id
+@@ -621,19 +628,12 @@
+ 	_comparison_selection = request_key
+ 	_cloud_detail_pending[request_key] = true
+ 	cloud.client.cancel_public_reads(get_instance_id())
+-	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
+-	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
+-		_cloud_detail_pending.erase(request_key)
+-		return
+-	var standings: Array = []
+-	if response.ok:
+-		for item: Dictionary in response.data.items:
+-			standings.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"country_code":str(item.get("country_code","")),"race_ms":float(item.time_ticks)*1000.0/120.0})
+-	var snapshot: Dictionary = discovery.records_by_rules_key.get(key,{}).duplicate(true)
++	# The score list and distributions are independent. Neither read waits for
++	# the other, and neither holds the already resolved hero offscreen.
++	_load_cloud_leaderboard(track,serial,vehicle,key)
++	var snapshot: Dictionary = discovery.record_snapshot(key)
+ 	if snapshot.get("comparison_scope","") != "all" or int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
+ 		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
+-	snapshot.friends = standings
+-	snapshot.board_error = "" if response.ok else str(response.error)
+ 	if cloud.client.signed_in():
+ 		var path: String = "/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS
+ 		var local: Dictionary = records.records.get(key,{})
+@@ -645,12 +645,30 @@
+ 		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
+ 			_cloud_detail_pending.erase(request_key)
+ 			return
++		# The leaderboard may have completed while the histogram was in flight.
++		var latest: Dictionary = discovery.record_snapshot(key)
++		for field: String in ["friends","board_error"]:
++			if latest.has(field): snapshot[field] = latest[field]
+ 		if not comparison.ok or not _apply_cloud_comparison(snapshot,comparison.data,track):
+ 			snapshot.comparison_error = "Comparison unavailable"
+ 	else:
+ 		snapshot.comparison_error = "Sign in to compare"
+ 	_cloud_detail_pending.erase(request_key)
+-	discovery.records_by_rules_key[key] = snapshot
++	discovery.remember_record(key,snapshot)
++	if is_inside_tree() and serial == _selection_serial: _show_detail()
++
++func _load_cloud_leaderboard(track: NativeTrack, serial: int, vehicle: String, key: String) -> void:
++	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
++	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++		return
++	var standings: Array = []
++	if response.ok:
++		for item: Dictionary in response.data.items:
++			standings.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"country_code":str(item.get("country_code","")),"race_ms":float(item.time_ticks)*1000.0/120.0})
++	var snapshot: Dictionary = discovery.record_snapshot(key)
++	snapshot.friends = standings
++	snapshot.board_error = "" if response.ok else str(response.error)
++	discovery.remember_record(key,snapshot)
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 
+ func _apply_cloud_comparison(snapshot: Dictionary, data: Dictionary, track: NativeTrack) -> bool:
+@@ -784,19 +802,9 @@
+ 	var available: bool = _selected_is_available()
+ 	if cloud != null and selected_track.metadata.has("cloud_version") and not _comparison_ready(snapshot) and not cloud.client.signed_in():
+ 		snapshot.comparison_error = "Sign in to compare"
+-	if available and cloud != null and selected_track.metadata.has("cloud_version") and not _comparison_ready(snapshot) and not snapshot.has("comparison_error"):
+-		# Reveal the track and both charts together, using a complete compatible
+-		# cache immediately or retaining the previous view until the read finishes.
+-		_detail_loading = true
+-		race_button.disabled = selecting or _resolve_thread != null
+-		race_button.text = "RACE "+str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper()
+-		if detail.get_child_count() == 0:
+-			detail.hide()
+-			pending_records.text = "Loading..."
+-			pending_records.show()
+-		return
+-	if _detail_loading:
+-		_detail_loading = false
++	var waiting: bool = available and cloud != null and selected_track.metadata.has("cloud_version") and not _comparison_ready(snapshot) and not snapshot.has("comparison_error")
++	if waiting != _detail_loading:
++		_detail_loading = waiting
+ 		_detail_state = []
+ 	pending_records.hide()
+ 	detail.show()
+@@ -869,7 +877,7 @@
+ 		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+ 		if histogram.snapshot.get("bins",[]).is_empty():
+ 			histogram.hide()
+-			column.add_child(MenuStyle.label(str(snapshot.get("comparison_error","No times yet")),12,true))
++			if not waiting or metric == "race": column.add_child(MenuStyle.label("Loading..." if waiting else str(snapshot.get("comparison_error","No times yet")),12,true))
+ 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+ 		histogram.custom_minimum_size = Vector2(112,96)
+ 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -884,8 +892,9 @@
+ 	var friends_body: VBoxContainer = _section_body(friends)
+ 	var standings: Array = snapshot.get("friends",[])
+ 	if standings.is_empty():
+-		friends_body.add_child(MenuStyle.label("No times yet" if selected_track.metadata.has("cloud_version") else "No friend times",18))
+-		_friendly_hint(friends_body,"Be the first to set a time!" if selected_track.metadata.has("cloud_version") else "Share this track and challenge a friend.")
++		var board_waiting: bool = selected_track.metadata.has("cloud_version") and not snapshot.has("friends")
++		friends_body.add_child(MenuStyle.label("Loading..." if board_waiting else "Scores unavailable" if not str(snapshot.get("board_error","")).is_empty() else "No times yet" if selected_track.metadata.has("cloud_version") else "No friend times",18))
++		if not board_waiting and str(snapshot.get("board_error","")).is_empty(): _friendly_hint(friends_body,"Be the first to set a time!" if selected_track.metadata.has("cloud_version") else "Share this track and challenge a friend.")
+ 	else:
+ 		for index: int in range(mini(3,standings.size())):
+ 			var friend: Dictionary = standings[index]
+diff --git a/game/ui/track_discovery_provider.gd b/game/ui/track_discovery_provider.gd
+--- a/game/ui/track_discovery_provider.gd
++++ b/game/ui/track_discovery_provider.gd
+@@ -6,8 +6,34 @@
+ var available: bool = false
+ var track_stats: Dictionary = {}
+ var records_by_rules_key: Dictionary = {}
++var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
++
++func configure_cache(path: String, scope: String) -> void:
++	if not snapshot_cache.scope.is_empty() and snapshot_cache.scope != scope: records_by_rules_key.clear()
++	snapshot_cache.configure(path,scope)
++
++func remember_record(rules_key: String, snapshot: Dictionary) -> void:
++	records_by_rules_key[rules_key] = snapshot
++	if snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS:
++		var saved: Dictionary = snapshot.duplicate(true)
++		for metric: String in ["race","lap"]:
++			for marker: Dictionary in saved.get(metric+"_distribution",{}).get("markers",[]): marker.erase("color")
++		snapshot_cache.remember(rules_key,saved)
+ 
+ func record_snapshot(rules_key: String) -> Dictionary:
++	if not records_by_rules_key.has(rules_key):
++		var cached: Dictionary = snapshot_cache.read(rules_key)
++		if not cached.is_empty():
++			# JSON numbers lose the typed GDScript array contract at rest.
++			for metric: String in ["race","lap"]:
++				var distribution: Dictionary = cached.get(metric+"_distribution",{})
++				var counts: Array[int] = []
++				for count: Variant in distribution.get("bins",[]): counts.append(int(count))
++				distribution.bins = counts
++				var edges: Array[float] = []
++				for edge: Variant in distribution.get("edges_ms",[]): edges.append(float(edge))
++				distribution.edges_ms = edges
++			records_by_rules_key[rules_key] = cached
+ 	return records_by_rules_key.get(rules_key,{}).duplicate(true)
+ 
+ static func is_rival(value: Dictionary) -> bool:
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -18,6 +18,42 @@
+ var _next_poll_msec: int = 0
+ var _ghost_cache: Dictionary = {}
+ var _ghost_pending: Dictionary = {}
++var cache_directory: String = ""
++var cached_snapshot: bool = false
++var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
++var _last_refresh_msec: int = -60000
++const REFRESH_INTERVAL_MSEC: int = 30000
++
++func _cache_scope() -> String:
++	return scope()+"/"+VehicleSimulation.PHYSICS_VERSION+"/"+RaceRules.KEY+"/"+TrackCompiler.VERSION+"/"+JSON.stringify(HandlingSelection.config().snapshot(),"",true).sha256_text()
++
++func _configure_cache() -> void:
++	snapshot_cache.max_entries = 1
++	snapshot_cache.max_age_seconds = 86400
++	var identity: String = _cache_scope()
++	snapshot_cache.configure(cache_directory.path_join(identity.sha256_text()+".json") if not cache_directory.is_empty() else "",identity)
++
++func _restore_snapshot() -> void:
++	if has_snapshot() or not client.signed_in(): return
++	_configure_cache()
++	var saved: Dictionary = snapshot_cache.read("current")
++	var value: Variant = saved.get("snapshot")
++	if not value is Dictionary or not valid_snapshot(value) or value.get("state") == "not_joined": return
++	if str(value.get("self_id","")) != str(client.player.get("id","")) or str(value.get("vehicle_id","")) != VehicleCatalog.selected or bool(value.get("test_population",false)) != test_population: return
++	var age: int = maxi(0,int(Time.get_unix_time_from_system())-int(saved.get("received_at",0)))
++	var remaining: int = maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0))-age)
++	if value.state == "active" and remaining == 0: return
++	value.remaining_seconds = remaining
++	model.apply_snapshot(value)
++	snapshot_scope = scope()
++	cached_snapshot = true
++
++func _remember_snapshot(value: Dictionary) -> void:
++	_configure_cache()
++	if value.get("state") == "not_joined":
++		snapshot_cache.forget("current")
++	else:
++		snapshot_cache.remember("current",{"snapshot":value,"received_at":int(Time.get_unix_time_from_system())})
+ 
+ func scope() -> String:
+ 	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected+("/test" if test_population else "/real")
+@@ -42,6 +78,8 @@
+ 	_next_poll_msec = 0
+ 	_ghost_cache.clear()
+ 	_ghost_pending.clear()
++	cached_snapshot = false
++	_last_refresh_msec = -60000
+ 
+ static func valid_snapshot(value: Dictionary) -> bool:
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+@@ -77,7 +115,7 @@
+ func has_snapshot() -> bool:
+ 	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
+ 
+-func refresh() -> void:
++func refresh(force: bool = true) -> void:
+ 	# Development rivalries use the server capability automatically. Release
+ 	# and ordinary services retain the real-player population.
+ 	if OS.is_debug_build() and client.has_method("test_drivers_available"):
+@@ -92,6 +130,8 @@
+ 		error = "Sign in to join Weekly Rivalry."
+ 		changed.emit()
+ 		return
++	_restore_snapshot()
++	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+ 	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode()+("&test_population=true" if test_population else ""))
+ 
+ func join() -> void:
+@@ -112,6 +152,9 @@
+ 	if response.ok and valid_snapshot(response.data):
+ 		model.apply_snapshot(response.data)
+ 		snapshot_scope = original
++		cached_snapshot = false
++		_last_refresh_msec = Time.get_ticks_msec()
++		_remember_snapshot(response.data)
+ 		var needs_enrollment: bool = model.status == "not_joined" or (model.status == "active" and not bool(response.data.get("automatic_test_drivers",false)))
+ 		if test_population and needs_enrollment and path != "/rivalry/join":
+ 			await join()
+@@ -121,7 +164,7 @@
+ 	changed.emit()
+ 
+ func ticket(slot: int) -> Dictionary:
+-	if busy or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
++	if busy or cached_snapshot or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
+ 	var original: String = scope()
+ 	var generation: int = _generation
+ 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tickets",HTTPClient.METHOD_POST,{"slot":slot},client.new_operation_key(),true)
+@@ -250,6 +293,8 @@
+ 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/continue",HTTPClient.METHOD_POST,{},client.new_operation_key(),true)
+ 	if original != scope() or generation != _generation: return
+ 	if response.ok:
++		_configure_cache()
++		snapshot_cache.forget("current")
+ 		reset()
+ 		await refresh()
+ 	else:
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -208,6 +208,7 @@
+ 	cloud.load_cached()
+ 	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
+ 	rivalry.client = online.client
++	rivalry.cache_directory = cloud.cache_root().path_join("menu/rivalry")
+ 	add_child(rivalry)
+ 	rivalry.changed.connect(_rivalry_changed)
+ 	challenges = ChallengesClient.new()
+@@ -912,7 +913,7 @@
+ 	var browser: TrackBrowser = menu_body.find_child("TrackBrowser", true, false)
+ 	if browser != null and browser.page_preview:
+ 		browser.activate_page()
+-	if screen == "rivalry" and not rivalry.model.sample and online.client.signed_in(): rivalry.refresh()
++	if screen == "rivalry" and not rivalry.model.sample and online.client.signed_in(): rivalry.refresh(false)
+ 	if screen == "challenges": challenges.refresh()
+ 
+ func _account_changed() -> void:
+@@ -1104,6 +1105,9 @@
+ 	browser.catalog = track_catalog
+ 	browser.cloud = cloud
+ 	browser.discovery = discovery_provider
++	if cloud != null and online.client.signed_in():
++		var comparison_scope: String = online.client.base_url()+"/"+str(online.client.player.get("id",""))+"/"+str(online.client.test_drivers_available())
++		discovery_provider.configure_cache(cloud.cache_root().path_join("menu/"+comparison_scope.sha256_text()+".json"),comparison_scope)
+ 	browser.records = records
+ 	browser.builtin_ids = BUILTIN_IDS
+ 	browser.selected_track = selected_track
+@@ -1390,7 +1394,7 @@
+ 	_race_mode_request += 1
+ 	var request: int = _race_mode_request
+ 	var navigation: int = _navigation_generation
+-	if not rivalry.model.sample: rivalry.refresh()
++	if not rivalry.model.sample: rivalry.refresh(false)
+ 	var original: String = rivalry.scope()
+ 	if online.client.signed_in() and not rivalry.has_snapshot() and rivalry.busy:
+ 		_rivalry_entry_pending = true
+@@ -1407,7 +1411,7 @@
+ func _prefetch_rivalry() -> void:
+ 	if rivalry == null or rivalry.model.sample or not online.client.signed_in() or is_instance_valid(game): return
+ 	if rivalry.has_snapshot(): return
+-	rivalry.refresh()
++	rivalry.refresh(false)
+ 
+ func _cancel_rivalry_entry() -> void:
+ 	_race_mode_request += 1
+@@ -1446,7 +1450,7 @@
+ 	page.section = rivalry_section
+ 	page.selected = rivalry_track
+ 	page.ghost_choice = rivalry_ghost_choice
+-	page.busy = rivalry.busy or cloud_starting
++	page.busy = rivalry.busy or rivalry.cached_snapshot or cloud_starting
+ 	page.error = rivalry.error
+ 	page.signed_in = online.client.signed_in()
+ 	page.pending_result = rivalry_result_pending
+@@ -1459,7 +1463,7 @@
+ 			rivalry_racing = false
+ 		rivalry_section = section
+ 		_rivalry()
+-		if not rivalry.model.sample: rivalry.refresh())
++		if not rivalry.model.sample: rivalry.refresh(false))
+ 	page.track_requested.connect(func(index: int) -> void:
+ 		rivalry_track = index
+ 		rivalry_section = "detail"
+diff --git a/game/tests/test_menu_loading.gd b/game/tests/test_menu_loading.gd
+--- a/game/tests/test_menu_loading.gd
++++ b/game/tests/test_menu_loading.gd
+@@ -96,9 +96,9 @@
+ 	cloud_entry.id = "cloud_delayed_fixture"
+ 	cloud_entry.source = "cloud"
+ 	cloud_entry.name = "Cloud preview"
+-	var retained_title: String = (browser.hero.find_child("HeroTrackTitle",true,false) as Label).text
+ 	browser._select(cloud_entry)
+-	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == retained_title and delayed.calls == 0,"cloud download keeps prior complete section visible")
++	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "CLOUD PREVIEW" and delayed.calls == 0,"cloud metadata hero appears before download starts")
++	check(not browser.detail.visible and browser.pending_records.visible,"new metadata hero never displays the previous track's records")
+ 	while delayed.calls == 0: await process_frame
+ 	check(browser.race_button.disabled,"pending download cannot race the previous selection")
+ 	delayed.finished.emit()
+diff --git a/game/tests/test_unified_histograms.gd b/game/tests/test_unified_histograms.gd
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -159,17 +159,17 @@
+ 		browser.catalog.entries.append({"id":unraced.identity,"version_id":unraced.metadata.cloud_version,"source":"cloud","name":document.name,"creator":"Beat my track","theme":"pine"})
+ 		client.hold = true
+ 		var previous_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+-		var previous_snapshot: Dictionary = previous_chart.snapshot.duplicate(true)
+ 		var requests_before_selection: int = client.paths.size()
+ 		browser._finish_selection({"track":unraced,"draft":{}})
+ 		await settle()
+ 		var loading_chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
+-		check(loading_chart == previous_chart and loading_chart.snapshot == previous_snapshot,"cold track keeps the previously displayed histogram until its data arrives")
++		check(loading_chart != previous_chart and loading_chart.snapshot.is_empty() and not loading_chart.visible,"cold track never presents the previous track's histogram")
++		check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == document.name.to_upper(),"cold track hero appears without waiting for comparison data")
+ 		check(not ui_text(browser).contains("No times yet"),"pending track selection never flashes an empty histogram message")
+ 		check(not browser.race_button.disabled,"optional comparison loading never blocks a resolved track from racing")
+ 		for frame: int in range(12):
+ 			await process_frame
+-			check(browser.find_child("RaceDistribution",true,false) == previous_chart and not ui_text(browser).contains("No times yet"),"delayed histogram keeps the complete previous view on frame %d" % frame)
++			check(browser.find_child("RaceDistribution",true,false) == loading_chart and not ui_text(browser).contains("No times yet"),"delayed histogram keeps the current track's truthful loading view on frame %d" % frame)
+ 		await screenshot("track-%d-waiting" % index)
+ 		client.hold = false
+ 		await settle()
+diff --git a/game/tests/test_rivalry_entry.gd b/game/tests/test_rivalry_entry.gd
+--- a/game/tests/test_rivalry_entry.gd
++++ b/game/tests/test_rivalry_entry.gd
+@@ -76,6 +76,9 @@
+ 	service = Service.new()
+ 	app.add_child(service)
+ 	app.rivalry.client = service
++	# This suite deliberately resets cold membership between scenarios. Restart
++	# persistence is exercised separately by test_menu_loading_speed.gd.
++	app.rivalry.cache_directory = ""
+ 	app.online.client.player = service.player
+ 	app.online.client._access_token = "fixture"
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
+diff --git a/game/backend/menu_snapshot_cache.gd b/game/backend/menu_snapshot_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/game/backend/menu_snapshot_cache.gd
+@@ -0,0 +1,43 @@
++extends RefCounted
++## Bounded presentation cache. Tickets and verified results remain authoritative.
++const IO = preload("res://backend/atomic_json.gd")
++const SCHEMA: String = "menu-snapshots-v1"
++const MAX_BYTES: int = 2097152
++var path: String = ""
++var scope: String = ""
++var entries: Dictionary = {}
++var max_entries: int = 32
++var max_age_seconds: int = 600
++
++func configure(destination: String, identity: String) -> void:
++	if destination == path and identity == scope: return
++	path = destination
++	scope = identity
++	entries.clear()
++	if path.is_empty() or scope.is_empty(): return
++	var saved: Dictionary = IO.read(path,MAX_BYTES)
++	if saved.get("schema","") == SCHEMA and saved.get("scope","") == scope and saved.get("entries") is Dictionary:
++		entries = saved.entries
++		while entries.size() > max_entries: entries.erase(entries.keys()[0])
++
++func read(key: String) -> Dictionary:
++	var saved: Variant = entries.get(key,{})
++	if not saved is Dictionary or not saved.get("data") is Dictionary: return {}
++	if not (saved.get("saved_at") is int or saved.get("saved_at") is float): return {}
++	var age: int = int(Time.get_unix_time_from_system())-int(saved.get("saved_at",0))
++	if age < 0 or age >= max_age_seconds: return {}
++	return saved.data.duplicate(true)
++
++func remember(key: String, value: Dictionary) -> void:
++	if path.is_empty() or scope.is_empty(): return
++	entries.erase(key)
++	entries[key] = {"saved_at":int(Time.get_unix_time_from_system()),"data":value.duplicate(true)}
++	while entries.size() > max_entries: entries.erase(entries.keys()[0])
++	_save()
++
++func forget(key: String) -> void:
++	entries.erase(key)
++	_save()
++
++func _save() -> void:
++	if not path.is_empty(): IO.write(path,{"schema":SCHEMA,"scope":scope,"entries":entries},MAX_BYTES)
+diff --git a/game/tests/test_menu_loading_speed.gd b/game/tests/test_menu_loading_speed.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_menu_loading_speed.gd
+@@ -0,0 +1,235 @@
++extends SceneTree
++## Delayed menu reads, app-restart caches and account/population fences.
++const RivalryClient = preload("res://backend/weekly_rivalry_client.gd")
++const CacheIO = preload("res://backend/atomic_json.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String
++var evidence: String
++
++class Browser extends TrackBrowser:
++	func _load_catalog() -> void:
++		loading = false
++		_show_detail()
++
++class Service extends Node:
++	var player: Dictionary = {"id":"you"}
++	var packet: Dictionary = {}
++	var membership: Dictionary = {}
++	var paths: Array[String] = []
++	var hold_board: bool = true
++	var hold_comparison: bool = true
++	var hold_rivalry: bool = true
++	var development: bool = false
++	var origin: String = "http://menu-speed-fixture"
++	func base_url() -> String: return origin
++	func signed_in() -> bool: return true
++	func test_drivers_available() -> bool: return development
++	func cancel_public_reads(_owner: int) -> void: pass
++	func new_operation_key() -> String: return "fixture-key"
++	func request_public(path: String, _owner: int) -> Dictionary:
++		paths.append(path)
++		while hold_board: await get_tree().process_frame
++		return {"ok":true,"data":{"items":[{"rank":1,"display_name":"Fixture leader","time_ticks":10000}]},"error":""}
++	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		paths.append(path)
++		if path.contains("results-comparison"):
++			while hold_comparison: await get_tree().process_frame
++			return {"ok":true,"data":packet,"error":""}
++		while hold_rivalry: await get_tree().process_frame
++		return {"ok":true,"data":membership,"error":""}
++
++class Cloud extends Node:
++	signal changed
++	var client: Node
++	var entries: Array[Dictionary] = []
++	var status: String = ""
++	var refreshing: bool = false
++	var discovery_pages: Node
++	func paged_discovery_available() -> bool: return false
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++func settle() -> void:
++	for _frame: int in range(6): await process_frame
++func texts(node: Node) -> String:
++	var result: String = node.text if node is Label or node is Button else ""
++	for child: Node in node.get_children(): result += "\n"+texts(child)
++	return result
++func capture(label: String) -> void:
++	if evidence.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(label+".png")) == OK,"capture "+label)
++
++func membership() -> Dictionary:
++	var sample := WeeklyRivalry.new(true)
++	var now: int = int(Time.get_unix_time_from_system())
++	var value: Dictionary = {"state":"active","group_id":"fixture-group","self_id":"you","week":41,"vehicle_id":"compact",
++		"server_now":now,"ends_at":now+3600,"test_population":false,"standings":sample.standing(),"tracks":[]}
++	for slot: int in range(5):
++		var track: Dictionary = sample.tracks[slot]
++		value.tracks.append({"board_id":"board_"+str(slot),"entries":sample.board(slot),
++			"entry":{"name":track.name,"theme":track.theme,"creator":"Beat my track","track_id":"track_"+str(slot),
++				"version_id":"version_"+str(slot),"content_hash":"a".repeat(64),"points":track.document.points}})
++	return value
++
++func adapter(service: Service) -> Node:
++	var value := RivalryClient.new()
++	value.client = service
++	value.cache_directory = folder.path_join("rivalry")
++	root.add_child(value)
++	return value
++
++func run() -> void:
++	folder = "user://menu_speed_"+TrackLibrary.unique_id()
++	evidence = OS.get_environment("BMT_MENU_SPEED_EVIDENCE")
++	if not evidence.is_empty(): DirAccess.make_dir_recursive_absolute(evidence)
++	VehicleCatalog.selected = "compact"
++	var service := Service.new()
++	service.packet = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/histogram-grid-2026-10-09/verified-silmukka-histograms.json")).packet
++	service.membership = membership()
++	root.add_child(service)
++	var cloud := Cloud.new()
++	cloud.client = service
++	root.add_child(cloud)
++	var document: Dictionary = TrackDocument.create_default()
++	var track: NativeTrack = TrackCompiler.compile(document)
++	track.metadata.cloud_version = "menu-speed-fixture"
++	track.metadata.title = "Immediate hero"
++	var browser := Browser.new()
++	browser.name = "SpeedBrowser"
++	browser.theme = MenuStyle.theme()
++	browser.library = TrackLibrary.new(folder.path_join("tracks"))
++	browser.catalog = TrackCatalog.new(browser.library)
++	browser.catalog.entries.append({"id":track.identity,"source":"cloud","version_id":track.metadata.cloud_version,"name":"Immediate hero","creator":"Beat my track","theme":"pine","points":document.points})
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	browser.records.records[browser.records.key_for(track,HandlingSelection.config())] = {"race_ms":86130,"flying_ms":15881}
++	browser.discovery.configure_cache(folder.path_join("discovery.json"),"fixture/account-a")
++	browser.selected_track = track
++	browser.cloud = cloud
++	browser.state = {}
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = Vector2i(1280,720)
++	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
++	var began: int = Time.get_ticks_usec()
++	root.add_child(browser)
++	var hero_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(browser.hero.find_child("HeroTrackTitle",true,false) != null,"first menu frame draws the hero with both network reads held")
++	check(not browser.race_button.disabled,"optional data never holds an available track's race action")
++	check(not texts(browser).contains("No times yet"),"unknown records never masquerade as empty data")
++	MenuStyle.fill(browser)
++	browser.offset_top = 112
++	browser.offset_bottom = -16
++	browser._load_cloud_detail(track)
++	check(service.paths.size() == 2,"leaderboard and histogram requests start in parallel")
++	check(service.paths.any(func(path: String) -> bool: return path.contains("results-comparison")),"held leaderboard never postpones histogram request")
++	await settle()
++	await capture("free-race-first-frame")
++	service.hold_comparison = false
++	await settle()
++	var key: String = browser.records.key_for(track,HandlingSelection.config())
++	check(browser._comparison_ready(browser.discovery.record_snapshot(key)),"histograms finish while the unrelated leaderboard remains held")
++	check((browser.find_child("RaceDistribution",true,false) as TrackDistribution).visible,"ready histogram appears immediately")
++	check(texts(browser).contains("Loading..."),"still-pending scores retain an honest loading state")
++	await capture("histogram-before-leaderboard")
++	service.hold_board = false
++	await settle()
++	check(texts(browser).contains("Fixture leader"),"independent leaderboard read merges without losing histograms")
++	check(browser._comparison_ready(browser.discovery.record_snapshot(key)),"score list never overwrites a completed comparison")
++	var reopened := TrackDiscoveryProvider.new()
++	began = Time.get_ticks_usec()
++	reopened.configure_cache(folder.path_join("discovery.json"),"fixture/account-a")
++	var restored: Dictionary = reopened.record_snapshot(key)
++	var histogram_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(browser._comparison_ready(restored),"a fresh app provider restores both histograms from disk")
++	check(restored.race_distribution.bins == browser.discovery.record_snapshot(key).race_distribution.bins,"restart preserves every real server count")
++	check(not restored.race_distribution.markers[0].has("color"),"cached player marker has a safe default color after JSON round trip")
++	reopened.configure_cache(folder.path_join("discovery.json"),"fixture/account-b")
++	check(reopened.record_snapshot(key).is_empty(),"another account never sees cached own times or distributions")
++	check(reopened.record_snapshot("different-pinned-rules").is_empty(),"pinned rules remain part of the distribution identity")
++	browser.queue_free()
++	await process_frame
++	var first: Node = adapter(service)
++	first.refresh(false)
++	check(first.busy and first.model.tracks.is_empty(),"genuinely cold membership stays unresolved until server confirms it")
++	service.hold_rivalry = false
++	await settle()
++	check(first.has_snapshot() and first.model.tracks.size() == 5,"confirmed membership is persisted")
++	var prior_requests: int = service.paths.size()
++	first.refresh(false)
++	first.refresh(false)
++	check(service.paths.size() == prior_requests,"repeat menu entry coalesces fresh membership reads")
++	first.queue_free()
++	await process_frame
++	service.hold_rivalry = true
++	var restarted: Node = adapter(service)
++	began = Time.get_ticks_usec()
++	restarted.refresh(false)
++	var rivalry_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(restarted.has_snapshot() and restarted.model.tracks.size() == 5 and restarted.busy,"restart has a populated rivalry before background refresh finishes")
++	check(restarted.cached_snapshot,"restored membership is explicitly presentation-only")
++	prior_requests = service.paths.size()
++	check((await restarted.ticket(0)).is_empty() and service.paths.size() == prior_requests,"cached membership cannot issue a race ticket")
++	var page := WeeklyRivalryPage.new()
++	page.theme = MenuStyle.theme()
++	page.model = restarted.model
++	page.signed_in = true
++	page.busy = true
++	root.add_child(page)
++	MenuStyle.fill(page)
++	check(page.find_child("RivalryTracksPanel",true,false) != null and page.find_child("RivalryLoading",true,false) == null,"first cached rivalry frame contains its five tracks and standings")
++	await settle()
++	await capture("rivalry-restored-before-network")
++	page.queue_free()
++	service.hold_rivalry = false
++	await settle()
++	check(not restarted.cached_snapshot and not restarted.busy,"fresh server response releases cached membership gates")
++	var saved_path: String = restarted.snapshot_cache.path
++	var saved_scope: String = restarted.snapshot_cache.scope
++	restarted.queue_free()
++	await process_frame
++	service.hold_rivalry = true
++	service.player.id = "different-account"
++	var different: Node = adapter(service)
++	different.refresh(false)
++	check(different.model.tracks.is_empty() and not different.cached_snapshot,"account switch fences the cached championship")
++	service.hold_rivalry = false
++	await settle()
++	different.queue_free()
++	await process_frame
++	service.player.id = "you"
++	service.development = true
++	service.hold_rivalry = true
++	var development: Node = adapter(service)
++	development.refresh(false)
++	check(development.model.tracks.is_empty() and not development.cached_snapshot,"artificial and public membership caches remain separate")
++	service.hold_rivalry = false
++	await settle()
++	development.queue_free()
++	await process_frame
++	service.development = false
++	var expired: Dictionary = service.membership.duplicate(true)
++	expired.ends_at = expired.server_now
++	CacheIO.write(saved_path,{"schema":"menu-snapshots-v1","scope":saved_scope,"entries":{"current":{"saved_at":int(Time.get_unix_time_from_system()),"data":{"snapshot":expired,"received_at":int(Time.get_unix_time_from_system())}}}})
++	var ended: Node = adapter(service)
++	ended._restore_snapshot()
++	check(ended.model.tracks.is_empty(),"previous week's active membership is never revived from disk")
++	ended.queue_free()
++	await process_frame
++	CacheIO.write(saved_path,{"schema":"wrong-schema","scope":saved_scope,"entries":{}})
++	var broken: Node = adapter(service)
++	broken._restore_snapshot()
++	check(broken.model.tracks.is_empty(),"incompatible cache fails open to normal server loading")
++	broken.queue_free()
++	cloud.queue_free()
++	service.queue_free()
++	await process_frame
++	var report: Dictionary = {"hero_ready_ms":hero_ms,"histogram_disk_restore_ms":histogram_ms,"rivalry_disk_restore_ms":rivalry_ms,"checks":checks,"failures":failures,"real_network":false}
++	print("MENU_SPEED_TIMING "+JSON.stringify(report))
++	if not evidence.is_empty(): CacheIO.write(evidence.path_join("client-timing.json"),report)
++	print("MENU_LOADING_SPEED: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/MENU_LOADING_SPEED_2026_10_10.md b/docs/MENU_LOADING_SPEED_2026_10_10.md
+new file mode 100644
+--- /dev/null
++++ b/docs/MENU_LOADING_SPEED_2026_10_10.md
+@@ -0,0 +1,76 @@
++# Menu loading and histogram response speed — 2026-10-10
++
++Requirements: MLOAD01 (immediate Free Race hero), MLOAD02 (independent optional reads), MLOAD03 (populated Rivalry restart/entry), MLOAD04/HOPT03–HOPT05 (fast stored server histograms), RR06/WR01–WR02/WR08–WR10/TD06/TD08/B05/B07/R01/Q01. The owner reports slow Free Race and Rivalry content and clarifies that obtaining histogram data from the server itself must be nearly immediate. This supersedes delaying the hero until optional score/comparison replies arrive. Unknown data must still never be presented as an empty population, or as the previous track's scores.
++
++The client changes are local. A matching histogram server image is built and verified locally, **not published or deployed**. The observed running development backend remains image `61b0accbcfaa3e9e9bdf444273c655bbde853b28a7a5901748854dfebfd7a9f6`, schema `0020_challenges`.
++
++## What caused the delay
++
++`TrackBrowser._load_cloud_detail()` awaited the public leaderboard before starting the authenticated comparison request. `_show_detail()` then withheld the already-resolved hero until the comparison finished. A cloud track lacking compiled geometry also withheld its available metadata hero during download/compilation. Rivalry snapshots lived only in memory, and explicit entry/page activation refreshed them even when recently fetched.
++
++The previously implemented durable histogram backend was absent from the running image. It is documented in [Stored histograms](STORED_HISTOGRAMS_2026_10_10.md). The current source also includes migration 0023's scoped invalidation, needed to prevent an artificial reset from invalidating unrelated/public comparison data.
++
++## Client behavior
++
++- Free Race draws an available track's hero and local PBs immediately. A cold cloud selection draws its metadata route/title/scenery before downloading or compiling the race geometry; its race action remains disabled until geometry is ready. Resolved tracks can race while optional reads are pending.
++- Leaderboard and comparison requests start concurrently. Each can populate its own section first, and merging either result preserves the other's data. Existing selection/car/account lifetime guards and duplicate-read coalescing remain. Loading/error/confirmed-empty states stay distinct; the new hero never carries the old track's histogram. No fabricated counts, extra source controls or diagnostic labels were added.
++- A bounded atomic presentation cache persists up to 32 recent compatible comparison snapshots for ten minutes, scoped to server/account/population, with the existing content/physics/car/rules key. JSON restores the typed count/edge arrays and uses the existing default marker color. Personal scores cannot cross accounts. The normal selection request still fetches current server data once.
++- Rivalry persists one confirmed snapshot per server/account/car/population and pinned physics/rules/compiler/handling scope, for at most 24 hours. Active snapshots cannot survive their remaining week deadline. Cached snapshots are presentation-only: cached membership cannot issue a ticket, and its Race action remains gated until a successful fresh server response. Countdown elapsed time is corrected on restore. Confirmed nonmembership clears persisted membership; Continue clears the completed week.
++- Entry, activation and overview returns reuse a snapshot fetched within 30 seconds instead of starting redundant membership reads. Explicit Refresh and periodic/verified-result refresh remain available. First truly uncached entry retains the existing populated-first-load wait and cancellation/account fences; no membership or standings are invented.
++
++## Actual measurements
++
++Read-only live HTTP probe using an **existing artificial diagnostic driver's** development login. No profiles, races, scores, track content, settings or deployments were changed; one diagnostic auth session was issued. Five requests per route reused an HTTP session. The second probe added a transport baseline. [Final live receipt](evidence/menu-loading-speed-2026-10-10/live-latency.json):
++
++| Running service route | Median whole HTTP request |
++| --- | ---: |
++| Health (no histogram work) | 118.98 ms |
++| Bootstrap | 144.05 ms |
++| Underpass race/lap comparison | 209.84 ms |
++| Ajorata race/lap comparison | 217.77 ms |
++| Blind spot race/lap comparison | 214.20 ms |
++| Those tracks' leaderboard reads | 147.05–172.54 ms |
++
++The preceding bounded probe measured comparison medians 211.34–247.14 ms and an individual maximum 525.27 ms. The final probe shows an approximate 119 ms connection/HTTP floor on this connection; this is not a guaranteed minimum for other clients. Histogram calculation time and complete remote HTTP latency must not be equated.
++
++The prepared **exact image package**, tested against an owned disposable PostgreSQL 17 database with 1,000 synthetic drivers/1,000 verified attempts, measured **4.698 ms median** for the comparison calculation. First read: three SQL statements; subsequent reads: two; **zero lap-history reads** throughout. An earlier workspace-source run measured 3.596 ms. These exclude authentication, HTTP transport and live-host load. [Exact package benchmark](evidence/menu-loading-speed-2026-10-10/server-postgres-report.json).
++
++Final graphical delayed-network client fixture: initial hero construction **48.555 ms**, comparison cache restore **0.799 ms**, Rivalry membership cache restore **3.447 ms**. The latter two measure disk/read-model hydration, not complete screen rendering or real HTTP. First-frame assertions confirm the hero and restored five-track standings exist while replies are held. The shared comparison Loading caption appears once. [Client timing](evidence/menu-loading-speed-2026-10-10/client-timing.json).
++
++## Prepared server update
++
++Local image `bmt-menu-read:20261010`, image ID `sha256:d16a4a17e3cb64db4d1d654c818f2076a3b633399ede76a19f75d563987d872d`, derives from the exact observed development image. It overlays only the histogram routes/helpers/cache/storage/configuration/idle worker and existing migration chain 0021–0023. All **114 packaged canonical-game files are byte-identical**, as are unrelated backend files. [Image proof](evidence/menu-loading-speed-2026-10-10/server-image-proof.json), [server-only patch](evidence/menu-loading-speed-2026-10-10/server-image.patch).
++
++The image includes durable stored sixteen-bin grids/frequencies/own times, dirty-only background refresh, separate lap revision, bounded shared generation caches and cheap candidate/frame overlays. Requests never generate a histogram or scan attempts. Existing adaptive refresh defaults and player-job priority remain. Competitive PB updates, population deduplication, exact counts, pinned frames and public/artificial isolation remain unchanged. The additive 0021 predecessor preserves existing unlimited challenges; the image does not introduce challenge attempt-limit behavior.
++
++An authorized rollout must first recheck the live parent image and preserve configuration, make a successful fresh database backup, publish the exact image, apply migrations 0021–0023, and prepare initial snapshots with the matching worker before switching the API. Then verify the live race/lap packet counts, actual HTTP latency and worker priority. Empty/invalidated snapshots correctly return unavailable rather than fabricated data; warming before the API switch matters. No rollout or remote migration has been performed.
++
++## Files and actual checks
++
++Changed client/runtime files: `game/ui/track_browser.gd`, `game/ui/track_discovery_provider.gd`, `game/backend/weekly_rivalry_client.gd`, `game/backend/menu_snapshot_cache.gd`, `game/core/app.gd`. Tests: new `game/tests/test_menu_loading_speed.gd`, updated `test_unified_histograms.gd`, `test_menu_loading.gd`, `test_rivalry_entry.gd`. The latter disables persistence for its deliberate cold-reset scenarios; restart persistence is covered by the new suite. Existing coherent local-geometry selection and eligibility checks were retained. This report and the two project status documents record the task. The server runtime implementation already existed in the workspace; its exact-parent packaging/verification is new work.
++
++Commands use pinned Godot **4.7.2 stable ed1daf0bf** via `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, isolated `APPDATA=build/menu-speed-*-user`, and evidence environment variables scoped to this directory. Existing Windows certificate-store access was required because the sandbox denied the engine's startup read.
++
++| Actual command | Outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_menu_loading_speed.gd -Graphical -CommandTimeoutSeconds 90` | **30 checks, zero failures**; independent replies, restart caches, counts, account/population/week fences, cached-ticket rejection, three captures |
++| `TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical -CommandTimeoutSeconds 90` | **150 checks, zero failures**; counts/markers, 16-bin grids, delayed selections and three menu sizes |
++| `TestScript -ScriptPath res://tests/test_rivalry_entry.gd -Graphical -CommandTimeoutSeconds 90` | **70 checks, zero failures**; cold/preloaded entry, account changes, cancellation, automatic enrollment, errors and guests |
++| `TestScript -ScriptPath res://tests/test_menu_loading.gd -CommandTimeoutSeconds 90` | **39 checks, zero failures**; local compile supersession/cache eviction, metadata-first cloud download, optional scores and geometry |
++| `TestApp -CommandTimeoutSeconds 90` | **99 checks, zero failures**, including five-lap start/results and saved PBs |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **424 scripts, zero failures** |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_histogram_snapshots.py backend/tests/test_domains.py -k 'not postgres and (histogram or results_comparison)' -q --tb=short --junitxml=.../server-cache.xml` | **16 passed, 63 deselected**; existing Starlette/httpx deprecation warning |
++| `.tools/backend-venv/Scripts/python.exe build/menu-speed/live_latency.py` | Successful live timing/readiness; schema 0020, no race/score/content writes |
++| `.tools/backend-venv/Scripts/python.exe build/menu-speed/prepare_server.py` | Offline local exact-parent image build, SQLite migration smoke, comparison route and unchanged canonical-file proof pass; no upload/deploy |
++| `.tools/backend-venv/Scripts/python.exe build/menu-speed/test_server_image.py` | **16 passed, 1 skipped, 62 deselected** against the exact image package/owned PostgreSQL, then benchmark exit zero and owned container removed |
++| Scoped `git diff --check` / task patch reverse-check | Pass |
++
++The PostgreSQL skip is the SQLite parametrization of a PostgreSQL consistency fixture. Initial exact-image coverage found one retained assertion failure when only migration 0022 was packaged: an artificial reset invalidated a public snapshot. Including existing migration 0023's scoped invalidation corrected it without changing the assertion. [Initial receipt](evidence/menu-loading-speed-2026-10-10/server-image-initial-tests.log). The first client cache test found JSON's untyped numerical arrays differed from the live typed arrays; restoration now normalizes them, retaining exact count assertions. Initial certificate-store/CLI sandbox restrictions and WSL build-context mapping were corrected. No failing product requirement was weakened.
++
++Inspected [first hero with both replies held](evidence/menu-loading-speed-2026-10-10/free-race-first-frame.png), [comparison ready before the leaderboard](evidence/menu-loading-speed-2026-10-10/histogram-before-leaderboard.png), and [restored Rivalry before the network reply](evidence/menu-loading-speed-2026-10-10/rivalry-restored-before-network.png). These are delayed-network presentation fixtures, not live races or invented shipping standings. [Task-only client checkpoint](evidence/menu-loading-speed-2026-10-10/scoped-change.patch) excludes unrelated pre-existing/concurrent work.
++
++## Remaining acceptance
++
++A OnePlus Pad 2/OPD2403 tablet (`f0ba474a`) was attached; **no phone was attached and no physical-device test was performed**. An initial sandbox ADB check failed, then normal certificate/device access confirmed that list. No Android export/install, full Validate, physics regression/merge, remote migration, production deployment or purchase was performed. Client changes require rebuilding/restarting the app; the running development server remains unchanged pending the explicit deployment authorization required by [AGENTS.md](../AGENTS.md).
++
++Remaining checks: authorized development rollout and initial snapshot warmup, post-rollout whole-HTTP/device measurements, owner review under a cold account/track selection and changed championship week, and large-population cold process/RSS validation. The sub-five-millisecond measurement covers the tested server calculation, not every possible population size or remote network.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-10 SND32/SND30-SND31/SND24/SND05/G01/R01/Q01/V06: owner-supplied thunder MP3 replaces prior clip, original16.056s buildup/clap/tail retained,+6dB low shelf below180Hz yields measured4.089dB bass-to-mid increase after safe mastering. Source12b96eaa/derivative768b2f76/1416184bytes, original untouched/filename attribution and missing licence metadata explicit. Offline rebuild/import/focused40/native19/owner-bass review pass; strongest final50ms8.663dB above engine, peak0.701/paused0/mute-only music.117 focused shutdown references retained; rain0.28/thunder1.0 and47 vehicle/wet mixer/wishlist hashes exact. No phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (owner bass).
++
++2026-10-10 MLOAD01-MLOAD04/HOPT03-HOPT05/RR06/WR01-WR02/WR08-WR10/TD06/TD08/B05/B07/R01/Q01: owner requires immediate Free Race/Rivalry content and fast server histogram retrieval. Hero/local PBs and cloud metadata preview appear before optional network replies; leaderboard/comparison start concurrently. Bounded atomic account/server/population/pinned-contract comparison and presentation-only Rivalry restart caches; 30s fresh entry reuse, week/account fences and server ticket gates retained. Exact observed development image61b0accb/schema0020 still deployed: live HTTP medians210-218ms, health119ms. Prepared offline histogram-only image d16a4a17/schema0023 preserves114 canonical files; exact-image local PG1000drivers median4.698ms/2warm SQL/zero history scans, PG16pass+1skip and SQLite16pass. Native graphical30/150/70, loading39/App99/parser424 pass; inspected captures. Initial JSON type loss and omitted scoped-invalidation migration corrected with retained assertions. TabletOPD2403 attached/no phone or device test/export-install/fullValidate; no remote migration/upload/deploy/score changes. Explicit deployment approval and live/device latency acceptance remain. Files/commands/evidence/scoped checkpoint: docs/MENU_LOADING_SPEED_2026_10_10.md.
++
+ 2026-10-10 SND30-SND31/SND28-SND29/SND24/SND05/G01/R01/Q01/V06: owner requests properly strong thunder and quieter rain. Fuller recorded body/RMS0.22+gain1.0 gives10.404dB increase; same7.5s/source/delayed lightning, protected ceilings/lifecycle. Rain0.36818182-to0.28 (-23.95%/-2.378dB), original owner loop/47 vehicle WAVs/deferred wet mixer/wishlist exact. Offline buildeed0fce8/import/focused40/native19/stronger final-output review pass; strongest mixed50ms8.015dB above engine, peak0.706/paused0/mute-only music. Previous visual spray failures not rerun; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/preview/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (strong thunder).
+ 
+ 2026-10-10 HOPT03-HOPT05/HOPT02/RR06/TD06/TD08/B05/B07/R01/Q01: owner requests stored histograms with throttled/adaptive refresh. Durable per-version/car/population grids/frequencies/own times; verified data marks dirty, idle service worker refreshes due fields only, new default10drivers90s/1000drivers15min/100000drivers1h (configurable900s reference). Separate lap revision handles slower-race lap PBs; reset/visibility/retired data invalidates immediately, leases/fenced publication/backfill preserve records. Requests2warm SQL/zero history scans; local PGinitial medians2.35-2.76ms up to50000attempts/final4.659ms;100000-driver view-only median0.0132ms. Final worker/cacheSQLite40(6skip)/focused15/driver2/PG15(1SQLite skip)+service priority1/Ruff pass. Broad domain two failures reproduce pre-task baseline; assertions retained. Explicit race diagnostics keep prior behavior. Schema0022 depends existing0021; no running migration/deploy, player-record or UI changes, phone attachment/device test/export/full Validate. Source/files/commands/receipts/task-only checkpoint/remaining host-load-interval acceptance: docs/STORED_HISTOGRAMS_2026_10_10.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 MLOAD01-MLOAD04/HOPT03-HOPT05/RR06/WR01-WR02/WR08-WR10/TD06/TD08/B05/B07/R01/Q01: owner requires immediate Free Race/Rivalry content and fast server histogram retrieval. Hero/local PBs and cloud metadata preview appear before optional network replies; leaderboard/comparison start concurrently. Bounded atomic account/server/population/pinned-contract comparison and presentation-only Rivalry restart caches; 30s fresh entry reuse, week/account fences and server ticket gates retained. Exact observed development image61b0accb/schema0020 still deployed: live HTTP medians210-218ms, health119ms. Prepared offline histogram-only image d16a4a17/schema0023 preserves114 canonical files; exact-image local PG1000drivers median4.698ms/2warm SQL/zero history scans, PG16pass+1skip and SQLite16pass. Native graphical30/150/70, loading39/App99/parser424 pass; inspected captures. Initial JSON type loss and omitted scoped-invalidation migration corrected with retained assertions. TabletOPD2403 attached/no phone or device test/export-install/fullValidate; no remote migration/upload/deploy/score changes. Explicit deployment approval and live/device latency acceptance remain. Files/commands/evidence/scoped checkpoint: docs/MENU_LOADING_SPEED_2026_10_10.md.
++
+ 2026-10-10 HOPT03-HOPT05/HOPT02/RR06/TD06/TD08/B05/B07/R01/Q01: owner requests stored histograms with throttled/adaptive refresh. Durable per-version/car/population grids/frequencies/own times; verified data marks dirty, idle service worker refreshes due fields only, new default10drivers90s/1000drivers15min/100000drivers1h (configurable900s reference). Separate lap revision handles slower-race lap PBs; reset/visibility/retired data invalidates immediately, leases/fenced publication/backfill preserve records. Requests2warm SQL/zero history scans; local PGinitial medians2.35-2.76ms up to50000attempts/final4.659ms;100000-driver view-only median0.0132ms. Final worker/cacheSQLite40(6skip)/focused15/driver2/PG15(1SQLite skip)+service priority1/Ruff pass. Broad domain two failures reproduce pre-task baseline; assertions retained. Explicit race diagnostics keep prior behavior. Schema0022 depends existing0021; no running migration/deploy, player-record or UI changes, phone attachment/device test/export/full Validate. Source/files/commands/receipts/task-only checkpoint/remaining host-load-interval acceptance: docs/STORED_HISTOGRAMS_2026_10_10.md.
+ 
+ 2026-10-10 V04/V05/Q01/R01: owner bridge-dust fix installed; Vulkan appearance rejected and Compatibility restored. Ground/deck particle banks preserve lingering emission layer; creator-span volume/actual sandstone soffit clipping plus opaque-roof protection prevents ground dust crossing deck, keeps on-deck dust visible. MSAA2x,1.5MP/nativeHUD/camera/colour/canonical unchanged, dust presentation12. GPU89/desert87/nine roof-reference pixels+state/material witness/export72/21/48 pass. Native final ground/deck images inspected, deck4banks, paused0; ordinary drive19.987ms/p9524.43 (~50FPS). APK246963167/SHA25694FF619583F4E27F6417438643A1CA4B62101A699E56897CAE55F838EDF4001D installSuccess; marker absent/normal play restored/playerdata retained. Initial locked attempt/argument-array capture issue corrected without weakened checks. No fullValidate/replay/thermal/other-device/backend or production action. Validated16 creator spans/junctions covered; legacy export-excluded deck fixtures unchanged; owner prolonged/shadow acceptance remains. Files/commands/evidence/scoped checkpoint: docs/BRIDGE_DUST_2026_10_10.md.
+@@ -1461,3 +1463,8 @@
+ ## Stronger thunder and quieter rain, 2026-10-10
+ 
+ 2026-10-10 SND30-SND31/SND28-SND29/SND24/SND05/G01/R01/Q01/V06: owner requests properly strong thunder and quieter rain. Fuller recorded body/RMS0.22+gain1.0 gives10.404dB increase; same7.5s/source/delayed lightning, protected ceilings/lifecycle. Rain0.36818182-to0.28 (-23.95%/-2.378dB), original owner loop/47 vehicle WAVs/deferred wet mixer/wishlist exact. Offline buildeed0fce8/import/focused40/native19/stronger final-output review pass; strongest mixed50ms8.015dB above engine, peak0.706/paused0/mute-only music. Previous visual spray failures not rerun; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/preview/task-only checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (strong thunder).
++
++
++## Owner-supplied thunder and bass boost, 2026-10-10
++
++2026-10-10 SND32/SND30-SND31/SND24/SND05/G01/R01/Q01/V06: owner-supplied thunder MP3 replaces prior clip, original16.056s buildup/clap/tail retained,+6dB low shelf below180Hz yields measured4.089dB bass-to-mid increase after safe mastering. Source12b96eaa/derivative768b2f76/1416184bytes, original untouched/filename attribution and missing licence metadata explicit. Offline rebuild/import/focused40/native19/owner-bass review pass; strongest final50ms8.663dB above engine, peak0.701/paused0/mute-only music.117 focused shutdown references retained; rain0.28/thunder1.0 and47 vehicle/wet mixer/wishlist hashes exact. No phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (owner bass).

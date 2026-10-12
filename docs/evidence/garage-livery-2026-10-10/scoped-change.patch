@@ -1,0 +1,835 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -403,17 +403,6 @@
+ 	MenuStyle.fill(background)
+ 	root_ui.add_child(background)
+ 	var scenery: Array[Control] = []
+-	if screen == "garage":
+-		var stage := MenuStage.new()
+-		stage.setting = str(selected_track.metadata.get("theme","pine"))
+-		stage.garage = screen == "garage"
+-		MenuStyle.fill(stage)
+-		root_ui.add_child(stage)
+-		scenery.append(stage)
+-		var scrim := MenuScrim.new()
+-		MenuStyle.fill(scrim)
+-		root_ui.add_child(scrim)
+-		scenery.append(scrim)
+ 	var margin := MarginContainer.new()
+ 	MenuStyle.fill(margin)
+ 	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 20)
+@@ -755,15 +744,6 @@
+ 		var background := MenuBackdrop.new()
+ 		body.add_child(background)
+ 		backgrounds.append(background)
+-		if next == "garage":
+-			var stage := MenuStage.new()
+-			stage.setting = str(selected_track.metadata.get("theme","pine"))
+-			stage.garage = true
+-			body.add_child(stage)
+-			backgrounds.append(stage)
+-			var scrim := MenuScrim.new()
+-			body.add_child(scrim)
+-			backgrounds.append(scrim)
+ 		var column := VBoxContainer.new()
+ 		MenuStyle.fill(column)
+ 		body.add_child(column)
+@@ -1595,65 +1575,15 @@
+ 
+ func _garage(parent: VBoxContainer = null) -> void:
+ 	if parent == null: parent = content
+-	var row := HBoxContainer.new()
+-	row.add_theme_constant_override("separation",24)
+-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	parent.add_child(row)
+-	var scene_copy := VBoxContainer.new()
+-	scene_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	row.add_child(scene_copy)
+-	var title := MenuStyle.label("YOUR GARAGE",48)
+-	title.add_theme_color_override("font_shadow_color",MenuStyle.INK)
+-	title.add_theme_constant_override("shadow_offset_y",2)
+-	scene_copy.add_child(title)
+-	scene_copy.add_child(MenuStyle.label("Drive. Improve. Repeat.",22,true))
+-	var scene_space := Control.new()
+-	scene_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	scene_copy.add_child(scene_space)
+-	var footer := HBoxContainer.new()
+-	scene_copy.add_child(footer)
+-	_feature(footer,track_title(selected_track).to_upper()+" · 5 LAPS","Return to your selected circuit",_show_screen.bind("tracks"))
+-	footer.get_child(footer.get_child_count()-1).name = "GarageCircuit"
+-	_feature(footer,"DRIVING CONTROLS","Find your preferred layout",_show_screen.bind("settings"))
+-	var info: VBoxContainer = _menu_card(row)
+-	info.add_theme_constant_override("separation",6)
+-	var eyebrow := MenuStyle.label("YOUR CAR  /  READY TO RACE",16)
+-	eyebrow.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	info.add_child(eyebrow)
+-	info.add_child(MenuStyle.label(VehicleCatalog.title(),36))
+-	var selector := OptionButton.new()
+-	selector.name = "VehicleSelector"
+-	selector.custom_minimum_size.y = 48
+-	for i: int in range(VehicleCatalog.IDS.size()):
+-		selector.add_item(VehicleCatalog.CLASSES[i])
+-	selector.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+-	selector.item_selected.connect(_select_vehicle)
+-	info.add_child(selector)
+-
+-	var description := MenuStyle.label(VehicleCatalog.description(),18,true)
+-	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	info.add_child(description)
+-	info.add_child(HSeparator.new())
+-	var handling: HandlingConfig = HandlingSelection.config()
+-	for pair: Array in [["Handling",handling.profile_name],["Mass","%d kg" % roundi(handling.mass)],["Speed limit","%d km/h" % roundi(handling.maximum_speed*3.6)]]:
+-		var stat := HBoxContainer.new()
+-		stat.custom_minimum_size.y = 35
+-		info.add_child(stat)
+-		var label := MenuStyle.label(pair[0],18,true)
+-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		stat.add_child(label)
+-		stat.add_child(MenuStyle.label(pair[1],24))
+-	info.add_child(HSeparator.new())
+-	var tip := MenuStyle.label("All cars available. Personal bests are saved per car and handling.",17,true)
+-	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	info.add_child(tip)
+-	var space := Control.new()
+-	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	info.add_child(space)
+-	var race := MenuStyle.button("RACE  →",func() -> void: _start_race(selected_track,false),true)
+-	race.custom_minimum_size.y = 64
+-	info.add_child(race)
+-	info.add_child(MenuStyle.button("Choose circuit",_open_library.bind("all")))
++	var page := GaragePage.new()
++	page.records = records
++	page.circuit_title = track_title(selected_track).to_upper()+" · 5 LAPS"
++	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	page.vehicle_selected.connect(_select_vehicle)
++	page.race_requested.connect(func() -> void: _start_race(selected_track,false))
++	page.circuit_requested.connect(_open_library.bind("all"))
++	page.save_failed.connect(func() -> void: _notice("Paint could not be saved. Check free storage space."))
++	parent.add_child(page)
+ 
+ func _settings() -> void:
+ 	var page := SettingsPage.new()
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -169,6 +169,7 @@
+ 	world.add_child(checkpoint_marker)
+ 	car = CarVisual.new()
+ 	car.vehicle_id = vehicle_id
++	if preference_records != null: car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
+ 	world.add_child(car)
+ 	if production_mode and not editor_test and native_track != null and preference_records != null:
+ 		personal_ghost = PersonalGhost.new()
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -4,6 +4,17 @@
+ 
+ var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
+ var vehicle_id: String = "compact"
++var livery: Dictionary = {}
++var paint_materials: Dictionary = {}
++var accent_roof: StandardMaterial3D
++
++func apply_livery(value: Dictionary) -> void:
++	livery = value.duplicate(true) if VehicleLivery.valid(value) else VehicleLivery.defaults(vehicle_id)
++	for slot: String in VehicleLivery.SLOTS:
++		if paint_materials.has(slot):
++			(paint_materials[slot] as StandardMaterial3D).albedo_color = Color(str(livery.colors[slot]))
++	if accent_roof != null:
++		accent_roof.albedo_color = Color(str(livery.colors.accent)).darkened(0.12)
+ var headlights: Node3D
+ var road_headlight: SpotLight3D
+ var night_lights_enabled: bool = false
+@@ -174,11 +185,13 @@
+ 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+ 	if vehicle_id != "compact":
+ 		VehicleModels.build(self, vehicle_id)
++		if not livery.is_empty(): apply_livery(livery)
+ 		_update_rear_lights()
+ 		if batch_parts: VisualGeometry.batch_static_parts(self)
+ 		return
+ 	var paint := VisualGeometry.material(Color("e0d5b5"))
+ 	var blue := VisualGeometry.material(Color("30627d"))
++	paint_materials = {"body":blue, "accent":paint}
+ 	var trim := VisualGeometry.material(Color("171e21"))
+ 	var glass := VisualGeometry.material(Color("1e3036"))
+ 	var rim := VisualGeometry.material(Color("657177"))
+@@ -207,6 +220,7 @@
+ 			register_rolling_wheel(pivot, 0.37)
+ 	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
+ 	CompactDetail.build(self, blue, paint, trim, rim)
++	if not livery.is_empty(): apply_livery(livery)
+ 	_update_rear_lights()
+ 	if batch_parts: VisualGeometry.batch_static_parts(self)
+ 
+@@ -465,6 +479,7 @@
+ 	_panel([lf,rf,trf,tlf],Vector3(0,0.79,-0.61),paint)
+ 	_panel([lr,rr,trr,tlr],Vector3(0,0.84,0.54),paint)
+ 	var roof_paint := VisualGeometry.material(Color("c5baa0"))
++	accent_roof = roof_paint
+ 	_panel([tlf,trf,trr,tlr],Vector3.UP,roof_paint)
+ 	var roof := Node3D.new()
+ 	body.add_child(roof)
+diff --git a/game/vehicle/vehicle_models.gd b/game/vehicle/vehicle_models.gd
+--- a/game/vehicle/vehicle_models.gd
++++ b/game/vehicle/vehicle_models.gd
+@@ -11,13 +11,16 @@
+ 	VisualGeometry.ink(paint)
+ 	var cream: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
+ 	VisualGeometry.ink(cream)
++	var accent: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
++	VisualGeometry.ink(accent)
++	car.paint_materials = {"body":paint, "accent":accent}
+ 	var trim: StandardMaterial3D = VisualGeometry.material(Color("182126"))
+ 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
+ 	match id:
+-		"pickup": _pickup(car,paint,cream,trim,glass)
+-		"classic": _classic(car,paint,cream,trim,glass)
+-		"formula": _formula(car,paint,cream,trim,glass)
+-		"kart": _kart(car,paint,cream,trim,glass)
++		"pickup": _pickup(car,paint,cream,trim,glass,accent)
++		"classic": _classic(car,paint,cream,trim,glass,accent)
++		"formula": _formula(car,paint,cream,trim,glass,accent)
++		"kart": _kart(car,paint,cream,trim,glass,accent)
+ 	var config: HandlingConfig = VehicleCatalog.config(id)
+ 	var half_axle: float = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
+ 	var half_track: float = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
+@@ -62,23 +65,23 @@
+ 		car._panel([Vector3(side*(lerpf(width,top,0.13)+0.009),lerpf(base,roof,0.13),lerpf(front,roof_front,0.13)+0.08),Vector3(side*(lerpf(width,top,0.13)+0.009),lerpf(base,roof,0.13),lerpf(back,roof_back,0.13)-0.08),Vector3(side*(lerpf(width,top,0.88)+0.009),lerpf(base,roof,0.88),lerpf(back,roof_back,0.88)-0.07),Vector3(side*(lerpf(width,top,0.88)+0.009),lerpf(base,roof,0.88),lerpf(front,roof_front,0.88)+0.07)],Vector3(side,0.3,0),glass)
+ 		_box(car,Vector3(0.17,0.12,0.23),Vector3(side*(width+0.10),base+0.08,front+0.22),trim)
+ 
+-static func _pickup(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
++static func _pickup(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
+ 	car._shell(car.body,[Vector3(0.97,0.46,2.66),Vector3(1.01,0.83,2.63)],paint)
+ 	# Open cargo bed: floor, separate side rails and tailgate, no solid top lid.
+ 	_box(car,Vector3(1.68,0.08,2.13),Vector3(0,0.87,1.47),trim)
+ 	for side: float in [-1.0,1.0]:
+ 		_box(car,Vector3(0.18,0.49,2.21),Vector3(side*0.92,1.06,1.43),paint)
+-		_box(car,Vector3(0.20,0.10,2.22),Vector3(side*0.92,1.32,1.43),cream)
++		_box(car,Vector3(0.20,0.10,2.22),Vector3(side*0.92,1.32,1.43),accent)
+ 		_box(car,Vector3(0.07,0.22,0.14),Vector3(side*0.91,1.05,2.58),car.brake_material)
+ 		_box(car,Vector3(0.035,0.05,0.20),Vector3(side*1.02,1.13,-0.02),trim)
+ 		car._seam(car.body,Vector3(side*1.015,0.80,0.29),Vector3(side*1.015,1.30,0.29),0.017,trim)
+ 	for rib: int in range(7):
+ 		_box(car,Vector3(0.025,0.025,1.98),Vector3(-0.68+rib*0.226,0.923,1.45),paint)
+ 	_box(car,Vector3(1.98,0.46,0.14),Vector3(0,1.08,2.55),paint)
+-	_box(car,Vector3(1.97,0.12,0.16),Vector3(0,1.33,2.55),cream)
++	_box(car,Vector3(1.97,0.12,0.16),Vector3(0,1.33,2.55),accent)
+ 	_box(car,Vector3(1.98,0.42,2.88),Vector3(0,1.04,-1.14),paint)
+-	_box(car,Vector3(1.92,0.12,1.4),Vector3(0,1.30,-1.86),cream)
+-	_cabin(car,0.94,1.30,1.95,-1.12,0.35,-0.70,0.23,cream,glass,trim)
++	_box(car,Vector3(1.92,0.12,1.4),Vector3(0,1.30,-1.86),accent)
++	_cabin(car,0.94,1.30,1.95,-1.12,0.35,-0.70,0.23,accent,glass,trim)
+ 	_box(car,Vector3(1.85,0.37,0.06),Vector3(0,1.10,-2.61),trim)
+ 	for side: float in [-1.0,1.0]:
+ 		_box(car,Vector3(0.43,0.23,0.08),Vector3(side*0.66,1.12,-2.66),cream)
+@@ -88,7 +91,7 @@
+ 	for end: float in [-1.0,1.0]:
+ 		_box(car,Vector3(2.08,0.16,0.15),Vector3(0,0.69,end*2.67),trim)
+ 
+-static func _classic(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
++static func _classic(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
+ 	car._shell(car.body,[Vector3(0.83,0.32,2.03),Vector3(0.91,0.57,2.08),Vector3(0.83,0.81,1.92)],paint)
+ 	_cabin(car,0.75,0.82,1.34,-0.76,1.60,-0.23,0.52,paint,glass,trim)
+ 	# Rounded wings, front lamps and the rear engine grille define the silhouette.
+@@ -102,14 +105,14 @@
+ 		_box(car,Vector3(0.40,0.12,0.05),Vector3(side*0.61,0.65,2.07),car.brake_material)
+ 		car._seam(car.body,Vector3(side*0.903,0.53,0.40),Vector3(side*0.85,0.80,0.40),0.018,trim)
+ 		_box(car,Vector3(0.035,0.045,0.18),Vector3(side*0.865,0.78,0.18),trim)
+-	_box(car,Vector3(0.18,0.02,1.08),Vector3(0,0.826,-1.34),cream)
+-	_box(car,Vector3(0.18,0.02,0.74),Vector3(0,1.352,0.14),cream)
++	_box(car,Vector3(0.18,0.02,1.08),Vector3(0,0.826,-1.34),accent)
++	_box(car,Vector3(0.18,0.02,0.74),Vector3(0,1.352,0.14),accent)
+ 	for vent: int in range(7):
+ 		_box(car,Vector3(0.83,0.026,0.033),Vector3(0,0.837,1.63+vent*0.036),trim)
+ 	for end: float in [-1.0,1.0]:
+ 		_box(car,Vector3(1.68,0.13,0.085),Vector3(0,0.47,end*2.09),trim)
+ 
+-static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
++static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
+ 	# Open-wheel single seater with tapered nose, cockpit, suspension and wings.
+ 	car._shell(car.body,[Vector3(0.42,0.19,2.13),Vector3(0.39,0.40,2.03),Vector3(0.28,0.52,1.82)],paint)
+ 	_box(car,Vector3(0.48,0.026,0.66),Vector3(0,0.541,-0.05),trim)
+@@ -128,15 +131,15 @@
+ 				car._seam(car.body,Vector3(side*0.32,0.30,axle+offset),Vector3(side*0.94,0.34,axle),0.042,trim)
+ 		_box(car,Vector3(0.04,0.25,0.44),Vector3(side*0.90,0.30,-2.06),paint)
+ 		_box(car,Vector3(0.045,0.32,0.55),Vector3(side*0.75,0.74,1.99),paint)
+-	_box(car,Vector3(1.83,0.065,0.45),Vector3(0,0.25,-2.06),cream)
+-	_box(car,Vector3(1.52,0.075,0.55),Vector3(0,0.81,1.99),cream)
++	_box(car,Vector3(1.83,0.065,0.45),Vector3(0,0.25,-2.06),accent)
++	_box(car,Vector3(1.52,0.075,0.55),Vector3(0,0.81,1.99),accent)
+ 	_box(car,Vector3(0.11,0.36,0.15),Vector3(0,0.58,1.99),trim)
+-	_box(car,Vector3(0.13,0.018,1.29),Vector3(0,0.535,-1.13),cream)
++	_box(car,Vector3(0.13,0.018,1.29),Vector3(0,0.535,-1.13),accent)
+ 	for vent: int in range(5):
+ 		_box(car,Vector3(0.39,0.02,0.025),Vector3(0,0.536,0.81+vent*0.12),trim)
+ 	_box(car,Vector3(0.13,0.08,0.045),Vector3(0,0.34,2.15),car.brake_material)
+ 
+-static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
++static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
+ 	# Low tubular chassis and an exposed seated driver distinguish it from Formula.
+ 	var steel: StandardMaterial3D = VisualGeometry.material(Color("536674"))
+ 	var suit: StandardMaterial3D = VisualGeometry.material(Color("263e53"))
+@@ -146,7 +149,7 @@
+ 		car._seam(car.body,Vector3(side*0.47,0.16,-1.12),Vector3(side*0.47,0.16,1.07),0.065,steel)
+ 		car._seam(car.body,Vector3(side*0.66,0.22,-0.88),Vector3(side*0.40,0.21,-0.50),0.038,steel)
+ 		_box(car,Vector3(0.29,0.23,1.04),Vector3(side*0.52,0.29,0.01),paint)
+-		_box(car,Vector3(0.30,0.035,0.75),Vector3(side*0.52,0.417,-0.02),cream)
++		_box(car,Vector3(0.30,0.035,0.75),Vector3(side*0.52,0.417,-0.02),accent)
+ 		car._seam(car.body,Vector3(side*0.76,0.15,1.08),Vector3(side*0.76,0.15,1.25),0.065,trim)
+ 	for end: float in [-1.0,1.0]:
+ 		car._seam(car.body,Vector3(-0.76,0.16,end*1.13),Vector3(0.76,0.16,end*1.13),0.065,steel)
+@@ -157,7 +160,7 @@
+ 	car.body.add_child(nose)
+ 	nose.position.z = -1.07
+ 	car._shell(nose,[Vector3(0.74,0.13,0.30),Vector3(0.76,0.30,0.28),Vector3(0.60,0.40,0.24)],paint)
+-	VisualGeometry.box(nose,Vector3(0.18,0.008,0.48),Vector3(0,0.405,0),cream)
++	VisualGeometry.box(nose,Vector3(0.18,0.008,0.48),Vector3(0,0.405,0),accent)
+ 	# Centered fairing meets the nose top; its stripe shares the same center and width.
+ 	car._panel([Vector3(-0.18,0.40,-0.83),Vector3(0.18,0.40,-0.83),Vector3(0.20,0.60,-0.37),Vector3(-0.20,0.60,-0.37)],Vector3(0,0.92,-0.40),paint)
+ 	car._panel([Vector3(-0.09,0.409,-0.83),Vector3(0.09,0.409,-0.83),Vector3(0.09,0.609,-0.37),Vector3(-0.09,0.609,-0.37)],Vector3(0,0.92,-0.40),cream)
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -147,6 +147,8 @@
+ 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+ 		elif field == "selected_car":
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
++		elif field == "vehicle_liveries":
++			if not VehicleLivery.valid_collection(preferences[field]): return {}
+ 		elif field == "camera_mode":
+ 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
+ 		elif field == "camera_speed_zoom_strength":
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -1,40 +1,71 @@
+ class_name CarShowroom
+ extends SubViewportContainer
+-## Menu-only camera over the same original production car geometry.
++## Menu-only orbit camera over the actual race model. No simulation ownership.
++var vehicle_id: String = "compact"
++var livery: Dictionary = {}
++var car: CarVisual
++var camera: Camera3D
++var showroom_viewport: SubViewport
++var yaw: float = 0.70
++var pointer: int = -1
+ 
+ func _ready() -> void:
+ 	stretch = true
+-	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	mouse_filter = Control.MOUSE_FILTER_STOP
+ 	var viewport := SubViewport.new()
+-	viewport.size = Vector2i(740, 430)
++	showroom_viewport = viewport
+ 	viewport.own_world_3d = true
+ 	viewport.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
++	viewport.msaa_3d = Viewport.MSAA_2X
+ 	add_child(viewport)
+ 	var world := Node3D.new()
+ 	viewport.add_child(world)
+ 	var environment := WorldEnvironment.new()
+ 	environment.environment = Environment.new()
+ 	environment.environment.background_mode = Environment.BG_COLOR
+-	environment.environment.background_color = Color("202e35")
++	environment.environment.background_color = Color("112734")
+ 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+ 	environment.environment.ambient_light_color = Color("bbccd1")
+-	environment.environment.ambient_light_energy = 0.55
++	environment.environment.ambient_light_energy = 0.65
+ 	world.add_child(environment)
+ 	var light := DirectionalLight3D.new()
+ 	light.rotation_degrees = Vector3(-48, -28, 0)
+ 	light.light_color = Color("eee2cd")
+ 	light.shadow_enabled = true
+ 	world.add_child(light)
+-	VisualGeometry.box(world, Vector3(60, 0.1, 60), Vector3(0, -0.11, 0), VisualGeometry.material(Color("37444a")))
+-	VisualGeometry.box(world, Vector3(7, 0.04, 7), Vector3(0, -0.04, 0), VisualGeometry.material(Color("465359")))
+-	for x: float in [-3.1, 3.1]:
+-		VisualGeometry.box(world, Vector3(0.04, 0.012, 6), Vector3(x, 0.0, 0), VisualGeometry.material(Color("929b98")))
+-	var car := CarVisual.new()
++	VisualGeometry.box(world, Vector3(60, 0.1, 60), Vector3(0, -0.11, 0), VisualGeometry.material(Color("233641")))
++	VisualGeometry.cylinder(world, 3.8, 0.07, Vector3(0, -0.04, 0), VisualGeometry.material(Color("3c4b53")))
++	car = CarVisual.new()
++	car.vehicle_id = vehicle_id
++	car.livery = livery
+ 	world.add_child(car)
+-	var camera := Camera3D.new()
++	camera = Camera3D.new()
+ 	world.add_child(camera)
+-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+-	camera.size = 6.2
+-	camera.position = Vector3(6, 4.4, -7)
+-	camera.look_at(Vector3(0, 0.5, 0))
++	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
++	camera.fov = 38.0
+ 	camera.current = true
++	_orbit()
++	gui_input.connect(_drag)
++	# The stretched container owns viewport dimensions, including phone resizes.
++	camera.keep_aspect = Camera3D.KEEP_HEIGHT
++
++func _orbit() -> void:
++	var distance: float = 8.5 if vehicle_id == "pickup" else 7.1 if vehicle_id != "kart" else 4.9
++	camera.position = Vector3(sin(yaw)*distance, 0.55 + distance*0.32, -cos(yaw)*distance)
++	camera.look_at(Vector3(0, 0.55, 0))
++
++func _drag(event: InputEvent) -> void:
++	if event is InputEventScreenTouch:
++		if event.pressed and pointer == -1: pointer = event.index
++		elif not event.pressed and pointer == event.index: pointer = -1
++	elif event is InputEventScreenDrag and event.index == pointer:
++		yaw -= event.relative.x * 0.012
++		_orbit()
++	elif event is InputEventMouseMotion and pointer == -1 and event.button_mask & MOUSE_BUTTON_MASK_LEFT:
++		yaw -= event.relative.x * 0.012
++		_orbit()
++	accept_event()
++
++func apply_livery(value: Dictionary) -> void:
++	livery = value.duplicate(true)
++	if is_instance_valid(car): car.apply_livery(livery)
+diff --git a/game/ui/menu_page_swipe.gd b/game/ui/menu_page_swipe.gd
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -126,7 +126,7 @@
+ 		if control.mouse_behavior_recursive == Control.MOUSE_BEHAVIOR_DISABLED: return false
+ 		if not control.is_visible_in_tree(): return false
+ 		if control.clip_contents and not control.get_global_rect().has_point(location): return false
+-		if control.get_global_rect().has_point(location) and (control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
++		if control.get_global_rect().has_point(location) and (control is CarShowroom or control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
+ 			return true
+ 	for child: Node in node.get_children():
+ 		if _owns_gesture(child, location): return true
+diff --git a/game/tests/test_menu_page_swipe.gd b/game/tests/test_menu_page_swipe.gd
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -92,7 +92,8 @@
+ 		await swipe(point, Vector2(-150, 0))
+ 		check(app.screen == "garage", "left swipe Create to Garage")
+ 		await capture("garage", dimensions)
+-		await swipe(point, Vector2(-150, 0))
++		# The actual car owns its rotation gesture; menu swipes use the title area.
++		await swipe(garage_page_point(), Vector2(-150, 0))
+ 		check(app.screen == "store", "left swipe Garage to Store")
+ 		check(app.menu_body.find_child("StorePage",true,false) != null, "swipe displays the actual Store page")
+ 		await capture("store", dimensions)
+@@ -101,7 +102,7 @@
+ 		await check_edge("store", point, -1, dimensions)
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "garage", "right swipe Store to Garage")
+-		await swipe(point, Vector2(150, 0))
++		await swipe(garage_page_point(), Vector2(150, 0))
+ 		check(app.screen == "biome" and app.document == retained, "return to Create preserves draft")
+ 		await swipe(point, Vector2(150, 0))
+ 		check(app.screen == "tracks", "right swipe Create to Race")
+@@ -421,7 +422,7 @@
+ 	await settle()
+ 	check(app.screen == "garage" and app.menu_body == garage, "prepared Garage becomes interactive after completion")
+ 	check(app.menu_body.find_child("VehicleSelector",true,false).mouse_filter != Control.MOUSE_FILTER_IGNORE, "promoted controls recover their original mouse input")
+-	await swipe(point, Vector2(75,0))
++	await swipe(garage_page_point(), Vector2(75,0))
+ 	await swipe(point, Vector2(75,0))
+ 	check(app.screen == "tracks", "prepared reverse neighbors return through Create to Race")
+ 	app._show_screen("biome")
+@@ -510,6 +511,10 @@
+ 	touch(point + distance, false, canceled)
+ 	await settle()
+ 
++func garage_page_point() -> Vector2:
++	var showroom: Control = app.menu_body.find_child("GarageShowroom",true,false)
++	return Vector2(showroom.get_global_rect().get_center().x, showroom.get_global_rect().position.y - 20)
++
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_page.gd
+@@ -0,0 +1,121 @@
++class_name GaragePage
++extends HBoxContainer
++signal vehicle_selected(index: int)
++signal race_requested
++signal circuit_requested
++signal save_failed
++
++var records: LocalRecords
++var showroom: CarShowroom
++var draft: Dictionary
++var pickers: Dictionary = {}
++var vehicle_id: String = VehicleCatalog.selected
++var circuit_title: String = ""
++
++func _ready() -> void:
++	add_theme_constant_override("separation", 20)
++	draft = VehicleLivery.for_car(records.settings, vehicle_id)
++	var preview := VBoxContainer.new()
++	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	add_child(preview)
++	preview.add_child(MenuStyle.label("YOUR GARAGE", 36))
++	showroom = CarShowroom.new()
++	showroom.name = "GarageShowroom"
++	showroom.vehicle_id = vehicle_id
++	showroom.livery = draft
++	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	preview.add_child(showroom)
++	preview.add_child(MenuStyle.label("Drag to rotate", 16, true))
++	var circuit := MenuFeature.new()
++	circuit.name = "GarageCircuit"
++	circuit.heading = circuit_title
++	circuit.description = "Choose circuit"
++	circuit.pressed.connect(func() -> void: circuit_requested.emit())
++	preview.add_child(circuit)
++	var panel := PanelContainer.new()
++	panel.custom_minimum_size.x = 340
++	panel.add_theme_stylebox_override("panel", MenuStyle.card(16))
++	add_child(panel)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation", 8)
++	panel.add_child(column)
++	var scroll := ScrollContainer.new()
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	column.add_child(scroll)
++	var controls := VBoxContainer.new()
++	controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	controls.add_theme_constant_override("separation", 10)
++	scroll.add_child(controls)
++	controls.add_child(MenuStyle.label(VehicleCatalog.title(vehicle_id), 28))
++	var selector := OptionButton.new()
++	selector.name = "VehicleSelector"
++	selector.custom_minimum_size.y = 48
++	for title: String in VehicleCatalog.CLASSES: selector.add_item(title)
++	selector.select(VehicleCatalog.IDS.find(vehicle_id))
++	selector.item_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
++	controls.add_child(selector)
++	var description := MenuStyle.label(VehicleCatalog.description(vehicle_id), 17, true)
++	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	controls.add_child(description)
++	controls.add_child(HSeparator.new())
++	controls.add_child(MenuStyle.label("LIVERY", 20))
++	for slot: String in VehicleLivery.SLOTS:
++		var row := HBoxContainer.new()
++		controls.add_child(row)
++		var label := MenuStyle.label(slot.capitalize(), 18)
++		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		row.add_child(label)
++		var picker := ColorPickerButton.new()
++		picker.name = "Livery" + slot.capitalize()
++		picker.custom_minimum_size = Vector2(112, 48)
++		picker.edit_alpha = false
++		picker.color = Color(str(draft.colors[slot]))
++		# Compact touch picker: hue/saturation/value and exact hex, no duplicated sliders.
++		var color_picker: ColorPicker = picker.get_picker()
++		color_picker.color_modes_visible = false
++		color_picker.sliders_visible = false
++		color_picker.sampler_visible = false
++		color_picker.presets_visible = false
++		picker.get_popup().add_theme_stylebox_override("panel", MenuStyle.card(12))
++		picker.color_changed.connect(_preview_color.bind(slot))
++		picker.popup_closed.connect(_save)
++		row.add_child(picker)
++		pickers[slot] = picker
++	controls.add_child(MenuStyle.button("Reset paint", _reset))
++	controls.add_child(HSeparator.new())
++	var handling: HandlingConfig = HandlingSelection.config()
++	for pair: Array in [["Mass", "%d kg" % roundi(handling.mass)], ["Speed limit", "%d km/h" % roundi(handling.maximum_speed*3.6)]]:
++		var row := HBoxContainer.new()
++		controls.add_child(row)
++		var label := MenuStyle.label(str(pair[0]), 17, true)
++		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		row.add_child(label)
++		row.add_child(MenuStyle.label(str(pair[1]), 20))
++	var race := MenuStyle.button("RACE", func() -> void: race_requested.emit(), true)
++	race.custom_minimum_size.y = 52
++	column.add_child(race)
++
++func _preview_color(color: Color, slot: String) -> void:
++	draft.colors[slot] = Color(clampf(color.r,0,1),clampf(color.g,0,1),clampf(color.b,0,1)).to_html(false)
++	showroom.apply_livery(draft)
++
++func _save() -> void:
++	var colors: Dictionary = records.settings.get("vehicle_liveries", {}).duplicate(true)
++	colors[vehicle_id] = draft.duplicate(true)
++	records.settings.vehicle_liveries = colors
++	if records.save_records() != OK:
++		draft = VehicleLivery.for_car(records.settings, vehicle_id)
++		showroom.apply_livery(draft)
++		_update_pickers()
++		save_failed.emit()
++
++func _update_pickers() -> void:
++	for slot: String in VehicleLivery.SLOTS:
++		(pickers[slot] as ColorPickerButton).color = Color(str(draft.colors[slot]))
++
++func _reset() -> void:
++	draft = VehicleLivery.defaults(vehicle_id)
++	showroom.apply_livery(draft)
++	_update_pickers()
++	_save()
+diff --git a/game/ui/garage_page.gd.uid b/game/ui/garage_page.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_page.gd.uid
+@@ -0,0 +1 @@
++uid://cowhf374uum1
+diff --git a/game/vehicle/vehicle_livery.gd b/game/vehicle/vehicle_livery.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_livery.gd
+@@ -0,0 +1,31 @@
++class_name VehicleLivery
++extends RefCounted
++## Versioned cosmetic colors. Independent of handling, tickets and PB keys.
++const VERSION: int = 1
++const SLOTS: Array[String] = ["body", "accent"]
++
++static func defaults(id: String) -> Dictionary:
++	return {"version":VERSION, "colors":{
++		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43"}.get(id,"30627d")),
++		"accent":"e0d5b5" if id == "compact" else "d9d0b7"}}
++
++static func valid(value: Variant) -> bool:
++	if not value is Dictionary or value.size() != 2 or value.get("version") != VERSION: return false
++	var colors: Variant = value.get("colors")
++	if not colors is Dictionary or colors.size() != SLOTS.size(): return false
++	for slot: String in SLOTS:
++		var color: Variant = colors.get(slot)
++		if not color is String or color.length() != 6: return false
++		for character: String in color:
++			if character not in "0123456789abcdef": return false
++	return true
++
++static func for_car(settings: Dictionary, id: String) -> Dictionary:
++	var value: Variant = settings.get("vehicle_liveries", {}).get(id, {})
++	return value.duplicate(true) if valid(value) else defaults(id)
++
++static func valid_collection(value: Variant) -> bool:
++	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	for id: Variant in value:
++		if not id is String or id not in VehicleCatalog.IDS or not valid(value[id]): return false
++	return true
+diff --git a/game/vehicle/vehicle_livery.gd.uid b/game/vehicle/vehicle_livery.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_livery.gd.uid
+@@ -0,0 +1 @@
++uid://k5uhnu5y2yha
+diff --git a/game/tests/test_garage_livery.gd b/game/tests/test_garage_livery.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_livery.gd
+@@ -0,0 +1,148 @@
++extends SceneTree
++## Real model/material, persistence, input ownership and graphical layout checks.
++var failures: int = 0
++var checks: int = 0
++var output: String = "res://../docs/evidence/garage-livery-2026-10-10"
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: " + label)
++
++func settle() -> void:
++	for i: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://garage_test_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await settle()
++	var base_key: String = app.records.key_for(app.selected_track, VehicleCatalog.config("compact"))
++	for id: String in VehicleCatalog.IDS:
++		VehicleCatalog.selected = id
++		app.call("_show_screen", "garage")
++		await settle()
++		var page: GaragePage = app.root_ui.find_child("GarageShowroom", true, false).get_parent().get_parent()
++		var car: CarVisual = page.showroom.car
++		check(car.vehicle_id == id and car.front_wheels.size() == 2, id + " actual model")
++		check(car.paint_materials.size() == 2, id + " cosmetic slots")
++		var brake_color: Color = car.brake_material.albedo_color
++		page.pickers.body.color = Color("9a3e50")
++		page.pickers.body.color_changed.emit(Color("9a3e50"))
++		page.pickers.accent.color = Color("e4b74c")
++		page.pickers.accent.color_changed.emit(Color("e4b74c"))
++		check(car.paint_materials.body.albedo_color.to_html(false) == "9a3e50", id + " live body")
++		check(car.paint_materials.accent.albedo_color.to_html(false) == "e4b74c", id + " live accent")
++		check(car.brake_material.albedo_color == brake_color, id + " lamps unchanged")
++		page.pickers.body.popup_closed.emit()
++		var reopened := LocalRecords.new(app.records.path)
++		reopened.load_records()
++		check(VehicleLivery.for_car(reopened.settings, id).colors.body == "9a3e50", id + " atomic reload")
++		check(reopened.settings.vehicle_liveries.size() == VehicleCatalog.IDS.find(id) + 1, id + " independent saved car")
++		var fresh := CarVisual.new()
++		fresh.vehicle_id = id
++		fresh.livery = VehicleLivery.for_car(reopened.settings, id)
++		root.add_child(fresh)
++		check(fresh.paint_materials.body.albedo_color.to_html(false) == "9a3e50", id + " rebuilt race model color")
++		fresh.queue_free()
++		var swipe: Node = app.root_ui.get_node("MenuPageSwipe")
++		check(swipe.call("_owns_gesture", app.root_ui, page.showroom.get_global_rect().get_center()), id + " rotate owns gesture")
++		var motion := InputEventMouseMotion.new()
++		motion.button_mask = MOUSE_BUTTON_MASK_LEFT
++		motion.relative = Vector2(40, 0)
++		var old_yaw: float = page.showroom.yaw
++		page.showroom.gui_input.emit(motion)
++		check(page.showroom.yaw != old_yaw, id + " mouse orbit")
++		var touch := InputEventScreenTouch.new()
++		touch.index = 0
++		touch.pressed = true
++		page.showroom.gui_input.emit(touch)
++		var drag := InputEventScreenDrag.new()
++		drag.index = 0
++		drag.relative = Vector2(-40,0)
++		page.showroom.gui_input.emit(drag)
++		touch.pressed = false
++		page.showroom.gui_input.emit(touch)
++		check(is_equal_approx(page.showroom.yaw, old_yaw) and page.showroom.pointer == -1, id + " touch orbit")
++		var press := InputEventScreenTouch.new()
++		press.index = 0
++		press.position = page.showroom.get_global_rect().get_center()
++		press.pressed = true
++		root.push_input(press, true)
++		await process_frame
++		var screen_drag := InputEventScreenDrag.new()
++		screen_drag.index = 0
++		screen_drag.position = press.position + Vector2(40,0)
++		screen_drag.relative = Vector2(40,0)
++		root.push_input(screen_drag, true)
++		await process_frame
++		press = press.duplicate() as InputEventScreenTouch
++		press.pressed = false
++		press.position = screen_drag.position
++		root.push_input(press, true)
++		check(page.showroom.yaw != old_yaw and app.screen == "garage", id + " real touch rotates without navigation")
++		page.showroom.yaw = old_yaw
++		page.showroom._orbit()
++		for dimensions: Vector2i in [Vector2i(1280,720), Vector2i(960,540), Vector2i(1600,720)]:
++			root.size = dimensions
++			await settle()
++			check(page.showroom.size.x > 250 and page.showroom.size.y > 200, id + " preview dimensions " + str(dimensions))
++			check(app.root_ui.get_global_rect().encloses(page.pickers.body.get_global_rect()), id + " paint within screen")
++			check(root.get_texture().get_image().save_png(output.path_join(id + "-" + str(dimensions.x) + ".png")) == OK, id + " screenshot")
++	check(app.records.key_for(app.selected_track, VehicleCatalog.config("compact")) == base_key, "paint retains PB key")
++	var invalid: Dictionary = VehicleLivery.defaults("compact")
++	invalid.colors.body = "nan"
++	check(not VehicleLivery.valid(invalid), "reject malformed color")
++	check(not VehicleLivery.valid_collection({"unknown":VehicleLivery.defaults("compact")}), "reject unknown car")
++	var page: GaragePage = app.root_ui.find_child("GarageShowroom", true, false).get_parent().get_parent()
++	var picker: ColorPickerButton = page.pickers.body
++	root.size = Vector2i(960,540)
++	await settle()
++	var click := InputEventMouseButton.new()
++	click.button_index = MOUSE_BUTTON_LEFT
++	click.position = picker.get_global_rect().get_center()
++	click.global_position = click.position
++	click.pressed = true
++	root.push_input(click, true)
++	await process_frame
++	click = click.duplicate() as InputEventMouseButton
++	click.pressed = false
++	root.push_input(click, true)
++	await settle()
++	check(picker.get_popup().visible, "opens actual color picker")
++	check(picker.get_popup().size.x <= root.size.x and picker.get_popup().size.y <= root.size.y, "color popup fits")
++	check(root.get_texture().get_image().save_png(output.path_join("color-picker.png")) == OK, "picker screenshot")
++	picker.get_popup().hide()
++	page._reset()
++	check(VehicleLivery.for_car(app.records.settings,"kart") == VehicleLivery.defaults("kart"), "reset persists factory colors")
++	check(VehicleLivery.for_car(app.records.settings,"compact").colors.body == "9a3e50", "reset leaves other cars")
++	var saved_path: String = app.records.path
++	app.records.path = directory.path_join("missing/records.json")
++	page._preview_color(Color("ffffff"), "body")
++	page._save()
++	check(page.draft == VehicleLivery.defaults("kart"), "failed write restores committed paint")
++	app.records.path = saved_path
++	# Exercise the same construction path used when a player starts driving.
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.preference_records = app.records
++	game.vehicle_id = "compact"
++	root.add_child(game)
++	check(game.car.paint_materials.body.albedo_color.to_html(false) == "9a3e50", "driving uses saved paint")
++	game.queue_free()
++	await process_frame
++	app.queue_free()
++	await process_frame
++	print("Garage livery: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_livery.gd.uid b/game/tests/test_garage_livery.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_livery.gd.uid
+@@ -0,0 +1 @@
++uid://8nrh41087asx
+diff --git a/docs/GARAGE_LIVERY.md b/docs/GARAGE_LIVERY.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_LIVERY.md
+@@ -0,0 +1,31 @@
++# Garage models and livery colors ? 2026-10-10
++
++Requirements: GL01 (actual selected race model), GL02 (editable persistent livery colors), GL03 (future extensibility), GL04 (owner perspective correction), G01/V06/R01/Q01. This owner request replaces the illustrated Garage view; the five existing fictional models and their race geometry remain the source.
++
++The Garage now displays the actual `CarVisual` for Compact, Hauler, Rearsport, Formula and Kart. Dragging the model rotates the menu camera; touching the title area still allows primary menu navigation. The first orthographic preview was rejected for its perspective. The final preview uses restrained perspective, 38? vertical field of view, approximately 17.7? downward angle and model-dependent distances 7.1m/8.5m/4.9m. Gameplay cameras, vehicle dimensions, collisions and canonical simulation are unchanged.
++
++Body and Accent controls recolor the model immediately. Closing the compact color picker saves that car's opaque RGB colors through the existing atomic LocalRecords transaction. The picker provides hue/saturation/value and hex input and fits the 960?540 layout. Reset paint restores that car's authored palette. A failed save restores its last committed colors and presents the existing actionable storage notice. Each car retains independent colors, and driving construction reads the saved livery. Glass, tires, rims, brake lights, headlamps and drivers retain their original materials; shared cream cosmetic/lamp materials were split before batching.
++
++`VehicleLivery` uses a bounded, validated `version:1` document with named `body` and `accent` color slots. The existing LocalRecords schema accepts the new optional `vehicle_liveries` field without changing old record files, timing keys or handling contracts. This is the base for future shape/pattern layers; arbitrary paint placement, texture patterns, decals and cloud cosmetic synchronization are not implemented in this slice. No placeholder customization controls or implementation labels were added to the game.
++
++Changed files: `game/ui/garage_page.gd` (new page), `game/ui/car_showroom.gd`, `game/vehicle/vehicle_livery.gd` (new cosmetic contract), `game/vehicle/car_visual.gd`, `game/vehicle/vehicle_models.gd`, `game/persistence/local_records.gd`, `game/core/app.gd`, the one livery initialization line in `game/core/game.gd`, `game/ui/menu_page_swipe.gd`; `game/tests/test_garage_livery.gd` and three Garage navigation points in `game/tests/test_menu_page_swipe.gd`; this document and status/plan entries. Existing unrelated workspace changes, including concurrent race-world caching, are excluded from the [scoped Git checkpoint](evidence/garage-livery-2026-10-10/scoped-change.patch).
++
++Actual commands used pinned Godot `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Isolated record/library/cloud paths and an empty API URL were used by the Garage test. Normal Windows access was required for Godot certificate/log access after the restricted import failed; no environment permission policy was changed.
++
++| Actual command | Actual outcome |
++| --- | --- |
++| `-Action Import` | Exit 0 after retry with normal Windows access |
++| `-Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical` | Final **115 checks, zero failures**, including final perspective captures, five real models, immediate body/accent materials, unchanged lamps, atomic reload, independent saved cars, mouse/touch rotation, real viewport touch ownership, 15 layout captures, actual color popup, reset, write-failure recovery, driving construction and unchanged PB key |
++| `-Action TestCars` | **105 checks, zero failures**, exact simulation/replay, original model geometry batching and fifteen actual five-lap AI fixtures |
++| `-Action TestRecords` | **54 checks, zero failures**, existing migration/atomic records coverage |
++| `-Action TestApp` | **99 checks, zero failures**, existing app/race flow |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **438 scripts, zero failures** before temporary baseline comparison scripts were added |
++| `-Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical` | **268 checks, 12 failures**; same six Create?Race/first-tab/edge assertions at both sizes reproduce with the saved pre-change app and pre-change test (**268 checks, 12 failures**). Garage?Store and Garage?Create navigate from outside the rotation viewport; original assertions retained |
++| `-Action TestScript -ScriptPath res://tests/test_menu_quality.gd -Graphical` | **23 checks, 3 failures**; same Race/Garage/Create cached-menu promotion assertions reproduce against the saved pre-change app (**23 checks, 3 failures**). Selected circuit, selector, cached Garage race action and descendant input checks pass |
++| `adb devices -l` | OnePlus Pad 2 `OPD2403`, serial `f0ba474a`, attached; **no phone attached** |
++
++Initial checks exposed manual SubViewport resizing under stretch (corrected by letting its container own size), synthetic pressed-signal fixture input (replaced with real viewport mouse input), and an overflowing default ColorPicker (corrected with compact picker controls and opaque panel). Navigation regression points that previously crossed the static illustration now use the title region; new tests verify actual touch rotation does not navigate. No assertion was removed or weakened.
++
++Final inspected captures: [Compact 960](evidence/garage-livery-2026-10-10/compact-960.png), [Hauler 960](evidence/garage-livery-2026-10-10/pickup-960.png), [Rearsport 1280](evidence/garage-livery-2026-10-10/classic-1280.png), [Formula 1280](evidence/garage-livery-2026-10-10/formula-1280.png), [Kart 1600](evidence/garage-livery-2026-10-10/kart-1600.png) and [compact color picker](evidence/garage-livery-2026-10-10/color-picker.png). These are actual desktop game captures using isolated test colors, not generated artwork or player records.
++
++No physical-device test, Android export/install, backend changes/deployment, full Validate or production action was performed. Remaining acceptance: owner view/proportion review, physical touch/picker usability, and Android frame pacing with the menu SubViewport. The pre-existing menu regression failures remain open. Reload/rebuild the client to use the local change.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 GL01-GL04/G01/V06/R01/Q01: Garage uses all five actual race models, drag rotation, saved per-car Body/Accent colors and factory reset. Owner perspective correction uses restrained38deg perspective/lower17.7deg menu camera; driving reads cosmetic-only version1 colors, atomic failure rollback/lamps/glass/PB keys/physics retained. Final native115/Car105/Records54/App99/parser438 pass;15 captures+picker inspected. Broad swipe268/12 and quality23/3 failures match saved pre-change app; assertions retained. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Source/commands/scoped checkpoint/remaining shape-pattern and device acceptance: docs/GARAGE_LIVERY.md.
++
+ 2026-10-10 RLOAD01-RLOAD02/R01/Q01/B07/V03/V05: owner reports slow race loading even on just-driven tracks. Bounded validated cloud compilation snapshots (5/32MiB, mutex, independent native/contact data) and completed race scenery (5/64MiB estimate, fresh nodes/props/tyre buffers) remove repeated work; editor and server ticket gates retained. Desktop immediate-repeat averages Ajorata1579.91-to551.05ms/Star1783.39-to357.61ms/oval871.21-to544.90ms; excludes HTTP/countdown, no controlled first-load/device claim. Graphical prepared73/loading81/App99/restart17/road66/parser438 pass; restart47 shutdown references retained. Four frozen captures inspected; native reload Import remains blocked by in-use DLL after partial class refresh. No phone check/device test/export-install/fullValidate/backend/deploy/player-score writes. Files/commands/limits/scoped checkpoint/remaining actual signed-in and mobile acceptance: docs/RACE_LOADING_SPEED_2026_10_10.md.
+ 
+ 2026-10-10 SND34/SND32/MUS35/SND33/SND05/G01/R01/Q01/V06: owner shortens overlapping thunder; same bass source now6s/main-clap start1.88s/1.2s cosine tail fade/529244bytes/b6c04a66. Every delayed cue starts fresh in two reusable voices, prior tail fades0.18s/no accumulation; pause-focus/exit retained, rain0.28/thunder1.0 unchanged. Final offline/import/focused41/verboseheadless20/nativeRapid21/raceCapture19/review/nativeMusic52 pass; rapid peak0.626, ordinary paused/muted output0, all5 music PCM0. Initial headless shutdown resources retained/clean verbose run; concurrent six compact masters preserved and VehicleLivery parse cleared by import, no edits to that work. Settings camera-touch/earlier spray failures remain; no phone attachment/device listening/export-install/full Validate/physics/camera/backend/deploy. Files/commands/audio/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (short tails).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 GL01-GL04/G01/V06/R01/Q01: Garage uses all five actual race models, drag rotation, saved per-car Body/Accent colors and factory reset. Owner perspective correction uses restrained38deg perspective/lower17.7deg menu camera; driving reads cosmetic-only version1 colors, atomic failure rollback/lamps/glass/PB keys/physics retained. Final native115/Car105/Records54/App99/parser438 pass;15 captures+picker inspected. Broad swipe268/12 and quality23/3 failures match saved pre-change app; assertions retained. TabletOPD2403 attached/no phone/device test/export-install/fullValidate/backend/deploy. Source/commands/scoped checkpoint/remaining shape-pattern and device acceptance: docs/GARAGE_LIVERY.md.
++
+ 2026-10-10 RLOAD01-RLOAD02/R01/Q01/B07/V03/V05: owner reports slow race loading even on just-driven tracks. Bounded validated cloud compilation snapshots (5/32MiB, mutex, independent native/contact data) and completed race scenery (5/64MiB estimate, fresh nodes/props/tyre buffers) remove repeated work; editor and server ticket gates retained. Desktop immediate-repeat averages Ajorata1579.91-to551.05ms/Star1783.39-to357.61ms/oval871.21-to544.90ms; excludes HTTP/countdown, no controlled first-load/device claim. Graphical prepared73/loading81/App99/restart17/road66/parser438 pass; restart47 shutdown references retained. Four frozen captures inspected; native reload Import remains blocked by in-use DLL after partial class refresh. No phone check/device test/export-install/fullValidate/backend/deploy/player-score writes. Files/commands/limits/scoped checkpoint/remaining actual signed-in and mobile acceptance: docs/RACE_LOADING_SPEED_2026_10_10.md.
+ 
+ 2026-10-10 SND34/SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: owner regular driving artefact/roughly fixed rhythm remains source-uncertain. Compact-only phase-matched joins, full-source filtering before cuts and longer mid/high sections reduce40ms envelope minima mid-2.231 to-0.877/high-1.649 to-0.333dB; sixWAV1448110bytes/other41 hashes exact/repeat47 exact. Ten isolated native engine-wind-road captures wrap/pause/dropout checks and vehicle1446 pass; exact960-tick simulation. Wind/road references retained unchanged; no claim owner exact symptom resolved. No phone attachment check/device listening/export-install/fullValidate/backend/deploy for task. Files/commands/audio/scoped checkpoint/remaining owner identification: docs/COMPACT_AUDIO_LOOPS.md.

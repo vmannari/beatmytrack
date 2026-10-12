@@ -1,0 +1,73 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -302,7 +302,7 @@
+ 	_stop_menu_page_motion()
+ 	menu_neighbors.clear()
+ 	menu_neighbor_direction = 0
+-	var pages: Array[String] = ["tracks", "biome", "garage"]
++	var pages: Array[String] = ["tracks", "biome", "garage", "store"]
+ 	var previous_page: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
+ 	var next_page: String = "biome" if next == "drafts" else "tracks" if next in ["rivalry","challenges"] else next
+ 	var slide: bool = is_instance_valid(root_ui) and root_ui.is_visible_in_tree() and previous_page in pages and next_page in pages and previous_page != next_page
+@@ -337,7 +337,7 @@
+ 	MenuStyle.fill(root_ui)
+ 	root_ui.theme = MenuStyle.theme()
+ 	menu_layer.add_child(root_ui)
+-	if screen in ["tracks", "rivalry", "challenges", "biome", "drafts", "garage"]:
++	if screen in ["tracks", "rivalry", "challenges", "biome", "drafts", "garage", "store"]:
+ 		var swipe := preload("res://ui/menu_page_swipe.gd").new()
+ 		swipe.name = "MenuPageSwipe"
+ 		swipe.menu = root_ui
+@@ -463,7 +463,7 @@
+ 	layout.add_child(HSeparator.new())
+ 	content = VBoxContainer.new()
+ 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	if screen in ["tracks", "rivalry", "challenges", "biome", "drafts", "garage"]:
++	if screen in ["tracks", "rivalry", "challenges", "biome", "drafts", "garage", "store"]:
+ 		menu_body_slot = Control.new()
+ 		menu_body_slot.name = "MenuContentViewport"
+ 		menu_body_slot.clip_contents = true
+@@ -591,7 +591,7 @@
+ 	menu_neighbor_direction = direction
+ 	for neighbor_direction: int in menu_neighbors:
+ 		menu_neighbors[neighbor_direction].body.visible = neighbor_direction == direction
+-	if (screen in ["tracks", "rivalry", "challenges"] and distance > 0.0) or (screen == "garage" and distance < 0.0):
++	if (screen in ["tracks", "rivalry", "challenges"] and distance > 0.0) or (screen == "store" and distance < 0.0):
+ 		# Match the track carousel's bounded resistance, followed by its spring return.
+ 		menu_body.position.x = signf(distance) * 64.0 * (1.0 - exp(-absf(distance) / 160.0))
+ 		menu_drag_offset = 0.0
+@@ -645,11 +645,11 @@
+ 	if swipe.pointer != -1:
+ 		_prepare_menu_neighbors.call_deferred(generation)
+ 		return
+-	var pages: Array[String] = ["tracks", "biome", "garage"]
++	var pages: Array[String] = ["tracks", "biome", "garage", "store"]
+ 	var current: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
+ 	var index: int = pages.find(current)
+ 	if index < 0: return
+-	# Keep the third primary page warm too, for another swipe immediately after
++	# Keep all primary pages warm too, for another swipe immediately after
+ 	# commitment. These are shared textures and inactive controls, not extra apps.
+ 	for destination: int in range(pages.size()):
+ 		var direction: int = destination - index
+@@ -687,6 +687,11 @@
+ 			"challenges": _challenges(column)
+ 			"biome": _choose_biome(column, true)
+ 			"garage": _garage(column)
++			"store":
++				var store := preload("res://ui/store_page.gd").new()
++				store.client = online.client
++				store.sign_in_requested.connect(_open_account)
++				column.add_child(store)
+ 		_set_menu_preview_input(body, true)
+ 		menu_neighbors[direction] = {"body":body,"content":column,"backgrounds":backgrounds,"screen":next}
+ 		body.position.x = menu_body_slot.size.x * direction
+@@ -1497,7 +1502,7 @@
+ 	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
+ 
+ func _swipe_menu_page(direction: int) -> void:
+-	var pages: Array[String] = ["tracks", "biome", "garage"]
++	var pages: Array[String] = ["tracks", "biome", "garage", "store"]
+ 	var current: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
+ 	var index: int = pages.find(current)
+ 	if index < 0: return

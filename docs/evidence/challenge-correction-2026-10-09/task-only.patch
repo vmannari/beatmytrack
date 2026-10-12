@@ -1,0 +1,1138 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -182,3 +182,7 @@
+ ## Admin support and data population override (2026-10-08)
+ 
+ The owner authorizes the player support workspace, audited development purchase/access controls and date/missing-value corrections. Keep artificial drivers included as ordinary players in administrative data for now; do not add population/source filters or classifications to this slice. Internal development authentication, simulation gates and public competitive/rating/eligibility isolation remain. Broader analytics and new telemetry follow separately. See docs/BACKEND_UI.md.
++
++## Post-race challenge correction (2026-10-09)
++
++The owner requires Create challenge after a race to use that exact completed result, including a slower-than-PB finish, with its track and car fixed. Pending verification or service failure must never substitute a personal best or ask the player to drive again. Use a compact custom menu-styled sheet with challenge type/duration, actual finish and original route preview; track/search/car selection remains for general menu creation only. The owner explicitly removes the unrequested Compare tab from race results: retain Track/Sectors/Speed and the original separate histogram page. See docs/CHALLENGES.md for exact-ticket contract, development rollout, evidence and remaining acceptance.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,6 +1,8 @@
+ 2026-10-09 WR06/WR09-WR10/R01/V03-V05/Q01: owner-reference rivalry track detail implemented locally: compact Back to Tracks, retained original outline/art with verified start/direction markers, eight complete full-board rows, signed millisecond gaps, top/bottom sticky player, continuation action and closest challenger/default matching ghost. Final native detail333/weekly1256/App99/parser390 pass;24 isolated fixture captures and task-only review patch retained. Scroll-layout and marker-fixture failures corrected without weakened contracts. Tablet f0ba474a offline; no physical-device test/export/install/live-backend race/full Validate/backend or production rollout. Owner/device/live cache-ghost acceptance remains. Files/actual commands/logs/evidence/limits: docs/RIVALRY_TRACK_DETAIL.md.
+ 
+ 2026-10-09 V04/V05/Q01/R01: tablet desert dust tiles reproduced and isolated to Adreno Compatibility MSAA: same shader/drive20.008ms vsMSAAoff19.899ms, smooth off screenshot. Scoped desert/mobileAdreno single-sample profile prepared; original dust/density/lifetime/budget/framing/physics retained and MSAA restored on exit. Render481/desert87/exportfocused72/21/48 pass; no fullValidate. Rejected shader experiments removed; actual evidence/diagnostic limits retained. Final install/under-bridge device acceptance pending USB offline/reconnect. Commands/files/scoped checkpoint: docs/TABLET_DUST_2026_10_09.md.
++
++2026-10-09 CH09-CH13/CH02-CH04/R01/V03/B01-B07/Q01: owner-corrected post-race challenges pin the exact completed ticket/track/car, including slower-than-PB finishes; custom scenic navy/yellow sheet exposes only type/duration and never reraces on pending/error. Unrequested Compare tab/embedded view removed; original Track/Sectors/Speed and separate unified histograms retained. Final graphical99/App99/SQLite16/ownedPG33(one skip)/actual HTTP43+47/button44/hist36+46/export72+21+48 pass; initial fixture/unsupported-job-flag failures retained and corrected. Missing development endpoint fixed with frozen image925c6b26, exact112 packaged files, successful backup1791521718841/additive schema0020/API-worker/smoke-catalog update; endpoint/native replay-storage-schema/worker checks pass. Existing records/settings/isolations preserved. APK241130965/SHA256374392FBF2156C4517CECA36EACDAC4B8040CBCB80BEBE12767F0EE7D66A5AA7. Tablet initially authorized, streamed install failed then unauthorized/offline; no candidate launch/device UI/race acceptance/full Validate/physics change or production action. Owner style/real-account/device acceptance remains; scoped checkpoint preserves concurrent work. Files/commands/pictures/rollout/limits: docs/CHALLENGE_CORRECTION_2026_10_09.md.
+ 
+ 2026-10-09 WR01-WR02/WR07-WR10/TD09/R01/V03-V05/Q01: owner-requested rivalry track-entry flow implemented: overview rows/arrows open the existing route/rival/ghost detail; Race starts there, Back to Rivalry remembers selection. Removed redundant section tabs, overview Race and obsolete pages; podium/five tracks/scrollable standings remain. Completed/busy/unavailable race gates retained. Final graphical1256/verified-field221/App99/result10/parser388 and disposable native HTTP39 checks pass; actual five laps/12757 ticks independently verified, normal results first. Historical replay countdown-observer setup corrected after initial HTTP failure without runtime/rules or weakened assertions. Native screenshots and task-only review checkpoint retained. No phone attachment check/device test/export/install/full Validate/retained staging or production action. Requirements/files/commands/evidence/acceptance: docs/RIVALRY_NAVIGATION.md.
+ 
+diff --git a/backend/bmt_backend/challenges.py b/backend/bmt_backend/challenges.py
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -8,7 +8,7 @@
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+ from fastapi.responses import HTMLResponse, JSONResponse
+-from pydantic import BaseModel, ConfigDict, Field
++from pydantic import BaseModel, ConfigDict, Field, model_validator
+ from sqlalchemy import or_, select, update
+ from sqlalchemy.exc import IntegrityError
+ 
+@@ -54,6 +54,13 @@
+     mode: Literal["beat", "group"] = "beat"
+     duration_seconds: Literal[86400, 259200, 604800] = 604800
+     source_run_id: str | None = Field(default=None, min_length=36, max_length=36)
++    source_ticket_id: str | None = Field(default=None, min_length=36, max_length=36)
++
++    @model_validator(mode="after")
++    def one_source(self):
++        if self.source_run_id and self.source_ticket_id:
++            raise ValueError("Choose one result reference")
++        return self
+ 
+ 
+ class Rematch(BaseModel):
+@@ -151,8 +158,16 @@
+             "share_url": request.app.state.settings.public_base_url.rstrip("/")+"/c/"+challenge.code}
+ 
+ 
+-def source_for(session, board, player_id, source_run_id=None):
+-    if not source_run_id:
++def source_for(session, board, player_id, source_run_id=None, source_ticket_id=None):
++    if source_ticket_id:
++        ticket = session.get(RunTicket, source_ticket_id)
++        if ticket is None or ticket.player_id != player_id or ticket.board_id != board.id:
++            raise HTTPException(404, "Race result not found")
++        run = session.scalar(select(Run).where(Run.ticket_id == source_ticket_id))
++        if run is None or run.status in ("queued", "verifying"):
++            raise HTTPException(409, "Result is still being verified")
++        source_run_id = run.id
++    elif not source_run_id:
+         best = session.get(PersonalBest, (board.id, player_id))
+         source_run_id = best.run_id if best else None
+     run = session.get(Run, source_run_id) if source_run_id else None
+@@ -205,7 +220,7 @@
+ 
+ def create_record(session, request, player, payload, key, scope, body):
+     board = prepare_board(session, request, payload.version_id, payload.vehicle_id)
+-    source = source_for(session, board, player.id, payload.source_run_id) if payload.mode == "beat" or payload.source_run_id else None
++    source = source_for(session, board, player.id, payload.source_run_id, payload.source_ticket_id) if payload.mode == "beat" or payload.source_run_id or payload.source_ticket_id else None
+     if source:
+         ensure_ghost(session, request, source, board)
+         # Blob IO/verification released the snapshot. Recheck availability/build.
+diff --git a/backend/tests/test_challenges.py b/backend/tests/test_challenges.py
+--- a/backend/tests/test_challenges.py
++++ b/backend/tests/test_challenges.py
+@@ -81,6 +81,42 @@
+     assert d.client.post("/v1/challenges", json={**body, "source_run_id": run}, headers=headers(d, "Bob")).status_code == 409
+     with d.factory() as session:
+         assert len(session.scalars(select(Challenge)).all()) == 1
++
++
++def test_finished_ticket_pins_slower_result_instead_of_personal_best(challenge_domain):
++    d = challenge_domain
++    version = setup(d)
++    normal_run(d, version, frames=10)
++    finished = normal_run(d, version, frames=30)
++    with d.factory() as session:
++        ticket_id = session.get(Run, finished).ticket_id
++    body = {"version_id": version, "vehicle_id": "compact", "source_ticket_id": ticket_id}
++    source = d.client.get("/v1/challenges/sources", params={"version_id": version, "vehicle_id": "compact", "ticket_id": ticket_id}, headers=headers(d, "Alice"))
++    assert source.json()["run_id"] == finished and source.json()["ms"] == 1250
++    for mode in ("beat", "group"):
++        response = d.client.post("/v1/challenges", json={**body, "mode": mode}, headers=headers(d, "Alice"))
++        assert response.status_code == 201, response.text
++        assert response.json()["standings"][0]["run_id"] == finished
++        assert response.json()["standings"][0]["ticks"] == 150
++        if mode == "beat": assert response.json()["target_ticks"] == 150
++    assert d.client.post("/v1/challenges", json=body, headers=headers(d, "Bob")).status_code == 404
++    assert d.client.post("/v1/challenges", json={**body, "source_run_id": finished}, headers=headers(d, "Alice")).status_code == 422
++
++
++def test_pending_finished_ticket_never_falls_back_to_an_existing_pb(challenge_domain):
++    d = challenge_domain
++    version = setup(d)
++    normal_run(d, version, frames=10)
++    issued = d.client.post("/v1/run-tickets", json={"version_id": version, "vehicle_id": "compact"}, headers=headers(d, "Alice")).json()
++    body = {"version_id": version, "vehicle_id": "compact", "source_ticket_id": issued["ticket_id"]}
++    assert d.client.post("/v1/challenges", json=body, headers=headers(d, "Alice")).status_code == 409
++    submit(d, issued, "Alice", frames=30)
++    assert d.client.post("/v1/challenges", json=body, headers=headers(d, "Alice")).status_code == 409
++    with d.factory() as session:
++        assert session.scalars(select(Challenge)).all() == []
++    assert process_one(d.app)
++    response = d.client.post("/v1/challenges", json=body, headers=headers(d, "Alice"))
++    assert response.status_code == 201 and response.json()["target_ticks"] == 150
+ 
+ 
+ def test_ghost_lazy_reconstruction_and_public_preview_expose_no_inputs(challenge_domain):
+diff --git a/docs/CHALLENGES.md b/docs/CHALLENGES.md
+--- a/docs/CHALLENGES.md
++++ b/docs/CHALLENGES.md
+@@ -1,4 +1,6 @@
+ # Race challenges — 2026-10-08
++
++**2026-10-09 correction:** post-race creation now uses the exact completed ticket, including slower-than-PB finishes, in a compact custom sheet with its track/car fixed and no rerace fallback. The unrequested Compare tab and embedded histogram addition were removed; original result navigation remains. The matching challenge API and additive migration have now been deployed to the retained development backend after a successful backup, preserving all packaged canonical files and existing data. [Actual tests, pictures, rollout and device limitation](CHALLENGE_CORRECTION_2026_10_09.md). Earlier local-only/Compare descriptions below record the superseded first implementation.
+ 
+ The owner accepted the proposed challenge plan and requested implementation. This is a local implementation with disposable HTTP and database verification; it has not been rolled out to the retained cloud backend.
+ 
+diff --git a/docs/CHALLENGE_CORRECTION_2026_10_09.md b/docs/CHALLENGE_CORRECTION_2026_10_09.md
+--- /dev/null
++++ b/docs/CHALLENGE_CORRECTION_2026_10_09.md
+@@ -0,0 +1,51 @@
++# Exact post-race challenges — 2026-10-09
++
++The owner reported that Create challenge after a finish displayed an unavailable-service message and asked for another drive, exposed unnecessary track/car/search controls, and used an inadequate generic dialog. The owner also explicitly removed the unrequested Compare tab.
++
++## Requirements and change
++
++| ID | Implemented behavior |
++| --- | --- |
++| CH09 / CH02 / CH04 | The post-race action captures the completed upload ticket, immutable track version, actual car, lap count, finish time and account/server scope before the durable upload queue takes ownership. A later retry or menu selection cannot change this result reference. |
++| CH10 / CH03 | Result-based creation sends `source_ticket_id`. The backend resolves that ticket's owned, verified run on the exact pinned board, including a slower-than-PB finish. Missing/queued/verifying results return pending; they never fall back to the player's PB. Supplying both ticket and run references is rejected. Group creation from a finish seeds the same verified run. |
++| CH11 / V03 / R01 | A custom CanvasLayer sheet replaces the native ConfirmationDialog. Original scenic art, actual route/time, restrained navy panels, yellow segmented type/duration choices, a single primary action, a close icon and eased entrance use the game's existing visual language. Result-based creation has no track/car/search selectors. Service failure retains the result and offers Retry; pending or failed verification never offers another drive. General menu creation retains the necessary selection controls and first-time race flow. |
++| CH12 / R01 | RaceResults returns to Track/Sectors/Speed. The added Compare tab, embedded comparison component and default-view switch are removed. Existing histograms remain on the original separate RaceComplete page, with their existing unified scope, deduplication and markers. |
++| CH13 / B01–B07 / Q01 | The retained owned development service was confirmed to lack `/v1/challenges`. A narrow frozen overlay adds challenge API/models/migration and the required registration/worker/retention hooks. A fresh successful backup precedes additive migration0019→0020. Existing settings, records, tracks, public isolation, artificial-driver development gates and all112 packaged canonical game files are preserved. Production was not touched. |
++
++The displayed finish comes from the captured race while verification is pending, then from that exact verified ticket. Client times never authorize competitive scores. No local-only or simulated challenge is substituted when the service is unavailable.
++
++## Changed files
++
++`game/ui/challenge_create.gd`, `game/core/app.gd`, `game/ui/race_results.gd`, `game/ui/race_complete.gd`, `backend/bmt_backend/challenges.py`, the challenge GDScript/Python tests, `docs/schemas/challenge-create-v1.schema.json`, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and challenge documentation. The inspected rollout operator and receipts are retained under `docs/evidence/challenge-correction-2026-10-09/`; its private configuration and credentials remain outside Git.
++
++## Actual verification
++
++| Command actually run | Outcome |
++| --- | --- |
++| `scripts/dev.ps1 CheckScript -ScriptPath res://core/app.gd` | Passed using pinned Godot4.7.2.stable.official.ed1daf0bf. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_challenges.gd -Graphical` | 99 checks, zero failures at1280×720,960×540,1600×720. Includes missing API/pending verification/no-rerace, locked selectors, immediate actual finish, exact ticket submission, viewport bounds and source retry behavior. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_challenges.py -k sqlite -q` | 16 passed, one row-lock skip,17 deselected. Exact slower result, existing faster PB, pending ticket with an existing PB, ownership and ambiguous source references covered. |
++| `.tools/backend-venv/Scripts/python.exe scripts/test_challenges_postgres.py` | 33 passed, one SQLite row-lock skip on SQLite plus an owned disposable PostgreSQL service; that owned container was removed. New evidence copied into this task and the prior task's evidence restored from its checkpoint. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_challenges_http.py -q -s` with `BMT_CAPTURE_CLOUD` | Two actual graphical/canonical flows:43/47 checks pass; later actual post-race button recheck44 passes. A faster prior verified PB is established in the result-creation case; the slower completed race is used for the invitation. Source-race return, guest try, group creation/race, ghosts, result feedback and rematch continue to pass. |
++| `scripts/dev.ps1 TestApp` | 99 checks pass. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical` | 36 checks pass. |
++| `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical` | 46 checks pass. |
++| `scripts/dev.ps1 ExportAndroid -QuickValidation -CommandTimeoutSeconds 300` | Import/APP_READY, driving72/catalog21/menus48 pass; corrected debug APK built. Existing31-instance driving shutdown warning retained; no full Validate or physics change/merge. |
++| Rollout operator `prepare`, `build`, `backup`, `deploy`, `smoke` | Missing endpoint confirmed; frozen image built/pushed with exact112-file canonical preservation; backup1791521718841 successful; additive migration/API/worker/smoke/catalog update complete; endpoint/native replay/storage/schema/worker readiness passed. |
++| `scripts/dev.ps1 Doctor` then `InstallAndroid`/`LaunchAndroid -DeviceSerial f0ba474a` | Tablet initially attached/authorized. Streamed install failed and the device subsequently became unauthorized/offline. Installation and launch of this candidate are unconfirmed; no physical-device challenge UI/race acceptance is claimed. |
++
++The source-race test initially established a PB in both cases, contradicting its own first-time/no-PB setup; the setup was corrected while retaining the slower-than-PB case. A rollout preflight initially used unsupported `jobs execute --command`; no new execution/migration resulted from that failure. The corrected operator verifies the existing Python command and overrides execution arguments only, retaining the same quiet-queue assertion. [Google's execution interface](https://docs.cloud.google.com/sdk/gcloud/reference/run/jobs/execute) documents the supported argument override.
++
++## Evidence and delivery
++
++- [Actual Create challenge button over completed results](evidence/challenge-correction-2026-10-09/http-flow/create-from-results.png)
++- [Corrected normal results without Compare](evidence/challenge-correction-2026-10-09/http-flow/normal-results.png)
++- [Compact sheet](evidence/challenge-correction-2026-10-09/screenshots/finished-sheet-960x540.png)
++- [Native HTTP test log](evidence/challenge-correction-2026-10-09/http-button.log)
++- [Database checks](evidence/challenge-correction-2026-10-09/postgres.log)
++- [Canonical packaged-file preservation](evidence/challenge-correction-2026-10-09/packaged-game-proof.json)
++- [Development rollout receipt](evidence/challenge-correction-2026-10-09/development-rollout.json)
++
++The controlled UI fixture includes88.110s only in tests. Native HTTP pictures are actual canonical races on a disposable local service, with test identities; they are not evidence of a completed race on the retained development service or real Google sign-in. No reference times/names were inserted into shipping data.
++
++Corrected APK: `build/android/challenge-correction-debug.apk`,241,130,965 bytes, SHA-256 `374392FBF2156C4517CECA36EACDAC4B8040CBCB80BEBE12767F0EE7D66A5AA7`. Matching development image: digest `925c6b2606395012a8d9c85a01ac46918fc1f8b44b4b9a88927f111ee7a3ca50`. Owner style/feel acceptance, tablet installation/touch testing and real-account end-to-end challenge acceptance remain. Restart the desktop game to load changed UI; the matching development API is already updated. HTTPS App Link activation remains separate; no production rollout, purchase, data reset, driving-rules change or unsolicited social feature was performed.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-09 V04/V05/Q01/R01: tablet desert dust tiles reproduced and isolated to Adreno Compatibility MSAA: same shader/drive20.008ms vsMSAAoff19.899ms, smooth off screenshot. Scoped desert/mobileAdreno single-sample profile prepared; original dust/density/lifetime/budget/framing/physics retained and MSAA restored on exit. Render481/desert87/exportfocused72/21/48 pass; no fullValidate. Rejected shader experiments removed; actual evidence/diagnostic limits retained. Final install/under-bridge device acceptance pending USB offline/reconnect. Commands/files/scoped checkpoint: docs/TABLET_DUST_2026_10_09.md.
++
++2026-10-09 CH09-CH13/CH02-CH04/R01/V03/B01-B07/Q01: owner-corrected post-race challenges pin the exact completed ticket/track/car, including slower-than-PB finishes; custom scenic navy/yellow sheet exposes only type/duration and never reraces on pending/error. Unrequested Compare tab/embedded view removed; original Track/Sectors/Speed and separate unified histograms retained. Final graphical99/App99/SQLite16/ownedPG33(one skip)/actual HTTP43+47/button44/hist36+46/export72+21+48 pass; initial fixture/unsupported-job-flag failures retained and corrected. Missing development endpoint fixed with frozen image925c6b26, exact112 packaged files, successful backup1791521718841/additive schema0020/API-worker/smoke-catalog update; endpoint/native replay-storage-schema/worker checks pass. Existing records/settings/isolations preserved. APK241130965/SHA256374392FBF2156C4517CECA36EACDAC4B8040CBCB80BEBE12767F0EE7D66A5AA7. Tablet initially authorized, streamed install failed then unauthorized/offline; no candidate launch/device UI/race acceptance/full Validate/physics change or production action. Owner style/real-account/device acceptance remains; scoped checkpoint preserves concurrent work. Files/commands/pictures/rollout/limits: docs/CHALLENGE_CORRECTION_2026_10_09.md.
+ 
+ 2026-10-09 WR01-WR02/WR07-WR10/TD09/R01/V03-V05/Q01: owner-requested rivalry track-entry flow implemented: overview rows/arrows open the existing route/rival/ghost detail; Race starts there, Back to Rivalry remembers selection. Removed redundant section tabs, overview Race and obsolete pages; podium/five tracks/scrollable standings remain. Completed/busy/unavailable race gates retained. Final graphical1256/verified-field221/App99/result10/parser388 and disposable native HTTP39 checks pass; actual five laps/12757 ticks independently verified, normal results first. Historical replay countdown-observer setup corrected after initial HTTP failure without runtime/rules or weakened assertions. Native screenshots and task-only review checkpoint retained. No phone attachment check/device test/export/install/full Validate/retained staging or production action. Requirements/files/commands/evidence/acceptance: docs/RIVALRY_NAVIGATION.md.
+ 
+diff --git a/docs/schemas/challenge-create-v1.schema.json b/docs/schemas/challenge-create-v1.schema.json
+--- /dev/null
++++ b/docs/schemas/challenge-create-v1.schema.json
+@@ -0,0 +1,17 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "urn:beat-my-track:challenge-create-v1",
++  "title": "Create a challenge from a pinned track or completed race",
++  "type": "object",
++  "additionalProperties": false,
++  "required": ["version_id", "vehicle_id"],
++  "properties": {
++    "version_id": {"type": "string", "minLength": 36, "maxLength": 36},
++    "vehicle_id": {"enum": ["compact", "pickup", "classic", "formula", "kart"]},
++    "mode": {"enum": ["beat", "group"], "default": "beat"},
++    "duration_seconds": {"enum": [86400, 259200, 604800], "default": 604800},
++    "source_run_id": {"type": ["string", "null"], "minLength": 36, "maxLength": 36},
++    "source_ticket_id": {"type": ["string", "null"], "minLength": 36, "maxLength": 36}
++  },
++  "not": {"type": "object", "required": ["source_run_id", "source_ticket_id"], "properties": {"source_run_id": {"type": "string"}, "source_ticket_id": {"type": "string"}}}
++}
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -312,6 +312,7 @@
+ 	var previous_page: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
+ 	var next_page: String = "biome" if next == "drafts" else "tracks" if next in ["rivalry","challenges"] else next
+ 	var vertical_slide: bool = is_instance_valid(menu_body) and screen in RACE_MODE_PAGES and next in RACE_MODE_PAGES and screen != next
++	var race_slide_height: float = menu_body_slot.size.y if vertical_slide else 0.0
+ 	var rail_rect := Rect2()
+ 	if vertical_slide:
+ 		var old_rail: Control = menu_body.find_child("RaceModes",true,false)
+@@ -524,7 +525,7 @@
+ 	var page_swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+ 	# _input visits children in reverse order: settle before the carousel hit-tests.
+ 	if page_swipe != null: root_ui.move_child(page_swipe, root_ui.get_child_count() - 1)
+-	if vertical_slide: _slide_race_mode_page(slide_direction,rail_rect)
++	if vertical_slide: _slide_race_mode_page(slide_direction,rail_rect,race_slide_height)
+ 	elif slide: _slide_menu_page(slide_direction, drag_offset)
+ 	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
+ 
+@@ -591,7 +592,7 @@
+ 	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, duration)
+ 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
+ 
+-func _slide_race_mode_page(direction: int, rail_rect: Rect2) -> void:
++func _slide_race_mode_page(direction: int, rail_rect: Rect2, height: float) -> void:
+ 	# The rail stays anchored while the two real page bodies roll vertically.
+ 	for body: Control in [menu_body,outgoing_menu_page]:
+ 		var rail: Control = body.find_child("RaceModes",true,false)
+@@ -604,8 +605,7 @@
+ 		race_mode_transition_rail.name = "RaceModeTransitionRail"
+ 		race_mode_transition_rail.position = rail_rect.position
+ 		race_mode_transition_rail.size = rail_rect.size
+-	var height: float = menu_body_slot.size.y
+-	if height <= 0.0: height = outgoing_menu_page.size.y
++	# Capture the departing viewport before reparenting clears anchored sizes.
+ 	var distance: float = (height+MENU_PAGE_GAP)*direction
+ 	menu_body.position.y = distance
+ 	menu_page_motion = create_tween().set_parallel(true)
+@@ -1223,7 +1223,7 @@
+ 	dialog.confirmed.connect(func() -> void: challenges.cancel())
+ 	dialog.popup_centered()
+ 
+-func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800) -> void:
++func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800, finished: Dictionary = {}) -> void:
+ 	if not online.client.signed_in():
+ 		_open_account()
+ 		return
+@@ -1234,6 +1234,14 @@
+ 	dialog.initial_vehicle = VehicleCatalog.selected if vehicle.is_empty() else vehicle
+ 	dialog.initial_ticket = ticket_id
+ 	dialog.initial_duration = duration_seconds
++	if not ticket_id.is_empty():
++		if finished.is_empty() and is_instance_valid(game) and game.get("track_session").finished:
++			finished = _challenge_finished_context(game.get("native_track"),game.get("track_session").race_time_seconds(),game.get("track_session").completed_laps,ticket_id,str(game.get("vehicle_id")))
++		dialog.result_context = finished.duplicate(true)
++		if not finished.is_empty():
++			dialog.initial_version = str(finished.entry.version_id)
++			dialog.initial_vehicle = str(finished.vehicle_id)
++			dialog.initial_ticket = str(finished.ticket_id)
+ 	var retained: Dictionary = cloud.retained_entry(selected_track.identity)
+ 	if not retained.is_empty() and not dialog.entries.any(func(entry: Dictionary) -> bool: return str(entry.version_id) == str(retained.version_id)):
+ 		dialog.entries.push_front(retained)
+@@ -1249,6 +1257,19 @@
+ 	root_ui.add_child(dialog)
+ 	dialog.canceled.connect(dialog.queue_free)
+ 	dialog.popup_centered(Vector2i(560,420))
++
++func _challenge_finished_context(track: NativeTrack, total: float, laps: int, ticket_id: String, vehicle: String) -> Dictionary:
++	var version: String = str(track.metadata.get("cloud_version",""))
++	var entry: Dictionary = {}
++	for candidate: Dictionary in cloud.entries:
++		if str(candidate.get("version_id","")) == version:
++			entry = candidate.duplicate(true)
++			break
++	if entry.is_empty():
++		var points: Array = []
++		for point: Vector2 in track.route: points.append([point.x,point.y])
++		entry = {"version_id":version,"track_id":str(track.metadata.get("cloud_track_id","")),"content_hash":track.content_hash,"name":track_title(track),"creator":str(track.metadata.get("cloud_creator","")),"theme":str(track.metadata.get("theme","pine")),"points":points}
++	return {"entry":entry,"ticket_id":ticket_id,"vehicle_id":vehicle,"total":total,"laps":laps,"scope":challenges.scope()}
+ 
+ func _race_for_challenge(metadata: Dictionary, vehicle: String, duration_seconds: int = 604800) -> void:
+ 	var original: String = challenges.scope()
+@@ -1339,8 +1360,9 @@
+ 	_update_rivalry_entry_button()
+ 
+ func _update_rivalry_entry_button() -> void:
+-	if not is_instance_valid(root_ui): return
+-	var button: Button = root_ui.find_child("Mode_trophy",true,false)
++	var parent: Control = race_mode_transition_rail if is_instance_valid(race_mode_transition_rail) else menu_body
++	if not is_instance_valid(parent): return
++	var button: Button = parent.find_child("Mode_trophy",true,false)
+ 	if button == null: return
+ 	button.disabled = _rivalry_entry_pending
+ 	button.icon = MenuIcon.texture("clock") if _rivalry_entry_pending else preload("res://ui/race_mode_icons.gd").texture("trophy")
+@@ -2786,10 +2808,13 @@
+ 	_result_game_id = game.get_instance_id()
+ 	var online_queued: bool = clean and session.finished and not cloud_ticket.is_empty()
+ 	var challenge_source_ticket: String = str(cloud_ticket.get("ticket_id",""))
++	var finished_challenge: Dictionary = _challenge_finished_context(track,total,session.completed_laps,challenge_source_ticket,str(game.get("vehicle_id"))) if online_queued else {}
+ 	if challenge_racing and online_queued:
+ 		challenges.begin_result(challenge_source_ticket)
+ 		challenges.poll_result()
+-	if not challenge_seed.is_empty(): challenge_seed.ticket_id = challenge_source_ticket
++	if not challenge_seed.is_empty():
++		challenge_seed.ticket_id = challenge_source_ticket
++		challenge_seed.finished = finished_challenge.duplicate(true)
+ 	if rivalry_racing:
+ 		rivalry_result_pending = online_queued
+ 		# Verification runs behind the normal PB/lap summary until Continue.
+@@ -2840,7 +2865,7 @@
+ 	panel.editor = returning_to_editor
+ 	panel.challenge_available = online_queued and not returning_to_editor
+ 	panel.challenge_requested.connect(func() -> void:
+-		_create_challenge_dialog(str(track.metadata.get("cloud_version","")),str(game.get("vehicle_id")),challenge_source_ticket))
++		_create_challenge_dialog(str(finished_challenge.entry.version_id),str(finished_challenge.vehicle_id),challenge_source_ticket,604800,finished_challenge))
+ 	panel.result = RaceResultData.build(track,session.lap_times,game.get("lap_telemetry"),bool(game.get("attempt_practice")))
+ 	var flying: float = 0.0
+ 	for i: int in range(1,session.lap_times.size()):
+@@ -2849,9 +2874,6 @@
+ 	for lap: Dictionary in panel.result.laps:
+ 		if lap.get("samples",[]).is_empty() or not lap.get("events",[]).is_empty(): incident_free = false
+ 	panel.set_meta("reward_facts",{"complete":clean and session.finished,"total":total,"previous":previous,"previous_lap":previous_lap,"flying":flying,"incident_free":incident_free})
+-	if track.metadata.has("cloud_version"):
+-		panel.comparison_config = {"client":online.client,"sync":cloud,"version":str(track.metadata.cloud_version),"vehicle":str(game.get("vehicle_id"))}
+-		panel.comparison_first = challenge_racing or challenge_practice or not challenge_seed.is_empty()
+ 	panel.continue_requested.connect(_results_continue.bind(panel,center))
+ 	panel.retry_requested.connect(_retry_race)
+ 	panel.return_requested.connect(_leave_race)
+@@ -2900,7 +2922,7 @@
+ 			game.queue_free()
+ 			game = null
+ 		_open_challenges()
+-		_create_challenge_dialog(str(seed.version_id),str(seed.vehicle_id),str(seed.get("ticket_id","")),int(seed.get("duration_seconds",604800)))
++		_create_challenge_dialog(str(seed.version_id),str(seed.vehicle_id),str(seed.get("ticket_id","")),int(seed.get("duration_seconds",604800)),seed.get("finished",{}))
+ 		return
+ 	if rivalry_racing:
+ 		rivalry_section = "result"
+diff --git a/game/tests/test_challenges.gd b/game/tests/test_challenges.gd
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -10,11 +10,16 @@
+ 	var delay: float = 0.0
+ 	var calls: int = 0
+ 	var keys: Array[String] = []
++	var last_path: String = ""
++	var last_payload: Dictionary = {}
++	func cancel_public_reads(_owner: int) -> void: pass
+ 	func base_url() -> String: return "http://fixture"
+ 	func signed_in() -> bool: return true
+ 	func new_operation_key() -> String: return "fixture-operation-"+str(Time.get_ticks_usec())
+ 	func request_api(_path: String, method: int, _payload: Dictionary, key: String, _auth: bool) -> Dictionary:
+ 		calls += 1
++		last_path = _path
++		last_payload = _payload.duplicate(true)
+ 		if method == HTTPClient.METHOD_POST: keys.append(key)
+ 		var response: Dictionary = answer.duplicate(true)
+ 		if delay > 0.0: await get_tree().create_timer(delay).timeout
+@@ -63,6 +68,7 @@
+ 			"joined": bad.joined = false
+ 		check(not ChallengesClient.valid_snapshot(bad),"invalid server snapshot rejected: "+mutation)
+ 	await _adapter_tests(sample)
++	await _finished_sheet_tests(sample)
+ 	await _page_tests()
+ 	print("CHALLENGES: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
+@@ -122,6 +128,56 @@
+ 	client.queue_free()
+ 	await process_frame
+ 
++func _finished_sheet_tests(sample: Dictionary) -> void:
++	var client := StubClient.new()
++	root.add_child(client)
++	var cloud: Node = load("res://backend/cloud_tracks.gd").new()
++	cloud.client = client
++	cloud.root_override = "user://challenge_sheet_"+TrackLibrary.unique_id()
++	root.add_child(cloud)
++	var adapter := ChallengesClient.new()
++	adapter.client = client
++	adapter.cloud = cloud
++	root.add_child(adapter)
++	adapter.reset()
++	var ticket: String = "12345678-1234-1234-1234-123456789abc"
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		await process_frame
++		client.answer = {"ok":false,"error":"Not Found"}
++		var sheet := ChallengeCreate.new()
++		sheet.adapter = adapter
++		sheet.initial_version = str(sample.entry.version_id)
++		sheet.initial_vehicle = "compact"
++		sheet.initial_ticket = ticket
++		sheet.result_context = {"entry":sample.entry.duplicate(true),"vehicle_id":"compact","ticket_id":ticket,"total":88.110,"laps":5,"scope":adapter.scope()}
++		root.add_child(sheet)
++		sheet.popup_centered()
++		while sheet._checking: await process_frame
++		await process_frame
++		check(sheet.locked_result() and sheet._track == null and sheet._vehicle == null and sheet._search == null,"post-race sheet has no track/car/search selectors")
++		check(not sheet._race.visible and sheet.get_ok_button().disabled,"missing service retains the finished result without offering a rerace")
++		check(sheet._time.text == MenuStyle.time_text(88.110),"post-race sheet immediately displays the exact finish instead of a PB")
++		check("ticket_id="+ticket in client.last_path,"source request always identifies the completed ticket")
++		client.answer = {"ok":true,"data":{"status":"verifying","run_id":null,"ms":null}}
++		await sheet._check_source()
++		check(not sheet._race.visible and sheet.get_ok_button().disabled,"verification stays pending without falling back to an earlier time")
++		client.answer = {"ok":true,"data":{"status":"verified","run_id":"finished","ms":88110}}
++		await sheet._check_source()
++		check(not sheet.get_ok_button().disabled and sheet._time.text == MenuStyle.time_text(88.110),"verification enables creation for this completed race")
++		var rect: Rect2 = sheet._panel.get_global_rect()
++		check(rect.position.x >= 0 and rect.position.y >= 0 and rect.end.x <= root.get_visible_rect().size.x+1 and rect.end.y <= root.get_visible_rect().size.y+1,"custom sheet stays within the viewport")
++		await _capture("finished-sheet",dimensions)
++		client.answer = {"ok":true,"data":sample}
++		await sheet._create()
++		check(client.last_payload.get("source_ticket_id") == ticket and not client.last_payload.has("source_run_id"),"creation submits the exact finished ticket and never a PB fallback")
++		sheet.queue_free()
++		await process_frame
++	adapter.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await process_frame
++
+ func _page_tests() -> void:
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+@@ -199,6 +255,7 @@
+ func _capture(label: String, dimensions: Vector2i) -> void:
+ 	if capture_directory.is_empty() or DisplayServer.get_name() == "headless": return
+ 	DirAccess.make_dir_recursive_absolute(capture_directory)
++	await create_timer(0.22).timeout
+ 	await RenderingServer.frame_post_draw
+ 	var path: String = capture_directory.path_join("%s-%dx%d.png" % [label,dimensions.x,dimensions.y])
+ 	check(root.get_texture().get_image().save_png(path) == OK,"capture saved: "+label)
+diff --git a/game/tests/test_challenges_http.gd b/game/tests/test_challenges_http.gd
+--- a/game/tests/test_challenges_http.gd
++++ b/game/tests/test_challenges_http.gd
+@@ -50,6 +50,14 @@
+ 	var track: NativeTrack = app.cloud.compile_entry(entry)
+ 	app.selected_track = track
+ 	var seed_flow: bool = OS.get_environment("BMT_CHALLENGE_SEED_FLOW") == "true"
++	# Establish a faster verified PB first: the challenge must still use the slower finish below.
++	if not seed_flow:
++		var prior_ticket: Dictionary = await app.online.client.race_ticket(str(metadata.version_id),"compact",app.online.client.new_operation_key())
++		var prior_upload: Dictionary = await app.online.client.submit_run(str(prior_ticket.data.ticket_id),fixture.replay.frames,app.online.client.new_operation_key())
++		for _poll: int in range(60):
++			var prior_status: Dictionary = await app.online.client.request_api("/runs/"+str(prior_upload.data.run_id),HTTPClient.METHOD_GET,{},"",true)
++			if prior_status.get("ok",false) and prior_status.data.get("status") == "verified": break
++			await create_timer(0.15).timeout
+ 	if seed_flow:
+ 		app.cloud.entries.assign([metadata])
+ 		app._open_challenges()
+@@ -58,7 +66,7 @@
+ 		var draft: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+ 		while draft._checking: await process_frame
+ 		check(draft.get_ok_button().disabled and draft._race.visible,"new creator is offered a race instead of an invented target")
+-		draft._duration.select(0)
++		draft._choose_duration(86400)
+ 		draft._race.pressed.emit()
+ 		while app.game == null: await process_frame
+ 	else: await app._start_race(track,false)
+@@ -86,14 +94,16 @@
+ 		if source.get("status") == "verified": break
+ 		await create_timer(0.15).timeout
+ 	check(source.get("status") == "verified","canonical worker verifies the source run")
+-	if not seed_flow: app._create_challenge_dialog(str(metadata.version_id),"compact",ticket_id)
++	if not seed_flow: (summary.find_child("CreateResultChallenge",true,false) as Button).pressed.emit()
+ 	var form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+ 	var wait_started: int = Time.get_ticks_msec()
+ 	while is_instance_valid(form) and (form._checking or form._source.get("status") != "verified") and Time.get_ticks_msec()-wait_started < 12000:
+ 		await process_frame
+ 	check(form != null and not form.get_ok_button().disabled,"creation form preselects the just-finished verified time")
++	check(form.locked_result() and form._track == null and form._vehicle == null and form._search == null and not form._race.visible,"finished-race creation is fixed and contains no rerace or unrelated selectors")
+ 	if seed_flow: check(app.root_ui.find_child("ChallengesPage",true,false) != null,"returning creation form has the live Challenges menu underneath")
+ 	await capture("create",app)
++	await capture("create-after-seed" if seed_flow else "create-from-results",app)
+ 	form.confirmed.emit()
+ 	while app.challenges.busy or (is_instance_valid(form) and form._submitting): await process_frame
+ 	check(not app.challenges.selected.is_empty(),"Create & share persists a real server challenge")
+@@ -138,10 +148,9 @@
+ 	app._results()
+ 	summary = app.root_ui.find_child("RaceResults",true,false)
+ 	check(summary != null and not app.challenge_result_view,"normal PB/lap results precede challenge feedback")
+-	check(summary.comparison != null and summary.comparison.visible and summary.comparison.race_chart != null and summary.comparison.lap_chart != null,"normal challenge summary includes both unified histograms before Continue")
++	check(summary.mode_buttons.size() == 3 and not summary.mode_buttons.any(func(button: Button) -> bool: return button.text == "Compare"),"normal results retain exactly Track/Sectors/Speed without Compare")
+ 	summary.select_lap(1)
+-	check(not summary.comparison.visible and summary.map.visible,"selecting a lap opens the retained lap analysis")
+-	summary.select_mode("Compare")
++	check(summary.map.visible,"selecting a lap retains its analysis")
+ 	var previous_ticks: Variant = app.challenges.selected.standings[-1].ticks
+ 	check(previous_ticks == null,"unverified local time does not enter challenge standings")
+ 	await capture("normal-results",app)
+@@ -165,8 +174,7 @@
+ 	check(int(app.challenges.selected.target_ticks) == int(fixture.time_ticks),"rematch target equals the recipient's canonically verified time")
+ 	app._create_challenge_dialog(str(metadata.version_id),"compact")
+ 	var group_form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+-	group_form._type.select(1)
+-	group_form._type.item_selected.emit(1)
++	group_form._choose_mode(1)
+ 	group_form._search.text = str(metadata.name)
+ 	group_form._search_timer.stop()
+ 	await group_form._find_tracks()
+diff --git a/game/ui/challenge_create.gd b/game/ui/challenge_create.gd
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -1,20 +1,27 @@
+ class_name ChallengeCreate
+-extends ConfirmationDialog
++extends CanvasLayer
++## A result stays bound to its completed ticket while verification finishes.
+ signal race_to_set_requested(entry: Dictionary, vehicle_id: String, duration_seconds: int)
++signal confirmed
++signal canceled
+ var adapter: ChallengesClient
+ var entries: Array[Dictionary] = []
+ var initial_version: String = ""
+ var initial_vehicle: String = ""
+ var initial_ticket: String = ""
+ var initial_duration: int = 604800
++var result_context: Dictionary = {}
+ var created_callback: Callable
++var mode: int = 0
++var duration: int = 604800
+ var _track: OptionButton
+ var _vehicle: OptionButton
+-var _type: OptionButton
+-var _duration: OptionButton
+ var _source: Dictionary = {}
+ var _notice: Label
+ var _race: Button
++var _create_button: Button
++var _retry: Button
++var _time: Label
+ var _serial: int = 0
+ var _checking: bool = false
+ var _submitting: bool = false
+@@ -24,39 +31,171 @@
+ var _search_serial: int = 0
+ var _base_entries: Array[Dictionary] = []
+ var _searching: bool = false
++var _mode_buttons: Array[Button] = []
++var _duration_buttons: Array[Button] = []
++var _overlay: Control
++var _panel: PanelContainer
++var _close_button: Button
++var _source_scope: String = ""
++var _motion: Tween
++
++func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
+ 
+ func _ready() -> void:
+ 	name = "ChallengeCreate"
+-	title = "Create challenge"
+-	ok_button_text = "Create & share"
+-	dialog_hide_on_ok = false
+-	add_theme_stylebox_override("embedded_border",MenuStyle.box(MenuStyle.PANEL,12))
+-	add_theme_stylebox_override("embedded_unfocused_border",MenuStyle.box(MenuStyle.PANEL,12))
+-	add_theme_color_override("title_color",MenuStyle.TEXT)
+-	add_theme_font_override("title_font",MenuStyle.DISPLAY)
+-	get_ok_button().add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT))
+-	for state: String in ["font_color","font_hover_color","font_pressed_color","font_focus_color"]:
+-		get_ok_button().add_theme_color_override(state,MenuStyle.INK)
++	layer = 50
++	process_mode = Node.PROCESS_MODE_ALWAYS
++	_source_scope = str(result_context.get("scope",adapter.scope()))
++	duration = initial_duration
++	_overlay = Control.new()
++	_overlay.theme = MenuStyle.theme()
++	MenuStyle.fill(_overlay)
++	add_child(_overlay)
++	var dim := ColorRect.new()
++	dim.color = Color(0.005,0.013,0.02,0.78)
++	MenuStyle.fill(dim)
++	_overlay.add_child(dim)
++	dim.gui_input.connect(func(event: InputEvent) -> void:
++		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT: close())
++	_panel = PanelContainer.new()
++	_panel.name = "ChallengeCreatePanel"
++	var style := MenuStyle.card(22)
++	style.bg_color = Color("0b1823")
++	style.border_color = Color("355264")
++	style.shadow_size = 22
++	style.shadow_color = Color(0,0,0,0.55)
++	_panel.add_theme_stylebox_override("panel",style)
++	_overlay.add_child(_panel)
+ 	var body := VBoxContainer.new()
+-	body.add_theme_constant_override("separation",14)
+-	add_child(body)
+-	_type = _choice(body,"Challenge",["Beat my time","Group challenge"])
+-	_track = _choice(body,"Track",[])
++	body.add_theme_constant_override("separation",12)
++	_panel.add_child(body)
++	var header := HBoxContainer.new()
++	body.add_child(header)
++	var glyph := TextureRect.new()
++	glyph.texture = MenuIcon.texture("target")
++	glyph.modulate = MenuStyle.ACCENT
++	glyph.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	glyph.custom_minimum_size = Vector2(30,30)
++	header.add_child(glyph)
++	var heading := MenuStyle.label("CREATE CHALLENGE",30)
++	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	header.add_child(heading)
++	_close_button = MenuStyle.button("",close)
++	_close_button.name = "CloseChallengeCreate"
++	_close_button.icon = MenuIcon.texture("close")
++	_close_button.tooltip_text = "Close"
++	_close_button.custom_minimum_size = Vector2(52,52)
++	_close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
++	header.add_child(_close_button)
++	var scroll := ScrollContainer.new()
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	body.add_child(scroll)
++	var gutter := MarginContainer.new()
++	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	gutter.add_theme_constant_override("margin_right",12)
++	scroll.add_child(gutter)
++	var fields := VBoxContainer.new()
++	fields.add_theme_constant_override("separation",12)
++	gutter.add_child(fields)
+ 	_base_entries = entries.duplicate(true)
++	if locked_result(): _result_hero(fields)
++	else: _track_choices(fields)
++	var modes := HBoxContainer.new()
++	fields.add_child(modes)
++	for index: int in range(2):
++		var choice := MenuStyle.button(["Beat my time","Group challenge"][index],_choose_mode.bind(index))
++		choice.name = ["ChallengeBeat","ChallengeGroup"][index]
++		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		choice.custom_minimum_size.y = 52
++		modes.add_child(choice)
++		_mode_buttons.append(choice)
++	fields.add_child(MenuStyle.label("DURATION",14,true))
++	var durations := HBoxContainer.new()
++	fields.add_child(durations)
++	for index: int in range(3):
++		var seconds: int = [86400,259200,604800][index]
++		var choice := MenuStyle.button(["24 hours","3 days","7 days"][index],_choose_duration.bind(seconds))
++		choice.name = "ChallengeDuration_"+str(seconds)
++		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		choice.custom_minimum_size.y = 52
++		durations.add_child(choice)
++		_duration_buttons.append(choice)
++	var status := HBoxContainer.new()
++	body.add_child(status)
++	_notice = MenuStyle.label("",17,true)
++	_notice.name = "ChallengeSourceStatus"
++	_notice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	status.add_child(_notice)
++	_retry = MenuStyle.button("Retry",_check_source)
++	_retry.name = "RetryChallengeSource"
++	_retry.custom_minimum_size.y = 52
++	status.add_child(_retry)
++	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
++	_race.name = "RaceToSetChallenge"
++	_race.custom_minimum_size.y = 56
++	body.add_child(_race)
++	_create_button = MenuStyle.button("Create & share",func() -> void: confirmed.emit(),true)
++	_create_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
++	_create_button.name = "ConfirmChallengeCreate"
++	_create_button.custom_minimum_size.y = 56
++	body.add_child(_create_button)
++	confirmed.connect(_create)
++	_overlay.resized.connect(_layout)
++	_layout.call_deferred()
++	_check_source()
++
++func _result_hero(parent: Control) -> void:
++	var entry: Dictionary = _entry()
++	var hero := PanelContainer.new()
++	hero.name = "ChallengeFinishedRace"
++	hero.custom_minimum_size.y = 126
++	hero.clip_contents = true
++	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),0))
++	parent.add_child(hero)
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	art.modulate = Color(0.45,0.53,0.58)
++	hero.add_child(art)
++	var margin := MarginContainer.new()
++	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,12)
++	hero.add_child(margin)
++	var row := HBoxContainer.new()
++	margin.add_child(row)
++	var identity := VBoxContainer.new()
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.add_theme_constant_override("separation",0)
++	row.add_child(identity)
++	var title := MenuStyle.label(str(entry.get("name",result_context.get("title",""))),23)
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	identity.add_child(title)
++	var total: float = float(result_context.get("total",0.0))
++	_time = MenuStyle.label(MenuStyle.time_text(total) if total > 0.0 else "—",58)
++	_time.name = "ChallengeFinishedTime"
++	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	identity.add_child(_time)
++	identity.add_child(MenuStyle.label("%d laps · %s" % [int(result_context.get("laps",5)),VehicleCatalog.title(initial_vehicle)],15))
++	var route := LapRouteView.new()
++	route.name = "ChallengeFinishedRoute"
++	route.miniature = true
++	route.custom_minimum_size.x = 130
++	for point: Array in entry.get("points",[]): route.route.append(Vector2(point[0],point[1]))
++	row.add_child(route)
++
++func _track_choices(parent: Control) -> void:
++	_track = _choice(parent,"Track",[])
+ 	for index: int in range(entries.size()):
+ 		_track.add_item(str(entries[index].name),index)
+ 		if str(entries[index].version_id) == initial_version: _track.select(index)
+-	var search_row := HBoxContainer.new()
+-	body.add_child(search_row)
+-	var spacer := Control.new()
+-	spacer.custom_minimum_size.x = 100
+-	search_row.add_child(spacer)
+ 	_search = LineEdit.new()
+ 	_search.placeholder_text = "Find a track or creator"
+ 	_search.max_length = 80
+-	_search.custom_minimum_size.y = 44
+-	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	search_row.add_child(_search)
++	_search.custom_minimum_size.y = 48
++	parent.add_child(_search)
+ 	_search_timer = Timer.new()
+ 	_search_timer.wait_time = 0.35
+ 	_search_timer.one_shot = true
+@@ -66,23 +205,155 @@
+ 		_search_serial += 1
+ 		_serial += 1
+ 		_search_timer.start())
+-	_vehicle = _choice(body,"Car",VehicleCatalog.NAMES)
++	_vehicle = _choice(parent,"Car",VehicleCatalog.NAMES)
+ 	_vehicle.select(VehicleCatalog.IDS.find(VehicleCatalog.valid_id(initial_vehicle)))
+-	_duration = _choice(body,"Duration",["24 hours","3 days","7 days"])
+-	_duration.select(maxi(0,[86400,259200,604800].find(initial_duration)))
+-	_notice = MenuStyle.label("",19,true)
+-	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	_notice.custom_minimum_size.x = 460
+-	body.add_child(_notice)
+-	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
+-	body.add_child(_race)
+ 	_track.item_selected.connect(func(_i: int) -> void: _check_source())
+ 	_vehicle.item_selected.connect(func(_i: int) -> void: _check_source())
+-	_type.item_selected.connect(func(_i: int) -> void: _update())
+-	confirmed.connect(_create)
+-	_check_source()
++
++func _choice(parent: Control, caption: String, choices: Array) -> OptionButton:
++	var row := VBoxContainer.new()
++	row.add_theme_constant_override("separation",4)
++	parent.add_child(row)
++	row.add_child(MenuStyle.label(caption.to_upper(),14,true))
++	var choice := OptionButton.new()
++	choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	choice.custom_minimum_size.y = 52
++	for item: Variant in choices: choice.add_item(str(item))
++	row.add_child(choice)
++	return choice
++
++func _entry() -> Dictionary:
++	if locked_result():
++		if result_context.get("entry") is Dictionary: return result_context.entry
++		for entry: Dictionary in entries:
++			if str(entry.get("version_id","")) == initial_version: return entry
++		return {}
++	return entries[_track.selected] if _track != null and _track.selected >= 0 and _track.selected < entries.size() else {}
++
++func _vehicle_id() -> String:
++	return initial_vehicle if locked_result() else VehicleCatalog.IDS[_vehicle.selected]
++
++func _choose_mode(index: int) -> void:
++	mode = index
++	_update()
++
++func _choose_duration(seconds: int) -> void:
++	duration = seconds
++	_update()
++
++func _layout() -> void:
++	if _panel == null: return
++	var viewport: Vector2 = _overlay.size
++	var width: float = minf(560.0,viewport.x-40.0)
++	var height: float = minf(508.0 if locked_result() else 552.0,viewport.y-40.0)
++	_panel.size = Vector2(width,height)
++	_panel.position = (viewport-_panel.size)*0.5
++
++func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void:
++	show()
++	set_process_input(true)
++	if _overlay != null:
++		_overlay.modulate.a = 0.0
++		_motion = create_tween()
++		_motion.tween_property(_overlay,"modulate:a",1.0,0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
++		_layout.call_deferred()
++
++func get_ok_button() -> Button: return _create_button
++
++func close() -> void:
++	if _submitting: return
++	_serial += 1
++	_search_serial += 1
++	hide()
++	set_process_input(false)
++	canceled.emit()
++
++func _input(event: InputEvent) -> void:
++	if visible and event.is_action_pressed("ui_cancel"):
++		close()
++		get_viewport().set_input_as_handled()
++
++func _check_source() -> void:
++	_serial += 1
++	var serial: int = _serial
++	_source = {}
++	var entry: Dictionary = _entry()
++	if entry.is_empty():
++		_update()
++		return
++	if adapter.scope() != _source_scope:
++		_next_check = Time.get_ticks_msec()+3000
++		_source = {"status":"unavailable","error":"Sign in again to create this challenge."}
++		_update()
++		return
++	_checking = true
++	_next_check = Time.get_ticks_msec()+3000
++	_update()
++	var ticket: String = initial_ticket if locked_result() else ""
++	var value: Dictionary = await adapter.source(str(entry.version_id),_vehicle_id(),ticket)
++	if not is_instance_valid(self) or serial != _serial: return
++	_checking = false
++	_source = value
++	_next_check = Time.get_ticks_msec()+3000
++	_update()
++
++func _update() -> void:
++	if _create_button == null: return
++	var verified: bool = _source.get("status") == "verified"
++	var has_entry: bool = not _entry().is_empty()
++	var pending: bool = _source.get("status") in ["not_set","queued","verifying"]
++	_create_button.disabled = _checking or _searching or _submitting or not has_entry or (not verified and (locked_result() or mode == 0)) or adapter.scope() != _source_scope
++	_race.visible = not locked_result() and mode == 0 and has_entry and _source.get("status") == "not_set" and not _checking
++	_create_button.visible = not _race.visible
++	_race.disabled = _submitting or _searching
++	_close_button.disabled = _submitting
++	_retry.visible = _source.get("status") == "unavailable" and not _checking and not _submitting
++	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Verifying result…" if locked_result() and (_checking or pending) else "Checking time…" if _checking else str(_source.get("error","")) if _source.has("error") else "This result was not verified." if locked_result() and not verified else "Choose a published track." if not has_entry else ""
++	_notice.visible = not _notice.text.is_empty()
++	if _time != null and verified: _time.text = MenuStyle.time_text(float(_source.ms)/1000.0)
++	for index: int in range(_mode_buttons.size()): _selection(_mode_buttons[index],index == mode)
++	for index: int in range(_duration_buttons.size()): _selection(_duration_buttons[index],[86400,259200,604800][index] == duration)
++
++func _selection(button: Button, chosen: bool) -> void:
++	var style := MenuStyle.box(MenuStyle.ACCENT if chosen else Color("152c3b"),10)
++	style.border_color = MenuStyle.ACCENT if chosen else Color("2b4657")
++	style.set_border_width_all(1)
++	button.add_theme_stylebox_override("normal",style)
++	for key: String in ["font_color","font_focus_color","font_hover_color"]: button.add_theme_color_override(key,MenuStyle.INK if chosen else MenuStyle.TEXT)
++	button.disabled = _submitting
++
++func _create() -> void:
++	if _create_button.disabled: return
++	_submitting = true
++	_update()
++	var entry: Dictionary = _entry()
++	var payload: Dictionary = {"version_id":str(entry.version_id),"vehicle_id":_vehicle_id(),"mode":"group" if mode == 1 else "beat","duration_seconds":duration}
++	if locked_result():
++		if initial_ticket.is_empty():
++			_submitting = false
++			_source = {"status":"unavailable","error":"Could not recover this result."}
++			_update()
++			return
++		payload.source_ticket_id = initial_ticket
++	elif _source.get("status") == "verified" and mode == 0: payload.source_run_id = str(_source.run_id)
++	await adapter.create_challenge(payload)
++	if not is_instance_valid(self): return
++	_submitting = false
++	if adapter.error.is_empty() and not adapter.selected.is_empty():
++		hide()
++		if created_callback.is_valid(): created_callback.call()
++	else:
++		_update()
++		_notice.text = adapter.error
++		_notice.show()
++
++func _race_to_set() -> void:
++	if locked_result() or _entry().is_empty(): return
++	hide()
++	race_to_set_requested.emit(_entry(),_vehicle_id(),duration)
+ 
+ func _find_tracks() -> void:
++	if locked_result(): return
+ 	var serial: int = _search_serial
+ 	var query: String = _search.text.strip_edges()
+ 	_searching = true
+@@ -90,18 +361,16 @@
+ 	var results: Array[Dictionary] = []
+ 	if query.is_empty(): results = _base_entries.duplicate(true)
+ 	else:
+-		var original: String = adapter.scope()
+ 		var payload: Dictionary = preload("res://backend/discovery_pages.gd").payload({"search":query,"section":"all"})
+ 		var response: Dictionary = await adapter.client.request_discovery(payload,get_instance_id())
+-		if not is_instance_valid(self) or serial != _search_serial or original != adapter.scope(): return
++		if not is_instance_valid(self) or serial != _search_serial or adapter.scope() != _source_scope: return
+ 		if not response.get("ok",false) or not response.data.get("items") is Array:
+ 			_searching = false
+ 			_checking = false
+-			_source = {}
+ 			entries.clear()
+ 			_track.clear()
++			_source = {"status":"unavailable","error":"Could not find tracks. Try again."}
+ 			_update()
+-			_notice.text = "Could not find tracks. Try again."
+ 			return
+ 		for entry: Variant in response.data.items:
+ 			if entry is Dictionary and adapter.cloud._valid_entry(entry): results.append(entry)
+@@ -113,75 +382,13 @@
+ 	_searching = false
+ 	_checking = false
+ 	_check_source()
+-	if entries.is_empty(): _notice.text = "No matching tracks."
++	if entries.is_empty():
++		_notice.text = "No matching tracks."
++		_notice.show()
++
++func _process(_delta: float) -> void:
++	if visible and not _checking and not _submitting and (locked_result() and _source.get("status") in ["not_set","queued","verifying","unavailable"] or _source.get("status") in ["queued","verifying"]):
++		if Time.get_ticks_msec() >= _next_check: _check_source()
+ 
+ func _exit_tree() -> void:
+ 	if adapter != null: adapter.client.cancel_public_reads(get_instance_id())
+-
+-func _choice(parent: Control, caption: String, choices: Array) -> OptionButton:
+-	var row := HBoxContainer.new()
+-	parent.add_child(row)
+-	var label := MenuStyle.label(caption,20)
+-	label.custom_minimum_size.x = 100
+-	row.add_child(label)
+-	var choice := OptionButton.new()
+-	choice.custom_minimum_size = Vector2(360,52)
+-	choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	for item: Variant in choices: choice.add_item(str(item))
+-	row.add_child(choice)
+-	return choice
+-
+-func _check_source() -> void:
+-	_serial += 1
+-	var serial: int = _serial
+-	_source = {}
+-	if entries.is_empty():
+-		_update()
+-		return
+-	_checking = true
+-	_next_check = Time.get_ticks_msec()+3000
+-	_update()
+-	var entry: Dictionary = entries[_track.selected]
+-	var vehicle: String = VehicleCatalog.IDS[_vehicle.selected]
+-	var ticket_id: String = initial_ticket if str(entry.version_id) == initial_version and vehicle == initial_vehicle else ""
+-	var value: Dictionary = await adapter.source(str(entry.version_id),vehicle,ticket_id)
+-	if not is_instance_valid(self) or serial != _serial: return
+-	_checking = false
+-	_source = value
+-	_next_check = Time.get_ticks_msec()+3000
+-	_update()
+-
+-func _update() -> void:
+-	var verified: bool = _source.get("status") == "verified"
+-	var group: bool = _type.selected == 1
+-	var pending: bool = _source.get("status") in ["queued","verifying"] or (not initial_ticket.is_empty() and _source.get("status") == "not_set")
+-	get_ok_button().disabled = _checking or _searching or _submitting or entries.is_empty() or (not group and not verified)
+-	_race.visible = not group and not verified and not pending and not _checking and not entries.is_empty()
+-	_race.disabled = _submitting or _searching or _source.get("status") in ["queued","verifying"]
+-	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Checking your time…" if _checking else "Choose a published track from Race first." if entries.is_empty() else "Verifying your race…" if pending and not group else str(_source.get("error","")) if _source.has("error") else "%.3f s · 5 laps" % (float(_source.get("ms",0))/1000.0) if verified and not group else "" if group else "Set a verified five-lap time to challenge someone."
+-
+-func _create() -> void:
+-	if get_ok_button().disabled: return
+-	_submitting = true
+-	_update()
+-	var entry: Dictionary = entries[_track.selected]
+-	var payload: Dictionary = {"version_id":str(entry.version_id),"vehicle_id":VehicleCatalog.IDS[_vehicle.selected],"mode":"group" if _type.selected == 1 else "beat","duration_seconds":[86400,259200,604800][_duration.selected]}
+-	if _source.get("status") == "verified" and (_type.selected == 0 or not initial_ticket.is_empty()): payload.source_run_id = str(_source.run_id)
+-	await adapter.create_challenge(payload)
+-	if not is_instance_valid(self): return
+-	_submitting = false
+-	if adapter.error.is_empty() and not adapter.selected.is_empty():
+-		hide()
+-		if created_callback.is_valid(): created_callback.call()
+-	else:
+-		_update()
+-		_notice.text = adapter.error
+-
+-func _race_to_set() -> void:
+-	if entries.is_empty(): return
+-	hide()
+-	race_to_set_requested.emit(entries[_track.selected],VehicleCatalog.IDS[_vehicle.selected],[86400,259200,604800][_duration.selected])
+-
+-func _process(_delta: float) -> void:
+-	if visible and not _checking and not _submitting and (_source.get("status") in ["queued","verifying"] or (not initial_ticket.is_empty() and _source.get("status") == "not_set")):
+-		if Time.get_ticks_msec() >= _next_check: _check_source()
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -5,7 +5,6 @@
+ signal tracks_requested
+ signal race_requested(recommendation: Dictionary)
+ var results: RaceResults
+-var embedded_comparison: bool = false
+ var rating_records: LocalRecords
+ var rating_track_id: String
+ var cloud_client: Node
+@@ -41,12 +40,6 @@
+ var revealed_count: int = 0
+ 
+ func _ready() -> void:
+-	if embedded_comparison:
+-		name = "ResultsComparison"
+-		size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		_standings(self)
+-		return
+ 	name = "RaceComplete"
+ 	add_theme_constant_override("separation",10)
+ 	var header := HBoxContainer.new()
+@@ -165,7 +158,6 @@
+ 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	title.clip_text = true
+ 	heading.add_child(title)
+-	if embedded_comparison: title.hide()
+ 	var legend := Control.new()
+ 	legend.custom_minimum_size = Vector2(116,28)
+ 	legend.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -207,7 +199,6 @@
+ 		best_caption.add_theme_color_override("font_color",Color("b8e3f4"))
+ 		times.add_child(best_caption)
+ 		card.add_child(times)
+-		if embedded_comparison: times.hide() # PB and lap values already appear in the summary.
+ 		var context := MenuStyle.label("",14,true)
+ 		context.clip_text = true
+ 		card.add_child(context)
+diff --git a/game/ui/race_results.gd b/game/ui/race_results.gd
+--- a/game/ui/race_results.gd
++++ b/game/ui/race_results.gd
+@@ -28,10 +28,6 @@
+ var next_button: Button
+ var lap_buttons: Array[Button] = []
+ var mode_buttons: Array[Button] = []
+-var comparison_config: Dictionary = {}
+-var comparison_first: bool = false
+-var comparison: Control
+-var lap_analysis: Control
+ 
+ func _ready() -> void:
+ 	name = "RaceResults"
+@@ -59,7 +55,6 @@
+ 	_lap_list(self)
+ 	_actions()
+ 	select_lap(maxi(0,result.fastest))
+-	if comparison_first and comparison != null: select_mode("Compare")
+ 
+ func _header() -> void:
+ 	var row := HBoxContainer.new()
+@@ -197,12 +192,10 @@
+ 	lap_heading.clip_text = true
+ 	lap_heading.custom_minimum_size.x = 80
+ 	header.add_child(lap_heading)
+-	var modes: Array[String] = ["Track","Sectors","Speed"]
+-	if not comparison_config.is_empty(): modes.push_front("Compare")
+-	for mode: String in modes:
++	for mode: String in ["Track","Sectors","Speed"]:
+ 		var button: Button = MenuStyle.button(mode,select_mode.bind(mode))
+ 		button.custom_minimum_size = Vector2(110,48)
+-		button.icon = ResultsIcons.texture("bars" if mode == "Compare" else "Time diff" if mode == "Track" else mode,Color.WHITE)
++		button.icon = ResultsIcons.texture("Time diff" if mode == "Track" else mode,Color.WHITE)
+ 		button.expand_icon = true
+ 		button.add_theme_constant_override("icon_max_width",24)
+ 		button.add_theme_constant_override("h_separation",10)
+@@ -221,7 +214,6 @@
+ 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	map.custom_minimum_size = Vector2(350,200)
+ 	var analysis := HBoxContainer.new()
+-	lap_analysis = analysis
+ 	analysis.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	analysis.add_theme_constant_override("separation",12)
+ 	body.add_child(analysis)
+@@ -238,17 +230,6 @@
+ 	sector_rows.add_theme_constant_override("h_separation",16)
+ 	sector_rows.add_theme_constant_override("v_separation",12)
+ 	sector_table.add_child(sector_rows)
+-	if not comparison_config.is_empty():
+-		comparison = load("res://ui/race_complete.gd").new() as Control
+-		comparison.set("embedded_comparison",true)
+-		comparison.set("results",self)
+-		comparison.set("cloud_client",comparison_config.get("client"))
+-		comparison.set("cloud_sync",comparison_config.get("sync"))
+-		comparison.set("cloud_version",str(comparison_config.get("version","")))
+-		comparison.set("vehicle_id",str(comparison_config.get("vehicle","compact")))
+-		comparison.set("facts",get_meta("reward_facts",{}))
+-		comparison.hide()
+-		body.add_child(comparison)
+ 	select_mode("Track")
+ 
+ func _stat(parent: Control, caption: String, symbol: String) -> Label:
+@@ -309,15 +290,10 @@
+ 	if not lap.valid: lap_heading.text = "LAP %02d / INVALID" % (selected_lap+1)
+ 	map.show_lap(lap,result.laps[result.fastest] if result.fastest >= 0 else {})
+ 	_update_sectors(lap)
+-	if comparison != null and comparison.visible: select_mode("Track")
+ 
+ func select_mode(mode: String) -> void:
+-	if comparison != null:
+-		comparison.visible = mode == "Compare"
+-		lap_analysis.visible = mode != "Compare"
+-		lap_heading.visible = mode != "Compare"
+ 	sector_table.visible = mode == "Sectors"
+-	map.mode = "Time diff" if mode in ["Track","Compare"] else mode
++	map.mode = "Time diff" if mode == "Track" else mode
+ 	map.queue_redraw()
+ 	for button: Button in mode_buttons:
+ 		var style: StyleBoxFlat = _panel_style(12)

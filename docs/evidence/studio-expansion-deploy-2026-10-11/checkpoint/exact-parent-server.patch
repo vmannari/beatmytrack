@@ -1,0 +1,1163 @@
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -58,7 +58,7 @@
+ 
+ @router.get("/admin/assets/{name}", include_in_schema=False)
+ def asset(name: str):
+-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "style.css"):
++    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -3,6 +3,9 @@
+ let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
+ let dialogGeneration=0, dialogOpener=null;
+ const sections=[['overview','Studio pulse','◫','LEARN'],['product','Product analytics','↗',''],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
++sections.splice(4,0,['competitions','Competition inspector','⚑',''],['cases','Support cases','♙','OPERATE']);
++sections.splice(2,0,['quality','Client quality & heatmaps','↗','']);
++sections.find(s=>s[0]==='players')[3]='';
+ const titles=Object.fromEntries(sections.map(x=>[x[0],x[1]]));
+ const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
+ const status=v=>`<span class="console-state ${['failed','rejected','queued','disabled','hidden'].includes(String(v))?'warn':''}">${esc(v)}</span>`;
+@@ -82,10 +85,11 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api((section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
++  const d=await api((['quality','cases','competitions'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+-  if(section==='product')html=productAnalyticsView(d);
++  if(['quality','competitions','cases'].includes(section))html=await operationsView(section,id,params);
++  else if(section==='product')html=productAnalyticsView(d);
+   else if(section==='overview')html=await overview(d);
+   else if(section==='studio')html=await studioCoverage();
+   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -9,6 +9,7 @@
+   <script src="/admin/assets/support.js" defer></script>
+   <script src="/admin/assets/studio.js" defer></script>
+   <script src="/admin/assets/product_analytics.js" defer></script>
++  <script src="/admin/assets/operations.js" defer></script>
+   <script src="/admin/assets/app.js" defer></script>
+ </head>
+ <body>
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/operations.js
+@@ -0,0 +1,54 @@
++'use strict';
++async function operationsView(section,id,params){
++ if(section==='quality'){
++  const kinds=['quality_summary','segment_summary','process_exit','discovery','creator'],kind=kinds.includes(params.get('kind'))?params.get('kind'):'quality_summary';
++  const query=new URLSearchParams({kind});for(const field of ['since','until'])if(params.has(field))query.set(field,params.get(field));
++  const d=await api(kind==='creator'?'creator-health':'quality?'+query);role=d.role;
++  const switches='<div class="console-actions">'+[['quality_summary','Frame times'],['segment_summary','Track heatmaps'],['process_exit','Crash / ANR exits'],['discovery','Discovery'],['creator','Creator health']].map(([k,label])=>`<a class="btn" href="${scopedHref('quality?kind='+k,params)}">${label}</a>`).join('')+'</div>';
++  if(kind==='creator')return intro('Creator health','Recent immutable versions and current publication state.')+switches+card('Latest versions',`<div class="console-table"><table><thead><tr><th>Version</th><th>Creator</th><th>State</th><th>Published</th></tr></thead><tbody>${d.items.map(r=>`<tr><td>${link('tracks',r.version_id,r.name)}</td><td>${link('players',r.creator_id,r.creator_id)}</td><td>${esc(r.state)}${r.hidden?' · Quarantined':''}</td><td>${esc(date(r.published_at))}</td></tr>`).join('')}</tbody></table></div>${d.truncated?'<p>Latest 100 versions only.</p>':''}`)+card('Coverage',esc(d.coverage));
++  let visual='';
++  if(kind==='quality_summary'){
++   const counts=d.bucket_upper_ms.map((_,i)=>d.items.reduce((sum,r)=>sum+r['b'+i],0)),max=Math.max(1,...counts);
++   visual=card('Frame-time histogram',`<div role="img" aria-label="Frame-time bucket counts">${counts.map((v,i)=>`<p>${i===7?'Over 100':(i?d.bucket_upper_ms[i-1]+'–':'0–')+d.bucket_upper_ms[i]} ms: ${v}<span style="display:block;background:#e8c354;height:12px;width:${v/max*100}%"></span></p>`).join('')}</div>`);
++  }else if(kind==='segment_summary'&&d.items.length){
++   const versions=[...new Set(d.items.map(r=>r.context.track_version_id))],version=versions.includes(params.get('version'))?params.get('version'):versions[0];
++   const rows=d.items.filter(r=>r.context.track_version_id===version),minX=Math.min(...rows.map(r=>r.context.cell_x)),minY=Math.min(...rows.map(r=>r.context.cell_y)),width=Math.max(...rows.map(r=>r.context.cell_x))-minX+1,height=Math.max(...rows.map(r=>r.context.cell_y))-minY+1,max=Math.max(1,...rows.map(r=>r.samples));
++   visual=card('Sampled presence · 20 m cells','<div class="console-actions">'+versions.map(v=>`<a class="btn" href="${scopedHref('quality?kind=segment_summary&version='+v,params)}">${esc(v)}</a>`).join('')+`</div><svg role="img" aria-label="Sampled track cell heatmap" viewBox="0 0 ${width} ${height}" style="width:100%;height:320px;background:#142434">${rows.map(r=>`<rect x="${r.context.cell_x-minX}" y="${height-1-r.context.cell_y+minY}" width="1" height="1" fill="#e8c354" fill-opacity="${Math.max(.1,r.samples/max)}"><title>Segment ${r.context.segment}, samples ${r.samples}, slow ${r.slow}</title></rect>`).join('')}</svg>`);
++  }
++  return intro('Client quality & track diagnostics','Prepared client observations; fixed counters and sampled cells.')+switches+visual+card(kind==='discovery'?'Observed discovery exposures / selections':'Observed summaries',`<div class="console-table"><table><thead><tr><th>UTC day</th><th>Context</th><th>${kind==='discovery'?'Exposures':'Reports'}</th><th>${kind==='discovery'?'Selections':'Samples'}</th><th>Slow</th></tr></thead><tbody>${d.items.map(r=>`<tr><td>${esc(date(r.day*86400))}</td><td><pre>${esc(JSON.stringify(r.context,null,2))}</pre></td><td>${r.reports}</td><td>${r.samples}</td><td>${r.slow}</td></tr>`).join('')}</tbody></table></div>${d.truncated?'<p>First 1,000 daily dimensions only.</p>':''}`)+card('Source coverage',kv(d.coverage));
++ }
++ if(section==='competitions'){
++  const kind=params.get('kind')==='challenge'?'challenge':'rivalry';
++  const d=await api(id?'competitions/'+kind+'/'+encodeURIComponent(id):'competitions?kind='+kind);
++  role=d.role;
++  const switches='<div class="console-actions"><a class="btn" href="#competitions?kind=rivalry">Weekly Rivalry</a><a class="btn" href="#competitions?kind=challenge">Challenges</a></div>';
++  if(!id)return intro('Competition inspector','Pinned contracts, accepted best results and scoring provenance.')+switches+card('Current records',`<div class="console-table"><table><thead><tr><th>ID</th><th>Ends</th><th>Members</th></tr></thead><tbody>${d.items.map(r=>`<tr><td><a href="#competitions/${esc(r.id)}?kind=${kind}">${esc(r.id)}</a></td><td>${esc(date(r.ends_at))}</td><td>${esc(r.member_count)}</td></tr>`).join('')}</tbody></table></div>${d.has_more?'<p>Additional records exceed this page’s 50-record budget.</p>':''}`);
++  return intro(kind==='rivalry'?'Weekly Rivalry inspection':'Challenge inspection','Recomputed from linked accepted evidence. Source inconsistencies remain visible.')+switches+
++   card('Pinned definition',kv(d.definition))+card('Roster and pre-round context',`<div class="console-table"><table><thead><tr><th>Driver</th><th>Player type</th><th>Skill at entry</th><th>Attempts used</th><th>Recomputed points</th></tr></thead><tbody>${d.roster.map(r=>`<tr><td>${link('players',r.player_id,r.name)}</td><td>${r.is_test_driver?'Artificial':'Real'}${r.disabled?' · Restricted':''}</td><td>${esc(r.pre_round_skill)}</td><td>${esc(r.attempts_used)}</td><td>${esc(r.points)}</td></tr>`).join('')}</tbody></table></div>`)+
++   card('Best-result provenance',`<div class="console-table"><table><thead><tr><th>Slot</th><th>Driver</th><th>Stored / evidence rank</th><th>Stored / evidence points</th><th>Pinned seconds</th><th>Evidence</th><th>Problems</th></tr></thead><tbody>${d.results.map(r=>`<tr><td>${r.slot+1}</td><td>${link('players',r.player_id,d.roster.find(p=>p.player_id===r.player_id)?.name||r.player_id)}</td><td>${esc(r.rank_from_stored_bests)} / ${esc(r.rank)}</td><td>${r.points_from_stored_bests} / ${r.points}</td><td>${esc(r.seconds?.toFixed(3))}</td><td>${r.run_id?link('races',r.run_id,'Inspect race'):esc(r.provenance)}</td><td>${esc(r.problems.join(', ')||'Verified source')}</td></tr>`).join('')}</tbody></table></div>`)+card('Attempt evidence',kv(d.attempt_states)+(d.attempts_truncated?'<p>First 500 linked attempts only.</p>':''))+
++   (d.target?card('Exact challenge target',kv(d.target)):'')+card('Inspection limits',`<ul>${d.limits.map(v=>'<li>'+esc(v)+'</li>').join('')}</ul>`);
++ }
++ const d=await api(id?'cases/'+encodeURIComponent(id):'cases');role=d.role;
++ if(!id)return intro('Support cases','Case-linked notes, issue references and recorded workflow decisions.')+
++  (role==='owner'?'<button class="btn btn-primary" data-case-action="create">New case</button>':'')+card('Cases',`<div class="console-table"><table><thead><tr><th>Title</th><th>State</th><th>Updated</th></tr></thead><tbody>${d.items.map(r=>`<tr><td><a href="#cases/${esc(r.id)}">${esc(r.title)}</a></td><td>${esc(r.status)}</td><td>${esc(date(r.updated_at))}</td></tr>`).join('')}</tbody></table></div>`);
++ const c=d.case;
++ return intro(c.title,'Case evidence is append-only; revision checks protect concurrent edits.')+card('Case context',kv(c))+
++  (role==='owner'?`<div class="console-actions">${['note','issue','transition',...(c.track_id?['quarantine','restore']:[])].map(a=>`<button class="btn" data-case-action="${a}" data-case-id="${esc(c.id)}" data-case-revision="${c.revision}">${{note:'Add note',issue:'Link issue',transition:'Change state',quarantine:'Quarantine track',restore:'Restore track'}[a]}</button>`).join('')}</div>`:'')+
++  card('Activity',`<ol>${d.events.map(e=>`<li><b>${esc(e.kind)}</b> · ${esc(date(e.created_at))}<pre style="white-space:pre-wrap">${esc(JSON.stringify(e.detail,null,2))}</pre></li>`).join('')}</ol>${d.history_truncated?'<p>Latest 100 events only.</p>':''}`)+card('Coverage',kv(d.coverage));
++}
++document.addEventListener('click',event=>{
++ const target=event.target.closest('[data-case-action]');if(!target||role!=='owner')return;
++ const action=target.dataset.caseAction,auth=authGeneration,credential=key,view=generation;
++ const dialog=$('#dialog');
++ dialog.innerHTML=`<form class="console-padding"><h3>${action==='create'?'New case':action==='transition'?'Case transition':'Case evidence'}</h3>${action==='transition'?'<label>State<select name="status"><option>investigating</option><option>resolved</option><option>appealed</option><option>open</option></select></label>':''}<label>${action==='create'?'Title':action==='issue'?'Issue reference':'Note / reason'}<textarea name="text" maxlength="${action==='create'?160:2000}" required></textarea></label><p class="console-note">Keep credentials, purchase tokens and private keys out of case evidence.</p><p class="console-error" id="case-error"></p><div class="console-actions"><button class="btn" type="button" id="case-cancel">Cancel</button><button class="btn btn-primary">Save</button></div></form>`;
++ if(action==='create')dialog.querySelector('textarea').closest('label').insertAdjacentHTML('afterend','<label>Player ID (optional)<input name="player_id" maxlength="36"></label><label>Track ID (optional)<input name="track_id" maxlength="36"></label>');
++ dialog.showModal();dialog.addEventListener('close',()=>{if(target.isConnected)target.focus();},{once:true});$('#case-cancel').onclick=()=>dialog.close();
++ const command=crypto.randomUUID();dialog.querySelector('form').onsubmit=async ev=>{
++  ev.preventDefault();if(auth!==authGeneration||credential!==key||view!==generation)return;
++  const form=new FormData(ev.target),body=action==='create'?{command_id:command,title:form.get('text')}:{command_id:command,expected_revision:Number(target.dataset.caseRevision),kind:action,text:form.get('text'),...(action==='transition'?{status:form.get('status')}:{})};
++  if(action==='create')for(const field of ['player_id','track_id'])if(form.get(field)?.trim())body[field]=form.get(field).trim();
++  const save=ev.target.querySelector('button:not([type="button"])');save.disabled=true;
++  try{const d=await api(action==='create'?'cases':'cases/'+target.dataset.caseId+'/events',body);if(auth!==authGeneration||view!==generation)return;dialog.close();location.hash='cases/'+d.id;await render();}
++  catch(e){if(auth===authGeneration&&view===generation&&dialog.open){$('#case-error').textContent=e.message;save.disabled=false;}}
++ };
++});
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -20,7 +20,7 @@
+ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
+     from . import admin, admin_commerce, browser_auth, commerce, discovery, resumes, rivalry, runs, test_drivers, tracks
+     from .verifier import GodotVerifier
+-    from . import telemetry, product_analytics
++    from . import telemetry, product_analytics, quality, studio_cases, studio_competitions
+     from . import studio
+     from . import challenges
+     from . import admin_purchase_controls, admin_support
+@@ -61,6 +61,9 @@
+     app.include_router(studio.router)
+     app.include_router(telemetry.router)
+     app.include_router(product_analytics.router)
++    app.include_router(quality.router)
++    app.include_router(studio_cases.router)
++    app.include_router(studio_competitions.router)
+     app.include_router(auth.router, prefix="/v1")
+     app.include_router(browser_auth.router, prefix="/v1")
+     app.include_router(tracks.router, prefix="/v1")
+@@ -133,6 +136,7 @@
+                 "idle_flush_seconds": 300,
+                 "response_limit_bytes": 16384,
+                 "guest_coverage": False,
++                "quality_schema_version": 1 if settings.client_quality_enabled else 0,
+             },
+             "track_schema": "creator-track-v5",
+             "replay_schema": "bmt-replay-v1",
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -13,6 +13,7 @@
+     test_driver_api_url: str = ""
+     purchase_simulation_enabled: bool = False
+     telemetry_enabled: bool = False
++    client_quality_enabled: bool = False
+     telemetry_client_backlog: int = 50000
+     telemetry_processor_batch: int = 500
+     telemetry_raw_days: int = 7
+@@ -69,6 +70,8 @@
+     s3_prefix: str = "bmt/v1"
+ 
+     def __post_init__(self):
++        if self.client_quality_enabled and not self.telemetry_enabled:
++            raise ValueError("Client quality requires bounded product telemetry transport")
+         if (not 50 <= self.telemetry_client_backlog <= 1000000
+                 or not 1 <= self.telemetry_processor_batch <= 1000
+                 or not 1 <= self.telemetry_raw_days <= 30 or not 14 <= self.telemetry_fact_days <= 366):
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -12,6 +12,8 @@
+     rivalry_models,
+     test_driver_models,
+     track_models,
++    studio_case_models,
++    quality_models,
+     telemetry_models,
+ )
+ from bmt_backend.db import Base
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0026_studio_cases.py
+@@ -0,0 +1,35 @@
++"""Case records and immutable command events; no business balance changes."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0026_studio_cases"
++down_revision = "0025_product_telemetry"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_table("studio_cases", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id")),
++        sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id")),
++        sa.Column("title", sa.String(160), nullable=False), sa.Column("status", sa.String(24), nullable=False),
++        sa.Column("revision", sa.Integer(), nullable=False), sa.Column("created_at", sa.Integer(), nullable=False),
++        sa.Column("updated_at", sa.Integer(), nullable=False))
++    op.create_index("ix_studio_case_updated", "studio_cases", ["updated_at", "id"])
++    op.create_table("studio_case_events", sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("case_id", sa.String(36), sa.ForeignKey("studio_cases.id"), nullable=False),
++        sa.Column("actor", sa.String(24), nullable=False), sa.Column("kind", sa.String(24), nullable=False),
++        sa.Column("revision", sa.Integer(), nullable=False),
++        sa.Column("detail", sa.JSON(), nullable=False), sa.Column("request_hash", sa.String(64), nullable=False),
++        sa.Column("created_at", sa.Integer(), nullable=False),
++        sa.UniqueConstraint("case_id", "revision", name="uq_studio_case_revision"))
++    op.create_index("ix_studio_case_event", "studio_case_events", ["case_id", "created_at", "id"])
++    op.create_table("studio_quarantines", sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id"), primary_key=True),
++        sa.Column("case_id", sa.String(36), sa.ForeignKey("studio_cases.id"), nullable=False),
++        sa.Column("audit_id", sa.String(36), sa.ForeignKey("admin_audit.id"), nullable=False))
++
++
++def downgrade():
++    op.drop_table("studio_quarantines")
++    op.drop_table("studio_case_events")
++    op.drop_table("studio_cases")
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0027_client_quality.py
+@@ -0,0 +1,26 @@
++"""Prepared client quality and spatial counters."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0027_client_quality"
++down_revision = "0026_studio_cases"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_index("ix_studio_creator_versions", "track_versions", ["created_at", "id"])
++    op.create_index("ix_studio_rivalry_recent", "rivalry_groups", ["created_at", "id"])
++    op.create_index("ix_studio_challenge_recent", "challenges", ["created_at", "id"])
++    op.create_table("quality_facts", sa.Column("day", sa.Integer(), primary_key=True),
++        sa.Column("kind", sa.String(24), primary_key=True), sa.Column("dimension", sa.String(64), primary_key=True),
++        sa.Column("context", sa.JSON(), nullable=False),
++        *(sa.Column(field, sa.BigInteger(), nullable=False) for field in
++            ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))))
++
++
++def downgrade():
++    op.drop_table("quality_facts")
++    op.drop_index("ix_studio_challenge_recent", table_name="challenges")
++    op.drop_index("ix_studio_rivalry_recent", table_name="rivalry_groups")
++    op.drop_index("ix_studio_creator_versions", table_name="track_versions")
+--- a/backend/bmt_backend/product_analytics.py
++++ b/backend/bmt_backend/product_analytics.py
+@@ -6,10 +6,12 @@
+ from fastapi import APIRouter, Query, Request
+ from sqlalchemy import delete, false, func, select, text, tuple_, update
+ 
++from . import quality as client_quality
+ from .admin import Access, Window
+ from .admin_ranges import calendar_range
+ from .identity_models import Player
+ from .middleware import ParsedJSONRoute
++from .quality_models import QualityFact
+ from .telemetry import insert_for
+ from .telemetry_models import (
+     ProductEvent,
+@@ -135,6 +137,7 @@
+         events = session.scalars(select(ProductEvent).where(ProductEvent.processed_at.is_(None))
+             .order_by(ProductEvent.received_at, ProductEvent.id).limit(limit)).all()
+         players = {event.player_id for event in events}
++        client_quality.project(session, events, insert_for)
+         profiles = {profile.player_id: profile for profile in session.scalars(
+             select(ProductProfile).where(ProductProfile.player_id.in_(players)))} if players else {}
+         missing_flags = {event.player_id for event in events if event.is_test_driver is None}
+@@ -286,6 +289,7 @@
+         if old_server:
+             session.execute(update(ProductEvent).where(ProductEvent.id.in_(old_server)).values(properties={}, compacted=True))
+         for model, columns in ((ProductPlayerDay, (ProductPlayerDay.day, ProductPlayerDay.player_id)),
++                (QualityFact, (QualityFact.day, QualityFact.kind, QualityFact.dimension)),
+                 (ProductMetric, (ProductMetric.day, ProductMetric.key, ProductMetric.dimension))):
+             expired_keys = session.execute(select(*columns).where(model.day < at // DAY - fact_days)
+                 .order_by(*columns).limit(limit)).all()
+--- /dev/null
++++ b/backend/bmt_backend/provider_proofs.py
+@@ -0,0 +1,191 @@
++"""Provider proof adapters. No client callbacks or catalog prices confer paid authority.
++
++Integration deliberately stays unavailable until package, products, SSV placement,
++acknowledgement/reconciliation jobs and reversal policy have been configured.
++"""
++import base64
++import hashlib
++import hmac
++import json
++import re
++import threading
++import time
++from datetime import datetime, timezone
++from urllib.parse import parse_qsl, quote, unquote_to_bytes
++
++import google.auth
++import requests
++from cryptography.exceptions import InvalidSignature
++from cryptography.hazmat.primitives import hashes, serialization
++from cryptography.hazmat.primitives.asymmetric import ec
++from google.auth.transport.requests import AuthorizedSession
++
++
++class InvalidProof(ValueError):
++    """Messages never contain receipt tokens, callback data or provider responses."""
++
++
++class ProviderUnavailable(RuntimeError):
++    pass
++
++
++def account_binding(player_id):
++    return hashlib.sha256(("bmt-play-player-v1/" + player_id).encode()).hexdigest()
++
++
++def bounded_response(response, limit=16384):
++    if response.status_code != 200:
++        response.close()
++        raise ProviderUnavailable("PROVIDER_RESPONSE_UNAVAILABLE")
++    try:
++        content = bytearray()
++        for chunk in response.iter_content(4096):
++            content.extend(chunk)
++            if len(content) > limit:
++                raise ProviderUnavailable("PROVIDER_RESPONSE_TOO_LARGE")
++        return json.loads(content)
++    except (ValueError, UnicodeError):
++        raise ProviderUnavailable("INVALID_PROVIDER_RESPONSE") from None
++    finally:
++        response.close()
++
++
++class PlayVerifier:
++    def __init__(self, package, *, http=None):
++        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
++            raise ValueError("EXPLICIT_PLAY_PACKAGE_REQUIRED")
++        self.package, self.http, self.lock = package, http, threading.Lock()
++
++    def verify(self, token, product_id, player_id, *, at=None):
++        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9._~:+/=-]{1,4096}", token):
++            raise InvalidProof("INVALID_PURCHASE_TOKEN")
++        url = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + quote(self.package, safe="")
++        url += "/purchases/productsv2/tokens/" + quote(token, safe="")
++        # No database lock is held while the provider is contacted. Serialize ADC
++        # refresh and cap concurrent calls per instance; caller supplies backpressure.
++        with self.lock:
++            try:
++                if self.http is None:
++                    credentials, _project = google.auth.default(scopes=["https://www.googleapis.com/auth/androidpublisher"])
++                    self.http = AuthorizedSession(credentials)
++                response = self.http.get(url, timeout=(3, 5), stream=True, allow_redirects=False)
++                proof = bounded_response(response)
++            except ProviderUnavailable:
++                raise
++            except (google.auth.exceptions.GoogleAuthError, requests.exceptions.RequestException, OSError):
++                raise ProviderUnavailable("PLAY_VERIFICATION_UNAVAILABLE") from None
++        return validate_play(proof, product_id, player_id, at=int(time.time()) if at is None else at)
++
++
++def validate_play(proof, product_id, player_id, *, at):
++    if not isinstance(proof, dict):
++        raise InvalidProof("INVALID_PLAY_PROOF")
++    expected = account_binding(player_id)
++    actual = proof.get("obfuscatedExternalAccountId")
++    if not isinstance(actual, str) or not re.fullmatch(r"[a-f0-9]{64}", actual) or not hmac.compare_digest(expected, actual):
++        raise InvalidProof("PURCHASE_ACCOUNT_MISMATCH")
++    items = proof.get("productLineItem")
++    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict) or items[0].get("productId") != product_id:
++        raise InvalidProof("PURCHASE_PRODUCT_MISMATCH")
++    offer = items[0].get("productOfferDetails", {})
++    if not isinstance(offer, dict) or type(offer.get("quantity")) is not int or offer["quantity"] != 1:
++        raise InvalidProof("UNSUPPORTED_PURCHASE_QUANTITY")
++    if "rentOfferDetails" in offer or "preorderOfferDetails" in offer:
++        raise InvalidProof("UNSUPPORTED_PRODUCT_OFFER")
++    state = proof.get("purchaseStateContext", {})
++    state = state.get("purchaseState") if isinstance(state, dict) else None
++    if state not in ("PURCHASED", "PENDING", "CANCELLED"):
++        raise InvalidProof("INVALID_PURCHASE_STATE")
++    completed = None
++    if state == "PURCHASED":
++        try:
++            if not isinstance(proof.get("purchaseCompletionTime"), str):
++                raise TypeError()
++            date = datetime.fromisoformat(proof["purchaseCompletionTime"].replace("Z", "+00:00"))
++            if date.tzinfo is None:
++                raise ValueError()
++            completed = int(date.astimezone(timezone.utc).timestamp())
++            if not 0 <= completed <= at + 300:
++                raise ValueError()
++        except (KeyError, TypeError, ValueError, OverflowError):
++            raise InvalidProof("INVALID_PURCHASE_COMPLETION_TIME") from None
++    refundable = offer.get("refundableQuantity")
++    if type(refundable) is not int or refundable not in (0, 1):
++        raise InvalidProof("INVALID_REFUNDABLE_QUANTITY")
++    return {"product_id": product_id, "state": state, "completed_at": completed,
++        "test_purchase": "testPurchaseContext" in proof,
++        "refundable_quantity": refundable, "acknowledgement": proof.get("acknowledgementState"),
++        "consumption": offer.get("consumptionState")}
++
++
++class AdMobKeys:
++    """Trusted Google keys only; bounded response/cache and paced unknown-key refresh."""
++    URL = "https://www.gstatic.com/admob/reward/verifier-keys.json"
++
++    def __init__(self, *, http=None, clock=time.monotonic):
++        self.http, self.clock = http or requests.Session(), clock
++        self.keys, self.expires, self.refresh_after = {}, 0, 0
++        self.lock = threading.Lock()
++
++    def key(self, key_id):
++        with self.lock:
++            at = self.clock()
++            if at < self.expires and key_id in self.keys:
++                return self.keys[key_id]
++            if at >= self.refresh_after:
++                self.refresh_after = at + 60
++                try:
++                    value = bounded_response(self.http.get(self.URL, timeout=(3, 5), stream=True, allow_redirects=False))
++                    rows = value["keys"]
++                    if not isinstance(rows, list) or not 1 <= len(rows) <= 10:
++                        raise ValueError()
++                    keys = {}
++                    for row in rows:
++                        key = serialization.load_der_public_key(base64.b64decode(row["base64"], validate=True))
++                        if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, (ec.SECP256R1, ec.SECP224R1)):
++                            raise TypeError()
++                        keys[str(row["keyId"])] = key
++                    self.keys, self.expires = keys, at + 3600
++                except (ProviderUnavailable, requests.exceptions.RequestException, KeyError, TypeError, ValueError):
++                    raise ProviderUnavailable("ADMOB_KEYS_UNAVAILABLE") from None
++            if at >= self.expires:
++                raise ProviderUnavailable("ADMOB_KEYS_EXPIRED")
++            if key_id not in self.keys:
++                raise InvalidProof("UNKNOWN_ADMOB_KEY")
++            return self.keys[key_id]
++
++
++def verify_admob(raw_query, keys):
++    """Match Google's URI.getQuery() canonicalization before parsing business fields."""
++    if not isinstance(raw_query, bytes) or not 1 <= len(raw_query) <= 4096:
++        raise InvalidProof("INVALID_ADMOB_QUERY")
++    try:
++        content, signature = raw_query.rsplit(b"&signature=", 1)
++        signature, key_id = signature.split(b"&key_id=")
++        signature = unquote_to_bytes(signature)
++        if not re.fullmatch(rb"[0-9]{1,20}", key_id) or not re.fullmatch(rb"[A-Za-z0-9_-]{1,128}={0,2}", signature):
++            raise ValueError()
++        signed = base64.b64decode(signature + b"=" * (-len(signature) % 4), altchars=b"-_", validate=True)
++        # Google's reference verifies URI.getQuery(): percent decode once, keep
++        # literal '+' and original parameter order. Do not use form decoding or
++        # serialize a parsed dictionary to reconstruct the signed message.
++        verified_content = unquote_to_bytes(content)
++        verified_content.decode("utf-8", errors="strict")
++        keys.key(key_id.decode("ascii")).verify(signed, verified_content, ec.ECDSA(hashes.SHA256()))
++        pairs = parse_qsl(content.decode("ascii"), keep_blank_values=True, strict_parsing=True,
++            encoding="utf-8", errors="strict", max_num_fields=16)
++        value = dict(pairs)
++        allowed = {"ad_network", "ad_unit", "custom_data", "reward_amount", "reward_item", "timestamp", "transaction_id", "user_id"}
++        if len(pairs) != len(value) or not set(value) <= allowed or not (allowed - {"user_id"}) <= set(value):
++            raise ValueError()
++        if value["reward_amount"] != "1" or value["reward_item"] != "resume":
++            raise InvalidProof("UNSUPPORTED_AD_REWARD")
++        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value["transaction_id"]) or not re.fullmatch(r"[0-9]{1,20}", value["timestamp"]):
++            raise ValueError()
++        # Placement and opaque server-issued intent must be checked by fulfillment.
++        # Signature verification alone never grants a resource or attributes revenue.
++        return value
++    except (ValueError, UnicodeError, InvalidSignature) as error:
++        if isinstance(error, InvalidProof):
++            raise
++        raise InvalidProof("INVALID_ADMOB_PROOF") from None
+--- /dev/null
++++ b/backend/bmt_backend/quality.py
+@@ -0,0 +1,99 @@
++"""Bounded scalar diagnostic observations; never race proof or compensation authority."""
++from collections import Counter
++
++from fastapi import APIRouter, Query, Request
++from sqlalchemy import select
++
++from .admin import Access, Window
++from .admin_ranges import calendar_range
++from .quality_models import QualityFact
++from .track_models import Track, TrackVersion, digest
++
++router = APIRouter(tags=["client quality"])
++BUCKET_UPPER_MS = (8, 12, 17, 25, 34, 50, 100, None)
++NAMES = {"quality_summary", "segment_summary", "process_exit"}
++NUMBERS = {"samples", "slow", "segment", "cell_x", "cell_y", "exit_reason", *("b" + str(i) for i in range(8))}
++FIELDS = {"quality_summary": {"device_class", "scene", "samples", "slow", *("b" + str(i) for i in range(8))},
++    "segment_summary": {"track_version_id", "segment", "cell_x", "cell_y", "samples", "slow"},
++    "process_exit": {"exit_reason", "device_class"}}
++
++
++def validate(name, props):
++    if set(props) != FIELDS[name]:
++        raise ValueError("INVALID_EVENT")
++    for key, value in props.items():
++        if key in NUMBERS:
++            low, high = (-5000, 5000) if key in ("cell_x", "cell_y") else (0, 1000000)
++            if type(value) is not int or not low <= value <= high:
++                raise ValueError("INVALID_EVENT")
++        elif key == "device_class" and value not in ("android_arm64", "android_other", "desktop", "other") or key == "scene" and value not in ("race", "menu", "editor"):
++            raise ValueError("INVALID_EVENT")
++    if name == "quality_summary" and (sum(props["b" + str(i)] for i in range(8)) != props["samples"]
++            or props["slow"] != sum(props["b" + str(i)] for i in (5, 6, 7))):
++        raise ValueError("INVALID_EVENT")
++    if name == "segment_summary" and (props["segment"] > 31 or props["slow"] > props["samples"]):
++        raise ValueError("INVALID_EVENT")
++    if name == "process_exit" and props["exit_reason"] not in (4, 5, 6):
++        raise ValueError("INVALID_EVENT")
++    return props
++
++
++def project(session, events, insert_for):
++    counters, contexts = {}, {}
++    for event in events:
++        discovery = event.name in ("track_exposed", "track_selected") and event.properties.get("track_version_id")
++        if (event.name not in NAMES and not discovery) or event.source != "client":
++            continue
++        props = event.properties
++        context = {"track_version_id": props["track_version_id"]} if discovery else {
++            "build_id": event.build_id, "platform": event.platform, **{k: v for k, v in props.items() if k not in
++                {"samples", "slow", *("b" + str(i) for i in range(8))}}}
++        identity = event.occurred_at // 86400, "discovery" if discovery else event.name, digest(context)
++        contexts[identity] = context
++        values = counters.setdefault(identity, Counter())
++        values["reports"] += int(event.name != "track_selected")
++        for field in ("samples", "slow", *("b" + str(i) for i in range(8))):
++            values[field] += int(event.name == "track_selected") if discovery and field == "samples" else props.get(field, 0)
++    if counters:
++        statement = insert_for(session, QualityFact).values([{ "day": day, "kind": kind, "dimension": dimension,
++            "context": contexts[identity], **dict(values)} for identity, values in counters.items()
++            for day, kind, dimension in (identity,)])
++        session.execute(statement.on_conflict_do_update(index_elements=["day", "kind", "dimension"], set_={
++            field: getattr(QualityFact, field) + getattr(statement.excluded, field)
++            for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))}))
++
++
++@router.get("/v1/admin/quality")
++def report(request: Request, role: Access, window: Window, kind: str = "quality_summary",
++           limit: int = Query(1000, ge=1, le=1000)):
++    if kind not in NAMES | {"discovery"}:
++        from fastapi import HTTPException
++        raise HTTPException(422, "INVALID_DIAGNOSTIC_KIND")
++    first, until = window or calendar_range(7)
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(QualityFact).where(QualityFact.kind == kind,
++            QualityFact.day >= first // 86400, QualityFact.day <= (until - 1) // 86400)
++            .order_by(QualityFact.day.desc(), QualityFact.dimension).limit(limit + 1)).all()
++        return {"items": [{"day": row.day, "context": row.context, **{field: getattr(row, field)
++            for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))}}
++            for row in rows[:limit]], "truncated": len(rows) > limit, "role": role,
++            "bucket_upper_ms": BUCKET_UPPER_MS,
++            "resolution": "UTC calendar day; partial-day requests include their entire day buckets",
++            "coverage": {"enabled": request.app.state.settings.client_quality_enabled,
++                "guest": "unavailable", "crash_stack": "unavailable", "play_vitals": "unavailable",
++                "spatial": "Client 1 Hz observations in 20 m cells; sampled presence, never verified race evidence.",
++                "sampling": "Lowest-hash 16 cells per 10-minute window, 32 route segments. Inclusion probability unavailable; capped coverage cannot estimate total dwell time or distinct drivers.",
++                "exit": "Android API 30+ OS process exits; previous process, not proven current-player crash/ANR.",
++                "capture": "Fixed counters only; no arbitrary logs, coordinates, credentials or control-input captures."}}
++
++
++@router.get("/v1/admin/creator-health")
++def creator_health(request: Request, role: Access, limit: int = Query(100, ge=1, le=100)):
++    with request.app.state.session_factory() as session:
++        rows = session.execute(select(TrackVersion, Track).join(Track)
++            .order_by(TrackVersion.created_at.desc(), TrackVersion.id).limit(limit + 1)).all()
++        return {"items": [{"version_id": version.id, "track_id": track.id, "creator_id": track.owner_id,
++            "name": version.name, "state": version.state, "created_at": version.created_at,
++            "published_at": version.published_at, "hidden": track.hidden, "archived": track.archived}
++            for version, track in rows[:limit]], "truncated": len(rows) > limit, "role": role,
++            "coverage": "Latest 100 immutable versions and publication states. Local unsaved drafts, editor crashes and validation phase timings are unavailable."}
+--- /dev/null
++++ b/backend/bmt_backend/quality_models.py
+@@ -0,0 +1,25 @@
++"""Prepared diagnostic counters: no player IDs, trace text or raw trajectories."""
++from sqlalchemy import JSON, BigInteger, Integer, String
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++
++
++class QualityFact(Base):
++    __tablename__ = "quality_facts"
++    day: Mapped[int] = mapped_column(Integer, primary_key=True)
++    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
++    dimension: Mapped[str] = mapped_column(String(64), primary_key=True)
++    context: Mapped[dict] = mapped_column(JSON)
++    reports: Mapped[int] = mapped_column(BigInteger, default=0)
++    samples: Mapped[int] = mapped_column(BigInteger, default=0)
++    slow: Mapped[int] = mapped_column(BigInteger, default=0)
++    b0: Mapped[int] = mapped_column(BigInteger, default=0)
++    b1: Mapped[int] = mapped_column(BigInteger, default=0)
++    b2: Mapped[int] = mapped_column(BigInteger, default=0)
++    b3: Mapped[int] = mapped_column(BigInteger, default=0)
++    b4: Mapped[int] = mapped_column(BigInteger, default=0)
++    b5: Mapped[int] = mapped_column(BigInteger, default=0)
++    b6: Mapped[int] = mapped_column(BigInteger, default=0)
++    b7: Mapped[int] = mapped_column(BigInteger, default=0)
++
+--- a/backend/bmt_backend/studio.py
++++ b/backend/bmt_backend/studio.py
+@@ -2,11 +2,12 @@
+ 
+ from uuid import UUID
+ 
+-from fastapi import APIRouter, HTTPException, Request
++from fastapi import APIRouter, HTTPException, Query, Request
+ from fastapi.responses import JSONResponse
+ from sqlalchemy import func, select, text
+ 
+-from .admin import Access
++from .admin import Access, Window
++from .admin_ranges import calendar_range
+ from .identity_models import Player
+ from .middleware import ParsedJSONRoute
+ from .resume_models import ResumeRace, ResumeReceipt
+@@ -42,6 +43,16 @@
+         for source in sources:
+             if source["key"] == "behaviour":
+                 source.update(status="unavailable", description="Product telemetry is disabled on this backend. No observed activity is implied by registered accounts or submitted attempts.")
++    if request.app.state.settings.client_quality_enabled:
++        for source in sources:
++            if source["key"] == "client_quality":
++                source.update(status="partial", description="Prepared build/device-class frame buckets, bounded sampled segments and Android API 30+ process-exit reasons. Crash stacks, Play vitals and consented enhanced captures remain unavailable.")
++    sources.extend([
++        {"key": "competition_inspection", "title": "Competition provenance", "status": "partial",
++            "description": "Bounded rivalry/challenge roster, pinned contracts, accepted-run checks, ranks/points and exact target; archived runs and reward delivery may be unavailable.", "requirement_ids": ["BMT-034"]},
++        {"key": "case_workflow", "title": "Support and moderation cases", "status": "partial",
++            "description": "Append-only notes/issues, case transitions, signed-in reports and appeals, audited track quarantine. Expiring scopes, verified recovery and production compensation are unavailable.", "requirement_ids": ["BMT-033", "BMT-050", "BMT-054", "BMT-056"]},
++    ])
+     return {
+         "schema": "bmt-studio-capabilities-v1", "as_of": now(),
+         "environment": request.app.state.settings.environment, "role": role, "read_only": True,
+@@ -60,6 +71,13 @@
+     value = board.manifest if board and isinstance(board.manifest, dict) else {}
+     # Project only known scalar contract fields; never copy arbitrary stored metadata.
+     return {key: value[key] for key in MANIFEST_FIELDS if key in value and type(value[key]) in (str, int)}
++
++
++@router.get("/v1/admin/studio/context")
++def studio_context(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
++    first, until = window or calendar_range(days)
++    return {"role": role, "environment": request.app.state.settings.environment,
++        "since": first, "until": until, "as_of": now()}
+ 
+ 
+ def race_evidence(session, run_id):
+--- /dev/null
++++ b/backend/bmt_backend/studio_case_models.py
+@@ -0,0 +1,40 @@
++"""Case-owned evidence and append-only support activity; no identity reassignment."""
++from sqlalchemy import JSON, ForeignKey, Index, Integer, String, UniqueConstraint
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++from .track_models import new_id, now
++
++
++class StudioCase(Base):
++    __tablename__ = "studio_cases"
++    __table_args__ = (Index("ix_studio_case_updated", "updated_at", "id"),)
++    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
++    player_id: Mapped[str | None] = mapped_column(ForeignKey("players.id"), nullable=True)
++    track_id: Mapped[str | None] = mapped_column(ForeignKey("tracks.id"), nullable=True)
++    title: Mapped[str] = mapped_column(String(160))
++    status: Mapped[str] = mapped_column(String(24), default="open")
++    revision: Mapped[int] = mapped_column(Integer, default=0)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++    updated_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class StudioCaseEvent(Base):
++    __tablename__ = "studio_case_events"
++    __table_args__ = (Index("ix_studio_case_event", "case_id", "created_at", "id"),
++        UniqueConstraint("case_id", "revision", name="uq_studio_case_revision"))
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    case_id: Mapped[str] = mapped_column(ForeignKey("studio_cases.id"))
++    actor: Mapped[str] = mapped_column(String(24))
++    kind: Mapped[str] = mapped_column(String(24))
++    revision: Mapped[int] = mapped_column(Integer, default=0)
++    detail: Mapped[dict] = mapped_column(JSON)
++    request_hash: Mapped[str] = mapped_column(String(64))
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class StudioQuarantine(Base):
++    __tablename__ = "studio_quarantines"
++    track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"), primary_key=True)
++    case_id: Mapped[str] = mapped_column(ForeignKey("studio_cases.id"))
++    audit_id: Mapped[str] = mapped_column(ForeignKey("admin_audit.id"))
+--- /dev/null
++++ b/backend/bmt_backend/studio_cases.py
+@@ -0,0 +1,258 @@
++"""Bounded owner-authored case workflow; business grants/recovery require policy."""
++import re
++from uuid import NAMESPACE_URL, UUID, uuid5
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import select, text
++
++from .admin import Access
++from .admin_models import AdminAudit
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .studio_case_models import StudioCase, StudioCaseEvent, StudioQuarantine
++from .track_models import Track, digest, now
++from .tracks import Auth
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio cases"])
++TRANSITIONS = {"open": {"investigating", "resolved"}, "investigating": {"resolved"},
++    "resolved": {"open", "appealed"}, "appealed": {"investigating", "resolved"}}
++
++
++def value(case):
++    return {key: getattr(case, key) for key in ("id", "player_id", "track_id", "title", "status", "revision", "created_at", "updated_at")}
++
++
++def safe_text(value, limit):
++    value = value.strip()
++    if not value or len(value) > limit or any(ord(char) < 32 and char not in "\n\t" for char in value):
++        raise HTTPException(422, "INVALID_CASE_TEXT")
++    # Notes are staff evidence, not a credential vault. Avoid common pasted secrets.
++    if re.search(r"(?i)(bearer\s+\S+|-----BEGIN .*PRIVATE KEY|(?:access_token|refresh_token|purchaseToken)\s*[:=])", value):
++        raise HTTPException(422, "CREDENTIALS_NOT_CASE_EVIDENCE")
++    return value
++
++
++class Create(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    title: str = Field(min_length=1, max_length=160)
++    player_id: UUID | None = None
++    track_id: UUID | None = None
++
++
++class Action(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=0)
++    kind: str = Field(pattern="^(note|issue|transition|quarantine|restore)$")
++    text: str = Field(default="", max_length=2000)
++    status: str | None = None
++
++
++def owner(role):
++    if role != "owner":
++        raise HTTPException(403, "OWNER_REQUIRED")
++
++
++def begin(session, identity):
++    if session.bind.dialect.name == "sqlite":
++        session.execute(text("BEGIN IMMEDIATE"))
++    else:
++        session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": UUID(identity).int % (2**63)})
++
++
++def replay(session, identity, request_hash, case_id=None):
++    old = session.get(StudioCaseEvent, identity)
++    if old:
++        if old.request_hash != request_hash or case_id and old.case_id != case_id:
++            raise HTTPException(409, "CASE_COMMAND_CONFLICT")
++        return value(session.get(StudioCase, old.case_id))
++
++
++@router.get("/v1/admin/cases")
++def list_cases(request: Request, role: Access, limit: int = Query(50, ge=1, le=100),
++               offset: int = Query(0, ge=0, le=10000), status: str | None = None):
++    with request.app.state.session_factory() as session:
++        query = select(StudioCase)
++        if status:
++            if status not in TRANSITIONS:
++                raise HTTPException(422, "INVALID_CASE_STATUS")
++            query = query.where(StudioCase.status == status)
++        rows = session.scalars(query.order_by(StudioCase.updated_at.desc(), StudioCase.id).offset(offset).limit(limit + 1)).all()
++        return {"items": [value(row) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
++
++
++@router.post("/v1/admin/cases")
++def create_case(payload: Create, request: Request, role: Access):
++    owner(role)
++    title = safe_text(payload.title, 160)
++    body = payload.model_dump(mode="json")
++    request_hash = digest(body)
++    identity = str(payload.command_id)
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash)
++        if result:
++            return result
++        for model, field in ((Player, payload.player_id), (Track, payload.track_id)):
++            if field and session.get(model, str(field)) is None:
++                raise HTTPException(404, "CASE_ENTITY_NOT_FOUND")
++        case = StudioCase(title=title, player_id=str(payload.player_id) if payload.player_id else None,
++            track_id=str(payload.track_id) if payload.track_id else None)
++        session.add(case)
++        session.flush()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor=role, kind="created",
++            detail={"title": title}, request_hash=request_hash))
++        session.commit()
++        return value(case)
++
++
++@router.get("/v1/admin/cases/{case_id}")
++def inspect_case(case_id: UUID, request: Request, role: Access):
++    with request.app.state.session_factory() as session:
++        case = session.get(StudioCase, str(case_id))
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        query = select(StudioCaseEvent).where(StudioCaseEvent.case_id == case.id)
++        # Case revision is a concurrency fence; event ID/time are source evidence.
++        rows = session.scalars(query.order_by(StudioCaseEvent.revision.desc()).limit(101)).all()
++        return {"case": value(case), "events": [{key: getattr(row, key) for key in
++            ("id", "actor", "kind", "revision", "detail", "created_at")} for row in rows[:100]],
++            "history_truncated": len(rows) > 100, "role": role,
++            "allowed_transitions": sorted(TRANSITIONS[case.status]),
++            "coverage": {"recovery": "unavailable", "production_compensation": "unavailable",
++                "quarantine": "case-linked track visibility, audited; restoration checks intervening moderation",
++                "staff_identity": "credential role; no individual SSO"}}
++
++
++@router.post("/v1/admin/cases/{case_id}/events")
++def append_event(case_id: UUID, payload: Action, request: Request, role: Access):
++    owner(role)
++    identity, request_hash = str(payload.command_id), digest(payload.model_dump(mode="json"))
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash, str(case_id))
++        if result:
++            return result
++        case = session.scalar(select(StudioCase).where(StudioCase.id == str(case_id)).with_for_update())
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        if case.revision != payload.expected_revision:
++            raise HTTPException(409, "STALE_CASE_REVISION")
++        if payload.kind in ("quarantine", "restore"):
++            if not case.track_id or payload.status is not None:
++                raise HTTPException(422, "TRACK_CASE_REQUIRED")
++            reason = safe_text(payload.text, 500)
++            track = session.scalar(select(Track).where(Track.id == case.track_id).with_for_update())
++            quarantine = session.get(StudioQuarantine, track.id)
++            if payload.kind == "quarantine":
++                if track.hidden or quarantine:
++                    raise HTTPException(409, "TRACK_ALREADY_RESTRICTED")
++                before = {"hidden": False}; track.hidden = True
++            else:
++                if not quarantine or quarantine.case_id != case.id or not track.hidden:
++                    raise HTTPException(409, "CASE_DOES_NOT_OWN_QUARANTINE")
++                # Never undo a later moderation action recorded by another workflow.
++                source = session.get(AdminAudit, quarantine.audit_id)
++                intervening = session.scalar(select(AdminAudit.id).where(AdminAudit.entity_id == track.id,
++                    AdminAudit.id != source.id, AdminAudit.created_at >= source.created_at,
++                    AdminAudit.action.in_(("track_visibility", "quarantine", "restore"))).limit(1))
++                if intervening:
++                    raise HTTPException(409, "INTERVENING_TRACK_MODERATION")
++                before = {"hidden": True}; track.hidden = False
++                session.delete(quarantine)
++            audit = AdminAudit(command_id=identity, actor=role, action=payload.kind, entity_id=track.id,
++                reason=reason, before=before, after={"hidden": track.hidden, "case_id": case.id},
++                request_hash=request_hash, request_id=request.state.request_id)
++            session.add(audit); session.flush()
++            if payload.kind == "quarantine":
++                session.add(StudioQuarantine(track_id=track.id, case_id=case.id, audit_id=audit.id))
++            detail = {"track_id": track.id, "audit_id": audit.id, "reason": reason, "hidden": track.hidden}
++        elif payload.kind == "transition":
++            if payload.status not in TRANSITIONS[case.status] or not payload.text:
++                raise HTTPException(409, "INVALID_CASE_TRANSITION")
++            detail = {"from": case.status, "to": payload.status, "reason": safe_text(payload.text, 2000)}
++            case.status = payload.status
++        elif payload.status is not None:
++            raise HTTPException(422, "UNEXPECTED_CASE_STATUS")
++        else:
++            detail = {"text": safe_text(payload.text, 2000)}
++            if payload.kind == "issue" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/#-]{0,159}", payload.text):
++                raise HTTPException(422, "INVALID_ISSUE_REFERENCE")
++        case.revision += 1
++        case.updated_at = now()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor=role, kind=payload.kind,
++            revision=case.revision, detail=detail, request_hash=request_hash))
++        session.commit()
++        return value(case)
++
++
++class Report(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    reason: str = Field(pattern="^(track_issue|abuse|billing_issue|technical_issue)$")
++    text: str = Field(min_length=1, max_length=2000)
++    track_id: UUID | None = None
++
++
++@router.post("/v1/reports")
++def player_report(payload: Report, request: Request, player: Auth):
++    identity = str(uuid5(NAMESPACE_URL, "bmt-report/" + player.id + "/" + str(payload.command_id)))
++    request_hash = digest(payload.model_dump(mode="json"))
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        result = replay(session, identity, request_hash)
++        if result:
++            return {"id": result["id"], "status": result["status"]}
++        if payload.track_id and session.get(Track, str(payload.track_id)) is None:
++            raise HTTPException(404, "TRACK_NOT_FOUND")
++        case = StudioCase(player_id=player.id, track_id=str(payload.track_id) if payload.track_id else None,
++            title=payload.reason.replace("_", " ").capitalize())
++        session.add(case); session.flush()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor="player", kind="reported",
++            detail={"reason": payload.reason, "text": safe_text(payload.text, 2000)}, request_hash=request_hash))
++        session.commit()
++        return {"id": case.id, "status": case.status}
++
++
++class Appeal(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=0)
++    text: str = Field(min_length=1, max_length=2000)
++
++
++@router.get("/v1/reports")
++def my_reports(request: Request, player: Auth):
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(StudioCase).where(StudioCase.player_id == player.id)
++            .where(select(StudioCaseEvent.id).where(StudioCaseEvent.case_id == StudioCase.id,
++                StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player").exists())
++            .order_by(StudioCase.updated_at.desc(), StudioCase.id).limit(51)).all()
++        return {"items": [{"id": row.id, "title": row.title, "status": row.status,
++            "revision": row.revision} for row in rows[:50]], "has_more": len(rows) > 50}
++
++
++@router.post("/v1/reports/{case_id}/appeal")
++def player_appeal(case_id: UUID, payload: Appeal, request: Request, player: Auth):
++    identity = str(uuid5(NAMESPACE_URL, "bmt-appeal/" + player.id + "/" + str(payload.command_id)))
++    hashed = digest({"case_id": str(case_id), **payload.model_dump(mode="json")})
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        case = session.scalar(select(StudioCase).where(StudioCase.id == str(case_id),
++            StudioCase.player_id == player.id,
++            select(StudioCaseEvent.id).where(StudioCaseEvent.case_id == StudioCase.id,
++                StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player").exists()).with_for_update())
++        if case is None:
++            raise HTTPException(404, "CASE_NOT_FOUND")
++        prior = replay(session, identity, hashed, case.id)
++        if prior:
++            return {"id": case.id, "status": case.status}
++        if case.status != "resolved" or case.revision != payload.expected_revision:
++            raise HTTPException(409, "CASE_NOT_APPEALABLE_REFRESH_REQUIRED")
++        case.status = "appealed"; case.revision += 1; case.updated_at = now()
++        session.add(StudioCaseEvent(id=identity, case_id=case.id, actor="player", kind="appealed",
++            revision=case.revision, detail={"text": safe_text(payload.text, 2000)}, request_hash=hashed))
++        session.commit()
++        return {"id": case.id, "status": case.status}
+--- /dev/null
++++ b/backend/bmt_backend/studio_competitions.py
+@@ -0,0 +1,177 @@
++"""Bounded read-only competition provenance; never invokes verification or scoring writes."""
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from sqlalchemy import select, text
++
++from .admin import Access
++from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .rivalry import POINTS, rankings
++from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
++from .studio import pinned_manifest
++from .track_models import Board, Run, RunTicket, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio competitions"])
++
++
++def snapshot(session):
++    if session.bind.dialect.name == "postgresql":
++        session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
++    else:
++        session.execute(text("BEGIN"))
++
++
++def record(row, fields):
++    return {field: getattr(row, field) for field in fields}
++
++
++@router.get("/v1/admin/competitions")
++def list_competitions(request: Request, role: Access, kind: str = "rivalry", limit: int = Query(50, ge=1, le=100)):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    model, fields = ((RivalryGroup, ("id", "week_start", "ends_at", "vehicle_id", "member_count", "archived"))
++        if kind == "rivalry" else (Challenge, ("id", "mode", "created_at", "ends_at", "member_count", "cancelled")))
++    with request.app.state.session_factory() as session:
++        rows = session.scalars(select(model).order_by(model.created_at.desc(), model.id).limit(limit + 1)).all()
++        return {"kind": kind, "items": [record(row, fields) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
++
++
++def proof(run, player_id, board, ticket):
++    problems = []
++    if run is None:
++        return ["SOURCE_RUN_UNAVAILABLE"]
++    if run.status != "verified":
++        problems.append("SOURCE_NOT_VERIFIED")
++    if run.player_id != player_id or board is None or run.board_id != board.id:
++        problems.append("SOURCE_CONTRACT_MISMATCH")
++    if ticket is None or ticket.player_id != player_id or ticket.board_id != run.board_id:
++        problems.append("SOURCE_TICKET_MISMATCH")
++    if type(run.time_ticks) is not int or run.time_ticks <= 0:
++        problems.append("SOURCE_TIME_UNAVAILABLE")
++    return problems
++
++
++@router.get("/v1/admin/competitions/{kind}/{identity}")
++def inspect_competition(kind: str, identity: UUID, request: Request, role: Access):
++    if kind not in ("rivalry", "challenge"):
++        raise HTTPException(422, "INVALID_COMPETITION_KIND")
++    with request.app.state.session_factory() as session:
++        snapshot(session)
++        entity = session.get(RivalryGroup if kind == "rivalry" else Challenge, str(identity))
++        if entity is None:
++            raise HTTPException(404, "COMPETITION_NOT_FOUND")
++        member_model = RivalryMember if kind == "rivalry" else ChallengeMember
++        member_field = member_model.group_id if kind == "rivalry" else member_model.challenge_id
++        members = session.execute(select(member_model, Player).join(Player).where(member_field == entity.id)
++            .order_by(Player.id).limit(201)).all()
++        if len(members) > 200:
++            raise HTTPException(409, "COMPETITION_ROSTER_EXCEEDS_INSPECTION_BUDGET")
++        if kind == "rivalry":
++            if not isinstance(entity.tracks, list) or len(entity.tracks) > 5:
++                raise HTTPException(409, "INVALID_PINNED_TRACK_LIST")
++            best_model = RivalryArchivedBest if entity.archived else RivalryBest
++            bests = list(session.scalars(select(best_model).where(best_model.group_id == entity.id).limit(1001)))
++            slots = entity.tracks
++            definition = record(entity, ("id", "week_start", "ends_at", "contract_key", "skill_band", "vehicle_id", "archived", "test_population"))
++        else:
++            bests = [member for member, _player in members if member.time_ticks is not None]
++            board = session.get(Board, entity.board_id)
++            if board is None:
++                raise HTTPException(409, "PINNED_BOARD_UNAVAILABLE")
++            slots = [{"board_id": board.id, "version_id": board.version_id, "tick_rate": board.manifest.get("tick_rate")}]
++            definition = record(entity, ("id", "board_id", "mode", "ends_at", "cancelled", "target_run_id", "target_ticks"))
++            definition.update(attempt_limit=getattr(entity, "attempt_limit", None),
++                attempt_limit_available=hasattr(entity, "attempt_limit"))
++        if len(bests) > 1000:
++            raise HTTPException(409, "COMPETITION_RESULTS_EXCEED_INSPECTION_BUDGET")
++        run_ids = {getattr(best, "run_id", None) for best in bests} - {None}
++        if kind == "challenge" and entity.target_run_id:
++            run_ids.add(entity.target_run_id)
++        runs = {row.id: row for row in session.scalars(select(Run).where(Run.id.in_(run_ids)))} if run_ids else {}
++        tickets = {row.id: row for row in session.scalars(select(RunTicket).where(RunTicket.id.in_(
++            [run.ticket_id for run in runs.values()]))) } if runs else {}
++        ticket_model = RivalryTicket if kind == "rivalry" else ChallengeTicket
++        bindings = {row.ticket_id: row for row in session.scalars(select(ticket_model).where(
++            ticket_model.ticket_id.in_(tickets)))} if tickets else {}
++        board_ids = {slot.get("board_id") for slot in slots} | {run.board_id for run in runs.values()}
++        boards = {row.id: row for row in session.scalars(select(Board).where(Board.id.in_(board_ids - {None})))}
++        roster = {player.id: {"player_id": player.id, "name": player.display_name, "is_test_driver": player.is_test_driver,
++            "disabled": player.disabled, "pre_round_skill": getattr(member, "skill", None),
++            "attempts_used": getattr(member, "attempts_used", None), "joined_at": member.joined_at,
++            "points": 0, "eligible_results": 0} for member, player in members}
++        results = []
++        for slot_index, slot in enumerate(slots):
++            rows = []
++            for best in bests:
++                if getattr(best, "slot", 0) != slot_index:
++                    continue
++                player = roster.get(best.player_id)
++                if player is None:
++                    continue
++                run = runs.get(getattr(best, "run_id", None))
++                board = boards.get(run.board_id) if run else boards.get(slot.get("board_id"))
++                problems = proof(run, best.player_id, board, tickets.get(run.ticket_id) if run else None)
++                if board and (board.version_id != slot.get("version_id") or board.id != slot.get("board_id")
++                        or kind == "rivalry" and board.vehicle_id != entity.vehicle_id):
++                    problems.append("PINNED_VERSION_MISMATCH")
++                binding = bindings.get(run.ticket_id) if run else None
++                seeded_target = kind == "challenge" and best.player_id == entity.creator_id and run and run.id == entity.target_run_id
++                if run and not seeded_target and (binding is None or
++                        (kind == "rivalry" and (binding.group_id != entity.id or binding.slot != slot_index)) or
++                        (kind == "challenge" and binding.challenge_id != entity.id)):
++                    problems.append("COMPETITION_TICKET_MISMATCH")
++                if run and not seeded_target and not (getattr(entity, "week_start", entity.created_at) <= run.created_at < entity.ends_at):
++                    problems.append("SUBMISSION_OUTSIDE_COMPETITION_WINDOW")
++                if run and run.time_ticks != best.time_ticks:
++                    problems.append("STORED_BEST_DIFFERS_FROM_SOURCE")
++                if player["disabled"] or player["is_test_driver"] and (kind == "challenge" or not entity.test_population):
++                    problems.append("PLAYER_NOT_COMPETITIVELY_ELIGIBLE")
++                tick_rate = board.manifest.get("tick_rate") if board else None
++                if type(tick_rate) is not int or not 0 < tick_rate <= 1000:
++                    problems.append("PINNED_TICK_RATE_UNAVAILABLE")
++                elif kind == "rivalry" and tick_rate != slot.get("tick_rate"):
++                    problems.append("PINNED_TICK_RATE_MISMATCH")
++                rows.append({"id": best.player_id, "player_id": best.player_id, "slot": slot_index, "run_id": getattr(best, "run_id", None),
++                    "stored_ticks": best.time_ticks, "ticks": run.time_ticks if not problems else None,
++                    "seconds": run.time_ticks / tick_rate if not problems and type(tick_rate) is int and tick_rate > 0 else None,
++                    "provenance": "accepted_run" if not problems else "unavailable_or_inconsistent",
++                    "problems": problems, "evidence_route": "/v1/admin/studio/races/" + run.id if run else None,
++                    "manifest": pinned_manifest(board)})
++            eligible = [row for row in rows if row["ticks"] is not None]
++            rankings(eligible, "ticks")
++            stored = [{"id": row["player_id"], "ticks": row["stored_ticks"]} for row in rows
++                if not roster[row["player_id"]]["disabled"] and type(row["stored_ticks"]) is int and row["stored_ticks"] > 0]
++            rankings(stored, "ticks")
++            stored_ranks = {row["id"]: row["rank"] for row in stored}
++            for row in rows:
++                row.setdefault("rank", None)
++                row["rank_from_stored_bests"] = stored_ranks.get(row["player_id"])
++                stored_rank = row["rank_from_stored_bests"]
++                row["points_from_stored_bests"] = POINTS[stored_rank - 1] if kind == "rivalry" and stored_rank and stored_rank <= len(POINTS) else 0
++                row["points"] = POINTS[row["rank"] - 1] if kind == "rivalry" and row["rank"] and row["rank"] <= len(POINTS) else 0
++                roster[row["player_id"]]["points"] += row["points"]
++                roster[row["player_id"]]["eligible_results"] += int(row["ticks"] is not None)
++            results.extend(rows)
++        ticket_field = ticket_model.group_id if kind == "rivalry" else ticket_model.challenge_id
++        attempts = session.execute(select(Run.status).join(ticket_model, ticket_model.ticket_id == Run.ticket_id)
++            .where(ticket_field == entity.id).order_by(Run.created_at, Run.id).limit(501)).all()
++        counts = {}
++        for (state,) in attempts[:500]:
++            counts[state] = counts.get(state, 0) + 1
++        target = None
++        if kind == "challenge" and entity.target_run_id:
++            run = runs.get(entity.target_run_id)
++            target = {"run_id": entity.target_run_id, "stored_ticks": entity.target_ticks,
++                "problems": proof(run, entity.creator_id, boards.get(entity.board_id), tickets.get(run.ticket_id) if run else None)}
++            if entity.mode == "beat" and run and run.time_ticks != entity.target_ticks:
++                target["problems"].append("STORED_TARGET_DIFFERS_FROM_SOURCE")
++        return {"kind": kind, "definition": definition, "roster": list(roster.values()), "results": results,
++            "target": target, "points_policy": list(POINTS) if kind == "rivalry" else None,
++            "attempt_states": counts, "attempts_truncated": len(attempts) > 500,
++            "as_of": now(), "role": role, "read_only": True,
++            "limits": ["Ranks/points recomputed from linked accepted evidence; inconsistencies do not mutate official results.",
++                "Archived timing without a retained run cannot prove original acceptance.",
++                "Ghosts and attempt count do not confer score eligibility; no verifier or proof-object reads.",
++                "Reward delivery is unavailable; no progression reward is inferred."]}
+--- a/backend/bmt_backend/telemetry.py
++++ b/backend/bmt_backend/telemetry.py
+@@ -10,6 +10,7 @@
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
++from . import quality
+ from .db import get_session
+ from .middleware import ParsedJSONRoute
+ from .security import current_player
+@@ -43,6 +44,7 @@
+     "collection_summary": {"dropped_events", "rejected_events", "persistence_failures"},
+     "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
+ }
++ALLOWED.update(quality.FIELDS)
+ REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
+     "save", "publish", "edit", "test", "open", "join", "create", "share"}
+ 
+@@ -75,6 +77,9 @@
+         raise ValueError("INVALID_EVENT")
+     result = {}
+     for key, item in value.items():
++        if name in quality.NAMES and key != "track_version_id":
++            result[key] = item
++            continue
+         if key in ("track_version_id", "ticket_id", "challenge_id"):
+             item = uuid_value(item)
+         elif key == "car_id":
+@@ -98,7 +103,7 @@
+         elif key == "reason" and item not in REASONS:
+             raise ValueError("INVALID_EVENT")
+         result[key] = item
+-    return result
++    return quality.validate(name, result) if name in quality.NAMES else result
+ 
+ 
+ class Batch(BaseModel):
+@@ -173,6 +178,8 @@
+                 raise ValueError("INVALID_EVENT")
+             name = raw["name"]
+             if not isinstance(name, str) or name not in ALLOWED:
++                raise ValueError("INVALID_EVENT")
++            if name in quality.NAMES and not request.app.state.settings.client_quality_enabled:
+                 raise ValueError("INVALID_EVENT")
+             occurred = integer(raw["occurred_at"], high=4102444800)
+             if occurred < at - MAX_AGE or occurred > at + FUTURE_ALLOWANCE:

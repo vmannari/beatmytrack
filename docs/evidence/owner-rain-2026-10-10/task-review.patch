@@ -1,0 +1,447 @@
+diff --git a/scripts/build_storm_rain.py b/scripts/build_storm_rain.py
+--- a/scripts/build_storm_rain.py
++++ b/scripts/build_storm_rain.py
+@@ -1,59 +1,41 @@
+-"""Fetch/master a cleared field-recorded rain loop; build tools only."""
++"""Master a short cyclic loop from the owner's rain recording; build tools only."""
+ from pathlib import Path
+-import argparse
+ import hashlib
+ import json
+-import urllib.request
+ import wave
+ import numpy as np
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ SOURCE = ROOT / "build/storm_rain_sources"
+ OUT = ROOT / "game/assets/audio/ambience"
+-PAGE = "https://freesound.org/people/jmbphilmes/sounds/200271/"
+-MEDIA = "https://cdn.freesound.org/previews/200/200271_2322692-hq.mp3"
++SOURCE_NAME = "dragon-studio-copyright-free-rain-sounds-331497.mp3"
+ RATE = 44100
+-SOURCE_SHA256 = "9150f775fea3c4aa020edff9174fb0d1a1d4c5cfe464a0ce6f3dd414065005be"
++SOURCE_SHA256 = "1142dde3666dad8d65e163eaca9292edcb7710afa4b81a9b7cbb93dab1a10e0c"
+ 
+ def main():
+-    parser = argparse.ArgumentParser()
+-    parser.add_argument("--fetch", action="store_true")
+-    args = parser.parse_args()
+     SOURCE.mkdir(parents=True, exist_ok=True)
+-    master = SOURCE / "rural-rain-200271.mp3"
+-    if args.fetch:
+-        html = urllib.request.urlopen(PAGE, timeout=30).read()
+-        if b"creativecommons.org/publicdomain/zero/1.0" not in html or b"jmbphilmes" not in html:
+-            raise ValueError("Expected CC0 recording/author metadata")
+-        (SOURCE / "rural-rain-license.html").write_bytes(html)
+-        if not master.exists():
+-            master.write_bytes(urllib.request.urlopen(MEDIA, timeout=45).read())
++    master = SOURCE / "owner-rain-331497.mp3"
+     data = master.read_bytes()
+     if hashlib.sha256(data).hexdigest()!=SOURCE_SHA256:
+         raise ValueError("Rain source hash changed; review the source before rebuilding")
+-    if args.fetch:
+-        print("Source pinned. Decode with scripts/dev.ps1 TestScript -ScriptPath res://tests/decode_storm_rain_source.gd, then rebuild without --fetch.")
+-        return
+-    decoded = SOURCE / "rural-rain-200271.f32"
+-    meta = json.loads((SOURCE/"rural-rain-200271.decode.json").read_text())
++    decoded = SOURCE / "owner-rain-331497.f32"
++    meta = json.loads((SOURCE/"owner-rain-331497.decode.json").read_text())
+     decoded_data = decoded.read_bytes()
+     if hashlib.sha256(decoded_data).hexdigest()!=meta['sha256']:
+         raise ValueError("Decoded recording hash differs from decoder receipt")
+     rate = int(meta['rate'])
+     source_values = np.frombuffer(decoded_data,dtype='<f4').astype(np.float64)
+-    # Four distinct areas of the rural recording merge individual local drops
+-    # into a broad rain field. No synthetic hiss or room/cavern reverb.
+-    count = round(25*rate)
+-    offsets = [8.0,18.37,34.13,49.79]
+-    if len(source_values)<round((offsets[-1]+25)*rate): raise ValueError("Rain recording is too short")
+-    values = sum(source_values[round(start*rate):round(start*rate)+count] for start in offsets)*0.25
++    if float(meta['start_seconds'])!=20.0 or float(meta['seconds'])!=21.0:
++        raise ValueError("Decode the chosen20-41s excerpt")
++    # Preserve the supplied texture: no EQ or added layers.
++    values = source_values
+     coordinates = np.arange(round(len(values)*RATE/rate),dtype=np.float64)*rate/RATE
+     values = np.interp(coordinates,np.arange(len(values),dtype=np.float64),values)
+-    hz = np.fft.rfftfreq(len(values),1/RATE)
+-    spectrum = np.fft.rfft(values)
+-    spectrum *= (1-np.exp(-(hz/100)**4))*np.exp(-(hz/2200)**4)
+-    values = np.fft.irfft(spectrum,n=len(values))
+-    values = np.tanh(values/max(np.sqrt(np.mean(values**2))*3.5,1e-8))
++    values -= values.mean()
++    # A few isolated source peaks otherwise force the whole rain bed inaudibly
++    # quiet. Gentle peak control retains the flow while matching the old level.
++    knee = max(np.sqrt(np.mean(values**2))*4.0,1e-8)
++    values = np.tanh(values/knee)*knee
+     overlap = RATE
+     ramp = .5-.5*np.cos(np.linspace(0,np.pi,overlap))
+     joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
+@@ -68,10 +50,12 @@
+         handle.writeframes(pcm.tobytes())
+     settings = target.with_suffix('.wav.import')
+     if not settings.exists(): settings.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding='utf-8')
+-    manifest = dict(file=target.name,source=PAGE,download=MEDIA,author='jmbphilmes',license='CC0-1.0',
+-        source_sha256=hashlib.sha256(data).hexdigest(),decoded_sha256=meta['sha256'],quality='public HQ MP3 preview decoded by pinned Godot 4.7.2',sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
++    manifest = dict(file=target.name,source='Owner-supplied local MP3,2026-10-10',source_filename=SOURCE_NAME,
++        author='Dragon Studio (filename attribution)',license='Owner-supplied; original licence metadata not provided',
++        source_sha256=hashlib.sha256(data).hexdigest(),decoded_sha256=meta['sha256'],quality='owner MP3 decoded by pinned Godot4.7.2',sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
++        source_seconds=meta['source_seconds'],source_start_seconds=20,source_excerpt_seconds=21,
+         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
+-        edits='four 25s rural rain regions (8/18.37/34.13/49.79s) mixed; mono; 44.1kHz; 100Hz-2.2kHz distance softening; soft transient limiting; 1s cyclic crossfade; RMS .055, peak cap .30',
++        edits='20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s cosine cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers',
+         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+     (OUT/'storm_rain_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+     print(json.dumps(manifest,indent=2))
+diff --git a/game/tests/decode_storm_rain_source.gd b/game/tests/decode_storm_rain_source.gd
+--- a/game/tests/decode_storm_rain_source.gd
++++ b/game/tests/decode_storm_rain_source.gd
+@@ -1,12 +1,23 @@
+ extends SceneTree
+-## Offline build tooling: decode the cleared public rural-rain preview.
++## Offline build tooling; optionally decode only a bounded owner-selected region.
+ func _initialize() -> void:
+ 	var path: String = "res://../build/storm_rain_sources/rural-rain-200271"
++	var start_seconds: float = 0.0
++	var duration: float = 0.0
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--source-base="): path = "res://../build/storm_rain_sources/"+argument.trim_prefix("--source-base=")
++		if argument.begins_with("--start-seconds="): start_seconds = argument.trim_prefix("--start-seconds=").to_float()
++		if argument.begins_with("--seconds="): duration = argument.trim_prefix("--seconds=").to_float()
+ 	var stream := AudioStreamMP3.new()
+ 	stream.data = FileAccess.get_file_as_bytes(path+".mp3")
+ 	var playback: AudioStreamPlayback = stream.instantiate_playback()
+-	playback.start()
+-	var samples: PackedVector2Array = playback.mix_audio(1.0,ceili(stream.get_length()*AudioServer.get_mix_rate()))
++	if duration<=0.0: duration = stream.get_length()-start_seconds
++	if start_seconds<0.0 or duration<=0.0 or start_seconds+duration>stream.get_length():
++		push_error("Requested region is outside the recording")
++		quit(1)
++		return
++	playback.start(start_seconds)
++	var samples: PackedVector2Array = playback.mix_audio(1.0,ceili(duration*AudioServer.get_mix_rate()))
+ 	var bytes := PackedByteArray()
+ 	bytes.resize(samples.size()*4)
+ 	for i: int in range(samples.size()): bytes.encode_float(i*4,(samples[i].x+samples[i].y)*0.5)
+@@ -14,7 +25,7 @@
+ 	file.store_buffer(bytes)
+ 	file.close()
+ 	var meta := FileAccess.open(path+".decode.json",FileAccess.WRITE)
+-	meta.store_string(JSON.stringify({"rate":AudioServer.get_mix_rate(),"frames":samples.size(),"seconds":stream.get_length(),"sha256":FileAccess.get_sha256(path+".f32")}))
++	meta.store_string(JSON.stringify({"rate":AudioServer.get_mix_rate(),"frames":samples.size(),"seconds":duration,"source_seconds":stream.get_length(),"start_seconds":start_seconds,"sha256":FileAccess.get_sha256(path+".f32")}))
+ 	meta.close()
+ 	print("RURAL_RAIN_DECODE: %d frames at %d Hz"%[samples.size(),AudioServer.get_mix_rate()])
+ 	quit()
+diff --git a/game/tests/capture_rain_presence.gd b/game/tests/capture_rain_presence.gd
+--- a/game/tests/capture_rain_presence.gd
++++ b/game/tests/capture_rain_presence.gd
+@@ -1,6 +1,8 @@
+ extends SceneTree
+ ## Actual race presentation, held speed, default music, raw rain and engine references.
+ const OUT: String = "res://../docs/evidence/rain-presence-2026-10-09"
++var evidence_dir: String = OUT
++var verify_loop: bool = false
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -16,7 +18,10 @@
+ 	if DisplayServer.get_name()=="headless":
+ 		quit(1)
+ 		return
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): evidence_dir = argument.trim_prefix("--evidence-dir=")
++		if argument=="--capture-loop": verify_loop = true
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
+ 	var game: Node = load("res://core/game.tscn").instantiate()
+ 	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+ 	game.initial_track.metadata.theme = "storm"
+@@ -47,7 +52,9 @@
+ 		AudioServer.add_bus_effect(index,record)
+ 		records.append(record)
+ 	var rows: Array[Dictionary] = []
+-	for scene: String in ["before","after","paused","muted"]:
++	var scenes: Array[String] = ["before","after","paused","muted"]
++	if verify_loop: scenes.append("loop")
++	for scene: String in scenes:
+ 		game.paused = scene=="paused"
+ 		AudioServer.set_bus_mute(AudioServer.get_bus_index("Vehicle"),scene=="muted")
+ 		# A separate parent gain reproduces .13 without racing the player's
+@@ -67,7 +74,9 @@
+ 		check(float(game.vehicle_audio.levels.road)==0 and not game.vehicle_audio.streams.has("wet_road"),"wet rolling stays deferred: "+scene)
+ 		for record: AudioEffectRecord in records: record.set_recording_active(true)
+ 		elapsed = 0.0
+-		var duration: float = 3.0 if scene in ["before","after"] else 1.0
++		var duration: float = weather.rain_audio.stream.get_length()+2.0 if scene=="loop" else 3.0 if scene in ["before","after"] else 1.0
++		var previous_cursor: float = weather.rain_audio.get_playback_position()
++		var wraps: int = 0
+ 		while elapsed<duration:
+ 			await process_frame
+ 			game.paused = scene=="paused"
+@@ -76,11 +85,15 @@
+ 			GameSoundtrack.instance()._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
+ 			game._process(root.get_process_delta_time())
+ 			elapsed += root.get_process_delta_time()
++			var cursor: float = weather.rain_audio.get_playback_position()
++			if cursor+.5<previous_cursor: wraps += 1
++			previous_cursor = cursor
+ 		for i: int in range(records.size()):
+ 			records[i].set_recording_active(false)
+-			check(records[i].get_recording().save_to_wav(OUT.path_join(scene+"-"+names[i]+".wav"))==OK,"native race audio: "+scene+" "+names[i])
+-		rows.append({"scene":scene,"rain_gain":weather.rain_gain,"rain_review_gain":AudioServer.get_bus_volume_linear(source_bus),"paused":game.paused,"music_mode":GameSoundtrack.instance().mode,"music_bus_gain":AudioServer.get_bus_volume_linear(AudioServer.get_bus_index("Music"))})
+-	var file := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++			check(records[i].get_recording().save_to_wav(evidence_dir.path_join(scene+"-"+names[i]+".wav"))==OK,"native race audio: "+scene+" "+names[i])
++		if scene=="loop": check(wraps>=1,"actual owner rain crosses a native loop boundary")
++		rows.append({"scene":scene,"rain_gain":weather.rain_gain,"rain_review_gain":AudioServer.get_bus_volume_linear(source_bus),"paused":game.paused,"music_mode":GameSoundtrack.instance().mode,"music_bus_gain":AudioServer.get_bus_volume_linear(AudioServer.get_bus_index("Music")),"rain_wraps":wraps})
++	var file := FileAccess.open(evidence_dir.path_join("capture.json"),FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(rows,"\t")+"\n")
+ 	file.close()
+ 	game.paused = true
+diff --git a/scripts/review_rain_presence.py b/scripts/review_rain_presence.py
+--- a/scripts/review_rain_presence.py
++++ b/scripts/review_rain_presence.py
+@@ -4,10 +4,13 @@
+ import json
+ import math
+ import wave
++import argparse
+ import numpy as np
+ 
+ ROOT=Path(__file__).resolve().parents[1]
+-OUT=ROOT/'docs/evidence/rain-presence-2026-10-09'
++parser=argparse.ArgumentParser()
++parser.add_argument('--evidence-dir',type=Path,default=ROOT/'docs/evidence/rain-presence-2026-10-09')
++OUT=parser.parse_args().evidence_dir
+ def read(path):
+     with wave.open(str(path)) as handle:
+         rate=handle.getframerate();channels=handle.getnchannels()
+@@ -46,7 +49,7 @@
+ report['preserved']=[{'path':p,'matches':hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==digest} for p,digest in previous.items()]
+ if not all(row['matches'] for row in report['preserved']): report['failures'].append('Rain source, deferred wet mixer or wishlist changed')
+ (OUT/'review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+-cards=''.join('<article><h2>'+label+'</h2><audio controls preload="metadata" src="'+name+'.wav"></audio></article>' for label,name in [('Previous rain level with engine and music','before-mix'),('Stronger distant rain with engine and music','after-mix'),('Distant rain alone at the revised level','after-rain')])
++cards=''.join('<article><h2>'+label+'</h2><audio controls preload="metadata" src="'+name+'.wav"></audio></article>' for label,name in [('Quiet reference with engine and music','before-mix'),('Current rain with engine and music','after-mix'),('Rain alone at the current playback level','after-rain')])
+ (OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Distant rain presence</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}audio{width:100%}</style><h1>Distant rain presence</h1><p>Actual race presentation at a held86.4km/h, with default engine/music settings. Wet road rolling remains disabled. The same soft rain recording plays at the stronger level.</p>'+cards,encoding='utf-8')
+ print(json.dumps(report,indent=2))
+ raise SystemExit(bool(report['failures']))
+diff --git a/game/assets/audio/ambience/storm_rain_manifest.json b/game/assets/audio/ambience/storm_rain_manifest.json
+--- a/game/assets/audio/ambience/storm_rain_manifest.json
++++ b/game/assets/audio/ambience/storm_rain_manifest.json
+@@ -1,19 +1,22 @@
+ {
+   "file": "storm_rain_recorded.wav",
+-  "source": "https://freesound.org/people/jmbphilmes/sounds/200271/",
+-  "download": "https://cdn.freesound.org/previews/200/200271_2322692-hq.mp3",
+-  "author": "jmbphilmes",
+-  "license": "CC0-1.0",
+-  "source_sha256": "9150f775fea3c4aa020edff9174fb0d1a1d4c5cfe464a0ce6f3dd414065005be",
+-  "decoded_sha256": "9c69cb09b8a56756a10fcc1cf2a10b360475dc91a7bf761931a5f74dc1e73fc5",
+-  "quality": "public HQ MP3 preview decoded by pinned Godot 4.7.2",
+-  "sha256": "45333e5c5b6b23e75ac063a54d763e8cb49b57af9cf6e1b5885426daad75b7a6",
++  "source": "Owner-supplied local MP3,2026-10-10",
++  "source_filename": "dragon-studio-copyright-free-rain-sounds-331497.mp3",
++  "author": "Dragon Studio (filename attribution)",
++  "license": "Owner-supplied; original licence metadata not provided",
++  "source_sha256": "1142dde3666dad8d65e163eaca9292edcb7710afa4b81a9b7cbb93dab1a10e0c",
++  "decoded_sha256": "940366d7ab39a8d5d26006699cb9234ace216cf2046577ae636b0ef2e1b6a1ec",
++  "quality": "owner MP3 decoded by pinned Godot4.7.2",
++  "sha256": "3bed8b7e81b1a278c55dc1eb39a8b8dd4b890fa252e6bc08372513f730a15dcc",
++  "source_seconds": 467.826934814453,
++  "source_start_seconds": 20,
++  "source_excerpt_seconds": 21,
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+-  "seconds": 24.0,
+-  "bytes": 2116844,
+-  "edits": "four 25s rural rain regions (8/18.37/34.13/49.79s) mixed; mono; 44.1kHz; 100Hz-2.2kHz distance softening; soft transient limiting; 1s cyclic crossfade; RMS .055, peak cap .30",
++  "seconds": 20.0,
++  "bytes": 1764044,
++  "edits": "20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s cosine cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers",
+   "rms_dbfs": -25.19274621011512,
+-  "peak_dbfs": -14.17697085211036
++  "peak_dbfs": -12.329963923527119
+ }
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -8,16 +8,15 @@
+ No runtime downloads or external audio services.
+ 
+ 
+-storm_rain_recorded.wav: "Rain light 1 (rural)" by jmbphilmes, Freesound sound 200271.
+-https://freesound.org/people/jmbphilmes/sounds/200271/
+-CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
++storm_rain_recorded.wav: owner-supplied dragon-studio-copyright-free-rain-sounds-331497.mp3,2026-10-10.
++Filename attribution: Dragon Studio. Original licence metadata was not supplied;
++the filename is not a verified CC0 licence statement. Local use/edit is at the
++owner's explicit request. Source and decoded hashes: storm_rain_manifest.json.
+ 
+-Outdoor rural rain field recording, public HQ MP3 preview decoded offline by
+-pinned Godot 4.7.2. Four25-second regions mixed into diffuse rainfall, mono
+-44.1kHz16-bit PCM,100Hz-2.2kHz distance softening, soft transient limiting and
+-one-second cyclic crossfade into a24-second loop. Quiet Vehicle playback .55.
+-This overhead perspective is sound design from a ground recording, not an
+-aerial recording. Source/decoded/derivative hashes: storm_rain_manifest.json;
+-rebuild: scripts/build_storm_rain.py and tests/decode_storm_rain_source.gd.
+-No runtime download or external audio service. Earlier close-rain recording
+-by Joseph SARDIN is retained only as historical evidence outside exports.
++Only20-41s is decoded from the467.827-second MP3. Mono44.1kHz16-bit PCM,
++DC removal, gentle rare-peak control, level matching and one-second cyclic
++crossfade produce a20-second loop. No EQ or added rain layers. Existing0.55
++Vehicle playback and pause/finish lifecycle retained. Rebuild:
++scripts/build_storm_rain.py; bounded decoder: tests/decode_storm_rain_source.gd.
++No runtime download, AI or external audio service. Earlier source assets and
++provenance remain in export-excluded build storage and historical evidence.
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -1,8 +1,8 @@
+ # Storm wet-asphalt tire rolling, 2026-10-09
+ 
+ Current state: the owner rejected wet rolling and moved it to the wishlist.
+-Storm asphalt rolling is disabled; distant rain now has stronger background
+-presence at 0.55 gain after the owner could not hear the earlier 0.13 mix. The
++Storm asphalt rolling is disabled; the owner-supplied rain now plays as a
++20-second loop at 0.55 gain. The
+ implementation history below is superseded by the final deferral section.
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+@@ -324,3 +324,60 @@
+ backend or deployment. Owner audible-background/distant-texture approval and
+ device/music listening remain; the two earlier visual spray failures remain
+ outside this gain-only change.
++
++## Owner-supplied rain loop, 2026-10-10
++
++The owner provides `dragon-studio-copyright-free-rain-sounds-331497.mp3` and
++requests a shorter loop. SND26 replaces the rain recording while preserving
++SND24 wet-tire deferral and SND25 playback/lifecycle. Only the 20–41-second
++section of the 467.827-second recording is decoded. A one-second cosine cyclic
++crossfade gives a 20-second mono 44.1 kHz/16-bit PCM loop. DC removal, gentle
++rare-peak control and level matching preserve the supplied texture without EQ
++or added layers. The first peak-capped candidate was too quiet (-41.37 dBFS)
++and is retained; the final loop matches the prior -25.193 dBFS asset RMS.
++
++Final WAV 1,764,044 bytes/SHA256
++`3bed8b7e81b1a278c55dc1eb39a8b8dd4b890fa252e6bc08372513f730a15dcc`.
++Original MP3 SHA256
++`1142dde3666dad8d65e163eaca9292edcb7710afa4b81a9b7cbb93dab1a10e0c`;
++decoded excerpt hash is in the shipping manifest. Original Downloads file is
++unchanged. Source copy/decoded excerpt and previous rain assets remain in
++export-excluded build/evidence storage. Attribution is recorded from the
++filename as Dragon Studio; no CC0/other licence is inferred from the filename,
++and no licence document was supplied. Local use/edit is explicitly requested.
++
++Changed files: `scripts/build_storm_rain.py`,
++`scripts/review_owner_rain.py`, `scripts/review_rain_presence.py`,
++`game/tests/decode_storm_rain_source.gd`, `game/tests/capture_rain_presence.gd`,
++`game/assets/audio/ambience/{storm_rain_recorded.wav,storm_rain_recorded.wav.import,storm_rain_manifest.json,NOTICE.txt}`,
++this page, `licenses/ASSETS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++No runtime code/gain, camera, physics, UI, backend or dependency changes.
++
++Actual pinned `scripts/dev.ps1` commands and outcomes:
++
++- Source copied from the owner's explicitly named Downloads MP3 into
++  `build/storm_rain_sources/owner-rain-331497.mp3`; hash pinned.
++- `TestScript -ScriptPath res://tests/decode_storm_rain_source.gd` with
++  `--source-base=owner-rain-331497 --start-seconds=20 --seconds=21`:
++  926,100 mono float frames at 44.1 kHz, exit 0. Full recording not decoded.
++- `python scripts/build_storm_rain.py`: final and repeat offline builds have
++  identical SHA256. `Import`: exit 0. Initial same-path delete/add patch was
++  rejected before file edits; ordinary update patch succeeds.
++- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`: 39 checks,
++  zero failures.
++- `TestScript -ScriptPath res://tests/capture_rain_presence.gd -Graphical` with
++  `--evidence-dir=res://../docs/evidence/owner-rain-2026-10-10 --capture-loop`:
++  33 checks, zero failures, actual owner-rain playback wrap captured.
++- `python scripts/review_rain_presence.py --evidence-dir
++  docs/evidence/owner-rain-2026-10-10`: zero failures; default engine/music mix,
++  rain 10.061 dB below engine, paused PCM zero, mute leaves only music.
++- `python scripts/review_owner_rain.py`: zero failures; 20-second asset,
++  repeated seams and actual native loop have zero dropout windows; one native
++  wrap. All 47 vehicle WAVs, playback gains, wet mixer and wishlist hashes match
++  the actual before-task snapshot.
++
++Evidence/scoped patch: `docs/evidence/owner-rain-2026-10-10/`.
++[Repeatable loop preview](evidence/owner-rain-2026-10-10/loop-review.html).
++No phone attachment check, physical-device listening, APK export/install,
++full Validate, backend or deployment. Owner listening and device acceptance
++remain; previous storm visual spray failures are outside this audio asset change.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -151,3 +151,6 @@
+ Distant storm rain (2026-10-09): active `game/assets/audio/ambience/storm_rain_recorded.wav` now derives from "Rain light 1 (rural)" by jmbphilmes, Freesound200271, CC0-1.0: https://freesound.org/people/jmbphilmes/sounds/200271/ . Public HQ MP3 preview decoded offline by pinned Godot4.7.2; four distinct recorded regions mixed,100Hz-2.2kHz softening/transient limiting,24s cyclic PCM loop. Designed overhead perspective from a ground recording. Source/decoded/derivative hashes and notices retained; prior Joseph SARDIN close-rain asset remains historical evidence outside exports. All47 vehicle WAVs unchanged; no purchase/runtime service/new dependency/camera change. Rebuild and actual listening evidence: `docs/WET_ROAD_AUDIO.md` (distant rain).
+ 
+ Windows shared body output v3 (2026-10-09): original native/windows_audio/impact.cpp now handles the existing chassis clip alongside three impacts. Existing Godot bindings/MinGW runtime notices remain under game/platform/windows; no new asset/dependency. DLL1478013bytes/SHA-256 B01F6479DCFEF435B95390B6B8F2491F6510917E350A723AF8097ABB2AC8570E. All47 vehicle WAVs match their manifest; Android content excludes this Windows adapter. Build/test/evidence: docs/SHARED_BODY_AUDIO_TIMING.md.
++
++
++Owner-supplied storm rain (2026-10-10): `game/assets/audio/ambience/storm_rain_recorded.wav` now derives from the explicitly provided `dragon-studio-copyright-free-rain-sounds-331497.mp3`. Attribution recorded from filename: Dragon Studio; original licence metadata not supplied, and no CC0 licence inferred. Source MP3 hash1142dde3/decoded excerpt/derivative3bed8b7e pinned in `storm_rain_manifest.json`. Only20-41s is decoded; mono44.1kHz PCM/DC/rare-peak control/level matching/1s cosine cyclic crossfade yields20s loop. Original file untouched; source copy and older masters outside exports. No EQ/added layers/runtime AI or downloads/new dependencies. Actual edit, commands, review and acceptance: `docs/WET_ROAD_AUDIO.md` (owner loop).
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND26/SND24-SND25/SND05/G01/R01/Q01/V06: owner-provided Dragon Studio rain MP3 now supplies storm background; only20-41s of467.827s decoded,1s cyclic crossfade gives20s/1764044bytes/3bed8b7e loop. Gentle rare-peak control matches prior RMS/0.55 gain, no EQ/added layers; original untouched/source-excerpt/old assets retained, filename attribution/licence metadata explicit. Final offline rebuild/import/focused39/native33/source+native loop/mix reviews pass; one actual wrap/no gaps/paused zero/default music present, rain10.061dB below engine. First quiet peak-capped candidate retained; rejected same-path patch changed no files. All47 vehicle WAVs/wet mixer/gain/wishlist hashes exact. No phone attachment/device listening/APK export-install/full Validate/backend/deploy. Files/commands/audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (owner loop).
++
+ 2026-10-10 B01/B07/R01/Q01: owner supplies Android OAuth ID; existing login deployment authorization used for config-only correction. Exact supplied Android client added to development API-worker/migrate-smoke-catalog; Web client and image61b0accb retained/all five audited. Private deployment/rendered env updated; live readiness200/challenge201/invalidtoken401/Webclient-preserved pass. Prior signed crypto11 verifies knownAndroid presenter acceptance and unknown rejection. No image/schema/reseed/player-write/APK/install/phone-attachment/new-device-login/fullregression action; actual user Google retry remains pending. Commands/receipts/scoped checkpoint/remaining acceptance: docs/NATIVE_GOOGLE_SIGN_IN.md.
+ 
+ 2026-10-09 VF05-VF09/B05/B07/Q01/R01/WR07-WR08/CH09: owner explicitly approves backend update. Exact-parent development rollout61b0accb rebases over native-Google190ef673/histogramda0ab3da; all unrelated backend files/histogram ASTs/112 packaged game files except named verifier/generator changes preserved. Fresh successful backup1791576838378/old queue empty; API-worker/migrate-smoke-catalog images updated, no migration/reseed/resource resize/score reset/production action. Live capabilitytrajectory-v1/ready0020/compatible worker; deployed12757-tick five-lap check2.231035ms/zero acceptance engine calls, storage2objects cleanup/results route retained. Static geometry28tracks/19.729s/zero player-score writes; oneCPUrebase median1.108/p951.421ms. Initial TLS read retries/exact smoke-context refusal/concurrent parent refusal reconciled and retested. No new player race or device complete-race acceptance; restart active client for new capabilities. Actual commands/receipts/scoped checkpoint/remaining load-device acceptance: docs/TRAJECTORY_VERIFICATION.md (Approved development deployment).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1435,3 +1435,8 @@
+ ## Distant rain presence correction, 2026-10-09
+ 
+ 2026-10-09 SND25/SND22-SND24/SND05/G01/R01/Q01/V06: owner cannot hear rain; existing distant field gain0.13-to0.55/native+12.524dB now10.098dB below engine with default race music. Soft rain WAV/deferred wet mixer/wishlist hashes exact; fade/pause/focus/finish retained. Focused39/actualGame-presentation native26/review checks pass; paused PCM zero and Vehicle mute matches remaining0.7-gain music within0.022dB. Held86.4km/h fixture is not a completed/player-driven race. Initial parser/desktop auto-pause/paused getter/pre-volume comparison corrected and receipts retained; automatic review timeout retry succeeds. No phone attachment/device listening/APK export-install/full Validate/physics/backend/deployment. Commands/files/listening/scoped checkpoint/owner acceptance: docs/WET_ROAD_AUDIO.md (rain presence).
++
++
++## Owner-supplied storm rain loop, 2026-10-10
++
++2026-10-10 SND26/SND24-SND25/SND05/G01/R01/Q01/V06: owner-provided Dragon Studio rain MP3 now supplies storm background; only20-41s of467.827s decoded,1s cyclic crossfade gives20s/1764044bytes/3bed8b7e loop. Gentle rare-peak control matches prior RMS/0.55 gain, no EQ/added layers; original untouched/source-excerpt/old assets retained, filename attribution/licence metadata explicit. Final offline rebuild/import/focused39/native33/source+native loop/mix reviews pass; one actual wrap/no gaps/paused zero/default music present, rain10.061dB below engine. First quiet peak-capped candidate retained; rejected same-path patch changed no files. All47 vehicle WAVs/wet mixer/gain/wishlist hashes exact. No phone attachment/device listening/APK export-install/full Validate/backend/deploy. Files/commands/audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (owner loop).
+diff --git a/scripts/review_owner_rain.py b/scripts/review_owner_rain.py
+--- /dev/null
++++ b/scripts/review_owner_rain.py
+@@ -0,0 +1,43 @@
++"""Owner rain loop, repeated seams, playback continuity and a listening preview."""
++from pathlib import Path
++import hashlib
++import json
++import wave
++import numpy as np
++from test_vehicle_audio_continuity import measure
++
++ROOT=Path(__file__).resolve().parents[1]
++OUT=ROOT/'docs/evidence/owner-rain-2026-10-10'
++ASSET=ROOT/'game/assets/audio/ambience/storm_rain_recorded.wav'
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate=handle.getframerate();channels=handle.getnchannels()
++        pcm=np.frombuffer(handle.readframes(handle.getnframes()),dtype='<i2').astype(np.float64)/32768.0
++    return pcm.reshape(-1,channels),rate
++values,rate=read(ASSET)
++report={'asset':measure(np.tile(values,(3,1)),rate),'failures':[]}
++report['seconds']=len(values)/rate
++steps=np.abs(np.diff(values,axis=0))
++report['seam_step']=float(np.max(np.abs(values[0]-values[-1])))
++report['reference_step']=float(np.quantile(steps,.9995))
++if report['seconds']!=20: report['failures'].append('Expected20-second loop')
++if report['asset']['dropout_windows']!=0: report['failures'].append('Embedded gap or seam dropout')
++if report['seam_step']>report['reference_step']*1.5+2/32768: report['failures'].append('Discontinuous loop boundary')
++native,native_rate=read(OUT/'loop-rain.wav')
++report['native']=measure(native,native_rate)
++if report['native']['dropout_windows']!=0: report['failures'].append('Native playback contains a gap')
++capture=json.loads((OUT/'capture.json').read_text())
++report['native_wraps']=next(row['rain_wraps'] for row in capture if row['scene']=='loop')
++if report['native_wraps']<1: report['failures'].append('No actual playback wrap')
++manifest=json.loads((ROOT/'game/assets/audio/ambience/storm_rain_manifest.json').read_text())
++if hashlib.sha256(ASSET.read_bytes()).hexdigest()!=manifest['sha256']: report['failures'].append('Asset differs from pinned master')
++hashes=json.loads((OUT/'before/preserved-hashes.json').read_text())
++report['preserved']=[{'path':p,'matches':hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==digest} for p,digest in hashes.items()]
++if not all(row['matches'] for row in report['preserved']): report['failures'].append('Existing playback gain/vehicle/WAV/wishlist changed')
++with wave.open(str(OUT/'owner-rain-loop.wav'),'wb') as handle:
++    handle.setnchannels(1);handle.setsampwidth(2);handle.setframerate(rate)
++    handle.writeframes(np.rint(values*.55*32767).astype('<i2').tobytes())
++(OUT/'loop-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++(OUT/'loop-review.html').write_text('<!doctype html><meta charset="utf-8"><title>Owner rain loop</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}audio{width:100%}</style><h1>Your rain recording:20-second loop</h1><p>The20–41-second source section is shortened with a one-second crossfade. This player repeats the loop at the game playback level.</p><audio controls loop preload="metadata" src="owner-rain-loop.wav"></audio><p><a href="review.html">Listen with engine and music</a></p>',encoding='utf-8')
++print(json.dumps({k:v for k,v in report.items() if k!='preserved'},indent=2))
++raise SystemExit(bool(report['failures']))

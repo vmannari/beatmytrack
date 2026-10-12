@@ -1,0 +1,314 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -67,6 +67,7 @@
+ var _cloud_catalog_state: Array = []
+ var _page_dirty: bool = false
+ var _detail_state: Array = []
++var _comparison_view_key: String = ""
+ var _detail_loading: bool = false
+ const COMPARISON_NOTICE_DELAY_MS: int = 2500
+ var _detail_wait_started: int = 0
+@@ -693,10 +694,17 @@
+ 		_detail_wait_started = Time.get_ticks_msec()
+ 		_reveal_slow_comparison(request_key)
+ 	cloud.client.cancel_public_reads(get_instance_id())
++	var snapshot: Dictionary = discovery.record_snapshot(key)
++	var had_comparison: bool = _comparison_ready(snapshot)
++	var preloader = discovery.comparisons
++	var warmed: Dictionary = preloader.peek(str(track.metadata.cloud_version),vehicle)
++	if not had_comparison and warmed.get("packet") is Dictionary and _apply_cloud_comparison(snapshot,warmed.packet,track):
++		for field: String in ["friends","board_error"]:
++			if warmed.has(field): snapshot[field] = warmed[field]
++		discovery.remember_record(key,snapshot)
+ 	# The score list and distributions are independent. Neither read waits for
+ 	# the other, and neither holds the already resolved hero offscreen.
+ 	_load_cloud_leaderboard(track,serial,vehicle,key)
+-	var snapshot: Dictionary = discovery.record_snapshot(key)
+ 	if snapshot.get("comparison_scope","") != "all" or int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
+ 		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
+ 	if cloud.client.signed_in():
+@@ -706,10 +714,8 @@
+ 		if int(local.get("flying_ms",0)) > 0: path += "&lap_ticks=%d" % roundi(float(local.flying_ms)*VehicleSimulation.TICK_RATE/1000.0)
+ 		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
+ 		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
+-		var preloader = discovery.comparisons
+-		var warmed: Dictionary = preloader.peek(str(track.metadata.cloud_version),vehicle)
+ 		var comparison: Dictionary
+-		var needs_overlay: bool = int(local.get("race_ms",0)) > 0 or int(local.get("flying_ms",0)) > 0 or _comparison_ready(snapshot)
++		var needs_overlay: bool = int(local.get("race_ms",0)) > 0 or int(local.get("flying_ms",0)) > 0 or had_comparison
+ 		if not needs_overlay and (warmed.has("packet") or preloader.pending(str(track.metadata.cloud_version),vehicle)):
+ 			warmed = await preloader.fetch(str(track.metadata.cloud_version),vehicle)
+ 			comparison = {"ok":warmed.has("packet"),"data":warmed.get("packet",{})}
+@@ -929,6 +935,8 @@
+ 		if is_instance_valid(race_button): race_button.disabled = true
+ 		return
+ 	_prepare_outgoing_section()
++	var comparison_view_key: String = JSON.stringify([cloud_version if not cloud_version.is_empty() else key,VehicleCatalog.selected,_comparison_scope() if cloud != null else ""])
++	var retained_distribution: VBoxContainer = _retain_comparison_view(comparison_view_key,snapshot)
+ 	_clear(detail)
+ 	var row := HBoxContainer.new()
+ 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -962,37 +970,8 @@
+ 		if int(pb.get("flying_ms",0)) > 0:
+ 			personal_body.add_child(MenuStyle.label("Best lap  "+MenuStyle.time_text(float(pb.flying_ms)/1000.0),16,true))
+ 	row.add_child(VSeparator.new())
+-	var distribution := VBoxContainer.new()
+-	distribution.name = "RaceComparison"
+-	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	distribution.size_flags_stretch_ratio = 1.4
+-	distribution.add_theme_constant_override("separation",2)
+-	row.add_child(distribution)
+-	_heading(distribution,"WHERE YOU STAND","podium")
+-	var distribution_body: VBoxContainer = _section_body(distribution)
+-	var charts := HBoxContainer.new()
+-	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	charts.add_theme_constant_override("separation",8)
+-	distribution_body.add_child(charts)
+-	for metric: String in ["race","lap"]:
+-		var card := PanelContainer.new()
+-		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		card.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+-		charts.add_child(card)
+-		var column := VBoxContainer.new()
+-		column.add_theme_constant_override("separation",4)
+-		card.add_child(column)
+-		column.add_child(MenuStyle.label("Race" if metric == "race" else "Lap",12,true))
+-		var histogram := TrackDistribution.new()
+-		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
+-		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+-		if histogram.snapshot.get("bins",[]).is_empty():
+-			histogram.hide()
+-			if not waiting or (exceptional_wait and metric == "race"): column.add_child(MenuStyle.label("Loading..." if waiting else str(snapshot.get("comparison_error","No times yet")),12,true))
+-		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+-		histogram.custom_minimum_size = Vector2(112,96)
+-		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		column.add_child(histogram)
++	row.add_child(retained_distribution if retained_distribution != null else _build_comparison_view(snapshot,waiting,exceptional_wait))
++	_comparison_view_key = comparison_view_key
+ 	row.add_child(VSeparator.new())
+ 	var friends := VBoxContainer.new()
+ 	friends.custom_minimum_size.x = 0
+@@ -1034,6 +1013,60 @@
+ 	race_button.text = "RACE "+title
+ 	race_button.disabled = metadata_only
+ 	detail_costs = {"preview":0.0}
++
++func _retain_comparison_view(view_key: String, snapshot: Dictionary) -> VBoxContainer:
++	if view_key != _comparison_view_key: return null
++	if not _comparison_ready(snapshot) and snapshot.has("comparison_error"): return null
++	var distribution: VBoxContainer = detail.find_child("RaceComparison",true,false) as VBoxContainer
++	if distribution == null: return null
++	# Keep laid-out controls through metadata promotion and unrelated score/PB
++	# updates. A confirmed empty metric still needs its proper empty-state layout.
++	for metric: String in ["race","lap"]:
++		var chart: TrackDistribution = distribution.find_child("RaceDistribution" if metric == "race" else "LapDistribution",true,false)
++		if chart == null or chart.snapshot.get("bins",[]).is_empty(): return null
++		if _comparison_ready(snapshot) and snapshot[metric+"_distribution"].get("bins",[]).is_empty(): return null
++	if _comparison_ready(snapshot):
++		for metric: String in ["race","lap"]:
++			var chart: TrackDistribution = distribution.find_child("RaceDistribution" if metric == "race" else "LapDistribution",true,false)
++			var fresh: Dictionary = snapshot[metric+"_distribution"]
++			if chart.snapshot != fresh:
++				chart.snapshot = fresh.duplicate(true)
++				chart.queue_redraw()
++	distribution.get_parent().remove_child(distribution)
++	return distribution
++
++func _build_comparison_view(snapshot: Dictionary, waiting: bool, exceptional_wait: bool) -> VBoxContainer:
++	var distribution := VBoxContainer.new()
++	distribution.name = "RaceComparison"
++	distribution.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	distribution.size_flags_stretch_ratio = 1.4
++	distribution.add_theme_constant_override("separation",2)
++	_heading(distribution,"WHERE YOU STAND","podium")
++	var distribution_body: VBoxContainer = _section_body(distribution)
++	var charts := HBoxContainer.new()
++	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	charts.add_theme_constant_override("separation",8)
++	distribution_body.add_child(charts)
++	for metric: String in ["race","lap"]:
++		var card := PanelContainer.new()
++		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		card.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
++		charts.add_child(card)
++		var column := VBoxContainer.new()
++		column.add_theme_constant_override("separation",4)
++		card.add_child(column)
++		column.add_child(MenuStyle.label("Race" if metric == "race" else "Lap",12,true))
++		var histogram := TrackDistribution.new()
++		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
++		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
++		if histogram.snapshot.get("bins",[]).is_empty():
++			histogram.hide()
++			if not waiting or (exceptional_wait and metric == "race"): column.add_child(MenuStyle.label("Loading..." if waiting else str(snapshot.get("comparison_error","No times yet")),12,true))
++		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
++		histogram.custom_minimum_size = Vector2(112,96)
++		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
++		column.add_child(histogram)
++	return distribution
+ 
+ func _open_rating() -> void:
+ 	var dialog := AcceptDialog.new()
+--- /dev/null
++++ b/game/tests/test_histogram_continuity.gd
+@@ -0,0 +1,119 @@
++extends "res://tests/test_carousel_histograms.gd"
++## Observe every handoff frame, including a local PB and a late score list.
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../build/histogram-continuity/fixture-"+TrackLibrary.unique_id())
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/histogram-continuity-2026-10-10")
++	DirAccess.make_dir_recursive_absolute(folder)
++	DirAccess.make_dir_recursive_absolute(evidence)
++	root.size = Vector2i(1280,720)
++	VehicleCatalog.selected = "compact"
++	var packet: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/instant-comparisons-2026-10-10/slippery-compact-packet.json")).packet
++	var service := WindowService.new()
++	service.packet = packet
++	service.hold_board = false
++	root.add_child(service)
++	var document: Dictionary = TrackDocument.create_default()
++	var track: NativeTrack = TrackCompiler.compile(document)
++	track.metadata.cloud_version = "continuity-first"
++	track.metadata.title = "First track"
++	var target_document: Dictionary = document.duplicate(true)
++	target_document.id = "continuity_target"
++	target_document.name = "Next track"
++	var body: String = JSON.stringify(target_document)
++	var path: String = folder.path_join("next-track.json")
++	var file := FileAccess.open(path,FileAccess.WRITE)
++	file.store_string(body)
++	file.close()
++	var cloud := MetadataCloud.new()
++	cloud.client = service
++	cloud.entries = [
++		{"id":track.identity,"source":"cloud","version_id":"continuity-first","name":"First track","creator":"Beat my track","theme":"pine","points":document.points},
++		{"id":"continuity-next","source":"cloud","version_id":"continuity-next","track_id":"continuity-next","name":"Next track","creator":"Beat my track","theme":"pine","points":target_document.points,"cache_path":path,"content_hash":body.sha256_text()},
++	]
++	cloud.ready_versions = ["continuity-next"]
++	root.add_child(cloud)
++	var browser := TrackBrowser.new()
++	browser.theme = MenuStyle.theme()
++	browser.library = TrackLibrary.new(folder.path_join("tracks"))
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	var target: NativeTrack = RealCloud.compile_entry(cloud.entries[1])
++	browser.records.records[browser.records.key_for(target,HandlingSelection.config())] = {"race_ms":88000,"flying_ms":16000}
++	browser.catalog = TrackCatalog.new(browser.library)
++	browser.catalog.indexed_revision = browser.library.revision
++	browser.catalog.entries.assign(cloud.entries)
++	browser.catalog.remember_track(cloud.entries[0],track)
++	browser.selected_track = track
++	browser.cloud = cloud
++	browser.state = {}
++	root.add_child(browser)
++	MenuStyle.fill(browser)
++	browser.offset_top = 112
++	browser.offset_bottom = -16
++	await wait_frames(12)
++	service.hold_board = true
++	browser.discovery.prime_comparisons(service,[cloud.entries[1]],"compact")
++	await wait_frames(12)
++	browser._select(cloud.entries[1])
++	await wait_frames(12)
++	var race: TrackDistribution = browser.detail.find_child("RaceDistribution",true,false)
++	var lap: TrackDistribution = browser.detail.find_child("LapDistribution",true,false)
++	check(race != null and race.visible and lap != null and lap.visible,"both warmed preview histograms are visible before geometry is ready")
++	if race == null or lap == null: quit(1); return
++	var race_bins: Array = race.snapshot.bins.duplicate()
++	var lap_bins: Array = lap.snapshot.bins.duplicate()
++	await create_timer(0.45).timeout
++	await capture("preview-ready")
++	service.held_versions = ["continuity-next"]
++	cloud.release_download.emit()
++	var observed: Array[Dictionary] = []
++	for frame: int in range(36):
++		await process_frame
++		var active_race: TrackDistribution = browser.detail.find_child("RaceDistribution",true,false)
++		var active_lap: TrackDistribution = browser.detail.find_child("LapDistribution",true,false)
++		var visible: bool = active_race != null and active_lap != null and active_race.is_visible_in_tree() and active_lap.is_visible_in_tree() and active_race.size.y >= 90 and active_lap.size.y >= 90
++		var same_controls: bool = active_race == race and active_lap == lap
++		var same_counts: bool = active_race != null and active_lap != null and active_race.snapshot.get("bins",[]) == race_bins and active_lap.snapshot.get("bins",[]) == lap_bins
++		observed.append({"frame":frame,"selecting":browser.selecting,"visible":visible,"same_controls":same_controls,"same_counts":same_counts})
++	check(not browser.selecting and browser.selected_track.metadata.cloud_version == "continuity-next","compiled target completes while its local-PB comparison read remains held")
++	check(observed.all(func(sample: Dictionary) -> bool: return sample.visible and sample.same_counts),"every geometry-handoff frame retains both histograms and their exact counts")
++	check(observed.all(func(sample: Dictionary) -> bool: return sample.same_controls),"geometry handoff preserves both chart controls")
++	await capture("compiled-read-pending")
++	service.held_versions.clear()
++	await wait_frames(12)
++	check(browser.detail.find_child("RaceDistribution",true,false) == race and browser.detail.find_child("LapDistribution",true,false) == lap,"same-shaped local-PB response updates the existing charts")
++	service.hold_board = false
++	await wait_frames(12)
++	check(browser.detail.find_child("RaceDistribution",true,false) == race and browser.detail.find_child("LapDistribution",true,false) == lap,"late standings preserve both visible chart controls")
++	check(browser.detail.find_child("RaceDistribution",true,false).snapshot.bins == race_bins,"late standings retain exact server counts")
++	await capture("standings-ready")
++	service.packet = service.packet.duplicate(true)
++	for metric: String in ["race","best_lap"]:
++		service.packet[metric].bins[0].count += 1
++		service.packet[metric].population += 1
++	await browser._load_cloud_detail(browser.selected_track)
++	await wait_frames()
++	check(browser.detail.find_child("RaceDistribution",true,false) == race and browser.detail.find_child("LapDistribution",true,false) == lap,"actual changed counts update both charts without replacing their controls")
++	check(race.snapshot.bins[0] == race_bins[0]+1 and lap.snapshot.bins[0] == lap_bins[0]+1,"retained controls display the new exact counts rather than freezing the old shape")
++	VehicleCatalog.selected = "kart"
++	service.held_versions = ["continuity-next"]
++	browser._show_detail()
++	await wait_frames()
++	check(browser.detail.find_child("RaceDistribution",true,false) != race and browser.detail.find_child("LapDistribution",true,false) != lap,"a different car cannot retain the compact chart controls")
++	var kart_race: TrackDistribution = browser.detail.find_child("RaceDistribution",true,false)
++	check(kart_race.snapshot.get("bins",[]).is_empty() and not kart_race.visible,"a pending kart field never displays the previous car's counts")
++	service.packet = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/instant-comparisons-2026-10-10/slippery-kart-packet.json"))
++	service.held_versions.clear()
++	await wait_frames()
++	check(texts(browser.detail.find_child("RaceComparison",true,false)).contains("No times yet"),"a confirmed empty car field still has its correct empty state")
++	VehicleCatalog.selected = "compact"
++	var report := FileAccess.open(evidence.path_join("frames.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(observed,"\t"))
++	report.close()
++	browser.queue_free()
++	cloud.queue_free()
++	await wait_frames()
++	service.queue_free()
++	await process_frame
++	print("HISTOGRAM_CONTINUITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_histogram_continuity.gd.uid
+@@ -0,0 +1 @@
++uid://bu43pfjcq0ja2
+--- /dev/null
++++ b/docs/HISTOGRAM_CONTINUITY_2026_10_10.md
+@@ -0,0 +1,24 @@
++# Histogram continuity, 2026-10-10
++
++Requirements RR06/V03/V05/Q01; preserve R01, TD06/TD08, pinned track/car comparison contracts, normal results first, five laps, best-only scoring and public/artificial isolation. The owner reports the same histogram briefly appearing, disappearing and reappearing in Free Race.
++
++The metadata preview already had a warmed comparison packet. When the compiled target had a local PB, its separate candidate/marker read could remain pending after the preview was replaced with an empty pinned snapshot. Separately, late standings or PB changes rebuilt the entire detail row, destroying and recreating the chart controls despite unchanged histogram data. The regression fixture reproduced both: **seven checks, four failures** before the correction. [Baseline log](evidence/histogram-continuity-2026-10-10/continuity-before.log).
++
++`game/ui/track_browser.gd` now promotes a valid warmed packet into the pinned record snapshot before the compiled view is drawn, applying the actual local/verified marker values. It preserves the existing request decision, including local-PB overlays, without adding background polling. The populated comparison column survives metadata promotion and unrelated detail updates for the same immutable version, vehicle and account/service scope. Actual count or marker changes update the same controls and request a redraw. Different tracks, cars or scopes cannot retain that column. Confirmed empty metrics rebuild their proper empty layout; failed reads without valid cached data still show the existing unavailable state. No new player-facing text was added.
++
++Changed files: `game/ui/track_browser.gd`; new `game/tests/test_histogram_continuity.gd` and its generated UID; this report; `DEVELOPMENT_STATUS.md`; `docs/PHASE_0_PLAN.md`. No canonical simulation, backend API, schema or rules contract changed. [Task-only Git checkpoint](evidence/histogram-continuity-2026-10-10/scoped-change.patch) preserves unrelated workspace work.
++
++Actual commands use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned Godot **4.7.2 stable ed1daf0bf**, isolated `APPDATA=build/histogram-continuity-*-user`, and `-CommandTimeoutSeconds 90`:
++
++- `TestScript -ScriptPath res://tests/test_histogram_continuity.gd -Graphical`: **15 checks, zero failures**. Both histograms remain visible with the same controls and exact counts across **all 36 sampled geometry-handoff frames**, while the local-PB request is deliberately held. Late standings preserve the controls; genuinely changed server counts update in place; a different car cannot borrow the old charts, and its actual empty response remains explicit. [Log](evidence/histogram-continuity-2026-10-10/continuity-final.log), [per-frame observations](evidence/histogram-continuity-2026-10-10/frames.json).
++- `TestScript -ScriptPath res://tests/test_instant_comparisons.gd`: **25 checks, zero failures**, including scoped caching, foreground priority and genuine empty fields. [Log](evidence/histogram-continuity-2026-10-10/instant-final.log).
++- `TestScript -ScriptPath res://tests/test_carousel_histograms.gd`: **20 checks, zero failures**, including preview-before-geometry, rapid far-track selections and bounded warming. [Log](evidence/histogram-continuity-2026-10-10/carousel-final.log).
++- `TestScript -ScriptPath res://tests/test_unified_histograms.gd`, with `BMT_RESULTS_EVIDENCE=docs/evidence/histogram-continuity-2026-10-10/unified`: **127 checks, zero failures**. [Log](evidence/histogram-continuity-2026-10-10/unified-final.log).
++- `TestApp`: **99 checks, zero failures**. [Log](evidence/histogram-continuity-2026-10-10/app-final.log).
++- Scoped `git diff --check` and reverse Git checkpoint validation: pass.
++
++An intermediate retention condition kept old controls when the fixture explicitly cleared all valid comparison data and returned a failure. The unchanged unified suite caught this (**127 checks, one failure**); the guard now distinguishes a pending handoff from a completed failure without usable data. Its final rerun passes. No assertion was removed or weakened.
++
++Inspected native captures: [metadata preview](evidence/histogram-continuity-2026-10-10/preview-ready.png), [compiled track with the local-PB read still pending](evidence/histogram-continuity-2026-10-10/compiled-read-pending.png), [late standings ready](evidence/histogram-continuity-2026-10-10/standings-ready.png). The test uses a retained actual Slippery comparison packet with synthetic local track names/PB values and isolated mock responses. Its count-change case is an explicit test packet, not a submitted race or live server update. No server/player data was written.
++
++The original scenic preview and metadata-only race gate remain; actual compiled tracks retain race availability while optional data loads. Legitimate new counts, markers or timing bounds may still change the chart's appearance. These checks prove the reproduced handoff and refresh paths, not every device or network timing. No phone attachment check or physical-device test was performed. No Android export/install, full Validate, backend deployment or production action was performed. Remaining acceptance: restart the updated client and review actual populated Free Race transitions on the owner's device.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-10 RR06/V03/V05/Q01/R01/TD06/TD08: owner histogram disappear/reappear reproduced7/4fail through warmed metadata-to-compiled local-PB handoff and late standings rebuild. Valid packet promoted before draw; same version/car/account comparison controls retained and real changes redrawn in place. Final native15/36all-visible frames/instant25/carousel20/unified127/App99 pass; three native captures inspected. Missing-data failure guard corrected after unchanged unified assertion caught retention; no weakened checks/new UI captions. No phone attachment/device test/Android export-install/full Validate/backend or production action. Files, actual commands, frame evidence, scoped Git checkpoint and remaining owner/device acceptance: docs/HISTOGRAM_CONTINUITY_2026_10_10.md.
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-10 RR06/V03/V05/Q01/R01/TD06/TD08: owner histogram disappear/reappear reproduced7/4fail through warmed metadata-to-compiled local-PB handoff and late standings rebuild. Valid packet promoted before draw; same version/car/account comparison controls retained and real changes redrawn in place. Final native15/36all-visible frames/instant25/carousel20/unified127/App99 pass; three native captures inspected. Missing-data failure guard corrected after unchanged unified assertion caught retention; no weakened checks/new UI captions. No phone attachment/device test/Android export-install/full Validate/backend or production action. Files, actual commands, frame evidence, scoped Git checkpoint and remaining owner/device acceptance: docs/HISTOGRAM_CONTINUITY_2026_10_10.md.
++

@@ -1,0 +1,642 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -23,6 +23,7 @@
+ var clock_label: Label
+ var track_rows: Array[Button] = []
+ var track_markers: Array[ColorRect] = []
++var detail_route: LapRouteView
+ const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
+ const COMPACT_ART: Texture2D = preload("res://assets/menu/rivalry_compact_cutout_v1.png")
+ const STANDINGS_GUTTER: int = 12
+@@ -185,14 +186,31 @@
+ 	var total := _copy(line,"/ %d" % count,32,MenuStyle.MUTED)
+ 	total.size_flags_vertical = Control.SIZE_SHRINK_END
+ 
+-func _route(parent: Control, index: int, height: int = 82) -> void:
++func _route(parent: Control, index: int, height: int = 82, markers: bool = false) -> void:
+ 	var route := LapRouteView.new()
+ 	route.miniature = true
++	route.show_race_markers = markers
++	if markers: detail_route = route
+ 	for point: Array in model.tracks[index].document.get("points",[]): route.route.append(Vector2(point[0],point[1]))
+ 	route.custom_minimum_size = Vector2(0,height)
+ 	route.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	route.modulate = Color("ffffff")
+ 	parent.add_child(route)
++
++func apply_track_preview(document: Dictionary) -> void:
++	if not is_instance_valid(detail_route) or document.is_empty(): return
++	var samples: Dictionary = TrackDocument.route_data(document)
++	var route: PackedVector2Array = samples.points
++	var widths: PackedFloat32Array = samples.widths
++	if document.corners[0] == "sharp":
++		var offset: int = mini(8,maxi(1,floori(Vector2(document.points[0][0],document.points[0][1]).distance_to(Vector2(document.points[1][0],document.points[1][1]))*0.5)))
++		route = route.slice(offset)+route.slice(0,offset)
++		widths = widths.slice(offset)+widths.slice(0,offset)
++	if document.has("start_line"):
++		route = CreatorStartLine.route_from_start(route,widths,document.start_line).points
++	detail_route.race_route = route
++	detail_route.show_race_markers = true
++	detail_route._fit()
+ 
+ func _table_row(parent: Control, row: Dictionary, value: String, compact: bool = false) -> void:
+ 	var panel := PanelContainer.new()
+@@ -595,17 +613,21 @@
+ 	var track: Dictionary = model.tracks[selected]
+ 	var scene: VBoxContainer = _card(parent,str(track.theme))
+ 	scene.get_parent().size_flags_stretch_ratio = 1.25
+-	_action(scene,"←  BACK TO RIVALRY","RivalryBackToOverview",func() -> void: section_requested.emit("overview"))
++	var back: Button = _action(scene,"←  BACK TO TRACKS","RivalryBackToOverview",func() -> void: section_requested.emit("overview"))
++	back.custom_minimum_size.y = 48
+ 	scene.add_child(Badge.view(str(track.theme),15))
+ 	_copy(scene,str(track.name).to_upper(),48)
+-	_route(scene,selected,100)
++	_route(scene,selected,100,true)
++	if model.sample: apply_track_preview(track.document)
++	else: detail_route.show_race_markers = false # Wait for the verified full document's start/direction.
+ 	_copy(scene,VehicleCatalog.title(model.vehicle_id),18,MenuStyle.MUTED)
+ 	var board: VBoxContainer = _card(parent,"",14)
+ 	_copy(board,"YOUR POSITION",18,MenuStyle.MUTED)
+ 	var gap: Dictionary = model.gaps(selected)
+ 	_rank(board,gap.own,model.board(selected).size(),52)
+-	_space(board)
+-	for row: Dictionary in model.nearby(selected): _table_row(board,row,MenuStyle.time_text(int(row.ms)/1000.0) if row.get("ms") != null else "No time",true)
++	var standings := preload("res://ui/rivalry_track_standings.gd").new()
++	standings.board = model.board(selected)
++	board.add_child(standings)
+ 	var duel: VBoxContainer = _card(parent,"",16)
+ 	_copy(duel,"YOUR NEXT RIVAL",18,MenuStyle.MUTED)
+ 	if not gap.ahead.is_empty():
+@@ -622,27 +644,47 @@
+ 	else:
+ 		_copy(duel,"DEFEND THE LEAD",32)
+ 		_copy(duel,"Push your best further.",19,MenuStyle.MUTED)
+-	_space(duel)
++	var closest: Dictionary = model.closest_challenger(selected)
++	if not closest.is_empty():
++		duel.add_child(HSeparator.new())
++		_copy(duel,"Closest challenger",17,MenuStyle.MUTED)
++		var challenger := HBoxContainer.new()
++		challenger.add_theme_constant_override("separation",8)
++		duel.add_child(challenger)
++		challenger.add_child(PlayerCountry.flag(str(closest.get("country_code","")),30))
++		_copy(challenger,rank_text(closest),18)
++		var challenger_name: Label = _copy(challenger,_display_name(closest),18)
++		challenger_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		challenger_name.clip_text = true
++		challenger_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		var challenger_time: Label = _copy(challenger,MenuStyle.time_text(int(closest.ms)/1000.0),22)
++		challenger_time.name = "RivalryClosestChallengerTime"
++		challenger_time.add_theme_font_override("font",MenuStyle.DISPLAY)
++		var challenger_gap: Label = _copy(duel,"+%.3f behind you" % ((int(closest.ms)-int(gap.own.ms))/1000.0) if int(closest.ms) > int(gap.own.ms) else "Level with you",16,MenuStyle.MUTED)
++		challenger_gap.name = "RivalryClosestChallengerGap"
++	duel.add_child(HSeparator.new())
+ 	_copy(duel,"Race with ghost",18,MenuStyle.MUTED)
+ 	var selector := OptionButton.new()
+ 	selector.name = "RivalryGhostSelector"
+ 	selector.custom_minimum_size = Vector2(0,54)
+ 	selector.fit_to_longest_item = false
+ 	selector.add_theme_font_size_override("font_size",17)
+-	selector.add_item(str(gap.ahead.name)+" (#"+str(gap.ahead.rank)+")" if not gap.ahead.is_empty() else "Rival ahead · unavailable")
++	var target: Dictionary = model.ghost_target(selected,0)
++	selector.add_item(_display_name(target)+" ("+rank_text(target)+")" if not target.is_empty() else "Rival · unavailable")
+ 	selector.add_item("Leader: "+str(gap.leader.name) if not gap.leader.is_empty() else "Weekly leader · unavailable")
+ 	selector.add_item("My weekly PB")
+ 	selector.add_item("No ghost")
+-	selector.set_item_disabled(0,gap.ahead.is_empty())
++	selector.set_item_disabled(0,target.is_empty())
+ 	selector.set_item_disabled(1,gap.leader.is_empty())
+ 	selector.set_item_disabled(2,gap.own.get("ms") == null)
+ 	if selector.is_item_disabled(ghost_choice): ghost_choice = 3
+ 	selector.select(ghost_choice)
+ 	duel.add_child(selector)
+-	var ghost_copy := _copy(duel,"Your recorded weekly best." if ghost_choice == 2 else "Drive without a ghost." if ghost_choice == 3 else "Follow your rival and find time.",15,MenuStyle.MUTED)
++	var ghost_copy := _copy(duel,"Your recorded weekly best." if ghost_choice == 2 else "Drive without a ghost." if ghost_choice == 3 else "Race against their best time.",15,MenuStyle.MUTED)
+ 	selector.item_selected.connect(func(index: int) -> void:
+ 		ghost_choice = index
+-		ghost_copy.text = "Your recorded weekly best." if index == 2 else "Drive without a ghost." if index == 3 else "Follow the rival's verified recording.")
++		ghost_copy.text = "Your recorded weekly best." if index == 2 else "Drive without a ghost." if index == 3 else "Race against their best time.")
++	_space(duel)
+ 	var race: Button = _action(duel,"RACE "+str(track.name).to_upper()+"  →","RivalryStartRace",func() -> void: race_requested.emit(selected,ghost_choice),true)
+ 	race.disabled = busy or model.completed or model.status != "active" or not bool(track.get("available",true))
+ 	if not bool(track.get("available",true)): _copy(duel,"This track is unavailable for racing.",15,MenuStyle.MUTED)
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1426,11 +1426,21 @@
+ 	page.retry_requested.connect(_retry_race)
+ 	parent.add_child(page)
+ 	_keep_race_mode_rail_fixed(page)
++	if page.section == "detail" and not rivalry.model.sample and not rivalry.model.tracks.is_empty():
++		_prepare_rivalry_track_preview(page,rivalry_track)
++
++func _prepare_rivalry_track_preview(page: WeeklyRivalryPage, index: int) -> void:
++	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
++	var document: Dictionary = cloud.cached_document(entry)
++	if document.is_empty():
++		if not bool(rivalry.model.tracks[index].get("available",true)): return
++		if not await cloud.download(entry): return
++		document = cloud.cached_document(entry)
++	if is_instance_valid(page) and page.is_inside_tree(): page.apply_track_preview(document)
+ 
+ func _rivalry_ghost(index: int, choice: int) -> Dictionary:
+ 	if choice == 3: return {}
+-	var gap: Dictionary = rivalry.model.gaps(index)
+-	var target: Dictionary = gap.ahead if choice == 0 else gap.leader if choice == 1 else gap.own
++	var target: Dictionary = rivalry.model.ghost_target(index,choice)
+ 	var driver: String = str(target.get("driver_id",""))
+ 	rivalry.prefetch_ghost(index,driver)
+ 	return rivalry.cached_ghost(index,driver)
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -274,6 +274,28 @@
+ 		elif int(row.points) < int(own.points) and behind.is_empty(): behind = row
+ 	return {"own":own,"ahead":ahead,"behind":behind}
+ 
++func ghost_target(index: int, choice: int) -> Dictionary:
++	var gap: Dictionary = gaps(index)
++	if choice == 0:
++		# Chase the next faster rival, or defend against the closest challenger.
++		if not gap.ahead.is_empty(): return gap.ahead
++		var challenger: Dictionary = closest_challenger(index)
++		if not challenger.is_empty(): return challenger
++		for driver: Dictionary in board(index):
++			if driver.id != SELF and driver.get("ms") != null: return driver
++		return {}
++	if choice == 1: return gap.leader
++	if choice == 2: return gap.own if gap.own.get("ms") != null else {}
++	return {}
++
++func closest_challenger(index: int) -> Dictionary:
++	var rows: Array[Dictionary] = board(index)
++	var own: Dictionary = self_row(rows)
++	if own.get("ms") == null: return {}
++	for driver: Dictionary in rows:
++		if driver.id != SELF and driver.get("ms") != null and int(driver.ms) >= int(own.ms): return driver
++	return {}
++
+ func opportunity() -> int:
+ 	var selected: int = 0
+ 	var smallest: int = 2147483647
+--- a/game/ui/lap_route_view.gd
++++ b/game/ui/lap_route_view.gd
+@@ -9,6 +9,8 @@
+ var boundaries := PackedFloat32Array([0.0,1.0/3.0,2.0/3.0,1.0])
+ var mode: String = "Speed"
+ var miniature: bool = false
++var show_race_markers: bool = false
++var race_route := PackedVector2Array()
+ var selected_point: int = -1
+ var fitted := PackedVector2Array()
+ var bounds := Rect2()
+@@ -73,6 +75,7 @@
+ 	if fitted.size() < 2: return
+ 	if miniature:
+ 		draw_polyline(fitted,Color("8baabd"),2.5,true)
++		if show_race_markers: _draw_race_markers()
+ 		return
+ 	draw_polyline(fitted,Color(0.32,0.43,0.47,0.24),22,true)
+ 	draw_polyline(fitted,Color("08141e"),17,true)
+@@ -114,6 +117,47 @@
+ 	elif lap.get("samples",[]).is_empty():
+ 		draw_string(MenuStyle.BODY,Vector2(12,20),"Telemetry unavailable for this lap",HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
+ 
++func _draw_race_markers() -> void:
++	var start: Vector2 = fitted[0]
++	var segment: int = 0
++	var reverse: bool = false
++	if race_route.size() > 1:
++		var target: Vector2 = _screen(race_route[0])
++		var forward: Vector2 = _screen(race_route[1])-target
++		var nearest: float = INF
++		# Keep the existing outline. Place the actual start on its corresponding
++		# preview segment, which may be downsampled discovery geometry.
++		for index: int in range(fitted.size()-1):
++			var point: Vector2 = Geometry2D.get_closest_point_to_segment(target,fitted[index],fitted[index+1])
++			if point.distance_squared_to(target) >= nearest: continue
++			nearest = point.distance_squared_to(target)
++			start = point
++			segment = index
++			reverse = forward.dot(fitted[index+1]-fitted[index]) < 0
++	var direction: Vector2 = (fitted[segment+1]-fitted[segment]).normalized()*(-1 if reverse else 1)
++	if direction.is_zero_approx(): return
++	var normal := Vector2(-direction.y,direction.x)
++	# Transverse chequered start line, followed by a forward arrow on the route.
++	for x: int in range(4):
++		for y: int in range(2):
++			var corner: Vector2 = start+normal*(x*4.0-8.0)+direction*(y*4.0-4.0)
++			draw_colored_polygon(PackedVector2Array([corner,corner+normal*4,corner+normal*4+direction*4,corner+direction*4]),Color.WHITE if (x+y)%2 == 0 else Color("111e27"))
++	var center: Vector2 = start
++	var remaining: float = 28.0
++	var from: Vector2 = start
++	for offset: int in range(fitted.size()):
++		var next: int = posmod(segment-offset if reverse else segment+1+offset,fitted.size()-1)
++		var to: Vector2 = fitted[next]
++		var distance: float = from.distance_to(to)
++		if distance <= 0.001: continue
++		direction = (to-from)/distance
++		center = from.lerp(to,minf(1.0,remaining/distance))
++		if remaining <= distance: break
++		remaining -= distance
++		from = to
++	normal = Vector2(-direction.y,direction.x)
++	draw_colored_polygon(PackedVector2Array([center+direction*7,center-direction*6+normal*5,center-direction*6-normal*5]),Color("c7e1ee"))
++
+ func _draw_sector_ends() -> void:
+ 	# A transverse line keeps boundaries visible when adjacent sectors share a colour.
+ 	for i: int in range(1,boundaries.size()):
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR06/WR09-WR10/R01/V03-V05/Q01: owner-reference rivalry track detail implemented locally: compact Back to Tracks, retained original outline/art with verified start/direction markers, eight complete full-board rows, signed millisecond gaps, top/bottom sticky player, continuation action and closest challenger/default matching ghost. Final native detail333/weekly1256/App99/parser390 pass;24 isolated fixture captures and task-only review patch retained. Scroll-layout and marker-fixture failures corrected without weakened contracts. Tablet f0ba474a offline; no physical-device test/export/install/live-backend race/full Validate/backend or production rollout. Owner/device/live cache-ghost acceptance remains. Files/actual commands/logs/evidence/limits: docs/RIVALRY_TRACK_DETAIL.md.
++
+ 2026-10-09 V04/V05/Q01/R01: tablet desert dust tiles reproduced and isolated to Adreno Compatibility MSAA: same shader/drive20.008ms vsMSAAoff19.899ms, smooth off screenshot. Scoped desert/mobileAdreno single-sample profile prepared; original dust/density/lifetime/budget/framing/physics retained and MSAA restored on exit. Render481/desert87/exportfocused72/21/48 pass; no fullValidate. Rejected shader experiments removed; actual evidence/diagnostic limits retained. Final install/under-bridge device acceptance pending USB offline/reconnect. Commands/files/scoped checkpoint: docs/TABLET_DUST_2026_10_09.md.
+ 
+ 2026-10-09 CH09-CH13/CH02-CH04/R01/V03/B01-B07/Q01: owner-corrected post-race challenges pin the exact completed ticket/track/car, including slower-than-PB finishes; custom scenic navy/yellow sheet exposes only type/duration and never reraces on pending/error. Unrequested Compare tab/embedded view removed; original Track/Sectors/Speed and separate unified histograms retained. Final graphical99/App99/SQLite16/ownedPG33(one skip)/actual HTTP43+47/button44/hist36+46/export72+21+48 pass; initial fixture/unsupported-job-flag failures retained and corrected. Missing development endpoint fixed with frozen image925c6b26, exact112 packaged files, successful backup1791521718841/additive schema0020/API-worker/smoke-catalog update; endpoint/native replay-storage-schema/worker checks pass. Existing records/settings/isolations preserved. APK241130965/SHA256374392FBF2156C4517CECA36EACDAC4B8040CBCB80BEBE12767F0EE7D66A5AA7. Tablet initially authorized, streamed install failed then unauthorized/offline; no candidate launch/device UI/race acceptance/full Validate/physics change or production action. Owner style/real-account/device acceptance remains; scoped checkpoint preserves concurrent work. Files/commands/pictures/rollout/limits: docs/CHALLENGE_CORRECTION_2026_10_09.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1348,3 +1348,8 @@
+ 2026-10-08 SND14-SND15/SND05/SND08/SND11/G01/R01/Q01/V06: owner100-200ms wall delay reproduced as drawn-nose/canonical-circle gap, not3ms alone. Compact4m/s visible/sound62 vsphysical81 gives158.33ms old gap; new read-only mesh/solid onset25 five-car speed cases allzero tickgap, rotated/away/deep guards167 pass. Actual Game/render-disabled62/62/81 and exact canonical snapshots/handling/records retained; same-wall later cue deduplicated. Three impact files begin at full PCM peak0/no fade; direct protected Impacts bus follows Vehicle volume/mute and retained master. Native6 light/medium/hard captures42 pass, meaningful-to-halfpeak0.02083ms/route2.0417ms/driver estimate10ms separate; no zero-acoustic claim. 46 clips/10,266,428 bytes/43 other masters exact/22 voices; wall mean47.88us/p9591us desktop. Attack22/timing43/vehicle1442/surface67/desert-continuous28/App99/rewind57/parser382/loops39 pass; attack33 shutdown references retained. Initial unscaled/wrong-method/internal-face failures corrected without relaxed invariants. Android present but unauthorized; no device audio/Android export-install/full Validate/backend or production action. Owner actual-device/corner/bridge acceptance remains, task-only checkpoint preserves concurrent work. Files/commands/captures/limits: docs/COLLISION_ATTACK.md.
+ 
+ 2026-10-09 V01/V02/V04/V05/Q01: subtle Storm wet-asphalt feedback refines the existing bead-only tire spray with speed-dependent low fans and quieter front tires; 288 lazy particles/0.30s/no clouds. Canonical grip/rules/camera/road materials unchanged. Storm94/capture25/soil163/desert87/parser388 pass; eight frozen matched captures inspected at1280x720/960x540, no shader errors. Sandbox log/certificate/adb failures resolved with disposable workspace saves and approved local execution. Doctor finds authorized OnePlus Pad 2; no device test/export/install/full Validate/deployment. Owner motion and mobile acceptance remain; task-only patch preserves concurrent work. Actual files, commands, evidence and limits: docs/STORM_WET_DRIVING.md.
++
++
++## Rivalry track detail reference correction, 2026-10-09
++
++2026-10-09 WR06/WR09-WR10/R01/V03-V05/Q01: owner-reference rivalry track detail implemented locally: compact Back to Tracks, retained original outline/art with verified start/direction markers, eight complete full-board rows, signed millisecond gaps, top/bottom sticky player, continuation action and closest challenger/default matching ghost. Final native detail333/weekly1256/App99/parser390 pass;24 isolated fixture captures and task-only review patch retained. Scroll-layout and marker-fixture failures corrected without weakened contracts. Tablet f0ba474a offline; no physical-device test/export/install/live-backend race/full Validate/backend or production rollout. Owner/device/live cache-ghost acceptance remains. Files/actual commands/logs/evidence/limits: docs/RIVALRY_TRACK_DETAIL.md.
+--- /dev/null
++++ b/game/ui/rivalry_track_standings.gd
+@@ -0,0 +1,131 @@
++extends VBoxContainer
++## Full ordered track board with a pinned copy only while the player is offscreen.
++const VISIBLE_ROWS: int = 8
++const GUTTER: int = 8
++var board: Array[Dictionary] = []
++var scroll: ScrollContainer
++var rows: VBoxContainer
++var viewport: Control
++var player: Control
++var sticky: Control
++var more: Button
++
++func _ready() -> void:
++	name = "RivalryTrackStandings"
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",4)
++	viewport = Control.new()
++	viewport.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	viewport.custom_minimum_size.y = 28*VISIBLE_ROWS+2*(VISIBLE_ROWS-1)
++	add_child(viewport)
++	scroll = WeeklyRivalryResult.PlayerList.new()
++	scroll.name = "RivalryTrackStandingsScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
++	viewport.add_child(scroll)
++	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	var margin := MarginContainer.new()
++	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	margin.add_theme_constant_override("margin_right",GUTTER)
++	scroll.add_child(margin)
++	rows = VBoxContainer.new()
++	rows.name = "RivalryTrackDriverRows"
++	rows.add_theme_constant_override("separation",2)
++	margin.add_child(rows)
++	var own: Dictionary = WeeklyRivalry.self_row(board)
++	for driver: Dictionary in board:
++		var row: Control = _row(driver,own)
++		rows.add_child(row)
++		if driver.id == WeeklyRivalry.SELF: player = row
++	if not own.is_empty():
++		sticky = _row(own,own,true)
++		sticky.name = "RivalryTrackStickyPlayer"
++		sticky.visible = false
++		_ignore_input(sticky)
++		viewport.add_child(sticky)
++	more = MenuStyle.button("",_next_page)
++	more.name = "RivalryTrackMoreDrivers"
++	more.custom_minimum_size.y = 48
++	more.add_theme_font_size_override("font_size",15)
++	more.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++	more.visible = board.size() > VISIBLE_ROWS
++	add_child(more)
++	scroll.resized.connect(_resize_rows)
++	scroll.get_v_scroll_bar().value_changed.connect(func(_value: float) -> void: _update_sticky.call_deferred())
++	_resize_rows.call_deferred()
++
++func _ignore_input(node: Node) -> void:
++	if node is Control: node.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for child: Node in node.get_children(): _ignore_input(child)
++
++func _label(parent: Control, text: String, width: int, color: Color, id: String, font_size: int = 16) -> Label:
++	var label: Label = MenuStyle.label(text,font_size)
++	label.name = id
++	label.custom_minimum_size.x = width
++	label.add_theme_color_override("font_color",color)
++	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	parent.add_child(label)
++	return label
++
++func _row(driver: Dictionary, own: Dictionary, pinned: bool = false) -> Control:
++	var panel := PanelContainer.new()
++	panel.name = "RivalryTrackDriver_"+str(driver.id)
++	var is_player: bool = driver.id == WeeklyRivalry.SELF
++	var style: StyleBoxFlat = MenuStyle.box(Color("263329") if pinned else Color("ffd34820") if is_player else Color("0b1c2799"),0)
++	style.content_margin_left = 6
++	style.content_margin_right = 6
++	style.content_margin_top = 2
++	style.content_margin_bottom = 2
++	if is_player:
++		style.border_color = MenuStyle.ACCENT
++		style.set_border_width_all(1)
++	panel.add_theme_stylebox_override("panel",style)
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",6)
++	panel.add_child(line)
++	var color: Color = MenuStyle.ACCENT if is_player else MenuStyle.TEXT
++	_label(line,"#%d" % int(driver.rank) if driver.get("rank") != null else "—",28,color,"Rank")
++	line.add_child(PlayerCountry.flag(str(driver.get("country_code","")),22))
++	var display_name: String = str(driver.name)
++	if bool(driver.get("is_test_driver",false)):
++		var marker: int = display_name.find(" T")
++		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
++	var identity: Label = _label(line,display_name,0,color,"Name")
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.clip_text = true
++	identity.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	var time: Label = _label(line,MenuStyle.time_text(int(driver.ms)/1000.0) if driver.get("ms") != null else "—",80,color,"Time",20)
++	time.add_theme_font_override("font",MenuStyle.DISPLAY)
++	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	var difference: String = "—"
++	if not is_player and driver.get("ms") != null and own.get("ms") != null:
++		difference = "%+.3f" % ((int(driver.ms)-int(own.ms))/1000.0)
++	_label(line,difference,65,color if is_player else MenuStyle.MUTED,"Gap").horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	return panel
++
++func _resize_rows() -> void:
++	if not is_instance_valid(rows): return
++	var available: int = maxi(28*VISIBLE_ROWS,floori(scroll.size.y)-2*(VISIBLE_ROWS-1))
++	var height: int = available/VISIBLE_ROWS
++	var remainder: int = available%VISIBLE_ROWS
++	for index: int in range(rows.get_child_count()):
++		var row: Control = rows.get_child(index)
++		row.custom_minimum_size.y = height+(1 if index%VISIBLE_ROWS < remainder else 0)
++	_update_sticky.call_deferred()
++
++func _update_sticky() -> void:
++	if not is_inside_tree(): return
++	if is_instance_valid(player) and is_instance_valid(sticky):
++		var top: float = player.get_global_rect().position.y-scroll.get_global_rect().position.y
++		sticky.visible = top < -0.5 or top+player.size.y > scroll.size.y+0.5
++		sticky.position = Vector2(0,0 if top < 0 else maxf(0,scroll.size.y-player.size.y))
++		sticky.size = Vector2(rows.size.x,player.size.y)
++	var remaining: int = 0
++	for row: Control in rows.get_children():
++		if row.get_global_rect().end.y > scroll.get_global_rect().end.y+0.5: remaining += 1
++	more.text = "↓  %d more drivers" % remaining if remaining > 0 else "↑  Back to top"
++
++func _next_page() -> void:
++	var bar: VScrollBar = scroll.get_v_scroll_bar()
++	if scroll.scroll_vertical >= bar.max_value-bar.page-1: scroll.scroll_vertical = 0
++	else: scroll.scroll_vertical += roundi(scroll.size.y-(player.size.y+2 if is_instance_valid(player) else 0))
+--- /dev/null
++++ b/game/tests/test_rivalry_track_detail.gd
+@@ -0,0 +1,198 @@
++extends SceneTree
++## Isolated data/interaction checks and native captures for the track detail.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = "res://../docs/evidence/rivalry-track-detail-2026-10-09/ui"
++const Standings = preload("res://ui/rivalry_track_standings.gd")
++
++class GhostProbe extends Node:
++	var model: WeeklyRivalry
++	var driver: String
++	func prefetch_ghost(_slot: int, value: String) -> void: driver = value
++	func cached_ghost(_slot: int, value: String) -> Dictionary: return {"driver":value}
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func settle() -> void:
++	for _frame: int in range(6): await process_frame
++
++func capture(id: String, dimensions: Vector2i) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id)
++
++func table() -> VBoxContainer: return app.root_ui.find_child("RivalryTrackStandings",true,false)
++
++func check_rows() -> void:
++	var list: VBoxContainer = table()
++	check(list.rows.get_child_count() == app.rivalry.model.board(app.rivalry_track).size(),"every driver remains in the ordered scrolling board")
++	var shown: int = 0
++	var bounds: Rect2 = list.scroll.get_global_rect()
++	for row: Control in list.rows.get_children():
++		if bounds.grow(0.5).encloses(row.get_global_rect()): shown += 1
++		check(row.get_global_rect().end.x <= list.scroll.get_v_scroll_bar().get_global_rect().position.x-8,"row leaves the scrollbar gutter")
++	check(shown == 8,"eight complete rows fit the initial viewport")
++	check(list.more.text == "↓  6 more drivers","fourteen entrants expose the remaining six")
++	check(bounds.position.y-(list.get_parent().get_child(1) as Control).get_global_rect().end.y <= 11,"standings begin directly below the rank")
++	check(list.player != null and not list.sticky.visible,"visible player needs no duplicate pinned row")
++	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.board(app.rivalry_track))
++	for driver: Dictionary in app.rivalry.model.board(app.rivalry_track):
++		var row: Control = list.rows.find_child("RivalryTrackDriver_"+str(driver.id),false,false)
++		var expected: String = "—" if driver.id == WeeklyRivalry.SELF else "%+.3f" % ((int(driver.ms)-int(own.ms))/1000.0)
++		check((row.find_child("Gap",true,false) as Label).text == expected,"signed millisecond gap uses the player's actual result")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = ProjectSettings.globalize_path(evidence)
++	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
++	var folder: String = "user://rivalry_detail_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		var model := WeeklyRivalry.new(true)
++		var countries: Array[String] = ["FI","AU","DE","ES","GB","US","FR","SE","CA","JP","IT","NO","NL","BR"]
++		for track: Dictionary in model.tracks:
++			for index: int in range(track.entries.size()):
++				track.entries[index].country_code = countries[index]
++				track.entries[index].driver_id = track.entries[index].id
++		app.rivalry.model = model
++		app.rivalry_section = "detail"
++		app.rivalry_track = 1
++		app.rivalry_ghost_choice = 0
++		app._show_screen("rivalry")
++		await settle()
++		check_rows()
++		var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		var selector: OptionButton = page.find_child("RivalryGhostSelector",true,false)
++		var target: Dictionary = model.closest_challenger(1)
++		check(selector.selected == 0 and selector.get_item_text(0) == str(target.name)+" (#2)","leader defaults to the actual closest challenger's ghost")
++		check((page.find_child("RivalryClosestChallengerTime",true,false) as Label).text == MenuStyle.time_text(int(target.ms)/1000.0),"challenger shows the actual best race time")
++		check((page.find_child("RivalryClosestChallengerGap",true,false) as Label).text == "+0.080 behind you","challenger gap retains milliseconds")
++		check(page.detail_route.show_race_markers and page.detail_route.fitted.size() > 2,"preview renders start and direction markers")
++		var button: Button = page.find_child("RivalryStartRace",true,false)
++		check(app.menu_body_slot.get_global_rect().grow(1).encloses(button.get_global_rect()),"dense rival panel keeps Race within its bounds")
++		var list: VBoxContainer = table()
++		var board_before: Array[Dictionary] = model.board(1)
++		await capture("leader",dimensions)
++		list.more.pressed.emit()
++		await settle()
++		check(list.scroll.scroll_vertical > 0 and list.sticky.visible,"more action scrolls and pins the player")
++		check(absf(list.sticky.get_global_rect().position.y-list.scroll.get_global_rect().position.y) < 1,"player scrolling above the list sticks to the top")
++		check((list.sticky.find_child("Time",true,false) as Label).text == (list.player.find_child("Time",true,false) as Label).text,"sticky time is the same weekly PB")
++		await capture("leader-scrolled",dimensions)
++		list.scroll.scroll_vertical = 60
++		await settle()
++		var wheel := InputEventMouseButton.new()
++		wheel.position = list.sticky.get_global_rect().get_center()
++		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
++		wheel.pressed = true
++		root.push_input(wheel,true)
++		await settle()
++		check(list.scroll.scroll_vertical > 60,"mouse wheel over the pinned player still scrolls the board")
++		list.scroll.scroll_vertical = 0
++		await settle()
++		check(not list.sticky.visible,"scrolling back hides the duplicate player row")
++		var touch := InputEventScreenTouch.new()
++		touch.index = 7
++		touch.pressed = true
++		touch.position = list.scroll.get_global_rect().get_center()
++		list.scroll._input(touch)
++		var drag := InputEventScreenDrag.new()
++		drag.index = 7
++		drag.position = touch.position-Vector2(0,90)
++		list.scroll._input(drag)
++		touch.pressed = false
++		list.scroll._input(touch)
++		await settle()
++		check(list.scroll.scroll_vertical == 90 and list.scroll.pointer == -1,"touch drag scrolls the real board and releases its pointer")
++		check(model.board(1) == board_before,"scrolling and sticky rows leave competitive data unchanged")
++		app.rivalry_track = 2
++		app._rivalry()
++		await settle()
++		check_rows()
++		await capture("ranked",dimensions)
++		model.submit(2,120.0) # A slower race cannot replace its best.
++		for driver: Dictionary in model.tracks[2].entries:
++			if driver.id == WeeklyRivalry.SELF: driver.ms = 120000
++		app._rivalry()
++		await settle()
++		list = table()
++		check(list.sticky.visible and absf(list.sticky.get_global_rect().end.y-list.scroll.get_global_rect().end.y) < 1,"offscreen lower-ranked player sticks to the bottom")
++		await capture("last-player",dimensions)
++		list.scroll.scroll_vertical = 100000
++		await settle()
++		check(not list.sticky.visible,"reaching the player's row removes its sticky copy")
++		check(list.more.text == "↑  Back to top","end of board offers a useful return action")
++		await capture("last-player-scrolled",dimensions)
++		# Exact marker geometry follows the canonical start/direction without a race.
++		page = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		var document: Dictionary = model.tracks[2].document.duplicate(true)
++		document.start_line = {"position":document.points[3].duplicate(),"heading":180.0}
++		# Full documents arrive through JSON, with ordinary String keys.
++		document = JSON.parse_string(JSON.stringify(document))
++		page.apply_track_preview(document)
++		await settle()
++		var native: NativeTrack = TrackCompiler.compile(document)
++		check(native != null and page.detail_route.race_route == native.route,"start-line relocation and reversal match the canonical route exactly")
++		var outline := PackedVector2Array()
++		for point: Array in model.tracks[2].document.points: outline.append(Vector2(point[0],point[1]))
++		check(page.detail_route.route == outline,"markers preserve the original preview outline")
++		# UI and race loading resolve the identical rival, including tied times.
++		var real_client: Node = app.rivalry
++		var probe := GhostProbe.new()
++		probe.model = model
++		app.rivalry = probe
++		var ghost: Dictionary = app._rivalry_ghost(1,0)
++		check(probe.driver == model.ghost_target(1,0).driver_id and ghost.driver == probe.driver,"race loading fetches the same challenger selected by the menu")
++		app.rivalry = real_client
++		probe.free()
++		for driver: Dictionary in model.tracks[1].entries:
++			if driver.id != WeeklyRivalry.SELF:
++				driver.ms = 78500
++				break
++		check(int(model.closest_challenger(1).ms) == 78500,"tied rival is the closest challenger")
++		app.rivalry_track = 1
++		app._rivalry()
++		await settle()
++		check((app.root_ui.find_child("RivalryClosestChallengerGap",true,false) as Label).text == "Level with you","tie never claims a rival is behind")
++		await capture("tied-lead",dimensions)
++		for track: Dictionary in model.tracks:
++			for driver: Dictionary in track.entries: driver.ms = null
++		# Unranked boards are ordinary server projections, not sortable sample times.
++		model.sample = false
++		for track: Dictionary in model.tracks:
++			track.available = false
++			track.entry = {"track_id":"fixture","version_id":"fixture","name":track.name,"creator":"Beat my track","content_hash":"a".repeat(64),"points":track.document.points}
++			for driver: Dictionary in track.entries: driver.rank = null
++		app._rivalry()
++		await settle()
++		list = table()
++		check(app.root_ui.find_child("RivalryClosestChallengerTime",true,false) == null,"no invented challenger before anyone records a time")
++		selector = app.root_ui.find_child("RivalryGhostSelector",true,false)
++		check(selector.selected == 3 and selector.is_item_disabled(0),"unrecorded rivals retain the No ghost fallback")
++		for row: Control in list.rows.get_children():
++			check((row.find_child("Time",true,false) as Label).text == "—" and (row.find_child("Gap",true,false) as Label).text == "—","missing times have no invented gaps")
++		await capture("unranked",dimensions)
++		for index: int in range(6):
++			model.tracks[1].entries.append({"id":"extra_"+str(index),"name":"Additional driver "+str(index),"rank":null,"ms":null})
++		app._rivalry()
++		await settle()
++		check(table().rows.get_child_count() == 20 and table().more.text == "↓  12 more drivers","the full twenty-driver field remains accessible")
++		await capture("twenty-drivers",dimensions)
++	app.queue_free()
++	await settle()
++	print("RIVALRY_TRACK_DETAIL_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/RIVALRY_TRACK_DETAIL.md
+@@ -0,0 +1,39 @@
++# Rivalry track detail reference correction — 2026-10-09
++
++Requirements: WR06/WR09-WR10, R01, V03-V05, Q01; the owner's track-detail reference requests the existing three columns, eight standings rows, signed player-relative gaps, a sticky player, a closest challenger and an appropriate default ghost.
++
++The left panel retains its original biome artwork and preview outline. Back to Tracks is reduced to a 48-logical-pixel touch target and returns to the existing rivalry overview/track list. A chequered start marker and forward arrow use the pinned full document's canonical route start and direction, projected onto the retained discovery outline. The verified cached document is used immediately; an uncached document downloads in the background through the existing integrity-checked cache. Until that document is available, the outline remains visible without guessing a start position. The sample fixture and reference's identities/times are never shipping fallbacks.
++
++The centre panel retains the yellow rank and total, with the full ordered track board immediately underneath. Eight complete rows fit the viewport at the checked sizes. Every entrant remains accessible by scroll, touch drag, wheel or the “more drivers” action; the count indicates entrants below the viewport. At the end, that action returns to the top. Every timed competitor has a signed three-decimal difference from the player's weekly PB. Missing times/gaps remain dashes. The player's row retains its yellow outline and appears as an opaque sticky row at the top or bottom while its original row is outside the viewport. The copy disappears when the original row returns; it passes pointer input through so mouse-wheel scrolling still works.
++
++The right panel retains the leading/rival headline and yellow Race action. The closest challenger section contains the actual flag, rank, name, best race time and millisecond gap, with quiet dividers. Tied competitors show “Level with you.” Choice zero follows the nearest faster rival; when leading, it follows the closest challenger, including a tied rival. If the player has no time, an available timed opponent can be selected. Menu labels and race ghost fetching share `WeeklyRivalry.ghost_target`, so the selected challenger is the recording actually requested. Explicit No ghost, leader and personal-PB choices remain. The ghost description updates with the choice. There is no fabricated challenger when no comparable recorded time exists.
++
++Changed files:
++
++- `game/ui/weekly_rivalry_page.gd`: denser detail, challenger, default ghost, compact back action and marker preparation.
++- `game/ui/rivalry_track_standings.gd`: full scrolling board, eight-row sizing, gaps, sticky player and continuation action.
++- `game/ui/lap_route_view.gd`: opt-in miniature race markers; other callers retain their existing presentation.
++- `game/race/weekly_rivalry.gd`: shared presentation-only ghost/challenger selection.
++- `game/core/app.gd`: verified preview document preparation and shared ghost target resolution.
++- `game/tests/test_rivalry_track_detail.gd`: isolated fixtures, geometry/data invariants, scroll/touch/wheel checks and captures.
++- This report, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
++
++No canonical simulation, physics/rules version, track file, competitive scoring, backend deployment, population isolation or normal-results-first behavior changes.
++
++## Actual validation
++
++Commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned **4.7.2.stable.official.ed1daf0bf**. Runtime tests set `APPDATA` to isolated workspace folders under `build/rivalry-track-detail-*-user`; Windows certificate-store access was required for Godot startup.
++
++| Arguments | Actual result |
++|---|---|
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_track_detail.gd -Graphical` | **333 checks, zero failures**. Leading, ranked, last-place, tied, unranked and twenty-driver fields; eight complete rows, signed gaps, unchanged competitive data, top/bottom sticky behavior, duplicate removal, more action, touch dragging, wheel over the pinned row, canonical start/reversal equality, original outline preservation and menu/race ghost agreement. Twenty-four native captures at 1280×720, 960×540 and 1600×720. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical` | **1,256 checks, zero failures**. Existing overview, track navigation, result, pending-verification, finale and unranked behavior. |
++| `-Action TestApp` | **99 checks, zero failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **390 scripts, zero failures**. |
++| `-Action Doctor` | Pinned engine/matching templates found; tablet `f0ba474a` listed **offline**. No physical-device test performed. |
++
++Final logs are in [the evidence directory](evidence/rivalry-track-detail-2026-10-09/logs). Initial execution-policy, default user-log, certificate-store and ADB sandbox failures were addressed with the process-scoped execution-policy option, isolated storage and approved native access. An initial undeclared script identifier was corrected to the existing cloud adapter. Focused scrolling tests exposed that scrollbar signals precede content layout; deferred updates fix stale sticky placement/counts. A marker fixture initially contained unsupported dictionary keys; JSON serialization now matches real full-document input, without weakening document validation or geometry equality. Failed runs are retained alongside final evidence.
++
++Inspected captures: [leading desert detail](evidence/rivalry-track-detail-2026-10-09/ui/leader-1280x720.png), [compact detail](evidence/rivalry-track-detail-2026-10-09/ui/leader-960x540.png), [sticky leader](evidence/rivalry-track-detail-2026-10-09/ui/leader-scrolled-1280x720.png), [sticky last-place player](evidence/rivalry-track-detail-2026-10-09/ui/last-player-960x540.png), [ranked detail](evidence/rivalry-track-detail-2026-10-09/ui/ranked-1280x720.png), [twenty-driver field](evidence/rivalry-track-detail-2026-10-09/ui/twenty-drivers-960x540.png). These are explicit isolated UI fixtures, not live standings. Existing original artwork is reused; no new raster assets or external dependencies.
++
++Remaining acceptance: owner visual/interaction review, actual-device legibility and gestures, live-backend document/ghost behavior under slow or failed connections, and mobile performance. No Android export/install, live competitive submission, full Validate/physics regression, backend rollout or production action was performed. A task-only source patch and hashes provide the review checkpoint while preserving the existing dirty working tree.

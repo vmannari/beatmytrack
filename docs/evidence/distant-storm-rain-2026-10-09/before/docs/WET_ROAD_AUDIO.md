@@ -1,0 +1,155 @@
+# Storm wet-asphalt tire rolling, 2026-10-09
+
+The follow-up correction below raises wet rolling and adds quiet recorded rain
+at the owner's request. It supersedes this first revision's rain removal and mix.
+
+The owner removes storm rain audio and requests tire rolling on wet asphalt
+that follows speed. SND19 implements this correction to SND04/SND05, with
+G01/R01/Q01/V06 presentation and canonical-state checks.
+
+`StormWeather` now creates only its occasional thunder voice. Visual weather,
+lightning and delayed thunder remain. The old rain WAV is retained as an unused
+historical asset; no runtime code loads or plays it.
+
+The existing road voice selects `wet_road.wav` in Storm. Four-wheel pavement
+coverage controls its mix. Gain increases through the driving-speed range;
+pitch stays bounded at 0.84–1.14. At rest, airborne, overturned, off asphalt and
+during countdown, road contact is immediately silent. Pause suspends playback;
+retry/rewind reset existing mixer state. Puddle spray uses actual water contact,
+including retained tire water, instead of a biome-wide maximum. Normal grass,
+sand and dry asphalt still select their established layers. No additional
+playback voices, physics/rules changes, UI labels or runtime dependencies.
+
+The new 5.9-second loop is offline sound design: filtered Nox CC0 car-interior
+rolling plus original sustained spray hiss. It is not a dedicated wet-road field
+recording. The builder, shipped notice and manifest retain provenance. The bank
+now contains 47 clips/10,786,852 bytes; all 46 existing WAVs match historical
+manifest hashes plus the subsequent three-impact onset audit. Looping voices
+remain bounded at 22 per race, with one fewer weather voice.
+
+Changed files: `game/track/storm_weather.gd`,
+`game/vehicle/vehicle_audio.gd`, `scripts/build_vehicle_audio.py`,
+`game/assets/audio/vehicles/{wet_road.wav,wet_road.wav.import,manifest.json,NOTICE.txt}`,
+`game/tests/{test_vehicle_audio.gd,test_storm.gd,test_wet_road_audio.gd,test_wet_road_audio.gd.uid}`,
+`scripts/review_wet_road_audio.py`, this document, `licenses/ASSETS.md`,
+`DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
+
+All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File
+scripts/dev.ps1` and pinned 4.7.2.stable.official.ed1daf0bf.
+
+| Actual command suffix / command | Actual outcome |
+| --- | --- |
+| `python scripts/build_vehicle_audio.py` | 47 clips; peak ceiling -1.514 dBFS. |
+| `Import` | Exit 0 with local Windows access. Restricted initial run could not read the Windows certificate store and was stopped; approved retry succeeds. |
+| `TestScript -ScriptPath res://tests/test_wet_road_audio.gd` | 33 checks, 0 failures. |
+| `TestScript -ScriptPath res://tests/test_wet_road_audio.gd -Graphical -TestArgument @('--capture')` via PowerShell `-Command` | 40 checks, 0 failures; six actual 48 kHz native PCM captures. Initial `-File` argument spelling failed before engine execution. |
+| `TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | 1,446 checks, 0 failures, including exact 960-tick canonical equivalence and bank hashes. |
+| `TestScript -ScriptPath res://tests/test_surface_impact_audio.gd` | 67 checks, 0 failures; exit 0 after delayed shutdown. An attempted narrowly scoped cleanup found no matching owned process and stopped nothing. |
+| `TestScript -ScriptPath res://tests/test_continuous_desert_audio.gd` | 28 checks, 0 failures; exit 0. |
+| `TestScript -ScriptPath res://tests/test_storm.gd` | 94 checks, 2 pre-existing visual spray failures, identical messages to `docs/evidence/verification-speed-2026-10-09/storm-validation-failure.log`. Weather/pause/thunder assertions pass. Initial adaptation queried paused state on an inactive thunder stream; corrected to test unchanged weather clock/no thunder start/count, with the separate active-thunder pause check retained. |
+| `python scripts/test_vehicle_audio_continuity.py --report docs/evidence/wet-road-audio-2026-10-09/continuity.json` | 40 looped assets including repeated wrap boundaries, 0 failures. |
+| `python scripts/review_wet_road_audio.py` | Six native captures, all 46 earlier masters unchanged, 0 failures. |
+
+Native isolated rolling RMS at 14.4/57.6/144 km/h is -37.42/-32.58/-27.44 dBFS;
+stopped/airborne/paused PCM is exactly zero. Audio measurements verify behavior
+and continuity, not owner approval of realism or the full game mix. Listening
+samples: [review.html](evidence/wet-road-audio-2026-10-09/review.html).
+Reports and the scoped review patch remain in the same evidence directory.
+The text patch passes `git -c core.autocrlf=false apply --reverse --check
+--ignore-space-change docs/evidence/wet-road-audio-2026-10-09/task-review.patch`.
+Default Git whitespace handling initially rejected CRLF working files; no
+runtime files were changed by either read-only patch check. The new WAV is
+stored separately and pinned by `checkpoint-files.json` and the bank manifest.
+The before-source files are reconstructed by reversing this task's edits because
+the initial backup command failed; PCM preservation is checked independently
+against the earlier saved manifest and onset audit. Existing workspace edits
+are preserved; the review patch stages no unrelated work.
+
+No phone attachment check or physical-device listening/performance test,
+Android export/install, full Validate, physics merge or deployment was performed.
+Remaining acceptance: owner listening to texture/balance in normal storm driving
+and on the target device. The two existing visual spray failures remain open.
+
+## Stronger wet rolling and quiet recorded rain
+
+The owner cannot hear wet tires well enough and now explicitly requests a
+suitable quiet background rain recording. SND21 (wet-tire presence) and SND22
+(recorded rain), with SND04/SND05/G01/R01/Q01/V06, implement this follow-up.
+Wet road gain is three times the previous value (+9.542 dB), with the same
+speed response, wheel contacts, bounded pitch, stop/airborne/countdown/retry
+guards and 22 mixer voices. None of the 47 vehicle WAVs change.
+
+One race-owned 19-second mono PCM rain loop replaces the earlier synthetic
+rain reference. The source is [Rain on concrete by Joseph SARDIN,
+BigSoundBank sound 1289](https://bigsoundbank.com/rain-on-concrete-s1289.html),
+whose page confirms an outdoor recording and CC0 licence. The shipping
+derivative extracts seconds 20–40, softens rumble/high frequencies and sharp
+drop transients, and crossfades a cyclic one-second seam. The first candidate
+had disproportionately strong isolated drops and was remastered before use.
+Source SHA256 `e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef`;
+derivative SHA256 `8e6eef9c6c9651caaeec3f19a02afaf3fe77a02c050daffecfad4ec7b604d5de`,
+1,675,844 bytes, RMS -21.938 dBFS. Rebuilding offline preserves identical bytes.
+Rain plays at 0.13 gain, about -39.7 dBFS nominal, on the existing Vehicle bus
+so vehicle volume/master mute apply. It fades in/out over 0.75 seconds,
+suspends with race pause/background focus and fades out on race finish.
+Retry/theme replacement/exit stop the old race-owned voice. Occasional delayed
+thunder remains. No new UI, physics/rules, source services or runtime dependencies.
+
+Follow-up changed files: `game/vehicle/vehicle_audio.gd`,
+`game/track/storm_weather.gd`, the storm advance call in `game/core/game.gd`,
+`game/tests/test_wet_road_audio.gd`,
+`game/tests/capture_storm_audio_balance.gd` and its UID,
+`scripts/build_storm_rain.py`, `scripts/review_storm_audio_balance.py`,
+`game/assets/audio/ambience/{storm_rain_recorded.wav,storm_rain_recorded.wav.import,storm_rain_manifest.json,NOTICE.txt}`,
+this page, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and `licenses/ASSETS.md`.
+
+Actual commands use the pinned `scripts/dev.ps1` entry point as above:
+
+- `python scripts/build_storm_rain.py --fetch`: source/licence fetched with
+  approved network access after the restricted socket attempt failed. No login,
+  purchase or account. `python scripts/build_storm_rain.py`: exact offline rebuild.
+- `Import`: exit 0.
+- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`: final 38 checks,
+  zero failures, including separate focus/pause/finish guards.
+- `TestScript -ScriptPath res://tests/test_vehicle_audio.gd`: 1,446 checks,
+  zero failures, including exact 960-tick canonical equivalence.
+- `TestScript -ScriptPath res://tests/test_storm.gd`: 94 checks, the same two
+  previously recorded visual spray failures; weather/thunder checks pass.
+- `TestScript -ScriptPath res://tests/capture_storm_audio_balance.gd -Graphical`:
+  final 30 checks, zero failures; seven same-clock mixer/engine/wet/rain sets,
+  including a real rain-loop wrap. Final capture exits cleanly.
+- `python scripts/review_storm_audio_balance.py`: zero failures; measured wet
+  increase 9.5299 dB. At 57.6/115.2 km/h wet/engine relative levels are -3.21/
+  +1.59 dB for compact and +1.45 dB for Formula at 115.2 km/h. Quiet rain is
+  16.66/22.07/20.79 dB below wet rolling respectively. Stationary wet and all
+  paused PCM are exactly zero; rain remains audible at rest. No clipped output
+  or dropout windows in source repeated seams or 21s native rain recording.
+  All 47 vehicle WAV hashes match the actual before-task snapshot.
+- `TestApp`: 99 checks, zero failures; race creation/return/record lifecycle.
+
+Native mix evidence, actual capture receipts, continuity/mix measurements and
+the task-only review patch are in `docs/evidence/storm-audio-balance-2026-10-09/`.
+The initial shorter unpaired gain comparison and a later capture interrupted by
+desktop focus changes are retained. The final fixture models foreground play
+explicitly; pause/background behavior is tested separately. No failures were
+removed from the production contracts. Listening review:
+[wet tires, engine and quiet rain](evidence/storm-audio-balance-2026-10-09/review.html).
+
+The initial old-level fixture briefly restored full wet gain between separate
+volume writes, allowing the audio thread to read that intermediate level. The
+final comparison uses a private one-third-level PCM copy as the mathematically
+equivalent previous wet level; both versions use the same held speed/engine,
+quiet rain and loop cursor. Shipping assets and the reviewed gain invariant
+remain unchanged. Initial measurement failures and recordings are retained.
+
+No physical-device listening/performance test, phone attachment check,
+Android export/install, full Validate, physics merge, backend or deployment.
+Owner hearing/texture approval in the normal game mix, music balance and
+target-device listening remain; native PCM measurements do not prove these.
+
+Follow-up checkpoint: `docs/evidence/storm-audio-balance-2026-10-09/task-review.patch`
+and `checkpoint-files.json`. The text patch includes only this task's changes;
+the new WAV is retained separately with its pinned hash. Read-only reverse
+verification uses `git -c core.autocrlf=false apply --reverse --check
+--ignore-space-change --whitespace=error-all` against that patch. Current
+unrelated workspace changes are preserved and unstaged.

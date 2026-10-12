@@ -1,0 +1,702 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Road section and free-form creator track v4",
+  "description": "At most 524288 UTF-8 bytes. Domain validation checks matching route/helper arrays, finite values, 16384 total paint points, at most 4000 m of road sections and bundled base identifiers. At-grade crossings are allowed. The lap route is independent of road pieces and paint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "name",
+    "theme",
+    "width",
+    "surface",
+    "points",
+    "widths",
+    "corners",
+    "objects",
+    "layout",
+    "paint",
+    "base_track",
+    "route_override",
+    "pieces"
+  ],
+  "properties": {
+    "schema": {
+      "const": "creator-track-v5"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[a-z0-9_]+$",
+      "not": {
+        "pattern": "^(con|prn|aux|nul|com[1-9]|lpt[1-9])$"
+      }
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "theme": {
+      "enum": [
+        "pine",
+        "coast",
+        "night_city",
+        "winter",
+        "storm",
+        "desert"
+      ]
+    },
+    "width": {
+      "type": "number",
+      "minimum": 6,
+      "maximum": 20
+    },
+    "surface": {
+      "enum": [
+        "asphalt",
+        "dirt"
+      ]
+    },
+    "points": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "number",
+          "minimum": -120,
+          "maximum": 120
+        }
+      }
+    },
+    "widths": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "type": "number",
+        "minimum": 6,
+        "maximum": 20
+      }
+    },
+    "corners": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 96,
+      "items": {
+        "enum": [
+          "sharp",
+          "smooth"
+        ]
+      }
+    },
+    "objects": {
+      "type": "array",
+      "maxItems": 96,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "position",
+          "rotation"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "tree",
+              "rock",
+              "barrier",
+              "tyre_wall",
+              "fence",
+              "dirt",
+              "water",
+              "boulder",
+              "slate",
+              "cliff",
+              "oil",
+              "puddle",
+              "jump",
+              "tyre_stack",
+              "broadleaf",
+              "bush",
+              "grass_clump",
+              "flowers",
+              "pebbles",
+              "log",
+              "guardrail",
+              "wire_fence",
+              "cone",
+              "chevron",
+              "braking_board",
+              "banner",
+              "flag",
+              "light",
+              "gantry",
+              "crate",
+              "barrel",
+              "pallet",
+              "parked_car",
+              "van",
+              "container",
+              "shed",
+              "hut",
+              "grandstand"
+            ]
+          },
+          "position": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number",
+              "minimum": -110,
+              "maximum": 110
+            }
+          },
+          "rotation": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 360
+          },
+          "scale": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 3.0,
+            "default": 1.0
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "tyre_wall",
+                    "tyre_stack"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "scale": {
+                  "const": 1.0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "bush",
+                    "grass_clump",
+                    "flowers",
+                    "pebbles",
+                    "flag",
+                    "pallet"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "scale": {
+                  "maximum": 1.5
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "creator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "layout": {
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "points",
+            "widths",
+            "corners",
+            "surface"
+          ],
+          "properties": {
+            "points": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number",
+                  "minimum": -120,
+                  "maximum": 120
+                }
+              }
+            },
+            "widths": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "type": "number",
+                "minimum": 6,
+                "maximum": 20
+              }
+            },
+            "corners": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 96,
+              "items": {
+                "enum": [
+                  "sharp",
+                  "smooth"
+                ]
+              }
+            },
+            "surface": {
+              "enum": [
+                "asphalt",
+                "dirt"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "base_track": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(|slicks_[a-z0-9_-]+_test)$"
+    },
+    "route_override": {
+      "type": "boolean"
+    },
+    "paint": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "surface",
+          "width",
+          "shape",
+          "points"
+        ],
+        "properties": {
+          "surface": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "width": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 40
+          },
+          "shape": {
+            "enum": [
+              "round",
+              "square"
+            ]
+          },
+          "points": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 512,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": -110,
+                "maximum": 110
+              }
+            }
+          },
+          "protect_road": {
+            "type": "boolean",
+            "default": false
+          },
+          "mode": {
+            "enum": [
+              "free",
+              "line",
+              "area"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "line"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "points": {
+                  "minItems": 2,
+                  "maxItems": 64
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "area"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "points": {
+                  "minItems": 3,
+                  "maxItems": 64
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "pieces": {
+      "type": "array",
+      "maxItems": 96,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "position",
+          "heading",
+          "length",
+          "radius",
+          "width",
+          "flip"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "straight",
+              "taper",
+              "curve",
+              "s_bend",
+              "hairpin",
+              "bridge",
+              "spline"
+            ]
+          },
+          "position": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "number",
+              "minimum": -120,
+              "maximum": 120
+            }
+          },
+          "heading": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 360
+          },
+          "length": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 120,
+            "description": "Straight/bridge length or the equal length of EACH hairpin arm. Ignored for pure-arc curves and S-bends, whose entry and exit straights are fixed at 2 metres each."
+          },
+          "radius": {
+            "type": "number",
+            "minimum": 3,
+            "maximum": 60
+          },
+          "width": {
+            "type": "number",
+            "minimum": 6,
+            "maximum": 20
+          },
+          "narrow_width": {
+            "type": "number",
+            "minimum": 6,
+            "maximum": 20,
+            "description": "Taper-only width at the converging end. Flip chooses which road edge remains straight. Domain validation also requires this not to exceed width."
+          },
+          "flip": {
+            "type": "boolean"
+          },
+          "angle": {
+            "type": "number",
+            "minimum": 5,
+            "maximum": 270,
+            "description": "Curve sweep in degrees, default 90; radius is independent."
+          },
+          "curvature": {
+            "type": "number",
+            "minimum": -0.3,
+            "maximum": 0.3,
+            "description": "Curve-only radial bulge; zero or omitted is a perfect circular arc. End positions and tangents are preserved."
+          },
+          "height": {
+            "type": "number",
+            "minimum": 2,
+            "maximum": 60,
+            "description": "S-bend lateral span in metres; omitted uses 2 * radius * (1 - cos(45 degrees)). Independent of lead-in length."
+          },
+          "spline_points": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "description": "Spline-only local interpolation points. First point is [0,0]; neighbouring points must be at least 2 m apart. World samples must stay inside the map.",
+            "prefixItems": [
+              {
+                "const": [
+                  0,
+                  0
+                ]
+              }
+            ],
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": -240,
+                "maximum": 240
+              }
+            }
+          },
+          "point_widths": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+              "type": "number",
+              "minimum": 6,
+              "maximum": 20
+            },
+            "description": "Spline-only widths at the five interpolation points; linear interpolation by distance within each fitted span. width equals the maximum point width. Connected endpoint mouths match neighbouring roads."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "taper"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "narrow_width"
+              ]
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "narrow_width"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "taper"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "bridge"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "length": {
+                  "minimum": 24
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "height"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "s_bend"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "curvature"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "curve"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "spline"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "spline_points",
+                "point_widths"
+              ]
+            }
+          },
+          {
+            "if": {
+              "anyOf": [
+                {
+                  "required": [
+                    "spline_points"
+                  ]
+                },
+                {
+                  "required": [
+                    "point_widths"
+                  ]
+                }
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "spline"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "contains": {
+        "properties": {
+          "kind": {
+            "const": "bridge"
+          }
+        }
+      },
+      "minContains": 0,
+      "maxContains": 16
+    },
+    "practice_start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "heading"
+      ],
+      "properties": {
+        "position": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number",
+            "minimum": -110,
+            "maximum": 110
+          }
+        },
+        "heading": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 360
+        }
+      }
+    },
+    "hidden_scenery": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "maxLength": 40
+      }
+    },
+    "start_line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "heading"
+      ],
+      "properties": {
+        "position": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number",
+            "minimum": -110,
+            "maximum": 110
+          }
+        },
+        "heading": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 360
+        }
+      },
+      "description": "Start/finish position and travel heading in map degrees; reverses the derived lap direction when facing against the road chain."
+    }
+  }
+}

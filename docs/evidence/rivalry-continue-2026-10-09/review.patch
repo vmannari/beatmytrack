@@ -1,0 +1,195 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -288,7 +288,7 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
+-	if screen == "rivalry": _remember_rivalry_standings(content)
++	if screen == "rivalry" and is_instance_valid(content): _remember_rivalry_standings(content)
+ 	_close_race_loading()
+ 	if challenge_racing and challenge_result_view and next != "challenges" and is_instance_valid(game):
+ 		remove_child(game)
+@@ -2874,6 +2874,15 @@
+ 		var ghost_error: Error = game.save_personal_ghost()
+ 		if ghost_error != OK: pending_menu_notice = "Best time saved. Could not save its local ghost."
+ 	(game.get("hud") as PlaygroundHUD).hide()
++	# The summary replaces the menu children. Retire their references before
++	# Continue or a background result update can revisit the previous page.
++	if screen == "rivalry" and is_instance_valid(content): _remember_rivalry_standings(content)
++	_stop_menu_page_motion()
++	menu_neighbors.clear()
++	content = null
++	menu_body = null
++	menu_body_slot = null
++	menu_body_backgrounds.clear()
+ 	root_ui.visible = true
+ 	for child: Node in root_ui.get_children():
+ 		root_ui.remove_child(child)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
++
+ 2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
+ 
+ 2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
++
+ 2026-10-09 WR01-WR02/WR08-WR10/R01/V03-V05/Q01: owner-requested compact Rivalry hub implemented: track arrows removed/full-width row entry, explicit Rivalry entry always resets to the overview across trophy/primary/prepared-page returns, background detail refresh preserved. Podium cars removed; winner/runner minima116/104 and native standings284 logical pixels/seven complete rows at desktop/compact/wide. Result-entry cleanup, player highlight/scroll memory, five tracks, populated first load and vertical Race transitions retained. Final graphical1151/entry66/carousel42/App99 pass;21 native captures reviewed. Minimized owned capture window restored to finish checks; other windows preserved. No phone attachment check/device test/export/install/full Validate/new backend HTTP/deployment. Task-only source checkpoint and commands/evidence/remaining acceptance: docs/RIVALRY_HUB_COMPACT.md.
+ 
+ 2026-10-09 RMC02/RMC04/R01/WR02/WR08/V03-V05/Q01: owner-reported standings movement reproduced as outgoing anchored-size changes and reset scroll during refresh/return. Fixed departing geometry, offscreen initial layout/reveal and scoped transient remembered scroll seeded before first draw; different championships retain independent player reveal. Final graphical stability50/carousel42/weekly1235/App99/headlessentry66/parser395/Import pass; six native captures inspected. Baseline six failures and subpixel/case-isolation fixture corrections retained; no invariant weakened. Concurrent compact podium/track-row edits preserved. Tablet f0ba474a offline; no physical-device test/export/install/full Validate/live race/backend or production action. Files/actual commands/evidence/scoped checkpoint/acceptance: docs/RACE_MODE_CAROUSEL.md (Standings row stability correction).
+--- /dev/null
++++ b/game/tests/test_rivalry_results_continue.gd
+@@ -0,0 +1,117 @@
++extends "res://tests/test_rivalry_result.gd"
++## Real pointer input after the race replaces a warmed Rivalry menu.
++
++class FixtureClient extends Node:
++	var player: Dictionary = {"id":"driver_2"}
++	var snapshot: Dictionary
++	func base_url() -> String: return "http://fixture.invalid"
++	func signed_in() -> bool: return true
++	func recent_run(_ticket: String) -> Dictionary: return {}
++	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		await get_tree().process_frame
++		return {"ok":true,"data":{"status":"queued"} if path.ends_with("/result") else snapshot.duplicate(true)}
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-continue-2026-10-09/ui")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	OS.set_environment("BMT_API_URL", "")
++	var folder: String = "user://rivalry_continue_" + TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var client := FixtureClient.new()
++	client.snapshot = fixture()
++	root.add_child(client)
++	app.rivalry.client = client
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		for state: String in ["verified", "pending", "failed"]:
++			await continue_flow(dimensions,state)
++	app.queue_free()
++	client.queue_free()
++	await process_frame
++	print("RIVALRY_CONTINUE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func continue_flow(dimensions: Vector2i, state: String) -> void:
++	app.rivalry.model.apply_snapshot(fixture())
++	app.rivalry.snapshot_scope = app.rivalry.scope()
++	app.rivalry.result_ticket = ""
++	app.rivalry_track = 1
++	app.rivalry_section = "overview"
++	app._show_screen("rivalry")
++	await settle()
++	var hub: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++	hub.standings_scroll.scroll_vertical = 75
++	await settle()
++	var scroll_offset: int = hub.standings_scroll.scroll_vertical
++	app.rivalry_section = "detail"
++	app._rivalry()
++	await settle()
++	check(not app.menu_neighbors.is_empty(),"fixture starts from a warmed Rivalry menu")
++	var track: NativeTrack = app.selected_track
++	track.metadata.cloud_version = "rivalry-continue-fixture"
++	await app._start_race(track,false,true,{"fixture":true})
++	var completed_game: Node = app.game
++	completed_game.set_physics_process(false)
++	completed_game.paused = true
++	completed_game.attempt_practice = false
++	# Owned capture windows can lose focus during scene preparation. Dismiss
++	# that unrelated pause overlay before emulating the completed-race event.
++	completed_game.hud.pause_menu.hide()
++	var session := TrackSession.new()
++	session.completed_laps = 5
++	session.elapsed_ticks = 13080
++	session.lap_start_time = 109.0
++	session.lap_times.assign([22.0,22.0,22.0,22.0,21.0])
++	session.finished = true
++	completed_game.track_session = session
++	completed_game.race_completed.emit()
++	await settle()
++	var normal: RaceResults = app.root_ui.find_child("RaceResults",true,false)
++	check(normal != null and normal.is_visible_in_tree() and app.rivalry_section == "race_results","normal five-lap summary appears first")
++	check(app.content == null and app.menu_body == null and app.menu_body_slot == null and app.menu_neighbors.is_empty(),"summary retires previous menu controls and prepared pages")
++	check(app.rivalry_standings_view.offset == scroll_offset,"summary preserves the remembered standings scroll")
++	app.rivalry_result_pending = state == "pending"
++	app.rivalry.error = "Could not connect. Try again." if state == "failed" else ""
++	# Keep verification state independent of HTTP: only the navigation is under test.
++	app.rivalry.result_state = state
++	if state != "failed":
++		var outcome: Dictionary = app.rivalry.model.preview_result(1,session.elapsed_ticks,109.0)
++		if state == "verified":
++			outcome.erase("provisional")
++			app.rivalry.model.apply_outcome(outcome,1)
++		else:
++			app.rivalry.result_ticket = "pending-fixture"
++	check(normal.next_button.is_visible_in_tree() and not normal.next_button.disabled,"Continue remains usable in " + state)
++	if DisplayServer.get_name() != "headless": await capture("normal-"+state,dimensions)
++	if dimensions.x == 1280:
++		await mouse_click(normal.next_button.get_global_rect().get_center())
++	else:
++		await tap(normal.next_button.get_global_rect().get_center())
++	await settle()
++	var result_view: WeeklyRivalryResult = app.root_ui.find_child("RivalryRaceResult",true,false)
++	check(app.rivalry_section == "result" and result_view != null and result_view.is_visible_in_tree(),"native Continue opens Rivalry feedback in " + state)
++	check(app.game == completed_game,"Continue preserves the completed race for Race Again")
++	if result_view == null: return
++	if DisplayServer.get_name() != "headless": await capture("feedback-"+state,dimensions)
++	var back: Button = app.root_ui.find_child("RivalryResultHome",true,false)
++	await tap(back.get_global_rect().get_center())
++	await settle()
++	var returned: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++	check(app.rivalry_section == "overview" and returned.track_rows.size() == 5 and app.root_ui.find_child("RivalryTracksPanel",true,false) != null,"Back to Rivalry opens the five-track overview")
++	check(app.game == null and not app.rivalry_racing,"Back to Rivalry releases the completed race")
++	check(returned.standings_scroll != null and returned.standings_scroll.scroll_vertical == scroll_offset,"return restores standings scroll")
++	if DisplayServer.get_name() != "headless": await capture("overview-"+state,dimensions)
++
++func mouse_click(position: Vector2) -> void:
++	for pressed: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = position
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = pressed
++		root.push_input(event,true)
++		await process_frame
+--- /dev/null
++++ b/docs/RIVALRY_CONTINUE_FIX.md
+@@ -0,0 +1,29 @@
++# Rivalry results Continue blocker — 2026-10-09
++
++Requirements: **WR08, R01, V03–V05, Q01**. The owner reports that Continue does nothing after a five-lap Rivalry race reaches the normal race summary.
++
++Reproduced with the pinned engine and existing graphical result regression. `_results()` removes and frees the previous menu children, including `content`, but retains their references. `_show_screen("rivalry")` then passes the freed `content` to the typed `_remember_rivalry_standings(Control)` helper. Godot rejects the argument before the helper's internal validity guard can run, aborting navigation. The recorded error is `Invalid type in function '_remember_rivalry_standings' ... argument 1 (previously freed)` at `app.gd:291`.
++
++`game/core/app.gd` now checks validity before passing that control and retires replaced menu references when constructing the race summary. It remembers standings scroll first, stops menu motion, clears prepared neighboring pages and releases `content`, `menu_body`, `menu_body_slot` and menu background references before deleting their controls. Background verification cannot revisit those removed pages. Continue retains the finished race for Race Again and opens the competition feedback immediately; Back to Rivalry releases the race and restores the overview and remembered scroll. Normal PB/lap results still appear first. No scoring, canonical simulation, rules, backend or presentation layout changes.
++
++`game/tests/test_rivalry_results_continue.gd` reuses the existing result fixture/helpers with an isolated asynchronous authenticated-service fixture. It checks actual viewport mouse input at 1280×720 and touch input at 960×540, each with verified, queued and failed verification. It covers the warmed menu's replacement, real five-lap summary data, usable Continue, immediate result entry, completed-race retention, Back to Rivalry cleanup, all five overview tracks and remembered scrolling. These synthetic completion fixtures do not claim a newly driven or server-verified race. Eighteen native screenshots are retained under `docs/evidence/rivalry-continue-2026-10-09/ui/`.
++
++All commands used `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, **4.7.2.stable.official.ed1daf0bf**, and disposable workspace `APPDATA` directories under `build/rivalry-continue-2026-10-09/`. Native runs needed approved local certificate-store access; neither owner saves nor certificate settings were changed.
++
++| Actual command suffix | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_rivalry_results_continue.gd -Graphical -CommandTimeoutSeconds 120` | **78 checks, zero failures**; all six native Continue/Back paths and 18 captures. |
++| `TestScript -ScriptPath res://tests/test_rivalry_result.gd -Graphical -CommandTimeoutSeconds 120` | **105 checks, zero failures**; existing results presentation, standings and summary-first app flow. Before the fix, this command aborted on the freed-control error. |
++| `TestApp` | **99 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_rivalry_feedback.gd` | **18 checks, zero failures**; provisional/verified scoring separation. |
++| `TestScript -ScriptPath res://tests/test_rivalry_entry.gd` | **66 checks, zero failures**; populated first entry and account fences. |
++| `TestScript -ScriptPath res://tests/test_race_mode_carousel.gd` | **42 checks, zero failures**, headless. |
++| `TestScript -ScriptPath res://tests/test_challenges.gd -CommandTimeoutSeconds 90` | **84 checks, zero failures**, including adjacent result/navigation flows. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **396 scripts, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_race_results.gd` | Headless broad normal-results test reports **11 failed checks** (rating fade, viewport/touch and retired local recommendations), then aborts at the missing third recommendation. An isolated copy using the saved pre-fix app reports the **same 11 failures and same out-of-bounds abort**. These failures were not changed or hidden. Temporary comparison scripts were removed. |
++
++Initial restricted execution could not read Windows root certificates. Early versions of the new fixture lost their board when unauthenticated refresh reset its scope, and one capture was obscured by the owned native window's focus-loss pause overlay. The fixture now models authenticated refresh and dismisses that unrelated pause overlay before emulating race completion; runtime behavior and assertions were not weakened. Failure logs and successful logs are retained.
++
++Reviewed native [compact pending feedback](evidence/rivalry-continue-2026-10-09/ui/feedback-pending-960x540.png), [compact summary with failed verification](evidence/rivalry-continue-2026-10-09/ui/normal-failed-960x540.png) and [returned overview](evidence/rivalry-continue-2026-10-09/ui/overview-failed-1280x720.png). Layout fixtures never substitute live scores. Before-source copies and a task-only review patch preserve the source checkpoint and unrelated workspace changes.
++
++Changed files: `game/core/app.gd`, the new regression, this report, `DEVELOPMENT_STATUS.md`, and `docs/PHASE_0_PLAN.md`, plus evidence. Remaining acceptance: restart the owner game and complete a live Rivalry race; confirm Continue, pending-to-verified feedback, Race Again and Back on the owner's desktop/device. No phone attachment check or physical-device test, Android export/install, live backend race, full Validate or deployment was performed.

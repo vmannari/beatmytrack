@@ -1,0 +1,45 @@
+﻿diff --git a/game/tests/test_desert.gd b/game/tests/test_desert.gd
+index 302bcba9..b46893a6 100644
+--- a/game/tests/test_desert.gd
++++ b/game/tests/test_desert.gd
+@@ -141,7 +141,7 @@ func run() -> void:
+ 	var environment := Environment.new()
+ 	var light := DirectionalLight3D.new()
+ 	TrackTheme.apply_lighting("desert",environment,light)
+-	check(is_equal_approx(light.rotation_degrees.x,-58) and light.light_color == Color("fff1d8"),"desert uses normal daylight per owner override")
++	check(is_equal_approx(light.rotation_degrees.x,-58) and light.light_color == Color("ffedce") and is_equal_approx(light.light_energy,1.32),"desert shares grass warm daylight per owner override")
+ 	TrackTheme.apply_lighting("pine",environment,light)
+ 	check(is_equal_approx(light.rotation_degrees.x,-58),"leaving desert restores daylight angle")
+ 	light.free()
+@@ -188,6 +188,7 @@ func run() -> void:
+ 		var folder: String = "res://../docs/evidence/desert"
+ 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+ 		for i: int in range(10): await process_frame
++		resume_capture(race)
+ 		await RenderingServer.frame_post_draw
+ 		check(root.get_texture().get_image().save_png(folder+"/sunset-road.png") == OK,"sunset evidence")
+ 		var comparison_folder: String = "res://../docs/evidence/desert-dunes"
+@@ -221,8 +222,23 @@ func run() -> void:
+ 			race.set("previous_heading",state.heading)
+ 			(race.get("camera") as FollowCamera).follow(state.position,Vector2.ZERO,state.heading,0.0,true)
+ 			for frame: int in range(5): await process_frame
++			resume_capture(race)
+ 			await RenderingServer.frame_post_draw
+ 			check(root.get_texture().get_image().save_png(apron_folder+"/route-"+str(int(fraction*100))+".png") == OK,"apron route evidence")
++			if fraction == 0.35 and "--screen=bank-detail" in OS.get_cmdline_user_args():
++				# Diagnostic close-up only; normal driving framing stays unchanged.
++				var camera: Camera3D = race.get("camera")
++				var normal_size: float = camera.size
++				race.set_process(false)
++				camera.size = normal_size*0.55
++				resume_capture(race)
++				await RenderingServer.frame_post_draw
++				await RenderingServer.frame_post_draw
++				var detail_folder: String = "res://../docs/evidence/desert-even-banks-2026-10-05"
++				DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(detail_folder))
++				check(root.get_texture().get_image().save_png(detail_folder+"/fresh-closeup.png") == OK,"fresh bank detail evidence")
++				camera.size = normal_size
++				race.set_process(true)
+ 		state.position = restored_position
+ 		state.heading = restored_heading
+ 		race.set("previous_position",state.position)

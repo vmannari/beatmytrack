@@ -1,0 +1,256 @@
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -33,7 +33,7 @@
+ func _profile_request(path: String, phase: String, start: int) -> void:
+ 	if not OS.is_debug_build() or (OS.get_environment("BMT_RACE_LOAD_PROFILE") != "1" and not "--profile-race-load" in OS.get_cmdline_user_args()): return
+ 	# Category only: never log account/track/ticket IDs, URLs, headers or bodies.
+-	var kind: String = "race_ticket" if _race_ticket_path(path) else "track_document" if path.ends_with("/document") else "score_upload" if path == "/runs" else "other"
++	var kind: String = "challenge_source" if path.get_slice("?",0) == "/challenges/sources" else "race_ticket" if _race_ticket_path(path) else "track_document" if path.ends_with("/document") else "score_upload" if path == "/runs" else "other"
+ 	print("RACE_LOAD_REQUEST ",JSON.stringify({"kind":kind,"phase":phase,"ms":(Time.get_ticks_usec()-start)/1000.0}))
+ 
+ func _ready() -> void:
+@@ -199,10 +199,10 @@
+ 	while _refresh_busy:
+ 		if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+ 		# Renewal may already be complete while its owner's original read is
+-		# still being retried under the rotation lock. A race can use that new
+-		# credential without waiting for the unrelated response or releasing
+-		# either lock. Keep the exact ticket payload and operation key.
+-		if method == HTTPClient.METHOD_POST and _race_ticket_path(path) and not _access_token.is_empty() and _access_token != used_access:
++		# still being retried under the rotation lock. Race authorization and
++		# challenge-time lookup can use that credential without waiting for an
++		# unrelated response or releasing either lock. Keep the exact request.
++		if _independent_auth_request(path,method) and not _access_token.is_empty() and _access_token != used_access:
+ 			var ticket: Dictionary = _checked(await _send(path,method,payload,true,key),path,method)
+ 			return ticket if generation == _session_generation else _failure("ACCOUNT_CHANGED")
+ 		if Time.get_ticks_msec()-began >= 35000:
+@@ -546,6 +546,11 @@
+ static func _race_ticket_path(path: String) -> bool:
+ 	return path == "/run-tickets" or ((path.begins_with("/rivalry/") or path.begins_with("/challenges/")) and path.get_slice_count("/") == 4 and path.ends_with("/tickets"))
+ 
++static func _independent_auth_request(path: String, method: HTTPClient.Method) -> bool:
++	# A tiny verified-time lookup must not queue behind durable uploads. Its
++	# credential rotation uses the same independent lock as race authorization.
++	return (method == HTTPClient.METHOD_POST and _race_ticket_path(path)) or (method == HTTPClient.METHOD_GET and path.get_slice("?",0) == "/challenges/sources")
++
+ func _authenticated_read(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, idempotency_key: String = "") -> Dictionary:
+ 	var identity: String = str(player.get("id",""))
+ 	var generation: int = _session_generation
+@@ -560,14 +565,14 @@
+ 		clear_session()
+ 		return response
+ 	var profile_wait: int = Time.get_ticks_usec()
+-	var priority_ticket: bool = method == HTTPClient.METHOD_POST and _race_ticket_path(path)
+-	if not priority_ticket:
++	var independent: bool = _independent_auth_request(path,method)
++	if not independent:
+ 		while _busy: await get_tree().process_frame
+ 	_profile_request(path,"refresh_queue",profile_wait)
+ 	if str(player.get("id","")) != identity or generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+-	if not priority_ticket: _busy = true
++	if not independent: _busy = true
+ 	response = await _renew_session(generation,path,method,payload,idempotency_key,used_access)
+-	if not priority_ticket: _busy = false
++	if not independent: _busy = false
+ 	if str(player.get("id","")) != identity or generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+ 	if response.status == 401 or (response.get("refresh_failed",false) and not refresh_retry_safe(response)): clear_session()
+ 	return response
+--- a/game/tests/test_challenge_source_priority.gd
++++ b/game/tests/test_challenge_source_priority.gd
+@@ -0,0 +1,132 @@
++extends SceneTree
++## Real auth dispatcher and challenge adapter against held transport boundaries.
++const Client = preload("res://backend/backend_client.gd")
++const SOURCE = "/challenges/sources?version_id=00000000-0000-0000-0000-000000000001&vehicle_id=compact"
++var checks: int = 0
++var failures: int = 0
++
++class API extends Client:
++	signal release_upload
++	signal release_read
++	signal release_source
++	var upload_started: bool = false
++	var read_retry_started: bool = false
++	var source_started: bool = false
++	var hold_source: bool = false
++	var expired: bool = true
++	var switch_account: bool = false
++	var refreshes: int = 0
++	var source_calls: int = 0
++	var requested: Array[String] = []
++	func _send(path: String, _method: HTTPClient.Method, _payload: Dictionary, _auth: bool, _key: String = "", _headers: PackedStringArray = [], _owner: int = 0) -> Dictionary:
++		requested.append(path)
++		if path == "/runs":
++			upload_started = true
++			await release_upload
++			return {"ok":true,"status":202,"data":{},"error":""}
++		if path == "/auth/refresh":
++			refreshes += 1
++			await get_tree().process_frame
++			return {"ok":true,"status":200,"data":{"access_token":"fresh-access","refresh_token":"fresh-refresh","player":{"id":"fixture-player"}},"error":""}
++		if path == "/me":
++			if _access_token != "fresh-access": return {"ok":false,"status":401,"data":{},"error":"INVALID_SESSION"}
++			read_retry_started = true
++			await release_read
++			return {"ok":true,"status":200,"data":{"id":"fixture-player"},"error":""}
++		if path.begins_with("/challenges/sources?"):
++			source_calls += 1
++			if hold_source and not source_started:
++				source_started = true
++				await release_source
++				return {"ok":false,"status":401,"data":{},"error":"INVALID_SESSION"}
++			await get_tree().process_frame
++			if expired and _access_token != "fresh-access": return {"ok":false,"status":401,"data":{},"error":"INVALID_SESSION"}
++			if switch_account: clear_session()
++			return {"ok":true,"status":200,"data":{"status":"verified","run_id":"fixture-run","ms":88110},"error":""}
++		return {"ok":true,"status":200,"data":{},"error":""}
++
++func _initialize() -> void: call_deferred("run")
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL: ",label)
++func fixture() -> API:
++	var api := API.new()
++	root.add_child(api)
++	api.configure("http://127.0.0.1:18181")
++	api.player = {"id":"fixture-player"}
++	api._access_token = "old-access"
++	api._refresh_token = "r".repeat(64)
++	return api
++func upload(api: API, result: Dictionary) -> void:
++	result.value = await api.request_api("/runs",HTTPClient.METHOD_POST,{},"upload-key",true)
++	result.done = true
++func source(api: API, result: Dictionary, ticket: String = "") -> void:
++	var adapter := ChallengesClient.new()
++	adapter.client = api
++	root.add_child(adapter)
++	var started: int = Time.get_ticks_usec()
++	result.value = await adapter.source("00000000-0000-0000-0000-000000000001","compact",ticket)
++	result.elapsed_ms = (Time.get_ticks_usec()-started)/1000.0
++	result.done = true
++	adapter.queue_free()
++func read(api: API, result: Dictionary) -> void:
++	result.value = await api.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	result.done = true
++func observer(api: API, result: Dictionary) -> void:
++	result.value = await api._renew_session(api._session_generation,"/other-observer",HTTPClient.METHOD_GET,{},"","old-access")
++	result.done = true
++func run() -> void:
++	for expired: bool in [false,true]:
++		var api := fixture()
++		api.expired = expired
++		var writing := {"done":false}
++		upload(api,writing)
++		while not api.upload_started: await process_frame
++		var looking := {"done":false}
++		var second := {"done":false}
++		var started: int = Time.get_ticks_usec()
++		source(api,looking)
++		if expired: source(api,second,"00000000-0000-0000-0000-000000000002")
++		for frame: int in range(25): await process_frame
++		check(looking.done and not writing.done,"source lookup finishes before held upload; expired="+str(expired))
++		if expired: check(second.done,"simultaneous exact-ticket lookup also finishes before held upload")
++		check(api._busy,"lookup never releases the upload owner's lock")
++		print("SOURCE_PRIORITY ",JSON.stringify({"expired":expired,"completed_before_release":looking.done,"elapsed_ms":looking.get("elapsed_ms"),"observation_ms":(Time.get_ticks_usec()-started)/1000.0}))
++		api.release_upload.emit()
++		while not writing.done or not looking.done or (expired and not second.done): await process_frame
++		check(looking.value.status == "verified" and looking.value.ms == 88110,"lookup returns actual verified time")
++		check(api.refreshes == (1 if expired else 0),"concurrent sources share one credential rotation")
++		if expired: check(api.requested.count(SOURCE+"&ticket_id=00000000-0000-0000-0000-000000000002") == 2,"refresh keeps the exact completed-ticket query")
++		check(not api._busy and not api._refresh_busy,"owners finish with both locks released")
++		api.free()
++	for changed: bool in [false,true]:
++		var api := fixture()
++		api.hold_source = true
++		api.switch_account = changed
++		var looking := {"done":false}
++		source(api,looking)
++		while not api.source_started: await process_frame
++		var reading := {"done":false}
++		read(api,reading)
++		while not api.read_retry_started: await process_frame
++		var observing := {"done":false}
++		if not changed: observer(api,observing)
++		api.release_source.emit()
++		for frame: int in range(12): await process_frame
++		check(looking.done and not reading.done,"already refreshed source bypasses held original read")
++		check(api._busy and api._refresh_busy,"lookup preserves refresh and mutation ownership")
++		if not changed: check(not observing.done,"unrelated reads keep their original renewal serialization")
++		api.release_read.emit()
++		while not looking.done or not reading.done: await process_frame
++		if changed: check(looking.value.status == "unavailable" and not api.signed_in(),"account switch cannot expose an old verified time")
++		else:
++			while not observing.done: await process_frame
++			check(looking.value.status == "verified" and api.refreshes == 1,"fresh access handles the source without a second renewal")
++		check(not api._busy and not api._refresh_busy,"held read releases only its own locks")
++		api.free()
++	check(Client._independent_auth_request(SOURCE,HTTPClient.METHOD_GET),"only the exact source GET route joins race auth priority")
++	for path: String in ["/challenges","/challenges/sources/other","/challenges/source","/runs"]:
++		check(not Client._independent_auth_request(path,HTTPClient.METHOD_GET),"unrelated read remains serialized on renewal: "+path)
++	check(not Client._independent_auth_request(SOURCE,HTTPClient.METHOD_POST),"source mutation is never granted priority")
++	print("CHALLENGE_SOURCE_PRIORITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- a/docs/CHALLENGE_SOURCE_LATENCY.md
++++ b/docs/CHALLENGE_SOURCE_LATENCY.md
+@@ -0,0 +1,51 @@
++# Challenge “Checking time…” delay — 2026-10-11
++
++The owner reports a long Checking time… state in challenge creation. Inspection and a failing reproduction identify a client authentication queue defect capable of holding this state while unrelated requests are in flight. The source lookup itself is a small database query; it does not replay or simulate a race.
++
++Requirement IDs: **CH02, CH09–CH11, CH14, B01, R01, Q01**. Preserve the verified source, exact completed-ticket query, account fencing, refresh-token rotation ownership and durable upload semantics.
++
++## Trace and live evidence
++
++`ChallengeCreate._check_source()` sets `_checking`, then waits for `ChallengesClient.source()`, which calls authenticated GET `/v1/challenges/sources`. Backend `sources()` checks the published track/car/board contract, reads the player's PB or the exact requested completed ticket, and returns status/time. Ghost preparation belongs to creation, not this lookup; no verifier, track compilation or recording download occurs here.
++
++Read-only cloud observations saved sanitized route/status/duration fields only. Twelve source requests were found in the preceding 24 hours. Nine successful lookups took **28.39–66.29 ms** of backend handling; the three 401 responses took **19.71–28.08 ms**. Recent source requests include expired-session responses. Public health/readiness probes succeeded. These server durations exclude transport and client waits and do not identify a particular owner account. No owner session file/token was adopted or modified.
++
++The client already sends healthy authenticated GETs independently. After a 401, however, `_authenticated_read()` waited for the general `_busy` mutation queue. A score upload can hold that queue for its 30-second HTTP timeout, and queued mutations can lengthen the wait. A second case waits behind `_refresh_busy` even after a different request has installed fresh credentials, because the refresh owner retains its lock through its original HTTP retry. Existing race tickets had independent handling for these cases; the challenge source GET did not.
++
++`test_challenge_source_priority.gd` reproduces both boundaries with the real dispatcher and ChallengesClient adapter. The baseline reports **21 checks / four failures**: expired PB lookup and exact-ticket lookup remain pending behind a held upload, and already-renewed lookup remains pending behind a held original read in two account cases. Releasing the held transport lets the baseline complete, so the test distinguishes queue waiting from server computation without waiting for a real 30-second timeout.
++
++## Correction
++
++`game/backend/backend_client.gd` gives the exact GET `/challenges/sources` route the same independent credential handling as actual race-ticket POSTs. It can renew while an unrelated upload remains held, and can retry with already-installed credentials while another request retains its original locks. Generation/identity checks, exact query/payload/key, serialized refresh and lock ownership remain. Other reads and mutations retain their original renewal behavior. A debug-only profiling category now identifies challenge-source encode/HTTP/refresh-queue timings without exposing query strings, tokens, IDs or responses.
++
++No cached or invented PB replaces server verification. No HTTP timeout was shortened, no refresh bypass was added, and no server/physics/UI contract changed. Source requests still use the existing 30-second network timeout if transport itself stalls. This fixes a confirmed client defect; it is not a capture of the owner's exact stalled coroutine or proof that every network-related delay is eliminated.
++
++## Files and actual checks
++
++- Changed runtime: `game/backend/backend_client.gd`.
++- Added focused regression: `game/tests/test_challenge_source_priority.gd`.
++- Documentation: this file, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, evidence and review receipt.
++
++All native commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned **4.7.2.stable.official.ed1daf0bf**, and isolated workspace-local APPDATA under `.tools/challenge-source-latency-20261011/`.
++
++| Actual command arguments | Outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_challenge_source_priority.gd` | Baseline 21/four failures; final **27/zero failures**. Final stub-transport PB lookup completed in **20.488 ms** with expired credentials while upload remained held; this is client scheduling evidence, not a live end-to-end latency promise. |
++| `TestScript -ScriptPath res://tests/test_race_ticket_priority.gd` | **26/zero failures** |
++| `TestScript -ScriptPath res://tests/test_expired_ticket_priority.gd` | **19/zero failures** |
++| `TestScript -ScriptPath res://tests/test_refreshed_ticket_priority.gd` | **26/zero failures** |
++| `TestScript -ScriptPath res://tests/test_backend_exception_recovery.gd` | **28/zero failures** |
++| `TestScript -ScriptPath res://tests/test_challenges.gd` | Headless **161/zero failures**, including exact-result creation/pending/error/source gates. |
++| `TestApp` | **99/zero failures** |
++| `.tools/backend-venv/Scripts/python.exe .tools/challenge-source-latency-20261011/inspect_live.py` | Two read-only observations: health/readiness and sanitized request timings; second query specifically targets sources. |
++| Scoped checkpoint `git diff --check` | Passed. |
++
++The first restricted native attempt emitted a Windows certificate-store access error. The normal-access baseline retains its expected failures, and final/regression logs are clean. No assertions were removed or weakened.
++
++[Baseline](evidence/challenge-source-latency-2026-10-11/baseline.log), [final focused test](evidence/challenge-source-latency-2026-10-11/final.log), [source server timings](evidence/challenge-source-latency-2026-10-11/live-source-read-only.json), [challenge checks](evidence/challenge-source-latency-2026-10-11/challenges.log), [application checks](evidence/challenge-source-latency-2026-10-11/app.log).
++
++## Acceptance and review
++
++Restart the Windows game to load the client fix, then retry challenge creation under the owner's actual sign-in/session/network. Existing debug profiling can separate client refresh-queue time and HTTP time if a delay remains. No owner-specific live coroutine, phone/device test or attachment check, Android export/install, backend change/deployment, player/race/score writes, full Validate or production deployment was performed. Read-only cloud access did not change a service, schema or account. There are no visible UI changes requiring new screenshots.
++
++Review ref: `refs/codex/challenge-source-latency-2026-10-11`; compare it with its snapshot parent. [Checkpoint receipt](evidence/challenge-source-latency-2026-10-11/checkpoint.json) records the task files and preserved HEAD/index.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-11 CH02/CH09-CH11/CH14/B01/R01/Q01: owner long challenge Checking time. Read-only source nine200/28.39-66.29ms/three401/19.71-28.08ms; small DB query/no replay. Real client-adapter held-upload and already-renewed-read baseline21/4fail; exact sourceGET joins independent race credential path, preserving account/rotation/owner locks/exact-ticket query. Final27/0 (stub expired20.488ms), race26/expired19/refreshed26/recovery28/challenge161/App99 pass; category-only debug profile. Owner exact coroutine/transport latency unconfirmed; restart/retry acceptance. No player/race writes/server-physics-UI change/phone-or-attachment test/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/limits: docs/CHALLENGE_SOURCE_LATENCY.md.
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-11 CH02/CH09-CH11/CH14/B01/R01/Q01: owner long challenge Checking time. Read-only source nine200/28.39-66.29ms/three401/19.71-28.08ms; small DB query/no replay. Real client-adapter held-upload and already-renewed-read baseline21/4fail; exact sourceGET joins independent race credential path, preserving account/rotation/owner locks/exact-ticket query. Final27/0 (stub expired20.488ms), race26/expired19/refreshed26/recovery28/challenge161/App99 pass; category-only debug profile. Owner exact coroutine/transport latency unconfirmed; restart/retry acceptance. No player/race writes/server-physics-UI change/phone-or-attachment test/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/limits: docs/CHALLENGE_SOURCE_LATENCY.md.
++

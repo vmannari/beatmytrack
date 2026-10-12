@@ -1,0 +1,459 @@
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -19,6 +19,7 @@
+ var _search_cursor: String = ""
+ var _search_loading: bool = false
+ var _snapshot_entries: Array[Dictionary] = []
++var _catalog_serial: int = 0
+ const MAX_CATALOG_ENTRIES: int = 1000
+ var _recovered_outboxes: Dictionary = {}
+ var _pending_iterators: Dictionary = {}
+@@ -182,6 +183,8 @@
+ 	return ok and DirAccess.rename_absolute(path+".tmp",path) == OK
+ 
+ func load_cached() -> void:
++	_catalog_serial += 1
++	_search_serial += 1
+ 	catalog_url = str(client.base_url())
+ 	next_cursor = ""
+ 	_search_cursor = ""
+@@ -213,12 +216,14 @@
+ 	last_refresh_msec = Time.get_ticks_msec()
+ 	if catalog_url != str(client.base_url()): load_cached()
+ 	refreshing = true
++	var serial: int = _catalog_serial
+ 	status = "Refreshing cloud tracks…"
+ 	changed.emit()
+ 	var collected: Array[Dictionary] = entries.duplicate(true)
+ 	if next_cursor.is_empty(): _snapshot_entries.clear()
+ 	for page: int in range(1):
+ 		var response: Dictionary = await client.request_api("/tracks?limit=20"+("&cursor="+next_cursor.uri_encode() if not next_cursor.is_empty() else ""))
++		if serial != _catalog_serial or catalog_url != str(client.base_url()): break
+ 		if not response.ok:
+ 			status = "Cloud unavailable · showing cached tracks · Refresh to retry"
+ 			break
+@@ -251,6 +256,9 @@
+ 			break
+ 		status = "Cloud tracks loaded · more will load on the next refresh"
+ 	refreshing = false
++	if serial != _catalog_serial or catalog_url != str(client.base_url()):
++		refresh.call_deferred(true)
++		return
+ 	_remember_aliases()
+ 	changed.emit()
+ 
+@@ -334,6 +342,16 @@
+ 
+ func remember_publication(metadata: Dictionary) -> bool:
+ 	if not _retain_metadata(metadata): return false
++	# An older paginated snapshot cannot contain this newly committed revision.
++	# Fence outstanding reads and start the next refresh at the newest page.
++	_catalog_serial += 1
++	next_cursor = ""
++	_snapshot_entries.clear()
++	last_refresh_msec = -60000
++	_search_serial += 1
++	_search_filters.clear()
++	_search_cursor = ""
++	_search_loading = false
+ 	entries = entries.filter(func(old: Dictionary) -> bool: return str(old.track_id) != str(metadata.track_id))
+ 	entries.append(metadata.duplicate(true))
+ 	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2944,11 +2944,19 @@
+ 			editor_view.clear()
+ 			history.clear()
+ 			redo_history.clear()
+-		_show_screen("tracks")
++		_open_published_track(lifecycle.status_for(loaded).receipt)
+ 		_notice("Track published.")
+ 		return
+ 	_notice("Sign in to publish this track to the cloud. Your draft remains saved locally.")
+ 	return
++
++func _open_published_track(receipt: Dictionary) -> void:
++	# Publishing is a direct navigation to the acknowledged public card.
++	# Previous search/feed filters must not hide the track just published.
++	browser_state.clear()
++	browser_state.focus_track = "cloud_"+str(receipt.track_id)
++	race_area_mode = "free"
++	_show_screen("tracks")
+ 
+ func _prepare_creator_test(source: Dictionary) -> bool:
+ 	if lifecycle == null: return true
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -276,9 +276,28 @@
+ 	return selected_track.metadata.has("cloud_version") and catalog.entries.any(func(entry: Dictionary) -> bool: return str(entry.id) == selected_track.identity)
+ 
+ func _random_on_open() -> void:
++	var focus_id: String = str(state.get("focus_track",""))
++	if not focus_id.is_empty():
++		state.erase("focus_track")
++		for entry: Dictionary in matches:
++			if str(entry.id) != focus_id: continue
++			_select(entry)
++			_reveal_track.call_deferred(focus_id)
++			return
+ 	if state.get("random_on_open",false):
+ 		state.erase("random_on_open")
+ 		_random()
++
++func _reveal_track(identity: String) -> void:
++	# Scroll after the container has laid out its complete virtual carousel.
++	await get_tree().process_frame
++	if not is_inside_tree(): return
++	for index: int in range(matches.size()):
++		if str(matches[index].id) != identity: continue
++		gallery.call("_stop_snap")
++		gallery.scroll_horizontal = index*tile_stride
++		_render_tiles(true)
++		return
+ 
+ func _clear(parent: Node) -> void:
+ 	for child: Node in parent.get_children():
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-07 B01-B07/R01/V03-V05/Q01: just-published Star is public in retained cloud and existing cache; corrected Publish return clears discovery filters, opens Free Race, selects exact public revision and reveals its full carousel card. Publication invalidates old pagination/search reads and starts a fresh immediate snapshot; later withdrawal still removes cards. Task-start disappearance reproduced; final publication22/live-Star12/App99/recovery86/catalog21 and real HTTP2 pass (one existing deprecation warning). Inspected desktop1280x720/compact960x540 captures, isolated caches and scoped patch preserved unrelated work. No republication/player-data repair, phone attachment check/device test/export/install/full Validate/backend rollout/production action. Restart running app; owner/device acceptance remains. Actual files/commands/failures/evidence: docs/PUBLISHED_TRACK_DISCOVERY.md.
++
+ 2026-10-07 TD07-TD08/WR01-WR09/B01-B07/R01/V03-V05/Q01: owner-requested automatic development rivalry and five-track race hub implemented. No Test Rivals selector; persistent 14-member fields and idle backend canonical ticket/upload/verification, labeled/isolated from public results. Overview exposes every circuit with direct Race, PB/leader targets and reference-led podium/table; distinct Tracks/Standings and completed-week results. Final menu1091/verified-fixture503/lifecycle7/live-cloud26/App99/parser327 and backend41 pass/4 skip/15 deselected plus native HTTP5 pass. Retained staging updated from frozen current physics0.52/compiler22/rules19 after successful SQL backup1791388723672; all five circuits receive actual verified artificial PBs without a PC watcher. First all-five counts4/3/1/1/5, not all profiles complete; existing accounts/data preserved, isolated observer used after prior reserved-name conflict. Corrected intermediate fixture/encoding/manifest/footer/name failures; inspected real captures/scoped patch. DN2103 attached, no phone UI test/export/install/full Validate or production deployment. Files/commands/limits/acceptance: docs/RIVALRY_HUB.md.
+ 
+ 2026-10-07 STORE01-STORE07/PUR01-PUR08/B01-B07/RW05-RW07/Q01: owner-requested Store tab and purchase administration implemented. Five products/authoritative access, explicit payment-free debug simulation, pending/retry recovery and desktop/compact layout; four-tab navigation retains canonical racer. Owner-only development/test product toggles use CAS revisions/idempotent audits; new checkout rejects disabled items while existing access/pending payments survive. Per-player purchase/entitlement inspection is redacted/read-only and cursor-bounded/indexed. Separate generated admin key, Admin browser/clipboard launcher and debug console link preserve game credentials. Final SQLite/ownedPG backend66 pass/3 skip, graphicalStore17/browser7/App99 checks all zero failures; screenshots inspected, availability restored and owned PG removed. Migration0017 applied only to owned lab; catalog updated for existing .51/rules19. No actual store/payment/cloud rollout/phone check/device/export/full Validate. Commands/files/failures/scoped checkpoint/acceptance: docs/STORE_AND_ADMIN.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-07 B01-B07/R01/V03-V05/Q01: just-published Star is public in retained cloud and existing cache; corrected Publish return clears discovery filters, opens Free Race, selects exact public revision and reveals its full carousel card. Publication invalidates old pagination/search reads and starts a fresh immediate snapshot; later withdrawal still removes cards. Task-start disappearance reproduced; final publication22/live-Star12/App99/recovery86/catalog21 and real HTTP2 pass (one existing deprecation warning). Inspected desktop1280x720/compact960x540 captures, isolated caches and scoped patch preserved unrelated work. No republication/player-data repair, phone attachment check/device test/export/install/full Validate/backend rollout/production action. Restart running app; owner/device acceptance remains. Actual files/commands/failures/evidence: docs/PUBLISHED_TRACK_DISCOVERY.md.
++
+ 2026-10-07 TD07-TD08/WR01-WR09/B01-B07/R01/V03-V05/Q01: owner-requested automatic development rivalry and five-track race hub implemented. No Test Rivals selector; persistent 14-member fields and idle backend canonical ticket/upload/verification, labeled/isolated from public results. Overview exposes every circuit with direct Race, PB/leader targets and reference-led podium/table; distinct Tracks/Standings and completed-week results. Final menu1091/verified-fixture503/lifecycle7/live-cloud26/App99/parser327 and backend41 pass/4 skip/15 deselected plus native HTTP5 pass. Retained staging updated from frozen current physics0.52/compiler22/rules19 after successful SQL backup1791388723672; all five circuits receive actual verified artificial PBs without a PC watcher. First all-five counts4/3/1/1/5, not all profiles complete; existing accounts/data preserved, isolated observer used after prior reserved-name conflict. Corrected intermediate fixture/encoding/manifest/footer/name failures; inspected real captures/scoped patch. DN2103 attached, no phone UI test/export/install/full Validate or production deployment. Files/commands/limits/acceptance: docs/RIVALRY_HUB.md.
+ 
+ 2026-10-07 STORE01-STORE07/PUR01-PUR08/B01-B07/RW05-RW07/Q01: owner-requested Store tab and purchase administration implemented. Five products/authoritative access, explicit payment-free debug simulation, pending/retry recovery and desktop/compact layout; four-tab navigation retains canonical racer. Owner-only development/test product toggles use CAS revisions/idempotent audits; new checkout rejects disabled items while existing access/pending payments survive. Per-player purchase/entitlement inspection is redacted/read-only and cursor-bounded/indexed. Separate generated admin key, Admin browser/clipboard launcher and debug console link preserve game credentials. Final SQLite/ownedPG backend66 pass/3 skip, graphicalStore17/browser7/App99 checks all zero failures; screenshots inspected, availability restored and owned PG removed. Migration0017 applied only to owned lab; catalog updated for existing .51/rules19. No actual store/payment/cloud rollout/phone check/device/export/full Validate. Commands/files/failures/scoped checkpoint/acceptance: docs/STORE_AND_ADMIN.md.
+--- /dev/null
++++ b/game/tests/test_publication_discovery.gd
+@@ -0,0 +1,198 @@
++extends SceneTree
++## Publication during snapshot pagination and actual Publish -> Free Race navigation.
++## Fictional backend responses and all writes isolated inside build/.
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String
++
++class CatalogClient extends Client:
++	signal release_read
++	var head: Dictionary
++	var tail: Dictionary
++	var publication: Dictionary
++	var published: bool = false
++	var hold: bool = false
++	var started: bool = false
++	var requests: Array[String] = []
++	var hold_search: bool = false
++	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		if not path.begins_with("/tracks?"): return {"ok":false,"error":"offline fixture","data":{}}
++		requests.append(path)
++		var data: Dictionary
++		if path.contains("cursor="): data = {"items":[tail],"next_cursor":null}
++		elif published: data = {"items":[publication,head,tail],"next_cursor":null}
++		else: data = {"items":[head],"next_cursor":"snapshot-before-publication"}
++		started = true
++		if hold:
++			hold = false
++			await release_read
++		return {"ok":true,"data":data,"error":""}
++	func request_public(path: String, _owner: int) -> Dictionary:
++		if path.begins_with("/tracks?"):
++			var data: Dictionary = {"items":[publication.duplicate(true)],"next_cursor":null}
++			if hold_search: await release_read
++			return {"ok":true,"data":data,"error":""}
++		return {"ok":true,"data":{"items":[],"population":0,"next_cursor":null},"error":""}
++
++class PublishedFlow extends TrackLifecycle:
++	var receipt: Dictionary
++	func request_publish(_document: Dictionary) -> bool:
++		library.revision += 1
++		return cloud.remember_publication(receipt)
++	func status_for(_document: Dictionary) -> Dictionary:
++		return {"state":"published","receipt":receipt}
++
++class PublicationApp extends "res://core/app.gd":
++	var browser: TrackBrowser
++	var last_notice: String
++	func _ready() -> void: pass
++	func _notice(message: String) -> void: last_notice = message
++	func _show_screen(next: String) -> void:
++		screen = next
++		browser = TrackBrowser.new()
++		browser.library = library
++		browser.records = records
++		browser.catalog = TrackCatalog.new(library)
++		browser.cloud = cloud
++		browser.selected_track = selected_track
++		browser.state = browser_state
++		browser.size = get_viewport().get_visible_rect().size
++		add_child(browser)
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func metadata(number: int, title: String, hash_value: String, points: Array) -> Dictionary:
++	return {"track_id":"fixture-track-"+str(number),"version_id":"00000000-0000-4000-8000-"+str(number).pad_zeros(12),
++		"name":title,"creator":"Fixture Author","creator_id":"fixture-owner","content_hash":hash_value,
++		"points":points,"theme":"pine","rating_count":0,"rating_average":null,"published_at":number}
++
++func make_cloud(label: String, hash_value: String, points: Array, baseline: bool = false) -> Node:
++	var client := CatalogClient.new()
++	root.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	client.head = metadata(1,"Alpha",hash_value,points)
++	client.tail = metadata(2,"Beta",hash_value,points)
++	client.publication = metadata(50,"Star",hash_value,points)
++	var script: Script = Cloud
++	if baseline: script = load(ProjectSettings.globalize_path("res://../docs/evidence/published-track-2026-10-07/before/game/backend/cloud_tracks.gd"))
++	var cloud: Node = script.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join(label)
++	root.add_child(cloud)
++	cloud.load_cached()
++	return cloud
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	create_timer(40).timeout.connect(func() -> void: push_error("Publication test deadline"); quit(1))
++	folder = ProjectSettings.globalize_path("res://../build/publication-tests-"+str(Time.get_ticks_usec()))
++	var document: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
++	document.name = "Star"
++	var body: String = JSON.stringify(document)
++	var hash_value: String = body.sha256_text()
++
++	var old: Node = make_cloud("baseline",hash_value,document.points,true)
++	await old.refresh(true)
++	check(old.remember_publication(old.client.publication),"baseline acknowledges publication")
++	old.client.published = true
++	await old.refresh(true)
++	check(not old.entries.any(func(item: Dictionary) -> bool: return item.name == "Star"),"task-start snapshot reproduces disappearance of Star")
++	old.client.queue_free()
++	old.queue_free()
++	await process_frame
++
++	var cloud: Node = make_cloud("paged",hash_value,document.points)
++	await cloud.refresh(true)
++	check(not cloud.next_cursor.is_empty(),"old catalog has an unfinished snapshot")
++	check(cloud.remember_publication(cloud.client.publication),"publication indexed immediately")
++	cloud.client.published = true
++	await cloud.refresh() # Must bypass the ordinary one-minute refresh throttle.
++	check(not cloud.client.requests[-1].contains("cursor="),"publication refresh starts a new snapshot immediately")
++	check(cloud.entries.any(func(item: Dictionary) -> bool: return item.name == "Star"),"new publication survives completed pagination")
++	cloud.load_cached()
++	check(cloud.entries.size() == 3,"publication and public catalog survive restart")
++	cloud.client.hold_search = true
++	cloud.search({"search":"Star"})
++	var revised: Dictionary = cloud.client.publication.duplicate(true)
++	revised.version_id = "00000000-0000-4000-8000-000000000500"
++	check(cloud.remember_publication(revised),"new immutable revision committed during search")
++	cloud.client.release_read.emit()
++	await process_frame
++	var public_cards: Array = cloud.entries.filter(func(item: Dictionary) -> bool: return item.track_id == revised.track_id)
++	check(public_cards.size() == 1 and public_cards[0].version_id == revised.version_id,"late search cannot replace newly published revision with old metadata")
++	check(cloud._search_filters.is_empty() and not cloud._search_loading,"publication returns pagination to the unfiltered catalog")
++	cloud.client.hold_search = false
++	cloud.client.publication = revised
++
++	var inflight: Node = make_cloud("inflight",hash_value,document.points)
++	inflight.client.hold = true
++	inflight.refresh(true)
++	check(inflight.client.started and inflight.refreshing,"old catalog request is outstanding")
++	check(inflight.remember_publication(inflight.client.publication),"publication committed while old request is outstanding")
++	inflight.client.published = true
++	inflight.client.release_read.emit()
++	for _frame: int in range(5): await process_frame
++	check(inflight.entries.size() == 3 and inflight.entries[0].name == "Star","late old response cannot overwrite publication; fresh snapshot loads automatically")
++	check(inflight.client.requests.size() == 2 and not inflight.refreshing,"refresh recovers without duplicate request loop")
++	# Fresh server removal still wins: a hidden/deleted card must not be pinned forever.
++	inflight.client.publication = inflight.client.head
++	await inflight.refresh(true)
++	check(not inflight.entries.any(func(item: Dictionary) -> bool: return item.name == "Star"),"later complete server snapshot removes withdrawn publication")
++
++	# Use the actual Publish handler with a committed backend receipt and real UI.
++	var app := PublicationApp.new()
++	app.library = TrackLibrary.new(folder.path_join("drafts"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	app.cloud = cloud
++	app.online = preload("res://backend/account_controller.gd").new()
++	app.online.client.free()
++	app.online.client = cloud.client
++	cloud.client.player = {"id":"fixture-owner"}
++	cloud.client._access_token = "fictional-access-token"
++	var flow := PublishedFlow.new()
++	flow.cloud = cloud
++	flow.library = app.library
++	flow.receipt = cloud.client.publication
++	app.lifecycle = flow
++	root.add_child(flow)
++	root.add_child(app)
++	cloud._write(cloud.cache_root().path_join(hash_value+".json"),document)
++	# Put Star beyond the initial twelve-card virtual window.
++	cloud.entries.clear()
++	for index: int in range(24): cloud.entries.append(metadata(100+index,"Circuit %02d" % index,hash_value,document.points))
++	cloud.client.hold = true # Keep the catalog read pending while the visible card opens.
++	app.browser_state = {"section":"favorites","feed":"rivals","search":"missing","theme":"desert","minimum_rating":4.5,"race_history":"raced","random_on_open":true}
++	app.race_area_mode = "rivalry"
++	check(app.library.save_wip(document) == OK,"save isolated draft before Publish")
++	await app._publish_saved_draft("wip:"+str(document.id))
++	for _frame: int in range(240):
++		await process_frame
++		if app.browser != null and not app.browser.loading and not app.browser.selecting and app.browser.selected_track.metadata.has("cloud_version"): break
++	for _frame: int in range(4): await process_frame
++	check(app.screen == "tracks" and app.race_area_mode == "free" and app.last_notice == "Track published.","Publish returns to Free Race with success acknowledgement")
++	check(app.browser.matches.any(func(item: Dictionary) -> bool: return item.name == "Star"),"previous filters cannot hide just-published track")
++	check(app.browser.selected_track.identity == "cloud_fixture-track-50" and not app.browser.race_button.disabled,"published immutable revision is selected and raceable")
++	check(app.browser.matches.size() == 25 and app.browser.gallery.scroll_horizontal > 0,"publication opens beyond initial virtual window without waiting for refresh")
++	var tile: Control = app.browser.grid.get_node_or_null("Track_cloud_fixture-track-50")
++	check(tile != null and tile.get_global_rect().intersection(app.browser.gallery.get_global_rect()).size.x >= tile.size.x-1,"published card is fully visible beyond virtual carousel's initial window")
++	check(not app.browser_state.has("focus_track"),"publication focus is consumed so later visits retain user's selection")
++	cloud.client.release_read.emit()
++	await process_frame
++	app.online.free()
++	app.queue_free()
++	flow.queue_free()
++	cloud.client.queue_free()
++	cloud.queue_free()
++	inflight.client.queue_free()
++	inflight.queue_free()
++	await process_frame
++	await process_frame
++	print("PUBLICATION_DISCOVERY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_published_star_live.gd
+@@ -0,0 +1,77 @@
++extends SceneTree
++## Opt-in, read-only live discovery and native Race capture; no player login.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func capture(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await create_timer(0.6).timeout
++	await RenderingServer.frame_post_draw
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/published-track-2026-10-07")
++	DirAccess.make_dir_recursive_absolute(output)
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png")) == OK,"capture "+name)
++
++func run() -> void:
++	var origin: String = OS.get_environment("BMT_STAGING_API_URL")
++	if origin.is_empty(): push_error("Explicit BMT_STAGING_API_URL required for opt-in public read"); quit(1); return
++	OS.set_environment("BMT_API_URL",origin)
++	root.size = Vector2i(1280,720)
++	create_timer(90).timeout.connect(func() -> void: push_error("Live discovery deadline"); quit(1))
++	var folder: String = ProjectSettings.globalize_path("res://../build/published-star-live-"+str(Time.get_ticks_usec()))
++	var app: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(not app.online.client.signed_in(),"isolated diagnostic has no saved login")
++	await app.cloud.refresh(true)
++	for _page: int in range(5):
++		if app.cloud.next_cursor.is_empty(): break
++		await app.cloud.refresh(true)
++	var found: Array = app.cloud.entries.filter(func(item: Dictionary) -> bool: return item.name == "Star" and item.track_id == "3fe3be78-8db0-4404-81fe-9a25742f6cd1")
++	check(found.size() == 1,"actual published Star is in public Free Race catalog")
++	if found.is_empty(): app.queue_free(); quit(1); return
++	var metadata: Dictionary = found[0]
++	check(metadata.state == "published" and not metadata.hidden and metadata.creator == "Ville","real publication is public with correct creator")
++	var entry: Dictionary = app.cloud.entry_from_metadata(metadata)
++	check(await app.cloud.download(entry),"Star downloads with normal hash/document validation")
++	# Reproduce the previous post-publication navigation: retain the local draft
++	# selection and merely open Race, leaving Star beyond the initial carousel.
++	app.selected_track = TrackCompiler.compile(app.cloud.cached_document(entry))
++	app.browser_state.clear()
++	app._show_screen("tracks")
++	var browser: TrackBrowser = app.root_ui.find_child("TrackBrowser",true,false)
++	while browser.loading: await process_frame
++	check(browser.grid.get_node_or_null("Track_"+str(entry.id)) == null,"prior return behavior leaves Star outside the initial virtual card window")
++	await capture("star-before-return")
++	# The actual navigation used by the corrected publication handler.
++	app.browser_state = {"section":"favorites","search":"missing","theme":"desert","minimum_rating":4.5}
++	app.race_area_mode = "rivalry"
++	app._open_published_track(metadata)
++	browser = app.root_ui.find_child("TrackBrowser",true,false)
++	var deadline: int = Time.get_ticks_msec()+20000
++	while (browser.loading or browser.selecting or browser.selected_track.identity != entry.id) and Time.get_ticks_msec() < deadline: await process_frame
++	for _frame: int in range(5): await process_frame
++	check(app.race_area_mode == "free" and browser.matches.size() == app.cloud.entries.size(),"publication opens Free Race with no excluding filters")
++	check(browser.selected_track.identity == entry.id and not browser.race_button.disabled,"actual Star selected with Race enabled")
++	var card: Control = browser.grid.get_node_or_null("Track_"+str(entry.id))
++	check(card != null and card.get_global_rect().intersection(browser.gallery.get_global_rect()).size.x >= card.size.x-1,"Star card is fully visible in desktop carousel")
++	await capture("star-free-race-desktop")
++	root.size = Vector2i(960,540)
++	for _frame: int in range(5): await process_frame
++	await browser._reveal_track(str(entry.id))
++	card = browser.grid.get_node_or_null("Track_"+str(entry.id))
++	check(card != null and card.get_global_rect().intersection(browser.gallery.get_global_rect()).size.x >= card.size.x-1,"Star card remains fully visible at compact landscape size")
++	await capture("star-free-race-compact")
++	print("PUBLISHED_STAR_LIVE: %d checks, %d failures; %d actual public tracks" % [checks,failures,app.cloud.entries.size()])
++	app.queue_free()
++	await process_frame
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/PUBLISHED_TRACK_DISCOVERY.md
+@@ -0,0 +1,44 @@
++# Published tracks in Free Race — 2026-10-07
++
++Requirements **B01–B07 / R01 / V03–V05 / Q01**. The owner reported that the just-published **Star** was absent from Free Race and expected immediate visibility.
++
++The public staging API confirms the real track is published, visible, credited to **Ville**, and first on its newest discovery page. Its logical ID is `3fe3be78-8db0-4404-81fe-9a25742f6cd1`, revision `767228de-9eb6-45ae-a756-b7f9d04da482`. The existing desktop cache also contains Star among 28 tracks. Publishing succeeded; no republication or player-data repair was needed.
++
++The previous return opened Race at the initial alphabetical carousel window, preserving previous filters and the local draft selection. Star sits beyond that window. Separately, a paginated server snapshot begun before publication could replace the newly remembered card when its final page arrived. The saved task-start cloud adapter reproduces that disappearance in the regression.
++
++After acknowledged publication, the app opens **Free Race**, clears the previous discovery filters, selects the exact public revision and scrolls its whole card into view after layout. The focus is consumed once, leaving later visits and manual selection alone. Catalog refresh resets its old cursor and bypasses the ordinary minute throttle after publication. Outstanding old catalog/search reads are fenced; an interrupted catalog read schedules a fresh newest page. A later complete server snapshot can still remove withdrawn tracks. Normal search, catalog caps and immutable identities remain in use.
++
++Changed runtime files: `game/core/app.gd`, `game/ui/track_browser.gd`, `game/backend/cloud_tracks.gd`. New regression/opt-in capture files: `game/tests/test_publication_discovery.gd`, `game/tests/test_published_star_live.gd`. Documentation: this report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the evidence/checkpoint below.
++
++## Actual validation
++
++Pinned **Godot 4.7.2.stable.official.ed1daf0bf**, through `scripts/dev.ps1`:
++
++- Publication regression: **22 checks, zero failures**. Task-start disappearance reproduced; completed/late snapshots, immediate refresh, persisted cache, late old-revision search, server withdrawal, actual Publish handler, exclusion filters and fully visible selection beyond the initial virtual window while the HTTP read remains pending.
++- Read-only native live Star check: **12 checks, zero failures**, **28 actual public tracks**. No saved login. Normal hash/document validation, actual public Star selection, enabled Race, desktop **1280×720** and compact **960×540** full-card visibility.
++- Existing app flow: **99 checks, zero failures**.
++- Existing catalog/bounded recovery: **86 checks, zero failures**; existing catalog tests: **21 checks, zero failures**.
++- Existing real HTTP cloud library and durable publishing lifecycle: **2 pytest tests passed in 38.96 seconds**, one existing Starlette deprecation warning. These use disposable local API/worker/database fixtures, including actual verification, lost publication response recovery, cache-index failure/retry, immutable revision replacement and withdrawal.
++- `git diff --check` for the changed runtime/tests: exit **0**; Git reports only the repository's existing CRLF normalization notices.
++
++Actual commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_discovery.gd
++$env:BMT_STAGING_API_URL = 'https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_published_star_live.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_review_followups.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCatalog
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendTestLifecycle
++```
++
++Public `Invoke-RestMethod` GETs checked `/v1/tracks?limit=20&q=Star` and `/v1/tracks?limit=20`. Initial sandbox network access failed; the first approved request omitted `/v1` and returned 404, then the corrected request succeeded. The first sandboxed engine run could not create its standard user log; approved engine runs used isolated test saves and passed. An initial atomic patch did not match the existing `_random()` call and made no edits; it was corrected before validation.
++
++Screenshots were inspected: [previous return behavior](evidence/published-track-2026-10-07/star-before-return.png), [Star selected on desktop](evidence/published-track-2026-10-07/star-free-race-desktop.png), [compact layout](evidence/published-track-2026-10-07/star-free-race-compact.png). The previous-return capture reproduces the old navigation semantics using the current app and actual live document; it is not a screenshot of an older executable. [Scoped checkpoint and evidence](evidence/published-track-2026-10-07/) preserve task-start runtime sources, exact changes, source hashes and logs, excluding unrelated existing work.
++
++## Remaining acceptance
++
++Restart the running desktop app to load this code; publishing then opens the new public card directly. Star is already public and searchable without publishing again. Live checks only read/downloaded public content; the real user's publication, account and records were not changed. The complete real publishing protocol is exercised separately against disposable loopback fixtures.
++
++No Android export/install, physical-phone interaction, full Validate, backend rollout or production deployment was performed. Phone attachment was not checked. Owner acceptance of the publishing return on the intended device remains. An older running binary continues to use its existing navigation until restarted.

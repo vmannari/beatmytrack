@@ -1,0 +1,448 @@
+diff --git a/scripts/build_storm_rain.py b/scripts/build_storm_rain.py
+--- a/scripts/build_storm_rain.py
++++ b/scripts/build_storm_rain.py
+@@ -3,7 +3,6 @@
+ import argparse
+ import hashlib
+ import json
+-import struct
+ import urllib.request
+ import wave
+ import numpy as np
+@@ -11,59 +10,56 @@
+ ROOT = Path(__file__).resolve().parents[1]
+ SOURCE = ROOT / "build/storm_rain_sources"
+ OUT = ROOT / "game/assets/audio/ambience"
+-PAGE = "https://bigsoundbank.com/rain-on-concrete-s1289.html"
+-MEDIA = "https://bigsoundbank.com/UPLOAD/bwf-en/1289.wav"
++PAGE = "https://freesound.org/people/jmbphilmes/sounds/200271/"
++MEDIA = "https://cdn.freesound.org/previews/200/200271_2322692-hq.mp3"
+ RATE = 44100
+-SOURCE_SHA256 = "e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef"
++SOURCE_SHA256 = "9150f775fea3c4aa020edff9174fb0d1a1d4c5cfe464a0ce6f3dd414065005be"
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--fetch", action="store_true")
+     args = parser.parse_args()
+     SOURCE.mkdir(parents=True, exist_ok=True)
+-    master = SOURCE / "rain-1289.wav"
++    master = SOURCE / "rural-rain-200271.mp3"
+     if args.fetch:
+         html = urllib.request.urlopen(PAGE, timeout=30).read()
+-        if b"CC0" not in html or b"Joseph SARDIN" not in html:
++        if b"creativecommons.org/publicdomain/zero/1.0" not in html or b"jmbphilmes" not in html:
+             raise ValueError("Expected CC0 recording/author metadata")
+-        (SOURCE / "license.html").write_bytes(html)
++        (SOURCE / "rural-rain-license.html").write_bytes(html)
+         if not master.exists():
+             master.write_bytes(urllib.request.urlopen(MEDIA, timeout=45).read())
+     data = master.read_bytes()
+     if hashlib.sha256(data).hexdigest()!=SOURCE_SHA256:
+         raise ValueError("Rain source hash changed; review the source before rebuilding")
+-    pos = 12
+-    while pos + 8 <= len(data):
+-        kind, count = struct.unpack_from("<4sI", data, pos)
+-        body = data[pos+8:pos+8+count]
+-        if kind == b"fmt ":
+-            fmt, channels, rate, _, _, bits = struct.unpack_from("<HHIIHH", body)
+-            if fmt == 65534: fmt = struct.unpack_from("<H", body, 24)[0]
+-        elif kind == b"data": pcm = body
+-        pos += 8 + count + (count & 1)
+-    if fmt != 1 or bits not in [16,24]: raise ValueError("Expected recorded PCM")
+-    if bits == 24:
+-        raw = np.frombuffer(pcm,dtype=np.uint8).reshape(-1,3).astype(np.int32)
+-        ints = raw[:,0] | (raw[:,1]<<8) | (raw[:,2]<<16)
+-        values = ((ints ^ 0x800000)-0x800000)/8388608.0
+-    else: values = np.frombuffer(pcm,dtype='<i2').astype(np.float64)/32768.0
+-    values = values.reshape(-1,channels).mean(axis=1)
+-    values = values[round(20*rate):round(40*rate)]
++    if args.fetch:
++        print("Source pinned. Decode with scripts/dev.ps1 TestScript -ScriptPath res://tests/decode_storm_rain_source.gd, then rebuild without --fetch.")
++        return
++    decoded = SOURCE / "rural-rain-200271.f32"
++    meta = json.loads((SOURCE/"rural-rain-200271.decode.json").read_text())
++    decoded_data = decoded.read_bytes()
++    if hashlib.sha256(decoded_data).hexdigest()!=meta['sha256']:
++        raise ValueError("Decoded recording hash differs from decoder receipt")
++    rate = int(meta['rate'])
++    source_values = np.frombuffer(decoded_data,dtype='<f4').astype(np.float64)
++    # Four distinct areas of the rural recording merge individual local drops
++    # into a broad rain field. No synthetic hiss or room/cavern reverb.
++    count = round(25*rate)
++    offsets = [8.0,18.37,34.13,49.79]
++    if len(source_values)<round((offsets[-1]+25)*rate): raise ValueError("Rain recording is too short")
++    values = sum(source_values[round(start*rate):round(start*rate)+count] for start in offsets)*0.25
+     coordinates = np.arange(round(len(values)*RATE/rate),dtype=np.float64)*rate/RATE
+     values = np.interp(coordinates,np.arange(len(values),dtype=np.float64),values)
+     hz = np.fft.rfftfreq(len(values),1/RATE)
+     spectrum = np.fft.rfft(values)
+-    spectrum *= (1-np.exp(-(hz/140)**4))*np.exp(-(hz/6500)**4)
++    spectrum *= (1-np.exp(-(hz/100)**4))*np.exp(-(hz/2200)**4)
+     values = np.fft.irfft(spectrum,n=len(values))
+-    # Tame close-microphone drop transients so isolated drops do not set the
+-    # entire loop's quietness or punctuate the background with sharp knocks.
+-    values = np.tanh(values/max(np.sqrt(np.mean(values**2))*3.0,1e-8))
++    values = np.tanh(values/max(np.sqrt(np.mean(values**2))*3.5,1e-8))
+     overlap = RATE
+     ramp = .5-.5*np.cos(np.linspace(0,np.pi,overlap))
+     joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
+     values = np.concatenate([values[overlap:-overlap],joined])
+     values -= values.mean()
+-    values *= min(.08/max(np.sqrt(np.mean(values**2)),1e-8),.5/max(np.max(np.abs(values)),1e-8))
++    values *= min(.055/max(np.sqrt(np.mean(values**2)),1e-8),.30/max(np.max(np.abs(values)),1e-8))
+     pcm = np.rint(values*32767).astype('<i2')
+     OUT.mkdir(parents=True,exist_ok=True)
+     target = OUT/'storm_rain_recorded.wav'
+@@ -72,10 +68,10 @@
+         handle.writeframes(pcm.tobytes())
+     settings = target.with_suffix('.wav.import')
+     if not settings.exists(): settings.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding='utf-8')
+-    manifest = dict(file=target.name,source=PAGE,download=MEDIA,author='Joseph SARDIN',license='CC0-1.0',
+-        source_sha256=hashlib.sha256(data).hexdigest(),sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
++    manifest = dict(file=target.name,source=PAGE,download=MEDIA,author='jmbphilmes',license='CC0-1.0',
++        source_sha256=hashlib.sha256(data).hexdigest(),decoded_sha256=meta['sha256'],quality='public HQ MP3 preview decoded by pinned Godot 4.7.2',sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
+-        edits='20-40s recording; mono; 44.1kHz; 140Hz-6.5kHz softening; soft drop-transient limiting; 1s cyclic crossfade; RMS .08, peak cap .5',
++        edits='four 25s rural rain regions (8/18.37/34.13/49.79s) mixed; mono; 44.1kHz; 100Hz-2.2kHz distance softening; soft transient limiting; 1s cyclic crossfade; RMS .055, peak cap .30',
+         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+     (OUT/'storm_rain_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+     print(json.dumps(manifest,indent=2))
+diff --git a/scripts/review_storm_audio_balance.py b/scripts/review_storm_audio_balance.py
+--- a/scripts/review_storm_audio_balance.py
++++ b/scripts/review_storm_audio_balance.py
+@@ -4,11 +4,14 @@
+ import json
+ import math
+ import wave
++import argparse
+ import numpy as np
+ from test_vehicle_audio_continuity import measure
+ 
+ ROOT=Path(__file__).resolve().parents[1]
+-OUT=ROOT/'docs/evidence/storm-audio-balance-2026-10-09'
++parser=argparse.ArgumentParser()
++parser.add_argument('--evidence-dir',type=Path,default=ROOT/'docs/evidence/storm-audio-balance-2026-10-09')
++OUT=parser.parse_args().evidence_dir
+ report={'captures':[],'failures':[]}
+ def read(path):
+     with wave.open(str(path)) as handle:
+@@ -53,6 +56,6 @@
+ if report['rain_asset_continuity']['maximum_dropout_ms']>=100: report['failures'].append('Rain asset contains a sustained gap')
+ (OUT/'review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+ cards=''.join('<article><h2>'+label+'</h2><audio controls preload="metadata" src="'+name+'.wav"></audio></article>' for label,name in [('Previous wet level + quiet rain','cruise-before-mix'),('Stronger wet tires + quiet rain','cruise-after-mix'),('Faster driving','fast-after-mix'),('Formula car','formula-after-mix'),('Rain at the shipping background level','rain-loop-rain')])
+-(OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Storm audio balance</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}h2{margin:0 0 10px}audio{width:100%}</style><h1>Wet tires and quiet rain</h1><p>Native engine/tire/rain mix at 57.6 and 115.2 km/h. Music is excluded. The rain recording is Joseph SARDIN\'s CC0 Rain on concrete from BigSoundBank.</p>'+cards,encoding='utf-8')
++(OUT/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>Storm audio balance</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}h2{margin:0 0 10px}audio{width:100%}</style><h1>Wet tires and quiet rain</h1><p>Native engine/tire/rain mix at 57.6 and 115.2 km/h. Music is excluded. Recorded rain: '+manifest['author']+' (CC0). <a href="'+manifest['source']+'">Source recording</a>.</p>'+cards,encoding='utf-8')
+ print(json.dumps(report,indent=2))
+ raise SystemExit(bool(report['failures']))
+diff --git a/game/tests/capture_storm_audio_balance.gd b/game/tests/capture_storm_audio_balance.gd
+--- a/game/tests/capture_storm_audio_balance.gd
++++ b/game/tests/capture_storm_audio_balance.gd
+@@ -1,6 +1,7 @@
+ extends SceneTree
+ ## Same-clock engine, wet tire, quiet rain and complete native mixer references.
+ const OUT: String = "res://../docs/evidence/storm-audio-balance-2026-10-09"
++var evidence_dir: String = OUT
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -16,7 +17,9 @@
+ 	if DisplayServer.get_name()=="headless":
+ 		quit(1)
+ 		return
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): evidence_dir = argument.trim_prefix("--evidence-dir=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
+ 	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+ 	track.metadata.theme = "storm"
+ 	track.cells.fill(0)
+@@ -75,7 +78,8 @@
+ 		var last_us: int = Time.get_ticks_usec()
+ 		var previous_cursor: float = weather.rain_audio.get_playback_position()
+ 		var wraps: int = 0
+-		while elapsed<(21.0 if scene=="rain-loop" else 7.0 if scene in ["cruise-before","cruise-after"] else 3.0):
++		var duration: float = weather.rain_audio.stream.get_length()+2.0 if scene=="rain-loop" else 7.0 if scene in ["cruise-before","cruise-after"] else 3.0
++		while elapsed<duration:
+ 			await process_frame
+ 			var now: int = Time.get_ticks_usec()
+ 			var dt: float = float(now-last_us)/1000000.0
+@@ -90,10 +94,10 @@
+ 			previous_cursor = cursor
+ 		for i: int in range(records.size()):
+ 			records[i].set_recording_active(false)
+-			check(records[i].get_recording().save_to_wav(OUT.path_join(scene+"-"+names[i]+".wav"))==OK,"native reference: "+scene+" "+names[i])
++			check(records[i].get_recording().save_to_wav(evidence_dir.path_join(scene+"-"+names[i]+".wav"))==OK,"native reference: "+scene+" "+names[i])
+ 		if scene=="rain-loop": check(wraps>=1,"continuous recorded rain crosses a real playback wrap")
+ 		rows.append({"scene":scene,"speed_mps":state.velocity.length(),"road_gain":audio.levels.road,"rain_gain":weather.rain_gain,"rain_wraps":wraps,"foreground_fixture":not weather.suspended})
+-	var report := FileAccess.open(OUT.path_join("capture.json"),FileAccess.WRITE)
++	var report := FileAccess.open(evidence_dir.path_join("capture.json"),FileAccess.WRITE)
+ 	report.store_string(JSON.stringify(rows,"\t")+"\n")
+ 	report.close()
+ 	audio.free()
+diff --git a/game/assets/audio/ambience/storm_rain_manifest.json b/game/assets/audio/ambience/storm_rain_manifest.json
+--- a/game/assets/audio/ambience/storm_rain_manifest.json
++++ b/game/assets/audio/ambience/storm_rain_manifest.json
+@@ -1,17 +1,19 @@
+ {
+   "file": "storm_rain_recorded.wav",
+-  "source": "https://bigsoundbank.com/rain-on-concrete-s1289.html",
+-  "download": "https://bigsoundbank.com/UPLOAD/bwf-en/1289.wav",
+-  "author": "Joseph SARDIN",
++  "source": "https://freesound.org/people/jmbphilmes/sounds/200271/",
++  "download": "https://cdn.freesound.org/previews/200/200271_2322692-hq.mp3",
++  "author": "jmbphilmes",
+   "license": "CC0-1.0",
+-  "source_sha256": "e4876e37514c40728637c6caaed6068209c00f77b80557752f237bb02c7bdbef",
+-  "sha256": "8e6eef9c6c9651caaeec3f19a02afaf3fe77a02c050daffecfad4ec7b604d5de",
++  "source_sha256": "9150f775fea3c4aa020edff9174fb0d1a1d4c5cfe464a0ce6f3dd414065005be",
++  "decoded_sha256": "9c69cb09b8a56756a10fcc1cf2a10b360475dc91a7bf761931a5f74dc1e73fc5",
++  "quality": "public HQ MP3 preview decoded by pinned Godot 4.7.2",
++  "sha256": "45333e5c5b6b23e75ac063a54d763e8cb49b57af9cf6e1b5885426daad75b7a6",
+   "rate": 44100,
+   "channels": 1,
+   "bits": 16,
+-  "seconds": 19.0,
+-  "bytes": 1675844,
+-  "edits": "20-40s recording; mono; 44.1kHz; 140Hz-6.5kHz softening; soft drop-transient limiting; 1s cyclic crossfade; RMS .08, peak cap .5",
+-  "rms_dbfs": -21.93820026016113,
+-  "peak_dbfs": -7.8129637007851525
++  "seconds": 24.0,
++  "bytes": 2116844,
++  "edits": "four 25s rural rain regions (8/18.37/34.13/49.79s) mixed; mono; 44.1kHz; 100Hz-2.2kHz distance softening; soft transient limiting; 1s cyclic crossfade; RMS .055, peak cap .30",
++  "rms_dbfs": -25.19274621011512,
++  "peak_dbfs": -14.17697085211036
+ }
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -8,12 +8,16 @@
+ No runtime downloads or external audio services.
+ 
+ 
+-storm_rain_recorded.wav: "Rain on concrete" by Joseph SARDIN, BigSoundBank sound 1289.
+-https://bigsoundbank.com/rain-on-concrete-s1289.html
++storm_rain_recorded.wav: "Rain light 1 (rural)" by jmbphilmes, Freesound sound 200271.
++https://freesound.org/people/jmbphilmes/sounds/200271/
+ CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
+ 
+-Outdoor rain field recording, 20-40s excerpt; mono 44.1kHz 16-bit PCM;
+-rumble/high-frequency softening and soft drop-transient limiting; 1s cyclic
+-crossfade into a19s loop. Quiet playback level .13 on Vehicle bus. Source and
+-derivative hashes: storm_rain_manifest.json; rebuild: scripts/build_storm_rain.py.
+-No runtime download or external audio service.
++Outdoor rural rain field recording, public HQ MP3 preview decoded offline by
++pinned Godot 4.7.2. Four25-second regions mixed into diffuse rainfall, mono
++44.1kHz16-bit PCM,100Hz-2.2kHz distance softening, soft transient limiting and
++one-second cyclic crossfade into a24-second loop. Quiet Vehicle playback .13.
++This overhead perspective is sound design from a ground recording, not an
++aerial recording. Source/decoded/derivative hashes: storm_rain_manifest.json;
++rebuild: scripts/build_storm_rain.py and tests/decode_storm_rain_source.gd.
++No runtime download or external audio service. Earlier close-rain recording
++by Joseph SARDIN is retained only as historical evidence outside exports.
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -2,6 +2,8 @@
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+ at the owner's request. It supersedes this first revision's rain removal and mix.
++The latest distant-rain correction at the end replaces the close surface-drop
++recording with a softer rural rain field suited to the overhead view.
+ 
+ The owner removes storm rain audio and requests tire rolling on wet asphalt
+ that follows speed. SND19 implements this correction to SND04/SND05, with
+@@ -153,3 +155,82 @@
+ verification uses `git -c core.autocrlf=false apply --reverse --check
+ --ignore-space-change --whitespace=error-all` against that patch. Current
+ unrelated workspace changes are preserved and unstaged.
++
++## Distant rain for the overhead view
++
++The owner rejects close individual drops because the game is viewed from far
++above. SND23 corrects the rain perspective while retaining SND21/SND22 and
++SND05/G01/R01/Q01/V06. The active asset now uses [Rain light 1 (rural) by
++jmbphilmes, Freesound 200271](https://freesound.org/people/jmbphilmes/sounds/200271/).
++The source page describes rural background rain without surrounding sounds
++and confirms CC0. The public HQ MP3 preview is fetched without an account,
++then decoded offline by the pinned Godot engine; the preview quality is explicit
++in the manifest. This is a designed distant perspective from a ground recording,
++not a claim that the source was recorded above the track.
++
++Four distinct 25-second regions blend local drops into a diffuse field. A
++100 Hz–2.2 kHz filter softens close bright detail, restrained transient limiting
++smooths the remaining peaks, and a one-second cyclic crossfade produces a
++24-second mono PCM loop. RMS is -25.193 dBFS, 3.255 dB below the rejected asset;
++crest factor falls from 14.125 to 11.016 dB and energy above 3 kHz from 43.52%
++to 0.0216%. These measurements substantiate softer/quieter processing and do
++not establish subjective distance/realism approval. Wet tire/engine masters,
++mix gains and runtime pause/focus/finish behavior are unchanged by this task.
++
++Asset 2,116,844 bytes, SHA256
++`45333e5c5b6b23e75ac063a54d763e8cb49b57af9cf6e1b5885426daad75b7a6`;
++encoded source SHA256
++`9150f775fea3c4aa020edff9174fb0d1a1d4c5cfe464a0ce6f3dd414065005be`.
++Manifest also pins decoded float bytes. Previous close-rain asset/source and
++historical recordings remain outside exports; shipping notice is updated.
++
++Changed files: `scripts/build_storm_rain.py`,
++`scripts/review_distant_storm_rain.py`, `scripts/review_storm_audio_balance.py`,
++`game/tests/decode_storm_rain_source.gd` and UID,
++`game/tests/capture_storm_audio_balance.gd`,
++`game/assets/audio/ambience/{storm_rain_recorded.wav,storm_rain_recorded.wav.import,storm_rain_manifest.json,NOTICE.txt}`,
++this page, `licenses/ASSETS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++Capture/review tools now accept a separate evidence directory so previous
++listening evidence is preserved. No camera, UI, simulation or runtime code changes.
++
++Actual pinned commands and outcomes:
++
++- Public source/licence fetch: approved Python HTTPS fetch; licence HTML and
++  exact URL/hash retained in `build/storm_rain_sources/`. Reproducible fetch:
++  `python scripts/build_storm_rain.py --fetch` (decode/build then follow separately).
++- `TestScript -ScriptPath res://tests/decode_storm_rain_source.gd`:
++  3,975,329 mono float frames at 44.1 kHz, exit 0.
++- `python scripts/build_storm_rain.py`: initial and repeat offline builds have
++  identical derivative SHA256. `Import`: exit 0.
++- `TestScript -ScriptPath res://tests/test_wet_road_audio.gd`: 38 checks,
++  zero failures, exit 0; 55 ObjectDB shutdown warnings retained in the log.
++- `python scripts/review_distant_storm_rain.py`: zero failures; all 47 vehicle
++  WAVs unchanged, quieter/softer comparison and repeated source seam checks.
++- `TestScript -ScriptPath res://tests/capture_storm_audio_balance.gd -Graphical`
++  with `--evidence-dir=res://../docs/evidence/distant-storm-rain-2026-10-09`:
++  final 30 checks, zero failures, clean exit, actual rain wrap captured.
++- `python scripts/review_storm_audio_balance.py --evidence-dir
++  docs/evidence/distant-storm-rain-2026-10-09`: zero failures. Native rain RMS
++  -42.92 dBFS, 19.58–24.56 dB below rolling in the driving scenarios; no clipping,
++  no dropout windows through the 26-second recording, all paused layers zero.
++  Existing wet gain comparison remains +9.535 dB.
++
++Evidence and task-only patch:
++`docs/evidence/distant-storm-rain-2026-10-09/`. Initial native capture had no
++dropouts but its fixed 21 seconds did not cross the replacement's longer
++24-second loop; the existing wrap assertion failed. The capture now records
++the actual loop duration plus two seconds, retaining the wrap requirement.
++The failed receipt is preserved. Quiet before/after listening:
++[distant rain comparison](evidence/distant-storm-rain-2026-10-09/distance-review.html).
++Snapshot hashes confirm all 47 vehicle WAVs plus `StormWeather` and `game.gd`
++unchanged. `vehicle_audio.gd` received concurrent impact-route diagnostics;
++this rain task leaves that file untouched and excludes it from its patch.
++The scoped text patch and binary hash receipt are retained in the evidence
++directory; the before files for the two capture/review helpers are reconstructed
++by reversing only this task's edits. Earlier evidence is preserved.
++
++No phone attachment check, physical-device listening/performance test,
++Android export/install, full Validate, backend or deployment. No visual UI change,
++so audio captures replace screenshot evidence. Owner distant-perspective/mix
++approval and device listening remain; the two earlier storm visual-test
++failures remain outside this audio-only change.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -146,3 +146,6 @@
+ 
+ 
+ Quiet recorded storm rain (2026-10-09): `game/assets/audio/ambience/storm_rain_recorded.wav` derives from Joseph SARDIN, BigSoundBank "Rain on concrete", sound1289, CC0-1.0. Source/licence: https://bigsoundbank.com/rain-on-concrete-s1289.html ; source/derivative hashes and editing in `storm_rain_manifest.json`, shipping `NOTICE.txt` and `scripts/build_storm_rain.py`. Original20-40s excerpt, mono44.1kHz PCM, spectral/drop-transient softening,19s cyclic loop; quiet Vehicle-bus mix. All47 existing vehicle WAVs unchanged; wet rolling gain +9.542dB. No purchase/runtime generation/service/dependency. Actual measurements/listening: `docs/WET_ROAD_AUDIO.md` (follow-up).
++
++
++Distant storm rain (2026-10-09): active `game/assets/audio/ambience/storm_rain_recorded.wav` now derives from "Rain light 1 (rural)" by jmbphilmes, Freesound200271, CC0-1.0: https://freesound.org/people/jmbphilmes/sounds/200271/ . Public HQ MP3 preview decoded offline by pinned Godot4.7.2; four distinct recorded regions mixed,100Hz-2.2kHz softening/transient limiting,24s cyclic PCM loop. Designed overhead perspective from a ground recording. Source/decoded/derivative hashes and notices retained; prior Joseph SARDIN close-rain asset remains historical evidence outside exports. All47 vehicle WAVs unchanged; no purchase/runtime service/new dependency/camera change. Rebuild and actual listening evidence: `docs/WET_ROAD_AUDIO.md` (distant rain).
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 SND23/SND21-SND22/SND05/G01/R01/Q01/V06: owner-requested distant storm rain replaces close concrete drops with cleared CC0 jmbphilmes rural rainfall. Four recorded regions/100Hz-2.2kHz softening/transient control yield24s/2116844bytes/45333e5c loop,3.255dB quieter and less sharp; original source/encoded-decoded hashes/old asset retained. Native rain -42.92dBFS/19.58-24.56dB below wet,26s wrap/no dropout/paused zero; focused38/capture30/distance and native review checks pass,47 vehicle WAVs exact. Initial21s wrap fixture extended to actual loop+2s;55 focused shutdown references retained. No runtime/camera/simulation change, phone attachment/device listening/export-install/full Validate/backend/deploy. Commands/files/licence/listening/task-only checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (distant rain).
++
+ 2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: owner-reported Free Race histogram loading flash reproduced with five failures. Complete compatible cache shows immediately; cold target retains prior hero/charts until both metrics arrive, first entry uses existing loading area. Confirmed empty responses alone show No times yet; failures/guest access remain distinct, optional race availability/local PBs retained. Final graphical141/App99/paging269/menu38 checks pass; 11 native captures retained, waiting/ready pair inspected. Additive test-double capability repair; initial offline PB fixture regression corrected. No phone attachment/device test/Android export-install/full Validate/backend or production deployment. Files, actual commands, scoped Git checkpoint and remaining latency/device acceptance: docs/FREE_RACE_HISTOGRAMS.md (Loading-state correction).
+ 
+ 2026-10-09 B01/B07/R01/V03/Q01: owner-requested browser-free Android Google sign-in implemented with native Credential Manager, server nonce/ID-token verification, no browser fallback, cancellation and provider-state sign-out. New identities retain username/country onboarding; returning identity/name unchanged. Final native11/auth45/actual Godot-HTTP67 and export startup/driving72/catalog21/menus48 pass; initial test cleanup and stale Rivalry navigation fixtures corrected. APK78D044DB built, not installed. OPD2403 tablet f0ba474a attached; no phone listed, no real Google/device login or native-picker capture/fullValidate/backend deployment. Explicit backend rollout authorization and Google Android package/signing-certificate registration remain. Files/commands/provenance/checkpoint/acceptance: docs/NATIVE_GOOGLE_SIGN_IN.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1410,3 +1410,8 @@
+ ## Storm audio presence and quiet recorded rain, 2026-10-09
+ 
+ 2026-10-09 SND21-SND22/SND04-SND05/G01/R01/Q01/V06: owner-requested stronger wet tires and quiet recorded storm rain implemented. Wet road gain3x/native+9.5299dB, same speed/contact/pitch/silence contracts; all47 vehicle WAVs exact. New CC0 Joseph SARDIN rain1289 derivative19s/1675844bytes/8e6eef9c, Vehicle gain0.13/fades/pause-background/finish-reset ownership. Native rain16.66-22.07dB below wet/no dropout wraps/paused zero; focused38/vehicle1446/nativecapture30/App99/review checks pass, storm94 retains two pre-existing visual spray failures. Restricted source socket/first sharp-drop master/unpaired gain/audio-thread volume race/focus-interrupted fixtures corrected and retained; final foreground paired reference clean. No phone attachment/device listening/Android export-install/full Validate/physics/backend/deploy. Actual files/commands/recording licence/review/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (follow-up).
++
++
++## Distant storm rain perspective, 2026-10-09
++
++2026-10-09 SND23/SND21-SND22/SND05/G01/R01/Q01/V06: owner-requested distant storm rain replaces close concrete drops with cleared CC0 jmbphilmes rural rainfall. Four recorded regions/100Hz-2.2kHz softening/transient control yield24s/2116844bytes/45333e5c loop,3.255dB quieter and less sharp; original source/encoded-decoded hashes/old asset retained. Native rain -42.92dBFS/19.58-24.56dB below wet,26s wrap/no dropout/paused zero; focused38/capture30/distance and native review checks pass,47 vehicle WAVs exact. Initial21s wrap fixture extended to actual loop+2s;55 focused shutdown references retained. No runtime/camera/simulation change, phone attachment/device listening/export-install/full Validate/backend/deploy. Commands/files/licence/listening/task-only checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (distant rain).
+diff --git a/scripts/review_distant_storm_rain.py b/scripts/review_distant_storm_rain.py
+--- /dev/null
++++ b/scripts/review_distant_storm_rain.py
+@@ -0,0 +1,47 @@
++"""Distant-rain asset comparison and quiet listening previews, build tools only."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++from test_vehicle_audio_continuity import measure
++
++ROOT=Path(__file__).resolve().parents[1]
++OUT=ROOT/'docs/evidence/distant-storm-rain-2026-10-09'
++ASSET=ROOT/'game/assets/audio/ambience/storm_rain_recorded.wav'
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate=handle.getframerate()
++        assert handle.getnchannels()==1 and handle.getsampwidth()==2
++        pcm=np.frombuffer(handle.readframes(handle.getnframes()),dtype='<i2').astype(np.float64)/32768.0
++    return pcm,rate
++def stats(pcm,rate):
++    rms=float(np.sqrt(np.mean(pcm**2)))
++    energy=np.abs(np.fft.rfft(pcm))**2
++    hz=np.fft.rfftfreq(len(pcm),1/rate)
++    return dict(rms_dbfs=20*math.log10(rms),crest_db=20*math.log10(np.max(np.abs(pcm))/rms),
++        high_energy_fraction=float(energy[hz>3000].sum()/energy.sum()),
++        continuity=measure(np.tile(pcm[:,None],(3,1)),rate))
++old,rate=read(OUT/'before/game/assets/audio/ambience/storm_rain_recorded.wav')
++new,new_rate=read(ASSET)
++report=dict(before=stats(old,rate),after=stats(new,new_rate),failures=[])
++if report['after']['rms_dbfs']>report['before']['rms_dbfs']-3: report['failures'].append('Distant bed must remain quieter')
++if report['after']['crest_db']>=report['before']['crest_db']: report['failures'].append('Distant field should soften individual drop transients')
++if report['after']['high_energy_fraction']>=report['before']['high_energy_fraction']: report['failures'].append('Distant field should contain less sharp high-frequency detail')
++if report['after']['continuity']['maximum_dropout_ms']>=100: report['failures'].append('Rain asset must not contain sustained gaps')
++hashes=json.loads((OUT/'before/preserved-hashes.json').read_text())
++report['unchanged_vehicle_wavs']=0
++for name,digest in hashes.items():
++    path=ROOT/name
++    if '/vehicles/' not in name.replace('\\','/'): continue
++    report['unchanged_vehicle_wavs']+=1
++    if hashlib.sha256(path.read_bytes()).hexdigest()!=digest: report['failures'].append('Vehicle WAV changed: '+name)
++for name,pcm,rate in [('near-rain',old,rate),('distant-rain',new,new_rate)]:
++    with wave.open(str(OUT/(name+'.wav')),'wb') as handle:
++        handle.setnchannels(1);handle.setsampwidth(2);handle.setframerate(rate)
++        handle.writeframes(np.rint(pcm*.13*32767).astype('<i2').tobytes())
++(OUT/'distance-review.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++(OUT/'distance-review.html').write_text('<!doctype html><meta charset="utf-8"><title>Distant storm rain</title><style>body{background:#111b2b;color:#eee;font:18px system-ui;max-width:900px;margin:40px auto}article{padding:16px;margin:12px 0;background:#1c2b40}audio{width:100%}</style><h1>Distant rain for the overhead view</h1><p>Both samples use the actual quiet playback level. Perspective processing is sound design; the source was recorded on the ground.</p><article><h2>Previous close surface drops</h2><audio controls preload="metadata" src="near-rain.wav"></audio></article><article><h2>New diffuse rural rainfall</h2><audio controls preload="metadata" src="distant-rain.wav"></audio></article><p><a href="review.html">Hear it with the engine and wet tires</a>. Source: <a href="https://freesound.org/people/jmbphilmes/sounds/200271/">Rain light 1 (rural), jmbphilmes, CC0</a>.</p>',encoding='utf-8')
++print(json.dumps(report,indent=2))
++raise SystemExit(bool(report['failures']))
+diff --git a/game/tests/decode_storm_rain_source.gd b/game/tests/decode_storm_rain_source.gd
+--- /dev/null
++++ b/game/tests/decode_storm_rain_source.gd
+@@ -0,0 +1,20 @@
++extends SceneTree
++## Offline build tooling: decode the cleared public rural-rain preview.
++func _initialize() -> void:
++	var path: String = "res://../build/storm_rain_sources/rural-rain-200271"
++	var stream := AudioStreamMP3.new()
++	stream.data = FileAccess.get_file_as_bytes(path+".mp3")
++	var playback: AudioStreamPlayback = stream.instantiate_playback()
++	playback.start()
++	var samples: PackedVector2Array = playback.mix_audio(1.0,ceili(stream.get_length()*AudioServer.get_mix_rate()))
++	var bytes := PackedByteArray()
++	bytes.resize(samples.size()*4)
++	for i: int in range(samples.size()): bytes.encode_float(i*4,(samples[i].x+samples[i].y)*0.5)
++	var file := FileAccess.open(path+".f32",FileAccess.WRITE)
++	file.store_buffer(bytes)
++	file.close()
++	var meta := FileAccess.open(path+".decode.json",FileAccess.WRITE)
++	meta.store_string(JSON.stringify({"rate":AudioServer.get_mix_rate(),"frames":samples.size(),"seconds":stream.get_length(),"sha256":FileAccess.get_sha256(path+".f32")}))
++	meta.close()
++	print("RURAL_RAIN_DECODE: %d frames at %d Hz"%[samples.size(),AudioServer.get_mix_rate()])
++	quit()
+diff --git a/game/tests/decode_storm_rain_source.gd.uid b/game/tests/decode_storm_rain_source.gd.uid
+--- /dev/null
++++ b/game/tests/decode_storm_rain_source.gd.uid
+@@ -0,0 +1 @@
++uid://dbkylpxou6r03

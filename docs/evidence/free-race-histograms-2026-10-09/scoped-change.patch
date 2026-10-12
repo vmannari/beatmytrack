@@ -1,0 +1,211 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -36,6 +36,7 @@
+ var _working_entry: Dictionary = {}
+ var _selection_serial: int = 0
+ var _working_serial: int = 0
++var _cloud_detail_pending: Dictionary = {}
+ var rng := RandomNumberGenerator.new()
+ var cloud: Node
+ var cloud_status: Label
+@@ -97,7 +98,7 @@
+ 	MenuStyle.fill(hero)
+ 	var records_slot := Control.new()
+ 	records_slot.name = "RecordsSlot"
+-	records_slot.custom_minimum_size.y = 160
++	records_slot.custom_minimum_size.y = 180
+ 	records_slot.clip_contents = true
+ 	main.add_child(records_slot)
+ 	var selection := PanelContainer.new()
+@@ -477,7 +478,10 @@
+ 
+ func _select(entry: Dictionary) -> void:
+ 	var cached: NativeTrack = catalog.cached_track(entry)
+-	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null: return
++	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null:
++		if not page_preview and cloud != null and cached.metadata.has("cloud_version"):
++			_load_cloud_detail(cached)
++		return
+ 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
+ 	var previous_id: String = str(preview_entry.get("id",selected_track.identity))
+ 	var previous_index: int = -1
+@@ -604,9 +608,14 @@
+ 	var serial: int = _selection_serial
+ 	var vehicle: String = VehicleCatalog.selected
+ 	var key: String = records.key_for(track,HandlingSelection.config())
++	var request_key: String = "%d:%s:%d" % [track.get_instance_id(),vehicle,serial]
++	if _cloud_detail_pending.has(request_key): return
++	_cloud_detail_pending[request_key] = true
+ 	cloud.client.cancel_public_reads(get_instance_id())
+ 	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
+-	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
++	if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++		_cloud_detail_pending.erase(request_key)
++		return
+ 	var standings: Array = []
+ 	if response.ok:
+ 		for item: Dictionary in response.data.items:
+@@ -624,8 +633,11 @@
+ 		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
+ 		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
+ 		var comparison: Dictionary = await cloud.client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle: return
++		if not is_inside_tree() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++			_cloud_detail_pending.erase(request_key)
++			return
+ 		if comparison.ok: _apply_cloud_comparison(snapshot,comparison.data,track)
++	_cloud_detail_pending.erase(request_key)
+ 	discovery.records_by_rules_key[key] = snapshot
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 
+@@ -803,13 +815,13 @@
+ 	distribution.size_flags_stretch_ratio = 1.4
+ 	distribution.add_theme_constant_override("separation",2)
+ 	row.add_child(distribution)
+-	_heading(distribution,"WHERE YOU STAND","bars")
++	_heading(distribution,"WHERE YOU STAND","podium")
+ 	var distribution_body: VBoxContainer = _section_body(distribution)
+ 	var charts := HBoxContainer.new()
+ 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	charts.add_theme_constant_override("separation",8)
+ 	distribution_body.add_child(charts)
+-	for metric: String in ["race"]:
++	for metric: String in ["race","lap"]:
+ 		var card := PanelContainer.new()
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		card.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+@@ -817,14 +829,15 @@
+ 		var column := VBoxContainer.new()
+ 		column.add_theme_constant_override("separation",4)
+ 		card.add_child(column)
++		column.add_child(MenuStyle.label("Race" if metric == "race" else "Lap",12,true))
+ 		var histogram := TrackDistribution.new()
+ 		histogram.name = "RaceDistribution" if metric == "race" else "LapDistribution"
+ 		histogram.snapshot = snapshot.get(metric+"_distribution",{}).duplicate(true)
+ 		if histogram.snapshot.get("bins",[]).is_empty():
+ 			histogram.hide()
+-			_friendly_hint(column,"Share this track and set a time to see how you compare." if not selected_track.metadata.has("cloud_version") else "Set a time to see how you compare.")
++			column.add_child(MenuStyle.label("No times yet",12,true))
+ 		histogram.bar_color = Color("41667b") if metric == "race" else Color("42865d")
+-		histogram.custom_minimum_size = Vector2(164,96)
++		histogram.custom_minimum_size = Vector2(112,96)
+ 		histogram.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		column.add_child(histogram)
+ 	row.add_child(VSeparator.new())
+--- a/game/tests/test_unified_histograms.gd
++++ b/game/tests/test_unified_histograms.gd
+@@ -81,6 +81,10 @@
+ 	client.hold = true
+ 	browser.call_deferred("_load_cloud_detail",track)
+ 	await settle()
++	var pending_requests: int = client.paths.size()
++	browser.call_deferred("_load_cloud_detail",track)
++	await settle()
++	check(client.paths.size() == pending_requests,"duplicate pending histogram reads are coalesced")
+ 	check(browser.discovery.record_snapshot(key) == before,"pending discovery read preserves the complete unified chart")
+ 	client.hold = false
+ 	await settle()
+@@ -89,18 +93,69 @@
+ 	check(client.paths.all(func(path: String) -> bool: return not path.contains("/histogram") and not path.contains("test_population")),"discovery never queries split histogram sources")
+ 	var chart: Control = browser.find_child("RaceDistribution",true,false)
+ 	check(chart != null and chart.size.y >= 90,"removed captions leave usable chart height")
++	var lap_chart: Control = browser.find_child("LapDistribution",true,false)
++	check(lap_chart != null and lap_chart.visible,"discovery displays the best-lap histogram alongside the race histogram")
+ 	if DisplayServer.get_name() != "headless":
+ 		capture = true
+ 		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 			root.size = dimensions
+ 			await settle()
+ 			await screenshot("discovery-%dx%d" % [dimensions.x,dimensions.y])
++	# A driver without either a local or verified PB still sees the complete field.
++	client.packet = client.packet.duplicate(true)
++	for metric: String in ["race","best_lap"]:
++		client.packet[metric].own_best_ticks = null
++		client.packet[metric].comparison = null
++	browser.records.records.clear()
++	browser.discovery.records_by_rules_key.clear()
++	client.paths.clear()
++	browser.catalog.indexed_revision = browser.library.revision
++	browser.catalog.remember_track(browser.catalog.entries[0],track)
++	browser._select(browser.catalog.entries[0])
++	await settle()
++	check(client.paths.any(func(path: String) -> bool: return path.contains("/results-comparison")),"reopening the cached selected track hydrates its histograms without a player record")
++	check_no_time_charts(browser,track)
++	check(client.paths.any(func(path: String) -> bool: return path.contains("/results-comparison") and not path.contains("&race_ticks=") and not path.contains("&lap_ticks=")),"a track with no personal time requests both distributions without a candidate")
++	if DisplayServer.get_name() != "headless":
++		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++			root.size = dimensions
++			await settle()
++			check_chart_layout(browser)
++			await screenshot("discovery-no-time-%dx%d" % [dimensions.x,dimensions.y])
++	for index: int in range(2):
++		var document: Dictionary = TrackDocument.create_default()
++		document.id = "unraced_discovery_%d" % index
++		document.name = "Unraced track %d" % index
++		var unraced: NativeTrack = TrackCompiler.compile(document)
++		unraced.metadata.cloud_version = "unraced-fixture-%d" % index
++		browser.catalog.entries.append({"id":unraced.identity,"version_id":unraced.metadata.cloud_version,"source":"cloud","name":document.name,"creator":"Beat my track","theme":"pine"})
++		browser._finish_selection({"track":unraced,"draft":{}})
++		await settle()
++		check_no_time_charts(browser,unraced)
+ 	browser.free()
+ 	cloud.free()
+ 	client.free()
+ 	print("UNIFIED_HISTOGRAMS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures > 0 else 0)
+ 
++func check_no_time_charts(browser: TrackBrowser, track: NativeTrack) -> void:
++	var snapshot: Dictionary = browser.discovery.record_snapshot(browser.records.key_for(track,HandlingSelection.config()))
++	check(not snapshot.has("race_ms") and not snapshot.has("lap_ms"),"unraced track does not invent a player time")
++	for metric: String in ["race","lap"]:
++		var chart: TrackDistribution = browser.find_child("RaceDistribution" if metric == "race" else "LapDistribution",true,false)
++		check(chart != null and chart.visible and not chart.snapshot.get("bins",[]).is_empty(),metric+" histogram is visible without a player record")
++		check(chart != null and chart.snapshot.get("markers",[]).is_empty(),metric+" histogram does not invent a YOU marker")
++		check(snapshot[metric+"_distribution"].bins == chart.snapshot.bins,metric+" chart preserves the complete server distribution")
++	check(not ui_text(browser).contains("Set a time to see how you compare."),"missing personal time never gates available comparisons")
++
++func check_chart_layout(browser: TrackBrowser) -> void:
++	var race: Control = browser.find_child("RaceDistribution",true,false)
++	var lap: Control = browser.find_child("LapDistribution",true,false)
++	check(race.get_global_rect().end.x <= lap.get_global_rect().position.x,"race and lap charts sit side by side without overlap")
++	check(is_equal_approx(race.global_position.y,lap.global_position.y),"both histogram baselines align")
++	var panel: Control = browser.find_child("RecordsSlot",true,false)
++	check(panel.get_global_rect().encloses(race.get_global_rect()) and panel.get_global_rect().encloses(lap.get_global_rect()),"both complete charts fit inside the records panel")
++
+ func ui_text(node: Node) -> String:
+ 	var value: String = node.text if node is Label or node is Button else ""
+ 	for child: Node in node.get_children(): value += "\n"+ui_text(child)
+--- /dev/null
++++ b/docs/FREE_RACE_HISTOGRAMS.md
+@@ -0,0 +1,21 @@
++# Free Race histograms, 2026-10-09
++
++Requirements: RR06/V03/V05/Q01; preserve R01 and the TD06/TD08 unified-comparison and public-isolation contracts. The owner requests histograms on every track with available comparison records, even without a personal time, and separate race/lap charts side by side.
++
++`game/ui/track_browser.gd` now displays both existing server distributions with small Race/Lap labels. Charts retain every bin and add a player marker only when an actual local or verified time exists. The records panel grows from 160 to 180 logical pixels to accommodate the labels and complete time axes; each chart uses a 112-pixel minimum width so both fit on compact layouts. Empty distributions say “No times yet” instead of telling the player to set a time to unlock comparisons.
++
++Reopening the already-selected cached track previously returned before loading comparison records. It now hydrates those records, including for drivers without a PB. Identical pending reads are coalesced; existing track, vehicle and selection guards remain. Prepared adjacent pages retain their no-network behavior. The existing results-comparison endpoint already returns both metrics without candidate times; no backend change or rollout is required.
++
++Changed files: `game/ui/track_browser.gd`, `game/tests/test_unified_histograms.gd`, this document, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. [Task-only Git patch](evidence/free-race-histograms-2026-10-09/scoped-change.patch) preserves the unrelated changes already in the workspace.
++
++Actual commands use `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned Godot **4.7.2 stable ed1daf0bf**, isolated `APPDATA=build/free-race-histograms-user-permitted` or `build/free-race-histograms-app-user`, and `BMT_RESULTS_EVIDENCE=docs/evidence/free-race-histograms-2026-10-09`:
++
++- `TestScript -ScriptPath res://tests/test_unified_histograms.gd -Graphical -CommandTimeoutSeconds 90`: **90 checks, zero failures**. Covers both metrics, local/verified markers, no personal record on three tracks, cached-track reopening, candidate-free requests, deduplicated pending reads, stable repeated data, forbidden captions and six screenshots. [Final log](evidence/free-race-histograms-2026-10-09/histograms-final.log).
++- `TestApp -CommandTimeoutSeconds 90`: **99 checks, zero failures**. [Final log](evidence/free-race-histograms-2026-10-09/app-final.log).
++- Scoped `git diff --check`: passes.
++
++The cached-track regression was reproduced before its fix: **74 checks, one failure**, specifically the absent results-comparison read on cached reopening. Initial attempts hit restricted Windows certificate-store access, a missing copied fixture, chart clipping after adding labels, and an invalid hyphenated fixture ID; these were corrected without weakening the assertions. Native verification ran with permitted Windows certificate access and isolated saves.
++
++Inspected captures: [no personal time, compact](evidence/free-race-histograms-2026-10-09/discovery-no-time-960x540.png), [with personal times](evidence/free-race-histograms-2026-10-09/discovery-1280x720.png). Both charts fit completely at **1280×720, 960×540 and 1600×720**, without overlap and with aligned baselines. The retained Silmukka fixture contains actual previously verified driver distributions and illustrative player UI values; the no-time case removes own-best/comparison fields and local records. It generates no races and writes no player/server records. Its sparse carousel and single public standings row are fixture setup, not a live discovery capture.
++
++Limitations: comparison records still require the existing authenticated service access, or an already cached snapshot. Tracks with no recorded comparison times remain empty; no histogram samples or player markers are invented. No phone attachment check or physical-device test was performed. No Android export/install, full Validate, backend deployment or production action was performed. Remaining acceptance: owner/device visual review in the populated Free Race menu.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: Free Race displays race/lap histograms side by side without requiring a personal time; missing times add no player marker. Cached-selected-track hydration skip reproduced/fixed, duplicate pending reads coalesced, 180px records panel keeps complete axes at three window sizes. Final graphical90/App99 checks pass; six native captures retained and two inspected. Existing unified endpoint unchanged; no new backend deployment, generated races or player-record writes. Initial certificate/fixture/layout/ID failures corrected; blocked owned test child stopped. No phone attachment check/device test/Android export-install/full Validate/production action. Files, actual commands, task-only checkpoint and remaining visual/device acceptance: docs/FREE_RACE_HISTOGRAMS.md.
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-09 RR06/V03/V05/Q01/R01/TD06/TD08: Free Race displays race/lap histograms side by side without requiring a personal time; missing times add no player marker. Cached-selected-track hydration skip reproduced/fixed, duplicate pending reads coalesced, 180px records panel keeps complete axes at three window sizes. Final graphical90/App99 checks pass; six native captures retained and two inspected. Existing unified endpoint unchanged; no new backend deployment, generated races or player-record writes. Initial certificate/fixture/layout/ID failures corrected; blocked owned test child stopped. No phone attachment check/device test/Android export-install/full Validate/production action. Files, actual commands, task-only checkpoint and remaining visual/device acceptance: docs/FREE_RACE_HISTOGRAMS.md.
++

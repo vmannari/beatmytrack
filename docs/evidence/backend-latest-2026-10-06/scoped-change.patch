@@ -1,0 +1,123 @@
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -90,7 +90,11 @@
+ 	var outlines: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+-		var polygons: Array[PackedVector2Array] = RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else [RoadPieces.section_outline(pieces,index,0.0,topology)]
++		var polygons: Array[PackedVector2Array] = []
++		if pieces[index].kind == "spline":
++			polygons = RoadEdges.section_contours(pieces,index,0.0,topology)
++		else:
++			polygons.append(RoadPieces.section_outline(pieces,index,0.0,topology))
+ 		for polygon: PackedVector2Array in polygons:
+ 			var bounds := Rect2(polygon[0],Vector2.ZERO)
+ 			for point: Vector2 in polygon: bounds = bounds.expand(point)
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -328,7 +328,7 @@
+                     assert self.headers.get("Authorization") == "Bearer new-token"
+                     self.reply(
+                         201,
+-                        {"track_id": "track-test", "idempotency_key": self.headers.get("Idempotency-Key")},
++                        {"track_id": "track-test", "version_id": "version-test", "idempotency_key": self.headers.get("Idempotency-Key")},
+                     )
+             elif self.path == "/v1/auth/logout":
+                 self.reply(200, {})
+--- a/game/tests/test_retained_cloud_catalog.gd
++++ b/game/tests/test_retained_cloud_catalog.gd
+@@ -52,7 +52,22 @@
+ 		var version: Dictionary = await app.online.client.request_api("/track-versions/" + str(metadata.version_id))
+ 		check(version.ok and str(version.data.manifest.track_content_hash) == track.content_hash, "compiled geometry matches the cloud canonical head")
+ 		check(version.ok and version.data.manifest.physics_version == VehicleSimulation.PHYSICS_VERSION and version.data.manifest.rules_key == RaceRules.KEY, "cloud head matches current physics and lap rules")
++		check(version.ok and version.data.manifest.compiler_version == TrackCompiler.VERSION, "cloud head matches the current track compiler")
+ 		await process_frame
++	if OS.has_environment("BMT_STAGING_CONTRACT_TICKETS"):
++		var key: String = OS.get_environment("BMT_DEV_AUTH_KEY")
++		check(not key.is_empty(), "opt-in ticket acceptance has its development key")
++		var login: Dictionary = await app.online.client.development_login("cloud-test-observer", "cloud-test-observer", key)
++		check(login.ok, "isolated existing development observer signs in")
++		if login.ok:
++			for metadata: Dictionary in app.cloud.entries:
++				if str(metadata.name).to_lower() != "blind spot": continue
++				var track: NativeTrack = app.cloud.compile_entry(app.cloud.entry_from_metadata(metadata))
++				var ticket: Dictionary = await app.cloud.ticket(track, false, "compact")
++				check(not ticket.is_empty(), "Blind spot passes the real client online race-contract checks: " + app.cloud.last_error)
++				break
++			var logout: Dictionary = await app.online.client.logout()
++			check(logout.ok and not app.online.client.signed_in(), "diagnostic observer logs out without retaining a session")
+ 	if DisplayServer.get_name() != "headless":
+ 		root.size = Vector2i(1280, 720)
+ 		app._show_screen("tracks")
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
++
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP04-SP05: owner-corrected steep spline borders now use clean exposed swept contours, rounded inward corners and continuous curve kerbs that taper before folding. Shared editor/render/contact boundaries retain five points/widths and genuine islands; local caches bounded. Compiler22/kit113 and packaged verifier helper updated; authoring schema unchanged. Final graphical border1111, spline479/final headless476, kerb31, road377, creator113, workflow252, cache66, parser311 and focused backend10 pass; exact five-lap spline13517 ticks/zero contacts. Four legacy-biome arrays equal actual task-start renderer; older desert golden failure retained, no full Validate claim. Screenshots inspected and scoped patch retained. No phone attachment check/device test/export/install or backend deployment; owner/mobile/matching rollout acceptance remains. Actual commands, files, failed intermediate runs and evidence: docs/SPLINE_BORDER_FIX.md.
+ 
+ 2026-10-06 TD01-TD07/WR03-WR07/B01-B07/R01/Q01: owner-requested Google Cloud test drivers enabled on retained staging after a completed SQL backup, with a separate private runtime key. 13 artificial rivals plus an independent observer have verified Week 41 scores/ghosts; a 200-driver compact fleet schedules 5,400 genuine five-lap histories across all 27 official tracks. Bulk completion remains in progress, never reported as 200 finished per track. Final fast-first controller reduces same-cloud Over and under race time 29.05%; genuine detour fallback handles Ellipse tyre walls. Additive histogram image proves byte-identical canonical project/manifest; no schema/physics/handling change or production deployment. Labeled debug Race/Results histograms remain separate from real rankings, with Player/Test data switching. Backend/staging42, canonical profile1, App99, parser309 and native live cloud34 pass; ten captures inspected. Hidden resumable schedulers run on this PC. Corrected intermediate pace/build/diagnostic/UI/trust failures retained; concurrent work preserved. No Android export/install/device test; attachment not checked. Full 200-per-track/fleet matching, long-running throughput, next-week scheduling, Results/phone and broader pace acceptance remain. Commands, files, progress report and scoped checkpoint: docs/CLOUD_TEST_DRIVERS_2026_10_06.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
++
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP04-SP05: owner-corrected steep spline borders now use clean exposed swept contours, rounded inward corners and continuous curve kerbs that taper before folding. Shared editor/render/contact boundaries retain five points/widths and genuine islands; local caches bounded. Compiler22/kit113 and packaged verifier helper updated; authoring schema unchanged. Final graphical border1111, spline479/final headless476, kerb31, road377, creator113, workflow252, cache66, parser311 and focused backend10 pass; exact five-lap spline13517 ticks/zero contacts. Four legacy-biome arrays equal actual task-start renderer; older desert golden failure retained, no full Validate claim. Screenshots inspected and scoped patch retained. No phone attachment check/device test/export/install or backend deployment; owner/mobile/matching rollout acceptance remains. Actual commands, files, failed intermediate runs and evidence: docs/SPLINE_BORDER_FIX.md.
+ 
+ 2026-10-06 TD01-TD07/WR03-WR07/B01-B07/R01/Q01: owner-requested Google Cloud test drivers enabled on retained staging after a completed SQL backup, with a separate private runtime key. 13 artificial rivals plus an independent observer have verified Week 41 scores/ghosts; a 200-driver compact fleet schedules 5,400 genuine five-lap histories across all 27 official tracks. Bulk completion remains in progress, never reported as 200 finished per track. Final fast-first controller reduces same-cloud Over and under race time 29.05%; genuine detour fallback handles Ellipse tyre walls. Additive histogram image proves byte-identical canonical project/manifest; no schema/physics/handling change or production deployment. Labeled debug Race/Results histograms remain separate from real rankings, with Player/Test data switching. Backend/staging42, canonical profile1, App99, parser309 and native live cloud34 pass; ten captures inspected. Hidden resumable schedulers run on this PC. Corrected intermediate pace/build/diagnostic/UI/trust failures retained; concurrent work preserved. No Android export/install/device test; attachment not checked. Full 200-per-track/fleet matching, long-running throughput, next-week scheduling, Results/phone and broader pace acceptance remain. Commands, files, progress report and scoped checkpoint: docs/CLOUD_TEST_DRIVERS_2026_10_06.md.
+--- a/backend/deploy/gcp/README.md
++++ b/backend/deploy/gcp/README.md
+@@ -1,4 +1,6 @@
+ # Google Cloud staging
++
++October 6 latest rollout: owner-authorized retained staging now runs compiler22 with matching immutable official-track revisions, backups and real Blind spot client-ticket acceptance. Compiler20 artificial-driver schedulers are paused pending new contract recordings. The disposable deploy guard remains unchanged. [Actual commands, checks and limitations](../../../docs/BACKEND_LATEST_2026_10_06.md).
+ 
+ October 6 latency follow-up: the retained API now keeps one service-level instance warm, with maximum two, after an observed 15.9-second first rivalry request. Optional api_min remains zero by default for new disposable staging and permits only zero/one. Actual min=1 adds about €0.38/day idle before credits/free tier; current image/auth/data are unchanged. [Commands, timings and limits](../../../docs/RIVALRY_LOADING_2026_10_06.md).
+ 
+--- /dev/null
++++ b/docs/BACKEND_LATEST_2026_10_06.md
+@@ -0,0 +1,44 @@
++# Latest retained backend deployment — 2026-10-06
++
++Requirements B01–B07/B19/B20/B23/R01/T01–T04/Q01. The owner authorized deploying the latest backend after Blind spot rejected the online race contract. The existing retained staging service in `beat-my-track`, `europe-west1`, now runs **creator-compiler-22** at the existing URL. API, worker, migration, smoke and catalog job templates use the same immutable image:
++
++`europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:8ac5ad340faed6ea17b3ccb15e902d6a575a54b93c363e0770e566e26078c5ba`
++
++Pinned engine remains `4.7.2.stable.official.ed1daf0bf`; physics remains `arcade-planar-0.50`, lap rules `standing-5-road-gates-v18`, five laps. Auth audiences, existing Google account/session secrets, development isolation, warm API minimum 1/maximum 2, worker count 1, database/storage settings and retention protection were preserved. No production deployment or Android export occurred.
++
++## Actual rollout and retained data
++
++Both owned compiler-20 artificial-driver schedulers were paused after checking their PID/command identity. The outstanding verification queue drained before the first switch. Fresh Cloud SQL backups succeeded before both deployment stages; the final pre-compiler-22 backup is `1791309553076`. Matching owned schema migrations completed before worker/API updates. Existing schema and player rows were preserved.
++
++The first compiler-21 rollout passed cloud native/storage/schema/worker smoke and added current immutable revisions. During that rollout, concurrent editor work advanced the shared source and golden contracts to compiler 22. Native acceptance correctly rejected the mismatch. The second build and backed-up rollout now match compiler 22; the intermediate compiler-21 revisions were retained too. The general disposable staging script's changed-image refusal was not weakened. The owner explicitly authorized this retained update, performed through scoped ignored operator helpers with ownership checks.
++
++All 27 official logical tracks received current immutable heads using the deployed native validator; original document hashes, titles, attribution and logical IDs remain unchanged. Prior manifests/links/boards were not rewritten. Public verification checked **87 historical links**, including all 34 original source revisions and the intermediate compiler-21 heads; stored source/intermediate manifests were compared where available. Old PBs, ratings and artificial-driver results remain attached to their original immutable contracts. They are not copied into new compiler-22 boards.
++
++## Checks actually run
++
++- Final compiler-22 image build checks the exact Linux engine, imports the packaged verifier and runs the existing 12,757-tick, five-lap oval replay with its complete golden manifest/lap assertions.
++- `pytest backend/tests/test_catalog_transfer.py backend/tests/test_gcp_staging.py backend/tests/test_verifier.py backend/tests/test_test_drivers.py -q`: final compiler-22 **113 passed**. Includes real packaged native/spline proofs and HTTP refresh/idempotency.
++- Domain batch: `pytest` over auth, domains, rivalry, track lifecycle, readiness, worker lifecycle, scalability, GCS and exception recovery with `-k 'not postgres'`: corrected source **157 passed / 8 skipped / 82 deselected**. This completed before the concurrent compiler-22 advance. Final compiler-22 native practice/publication recheck: **1 passed / 49 deselected**. These are overlapping checks, not an additive count of unique final-build tests.
++- Real cloud smoke: restricted PostgreSQL role/schema; real native 12,757-tick replay; immutable GCS put/get/list/delete in the diagnostic prefix; HTTPS health/readiness/bootstrap; matching compiler-22 available worker. Credential-free operation results are in `cloud-job-results.json`.
++- Real pinned Windows client through `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_retained_cloud_catalog.gd`: **196 checks / zero failures / 27 tracks**. Normal pagination, document hashes, compilation, geometry hashes, compiler/physics/rules and the original Blind spot online-ticket path pass. An existing development observer was used in isolated storage; no owner Google session was read, no race/PB/reward/membership was submitted, and the observer logged out. The private key was passed only through the child process environment and was not installed in the game or committed.
++- Scoped whitespace and patch reverse checks are recorded with the checkpoint. No visible menu/style change was made by this deployment, so no new UI screenshot was required.
++
++Exact operator actions from the repository root used `.tools/backend-venv/Scripts/python.exe .tools/gcp-staging/deploy-latest.py`: `inspect`, `build`, `backup`, `queue`, `migrate`, `deploy`, `catalog-check`, `catalog-apply`, `smoke`, then repeated inspection/build for the concurrent compiler change and `final-rollout` (fresh backup → migration → worker/API/jobs → catalog validation → immutable revisions → smoke → evidence → native acceptance). `.tools/gcp-staging/verify-latest.py` performs public integrity and isolated native acceptance. Existing private config/trust files were reused; no credentials are in the public evidence.
++
++## Failures corrected and files
++
++The initial sandbox-only native tests failed and were interrupted; the elevated gate was rerun. The stale local PostgreSQL test configuration points to an unavailable server: the first combined batch reported 129 passes, one client-fixture failure, two skips and 14 PostgreSQL connection errors. A broader initial run was interrupted after the same unavailable database was identified. Local PostgreSQL/concurrency acceptance is not claimed.
++
++The strict client refresh peer returned a track ID without the required version ID. The test peer now supplies both; refresh, mutation-key and redirect assertions remain intact. Real practice publication also reproduced a typed-array initialization error in `RoadKerbs.creator_segments` for ordinary road pieces. Explicit typed initialization plus append repaired it; the native practice/publication/replay check passes. A first image was built before that repair and was not deployed; the rebuilt compiler-21 image was the intermediate rollout.
++
++Operator-helper Windows output decoding and receipt bookkeeping were corrected. The first public-check helper incorrectly expected manifests in discovery summaries; it now reads immutable version details. The first native post-deployment acceptance exposed the concurrent compiler-22 advance rather than bypassing the hash assertion; the final rollout matches it. No invariant was removed to make checks green.
++
++Own source changes: `game/track/road_kerbs.gd` typed initialization; `backend/tests/test_verifier.py` complete HTTP peer response; `game/tests/test_retained_cloud_catalog.gd` explicit compiler checks and opt-in isolated ticket acceptance. Documentation: this report, development/phase status, GCP runbook and the evidence/scoped patch. Deployment helpers, credentials/config and applied operator receipts stay ignored under `.tools/gcp-staging`. Concurrent source/editor changes were included in the final requested image and preserved in the working tree; they are excluded from this task's scoped patch.
++
++## Remaining acceptance
++
++Restart the desktop game or reopen Race to refresh the catalog. Running processes keep the scripts loaded when they started. Older game builds and old share-link contracts may still need their corresponding verifier build.
++
++The two compiler-20 artificial-driver population plans remain **paused**. Their files, inputs, histories and verified results were preserved. Continuing the 200-per-track population requires new compiler-22 contract plans and recordings; old inputs/times were not relabeled. New Weekly Rivalry build keys may form separate groups; historical membership/standings remain stored.
++
++No phone attachment check, physical-device test, Android export/install, full `Validate`, production/NAS deployment, restore test, load/capacity test or score/rating migration was performed. Physical-device racing and the owner's interactive Google online race remain acceptance items. This remains retained staging with its existing billing; no worker count or API resource limit was increased.

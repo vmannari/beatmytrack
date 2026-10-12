@@ -1,0 +1,900 @@
+diff --git a/backend/bmt_backend/test_driver_generator.py b/backend/bmt_backend/test_driver_generator.py
+--- a/backend/bmt_backend/test_driver_generator.py
++++ b/backend/bmt_backend/test_driver_generator.py
+@@ -13,7 +13,7 @@
+     pass
+ 
+ 
+-def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0):
++def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False):
+     verifier = GodotVerifier(settings)
+     verifier._check_engine()
+     with tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
+@@ -27,6 +27,7 @@
+                     "traits": traits,
+                     "attempt": attempt,
+                     "pace_scale": pace_scale,
++                    "obstacle_detours": obstacle_detours,
+                 },
+                 allow_nan=False,
+             ),
+diff --git a/backend/bmt_backend/test_population_tool.py b/backend/bmt_backend/test_population_tool.py
+--- a/backend/bmt_backend/test_population_tool.py
++++ b/backend/bmt_backend/test_population_tool.py
+@@ -201,6 +201,7 @@
+         "joined": [],
+         "pace_scales": {},
+         "instant": arguments.instant,
++        "require_history_completion": bool(getattr(arguments, "all_tracks", False)),
+     }
+     if arguments.pace_reference:
+         references = json.loads(arguments.pace_reference.read_text(encoding="utf-8"))
+@@ -246,7 +247,9 @@
+         print(f"Test rivalry: {group['driver_count']} drivers including {target}")
+     else:
+         # Shared isolated history boards establish real percentile distributions.
+-        entries = sorted(catalog["tracks"], key=lambda e: e["version_id"])[:3]
++        entries = sorted(catalog["tracks"], key=lambda e: e["version_id"])
++        if not getattr(arguments, "all_tracks", False):
++            entries = entries[:3]
+         for profile in plan["profiles"]:
+             add_jobs(plan, profile, entries, history=True)
+         print(f"Test fleet: {count} profiles, {len(plan['jobs'])} verified history attempts planned")
+@@ -312,7 +315,27 @@
+                     f"Circuit {job['slot'] + 1}: closest honest controller pace differs from the PB by {relative_error:.0%}"
+                 )
+             atomic_save(state_path, plan)
+-        result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], scale)
++        last_error = None
++        for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
++            try:
++                result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate)
++                job["driven_pace_scale"] = candidate
++                break
++            except DriverDidNotFinish as error:
++                last_error = error
++        else:
++            # Dense tyre walls may need an ordinary reverse-and-detour drive.
++            # Keep the faster route follower first; never waive collisions/gates.
++            for candidate in dict.fromkeys((scale, max(0.6, scale * 0.85), max(0.6, scale * 0.7), 0.6)):
++                try:
++                    result = generate(settings, document, plan["vehicle_id"], profile["traits"], job["attempt"], candidate, obstacle_detours=True)
++                    job["driven_pace_scale"] = candidate
++                    break
++                except DriverDidNotFinish as error:
++                    last_error = error
++            else:
++                raise last_error
++        job["driven_controller"] = result.get("controller_version", "unversioned")
+         if build_contract(result["manifest"]) != build_contract(plan["manifest"]):
+             raise RuntimeError("Local generator and service have different canonical builds")
+         atomic_save(path, result)
+@@ -350,11 +373,16 @@
+                 atomic_save(path, plan)
+     # Join only once the shared history population has actually been verified.
+     history = [job for job in plan["jobs"] if job["group_id"] is None]
++    history_ready = bool(history) and all(
++        job["status"] == "verified" if plan.get("require_history_completion") else
++        job["status"] in ("verified", "rejected", "failed", "uncompleted", "expired")
++        for job in history
++    )
+     if (
+         timestamp < plan["ends_at"]
+         and plan["mode"] == "fleet"
+         and history
+-        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
++        and history_ready
+     ):
+         for profile in plan["profiles"]:
+             if profile["subject"] in plan["joined"]:
+@@ -395,6 +423,10 @@
+         except DriverDidNotFinish as error:
+             # A failed drive records an honest noncompletion, never a made-up PB.
+             job["status"], job["failure_code"] = "uncompleted", str(error)
++            if plan.get("require_history_completion") and job.get("generation_failures", 0) < 4:
++                job["generation_failures"] = job.get("generation_failures", 0) + 1
++                job["attempt"] += 1
++                job["status"], job["due"] = "waiting", timestamp + 30
+             atomic_save(path, plan)
+             started += 1
+             continue
+@@ -459,7 +491,7 @@
+         timestamp < plan["ends_at"]
+         and plan["mode"] == "fleet"
+         and history
+-        and all(j["status"] in ("verified", "rejected", "failed", "uncompleted", "expired") for j in history)
++        and history_ready
+     ):
+         counts["joining"] = len(plan["profiles"]) - len(plan["joined"])
+     print("Plan:", counts)
+@@ -473,6 +505,7 @@
+     parser.add_argument("--state", type=Path, required=True)
+     parser.add_argument("--seed", type=int, default=27)
+     parser.add_argument("--count", type=int)
++    parser.add_argument("--all-tracks", action="store_true", help="Seed one verified PB per driver on every eligible current track (use --count 200 for histogram population)")
+     parser.add_argument("--vehicle", default="compact")
+     parser.add_argument("--target-subject", default="developer")
+     parser.add_argument(
+@@ -512,7 +545,19 @@
+             print(f"Saved {arguments.state}. Run tick or watch to drive the planned attempts")
+             return
+         while True:
+-            counts = tick(api, plan, settings, arguments.state, arguments.max_jobs)
++            try:
++                counts = tick(api, plan, settings, arguments.state, arguments.max_jobs)
++            except (requests.RequestException, RuntimeError) as error:
++                # Durable progress/idempotency survives temporary cloud outages.
++                # Build/contract errors require operator review, not endless retries.
++                retryable = isinstance(error, requests.RequestException) or any(
++                    code in str(error) for code in ("HTTP 429:", "HTTP 502:", "HTTP 503:", "HTTP 504:")
++                )
++                if arguments.command != "watch" or not retryable:
++                    raise
++                print("Cloud temporarily unavailable; retrying the same durable plan", flush=True)
++                time.sleep(arguments.interval)
++                continue
+             if arguments.command != "watch" or not (
+                 counts.get("waiting") or counts.get("submitted") or counts.get("joining")
+             ):
+diff --git a/backend/bmt_backend/test_drivers.py b/backend/bmt_backend/test_drivers.py
+--- a/backend/bmt_backend/test_drivers.py
++++ b/backend/bmt_backend/test_drivers.py
+@@ -8,7 +8,7 @@
+ import uuid
+ from typing import Annotated
+ 
+-from fastapi import APIRouter, Depends, Header, HTTPException, Request
++from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+ from sqlalchemy import select, update
+ from sqlalchemy.exc import IntegrityError
+@@ -19,7 +19,7 @@
+ from .rivalry_models import RivalryGroup, RivalryMember
+ from .test_driver_models import TestDriverProfile
+ from .test_population import require_enabled
+-from .track_models import Track, now
++from .track_models import Track, digest, now
+ from .tracks import DB, Auth, track_payload
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, include_in_schema=False)
+@@ -36,6 +36,22 @@
+ 
+ 
+ Operator = Annotated[None, Depends(operator)]
++
++
++@router.get("/dev/test-drivers/track-versions/{version_id}/histogram")
++def test_histogram(version_id: str, vehicle_id: str, request: Request, session: DB,
++                   player: Auth, bins: int = Query(24, ge=1, le=100)):
++    from .runs import board_manifest, histogram_query
++    from .tracks import published_version
++    require_enabled(request)
++    version = published_version(session, version_id)
++    pinned = {**board_manifest(version, vehicle_id), "test_population": True}
++    board_id = digest({"version_id": version.id, **pinned})
++    result = histogram_query(board_id, session, bins, test_population=True)
++    result["test_population"] = True
++    result["label"] = "Simulated test drivers / verified personal bests"
++    result["vehicle_id"] = vehicle_id
++    return result
+ 
+ 
+ @router.get("/dev/test-drivers/tracks")
+diff --git a/game/input/profiled_route_driver.gd b/game/input/profiled_route_driver.gd
+--- a/game/input/profiled_route_driver.gd
++++ b/game/input/profiled_route_driver.gd
+@@ -1,5 +1,6 @@
+ class_name ProfiledRouteDriver
+ extends RefCounted
++const VERSION: String = "profiled-route-3"
+ ## Offline development controller. It only emits ordinary quantized inputs.
+ ## The conservative regression RouteDriver and canonical simulation are unchanged.
+ var rng := RandomNumberGenerator.new()
+@@ -13,6 +14,12 @@
+ var mistake_until: int = 0
+ var recovery: bool = false
+ var mistakes: int = 0
++var detour_until: int = 0
++var reverse_until: int = 0
++var detour_side: float = 1.0
++var gate_seen: int = -1
++var gate_tick: int = 0
++var obstacle_detours: bool = false
+ 
+ func _init(traits: Dictionary, theme: String, content: String, attempt: int, scale: float = 1.0) -> void:
+ 	rng.seed = (str(traits.seed)+"/"+content+"/"+str(attempt)).sha256_text().left(15).hex_to_int()
+@@ -26,6 +33,10 @@
+ 
+ func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig, session: TrackSession) -> DriveFrame:
+ 	tick += 1
++	var gate: int = session.next_checkpoint+session.completed_laps*10000
++	if gate != gate_seen:
++		gate_seen = gate
++		gate_tick = tick
+ 	if tick % 120 == 1:
+ 		noise = lerpf(noise,rng.randf_range(-0.035,0.035)*(1.0-consistency),0.35)
+ 		steering_noise = lerpf(steering_noise,rng.randf_range(-0.05,0.05)*(1.0-consistency),0.4)
+@@ -33,7 +44,9 @@
+ 			mistake_until = tick+rng.randi_range(35,100)
+ 			mistakes += 1
+ 	var index: int = track.nearest_route(state.position,state.route_index)
+-	var target: Vector2 = track.route[(index+3)%track.route.size()]
++	var speed: float = state.velocity.length()
++	var lookahead: int = clampi(2+floori(speed/8.0),3,6)
++	var target: Vector2 = track.route[(index+lookahead)%track.route.size()]
+ 	# Return behind a missed gate, then cross it in the required direction.
+ 	# This changes only controller targets; no teleport, gate skipping or time edits.
+ 	if session.initialized and session.missed_checkpoint >= 0:
+@@ -46,22 +59,55 @@
+ 			target = center+direction*3.0
+ 	else: recovery = false
+ 	var offset: Vector2 = target-state.position
+-	var avoidance: Vector2 = track.collision_normal(state.position+state.velocity*0.35,config.collision_radius+0.3,state.track_elevated)
+-	if avoidance != Vector2.ZERO: offset += avoidance*3.0
++	var avoidance: Vector2 = _obstacle_normal(state.position+state.velocity*0.35,state,track,config)
++	var route_direction: Vector2 = (track.route[(index+lookahead)%track.route.size()]-track.route[index]).normalized()
++	var lateral: Vector2 = route_direction.orthogonal()
++	var clearance: float = minf(6.0,maxf(1.0,track.route_widths[index]*0.5-config.collision_radius-0.4))
++	# A head-on tyre wall needs a real reverse-and-detour manoeuvre. Pushing
++	# directly against its normal cannot rotate a stationary car around it.
++	if obstacle_detours and avoidance != Vector2.ZERO and tick > detour_until:
++		var scores: Array[int] = [0,0]
++		for side: int in range(2):
++			for distance: float in [2.0,4.0,6.0,8.0]:
++				var probe: Vector2 = state.position+route_direction*distance+lateral*clearance*(1.0 if side == 0 else -1.0)
++				if _obstacle_normal(probe,state,track,config) != Vector2.ZERO: scores[side] += 1
++		detour_side = 1.0 if scores[0] < scores[1] else -1.0
++		reverse_until = tick+90 if speed < 0.7 or tick-gate_tick > 240 else tick
++		detour_until = tick+600
++	if tick < detour_until:
++		offset += lateral*clearance*detour_side
++	elif avoidance != Vector2.ZERO: offset += avoidance*3.0
+ 	var desired: float = atan2(offset.x,offset.y)
+ 	var error: float = wrapf(desired-state.heading,-PI,PI)
+ 	var steer: float = clampf(error*2.3-state.yaw_rate*0.15+steering_noise,-1.0,1.0)
+ 	var future: Vector2 = track.route[(index+12)%track.route.size()]-target
+ 	var corner: float = absf(wrapf(atan2(future.x,future.y)-desired,-PI,PI))
+-	var speed_goal: float = clampf(12.0-corner*10.0-absf(error)*8.0,3.0,12.0)
+-	speed_goal *= (0.85+skill*0.95+aggression*0.06+noise)*pace_scale
++	# Keep momentum through bends; the old heading-error subtraction braked
++	# continually even while following a clean line. Full throttle is ordinary
++	# canonical input, with braking retained for sharp corners and gate recovery.
++	var speed_goal: float = clampf(23.0-corner*12.0-absf(error)*5.0,5.0,23.0)
++	speed_goal *= (0.70+skill*0.40+aggression*0.04+noise)*pace_scale
+ 	if avoidance != Vector2.ZERO: speed_goal = minf(speed_goal,4.0)
+ 	if session.missed_checkpoint >= 0: speed_goal = minf(speed_goal,3.5)
+ 	if tick < mistake_until: speed_goal *= 0.65
+ 	speed_goal = minf(speed_goal,config.maximum_speed*0.8)
+-	var speed: float = state.velocity.length()
+ 	var frame := DriveFrame.new()
+ 	frame.steer = clampi(roundi(steer*127),-127,127)
+-	frame.throttle = 166 if speed < speed_goal else 0
++	frame.throttle = 255 if speed < speed_goal else 0
+ 	frame.brake = 128 if speed > speed_goal+0.6+aggression*0.7 else 0
++	if tick < reverse_until:
++		frame.steer = 0
++		frame.throttle = 0
++		frame.brake = 255
+ 	return frame
++
++func _obstacle_normal(point: Vector2, state: VehicleState, track: NativeTrack, config: HandlingConfig) -> Vector2:
++	var normal: Vector2 = track.collision_normal(point,config.collision_radius+0.3,state.track_elevated)
++	if state.track_elevated or not obstacle_detours: return normal
++	var closest: float = config.collision_radius+0.3+LooseTyres.RADIUS
++	for tyre: Array in state.loose_tyres:
++		var delta: Vector2 = point-Vector2(float(tyre[0]),float(tyre[1]))
++		if delta.length() < closest:
++			closest = delta.length()
++			normal = delta.normalized() if closest > 0.001 else -state.forward()
++	return normal
+diff --git a/game/backend/generate_test_driver.gd b/game/backend/generate_test_driver.gd
+--- a/game/backend/generate_test_driver.gd
++++ b/game/backend/generate_test_driver.gd
+@@ -27,6 +27,7 @@
+ 	var track: NativeTrack = compiled.track
+ 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
+ 	var driver := ProfiledRouteDriver.new(traits,str(value.document.theme),track.content_hash,attempt,pace_scale)
++	driver.obstacle_detours = bool(value.get("obstacle_detours",false))
+ 	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
+ 	var frames: Array = []
+ 	var last_gate: int = -1
+@@ -43,8 +44,8 @@
+ 			last_gate = session.next_checkpoint; last_lap = session.completed_laps; progress_tick = tick
+ 		if session.finished: break
+ 		if tick-progress_tick > 3600:
+-			respond({},"Driver stalled at gate %d on lap %d" % [session.next_checkpoint,session.completed_laps+1]); return
++			respond({},"Driver stalled at gate %d on lap %d (position %s, route %d, target %s, direction %s, heading %.3f, missed %d)" % [session.next_checkpoint,session.completed_laps+1,sim.state.position,sim.state.route_index,session.checkpoint_road_center(track),session.checkpoint_direction(track),sim.state.heading,session.missed_checkpoint]); return
+ 	if not session.finished: respond({},"Driver did not finish all five laps"); return
+ 	respond({"replay":{"schema":REPLAY_SCHEMA,"frames":frames},"vehicle_id":vehicle,
+ 		"time_ticks":session.elapsed_ticks,"lap_ticks":session.lap_times.map(func(seconds: float) -> int: return roundi(seconds*VehicleSimulation.TICK_RATE)),
+-		"mistakes":driver.mistakes,"profile_version":traits.version,"manifest":compiled.manifest})
++		"mistakes":driver.mistakes,"profile_version":traits.version,"controller_version":ProfiledRouteDriver.VERSION+("" if driver.obstacle_detours else "/simple"),"manifest":compiled.manifest})
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -265,6 +265,15 @@
+ 	else:
+ 		global_rank.text = "UNRANKED"
+ 		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
++	if response.ok and cloud_client.test_drivers_available():
++		var test_histogram: Dictionary = await cloud_client.request_api("/dev/test-drivers/track-versions/"+cloud_version+"/histogram?vehicle_id="+vehicle_id.uri_encode()+"&bins=24",HTTPClient.METHOD_GET,{},"",true)
++		if not is_inside_tree(): return
++		if test_histogram.ok and int(test_histogram.data.population) > 0:
++			var counts: Array[int] = []
++			for bin: Dictionary in test_histogram.data.bins: counts.append(int(bin.count))
++			race_chart.snapshot = {"bins":counts,"min_ms":float(test_histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(test_histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":-1}
++			race_chart.queue_redraw()
++			race_context.text = "TEST DATA · %d simulated drivers / verified PBs" % int(test_histogram.data.population)
+ 	standings_busy = false
+ 
+ func _recommendations() -> void:
+diff --git a/game/tests/test_test_driver_live.gd b/game/tests/test_test_driver_live.gd
+--- a/game/tests/test_test_driver_live.gd
++++ b/game/tests/test_test_driver_live.gd
+@@ -1,5 +1,5 @@
+ extends SceneTree
+-## Explicit loopback acceptance of the operator-created developer test field.
++## Explicit HTTPS/loopback acceptance of the operator-created test field.
+ ## Uses isolated client storage; never submits a human PB or changes membership.
+ var checks: int = 0
+ var failures: int = 0
+@@ -19,8 +19,9 @@
+ 		print("FAIL: "+message)
+ 
+ func run() -> void:
+-	if OS.get_environment("BMT_API_URL") != "http://127.0.0.1:18181" or OS.get_environment("BMT_DEV_AUTH_KEY").is_empty():
+-		print("Set the explicit local API and private development key before this live check")
++	var api: String = OS.get_environment("BMT_API_URL")
++	if not (api == "http://127.0.0.1:18181" or api.begins_with("https://")) or OS.get_environment("BMT_DEV_AUTH_KEY").is_empty():
++		print("Set an explicit HTTPS/loopback test API and private development key before this live check")
+ 		quit(1)
+ 		return
+ 	var folder: String = "user://test_driver_live_"+TrackLibrary.unique_id()
+@@ -30,7 +31,12 @@
+ 	app.cloud_root_override = folder.path_join("cloud")
+ 	root.add_child(app)
+ 	while not app.startup_complete: await process_frame
+-	await app.online.sign_in_developer()
++	var subject: String = OS.get_environment("BMT_TEST_SUBJECT")
++	if subject.is_empty() or subject == "developer":
++		await app.online.sign_in_developer()
++	else:
++		var client: Node = app.online.client
++		client._remember(await client._send("/auth/development",HTTPClient.METHOD_POST,{"subject":subject,"display_name":subject},false,"",PackedStringArray(["X-Dev-Auth-Key: "+OS.get_environment("BMT_DEV_AUTH_KEY")])))
+ 	check(app.online.client.signed_in(),"developer authenticates against the live local service")
+ 	check(app.online.capabilities.get("test_drivers",false),"live bootstrap advertises test drivers")
+ 	app.rivalry.set_test_population(true)
+@@ -76,6 +82,40 @@
+ 				check(root.get_texture().get_image().save_png(evidence.path_join("live-%s-%dx%d.png" % [section,dimensions.x,dimensions.y])) == OK,"live screenshot saves")
+ 	var ticket: Dictionary = await app.rivalry.ticket(0)
+ 	check(not ticket.is_empty(),"human can request a real race ticket for the test field")
++	if OS.has_environment("BMT_TEST_HISTOGRAM"):
++		var histogram: Dictionary = await app.online.client.request_api("/dev/test-drivers/track-versions/"+OS.get_environment("BMT_TEST_HISTOGRAM")+"/histogram?vehicle_id=compact",HTTPClient.METHOD_GET,{},"",true)
++		check(histogram.ok and histogram.data.get("test_population",false),"private cloud histogram identifies simulated test data")
++		check(histogram.ok and int(histogram.data.get("population",0)) > 0,"private cloud histogram contains actually verified PBs")
++		await app.cloud.refresh(true)
++		for _page: int in range(5):
++			if app.cloud.next_cursor.is_empty(): break
++			await app.cloud.refresh(true)
++		app._show_screen("tracks")
++		var browser: TrackBrowser = app.root_ui.find_child("TrackBrowser",true,false)
++		while browser.loading: await process_frame
++		for metadata: Dictionary in app.cloud.entries:
++			if str(metadata.get("version_id","")) == OS.get_environment("BMT_TEST_HISTOGRAM"):
++				browser._select(app.cloud.entry_from_metadata(metadata))
++				while browser.selecting: await process_frame
++				break
++		check(browser.selected_track != null and browser.selected_track.metadata.has("cloud_version"),"cloud histogram track is playable")
++		if browser.selected_track != null and browser.selected_track.metadata.has("cloud_version"):
++			await browser._load_cloud_detail(browser.selected_track)
++			var key: String = app.records.key_for(browser.selected_track,HandlingSelection.config())
++			var snapshot: Dictionary = browser.discovery.records_by_rules_key.get(key,{})
++			check(int(snapshot.get("test_population",0)) > 0,"Race displays the labeled test histogram without inventing a public rank")
++			check(browser.find_child("TestHistogramToggle",true,false) != null,"development Race can switch back to the real player histogram")
++			browser.test_histograms = false
++			await browser._load_cloud_detail(browser.selected_track)
++			check(not browser.discovery.records_by_rules_key[key].has("test_population"),"real player histogram never inherits simulated data")
++			browser.test_histograms = true
++			await browser._load_cloud_detail(browser.selected_track)
++			for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++				root.size = dimensions
++				for _frame: int in range(8): await process_frame
++				if not evidence.is_empty() and DisplayServer.get_name() != "headless":
++					await RenderingServer.frame_post_draw
++					check(root.get_texture().get_image().save_png(evidence.path_join("live-histogram-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"labeled live histogram screenshot saves")
+ 	await app.online.client.logout()
+ 	app.queue_free()
+ 	await process_frame
+diff --git a/docs/TEST_DRIVERS.md b/docs/TEST_DRIVERS.md
+--- a/docs/TEST_DRIVERS.md
++++ b/docs/TEST_DRIVERS.md
+@@ -118,3 +118,8 @@
+ Changed source files in this rollout: `backend/deploy/pc_development.py`, `backend/tests/test_pc_test_driver_rollout.py`, `game/tests/test_test_driver_live.gd` and its Godot UID. Documentation/status and [rollout-only Git patch](evidence/test-driver-rollout-2026-10-04/test-driver-rollout.patch) record this follow-up separately from the earlier feature implementation. No mixed-workspace commit was made. The initial sandbox CIM query was denied; the same narrowly scoped process check succeeded with normal desktop access. No automatic approval rejection occurred.
+ 
+ Doctor currently lists **DN2103 and emulator-5554**. **No phone/emulator driving test, APK export or installation was performed for this rollout.** NAS/production deployment, a restored-service rehearsal, multi-week unattended scheduling, 150-driver throughput, PostgreSQL concurrency stress and human visual/pace acceptance remain unperformed. The live migration and aggregate isolation checks above were performed on PostgreSQL.
++
++
++## Google Cloud faster population (2026-10-06)
++
++The owner-requested retained-cloud rollout, faster controller, compact 200-driver/all-27-track history plan and labeled private histograms are recorded in [Cloud test drivers](CLOUD_TEST_DRIVERS_2026_10_06.md). The 5,400-finish population is still running; consult its authoritative progress report. Earlier local pace limitations above are historical, not proof that the final controller is human-calibrated on every track.
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -439,9 +439,10 @@
+     return cached(session, (board_id, board.stats_revision, "histogram", bins), lambda: histogram_query(board_id, session, bins))
+ 
+ 
+-def histogram_query(board_id, session, bins):
+-    entries = select(BoardTimeCount.time_ticks, BoardTimeCount.public_count.label("count")).where(
+-        BoardTimeCount.board_id == board_id, BoardTimeCount.public_count > 0).subquery()
++def histogram_query(board_id, session, bins, *, test_population=False):
++    frequency = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
++    entries = select(BoardTimeCount.time_ticks, frequency.label("count")).where(
++        BoardTimeCount.board_id == board_id, frequency > 0).subquery()
+     count, minimum, maximum = session.execute(
+         select(func.coalesce(func.sum(entries.c.count), 0), func.min(entries.c.time_ticks), func.max(entries.c.time_ticks)).select_from(
+             entries
+diff --git a/game/backend/backend_client.gd b/game/backend/backend_client.gd
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -241,6 +241,9 @@
+ 
+ func server_now() -> int:
+ 	return _server_sample+maxi(0,Time.get_ticks_msec()-_server_sample_msec)/1000 if _server_sample > 0 else 0
++
++func test_drivers_available() -> bool:
++	return OS.is_debug_build() and signed_in() and bool(_capabilities.get("test_drivers",false))
+ 
+ func new_operation_key() -> String:
+ 	return new_idempotency_key(server_now())
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -36,6 +36,7 @@
+ var _working_serial: int = 0
+ var rng := RandomNumberGenerator.new()
+ var cloud: Node
++var test_histograms: bool = true # Development capability only; public ranks stay separate.
+ var cloud_status: Label
+ var gallery: ScrollContainer
+ var gallery_content: Control
+@@ -534,6 +535,14 @@
+ 					for index: int in range(histogram.data.bins.size()):
+ 						var bin: Dictionary = histogram.data.bins[index]
+ 						if int(own.data.player.time_ticks) >= int(bin.from_ticks) and int(own.data.player.time_ticks) < int(bin.to_ticks_exclusive): discovery.records_by_rules_key[key].race_distribution.player_bin = index
++	if response.ok and test_histograms and cloud.client.test_drivers_available():
++		var test_histogram: Dictionary = await cloud.client.request_api("/dev/test-drivers/track-versions/"+str(track.metadata.cloud_version)+"/histogram?vehicle_id="+VehicleCatalog.selected.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
++		if not is_inside_tree() or track != selected_track or serial != _selection_serial: return
++		if test_histogram.ok and int(test_histogram.data.population) > 0:
++			var test_bins: Array = []
++			for bin: Dictionary in test_histogram.data.bins: test_bins.append(int(bin.count))
++			discovery.records_by_rules_key[key].race_distribution = {"bins":test_bins,"min_ms":float(test_histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(test_histogram.data.maximum_ticks)*1000.0/120.0}
++			discovery.records_by_rules_key[key].test_population = int(test_histogram.data.population)
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 
+ func _open_scores() -> void:
+@@ -591,7 +600,7 @@
+ 	race_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	actions.add_child(race_button)
+ 
+-func _heading(parent: Control, caption: String, icon: String) -> void:
++func _heading(parent: Control, caption: String, icon: String) -> HBoxContainer:
+ 	var row := HBoxContainer.new()
+ 	row.add_theme_constant_override("separation",8)
+ 	parent.add_child(row)
+@@ -602,6 +611,7 @@
+ 	var label := MenuStyle.label(caption,21,true)
+ 	label.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	row.add_child(label)
++	return row
+ 
+ func _show_detail() -> void:
+ 	if selecting or not preview_entry.is_empty(): return
+@@ -660,12 +670,25 @@
+ 	distribution.size_flags_stretch_ratio = 1.4
+ 	distribution.add_theme_constant_override("separation",2)
+ 	row.add_child(distribution)
+-	_heading(distribution,"WHERE YOU STAND","bars")
++	var distribution_heading: HBoxContainer = _heading(distribution,"WHERE YOU STAND","bars")
+ 	var distribution_body: VBoxContainer = _section_body(distribution)
+ 	var charts := HBoxContainer.new()
+ 	charts.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	charts.add_theme_constant_override("separation",8)
+ 	distribution_body.add_child(charts)
++	if cloud != null and selected_track.metadata.has("cloud_version") and cloud.client.test_drivers_available():
++		var histogram_mode := MenuStyle.button("Player data" if test_histograms else "Test data",func() -> void:
++			test_histograms = not test_histograms
++			_load_cloud_detail(selected_track))
++		histogram_mode.name = "TestHistogramToggle"
++		histogram_mode.custom_minimum_size = Vector2(92,32)
++		histogram_mode.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		histogram_mode.tooltip_text = "Switch between real player and simulated test-driver histograms"
++		histogram_mode.add_theme_font_size_override("font_size",12)
++		var spacer := Control.new()
++		spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		distribution_heading.add_child(spacer)
++		distribution_heading.add_child(histogram_mode)
+ 	for metric: String in ["race"]:
+ 		var card := PanelContainer.new()
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+diff --git a/backend/tests/test_test_drivers.py b/backend/tests/test_test_drivers.py
+--- a/backend/tests/test_test_drivers.py
++++ b/backend/tests/test_test_drivers.py
+@@ -385,6 +385,52 @@
+     assert (subject, name, traits) == (fixture["subject"], fixture["display_name"], fixture["traits"])
+ 
+ 
++def test_all_track_history_has_200_distinct_drivers_per_track(tmp_path):
++    from bmt_backend.test_population_tool import prepare
++
++    class PopulationAPI:
++        url = "https://test.invalid"
++
++        def call(self, method, route, body=None, **kwargs):
++            if route == "/dev/test-drivers/fleets":
++                return {"fleet": "test-fleet-200", "profiles": [
++                    {"subject": profile(200, i, 200, 0.0, 1.0)[0],
++                     "traits": profile(200, i, 200, 0.0, 1.0)[2]} for i in range(200)]}
++            return {"manifest": {}, "server_now": now(), "tracks": [
++                {"version_id": str(i), "content_hash": str(i)} for i in range(27)]}
++
++    args = SimpleNamespace(state=tmp_path / "all.json", command="fleet", count=200,
++                           seed=200, vehicle="compact", instant=True,
++                           pace_reference=None, all_tracks=True)
++    plan = prepare(PopulationAPI(), args)
++    assert len(plan["jobs"]) == 5400
++    for version in range(27):
++        jobs = [j for j in plan["jobs"] if j["version_id"] == str(version)]
++        assert len({j["subject"] for j in jobs}) == 200
++        assert all(j["group_id"] is None for j in jobs)
++
++
++def test_test_histogram_uses_verified_test_counts_and_stays_private(drivers):
++    from bmt_backend.runs import board_manifest
++    from bmt_backend.track_models import BoardTimeCount, TrackVersion, digest
++    version_id = group(drivers)["tracks"][0]["entry"]["version_id"]
++    with drivers.factory() as session:
++        pinned = {**board_manifest(session.get(TrackVersion, version_id), "compact"),
++                  "test_population": True}
++        board_id = digest({"version_id": version_id, **pinned})
++        assert session.get(Board, board_id).manifest["test_population"] is True
++        session.add(BoardTimeCount(board_id=board_id, time_ticks=5000, all_count=200, public_count=0))
++        session.commit()
++    route = f"/v1/dev/test-drivers/track-versions/{version_id}/histogram?vehicle_id=compact"
++    assert drivers.client.get(route).status_code == 401
++    result = drivers.client.get(route, headers=auth(drivers.login))
++    assert result.status_code == 200, result.text
++    assert result.json()["population"] == 200
++    assert sum(b["count"] for b in result.json()["bins"]) == 200
++    assert result.json()["test_population"] is True
++    assert drivers.client.get(f"/v1/boards/{board_id}/histogram").status_code == 404
++
++
+ def test_pace_calibration_drives_inputs_instead_of_rewriting_result(tmp_path, monkeypatch):
+     import bmt_backend.test_population_tool as tool
+     from bmt_backend.track_models import digest
+@@ -416,3 +462,29 @@
+     assert plan["calibration"]["v"]["relative_error"] < 0.02
+ 
+ 
++def test_failed_fast_drive_retries_real_slower_inputs(tmp_path, monkeypatch):
++    import bmt_backend.test_population_tool as tool
++    from bmt_backend.track_models import digest
++    document = {"name": "Tight circuit"}
++    manifest = FakeVerifier().manifest()
++    profile_data = {"traits": profile(27, 6, 13, 0.42, 0.58)[2]}
++    job = {"id": "c" * 64, "slot": 0, "attempt": 0, "version_id": "v", "content_hash": digest(document)}
++    plan = {"manifest": manifest, "vehicle_id": "compact", "pace_scales": {}}
++    scales = []
++
++    def drive(settings, doc, vehicle, traits, attempt, scale):
++        scales.append(scale)
++        if scale > 0.7:
++            raise tool.DriverDidNotFinish("stalled")
++        return {"manifest": manifest, "time_ticks": 12345,
++                "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]]}, "mistakes": 0}
++
++    class ReadAPI:
++        def call(self, *args):
++            return document
++
++    monkeypatch.setattr(tool, "generate", drive)
++    result = tool.recording(ReadAPI(), plan, job, profile_data, None, tmp_path / "plan.json")
++    assert scales == [1.0, 0.85, 0.7]
++    assert job["driven_pace_scale"] == 0.7
++    assert result["time_ticks"] == 12345
+diff --git a/backend/tests/test_gcp_staging.py b/backend/tests/test_gcp_staging.py
+--- a/backend/tests/test_gcp_staging.py
++++ b/backend/tests/test_gcp_staging.py
+@@ -21,6 +21,22 @@
+         "cost_reviewed": True, "estimated_hourly_eur": 0.5, "pricing_checked_at": staging.utc().isoformat(),
+         "api_max": 2, "worker_instances": 1, "public_api": False, "google_client_ids": [], "google_web_client_id": "",
+         "godot_sha256": staging.PIN, "gcloud": ["fixture-gcloud"], "docker": ["fixture-docker"]}
++
++
++def test_retained_test_population_has_separate_runtime_secret(tmp_path):
++    c = config()
++    c.update(retain_data=True, test_drivers_enabled=True, test_drivers_secret="fixture-test-key")
++    assert staging.environment(c, "api")["BMT_TEST_DRIVERS_ENABLED"] == "true"
++    assert staging.environment(c, "worker")["BMT_ENVIRONMENT"] == "development"
++    assert staging.environment(c, "migrate")["BMT_DEV_AUTH_ENABLED"] == "false"
++    assert staging.environment(c, "smoke")["BMT_TEST_DRIVERS_ENABLED"] == "false"
++    commands = staging.deployment_commands(c, "fixture-image", tmp_path)
++    assert any("BMT_DEV_AUTH_KEY=fixture-test-key:1" in arg for arg in commands["api"])
++    assert any("BMT_DEV_AUTH_KEY=fixture-test-key:1" in arg for arg in commands["worker"])
++    assert not any("BMT_DEV_AUTH_KEY" in arg for arg in commands["migrate"])
++    c["retain_data"] = False
++    with pytest.raises(ValueError, match="retained staging"):
++        staging.environment(c, "api")
+ 
+ 
+ class Runner:
+diff --git a/backend/tests/test_test_drivers_integration.py b/backend/tests/test_test_drivers_integration.py
+--- a/backend/tests/test_test_drivers_integration.py
++++ b/backend/tests/test_test_drivers_integration.py
+@@ -43,6 +43,9 @@
+         times.append(result["time_ticks"])
+         replays.append(result["replay"])
+     assert times[0] > times[1] > times[2]
++    # Recorded same-profile prechange oval: 9872 ticks. Keep the controller
++    # improvement material without changing the simulation or reported time.
++    assert times[1] < 9872 * 0.8
+     traits["skill"] = 0.5
+     assert generate(settings, fixture["document"], "compact", traits)["replay"] == replays[1]
+     assert generate(settings, fixture["document"], "compact", traits, 1)["replay"] != replays[1]
+diff --git a/backend/deploy/gcp/staging.py b/backend/deploy/gcp/staging.py
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -117,6 +117,10 @@
+         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
+         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
+         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
++    if config.get("test_drivers_enabled") is True and role in ("api", "worker"):
++        if config.get("retain_data") is not True or not config.get("test_drivers_secret"):
++            raise ValueError("Cloud test drivers require retained staging and a separate key secret")
++        result.update(BMT_ENVIRONMENT="development", BMT_DEV_AUTH_ENABLED="true", BMT_TEST_DRIVERS_ENABLED="true")
+     return result
+ 
+ 
+@@ -132,8 +136,11 @@
+     def account(role):
+         return n[role] + "@" + project + ".iam.gserviceaccount.com"
+     def common(role, identity, secret):
++        bindings = "BMT_DATABASE_URL=" + n[secret] + ":1"
++        if config.get("test_drivers_enabled") is True and role in ("api", "worker"):
++            bindings += ",BMT_DEV_AUTH_KEY=" + config["test_drivers_secret"] + ":1"
+         return ["--image=" + image, "--region=" + region, "--service-account=" + account(identity),
+-            "--set-cloudsql-instances=" + sql, "--set-secrets=BMT_DATABASE_URL=" + n[secret] + ":1",
++            "--set-cloudsql-instances=" + sql, "--set-secrets=" + bindings,
+             "--env-vars-file=" + str(directory / (role + "-env.json")), "--labels=" + label,
+             "--cpu=1", "--memory=" + ("1024Mi" if role == "api" else "768Mi")]
+     job = ["--command=python", "--tasks=1", "--parallelism=1", "--max-retries=0", "--task-timeout=300s"]
+@@ -454,8 +461,8 @@
+                 headers={"X-Serverless-Authorization": "Bearer " + token})
+             results[path] = value
+         if (results["/health"].get("status") != "ok" or results["/ready"].get("status") != "ready"
+-                or results["/v1/bootstrap"].get("development_auth") is not False
+-                or results["/v1/bootstrap"].get("test_drivers") is not False):
++                or results["/v1/bootstrap"].get("development_auth") is not bool(self.c.get("test_drivers_enabled"))
++                or results["/v1/bootstrap"].get("test_drivers") is not bool(self.c.get("test_drivers_enabled"))):
+             raise RuntimeError("Staging health/auth separation failed")
+         write_json(self.directory / "smoke.json", results)
+         return results
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 TD01-TD07/WR03-WR07/B01-B07/R01/Q01: owner-requested Google Cloud test drivers enabled on retained staging after a completed SQL backup, with a separate private runtime key. 13 artificial rivals plus an independent observer have verified Week 41 scores/ghosts; a 200-driver compact fleet schedules 5,400 genuine five-lap histories across all 27 official tracks. Bulk completion remains in progress, never reported as 200 finished per track. Final fast-first controller reduces same-cloud Over and under race time 29.05%; genuine detour fallback handles Ellipse tyre walls. Additive histogram image proves byte-identical canonical project/manifest; no schema/physics/handling change or production deployment. Labeled debug Race/Results histograms remain separate from real rankings, with Player/Test data switching. Backend/staging42, canonical profile1, App99, parser309 and native live cloud34 pass; ten captures inspected. Hidden resumable schedulers run on this PC. Corrected intermediate pace/build/diagnostic/UI/trust failures retained; concurrent work preserved. No Android export/install/device test; attachment not checked. Full 200-per-track/fleet matching, long-running throughput, next-week scheduling, Results/phone and broader pace acceptance remain. Commands, files, progress report and scoped checkpoint: docs/CLOUD_TEST_DRIVERS_2026_10_06.md.
++
+ 2026-10-06 T01-T04/Q01: returning to a missed checkpoint could immediately flag an upcoming gate because notice projection used a distant collision route hint. Bounded projection now compares the last accepted gate corridor, retaining simulation-branch ties and unchanged swept acceptance/physics/rules v18. Reproduced 84 failures before fix; final notices533/rules266/layers259/exits2527/rewind57/capture22 all pass. Desktop missed/recovered screenshots inspected; scoped Git diff retained. No phone attachment check/device test/export/install/backend deployment or full Validate. Files, commands, limits and acceptance: docs/CHECKPOINT_RECOVERY_2026_10_06.md.
+ 
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP01-SP03: owner-requested five-point spline road block with independent point widths implemented. Shared deterministic fitted samples drive preview, surfaces and automatic routes; point/width handles, toolbar, snap/connect, undo/redo and saves retained. Creator-v5 schema adds spline fields; compiler21 and standalone verifier packaging updated. Final graphical spline479, workflow252, road377, creator113, editor-performance1215 and App99 checks pass; spline five-lap exact replay13517 ticks/zero contacts. Full Validate309 parses then stops on unrelated menu-loading DelayedBoard/test_drivers_available error; separate HTTP-refresh failure retained. Packaged spline/backend7 tests pass after fixing helper omission; existing recording/times unchanged, compiler/hash goldens updated. Screenshots inspected; scoped patch preserves concurrent work. No phone attachment check/device test/export or backend/cloud deployment; matching backend rollout, phone performance and owner acceptance remain. Actual commands, files, failures and evidence: docs/SPLINE_ROADS.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 TD01-TD07/WR03-WR07/B01-B07/R01/Q01: owner-requested Google Cloud test drivers enabled on retained staging after a completed SQL backup, with a separate private runtime key. 13 artificial rivals plus an independent observer have verified Week 41 scores/ghosts; a 200-driver compact fleet schedules 5,400 genuine five-lap histories across all 27 official tracks. Bulk completion remains in progress, never reported as 200 finished per track. Final fast-first controller reduces same-cloud Over and under race time 29.05%; genuine detour fallback handles Ellipse tyre walls. Additive histogram image proves byte-identical canonical project/manifest; no schema/physics/handling change or production deployment. Labeled debug Race/Results histograms remain separate from real rankings, with Player/Test data switching. Backend/staging42, canonical profile1, App99, parser309 and native live cloud34 pass; ten captures inspected. Hidden resumable schedulers run on this PC. Corrected intermediate pace/build/diagnostic/UI/trust failures retained; concurrent work preserved. No Android export/install/device test; attachment not checked. Full 200-per-track/fleet matching, long-running throughput, next-week scheduling, Results/phone and broader pace acceptance remain. Commands, files, progress report and scoped checkpoint: docs/CLOUD_TEST_DRIVERS_2026_10_06.md.
++
+ 2026-10-06 T01-T04/Q01: returning to a missed checkpoint could immediately flag an upcoming gate because notice projection used a distant collision route hint. Bounded projection now compares the last accepted gate corridor, retaining simulation-branch ties and unchanged swept acceptance/physics/rules v18. Reproduced 84 failures before fix; final notices533/rules266/layers259/exits2527/rewind57/capture22 all pass. Desktop missed/recovered screenshots inspected; scoped Git diff retained. No phone attachment check/device test/export/install/backend deployment or full Validate. Files, commands, limits and acceptance: docs/CHECKPOINT_RECOVERY_2026_10_06.md.
+ 
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP01-SP03: owner-requested five-point spline road block with independent point widths implemented. Shared deterministic fitted samples drive preview, surfaces and automatic routes; point/width handles, toolbar, snap/connect, undo/redo and saves retained. Creator-v5 schema adds spline fields; compiler21 and standalone verifier packaging updated. Final graphical spline479, workflow252, road377, creator113, editor-performance1215 and App99 checks pass; spline five-lap exact replay13517 ticks/zero contacts. Full Validate309 parses then stops on unrelated menu-loading DelayedBoard/test_drivers_available error; separate HTTP-refresh failure retained. Packaged spline/backend7 tests pass after fixing helper omission; existing recording/times unchanged, compiler/hash goldens updated. Screenshots inspected; scoped patch preserves concurrent work. No phone attachment check/device test/export or backend/cloud deployment; matching backend rollout, phone performance and owner acceptance remain. Actual commands, files, failures and evidence: docs/SPLINE_ROADS.md.
+diff --git a/backend/deploy/gcp/README.md b/backend/deploy/gcp/README.md
+--- a/backend/deploy/gcp/README.md
++++ b/backend/deploy/gcp/README.md
+@@ -82,3 +82,8 @@
+ ## Primary interfaces
+ 
+ The implementation follows [GCS conditional uploads](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert), [generation-conditioned deletion](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/delete), [Cloud SQL settings](https://docs.cloud.google.com/sql/docs/postgres/admin-api/rest/v1beta4/instances), [worker-pool deployment](https://docs.cloud.google.com/sdk/gcloud/reference/run/worker-pools/deploy) and [Cloud Run secret bindings](https://docs.cloud.google.com/run/docs/configuring/services/secrets). Bucket/SQL creation uses JSON API requests so ownership labels are atomic; the corresponding CLI create interfaces do not supply the needed labels uniformly.
++
++
++## Isolated development population (October 6)
++
++Owner-authorized simulated drivers are enabled on retained staging with a separate Secret Manager key, keeping Google accounts and public rankings separate. The minimal test-histogram API image preserves the exact canonical project and manifest. A 200-driver compact plan is populating all 27 current tracks through genuine verified races, and a focused test Weekly Rivalry is already populated. See [actual rollout, resumable commands and unfinished bulk population](../../../docs/CLOUD_TEST_DRIVERS_2026_10_06.md). The earlier disabled-auth descriptions apply to the original staging configuration; production defaults remain disabled.
+diff --git a/backend/deploy/gcp/test_population.py b/backend/deploy/gcp/test_population.py
+--- /dev/null
++++ b/backend/deploy/gcp/test_population.py
+@@ -0,0 +1,117 @@
++"""Enable and operate explicitly isolated test drivers on retained GCP staging.
++
++Uses the existing immutable image, a separate Secret Manager development key,
++ownership checks and a completed Cloud SQL backup. Google accounts stay intact.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import secrets
++import sys
++from pathlib import Path
++
++import staging
++
++
++def enable(config, directory, *, apply=False):
++    if config.get("retain_data") is not True:
++        raise ValueError("Test population requires retained staging; deletion must be disabled")
++    service = staging.Staging(config, directory)
++    receipt = json.loads((directory / "deployment.json").read_text())
++    for kind in ("api", "worker"):
++        if staging.resource_image(service.describe(kind, service.n[kind])) != receipt["image"]:
++            raise RuntimeError("Existing API and worker must match the retained image receipt")
++    secret = "bmt-stg-" + config["owner"][:8] + "-test-driver-key"
++    plan = {"owner": config["owner"], "image": receipt["image"], "url": receipt["url"],
++            "development_only": True, "isolated_boards": True, "key_secret": secret,
++            "backup_before_enable": True}
++    if not apply:
++        return plan
++    service.call("sql", "backups", "create", "--instance=" + service.n["sql"],
++                 "--description=Before isolated test-driver population", "--format=json")
++    backups = json.loads(service.call("sql", "backups", "list", "--instance=" + service.n["sql"],
++                                    "--filter=description:isolated", "--format=json"))
++    if not any(b.get("status") == "SUCCESSFUL" for b in backups):
++        raise RuntimeError("Completed prepopulation database backup required")
++    service.ensure("secret", secret, "secrets", "create", secret, "--replication-policy=automatic",
++                   "--labels=" + service.label_string() + ",bmt-retain-data=true")
++    if service.call("secrets", "versions", "describe", "1", "--secret=" + secret,
++                    "--format=json", allow_missing=True) is None:
++        service.call("secrets", "versions", "add", secret, "--data-file=-",
++                     input_data=secrets.token_urlsafe(48))
++    service.call("secrets", "add-iam-policy-binding", secret,
++                 "--member=serviceAccount:" + service.account("runtime"), "--role=roles/secretmanager.secretAccessor")
++    for kind, command in (("worker", ["run", "worker-pools", "update"]), ("api", ["run", "services", "update"])):
++        service.call(*command, service.n[kind], "--region=" + config["region"],
++                     "--update-env-vars=BMT_ENVIRONMENT=development,BMT_DEV_AUTH_ENABLED=true,BMT_TEST_DRIVERS_ENABLED=true",
++                     "--update-secrets=BMT_DEV_AUTH_KEY=" + secret + ":1", "--format=json")
++    plan["backup_ids"] = [b["id"] for b in backups if b.get("status") == "SUCCESSFUL"]
++    staging.write_json(directory / "test-population.json", plan)
++    return plan
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("command", choices=("enable", "fill", "fleet", "tick", "watch", "report"))
++    parser.add_argument("--config", type=Path, default=staging.ROOT / ".tools/gcp-staging/config.json")
++    parser.add_argument("--apply", action="store_true")
++    parser.add_argument("--confirm-owner")
++    args, population_args = parser.parse_known_args()
++    config = json.loads(args.config.read_text())
++    directory = args.config.parent / ("rendered-" + config["owner"])
++    if args.command == "enable":
++        if args.apply and args.confirm_owner != config["owner"]:
++            parser.error("Apply requires the retained staging owner ID")
++        result = enable(config, directory, apply=args.apply)
++        if args.apply:
++            config["test_drivers_enabled"] = True
++            config["test_drivers_secret"] = result["key_secret"]
++            staging.write_json(args.config, config)
++        print(json.dumps(result, indent=2))
++        return
++    receipt = json.loads((directory / "test-population.json").read_text())
++    service = staging.Staging(config, directory)
++    if receipt["owner"] != config["owner"]:
++        raise RuntimeError("Population ownership receipt differs")
++    service.describe("secret", receipt["key_secret"])
++    os.environ["BMT_DEV_AUTH_KEY"] = service.call("secrets", "versions", "access", "1", "--secret=" + receipt["key_secret"])
++    os.environ["BMT_API_URL"] = receipt["url"]
++    if args.command == "report":
++        from bmt_backend.test_population_tool import API, load_plan
++        report_parser = argparse.ArgumentParser()
++        report_parser.add_argument("--state", type=Path, required=True)
++        report_parser.add_argument("--output", type=Path)
++        report_args = report_parser.parse_args(population_args)
++        api = API(receipt["url"], os.environ["BMT_DEV_AUTH_KEY"])
++        plan = load_plan(report_args.state, api)
++        catalog = api.call("GET", "/dev/test-drivers/tracks?vehicle_id=" + plan["vehicle_id"], operator=True)
++        names = {track["version_id"]: track["name"] for track in catalog["tracks"]}
++        versions = sorted({job["version_id"] for job in plan["jobs"] if job["group_id"] is None})
++        tracks = []
++        for version in versions:
++            histogram = api.call("GET", "/dev/test-drivers/track-versions/" + version +
++                                 "/histogram?vehicle_id=" + plan["vehicle_id"], subject=plan["profiles"][0]["subject"])
++            tracks.append({"version_id": version, "name": names.get(version, version),
++                           "verified_test_pbs": histogram["population"], "target": len(plan["profiles"])})
++        result = {"vehicle_id": plan["vehicle_id"], "test_population": True,
++                  "complete": bool(tracks) and all(t["verified_test_pbs"] >= t["target"] for t in tracks),
++                  "tracks": tracks,
++                  "jobs": {status: sum(j["status"] == status for j in plan["jobs"])
++                           for status in sorted({j["status"] for j in plan["jobs"]})}}
++        if report_args.output:
++            staging.write_json(report_args.output, result)
++        print(json.dumps(result, indent=2))
++        os.environ.pop("BMT_DEV_AUTH_KEY", None)
++        return
++    from bmt_backend.test_population_tool import main as population_main
++    sys.argv = [sys.argv[0], args.command, *population_args]
++    try:
++        population_main()
++    finally:
++        os.environ.pop("BMT_DEV_AUTH_KEY", None)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/CLOUD_TEST_DRIVERS_2026_10_06.md b/docs/CLOUD_TEST_DRIVERS_2026_10_06.md
+--- /dev/null
++++ b/docs/CLOUD_TEST_DRIVERS_2026_10_06.md
+@@ -0,0 +1,63 @@
++# Faster Google Cloud test drivers
++
++Requirements: TD01–TD07, WR03–WR07, B01–B07, R01, Q01. The owner requested simulated drivers in the existing Google Cloud environment, considerably faster pace, Weekly Rivalry population and 200 finishes per track.
++
++The retained `beat-my-track` staging service now explicitly enables development authentication and isolated test drivers. A completed Cloud SQL backup preceded enablement. A new Secret Manager key is available only to the runtime identity and the authenticated operator; it is not installed in the game, stored in plans, passed on command lines or committed. Google identities remain separate. Production defaults still disable this feature.
++
++There are 213 artificial profiles: 13 rivals in the focused 14-member Week 41 compact group (with a separate development observer), and 200 profiles in the larger fleet. The larger plan schedules **5,400 genuine five-lap finishes across all 27 current official tracks**, one per fleet driver per track. These are input recordings uploaded through ordinary tickets and verified by the existing worker. Histogram population counts distinct verified PBs, not repeated attempts by one driver. Additional focused-rivalry PBs can put the total above 200 on its five tracks.
++
++**The bulk population is still running; 200 verified finishes on every track has not yet been achieved.** The authoritative [progress report](evidence/cloud-test-drivers-2026-10-06/population-progress.json) explicitly records `complete: false` until every track reaches its target. Both hidden Windows schedulers have durable plans and resume using the same idempotency keys after interruption. They depend on this PC remaining on; startup registration and automatic next-week plans are not configured. Full-fleet matching waits for all requested history jobs to verify, then generates genuine weekly attempts. The smaller rivalry already has verified standings and ghosts independently of that history work.
++
++## Pace and completion
++
++`profiled-route-3` emits ordinary quantized controls, uses full throttle and a bounded speed-dependent route lookahead, and reduces continual braking caused by heading error. No car, handling, physics, gate, collision or timing rule was changed. Against the **same deployed compiler 20**, the original controller takes 19,538 ticks on Over and under; the final controller takes **13,863 ticks (29.05% less race time)**. Both recordings passed canonical verification. The oval regression also requires a material improvement and preserves deterministic recordings and skill ordering.
++
++The fast route follower is tried first. If it cannot finish, the scheduler actually drives slower scales, then an obstacle-aware variant; it never rewrites a time or waives a gate. Ellipse exposed a dense loose-tyre wall that static contact queries missed. The variant reads the actual deterministic tyre positions and uses real reversing and steering to detour within the authored road width. Low/middle/high fleet profiles completed all five laps at 8,725/7,437/6,705 ticks, respectively, with exact canonical verification. It is a fallback because proactive detours slowed some other circuits. Ajorata, Ellipse, Knit and Over and under were separately verified through the final scheduling path. Failed required-history drives get four additional attempt variations; exhausted failures remain visible and prevent declaring the target complete.
++
++## Histograms and rivalry
++
++Authenticated development clients can read `/v1/dev/test-drivers/track-versions/{version_id}/histogram?vehicle_id=compact`. It uses the separate test board's verified PB frequencies and returns explicit test labels. Normal public boards still reject test-board IDs and exclude artificial drivers. Ratings and community eligibility retain their existing artificial-identity exclusions.
++
++In the debug app, Race labels the development distribution **TEST DATA · … simulated drivers**, with a **Player data / Test data** switch in the chart heading. Normal standings and player ranks remain separate. Results also label the development chart; normal race results continue to display immediately. The capability and UI are unavailable in release behavior or with test drivers disabled. In Weekly Rivalry, select **TEST RIVALS: ON** to join the isolated test population using your normal Google account; no development key is required by the game for that selection. Normal rivalries continue to contain real drivers only.
++
++Actual cloud screenshots, inspected at 1280×720 and 960×540: [Race test histogram](evidence/cloud-test-drivers-2026-10-06/live-histogram-960x540.png), [verified standings](evidence/cloud-test-drivers-2026-10-06/live-standings-1280x720.png), [duel detail](evidence/cloud-test-drivers-2026-10-06/live-detail-960x540.png). They show the population at capture time, not a fabricated 200-driver finished population.
++
++## Cloud rollout and operations
++
++The workspace compiler is 21, so its recordings were correctly refused by the live compiler-20 build. The generator instead uses `.tools/cloud-driver-project`, extracted from the exact deployed image, with only the offline controller and generator updated. The engine is pinned to `godot-version.txt` (4.7.2 stable ed1daf0bf).
++
++The test histogram endpoint was rolled out with a minimal derived image containing changes to only the deployed `runs.py` and `test_drivers.py`. All `/opt/bmt` canonical project files and the native manifest were compared between base and derived images and were byte-identical. API, worker and existing diagnostic/migration jobs use the new immutable image. This additive retained-staging operation did not weaken the general staging script's changed-image refusal, migrate the schema or deploy production. The original image/rollout receipt is retained. Existing tracks/accounts and local WSL services were not replaced.
++
++From the repository root, using the existing private operator TLS configuration when required:
++
++```powershell
++$env:PYTHONPATH = 'backend'
++$env:CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE = (Resolve-Path .tools/gcp-staging/windows-trust.pem).Path
++$env:REQUESTS_CA_BUNDLE = $env:CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE
++
++# Read current authoritative counts; no races are generated by report.
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/test_population.py report --state build/cloud-histograms-200-2026-10-06.json
++
++# Resume after a reboot/interruption. Use one process per plan.
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/test_population.py watch --state build/cloud-histograms-200-2026-10-06.json --project .tools/cloud-driver-project --godot 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --max-jobs 20 --interval 10
++& .tools/backend-venv/Scripts/python.exe backend/deploy/gcp/test_population.py watch --state build/cloud-rivalry-fast-2026-10-06.json --project .tools/cloud-driver-project --godot 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --max-jobs 20 --interval 10
++```
++
++Initial commands actually run: `test_population.py enable` then `enable --apply --confirm-owner` with the retained owner ID; `fill --seed 61006 --target-subject cloud-test-observer --instant`; `fleet --seed 62006 --count 200 --all-tracks --instant`; bounded `tick` passes; hidden `watch` launch/restarts; and `report --output docs/evidence/cloud-test-drivers-2026-10-06/population-progress.json`. Private rollout/capture launchers are retained under `.tools/gcp-staging`; sanitized rollout proof, pace/completion evidence and a scoped source checkpoint are in the evidence directory. Runtime PID/start/command receipts and stdout/stderr logs are next to each plan under `build/`.
++
++## Actual checks and limitations
++
++- Backend driver/staging regressions: **42 passed**; Ruff passes. Tests cover 200 distinct drivers on every one of 27 tracks, private histogram counts, public isolation, persisted profiles, disabling sessions, credential-role separation, scheduling/idempotent recovery and actual slower-input fallback.
++- Pinned canonical profile integration: **one test passed**, exercising three skill levels, deterministic repeatability, attempt variation, five laps and material oval pace improvement.
++- Native live Google Cloud acceptance: **34 checks, zero failures**, including verified rivalry ghosts, private histogram reads, playable track selection, labeled chart, switch back to real-player data and ten screenshots.
++- App regression: **99 checks, zero failures**. Final parser: **309 scripts, zero failures**.
++- Final fast-first/fallback completion probes finished **all five laps on all 27 tracks**. These are neutral-profile completion probes, not a claim that all 200 driver histories are finished.
++- The exact-cloud baseline/pace proof, difficult-circuit canonical recordings and final completion probes are separate from the bulk server verification. A neutral completion probe does not prove all 200 profiles will finish every circuit.
++
++Earlier failures were retained and corrected: Windows sandbox certificate access; missing cloud-project engine pin/read-only extracted cache; compiler 21/20 mismatch; existing-account `USERNAME_TAKEN` (used an independent observer without altering that account); a paginated diagnostic selecting a local track; initial chart toggle clipping; initial overdriving/skill inversion; Ellipse's tyre-wall stall; and overly broad detours. An accidental `CheckScript` invocation without its required path launched the app and was stopped; it was not reported as a parse pass. One background restart lacked the CLI trust environment; both scoped schedulers were restarted with the established trust configuration. No automatic approval rejection occurred.
++
++Changed source files: `backend/bmt_backend/test_driver_generator.py`, `test_population_tool.py`, `test_drivers.py`, the histogram query in `runs.py`; `backend/deploy/gcp/staging.py` and new `test_population.py`; `backend/tests/test_test_drivers.py`, `test_test_drivers_integration.py`, `test_gcp_staging.py`; `game/input/profiled_route_driver.gd`, `game/backend/generate_test_driver.gd`, the test-capability accessor in `backend_client.gd`, `game/ui/track_browser.gd`, `race_complete.gd`, and `game/tests/test_test_driver_live.gd`. Existing concurrent work is preserved in the scoped checkpoint; no mixed-workspace commit was made.
++
++The [scoped checkpoint](evidence/cloud-test-drivers-2026-10-06/scoped-change.patch) contains only this task's source/documentation changes. `git apply --check --reverse --ignore-space-change` passes against the working tree; the whitespace option accommodates the repository's mixed Windows line-ending normalization.
++
++Remaining acceptance: actual 200-per-track completion, long-running scheduler/worker throughput, exhausted controller failures, elite human pace calibration on every circuit, next-week unattended scheduling, Results chart visual acceptance, and physical-device behavior. This seed is for **compact**; the other four vehicle histograms are not populated by this plan. No Android export/install/device test was performed and phone attachment was not checked. No simulation change required a full physics regression. Retained staging continues its existing billing; worker count, CPU and memory were not increased.

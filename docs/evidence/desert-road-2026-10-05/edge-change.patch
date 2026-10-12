@@ -1,0 +1,31 @@
+﻿diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index 24ddb894..62fbbdf2 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -301,22 +330,14 @@ func _build_creator_roads(track: NativeTrack) -> void:
+ 						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
+ 						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points,axis_cache)
+ 					fringe_count += 1
+-					var is_kerb: bool = not dirt and not _on_join_plane(a,b,cuts) and _inner_bend_distance(midpoint,points) >= 0.0
+-					# Continuous sand beneath the tapered kerb ends.
++					# Continuous sand transition around the road.
+ 					# Only the outer contour varies; road/paint stay fixed.
+ 					var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+ 					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+ 					shoulder_mesh.add_quad(p,q,outer_p,outer_q)
+ 					counts[0] += 1
+-					if theme_id == "desert" and sand_clods < 1800:
+-						var seed_value: int = absi(int(midpoint.x*1731.0+midpoint.y*7919.0))
+-						var taper: float = _berm_envelope(midpoint,points) if is_kerb else 0.0
+-						if seed_value%100 < (52 if is_kerb else 4) and (not is_kerb or taper > 0.08):
+-							var normal: Vector2 = (normal_p+normal_q)*0.5
+-							var center: Vector2 = midpoint+normal*(1.0+float(seed_value%13)*0.032)
+-							var size: float = (0.95+float(seed_value%11)*0.06)*(sqrt(taper) if is_kerb else 0.40)
+-							_sand_clod(shoulders,center,(q-p).angle(),size,seed_value,1.65 if is_kerb else 1.0)
+-							sand_clods += 1
++					# Desert edges are a flat compacted-to-loose sand transition.
++					# Authored contacts remain canonical; no decorative raised clods.
+ 					# Retain the authored road-edge marking and keep it smooth;
+ 					# only the asphalt/sand colour transition receives subtle breakup.
+ 					if dirt or theme_id in ["desert","winter"]: continue
+

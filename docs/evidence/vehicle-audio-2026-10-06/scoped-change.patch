@@ -1,0 +1,3206 @@
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -70,8 +70,7 @@
+ var impact_cracks: Control
+ var trails: SkidTrails
+ var sand_dust: SandDustEffect
+-var tire_audio: TireAudio
+-var music: DynamicMusicController
++var vehicle_audio: VehicleAudio
+ var hud: PlaygroundHUD
+ var paused: bool = false
+ var previous_position: Vector2
+@@ -173,10 +172,9 @@
+ 	sand_dust.track_width = handling.track_width
+ 	sand_dust.collision_radius = handling.collision_radius
+ 	world.add_child(sand_dust)
+-	tire_audio = TireAudio.new()
+-	add_child(tire_audio)
+-	music = DynamicMusicController.new()
+-	add_child(music)
++	vehicle_audio = VehicleAudio.new()
++	add_child(vehicle_audio)
++	vehicle_audio.configure(vehicle_id,handling)
+ 	camera = FollowCamera.new()
+ 	if preference_records != null:
+ 		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
+@@ -294,6 +292,7 @@
+ 		camera.add_collision_impact(resolved_impact)
+ 		car.add_collision_impact(sim.state,resolved_impact)
+ 		impact_cracks.show_impact(resolved_impact)
++		vehicle_audio.collision(resolved_impact)
+ 	var roughness: float = native_track.off_road_rumble(sim.state) if native_track != null else 0.0
+ 	var off_track_rumble: float = smoothstep(3.0, 22.0, sim.state.velocity.length()) * roughness
+ 	camera.set_off_track_rumble(off_track_rumble)
+@@ -377,8 +376,6 @@
+ 	if sim == null:
+ 		return
+ 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+-	if music != null and track_session != null:
+-		music.present(presented.state,track_session,delta,paused or countdown_ticks > 0)
+ 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused)
+ 	if sand_dust != null: sand_dust.set_water_paused(paused)
+@@ -396,7 +393,7 @@
+ 	var water_depth: float = native_track.water_depth(point) if native_track != null else 0.0
+ 	car.present(point, heading, presented.state, frame)
+ 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
+-	tire_audio.present(presented.state, delta, paused or countdown_ticks > 0)
++	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0)
+ 	car.rotation.x = 0.0
+ 	if native_track != null:
+ 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
+@@ -494,7 +491,7 @@
+ 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
+ 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
+ 	track_session = TrackSession.new()
+-	if music != null: music.start(native_track)
++	if vehicle_audio != null: vehicle_audio.reset()
+ 	practice_validation = TrackSession.new(120,1)
+ 	practice_validation_eligible = true
+ 	checkpoint_marker.previous_gate = -2
+@@ -907,7 +904,7 @@
+ 	car.suspension = Vector3.ZERO
+ 	car.suspension_speed = Vector3.ZERO
+ 	checkpoint_marker.previous_gate = -2
+-	if music != null: music.start(native_track)
++	if vehicle_audio != null: vehicle_audio.reset()
+ 	_close_rewind(false,true)
+ 	_refresh_resume_hud()
+ 
+diff --git a/game/vehicle/tire_audio.gd b/game/vehicle/tire_audio.gd
+--- a/game/vehicle/tire_audio.gd
++++ b/game/vehicle/tire_audio.gd
+@@ -1,10 +1,11 @@
+ class_name TireAudio
+ extends AudioStreamPlayer
+-## Original synthesized scrub, presentation only; never writes simulation state.
++## Slip feedback contract retained for handling diagnostics. The race mix uses VehicleAudio.
+ var loudness: float = 0.0
+ 
+ func _ready() -> void:
+ 	stream = make_scrub()
++	bus = "Tires"
+ 	volume_db = -80.0
+ 	play()
+ 
+@@ -22,22 +23,8 @@
+ 	pitch_scale = 0.85 + 0.3 * clampf(state.velocity.length() / 46.0, 0.0, 1.0)
+ 
+ static func make_scrub() -> AudioStreamWAV:
+-	var sample := AudioStreamWAV.new()
+-	sample.format = AudioStreamWAV.FORMAT_16_BITS
+-	sample.mix_rate = 22050
++	var sample: AudioStreamWAV = preload("res://assets/audio/vehicles/tire.wav").duplicate() as AudioStreamWAV
+ 	sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
+-	sample.loop_end = 11025
+-	var bytes := PackedByteArray()
+-	bytes.resize(sample.loop_end * 2)
+-	var noise_state: int = 317
+-	var filtered: float = 0.0
+-	for index: int in range(sample.loop_end):
+-		noise_state = (noise_state * 1664525 + 1013904223) & 0xffffffff
+-		var noise: float = float(noise_state) / 4294967295.0 * 2.0 - 1.0
+-		filtered = lerpf(filtered, noise, 0.28)
+-		var phase: float = TAU * float(index) / sample.mix_rate
+-		var envelope: float = minf(1.0, minf(index / 128.0, (sample.loop_end - 1 - index) / 128.0))
+-		var value: float = (filtered * 0.75 + sin(phase * 920.0) * 0.12 + sin(phase * 1380.0) * 0.06) * envelope
+-		bytes.encode_s16(index * 2, roundi(value * 26000.0))
+-	sample.data = bytes
++	sample.loop_begin = 0
++	sample.loop_end = sample.data.size()/2
+ 	return sample
+diff --git a/game/export_presets.cfg b/game/export_presets.cfg
+--- a/game/export_presets.cfg
++++ b/game/export_presets.cfg
+@@ -6,8 +6,8 @@
+ dedicated_server=false
+ custom_features=""
+ export_filter="all_resources"
+-include_filter="music/NOTICE.txt"
+-exclude_filter="tests/*,backend/runner.gd,backend/generate_fixture.gd,backend/test_client.gd"
++include_filter="assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json"
++exclude_filter="tests/*,music/*,backend/runner.gd,backend/generate_fixture.gd,backend/test_client.gd"
+ export_path="../build/android/circuit01-debug.apk"
+ script_export_mode=2
+ 
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -547,12 +547,9 @@
+         'CaptureCheckpoints' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd', '--') + $trackArguments) 'checkpoint-capture.log' }
+         'TestHeadlights' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_headlights.gd') 'headlights-tests.log' }
+         'CaptureHeadlights' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_headlights.gd', '--', '--capture') 'headlights-capture.log' }
+-        'CaptureMusicDrive' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_music.gd', '--', '--capture-drive') 'music-drive.log' }
+-        'BuildMusic' { & (Join-Path $PSScriptRoot 'build_music.ps1') }
+-        'TestMusicExit' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_music.gd', '--', '--stress-exit') 'music-exit.log' }
+-        'TestMusic' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_music.gd') 'music-tests.log' }
+-        'MusicLab' { Invoke-Checked $script:godot @('--path', $projectRoot, 'res://music/music_test.tscn') 'music-lab.log' }
+-        'CaptureMusic' { Invoke-Checked $script:godot @('--path', $projectRoot, 'res://music/music_test.tscn', '--', '--music-capture') 'music-capture.log' }
++        { $_ -in @('CaptureMusicDrive','BuildMusic','TestMusicExit','TestMusic','MusicLab','CaptureMusic') } {
++            throw 'The owner retired this soundtrack. Source is in archive/retired-soundtrack-2026-10-06; use TestScript -ScriptPath res://tests/test_vehicle_audio.gd for the replacement.'
++        }
+         'TestRoadCache' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_cache.gd') 'road-cache-tests.log' }
+         'TestRoadBuild' { Invoke-Checked $script:godot (@('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_build.gd', '--') + $trackArguments) 'road-build-tests.log' }
+         'TestShoulders' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shoulders.gd') 'shoulder-tests.log' }
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-06 B19-B20/B23/WR03-WR08/Q01: owner cost review completed read-only against latest compiler22 retained cloud. Preceding-day monitoring: SQLCPU mean9.5/max18.2%, RAM about1.00GiB of3.75; API sampled peak280MiB of1024; worker355MiB of768 and CPU reaches100%. Candidate API512 saves EUR0.095/day, worker512 EUR0.023/day; shared SQLg1-small EUR0.687/day requires isolated latency/connection benchmark and accepts shared-core/SLA tradeoff. Combined conditional EUR0.806/day, not proven no-impact. Keep warmAPI1, workerCPU1 and protection/backups; curated registry housekeeping minor, idle heartbeat load optimization not an immediate fixed-bill saving. No cloud/source-runtime/data/image/scheduler/secret changes, downsizing tests, device/export/attachment check or production action. Inventory, metric/price evidence, conditions, actual commands and review checkpoint: docs/CLOUD_COST_REVIEW_2026_10_06.md. Concurrent work preserved.
++
++2026-10-06 SND01-SND06/G01/R01/Q01/V06: owner-requested soundtrack removal and recorded car audio implemented. Prior soundtrack/native sources archived outside export; 40 mastered PCM clips (7,971,368 bytes), five authored engine voices, load/coast RPM crossfades, virtual shifts/reverse, actual slip/surface/wet/impact/landing/kerb feedback, pause/rewind/retry lifecycle and output ceilings. Final audio1418, graphical1432 with five audible/unclipped captures, handling88, App99, rewind57 and parser306 pass at actual runs. Corrected PCM-import/tire-endpoint/puddle failures retained; canonical 960-tick equivalence exact, no physics/rules/compiler/backend changes. Doctor finds DN2103; no phone audio test/export/install, full Validate or deployment. Source/license ledger, local audition page, commands, scoped checkpoint and remaining listening/mobile acceptance: docs/VEHICLE_AUDIO.md. Concurrent work preserved.
++
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP06: second separate road reproduced a switch from clean spline kerbs3258 to legacy decorative732, causing four visual/triangle/order failures. Multi-piece helper now reuses clean spline segments and masks while retaining legacy join fairing; kit114 invalidates old bakes. Final graphical composition42, borders1107, spline476/exact five-lap13517 ticks, shoulders71+18, roads377, cache66, workflow252, parser312 and canonical backend2 pass. Exact task-start physical triangles/masks and compiler22/identities preserved; no rollout needed. Before/after screenshots inspected, scoped patch/logs retained. No phone attachment check/device test/export/install or backend/cloud change/full Validate. Owner/map/phone acceptance remains. Commands, files, corrected fixture and evidence: docs/SPLINE_COMPOSITION_FIX.md.
+ 
+ 2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 B19-B20/B23/WR03-WR08/Q01: owner cost review completed read-only against latest compiler22 retained cloud. Preceding-day monitoring: SQLCPU mean9.5/max18.2%, RAM about1.00GiB of3.75; API sampled peak280MiB of1024; worker355MiB of768 and CPU reaches100%. Candidate API512 saves EUR0.095/day, worker512 EUR0.023/day; shared SQLg1-small EUR0.687/day requires isolated latency/connection benchmark and accepts shared-core/SLA tradeoff. Combined conditional EUR0.806/day, not proven no-impact. Keep warmAPI1, workerCPU1 and protection/backups; curated registry housekeeping minor, idle heartbeat load optimization not an immediate fixed-bill saving. No cloud/source-runtime/data/image/scheduler/secret changes, downsizing tests, device/export/attachment check or production action. Inventory, metric/price evidence, conditions, actual commands and review checkpoint: docs/CLOUD_COST_REVIEW_2026_10_06.md. Concurrent work preserved.
++
+ 2026-10-06 R01/T01-T04/V03-V05/Q01/SP06: second separate road reproduced a switch from clean spline kerbs3258 to legacy decorative732, causing four visual/triangle/order failures. Multi-piece helper now reuses clean spline segments and masks while retaining legacy join fairing; kit114 invalidates old bakes. Final graphical composition42, borders1107, spline476/exact five-lap13517 ticks, shoulders71+18, roads377, cache66, workflow252, parser312 and canonical backend2 pass. Exact task-start physical triangles/masks and compiler22/identities preserved; no rollout needed. Before/after screenshots inspected, scoped patch/logs retained. No phone attachment check/device test/export/install or backend/cloud change/full Validate. Owner/map/phone acceptance remains. Commands, files, corrected fixture and evidence: docs/SPLINE_COMPOSITION_FIX.md.
+ 
+ 2026-10-06 B01–B07/B19/B20/B23/R01/T01–T04/Q01: owner-authorized latest retained GCP backend now matches compiler22 after catching a concurrent compiler21→22 advance during rollout. Fresh successful backups, drained old verification queue, matching owned API/worker/jobs/schema and immutable official-track revisions; all 27 current tracks match, 87 historical links retained. Final compiler22 verifier113 and native Windows contract196 checks pass, including the real Blind spot ticket; earlier corrected domain157/8 skips and final native practice1 pass. Native kerb typed-array and incomplete refresh-peer failures repaired without weakening checks. Old artificial-driver schedulers paused; recordings/results preserved and new-contract population remains. No phone attachment check/device test/export/full Validate/production action/record migration. Commands, failures, receipts, files, limitations and scoped checkpoint: docs/BACKEND_LATEST_2026_10_06.md.
+@@ -1199,3 +1201,7 @@
+ 2026-10-01 R01/V03/Q01: renamed the shared biome display name to Night in game/track/track_theme.gd and editor validation copy in game/editor/track_document.gd; stored night_city identifiers retained. Actual commands: rg -n 'Night city|Night City' game (no matches); git diff --check -- game/track/track_theme.gd game/editor/track_document.gd (passed); powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CaptureMenus (1450 checks, 3 failures: wide 1600x720 section rectangles for long names, comparison data and cloud controls). Inspected docs/evidence/night-label-2026-10-01/filters.png confirming Night. Wide-layout failures remain unresolved; no physical-device test or Android export performed. Device connection not checked.
+ 
+ 2026-10-03 R01/V03/Q01: results connection-only footer implemented; scoped evidence and verification limits in docs/RESULTS_CONNECTION_NOTICE.md. App/cloud parse pass; captured desktop results inspected, recommendation fixture prevents full suite pass. Device/network acceptance remains.
++
++## Owner-authorized vehicle audio replacement, 2026-10-06
++
++The owner removes the generated soundtrack and requests AAA-quality car sounds. The local presentation slice uses cleared recorded engine/tire/rolling/body banks, original wind/spray, a virtual sound-only drivetrain and bounded playback/events. Native soundtrack source and libraries move outside the export root. Actual final checks: audio1418, graphical1432/five captured mixes, handling88, App99, rewind57 and parser306. Existing tire invariant retained; canonical audio-on/off snapshots match over960 ticks. DN2103 attached, with no phone audio acceptance, export/install or full Validate/backend rollout. See docs/VEHICLE_AUDIO.md for requirements, exact commands, initial corrected failures, source files, provenance, evidence and remaining listening/mobile checks.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -2,7 +2,9 @@
+ 
+ Illustrated compact menu art (2026-09-14): `game/assets/menu/compact_illustration_v1.png`, 1672×941 PNG, SHA-256 `BBDBA87BF42B41EFAFF8EC2E98D355125590AEA04EC343C1A330522D1DBDD8B0`. Generated with built-in image_gen from the exact prompt in `docs/ILLUSTRATED_MENU_PROMPT.md`; copied unmodified into the game. Original fictional compact illustration, using the owner image as style guidance; no source-reference crop or real vehicle name/logo is imported. Lossless/mipmapped import. This menu-only 2D artwork is distinct from the existing gameplay mesh. Owner visual acceptance remains open.
+ 
+-Handling audio (2026-09-14): `game/vehicle/tire_audio.gd` synthesizes an original filtered-noise/harmonic tyre-scrub loop in memory. No third-party recording, downloaded asset, AI audio service or external dependency is used. Presentation-only prototype pending human listening and phone acceptance.
++Handling audio (2026-09-14, retired 2026-10-06): the original in-memory tyre-scrub synth and generated soundtrack were replaced by the owner-requested recorded vehicle sound bank below. Historical soundtrack source, libraries and diagnostics are retained in `archive/retired-soundtrack-2026-10-06/`, outside the export root.
++
++Vehicle audio (2026-10-06): `game/assets/audio/vehicles/` contains 40 mastered mono 44.1 kHz 16-bit PCM clips. Recorded engine, road/loose-ground and body masters by Nox Sound Design are CC0, from [Essentials Series](https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound). Additional engine masters are CC0: [AC Cobra Engine by Joseph SARDIN](https://bigsoundbank.com/ac-cobra-engine-s0534.html), [Motor car #1](https://bigsoundbank.com/motor-car-1-s0290.html) and [Motorcycle](https://bigsoundbank.com/motorcycle-s0281.html) by DenisChardonnet. These are processed for fictional vehicles, with no manufacturer affiliation or exact-model reproduction claim. Wind and water beds are original offline noise design. Recorded tire squeal is [Car tire squeal skid loop](https://opengameart.org/content/car-tire-squeal-skid-loop), by audible-edge (Tom Haigh), loop edit by qubodup, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Changes: resampling, filtering, loop crossfades, loudness mastering, dither and a 2 ms tire endpoint taper. Attribution and modification details ship in `game/assets/audio/vehicles/NOTICE.txt`; `manifest.json` pins source/derivative filenames and SHA-256. Offline fetch/mastering scripts are `scripts/fetch_vehicle_audio.py` and `scripts/build_vehicle_audio.py`. Human listening and phone acceptance remain open; no paid assets, generation service or runtime dependency was added.
+ 
+ Premium menus (2026-09-14): `game/ui/menu_stage.gd` contains original procedural roadside pine/lake, coast, desert and workshop scenery with an independent menu camera. It reuses the existing fictional `CarVisual`; no reference vehicle, photo, generated poster or third-party asset is imported. `menu_brand.gd` and `menu_icon.gd` provide original typography composition, racing strokes and vector navigation glyphs using the existing OFL Barlow fonts. `track_tile.gd` draws original cartographic terrain washes behind the saved circuit geometry; these are route illustrations, not photographs of individual tracks. Scenery and vehicle detail remain prototype art pending owner acceptance.
+ 
+diff --git a/game/default_bus_layout.tres b/game/default_bus_layout.tres
+new file mode 100644
+--- /dev/null
++++ b/game/default_bus_layout.tres
+@@ -0,0 +1,39 @@
++[gd_resource type="AudioBusLayout" load_steps=4 format=3]
++
++[sub_resource type="AudioEffectHardLimiter" id="MasterLimit"]
++resource_name = "Output ceiling"
++ceiling_db = -1.0
++
++[sub_resource type="AudioEffectCompressor" id="VehicleDynamics"]
++resource_name = "Vehicle dynamics"
++threshold = -10.0
++ratio = 2.0
++attack_us = 6000.0
++release_ms = 90.0
++
++[sub_resource type="AudioEffectHardLimiter" id="VehicleLimit"]
++resource_name = "Vehicle ceiling"
++ceiling_db = -2.0
++
++[resource]
++bus/0/name = &"Master"
++bus/0/solo = false
++bus/0/mute = false
++bus/0/bypass_fx = false
++bus/0/volume_db = 0.0
++bus/0/send = &""
++bus/0/effect/0/effect = SubResource("MasterLimit")
++bus/0/effect/0/enabled = true
++bus/1/name = &"Vehicle"
++bus/1/volume_db = 0.0
++bus/1/send = &"Master"
++bus/1/effect/0/effect = SubResource("VehicleDynamics")
++bus/1/effect/0/enabled = true
++bus/1/effect/1/effect = SubResource("VehicleLimit")
++bus/1/effect/1/enabled = true
++bus/2/name = &"Engine"
++bus/2/volume_db = 0.0
++bus/2/send = &"Vehicle"
++bus/3/name = &"Tires"
++bus/3/volume_db = 0.0
++bus/3/send = &"Vehicle"
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_audio.gd
+@@ -0,0 +1,167 @@
++class_name VehicleAudio
++extends Node
++## Recorded local sound bank. All state is presentation-only and scoped to this race.
++const BANK: String = "res://assets/audio/vehicles/"
++const IMPACTS: Array[String] = ["impact_0","impact_1","impact_2"]
++var model := VehicleAudioModel.new()
++var engine_load: Array[AudioStreamPlayer] = []
++var engine_coast: Array[AudioStreamPlayer] = []
++var layers: Dictionary = {}
++var events: Array[AudioStreamPlayer] = []
++var streams: Dictionary = {}
++var levels: Dictionary = {}
++var active: bool = false
++var pending_impact: float = 0.0
++var impact_cooldown: float = 0.0
++var chassis_cooldown: float = 0.0
++var event_index: int = 0
++var impact_index: int = 0
++var last_tick: int = -1
++var last_jump: float = 0.0
++var last_jump_velocity: float = 0.0
++var was_silent: bool = true
++var event_count: int = 0
++var engine_envelope: float = 0.0
++
++func _ready() -> void:
++	name = "VehicleAudio"
++	for i: int in range(3):
++		engine_load.append(_player("EngineLoad%d"%i,"Engine"))
++		engine_coast.append(_player("EngineCoast%d"%i,"Engine"))
++	for layer: String in ["tire","road","loose","grass","wind","water"]:
++		var player: AudioStreamPlayer = _player(layer.capitalize(),"Tires" if layer in ["tire","road","loose","grass","water"] else "Vehicle")
++		layers[layer] = player
++		player.stream = _stream(layer,true)
++		levels[layer] = 0.0
++	for i: int in range(4): events.append(_player("BodyEvent%d"%i,"Vehicle"))
++	for clip: String in IMPACTS+ ["chassis"]: _stream(clip,false)
++
++func _player(label: String, target_bus: String) -> AudioStreamPlayer:
++	var player := AudioStreamPlayer.new()
++	player.name = label
++	player.bus = target_bus
++	player.volume_db = -80.0
++	add_child(player)
++	return player
++
++func _stream(clip: String, looping: bool) -> AudioStreamWAV:
++	if streams.has(clip): return streams[clip] as AudioStreamWAV
++	var sample: AudioStreamWAV = (load(BANK+clip+".wav") as AudioStreamWAV).duplicate() as AudioStreamWAV
++	if looping:
++		sample.loop_mode = AudioStreamWAV.LOOP_FORWARD
++		sample.loop_begin = 0
++		sample.loop_end = sample.data.size()/2 # Bank is authored mono, 16-bit PCM.
++	streams[clip] = sample
++	return sample
++
++func configure(id: String, config: HandlingConfig) -> void:
++	model.configure(id,config.maximum_speed)
++	# Only the selected vehicle's six engine loops are retained by this race.
++	for i: int in range(3):
++		engine_load[i].stream = _stream(model.vehicle_id+"_%d_load"%i,true)
++		engine_coast[i].stream = _stream(model.vehicle_id+"_%d_coast"%i,true)
++	reset()
++
++func reset() -> void:
++	model.reset()
++	pending_impact = 0.0
++	impact_cooldown = 0.0
++	chassis_cooldown = 0.0
++	event_index = 0
++	impact_index = 0
++	event_count = 0
++	engine_envelope = 0.0
++	last_tick = -1
++	last_jump = 0.0
++	last_jump_velocity = 0.0
++	was_silent = true
++	active = true
++	for player: AudioStreamPlayer in engine_load+engine_coast:
++		player.stop()
++		player.volume_db = -80.0
++		player.stream_paused = false
++		player.play()
++	for layer: String in layers:
++		var player: AudioStreamPlayer = layers[layer]
++		player.stop()
++		player.volume_db = -80.0
++		player.stream_paused = false
++		levels[layer] = 0.0
++		player.play()
++	for player: AudioStreamPlayer in events: player.stop()
++
++func collision(impulse: Vector2) -> void:
++	if active and not was_silent: pending_impact = maxf(pending_impact,impulse.length())
++
++func _event(clip: String, amplitude: float, pitch: float = 1.0) -> void:
++	var player: AudioStreamPlayer = events[event_index]
++	event_index = (event_index+1)%events.size()
++	player.stream = _stream(clip,false)
++	player.pitch_scale = pitch
++	player.volume_db = linear_to_db(maxf(0.0001,amplitude))
++	player.play()
++	event_count += 1
++
++func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false) -> void:
++	if not active: return
++	if last_tick>state.tick: reset() # Restored rewind state cannot replay impact/landing events.
++	for player: AudioStreamPlayer in engine_load+engine_coast+events: player.stream_paused = silent
++	for layer: String in layers: (layers[layer] as AudioStreamPlayer).stream_paused = silent
++	if silent:
++		pending_impact = 0.0
++		last_tick = state.tick
++		last_jump = state.jump_height
++		last_jump_velocity = state.jump_velocity
++		was_silent = true
++		return
++	var dt: float = minf(maxf(delta,0.0),0.1)
++	var changed: bool = model.advance(state,frame,dt)
++	if changed and not countdown and not was_silent: _event("chassis",0.12,1.32)
++	var weights: Vector3 = model.weights()
++	var load_blend: float = clampf(model.load_amount,0.08,1.0)
++	var engine_level: float = lerpf(0.31,0.72,load_blend)
++	if model.shift_remaining>0.0: engine_level *= 0.56
++	engine_envelope = lerpf(engine_envelope,engine_level,1.0-exp(-dt*22.0))
++	for i: int in range(3):
++		var pitch: float = clampf(model.rpm/model.anchors[i],0.55,1.85)
++		engine_load[i].pitch_scale = pitch
++		engine_coast[i].pitch_scale = pitch
++		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(load_blend)*engine_envelope))
++		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(1.0-load_blend)*engine_envelope*0.84))
++	var speed: float = state.velocity.length()
++	var rolling: float = smoothstep(0.8,25.0,speed) if state.jump_height<=0.0 and not countdown else 0.0
++	var surface: int = track.cell_at(state.position,state.track_elevated) if track != null else 0
++	var theme: String = str(track.metadata.get("theme","pine")) if track != null else "pine"
++	var loose: bool = surface in [1,2,5,7] or (surface==0 and theme=="desert")
++	var water: bool = surface in [3,6] or state.tire_water>0.05
++	var scrub: float = TireAudio.scrub_amount(state) if not countdown else 0.0
++	var asphalt: float = scrub if not loose and not water and theme!="winter" else 0.0
++	_layer("tire",asphalt*0.38,0.88+clampf(speed/46.0,0,1)*0.24,dt,state.jump_height>0.0)
++	_layer("road",rolling*0.13 if not loose else 0.0,0.78+clampf(speed/46.0,0,1)*0.46,dt,state.jump_height>0.0)
++	_layer("loose",rolling*(0.23+scrub*0.22) if loose and surface!=1 else 0.0,0.78+clampf(speed/46.0,0,1)*0.5,dt,state.jump_height>0.0)
++	_layer("grass",rolling*(0.25+scrub*0.18) if surface==1 else 0.0,0.8+clampf(speed/46.0,0,1)*0.4,dt,state.jump_height>0.0)
++	_layer("water",rolling*0.36 if water or theme=="storm" else 0.0,0.9+clampf(speed/46.0,0,1)*0.2,dt,state.jump_height>0.0)
++	_layer("wind",smoothstep(10.0,46.0,speed)*0.14,1.0,dt,false)
++	impact_cooldown = maxf(0,impact_cooldown-dt)
++	chassis_cooldown = maxf(0,chassis_cooldown-dt)
++	if pending_impact>1.2 and impact_cooldown==0.0 and not was_silent:
++		_event(IMPACTS[impact_index],lerpf(0.16,0.9,smoothstep(1.2,22,pending_impact)),1.02-float(impact_index)*0.065)
++		impact_index = (impact_index+1)%IMPACTS.size()
++		impact_cooldown = 0.14
++	pending_impact = 0.0
++	if not was_silent and not countdown:
++		if last_jump>0.0 and state.jump_height<=0.0 and last_jump_velocity< -0.5:
++			_event("impact_1",lerpf(0.15,0.55,clampf(-last_jump_velocity/10.0,0,1)),0.8)
++		elif chassis_cooldown==0.0 and speed>4.0 and state.jump_height<=0.0 and absf(state.kerb_velocity.x)>0.18:
++			_event("chassis",clampf(absf(state.kerb_velocity.x)*0.08,0.04,0.17),0.93)
++			chassis_cooldown = 0.22
++	last_tick = state.tick
++	last_jump = state.jump_height
++	last_jump_velocity = state.jump_velocity
++	was_silent = false
++
++func _layer(key: String, desired: float, pitch: float, delta: float, airborne: bool) -> void:
++	levels[key] = 0.0 if airborne else lerpf(float(levels[key]),desired,1.0-exp(-delta*14.0))
++	var player: AudioStreamPlayer = layers[key]
++	player.volume_db = linear_to_db(maxf(0.0001,float(levels[key])))
++	player.pitch_scale = pitch
+diff --git a/game/vehicle/vehicle_audio.gd.uid b/game/vehicle/vehicle_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_audio.gd.uid
+@@ -0,0 +1 @@
++uid://t7ot0nrlqplm
+diff --git a/game/vehicle/vehicle_audio_model.gd b/game/vehicle/vehicle_audio_model.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_audio_model.gd
+@@ -0,0 +1,85 @@
++class_name VehicleAudioModel
++extends RefCounted
++## Virtual drivetrain for sound only. Never feeds RPM/gears back into handling.
++var vehicle_id: String = "compact"
++var maximum_speed: float = 46.0
++var idle_rpm: float = 1000.0
++var redline_rpm: float = 7200.0
++var rpm: float = 1000.0
++var load_amount: float = 0.0
++var gear: int = 1
++var shift_remaining: float = 0.0
++var shift_cooldown: float = 0.0
++var shifts: int = 0
++var reverse: bool = false
++var anchors := Vector3(1200.0, 3000.0, 6000.0)
++const GEAR_TOPS: Array[float] = [0.30, 0.50, 0.71, 0.90, 1.13]
++
++func configure(id: String, speed: float) -> void:
++	vehicle_id = VehicleCatalog.valid_id(id)
++	maximum_speed = maxf(10.0,speed)
++	match vehicle_id:
++		"pickup":
++			idle_rpm = 800.0; redline_rpm = 5200.0; anchors = Vector3(950,2400,4400)
++		"classic":
++			idle_rpm = 1050.0; redline_rpm = 7600.0; anchors = Vector3(1250,3200,6500)
++		"formula":
++			idle_rpm = 1800.0; redline_rpm = 13000.0; anchors = Vector3(2100,5800,11000)
++		"kart":
++			idle_rpm = 1600.0; redline_rpm = 10800.0; anchors = Vector3(1800,4700,9300)
++		_:
++			idle_rpm = 1000.0; redline_rpm = 7200.0; anchors = Vector3(1200,3000,6000)
++	reset()
++
++func reset() -> void:
++	rpm = idle_rpm
++	load_amount = 0.0
++	gear = 1
++	shift_remaining = 0.0
++	shift_cooldown = 0.0
++	shifts = 0
++	reverse = false
++
++func advance(state: VehicleState, frame: DriveFrame, delta: float) -> bool:
++	var dt: float = maxf(0.0,delta)
++	var speed: float = state.velocity.length()
++	var signed_speed: float = state.velocity.dot(state.forward())
++	reverse = signed_speed < -0.6
++	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
++	load_amount = lerpf(load_amount,pedal,1.0-exp(-dt*(14.0 if pedal>load_amount else 7.0)))
++	shift_cooldown = maxf(0.0,shift_cooldown-dt)
++	shift_remaining = maxf(0.0,shift_remaining-dt)
++	var changed: bool = false
++	if reverse:
++		gear = -1
++	elif gear < 1:
++		gear = 1
++	elif vehicle_id != "kart" and shift_cooldown == 0.0:
++		if gear < GEAR_TOPS.size() and speed > maximum_speed*GEAR_TOPS[gear-1]*0.92:
++			gear += 1
++			changed = true
++		elif gear > 1 and speed < maximum_speed*GEAR_TOPS[gear-2]*0.63:
++			gear -= 1
++			changed = true
++	if changed:
++		shift_remaining = 0.12
++		shift_cooldown = 0.32
++		shifts += 1
++	var top: float = maximum_speed*GEAR_TOPS[maxi(0,gear-1)] if vehicle_id != "kart" else maximum_speed*1.04
++	if reverse: top = 9.0
++	var wheel_rpm: float = idle_rpm + clampf(speed/top,0.0,1.0)*(redline_rpm-idle_rpm)
++	var neutral_rpm: float = idle_rpm+load_amount*(redline_rpm-idle_rpm)*0.56
++	var desired: float = lerpf(neutral_rpm,wheel_rpm,smoothstep(0.8,4.0,speed))
++	if state.jump_height>0.0 or state.handbrake_pressure>0.4:
++		desired += load_amount*(redline_rpm-idle_rpm)*0.12
++	rpm = lerpf(rpm,clampf(desired,idle_rpm,redline_rpm),1.0-exp(-dt*(22.0 if changed else 11.0)))
++	return changed
++
++func weights() -> Vector3:
++	# Equal-power fades in log RPM keep power stable between neighboring recordings.
++	if rpm<=anchors.x: return Vector3(1,0,0)
++	if rpm>=anchors.z: return Vector3(0,0,1)
++	var lower: float = anchors.x if rpm<anchors.y else anchors.y
++	var upper: float = anchors.y if rpm<anchors.y else anchors.z
++	var blend: float = clampf(log(rpm/lower)/log(upper/lower),0.0,1.0)
++	return Vector3(cos(blend*PI*.5),sin(blend*PI*.5),0) if rpm<anchors.y else Vector3(0,cos(blend*PI*.5),sin(blend*PI*.5))
+diff --git a/game/vehicle/vehicle_audio_model.gd.uid b/game/vehicle/vehicle_audio_model.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/vehicle_audio_model.gd.uid
+@@ -0,0 +1 @@
++uid://d0nlyv4xn7eio
+diff --git a/game/tests/test_vehicle_audio.gd b/game/tests/test_vehicle_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_vehicle_audio.gd
+@@ -0,0 +1,181 @@
++extends SceneTree
++## Sound lifecycle, cleared bank integrity and canonical equivalence. Isolated local fixtures.
++var checks: int = 0
++var failures: int = 0
++var capture_audio: bool = false
++var evidence: String = "res://../docs/evidence/vehicle-audio-2026-10-06"
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+description)
++
++func run() -> void:
++	capture_audio = DisplayServer.get_name()!="headless"
++	check(not ClassDB.class_exists("BMTMusicStream"),"retired native soundtrack is absent")
++	check(not FileAccess.file_exists("res://music/bmt_music.gdextension"),"soundtrack is outside the export root")
++	check(AudioServer.get_bus_index("Engine")>=0 and AudioServer.get_bus_index("Tires")>=0,"vehicle buses loaded")
++	var vehicle_bus: int = AudioServer.get_bus_index("Vehicle")
++	check(AudioServer.get_bus_effect(vehicle_bus,1) is AudioEffectHardLimiter,"vehicle peak ceiling installed")
++	check(AudioServer.get_bus_effect(0,0) is AudioEffectHardLimiter,"final output peak ceiling installed")
++	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(VehicleAudio.BANK+"manifest.json"))
++	check(manifest.outputs.size()==40,"complete mastered bank")
++	for clip: Dictionary in manifest.outputs:
++		var sample: AudioStreamWAV = load(VehicleAudio.BANK+str(clip.file))
++		check(sample.mix_rate==44100 and not sample.stereo and sample.format==AudioStreamWAV.FORMAT_16_BITS,"portable mono PCM: "+str(clip.file))
++		check(float(clip.peak_dbfs)<= -1.5,"asset has mastering headroom: "+str(clip.file))
++		check(sample.data.size()>1000,"asset contains audio: "+str(clip.file))
++		check(FileAccess.get_sha256(VehicleAudio.BANK+str(clip.file))==str(clip.sha256),"bank checksum: "+str(clip.file))
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var state := VehicleState.new()
++	state.position = track.spawn
++	var control := DriveFrame.sample(0,1,0)
++	var neutral := DriveFrame.new()
++	for id: String in VehicleCatalog.IDS:
++		var model := VehicleAudioModel.new()
++		model.configure(id,VehicleCatalog.config(id).maximum_speed)
++		check(model.rpm==model.idle_rpm and model.gear==1,"clean drivetrain start: "+id)
++		var state_before: Array = state.snapshot()
++		var frame_before: Array = control.packed()
++		for i: int in range(240):
++			state.velocity = Vector2(0,float(i)/240*model.maximum_speed)
++			model.advance(state,control,1.0/60)
++			var weights: Vector3 = model.weights()
++			check(absf(weights.length_squared()-1.0)<0.0001,"equal-power engine crossfade: "+id)
++		check(model.shifts==0 if id=="kart" else model.shifts>=3,"authored transmission: "+id)
++		check(model.rpm>=model.idle_rpm and model.rpm<=model.redline_rpm,"bounded RPM: "+id)
++		state.velocity = Vector2.ZERO
++		var final_before: Array = state.snapshot()
++		model.advance(state,control,0.1)
++		check(state.snapshot()==final_before and control.packed()==frame_before,"audio model does not modify state/input: "+id)
++		model.reset()
++		check(model.shifts==0 and model.rpm==model.idle_rpm,"retry clears drivetrain: "+id)
++		state.velocity = Vector2(0,-5)
++		model.advance(state,DriveFrame.sample(0,0,1),0.1)
++		check(model.reverse and model.gear== -1 and model.load_amount>0,"reverse follows brake pedal: "+id)
++		check(state_before.size()==state.snapshot().size(),"audio adds no canonical fields: "+id)
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",config)
++	check(audio.get_child_count()==16,"bounded race voice count")
++	state.velocity = Vector2(6,20)
++	var snapshot: Array = state.snapshot()
++	audio.present(state,control,track,0.1,false)
++	check(state.snapshot()==snapshot,"whole mixer reads canonical state")
++	check(float(audio.levels.tire)>0,"recorded asphalt squeal follows actual slip")
++	state.jump_height = 1.0
++	audio.present(state,control,track,0.1,false)
++	check(float(audio.levels.tire)==0 and float(audio.levels.road)==0,"airborne wheels immediately silence tire/road layers")
++	state.jump_height = 0
++	audio.present(state,control,track,0.1,true)
++	var frozen_rpm: float = audio.model.rpm
++	audio.collision(Vector2(15,0))
++	audio.present(state,control,track,0.1,true)
++	check(audio.model.rpm==frozen_rpm and audio.event_count==0,"pause freezes drivetrain and suppresses events")
++	check(audio.engine_load[0].stream_paused,"pause suspends loop playback")
++	audio.present(state,control,track,0.1,false)
++	audio.collision(Vector2(15,0))
++	audio.present(state,control,track,0.016,false)
++	check(audio.event_count==1,"actual impact triggers one body sound")
++	for i: int in range(4):
++		audio.collision(Vector2(15,0))
++		audio.present(state,control,track,0.016,false)
++	check(audio.event_count==1,"wall rubbing cannot machine-gun impacts")
++	state.tick = 100
++	audio.present(state,neutral,track,0.016,false)
++	state.tick = 10
++	audio.present(state,neutral,track,0.016,false)
++	check(audio.event_count==0 and audio.pending_impact==0,"rewind resets stale events")
++	track.metadata.theme = "desert"
++	state.velocity = Vector2(6,20)
++	for i: int in range(10): audio.present(state,control,track,0.05,false)
++	check(float(audio.levels.loose)>0 and float(audio.levels.tire)<0.01,"desert replaces asphalt squeal with sand scrub")
++	track.metadata.theme = "storm"
++	audio.present(state,control,track,0.1,false)
++	check(float(audio.levels.water)>0,"wet road spray")
++	var original_cells: PackedInt32Array = track.cells.duplicate()
++	track.cells.fill(6)
++	track.metadata.theme = "pine"
++	audio.reset()
++	audio.present(state,control,track,0.1,false)
++	check(float(audio.levels.water)>0 and float(audio.levels.loose)==0,"puddles use spray from their first contact")
++	track.cells = original_cells
++	audio.reset()
++	audio.present(state,control,track,0.1,false,true)
++	check(float(audio.levels.tire)==0 and float(audio.levels.road)==0,"countdown has engine sound and no road noise")
++	audio.free()
++	# Simulate the same quantized controls with and without audio alongside every step.
++	var plain := VehicleSimulation.new(config)
++	var mixed := VehicleSimulation.new(config)
++	plain.reset(Vector2.ZERO,0)
++	mixed.reset(Vector2.ZERO,0)
++	audio = VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",config)
++	for i: int in range(960):
++		var input: DriveFrame = DriveFrame.sample(sin(float(i)*0.031)*0.8,1.0 if i%240<180 else 0.0,0.5 if i%240>=180 else 0.0)
++		plain.step(input)
++		mixed.step(input)
++		audio.present(mixed.state,input,null,1.0/120,false)
++	check(plain.state.snapshot()==mixed.state.snapshot(),"960 canonical ticks are byte-equivalent with the sound mix")
++	audio.free()
++	# Lifecycle regression: a real race creates only the replacement mixer.
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set_process(false)
++	check(game.vehicle_audio!=null and game.find_child("VehicleAudio",true,false)!=null,"race installs vehicle sound")
++	check(game.find_child("DynamicMusicController",true,false)==null,"race has no soundtrack controller")
++	game.vehicle_audio.present(game.sim.state,game.frame,game.native_track,0.1,false)
++	game.restart()
++	check(game.vehicle_audio.model.shifts==0 and game.vehicle_audio.event_count==0,"race retry resets audio")
++	game.free()
++	if capture_audio: await _record_previews()
++	await process_frame
++	print("VEHICLE_AUDIO: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures>0 else 0)
++
++func _record_previews() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence))
++	var record := AudioEffectRecord.new()
++	record.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(0,record)
++	for id: String in VehicleCatalog.IDS:
++		var audio := VehicleAudio.new()
++		root.add_child(audio)
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		audio.configure(id,config)
++		var state := VehicleState.new()
++		var time: float = 0.0
++		var previous_usec: int = Time.get_ticks_usec()
++		record.set_recording_active(true)
++		while time<8.0:
++			await process_frame
++			var now_usec: int = Time.get_ticks_usec()
++			var dt: float = float(now_usec-previous_usec)/1000000.0
++			previous_usec = now_usec
++			time += dt
++			state.tick += 1
++			var speed: float = config.maximum_speed*clampf((time-.5)/3.0,0.0,1.0)
++			if time>4.0: speed *= clampf(1.0-(time-4.0)/2.5,0,1)
++			state.velocity = Vector2(speed*0.35 if time>5.0 and time<6.0 else 0.0,speed)
++			var frame: DriveFrame = DriveFrame.sample(0,1 if time<4 else 0,0.5 if time>4.8 else 0)
++			if time>6.2 and time<6.3: audio.collision(Vector2(14,0))
++			audio.present(state,frame,null,dt,time>7.3)
++		record.set_recording_active(false)
++		var recording: AudioStreamWAV = record.get_recording()
++		check(recording!=null and recording.data.size()>44100,"captured engine mix: "+id)
++		if recording!=null:
++			var pcm: PackedByteArray = recording.data
++			var peak: int = 0
++			for offset: int in range(0,pcm.size(),2): peak = maxi(peak,absi(pcm.decode_s16(offset)))
++			check(peak>1000 and peak<32700,"captured mix is audible and unclipped: "+id)
++			check(recording.save_to_wav(evidence.path_join(id+"-driving.wav"))==OK,"saved playable preview: "+id)
++		audio.free()
++	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
+diff --git a/game/tests/test_vehicle_audio.gd.uid b/game/tests/test_vehicle_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_vehicle_audio.gd.uid
+@@ -0,0 +1 @@
++uid://cer1s4bida1lm
+diff --git a/scripts/fetch_vehicle_audio.py b/scripts/fetch_vehicle_audio.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/fetch_vehicle_audio.py
+@@ -0,0 +1,103 @@
++"""Fetch free CC0 audio sources into export-excluded build storage."""
++from pathlib import Path
++import http.cookiejar
++import json
++import re
++import urllib.parse
++import urllib.request
++import io
++import zipfile
++import hashlib
++
++ROOT = Path(__file__).resolve().parents[1]
++DEST = ROOT / "build" / "vehicle_audio_sources"
++DEST.mkdir(parents=True, exist_ok=True)
++opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
++opener.addheaders = [("User-Agent", "Mozilla/5.0")]
++page = "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound"
++html = opener.open(page, timeout=30).read().decode()
++csrf = re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
++payload = urllib.parse.urlencode({"csrf_token": csrf}).encode()
++response = json.loads(opener.open(page + "/download_url", payload, timeout=30).read())
++download = opener.open(response["url"], timeout=30).read().decode()
++csrf = re.search(r'name="csrf_token" value="([^"]+)"', download).group(1)
++file_url = page + "/file/17838594?source=game_download"
++file_response = json.loads(opener.open(file_url, urllib.parse.urlencode({"csrf_token":csrf}).encode(), timeout=30).read())
++if "url" not in file_response:
++    raise RuntimeError(file_response)
++url = file_response["url"]
++
++class RemoteZip(io.RawIOBase):
++    def __init__(self):
++        probe = opener.open(urllib.request.Request(url, headers={"Range":"bytes=0-0"}), timeout=30)
++        self.size = int(probe.headers["Content-Range"].split("/")[-1])
++        self.position = 0
++    def seekable(self): return True
++    def readable(self): return True
++    def tell(self): return self.position
++    def seek(self, offset, whence=0):
++        self.position = offset if whence == 0 else self.position + offset if whence == 1 else self.size + offset
++        return self.position
++    def read(self, count=-1):
++        count = self.size - self.position if count < 0 else min(count, self.size - self.position)
++        if count <= 0: return b""
++        request = urllib.request.Request(url, headers={"Range":f"bytes={self.position}-{self.position+count-1}"})
++        with opener.open(request, timeout=60) as result:
++            if result.status != 206: raise RuntimeError("Library server does not support bounded range downloads")
++            data = result.read()
++        self.position += len(data)
++        return data
++
++with zipfile.ZipFile(RemoteZip()) as archive:
++    names = archive.namelist()
++    (DEST / "library_index.json").write_text(json.dumps(names, indent=2), encoding="utf-8")
++    selected = {
++        "Vehicle_Car_Engine_1000_RPM_Front_Exterior_Loop_Mono.wav",
++        "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav",
++        "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav",
++        "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav",
++        "Vehicle_Car_Engine_Idle_Exterior_Loop_Mono_01.wav",
++        "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav",
++        "Vehicle_Truck_Idle_Exterior_Front_Loop_Stereo_01.wav",
++        "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav",
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav",
++        "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav",
++        "Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav",
++        "Vehicle_Car_Trunk_Close_Impact_Mono.wav",
++        "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav",
++        "Vehicle_Car_Door_Closing_Exterior_Mono_02.wav",
++        "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav",
++    }
++    records = []
++    for name in names:
++        filename = Path(name).name
++        if filename not in selected: continue
++        target = DEST / filename
++        if not target.exists(): target.write_bytes(archive.read(name))
++        records.append({"filename":filename,"source":page,"archive_member":name,"license":"CC0-1.0","author":"Nox Sound Design","sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
++        print("Source ready:", filename, target.stat().st_size, flush=True)
++    if {r["filename"] for r in records} != selected: raise RuntimeError("Missing selected library recordings")
++
++for slug, number, author in [
++    ("ac-cobra-engine-s0534.html", "0534", "Joseph SARDIN"),
++    ("motorcycle-s0281.html", "0281", "DenisChardonnet"),
++    ("motor-car-1-s0290.html", "0290", "DenisChardonnet"),
++]:
++    source_page = "https://bigsoundbank.com/" + slug
++    source_html = opener.open(source_page, timeout=30).read().decode()
++    if "CC0 (public domain)" not in source_html: raise RuntimeError("Source license changed: " + source_page)
++    target = DEST / (number + ".wav")
++    if not target.exists() or not target.read_bytes().startswith(b"RIFF"):
++        target.write_bytes(opener.open("https://bigsoundbank.com/UPLOAD/bwf-en/" + number + ".wav",timeout=60).read())
++        if not target.read_bytes().startswith(b"RIFF"): raise RuntimeError("WAV endpoint did not return audio")
++    records.append({"filename":target.name,"source":source_page,"license":"CC0-1.0","author":author,"sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
++    print("Source ready:", target.name, target.stat().st_size, flush=True)
++
++source_page = "https://opengameart.org/content/car-tire-squeal-skid-loop"
++source_html = opener.open(source_page, timeout=30).read().decode()
++matches = re.findall(r'href="([^"]*tires_squal_loop\.wav)"', source_html)
++target = DEST / "tires_squal_loop.wav"
++if not target.exists(): target.write_bytes(opener.open(matches[0],timeout=60).read())
++records.append({"filename":target.name,"source":source_page,"license":"CC-BY-3.0","author":"audible-edge (Tom Haigh); loop edit by qubodup","sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
++(DEST / "source_manifest.json").write_text(json.dumps(records,indent=2)+"\n",encoding="utf-8")
++print("Verified", len(records), "recordings", flush=True)
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/build_vehicle_audio.py
+@@ -0,0 +1,167 @@
++"""Offline mastering of cleared recordings; NumPy is a build tool, never a game dependency."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import struct
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = ROOT / "build/vehicle_audio_sources"
++OUT = ROOT / "game/assets/audio/vehicles"
++RATE = 44100
++OUT.mkdir(parents=True, exist_ok=True)
++sources = json.loads((SOURCE / "source_manifest.json").read_text(encoding="utf-8"))
++source_map = {item["filename"]: item for item in sources}
++outputs = []
++
++
++def read(name):
++    data = (SOURCE / name).read_bytes()
++    if hashlib.sha256(data).hexdigest() != source_map[name]["sha256"]:
++        raise ValueError("Source checksum changed: " + name)
++    if data[:4] != b"RIFF": raise ValueError("Expected WAV master")
++    pos = 12
++    while pos + 8 <= len(data):
++        kind, size = struct.unpack_from("<4sI", data, pos)
++        body = data[pos + 8:pos + 8 + size]
++        if kind == b"fmt ":
++            fmt, channels, rate, _, _, bits = struct.unpack_from("<HHIIHH", body)
++            if fmt == 65534: fmt = struct.unpack_from("<H", body, 24)[0]
++        elif kind == b"data": pcm = body
++        pos += 8 + size + (size & 1)
++    if fmt == 3:
++        values = np.frombuffer(pcm, dtype="<f4").astype(np.float64)
++    elif bits == 24:
++        raw = np.frombuffer(pcm, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
++        values = raw[:,0] | (raw[:,1] << 8) | (raw[:,2] << 16)
++        values = ((values ^ 0x800000) - 0x800000) / 8388608.0
++    elif bits == 16:
++        values = np.frombuffer(pcm, dtype="<i2").astype(np.float64) / 32768.0
++    elif bits == 32:
++        values = np.frombuffer(pcm, dtype="<i4").astype(np.float64) / 2147483648.0
++    else: raise ValueError("Unsupported PCM master")
++    values = values.reshape(-1, channels).mean(axis=1)
++    if rate != RATE:
++        values = np.interp(np.arange(round(len(values)*RATE/rate))*rate/RATE,np.arange(len(values)),values)
++    return values
++
++
++def filter_audio(values, low=35, high=9000, warmth=0.0):
++    spectrum = np.fft.rfft(values)
++    hz = np.fft.rfftfreq(len(values), 1/RATE)
++    gain = (1-np.exp(-(hz/max(low,1))**4)) * np.exp(-(hz/high)**4)
++    gain *= 1 + warmth*np.exp(-((hz-170)/180)**2)
++    return np.fft.irfft(spectrum*gain,n=len(values))
++
++
++def steady(values, seconds=3.2, start=None):
++    count = min(round(seconds*RATE), len(values))
++    if start is None:
++        # Select steady energy, away from starts/stops and isolated mechanical clicks.
++        candidates = range(round(.25*RATE), max(round(.25*RATE)+1,len(values)-count), round(.2*RATE))
++        scored = []
++        for offset in candidates:
++            segment = values[offset:offset+count]
++            blocks = np.array_split(segment,16)
++            rms = np.array([np.sqrt(np.mean(b*b)) for b in blocks])
++            score = np.mean(rms)/(1+4*np.std(rms)/(np.mean(rms)+1e-8))
++            scored.append((score,offset))
++        start_index = max(scored)[1] if scored else 0
++    else: start_index = min(round(start*RATE),max(0,len(values)-count))
++    return values[start_index:start_index+count].copy()
++
++
++def loop(values):
++    overlap = min(round(.10*RATE),len(values)//6)
++    ramp = .5-.5*np.cos(np.linspace(0,math.pi,overlap))
++    joined = values[-overlap:]*(1-ramp)+values[:overlap]*ramp
++    # End of overlap continues into the head; the other boundary continues from the tail.
++    return np.concatenate([values[overlap:-overlap],joined])
++
++
++def transpose(values, factor):
++    return np.interp(np.arange(0,len(values)-1,factor),np.arange(len(values)),values)
++
++
++def write(name, values, used, looping=True, rms=.14):
++    values = filter_audio(values)
++    values -= values.mean()
++    if looping:
++        values = loop(values)
++        if name == "tire":
++            # Retain the existing tire seam invariant with an inaudible 2 ms taper.
++            taper = round(.002*RATE)
++            values[:taper] *= np.linspace(0,1,taper)
++            values[-taper:] *= np.linspace(1,0,taper)
++    else:
++        attack = min(round(.003*RATE), len(values)//3)
++        release = min(round(.06*RATE), len(values)//3)
++        values[:attack] *= np.linspace(0,1,attack)
++        values[-release:] *= np.linspace(1,0,release)
++    values *= min(rms/max(np.sqrt(np.mean(values*values)),1e-8),.84/max(np.max(np.abs(values)),1e-8))
++    # Deterministic TPDF dither for 24 -> 16 bit conversion.
++    rng = np.random.default_rng(6102026)
++    pcm = np.clip(np.rint(values*32767 + (rng.random(len(values))-rng.random(len(values)))*.5),-32767,32767).astype("<i2")
++    if name == "tire": pcm[0] = pcm[-1] = 0
++    target = OUT / (name + ".wav")
++    with wave.open(str(target),"wb") as handle:
++        handle.setnchannels(1); handle.setsampwidth(2); handle.setframerate(RATE)
++        handle.writeframes(pcm.tobytes())
++    # QOA is Godot's default WAV import. Engine loops use lossless PCM so loop
++    # frame counts and repeated pitch changes retain the mastered waveform.
++    import_path = target.with_suffix(".wav.import")
++    if import_path.exists():
++        settings = import_path.read_text(encoding="utf-8")
++        import re
++        settings = re.sub(r"compress/mode=\d+", "compress/mode=0", settings)
++        import_path.write_text(settings,encoding="utf-8")
++    else:
++        import_path.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding="utf-8")
++    outputs.append({"file":target.name,"sources":used,"loop":looping,"seconds":len(values)/RATE,"rms_dbfs":20*math.log10(max(np.sqrt(np.mean(values*values)),1e-9)),"peak_dbfs":20*math.log10(max(np.max(np.abs(values)),1e-9)),"seam_step":float(abs(values[0]-values[-1])) if looping else None,"sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
++
++
++car_low = "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
++car_mid = "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
++car_front = "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
++truck_low = "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
++truck_mid = "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++profiles = {
++    "compact": [(car_low,1.0,0),(car_mid,1.05,0),(car_front,1.8,0)],
++    "pickup": [(truck_low,.90,.45),(truck_mid,.85,.45),(truck_mid,1.45,.35)],
++    "classic": [("0534.wav",1.0,.25),("0534.wav",1.55,.2),("0534.wav",2.3,.15)],
++    "formula": [("0290.wav",1.2,0),("0290.wav",1.9,0),("0290.wav",2.9,0)],
++    "kart": [("0281.wav",1.0,-.15),("0281.wav",1.6,-.15),("0281.wav",2.25,-.15)],
++}
++for car, layers in profiles.items():
++    for index, (source,pitch,warmth) in enumerate(layers):
++        values = transpose(filter_audio(steady(read(source)),high=min(9000,19000/pitch)),pitch)
++        values = filter_audio(values,low=45 if car in ["formula","kart"] else 35,high=8500,warmth=warmth)
++        # Low-load banks reduce intake/exhaust bark without an abrupt pitch change.
++        write(f"{car}_{index}_load",values,[source])
++        write(f"{car}_{index}_coast",filter_audio(values,high=2800,warmth=.15),[source],rms=.11)
++
++surface_sources = {
++    "road":("Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav",800,6500),
++    "loose":("Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav",650,11000),
++    "grass":("Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav",750,8500),
++    "tire":("tires_squal_loop.wav",450,8500),
++}
++for name,(source,low,high) in surface_sources.items():
++    write(name,filter_audio(steady(read(source)),low=low,high=high),[source],rms=.11)
++for index,source in enumerate(["Vehicle_Car_Door_Closing_Exterior_Mono_01.wav","Vehicle_Car_Trunk_Close_Impact_Mono.wav","Vehicle_Car_Door_Closing_Exterior_Mono_02.wav"]):
++    values = read(source)
++    peak = np.argmax(np.abs(values))
++    values = values[max(0,peak-round(.02*RATE)):peak+round(.6*RATE)]
++    write("impact_"+str(index),filter_audio(values,high=6200,warmth=.5),[source],looping=False,rms=.23)
++source = "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav"
++write("chassis",steady(read(source),.32),[source],looping=False,rms=.16)
++# Original restrained wind/spray beds supplement recorded mechanical assets.
++rng = np.random.default_rng(6102026)
++noise = rng.normal(0,.1,RATE*4)
++write("wind",filter_audio(noise,low=90,high=1600),[],rms=.07)
++write("water",filter_audio(noise,low=500,high=6500),[],rms=.09)
++manifest = {"schema":"vehicle-audio-bank-v1","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++(OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
++print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/scripts/review_vehicle_audio.py b/scripts/review_vehicle_audio.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_vehicle_audio.py
+@@ -0,0 +1,32 @@
++"""Inspect actual captured game mixes and build a local listening review."""
++from pathlib import Path
++import json
++import math
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++EVIDENCE = ROOT / "docs/evidence/vehicle-audio-2026-10-06"
++records = []
++for path in sorted(EVIDENCE.glob("*-driving.wav")):
++    with wave.open(str(path)) as handle:
++        rate = handle.getframerate()
++        channels = handle.getnchannels()
++        frames = handle.getnframes()
++        values = np.frombuffer(handle.readframes(frames),dtype="<i2").astype(np.float64)/32768.0
++    peak = float(np.max(np.abs(values)))
++    rms = float(np.sqrt(np.mean(values*values)))
++    clipped = int(np.sum(np.abs(values)>=.999))
++    silent_tail = float(np.max(np.abs(values[-rate*channels//2:])))
++    assert peak>.03 and peak<.90 and clipped==0, path.name+" is silent or clipped"
++    assert silent_tail==0.0, path.name+" has sound after pausing"
++    records.append({"file":path.name,"seconds":frames/rate,"peak_dbfs":20*math.log10(peak),"rms_dbfs":20*math.log10(rms),"clipped_samples":clipped,"last_half_second_peak":silent_tail})
++assert len(records)==5, "Capture all five vehicles with TestScript -Graphical first"
++(EVIDENCE / "capture_levels.json").write_text(json.dumps(records,indent=2)+"\n",encoding="utf-8")
++cards = "\n".join(f'<article><h2>{item["file"].split("-")[0].capitalize()}</h2><audio controls preload="metadata" src="{item["file"]}"></audio><p>Peak {item["peak_dbfs"]:.1f} dBFS · 0 clipped samples · silent paused tail</p></article>' for item in records)
++page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Beat my track — Vehicle sound review</title>
++<style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:820px;margin:48px auto;padding:0 24px}h1{font-size:34px;line-height:1.2}h2{margin:0 0 12px;font-size:22px;color:#ffd667}article{padding:20px;margin:16px 0;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p{color:#b3bec5}article p{font-size:14px;margin:10px 0 0}a{color:#ffd667}small{color:#b3bec5}</style>
++<main><h1>Vehicle sound review</h1><p>Actual Godot master-bus captures. Each eight-second preview moves through idle, acceleration and shifts, lift-off, braking, tire slip, a body impact, then pause.</p><p>The kart uses one gear. These are authored fictional engine voices, processed from cleared recordings. Hearing quality on the phone remains to be reviewed.</p>'''+cards+'''<small>Tire recording: audible-edge (Tom Haigh), loop edit by qubodup, <a href="https://opengameart.org/content/car-tire-squeal-skid-loop">Car tire squeal skid loop</a>, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>. Resampled, filtered, looped and mastered. Other recorded masters: Nox Sound Design, Joseph SARDIN and DenisChardonnet (CC0). Full credits: game/assets/audio/vehicles/NOTICE.txt.</small></main>
++<script>const players=[...document.querySelectorAll('audio')];players.forEach(player=>player.addEventListener('play',()=>players.forEach(other=>{if(other!==player)other.pause()})))</script></html>'''
++(EVIDENCE / "audition.html").write_text(page,encoding="utf-8")
++print(json.dumps(records,indent=2))
+diff --git a/docs/VEHICLE_AUDIO.md b/docs/VEHICLE_AUDIO.md
+new file mode 100644
+--- /dev/null
++++ b/docs/VEHICLE_AUDIO.md
+@@ -0,0 +1,108 @@
++# Vehicle audio replacement — 2026-10-06
++
++The owner requested removal of the current soundtrack and AAA-level high-quality
++car sounds. The race now creates a recorded vehicle mixer instead of the generated
++soundtrack or the old procedural tire player. The prior soundtrack, its native
++libraries/build sources and diagnostic test are archived outside the export root
++at `archive/retired-soundtrack-2026-10-06/`.
++
++## Requirements and behavior
++
++This slice implements owner requirements SND01–SND06 and supports G01/R01
++driving feedback, Q01 bounded mobile presentation and V06 asset provenance.
++
++| ID | Implemented behavior |
++| --- | --- |
++| SND01 | No generated soundtrack playback or native music extension in the active Godot project. Historical sources retained; old development music commands explain retirement. |
++| SND02 | Compact, pickup, classic sports, Formula and kart have authored engine banks. Three RPM layers per car, with separate load/coast variants, equal-power logarithmic crossfades, smoothly changing pitch/load and startup gain. |
++| SND03 | Presentation-only rev/gear model responds to speed, throttle, braking in reverse, lift-off and airborne/handbrake load. Geared cars have shift cut/shift sound and hysteresis; kart has one gear. No changes to physics, input logs, vehicle configs, rules, track compiler or records. |
++| SND04 | Recorded tire slip, road rolling, dirt/sand and grass layers; original wind/water beds. Desert uses granular scrub; wet roads/puddles use spray. Airborne tire/rolling layers silence immediately. Actual collision impulses, jump landings and kerb motion drive bounded body events. |
++| SND05 | Pause freezes playback and suppresses incidents; countdown allows engine response with stationary tire/road layers. Retry and rewind discard old incidents/reset drivetrain. Six engine loops, six surface/wind loops and four event slots bound each race to 16 voices. |
++| SND06 | Local cleared masters, hashes and derivative descriptions; lossless 44.1 kHz mono 16-bit PCM import. Vehicle dynamics compression, -2 dBFS vehicle ceiling and -1 dBFS master ceiling. Credits/manifest included in the Android export configuration. |
++
++Forty mastered clips occupy **7,971,368 bytes** (about 7.6 MiB), with maximum
++asset peak -1.514 dBFS. Runtime retains the selected vehicle bank, not every car's
++engine bank. Masters were cut, filtered, transposed, loop-crossfaded, RMS/peak
++mastered and dithered offline. `tire.wav` retains the existing silent-endpoint
++invariant with a 2 ms taper. Old `TireAudio.scrub_amount` diagnostics remain intact.
++
++The engine RPM/gears are sound design controls, not a physical transmission or
++an assertion about the RPM of every source recording. The Formula/kart voices
++use transformed car/motorcycle recordings; body impacts use edited body/door
++recordings. Wind and spray are authored noise beds. This is not a dedicated
++multimicrophone motorsport dyno library. AAA is the requested ambition; owner ear
++acceptance and physical-phone listening/performance are still required.
++
++## Provenance and files
++
++The source/derivative ledger is
++[`game/assets/audio/vehicles/manifest.json`](../game/assets/audio/vehicles/manifest.json);
++shipping credits are
++[`NOTICE.txt`](../game/assets/audio/vehicles/NOTICE.txt). The root ledger
++[`licenses/ASSETS.md`](../licenses/ASSETS.md) is updated.
++
++- Nox Sound Design [Essentials Series](https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound): CC0 engine, rolling and body masters.
++- Joseph SARDIN [AC Cobra Engine](https://bigsoundbank.com/ac-cobra-engine-s0534.html): CC0 classic engine source.
++- DenisChardonnet [Motor car #1](https://bigsoundbank.com/motor-car-1-s0290.html) and [Motorcycle](https://bigsoundbank.com/motorcycle-s0281.html): CC0 Formula/kart source material.
++- audible-edge (Tom Haigh), loop edit by qubodup, [Car tire squeal skid loop](https://opengameart.org/content/car-tire-squeal-skid-loop): [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/); modifications/attribution documented in the shipping notice and review page.
++
++No asset purchase, paid generation, new runtime dependency or runtime audio/API
++request was added. NumPy already present on this development machine is used only
++by offline mastering/review scripts. The large Nox archive was read with bounded
++HTTP range requests; only selected masters were downloaded to ignored build
++storage. Public library download session values are not shipping data.
++
++Runtime files: `game/vehicle/vehicle_audio.gd`, `vehicle_audio_model.gd`,
++`tire_audio.gd`, `game/core/game.gd`, `game/default_bus_layout.tres`,
++`game/export_presets.cfg`, `game/assets/audio/vehicles/*` and generated `.uid`s.
++Tool/test files: `scripts/fetch_vehicle_audio.py`, `build_vehicle_audio.py`,
++`review_vehicle_audio.py`, `scripts/dev.ps1`, `game/tests/test_vehicle_audio.gd`.
++Historical `game/music/*`, `game/tests/test_music.*`, `native/music/*` and
++`scripts/build_music.ps1` moved to the archive. No player files were touched.
++
++## Actual commands and results
++
++All engine commands used `scripts/dev.ps1` and
++`4.7.2.stable.official.ed1daf0bf`, never the older PATH alias.
++
++| Command | Actual outcome |
++| --- | --- |
++| `python scripts/fetch_vehicle_audio.py` | 19 cleared source WAV masters retrieved; WAV type checked by mastering, source SHA-256 pinned. Early free-library endpoint/key discovery and wrong BSB WAV path failures corrected; actual BWF masters fetched. No purchase. |
++| `python scripts/build_vehicle_audio.py` | 40 final bank clips, 7,971,368 bytes. Rebuilt after adding 32-bit PCM handling, forcing lossless import and preserving the tire seam invariant. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import` | Final import passes. Initial sandbox attempt hit stale extension/certificate-store access errors; normal Windows execution completed the import. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | Final **1,418 checks, 0 failures**. Includes bank hashes/PCM/headroom, equal-power weights, drivetrain lifecycle, reverse, pause/countdown, asphalt/desert/wet/puddle feedback, actual impacts, airborne silence, rewind, real race creation/retry, and exact simulation snapshots after 960 ticks with/without audio. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd -Graphical` | **1,432 checks, 0 failures** after tire fix; five actual master-bus recordings captured and checked audible/unclipped. Subsequent puddle classification adds one final headless check; previews use no track and are unaffected. |
++| `… scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd` | **306 scripts, 0 failures** at that run. Concurrent unrelated work can change the count. |
++| `… scripts/dev.ps1 TestHandling` | Final **88 checks, 0 failures**, including exact historical replay checks. Initial silent-loop-endpoint failure corrected by mastering the replacement tire clip; the existing test was not weakened. |
++| `… scripts/dev.ps1 TestApp` | **99 checks, 0 failures**; isolated app/race/retry/records flow. |
++| `… scripts/dev.ps1 TestRewind` | **57 checks, 0 failures**. |
++| `… scripts/dev.ps1 Doctor` | DN2103 attached (`PRQKU4U4PREQNRWG`). This only checks attachment/tool prerequisites. |
++| `python scripts/review_vehicle_audio.py` | Five audible, unclipped mixes; last half-second of each is exactly silent after pause. Local listening page and measured levels saved. |
++| `git diff --check -- game/core/game.gd game/vehicle/tire_audio.gd game/export_presets.cfg scripts/dev.ps1` | Exit 0; existing Windows CRLF normalization notice retained. |
++| `python build/make_vehicle_audio_checkpoint.py` then `git apply --reverse --check --ignore-whitespace docs/evidence/vehicle-audio-2026-10-06/scoped-change.patch` | Final exit 0: task-scoped text changes, 43 tracked archive moves, and a SHA-256 inventory of 96 new source/import/asset/review files. WAV bytes remain separate pinned artifacts. Initial review patch lacked an EOF marker for the listening HTML; corrected before the successful check. |
++
++Corrected intermediate failures are retained in the evidence log copies. Import
++and tests were run with normal Windows certificate/audio access after sandbox
++denial. Full Validate, Android export/install, phone audio listening, thermal
++profiling and backend deployment were **not** performed.
++
++## Review evidence and remaining acceptance
++
++[Listen to all five actual engine mixes](evidence/vehicle-audio-2026-10-06/audition.html).
++Each eight-second capture demonstrates idle, acceleration/shift, coast/brake,
++slip, impact and pause. Numeric evidence is
++[`capture_levels.json`](evidence/vehicle-audio-2026-10-06/capture_levels.json).
++The previews carry the recorded tire attribution. There are no visible game UI
++changes in this slice, so audio captures are the relevant presentation evidence.
++
++Source changes and archive moves are recorded in the scoped review patch/hash
++inventory under `docs/evidence/vehicle-audio-2026-10-06/`; unrelated existing and
++concurrent work is preserved. The checkpoint is a validated review patch plus
++artifact hashes; no Git commit or shared-index change was made. This is not a
++backend/physics rollout.
++
++Remaining acceptance: owner listening for engine character, shift/loop transitions
++and mix balance; DN2103 speaker/headphone audition in every biome; pause/focus/ads
++audio focus; long races/rewind/retry listening; Android packaging verification and
++20-minute voice/memory/thermal measurements. Desktop capture levels and automated
++checks do not establish the requested AAA listening quality or phone acceptance.
+diff --git a/archive/retired-soundtrack-2026-10-06/README.md b/archive/retired-soundtrack-2026-10-06/README.md
+new file mode 100644
+--- /dev/null
++++ b/archive/retired-soundtrack-2026-10-06/README.md
+@@ -0,0 +1,7 @@
++The owner removed the current soundtrack on 2026-10-06. Its source, native
++libraries and diagnostic test are preserved here, outside the Godot export root.
++The game no longer creates a DynamicMusicController or loads BMTMusicStream.
++This is a historical source archive, not an executable music feature or shipping
++asset. Original res://music paths describe the old project layout.
++
++The replacement vehicle sound mix is documented in docs/VEHICLE_AUDIO.md.
+diff --git a/docs/evidence/vehicle-audio-2026-10-06/audition.html b/docs/evidence/vehicle-audio-2026-10-06/audition.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/vehicle-audio-2026-10-06/audition.html
+@@ -0,0 +1,8 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Beat my track — Vehicle sound review</title>
++<style>body{margin:0;background:#101b27;color:#e9e3d7;font:17px/1.5 system-ui,sans-serif}main{max-width:820px;margin:48px auto;padding:0 24px}h1{font-size:34px;line-height:1.2}h2{margin:0 0 12px;font-size:22px;color:#ffd667}article{padding:20px;margin:16px 0;border:1px solid #344450;border-radius:12px;background:#182632}audio{width:100%}p{color:#b3bec5}article p{font-size:14px;margin:10px 0 0}a{color:#ffd667}small{color:#b3bec5}</style>
++<main><h1>Vehicle sound review</h1><p>Actual Godot master-bus captures. Each eight-second preview moves through idle, acceleration and shifts, lift-off, braking, tire slip, a body impact, then pause.</p><p>The kart uses one gear. These are authored fictional engine voices, processed from cleared recordings. Hearing quality on the phone remains to be reviewed.</p><article><h2>Classic</h2><audio controls preload="metadata" src="classic-driving.wav"></audio><p>Peak -4.6 dBFS · 0 clipped samples · silent paused tail</p></article>
++<article><h2>Compact</h2><audio controls preload="metadata" src="compact-driving.wav"></audio><p>Peak -4.5 dBFS · 0 clipped samples · silent paused tail</p></article>
++<article><h2>Formula</h2><audio controls preload="metadata" src="formula-driving.wav"></audio><p>Peak -5.3 dBFS · 0 clipped samples · silent paused tail</p></article>
++<article><h2>Kart</h2><audio controls preload="metadata" src="kart-driving.wav"></audio><p>Peak -4.6 dBFS · 0 clipped samples · silent paused tail</p></article>
++<article><h2>Pickup</h2><audio controls preload="metadata" src="pickup-driving.wav"></audio><p>Peak -5.8 dBFS · 0 clipped samples · silent paused tail</p></article><small>Tire recording: audible-edge (Tom Haigh), loop edit by qubodup, <a href="https://opengameart.org/content/car-tire-squeal-skid-loop">Car tire squeal skid loop</a>, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>. Resampled, filtered, looped and mastered. Other recorded masters: Nox Sound Design, Joseph SARDIN and DenisChardonnet (CC0). Full credits: game/assets/audio/vehicles/NOTICE.txt.</small></main>
++<script>const players=[...document.querySelectorAll('audio')];players.forEach(player=>player.addEventListener('play',()=>players.forEach(other=>{if(other!==player)other.pause()})))</script></html>
+\ No newline at end of file
+diff --git a/docs/evidence/vehicle-audio-2026-10-06/capture_levels.json b/docs/evidence/vehicle-audio-2026-10-06/capture_levels.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/vehicle-audio-2026-10-06/capture_levels.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "file": "classic-driving.wav",
++    "seconds": 7.989333333333334,
++    "peak_dbfs": -4.613167580191436,
++    "rms_dbfs": -25.077459475535917,
++    "clipped_samples": 0,
++    "last_half_second_peak": 0.0
++  },
++  {
++    "file": "compact-driving.wav",
++    "seconds": 8.010666666666667,
++    "peak_dbfs": -4.529713481271563,
++    "rms_dbfs": -23.598482911883774,
++    "clipped_samples": 0,
++    "last_half_second_peak": 0.0
++  },
++  {
++    "file": "formula-driving.wav",
++    "seconds": 8.010666666666667,
++    "peak_dbfs": -5.28158858926031,
++    "rms_dbfs": -22.496408896412007,
++    "clipped_samples": 0,
++    "last_half_second_peak": 0.0
++  },
++  {
++    "file": "kart-driving.wav",
++    "seconds": 8.0,
++    "peak_dbfs": -4.6176771538548875,
++    "rms_dbfs": -21.94531150990484,
++    "clipped_samples": 0,
++    "last_half_second_peak": 0.0
++  },
++  {
++    "file": "pickup-driving.wav",
++    "seconds": 8.0,
++    "peak_dbfs": -5.797644430404939,
++    "rms_dbfs": -22.566025545885186,
++    "clipped_samples": 0,
++    "last_half_second_peak": 0.0
++  }
++]
+diff --git a/game/assets/audio/vehicles/chassis.wav.import b/game/assets/audio/vehicles/chassis.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/chassis.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bcivh33kby7n0"
++path="res://.godot/imported/chassis.wav-ef740f4e6838892b060e150b1c514dda.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/chassis.wav"
++dest_files=["res://.godot/imported/chassis.wav-ef740f4e6838892b060e150b1c514dda.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_0_coast.wav.import b/game/assets/audio/vehicles/classic_0_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_0_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://df2rdx5e2p0vm"
++path="res://.godot/imported/classic_0_coast.wav-d0ded8bec91e3ffee7087fad121a7afd.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_0_coast.wav"
++dest_files=["res://.godot/imported/classic_0_coast.wav-d0ded8bec91e3ffee7087fad121a7afd.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_0_load.wav.import b/game/assets/audio/vehicles/classic_0_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_0_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://c8anif6l52suu"
++path="res://.godot/imported/classic_0_load.wav-f1900ba4ddc581850bdc82ba3881c5cf.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_0_load.wav"
++dest_files=["res://.godot/imported/classic_0_load.wav-f1900ba4ddc581850bdc82ba3881c5cf.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_1_coast.wav.import b/game/assets/audio/vehicles/classic_1_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_1_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bfe28i2exhu66"
++path="res://.godot/imported/classic_1_coast.wav-7887020bcbae2395951e8340c03d67aa.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_1_coast.wav"
++dest_files=["res://.godot/imported/classic_1_coast.wav-7887020bcbae2395951e8340c03d67aa.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_1_load.wav.import b/game/assets/audio/vehicles/classic_1_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_1_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://d0e01n2f3u543"
++path="res://.godot/imported/classic_1_load.wav-b7048f9a9d0f16acdf62b5987b295a70.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_1_load.wav"
++dest_files=["res://.godot/imported/classic_1_load.wav-b7048f9a9d0f16acdf62b5987b295a70.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_2_coast.wav.import b/game/assets/audio/vehicles/classic_2_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_2_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://ddickxqv26rfb"
++path="res://.godot/imported/classic_2_coast.wav-07dd76069bca94e2fc4210dfd010038a.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_2_coast.wav"
++dest_files=["res://.godot/imported/classic_2_coast.wav-07dd76069bca94e2fc4210dfd010038a.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/classic_2_load.wav.import b/game/assets/audio/vehicles/classic_2_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/classic_2_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://edn4goc6564p"
++path="res://.godot/imported/classic_2_load.wav-bd1ca2ecc7b202f1a9995d29f94f33eb.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/classic_2_load.wav"
++dest_files=["res://.godot/imported/classic_2_load.wav-bd1ca2ecc7b202f1a9995d29f94f33eb.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_0_coast.wav.import b/game/assets/audio/vehicles/compact_0_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_0_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dnxmr88skdyrq"
++path="res://.godot/imported/compact_0_coast.wav-661e1a0e6d0221b68a8ef9eed9612bf7.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_0_coast.wav"
++dest_files=["res://.godot/imported/compact_0_coast.wav-661e1a0e6d0221b68a8ef9eed9612bf7.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_0_load.wav.import b/game/assets/audio/vehicles/compact_0_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_0_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://d3t8rrp43wf34"
++path="res://.godot/imported/compact_0_load.wav-e78faeaeea499a725a5992cdac4ce829.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_0_load.wav"
++dest_files=["res://.godot/imported/compact_0_load.wav-e78faeaeea499a725a5992cdac4ce829.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_1_coast.wav.import b/game/assets/audio/vehicles/compact_1_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_1_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dn3wdua8te8a2"
++path="res://.godot/imported/compact_1_coast.wav-892d9e15df47386f8c175ae7e95eb93c.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_1_coast.wav"
++dest_files=["res://.godot/imported/compact_1_coast.wav-892d9e15df47386f8c175ae7e95eb93c.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_1_load.wav.import b/game/assets/audio/vehicles/compact_1_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_1_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bh8pwcvjrj0va"
++path="res://.godot/imported/compact_1_load.wav-304ab248a63f732355cfce1027daa0c9.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_1_load.wav"
++dest_files=["res://.godot/imported/compact_1_load.wav-304ab248a63f732355cfce1027daa0c9.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_2_coast.wav.import b/game/assets/audio/vehicles/compact_2_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_2_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dvolig8u3rlkq"
++path="res://.godot/imported/compact_2_coast.wav-402dc8962516143cfa8092204586afdc.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_2_coast.wav"
++dest_files=["res://.godot/imported/compact_2_coast.wav-402dc8962516143cfa8092204586afdc.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/compact_2_load.wav.import b/game/assets/audio/vehicles/compact_2_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/compact_2_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://budx7aa7uljcs"
++path="res://.godot/imported/compact_2_load.wav-482e22a62f6b86dc0094639cfc15e3f2.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/compact_2_load.wav"
++dest_files=["res://.godot/imported/compact_2_load.wav-482e22a62f6b86dc0094639cfc15e3f2.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_0_coast.wav.import b/game/assets/audio/vehicles/formula_0_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_0_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dh3lulengyvcb"
++path="res://.godot/imported/formula_0_coast.wav-822563bedfcf7f62891cd9101419c847.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_0_coast.wav"
++dest_files=["res://.godot/imported/formula_0_coast.wav-822563bedfcf7f62891cd9101419c847.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_0_load.wav.import b/game/assets/audio/vehicles/formula_0_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_0_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://jpxusrmllmhc"
++path="res://.godot/imported/formula_0_load.wav-8a4bb3ce2ca68e3e3269fe1d6285065b.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_0_load.wav"
++dest_files=["res://.godot/imported/formula_0_load.wav-8a4bb3ce2ca68e3e3269fe1d6285065b.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_1_coast.wav.import b/game/assets/audio/vehicles/formula_1_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_1_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://byp5hgr6je2gj"
++path="res://.godot/imported/formula_1_coast.wav-f3c5e07d45bd766d6c90dab0041da9e4.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_1_coast.wav"
++dest_files=["res://.godot/imported/formula_1_coast.wav-f3c5e07d45bd766d6c90dab0041da9e4.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_1_load.wav.import b/game/assets/audio/vehicles/formula_1_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_1_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://c3i5s7ninkp0c"
++path="res://.godot/imported/formula_1_load.wav-44089ed7a4357c84640e3097d617bd78.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_1_load.wav"
++dest_files=["res://.godot/imported/formula_1_load.wav-44089ed7a4357c84640e3097d617bd78.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_2_coast.wav.import b/game/assets/audio/vehicles/formula_2_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_2_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://ddk0l46h831m8"
++path="res://.godot/imported/formula_2_coast.wav-01f1367218c0918d60de9649896274fe.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_2_coast.wav"
++dest_files=["res://.godot/imported/formula_2_coast.wav-01f1367218c0918d60de9649896274fe.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/formula_2_load.wav.import b/game/assets/audio/vehicles/formula_2_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/formula_2_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://ctghg4hnolftx"
++path="res://.godot/imported/formula_2_load.wav-7a996c76663694e1967e6048cfe84db3.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/formula_2_load.wav"
++dest_files=["res://.godot/imported/formula_2_load.wav-7a996c76663694e1967e6048cfe84db3.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/grass.wav.import b/game/assets/audio/vehicles/grass.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/grass.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://kghnlj8m3unw"
++path="res://.godot/imported/grass.wav-6310fcc95bdd25505d62bef0c5bae3b1.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/grass.wav"
++dest_files=["res://.godot/imported/grass.wav-6310fcc95bdd25505d62bef0c5bae3b1.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/impact_0.wav.import b/game/assets/audio/vehicles/impact_0.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/impact_0.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dk68tf86cagig"
++path="res://.godot/imported/impact_0.wav-b558711f480f59e49c2e33e847baf431.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/impact_0.wav"
++dest_files=["res://.godot/imported/impact_0.wav-b558711f480f59e49c2e33e847baf431.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/impact_1.wav.import b/game/assets/audio/vehicles/impact_1.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/impact_1.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bwrmmjjb5addr"
++path="res://.godot/imported/impact_1.wav-7d60bc8579dab65672bd228c0671921a.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/impact_1.wav"
++dest_files=["res://.godot/imported/impact_1.wav-7d60bc8579dab65672bd228c0671921a.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/impact_2.wav.import b/game/assets/audio/vehicles/impact_2.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/impact_2.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://cgrocuhj3ec4k"
++path="res://.godot/imported/impact_2.wav-7e2c51a2b4bb232732258da48c9e1ea0.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/impact_2.wav"
++dest_files=["res://.godot/imported/impact_2.wav-7e2c51a2b4bb232732258da48c9e1ea0.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_0_coast.wav.import b/game/assets/audio/vehicles/kart_0_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_0_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://b7b7rluo34cck"
++path="res://.godot/imported/kart_0_coast.wav-9f5977ac95e783c0cdde9d9add24117f.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_0_coast.wav"
++dest_files=["res://.godot/imported/kart_0_coast.wav-9f5977ac95e783c0cdde9d9add24117f.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_0_load.wav.import b/game/assets/audio/vehicles/kart_0_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_0_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dq7susoqrfglr"
++path="res://.godot/imported/kart_0_load.wav-6d545f68ee0b394b452335b2e0d03fff.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_0_load.wav"
++dest_files=["res://.godot/imported/kart_0_load.wav-6d545f68ee0b394b452335b2e0d03fff.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_1_coast.wav.import b/game/assets/audio/vehicles/kart_1_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_1_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://cgp24hs7geju0"
++path="res://.godot/imported/kart_1_coast.wav-a7ef791a7f43ca266100cf34da4d7d9b.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_1_coast.wav"
++dest_files=["res://.godot/imported/kart_1_coast.wav-a7ef791a7f43ca266100cf34da4d7d9b.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_1_load.wav.import b/game/assets/audio/vehicles/kart_1_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_1_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://beumuwpi3ctbh"
++path="res://.godot/imported/kart_1_load.wav-cf88ed51125bcaa1a0ac3ec595cbcf7a.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_1_load.wav"
++dest_files=["res://.godot/imported/kart_1_load.wav-cf88ed51125bcaa1a0ac3ec595cbcf7a.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_2_coast.wav.import b/game/assets/audio/vehicles/kart_2_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_2_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://djwtbo4thl360"
++path="res://.godot/imported/kart_2_coast.wav-f5d5685cee9cbe60c95d751dca7452bd.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_2_coast.wav"
++dest_files=["res://.godot/imported/kart_2_coast.wav-f5d5685cee9cbe60c95d751dca7452bd.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/kart_2_load.wav.import b/game/assets/audio/vehicles/kart_2_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/kart_2_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://bexnm1u4dmuc7"
++path="res://.godot/imported/kart_2_load.wav-b2c3b8efdb38dd99b7cab9014b4e47b1.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/kart_2_load.wav"
++dest_files=["res://.godot/imported/kart_2_load.wav-b2c3b8efdb38dd99b7cab9014b4e47b1.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/loose.wav.import b/game/assets/audio/vehicles/loose.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/loose.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://b1t4efuqyqcvw"
++path="res://.godot/imported/loose.wav-3158033bf91f5c4f6bcb41bc17e6580b.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/loose.wav"
++dest_files=["res://.godot/imported/loose.wav-3158033bf91f5c4f6bcb41bc17e6580b.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -0,0 +1,634 @@
++{
++  "schema": "vehicle-audio-bank-v1",
++  "rate": 44100,
++  "channels": 1,
++  "bits": 16,
++  "sources": [
++    {
++      "filename": "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Door_Closing_Exterior_Mono_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "b62680bb5eea17402f09ecab3bd24ee16d38217a008d0d227cc08c39561b28f1"
++    },
++    {
++      "filename": "Vehicle_Car_Door_Closing_Exterior_Mono_02.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Door_Closing_Exterior_Mono_02.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "06b51f8a59a4c71faba5c7973add1287aaa51a82292d392eab0cd2463333b169"
++    },
++    {
++      "filename": "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "8e8a1af3f9aadc3153b1e1178d3932a7b598ebe88322b8c6ef7e624710d86c5a"
++    },
++    {
++      "filename": "Vehicle_Car_Engine_1000_RPM_Front_Exterior_Loop_Mono.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Engine_1000_RPM_Front_Exterior_Loop_Mono.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "8c4e8db005dc639f2ec0613a02b79b1c47509c2b77dce9856b8553eb57eaa8ec"
++    },
++    {
++      "filename": "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "e8cd05701e32186dea427862dd7f4e5c700e1938eeccb71f7e62b687cef9ca67"
++    },
++    {
++      "filename": "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "8de0f8c78385b5c38669e0b5ba5a640283138ed975d806f3fe65a9192b7ec59b"
++    },
++    {
++      "filename": "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "41a2ad2784f3f4f8516ffacc96e23af6323ec16b6ab96e4fba8b0b8983e61f9c"
++    },
++    {
++      "filename": "Vehicle_Car_Engine_Idle_Exterior_Loop_Mono_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Engine_Idle_Exterior_Loop_Mono_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "1ed17adb0aacfc8b09b91b249b213b20da26b015ca257fe84c0842e921a563ee"
++    },
++    {
++      "filename": "Vehicle_Car_Trunk_Close_Impact_Mono.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Car/Vehicle_Car_Trunk_Close_Impact_Mono.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "5e6804c7f2465aef42c32e812930193b481f371e042b6048056b6f26b6b7eab0"
++    },
++    {
++      "filename": "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Body_Movement_Interior_Mono_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "04ff27ccf6d4194dd4f40ffa43e41f1a88d29616c3c271f5d22c1fadb0db65f8"
++    },
++    {
++      "filename": "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "db042ce3ff1888f91d29454d93a749e741d1f1012c3c3e1c95cee09af4b9ae05"
++    },
++    {
++      "filename": "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "a98e6eed94af8c96b6e815701906677ce0a3cb71f7e1025626f50bce0a604d99"
++    },
++    {
++      "filename": "Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "971b789214572ee7da289d7680af08601b691e8d66c48578ab734ec984916496"
++    },
++    {
++      "filename": "Vehicle_Truck_Idle_Exterior_Front_Loop_Stereo_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Idle_Exterior_Front_Loop_Stereo_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "3fb785dbf2fed50dece3db1f5feb078ec084f281289c4baceb9805cc7f650b8e"
++    },
++    {
++      "filename": "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav",
++      "source": "https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound",
++      "archive_member": "Essentials_Series_NOX_SOUND/Vehicle_Essentials_NOX_SOUND/Vehicle_Essential_Truck/Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav",
++      "license": "CC0-1.0",
++      "author": "Nox Sound Design",
++      "sha256": "f306f1f41381975ade4de8a73c41619fc8dbfe5ff42e4bd364d94e9cc4d5c36e"
++    },
++    {
++      "filename": "0534.wav",
++      "source": "https://bigsoundbank.com/ac-cobra-engine-s0534.html",
++      "license": "CC0-1.0",
++      "author": "Joseph SARDIN",
++      "sha256": "bdb932dfe8990afc584cd0d579fba068ce6b23c87d7389724e89567e2d0020a8"
++    },
++    {
++      "filename": "0281.wav",
++      "source": "https://bigsoundbank.com/motorcycle-s0281.html",
++      "license": "CC0-1.0",
++      "author": "DenisChardonnet",
++      "sha256": "49d7c341ed0659a0556821c3875ba9184c2e8894e9485ad596dce18de501ac08"
++    },
++    {
++      "filename": "0290.wav",
++      "source": "https://bigsoundbank.com/motor-car-1-s0290.html",
++      "license": "CC0-1.0",
++      "author": "DenisChardonnet",
++      "sha256": "7b318c16bf306c6d14398c2206c09d6b7921b228c140b731ec55953f02fed2c6"
++    },
++    {
++      "filename": "tires_squal_loop.wav",
++      "source": "https://opengameart.org/content/car-tire-squeal-skid-loop",
++      "license": "CC-BY-3.0",
++      "author": "audible-edge (Tom Haigh); loop edit by qubodup",
++      "sha256": "2b341cfa20987388fcca9fd91d8be5056cb6c6c54abc2a97846c2be5e5a4f604"
++    }
++  ],
++  "outputs": [
++    {
++      "file": "compact_0_load.wav",
++      "sources": [
++        "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -19.146087809134706,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.010330873616835726,
++      "sha256": "b021e59d65d65d95c5b5e63cb8fa8f8dc329fb41c5ee9a3483b1b817b411ed17"
++    },
++    {
++      "file": "compact_0_coast.wav",
++      "sources": [
++        "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -1.5870739879317917,
++      "seam_step": 0.008554582418223267,
++      "sha256": "e6ab5ca1562efb61ef4d2b5a1e71c84e61e4ead417d211cdf43a94042c420906"
++    },
++    {
++      "file": "compact_1_load.wav",
++      "sources": [
++        "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 2.947619047619048,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -5.664814002937348,
++      "seam_step": 0.0018533002710837687,
++      "sha256": "bbca6c092ab52155fc35fbd48861e39f38dd5fc907b07e26b227dd17ec24a57a"
++    },
++    {
++      "file": "compact_1_coast.wav",
++      "sources": [
++        "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 2.947619047619048,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -8.355298181579919,
++      "seam_step": 0.0025825004134231166,
++      "sha256": "d4abfc1cb8b592936b801285283dc8643cda49265f4f086ba6041a4d23b8d90f"
++    },
++    {
++      "file": "compact_2_load.wav",
++      "sources": [
++        "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 1.6777777777777778,
++      "rms_dbfs": -17.81936969197744,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 1.7814043859030885e-06,
++      "sha256": "90b0e5c99c11769878790cafbea5213ccd0d71d56d3c9d59f0e5756856184a8d"
++    },
++    {
++      "file": "compact_2_coast.wav",
++      "sources": [
++        "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 1.6777777777777778,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -3.5150263277927207,
++      "seam_step": 3.022708475008192e-06,
++      "sha256": "397712899f8ac0cc822854c51f8602364f7b8ec7b5a7d7035fd505f9303adfdf"
++    },
++    {
++      "file": "pickup_0_load.wav",
++      "sources": [
++        "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 3.4555328798185942,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -2.9913288345065574,
++      "seam_step": 0.004762154172934352,
++      "sha256": "c14eabe37527c10dd299b2cb085e3ca626d509a195dd84eb3fff0a03fedd3088"
++    },
++    {
++      "file": "pickup_0_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 3.4555328798185942,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -5.19656535709796,
++      "seam_step": 0.0032968366624926415,
++      "sha256": "6275d911a896c2470da6f81209c005aade70ec9f4085865afe5479c8f1adf553"
++    },
++    {
++      "file": "pickup_1_load.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 3.6646938775510205,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -4.505984565191763,
++      "seam_step": 0.01830348017131305,
++      "sha256": "90fc27fc907f4b87a6ee876381e2fad127a3a70b3c57156f78c377a9bd24fe87"
++    },
++    {
++      "file": "pickup_1_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 3.6646938775510205,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -6.756912506898953,
++      "seam_step": 0.010232269053868544,
++      "sha256": "32c94dcaac6bcab2039b2f79087cfbbe920444d81ed3edbcb246f15f98d694df"
++    },
++    {
++      "file": "pickup_2_load.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 2.106893424036281,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -4.671592889807102,
++      "seam_step": 0.008425172594083208,
++      "sha256": "bde086d954156a16602b05816c4d534bc9e2bf7e1c40b553eaeb6913d1a720eb"
++    },
++    {
++      "file": "pickup_2_coast.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 2.106893424036281,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -7.21859923190089,
++      "seam_step": 0.007106166477268749,
++      "sha256": "357d21acad52fb28b864c0503cea8113317c0d906c665d83b9e641d33c8dd09d"
++    },
++    {
++      "file": "classic_0_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -20.137481569038624,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 5.6798637831411406e-05,
++      "sha256": "5e27f81cfcc5d281bb8d99cbcbb9c6e49f8addb55e1df07f2dea38d5c8e1fff6"
++    },
++    {
++      "file": "classic_0_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -19.970952984844047,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 3.9393865503738103e-05,
++      "sha256": "a92dc532edf85c1ec51a80198d604c4f3cec7cd102276fd9cb091fe249b2940a"
++    },
++    {
++      "file": "classic_1_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 1.9645124716553288,
++      "rms_dbfs": -20.031963617021816,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.00028102168018264784,
++      "sha256": "163097d0850b4a06c0707b67ca960b845300bb51e5f214fea4dbae40b94f02a8"
++    },
++    {
++      "file": "classic_1_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 1.9645124716553288,
++      "rms_dbfs": -19.872592264837195,
++      "peak_dbfs": -1.514414278762366,
++      "seam_step": 0.00022496736220745995,
++      "sha256": "45e0e05bbdb2042a4da555380124defe80bb9183ab0fe721dce41c45ed417099"
++    },
++    {
++      "file": "classic_2_load.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 1.2913151927437643,
++      "rms_dbfs": -20.171873812897964,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.012673921180116766,
++      "sha256": "4c1cfe4e0d72b52bfc92fb403270b6275fc7ffae4b9190962621685436071a4d"
++    },
++    {
++      "file": "classic_2_coast.wav",
++      "sources": [
++        "0534.wav"
++      ],
++      "loop": true,
++      "seconds": 1.2913151927437643,
++      "rms_dbfs": -19.976711430803615,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.0022418234475282926,
++      "sha256": "6103a1c582771759be98e4061c0e13e42148f54f5121b9b6b898c46296076951"
++    },
++    {
++      "file": "formula_0_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 2.4025850340136055,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -3.9956881094096612,
++      "seam_step": 0.007160935104244287,
++      "sha256": "b4a6b5f72dc990a6b7161b6ed611b73594d217ee7d02b9e921f9378ed7600a97"
++    },
++    {
++      "file": "formula_0_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 2.4025850340136055,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -6.457474493173635,
++      "seam_step": 0.002982274658424433,
++      "sha256": "2eb4da1f4eaf1ce2b87aa951f2ac9dc20fd9bd63f67a0b4d29734142c45a4719"
++    },
++    {
++      "file": "formula_1_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 1.4805895691609978,
++      "rms_dbfs": -17.077439286435236,
++      "peak_dbfs": -3.989125311857991,
++      "seam_step": 0.006591999047031578,
++      "sha256": "d8fb0a581c57cc21472971cfc3891d2bc659342620b455047215c77e8065496b"
++    },
++    {
++      "file": "formula_1_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 1.4805895691609978,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -7.0179546819696315,
++      "seam_step": 0.0013529278941114484,
++      "sha256": "69507db1d538db7b4462f38e2e867b7bf42c8dfaa4060cd3c4fd408abda86b2a"
++    },
++    {
++      "file": "formula_2_load.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 0.9355555555555556,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -3.9368732529486437,
++      "seam_step": 0.0009932444381612893,
++      "sha256": "bc5caaf0284b7ec04e537c41d2acac55705b4be630be9ed6d33b5d50063f18a4"
++    },
++    {
++      "file": "formula_2_coast.wav",
++      "sources": [
++        "0290.wav"
++      ],
++      "loop": true,
++      "seconds": 0.9355555555555556,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -6.699185654614666,
++      "seam_step": 0.0005846246787061943,
++      "sha256": "ee461c113a3861dd3dc7356b5614b56c3691d63d51ec1735767099b96f8954a2"
++    },
++    {
++      "file": "kart_0_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -4.8347314476872345,
++      "seam_step": 0.0162083199243577,
++      "sha256": "e6954f7ab2427530e18c20312852ed5b85b90b9c681b64435e79afb485ffe576"
++    },
++    {
++      "file": "kart_0_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 3.0999773242630386,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -7.579688820656568,
++      "seam_step": 3.1479560625574665e-06,
++      "sha256": "d16962cc5603bf0565797c3c3b611e09197c4965bc96b86f7d963461b90e4bae"
++    },
++    {
++      "file": "kart_1_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 1.9,
++      "rms_dbfs": -17.077439286435236,
++      "peak_dbfs": -5.216391736183895,
++      "seam_step": 0.009013058992688533,
++      "sha256": "a84d4f411b14f268b8b478aedc19378c196bb162faa19fe7b66a5e0536c7ae8e"
++    },
++    {
++      "file": "kart_1_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 1.9,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -7.561284224084551,
++      "seam_step": 0.004271191906293631,
++      "sha256": "0d820bb68956d602076a51bc071f38f557152243318d87473191918f28368d24"
++    },
++    {
++      "file": "kart_2_load.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 1.3222222222222222,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -5.302480812911687,
++      "seam_step": 0.00011949701455521433,
++      "sha256": "8f6fd5c4f81ce299fa97e2a7ea5ef8b7d8334e641e7c6dcefb8b7193297e6f22"
++    },
++    {
++      "file": "kart_2_coast.wav",
++      "sources": [
++        "0281.wav"
++      ],
++      "loop": true,
++      "seconds": 1.3222222222222222,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -7.480204971386223,
++      "seam_step": 0.0012105237893456633,
++      "sha256": "8a6f29f1349e7844c5a87e145e0a47405404f608c6587867e0007eac9f458d62"
++    },
++    {
++      "file": "road.wav",
++      "sources": [
++        "Vehicle_Car_Drive_Interior_Loop_Stereo_01.wav"
++      ],
++      "loop": true,
++      "seconds": 3.1,
++      "rms_dbfs": -19.472397516255736,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.02407307725974949,
++      "sha256": "3378e80a4d726541ae8387a01709d54599d41b02c1e35f81d556a17bcd963549"
++    },
++    {
++      "file": "loose.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Dirty_Ground_Exterior_Loop_Stereo.wav"
++      ],
++      "loop": true,
++      "seconds": 3.1,
++      "rms_dbfs": -23.1830692494357,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": 0.012622923467342319,
++      "sha256": "f439465388b50979dfcf4f2903839f74f01c0bfa3fb6170387d8b6394dde3ae5"
++    },
++    {
++      "file": "grass.wav",
++      "sources": [
++        "Vehicle_Truck_Drive_Grass_Exterior_Loop_Stereo.wav"
++      ],
++      "loop": true,
++      "seconds": 3.1,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -3.517714287016877,
++      "seam_step": 1.328876554744983e-14,
++      "sha256": "98612b6a651fbef9adbc64f3d66cc941b578b8f8b3cdc5e3f011fb3d66e43d41"
++    },
++    {
++      "file": "tire.wav",
++      "sources": [
++        "tires_squal_loop.wav"
++      ],
++      "loop": true,
++      "seconds": 2.65,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -4.330575735426568,
++      "seam_step": 0.0,
++      "sha256": "bd94206cd7a8bf575eecef610660f6a0001a45e15efc21ac2ccb7cc2f24b0c3b"
++    },
++    {
++      "file": "impact_0.wav",
++      "sources": [
++        "Vehicle_Car_Door_Closing_Exterior_Mono_01.wav"
++      ],
++      "loop": false,
++      "seconds": 0.42471655328798186,
++      "rms_dbfs": -21.846811507243658,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": null,
++      "sha256": "bb10eab208c2e891b3dd9057deaa9700b097f0d50c99f136f1684e375a0c499b"
++    },
++    {
++      "file": "impact_1.wav",
++      "sources": [
++        "Vehicle_Car_Trunk_Close_Impact_Mono.wav"
++      ],
++      "loop": false,
++      "seconds": 0.6121995464852608,
++      "rms_dbfs": -21.053772085605008,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": null,
++      "sha256": "d6d06b2cfd165012539cef14c4707648dcee6f7b92fb29c022c557420298117d"
++    },
++    {
++      "file": "impact_2.wav",
++      "sources": [
++        "Vehicle_Car_Door_Closing_Exterior_Mono_02.wav"
++      ],
++      "loop": false,
++      "seconds": 0.35299319727891154,
++      "rms_dbfs": -21.68226118633768,
++      "peak_dbfs": -1.5144142787623671,
++      "seam_step": null,
++      "sha256": "10ace8e4b0831a3aba489fcbfddf00363bfe7f2d3dcc5f9ce5b6a0861beae77a"
++    },
++    {
++      "file": "chassis.wav",
++      "sources": [
++        "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav"
++      ],
++      "loop": false,
++      "seconds": 0.32,
++      "rms_dbfs": -15.917600346881501,
++      "peak_dbfs": -4.140869371200363,
++      "seam_step": null,
++      "sha256": "e01f779f5510b0fb32d53b0fca5a886910faae5652798cf824d4556b635ed89c"
++    },
++    {
++      "file": "wind.wav",
++      "sources": [],
++      "loop": true,
++      "seconds": 3.9,
++      "rms_dbfs": -23.09803919971486,
++      "peak_dbfs": -10.471202189972633,
++      "seam_step": 0.009651594258706316,
++      "sha256": "836296bf3bdd6331d025c131f70e86eec679098f3166986143754743301f8136"
++    },
++    {
++      "file": "water.wav",
++      "sources": [],
++      "loop": true,
++      "seconds": 3.9,
++      "rms_dbfs": -20.915149811213503,
++      "peak_dbfs": -7.288722209485838,
++      "seam_step": 0.054619297483772165,
++      "sha256": "b48a51956c09649f705751cffd638a6361efacded7bbdb986b9e0f4ba2aef507"
++    }
++  ]
++}
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -0,0 +1,29 @@
++Beat my track vehicle audio bank v1 — 2026-10-06
++
++Recorded engine, rolling and body source masters:
++Nox Sound Design, Essentials Series, CC0 1.0.
++https://nox-sound-design.itch.io/essentials-series-sfx-nox-sound
++
++Additional recorded engine source masters:
++Joseph SARDIN, “AC Cobra Engine”, BigSoundBank, CC0 1.0.
++https://bigsoundbank.com/ac-cobra-engine-s0534.html
++DenisChardonnet, “Motor car #1”, BigSoundBank, CC0 1.0.
++https://bigsoundbank.com/motor-car-1-s0290.html
++DenisChardonnet, “Motorcycle”, BigSoundBank, CC0 1.0.
++https://bigsoundbank.com/motorcycle-s0281.html
++
++Recorded tire squeal:
++“Car tire squeal skid loop” by audible-edge (Tom Haigh), edited into a loop
++by qubodup, licensed under Creative Commons Attribution 3.0 Unported.
++https://opengameart.org/content/car-tire-squeal-skid-loop
++https://creativecommons.org/licenses/by/3.0/
++Changes: mono 44.1 kHz resampling, filtering, loop crossfade, loudness mastering
++and 16-bit dither. Attribution applies to tire.wav and audio/video containing it.
++
++All recorded masters are edited for fictional vehicles. No manufacturer
++affiliation or claim of exact engine reproduction. Engine variants use cuts,
++transposition, equalization, on-load/coast filtering and crossfaded loops.
++Body impacts use edited vehicle body/door recordings, not crash recordings.
++Wind and water noise beds are original offline sound design.
++Source/derivative filenames and SHA-256 values: manifest.json.
++All sources are local build inputs. The game makes no audio-generation/API calls.
+diff --git a/game/assets/audio/vehicles/pickup_0_coast.wav.import b/game/assets/audio/vehicles/pickup_0_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_0_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://dnk5alqx1qxi4"
++path="res://.godot/imported/pickup_0_coast.wav-72845b1166f6b662b3ba9ecb52e62f24.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_0_coast.wav"
++dest_files=["res://.godot/imported/pickup_0_coast.wav-72845b1166f6b662b3ba9ecb52e62f24.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/pickup_0_load.wav.import b/game/assets/audio/vehicles/pickup_0_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_0_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://c3ivnva3enfj0"
++path="res://.godot/imported/pickup_0_load.wav-985eca764a1e25bea6c6ac9c2a4b3bb7.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_0_load.wav"
++dest_files=["res://.godot/imported/pickup_0_load.wav-985eca764a1e25bea6c6ac9c2a4b3bb7.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/pickup_1_coast.wav.import b/game/assets/audio/vehicles/pickup_1_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_1_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://r3xwjgyyc7te"
++path="res://.godot/imported/pickup_1_coast.wav-60e850d73d1bdf68e991686735dee143.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_1_coast.wav"
++dest_files=["res://.godot/imported/pickup_1_coast.wav-60e850d73d1bdf68e991686735dee143.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/pickup_1_load.wav.import b/game/assets/audio/vehicles/pickup_1_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_1_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://b64wsqiopad4t"
++path="res://.godot/imported/pickup_1_load.wav-cbb1737fb86fdbb737bc7d56c4597ecc.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_1_load.wav"
++dest_files=["res://.godot/imported/pickup_1_load.wav-cbb1737fb86fdbb737bc7d56c4597ecc.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/pickup_2_coast.wav.import b/game/assets/audio/vehicles/pickup_2_coast.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_2_coast.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://buinp5dwkeu6h"
++path="res://.godot/imported/pickup_2_coast.wav-70c38410bbac79737b8f2d390b397b5f.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_2_coast.wav"
++dest_files=["res://.godot/imported/pickup_2_coast.wav-70c38410bbac79737b8f2d390b397b5f.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/pickup_2_load.wav.import b/game/assets/audio/vehicles/pickup_2_load.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/pickup_2_load.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://ulhf8fvmmsja"
++path="res://.godot/imported/pickup_2_load.wav-196417b1e2b2963689426516c88b85aa.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/pickup_2_load.wav"
++dest_files=["res://.godot/imported/pickup_2_load.wav-196417b1e2b2963689426516c88b85aa.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/road.wav.import b/game/assets/audio/vehicles/road.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/road.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://cgtpq4arje8q4"
++path="res://.godot/imported/road.wav-b883ba8d792f318de22a3a17ca3bfffb.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/road.wav"
++dest_files=["res://.godot/imported/road.wav-b883ba8d792f318de22a3a17ca3bfffb.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/tire.wav.import b/game/assets/audio/vehicles/tire.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/tire.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://cfdh4n2b2wvue"
++path="res://.godot/imported/tire.wav-2c826026bd8f117370dc5d7ce93ada4e.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/tire.wav"
++dest_files=["res://.godot/imported/tire.wav-2c826026bd8f117370dc5d7ce93ada4e.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/water.wav.import b/game/assets/audio/vehicles/water.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/water.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://c3ov4bqfyvur"
++path="res://.godot/imported/water.wav-7ce2002612120005c7dedefd708b56f0.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/water.wav"
++dest_files=["res://.godot/imported/water.wav-7ce2002612120005c7dedefd708b56f0.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/assets/audio/vehicles/wind.wav.import b/game/assets/audio/vehicles/wind.wav.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/audio/vehicles/wind.wav.import
+@@ -0,0 +1,24 @@
++[remap]
++
++importer="wav"
++type="AudioStreamWAV"
++uid="uid://cprgceg8pjptd"
++path="res://.godot/imported/wind.wav-36f770e50bf3c00698ce2d2dc329d9f3.sample"
++
++[deps]
++
++source_file="res://assets/audio/vehicles/wind.wav"
++dest_files=["res://.godot/imported/wind.wav-36f770e50bf3c00698ce2d2dc329d9f3.sample"]
++
++[params]
++
++force/8_bit=false
++force/mono=false
++force/max_rate=false
++force/max_rate_hz=44100
++edit/trim=false
++edit/normalize=false
++edit/loop_mode=0
++edit/loop_begin=0
++edit/loop_end=-1
++compress/mode=0
+diff --git a/game/music/NOTICE.txt b/archive/retired-soundtrack-2026-10-06/game/music/NOTICE.txt
+similarity index 100%
+rename from game/music/NOTICE.txt
+rename to archive/retired-soundtrack-2026-10-06/game/music/NOTICE.txt
+diff --git a/game/music/beat_clock.gd b/archive/retired-soundtrack-2026-10-06/game/music/beat_clock.gd
+similarity index 100%
+rename from game/music/beat_clock.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/beat_clock.gd
+diff --git a/game/music/beat_clock.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/beat_clock.gd.uid
+similarity index 100%
+rename from game/music/beat_clock.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/beat_clock.gd.uid
+diff --git a/game/music/bin/.gitignore b/archive/retired-soundtrack-2026-10-06/game/music/bin/.gitignore
+similarity index 100%
+rename from game/music/bin/.gitignore
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/.gitignore
+diff --git a/game/music/bin/bmt_music_v6.windows.template_debug.x86_64.dll b/archive/retired-soundtrack-2026-10-06/game/music/bin/bmt_music_v6.windows.template_debug.x86_64.dll
+similarity index 100%
+rename from game/music/bin/bmt_music_v6.windows.template_debug.x86_64.dll
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/bmt_music_v6.windows.template_debug.x86_64.dll
+diff --git a/game/music/bin/bmt_music_v6.windows.template_release.x86_64.dll b/archive/retired-soundtrack-2026-10-06/game/music/bin/bmt_music_v6.windows.template_release.x86_64.dll
+similarity index 100%
+rename from game/music/bin/bmt_music_v6.windows.template_release.x86_64.dll
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/bmt_music_v6.windows.template_release.x86_64.dll
+diff --git a/game/music/bin/libbmt_music_v6.android.template_debug.arm64.so b/archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_debug.arm64.so
+similarity index 100%
+rename from game/music/bin/libbmt_music_v6.android.template_debug.arm64.so
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_debug.arm64.so
+diff --git a/game/music/bin/libbmt_music_v6.android.template_debug.x86_64.so b/archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_debug.x86_64.so
+similarity index 100%
+rename from game/music/bin/libbmt_music_v6.android.template_debug.x86_64.so
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_debug.x86_64.so
+diff --git a/game/music/bin/libbmt_music_v6.android.template_release.arm64.so b/archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_release.arm64.so
+similarity index 100%
+rename from game/music/bin/libbmt_music_v6.android.template_release.arm64.so
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_release.arm64.so
+diff --git a/game/music/bin/libbmt_music_v6.android.template_release.x86_64.so b/archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_release.x86_64.so
+similarity index 100%
+rename from game/music/bin/libbmt_music_v6.android.template_release.x86_64.so
+rename to archive/retired-soundtrack-2026-10-06/game/music/bin/libbmt_music_v6.android.template_release.x86_64.so
+diff --git a/game/music/bmt_music.gdextension b/archive/retired-soundtrack-2026-10-06/game/music/bmt_music.gdextension
+similarity index 100%
+rename from game/music/bmt_music.gdextension
+rename to archive/retired-soundtrack-2026-10-06/game/music/bmt_music.gdextension
+diff --git a/game/music/bmt_music.gdextension.uid b/archive/retired-soundtrack-2026-10-06/game/music/bmt_music.gdextension.uid
+similarity index 100%
+rename from game/music/bmt_music.gdextension.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/bmt_music.gdextension.uid
+diff --git a/game/music/driving_music_progress.gd b/archive/retired-soundtrack-2026-10-06/game/music/driving_music_progress.gd
+similarity index 100%
+rename from game/music/driving_music_progress.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/driving_music_progress.gd
+diff --git a/game/music/driving_music_progress.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/driving_music_progress.gd.uid
+similarity index 100%
+rename from game/music/driving_music_progress.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/driving_music_progress.gd.uid
+diff --git a/game/music/dynamic_music_controller.gd b/archive/retired-soundtrack-2026-10-06/game/music/dynamic_music_controller.gd
+similarity index 100%
+rename from game/music/dynamic_music_controller.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/dynamic_music_controller.gd
+diff --git a/game/music/dynamic_music_controller.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/dynamic_music_controller.gd.uid
+similarity index 100%
+rename from game/music/dynamic_music_controller.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/dynamic_music_controller.gd.uid
+diff --git a/game/music/grass.tres b/archive/retired-soundtrack-2026-10-06/game/music/grass.tres
+similarity index 100%
+rename from game/music/grass.tres
+rename to archive/retired-soundtrack-2026-10-06/game/music/grass.tres
+diff --git a/game/music/music_debug.gd b/archive/retired-soundtrack-2026-10-06/game/music/music_debug.gd
+similarity index 100%
+rename from game/music/music_debug.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_debug.gd
+diff --git a/game/music/music_debug.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/music_debug.gd.uid
+similarity index 100%
+rename from game/music/music_debug.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_debug.gd.uid
+diff --git a/game/music/music_profile.gd b/archive/retired-soundtrack-2026-10-06/game/music/music_profile.gd
+similarity index 100%
+rename from game/music/music_profile.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_profile.gd
+diff --git a/game/music/music_profile.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/music_profile.gd.uid
+similarity index 100%
+rename from game/music/music_profile.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_profile.gd.uid
+diff --git a/game/music/music_test.gd b/archive/retired-soundtrack-2026-10-06/game/music/music_test.gd
+similarity index 100%
+rename from game/music/music_test.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_test.gd
+diff --git a/game/music/music_test.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/music_test.gd.uid
+similarity index 100%
+rename from game/music/music_test.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_test.gd.uid
+diff --git a/game/music/music_test.tscn b/archive/retired-soundtrack-2026-10-06/game/music/music_test.tscn
+similarity index 100%
+rename from game/music/music_test.tscn
+rename to archive/retired-soundtrack-2026-10-06/game/music/music_test.tscn
+diff --git a/game/music/track_music_analyzer.gd b/archive/retired-soundtrack-2026-10-06/game/music/track_music_analyzer.gd
+similarity index 100%
+rename from game/music/track_music_analyzer.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/track_music_analyzer.gd
+diff --git a/game/music/track_music_analyzer.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/track_music_analyzer.gd.uid
+similarity index 100%
+rename from game/music/track_music_analyzer.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/track_music_analyzer.gd.uid
+diff --git a/game/music/trajectory_music_analyzer.gd b/archive/retired-soundtrack-2026-10-06/game/music/trajectory_music_analyzer.gd
+similarity index 100%
+rename from game/music/trajectory_music_analyzer.gd
+rename to archive/retired-soundtrack-2026-10-06/game/music/trajectory_music_analyzer.gd
+diff --git a/game/music/trajectory_music_analyzer.gd.uid b/archive/retired-soundtrack-2026-10-06/game/music/trajectory_music_analyzer.gd.uid
+similarity index 100%
+rename from game/music/trajectory_music_analyzer.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/music/trajectory_music_analyzer.gd.uid
+diff --git a/game/tests/test_music.gd b/archive/retired-soundtrack-2026-10-06/game/tests/test_music.gd
+similarity index 100%
+rename from game/tests/test_music.gd
+rename to archive/retired-soundtrack-2026-10-06/game/tests/test_music.gd
+diff --git a/game/tests/test_music.gd.uid b/archive/retired-soundtrack-2026-10-06/game/tests/test_music.gd.uid
+similarity index 100%
+rename from game/tests/test_music.gd.uid
+rename to archive/retired-soundtrack-2026-10-06/game/tests/test_music.gd.uid
+diff --git a/native/music/.gitignore b/archive/retired-soundtrack-2026-10-06/native/music/.gitignore
+similarity index 100%
+rename from native/music/.gitignore
+rename to archive/retired-soundtrack-2026-10-06/native/music/.gitignore
+diff --git a/native/music/SConstruct b/archive/retired-soundtrack-2026-10-06/native/music/SConstruct
+similarity index 100%
+rename from native/music/SConstruct
+rename to archive/retired-soundtrack-2026-10-06/native/music/SConstruct
+diff --git a/native/music/audition_bank.cpp b/archive/retired-soundtrack-2026-10-06/native/music/audition_bank.cpp
+similarity index 100%
+rename from native/music/audition_bank.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/audition_bank.cpp
+diff --git a/native/music/audition_v2.hpp b/archive/retired-soundtrack-2026-10-06/native/music/audition_v2.hpp
+similarity index 100%
+rename from native/music/audition_v2.hpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/audition_v2.hpp
+diff --git a/native/music/extension.cpp b/archive/retired-soundtrack-2026-10-06/native/music/extension.cpp
+similarity index 100%
+rename from native/music/extension.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/extension.cpp
+diff --git a/native/music/modular_bank.hpp b/archive/retired-soundtrack-2026-10-06/native/music/modular_bank.hpp
+similarity index 100%
+rename from native/music/modular_bank.hpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/modular_bank.hpp
+diff --git a/native/music/profile.json b/archive/retired-soundtrack-2026-10-06/native/music/profile.json
+similarity index 100%
+rename from native/music/profile.json
+rename to archive/retired-soundtrack-2026-10-06/native/music/profile.json
+diff --git a/native/music/render_audition.cpp b/archive/retired-soundtrack-2026-10-06/native/music/render_audition.cpp
+similarity index 100%
+rename from native/music/render_audition.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/render_audition.cpp
+diff --git a/native/music/render_ensemble.cpp b/archive/retired-soundtrack-2026-10-06/native/music/render_ensemble.cpp
+similarity index 100%
+rename from native/music/render_ensemble.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/render_ensemble.cpp
+diff --git a/native/music/rock_audition.cpp b/archive/retired-soundtrack-2026-10-06/native/music/rock_audition.cpp
+similarity index 100%
+rename from native/music/rock_audition.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/rock_audition.cpp
+diff --git a/native/music/synth.hpp b/archive/retired-soundtrack-2026-10-06/native/music/synth.hpp
+similarity index 100%
+rename from native/music/synth.hpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/synth.hpp
+diff --git a/native/music/test_synth.cpp b/archive/retired-soundtrack-2026-10-06/native/music/test_synth.cpp
+similarity index 100%
+rename from native/music/test_synth.cpp
+rename to archive/retired-soundtrack-2026-10-06/native/music/test_synth.cpp
+diff --git a/scripts/build_music.ps1 b/archive/retired-soundtrack-2026-10-06/scripts/build_music.ps1
+similarity index 100%
+rename from scripts/build_music.ps1
+rename to archive/retired-soundtrack-2026-10-06/scripts/build_music.ps1

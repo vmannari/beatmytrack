@@ -1,0 +1,497 @@
+diff --git a/scripts/build_vehicle_audio.py b/scripts/build_vehicle_audio.py
+--- a/scripts/build_vehicle_audio.py
++++ b/scripts/build_vehicle_audio.py
+@@ -5,7 +5,12 @@
+ import math
+ import struct
+ import wave
++import argparse
+ import numpy as np
++
++parser = argparse.ArgumentParser(description=__doc__)
++parser.add_argument("--compact-only", action="store_true", help="Rebuild only the compact's six engine loops")
++args = parser.parse_args()
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ SOURCE = ROOT / "build/vehicle_audio_sources"
+@@ -138,18 +143,24 @@
+     outputs.append({"file":target.name,"sources":used,"loop":looping,"seconds":len(values)/RATE,"rms_dbfs":20*math.log10(max(np.sqrt(np.mean(values*values)),1e-9)),"peak_dbfs":20*math.log10(max(np.max(np.abs(values)),1e-9)),"seam_step":float(abs(values[0]-values[-1])) if looping else None,"sha256":hashlib.sha256(target.read_bytes()).hexdigest()})
+ 
+ 
+-car_low = "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
+-car_mid = "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+-car_front = "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
+ truck_low = "Vehicle_Truck_Idle_Exterior_Rear_Loop_Stereo_01.wav"
+ truck_mid = "Vehicle_Truck_Drive_Exterior_Loop_Stereo_01.wav"
+ profiles = {
+-    "compact": [(car_low,1.0,0),(car_mid,1.05,0),(car_front,1.8,0)],
+     "pickup": [(truck_low,.90,.45),(truck_mid,.85,.45),(truck_mid,1.45,.35)],
+     "classic": [("0534.wav",1.0,.25),("0534.wav",1.55,.2),("0534.wav",2.3,.15)],
+     "formula": [("0290.wav",1.2,0),("0290.wav",1.9,0),("0290.wav",2.9,0)],
+     "kart": [("0281.wav",1.0,-.15),("0281.wav",1.6,-.15),("0281.wav",2.25,-.15)],
+ }
++from compact_audio_mastering import render as render_compact
++render_compact(read, steady, filter_audio, transpose, write)
++if args.compact_only:
++    manifest = json.loads((OUT / "manifest.json").read_text(encoding="utf-8"))
++    replaced = {item["file"] for item in outputs}
++    manifest["outputs"] = [next(new for new in outputs if new["file"] == item["file"]) if item["file"] in replaced else item for item in manifest["outputs"]]
++    manifest["compact_revision"] = "engine-1"
++    (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
++    print(json.dumps({"compact_clips":len(outputs),"bytes":sum((OUT / item["file"]).stat().st_size for item in outputs)},indent=2))
++    raise SystemExit(0)
+ for car, layers in profiles.items():
+     for index, (source,pitch,warmth) in enumerate(layers):
+         values = transpose(filter_audio(steady(read(source)),high=min(9000,19000/pitch)),pitch)
+@@ -203,6 +214,6 @@
+ render(read, steady, filter_audio, transpose, write, RATE)
+ replaced = {item["file"] for item in outputs}
+ outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
+-manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
++manifest = {"schema":"vehicle-audio-bank-v1","revision":"wet-road-7","compact_revision":"engine-1","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+ (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
+ print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -229,7 +229,9 @@
+ 	if model.shift_remaining>0.0: engine_level *= 0.56
+ 	engine_envelope = lerpf(engine_envelope,engine_level,1.0-exp(-dt*22.0))
+ 	for i: int in range(3):
+-		var pitch: float = clampf(model.rpm/model.anchors[i],0.55,1.85)
++		# Compact recordings share a calibrated pulse rate. Allow the full 2.5x
++		# anchor overlap so the fading lower loop doesn't flatten before the next.
++		var pitch: float = clampf(model.rpm/model.anchors[i],0.4,2.55) if model.vehicle_id=="compact" else clampf(model.rpm/model.anchors[i],0.55,1.85)
+ 		engine_load[i].pitch_scale = pitch
+ 		engine_coast[i].pitch_scale = pitch
+ 		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*sqrt(load_blend)*engine_envelope))
+diff --git a/game/assets/audio/vehicles/manifest.json b/game/assets/audio/vehicles/manifest.json
+--- a/game/assets/audio/vehicles/manifest.json
++++ b/game/assets/audio/vehicles/manifest.json
+@@ -221,11 +221,11 @@
+         "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.0999773242630386,
+-      "rms_dbfs": -17.087467064029145,
+-      "peak_dbfs": -1.5144142787623671,
+-      "seam_step": 0.02840411466289533,
+-      "sha256": "f198cad3d0d4aacc153dc11aa6368688d026bca133fc36dbaafea5cea7629b1d"
++      "seconds": 3.474988662131519,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -1.9224473444264927,
++      "seam_step": 0.01419282323681409,
++      "sha256": "adab74a80fd0e8af364dab52b811c8e2ada6699abd5a82dcd0b94ef3c7c4c14c"
+     },
+     {
+       "file": "compact_0_coast.wav",
+@@ -233,11 +233,11 @@
+         "Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 3.0999773242630386,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -4.053950403627155,
+-      "seam_step": 0.020726847270415294,
+-      "sha256": "7a0453cee79ec320aa2c6d0644a80892b55dd72769b43abc27ffea05cbb8e0e5"
++      "seconds": 3.474988662131519,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -4.479984949459365,
++      "seam_step": 0.005613804924196147,
++      "sha256": "5679c54af0ac5a38094d81df70c6eb77f899a8606331d02f1ea4c5f6c29de640"
+     },
+     {
+       "file": "compact_1_load.wav",
+@@ -245,11 +245,11 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 2.947619047619048,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -6.577552652660641,
+-      "seam_step": 0.0028666210822502203,
+-      "sha256": "852098f8d6df015f55e6c4b0a0b88fb58ad650c5bd027dab400b926d9dffc4aa"
++      "seconds": 1.57,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -7.715423218227891,
++      "seam_step": 0.015866534049652863,
++      "sha256": "5160374e42910de5877a4fe3545eb88988820ca732ea6c97762e7e12bd3bd864"
+     },
+     {
+       "file": "compact_1_coast.wav",
+@@ -257,35 +257,35 @@
+         "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
+       ],
+       "loop": true,
+-      "seconds": 2.947619047619048,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -9.420089175261419,
+-      "seam_step": 0.00916351911791484,
+-      "sha256": "e53aa4eff200f8c46a74e6a5c93fa290d51a6ff424db665c8da8c8ef4bb33f9a"
++      "seconds": 1.57,
++      "rms_dbfs": -19.172146296835496,
++      "peak_dbfs": -10.898662587931934,
++      "seam_step": 0.015256007173648056,
++      "sha256": "3cf3db5ed1c28526721021183fa7d80359248480c8418b7524f1c51f8dcd3720"
+     },
+     {
+       "file": "compact_2_load.wav",
+       "sources": [
+-        "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.6777777777777778,
+-      "rms_dbfs": -17.07743928643524,
+-      "peak_dbfs": -5.707067320429783,
+-      "seam_step": 0.002169868907489325,
+-      "sha256": "80e0ccbc58c9bf54c76e35c35dab8e1582d74ea131e2dc968b66eb4791e3493f"
++        "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 0.7350113378684807,
++      "rms_dbfs": -17.07743928643524,
++      "peak_dbfs": -8.753276845072328,
++      "seam_step": 0.002526353390628386,
++      "sha256": "d48062e9656b9d0e1a304b8d76ae5c038c966fe1cce96ad4d92d55b5583e6f7f"
+     },
+     {
+       "file": "compact_2_coast.wav",
+       "sources": [
+-        "Vehicle_Car_Engine_2000_RPM_Front_Exterior_Loop_Mono.wav"
+-      ],
+-      "loop": true,
+-      "seconds": 1.6777777777777778,
+-      "rms_dbfs": -19.1721462968355,
+-      "peak_dbfs": -7.320810758582644,
+-      "seam_step": 0.004081573537727104,
+-      "sha256": "6319bd335569548236ce7567b0c2633abb767fce25a59aa1243e308bf72f88bd"
++        "Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav"
++      ],
++      "loop": true,
++      "seconds": 0.7350113378684807,
++      "rms_dbfs": -19.1721462968355,
++      "peak_dbfs": -11.949698638045678,
++      "seam_step": 0.0004782032219808746,
++      "sha256": "aa11e083ae2d0f03b11621c5e92535ff5f43888491ac625a8e372b49d6fbfe84"
+     },
+     {
+       "file": "pickup_0_load.wav",
+@@ -779,5 +779,6 @@
+       "seam_step": null,
+       "sha256": "7c2278b0420e171ab6b51a7611377f8d600b188dcf1b777ba3f87f4c00cdc4b9"
+     }
+-  ]
++  ],
++  "compact_revision": "engine-1"
+ }
+diff --git a/game/assets/audio/vehicles/NOTICE.txt b/game/assets/audio/vehicles/NOTICE.txt
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -76,3 +76,12 @@
+ follows speed and four-wheel asphalt contact; no continuous storm rain audio.
+ Source/derivative filenames and SHA-256 values: manifest.json.
+ All sources are local build inputs. The game makes no audio-generation/API calls.
++
++Compact engine revision 1, 2026-10-10: only compact_0/1/2_load/coast.wav are
++revoiced from the existing Nox CC0 1000/2000 RPM rear-exterior recordings.
++Measured repeating engine orders are transposed to 40/100/200 Hz at the
++1200/3000/6000 playback anchors, with warmer low/mid equalization, restrained
++high-frequency detail and quieter coast variants. The front-exterior high
++layer is replaced by the matching rear-exterior perspective. Offline filtering,
++loop crossfades, headroom mastering and deterministic dither remain. No new
++recording, licence or exact-engine reproduction claim is introduced.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
++
+ 2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.
+ 
+ 2026-10-10 MLOAD04/HOPT03-HOPT05/B05/B07/R01/Q01/TD06/TD08: owner explicitly approves backend deployment. Fresh backup1791631372709; exact tested d16a4a17 image/API-worker-migrate-smoke-catalog updated; additive schema0021-0023/config hashes/114 canonical files preserved. Migration job correctly left980 artificial fields pending; matching gated worker warmed all fields before API switch, no bypass/assertion change. Live27-track counts/retained frames/private404 and native44 pass; smoke12757 canonical+trajectory ticks/1.988ms/zero acceptance engine calls/2 diagnostic objects/zero player writes, servicesReady. Server comparison handler median30.32ms; external standalone292-358ms/health335ms remains variable, no established whole-HTTP speedup or instant-response claim. No PB reset/reseed/resource resize/production/device/phone check/APK/fullValidate; app-side fixes still require a client build. Actual commands/receipts/deployment-only checkpoint and remaining network/device acceptance: docs/MENU_LOADING_SPEED_2026_10_10.md (Approved development rollout).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND33/SND02-SND03/SND05-SND06/G01/R01/Q01: compact engine first improvement uses existing pinned CC0 rear recordings, matched40/100/200Hz orders at1200/3000/6000 sound RPM, warmer/softer voicing and compact-only0.4-2.55 pitch overlap. Six WAVs1019856bytes changed; other41 hashes exact, repeat build identical. Pinned native before/after wraps/no dropouts/paused-zero review, vehicle1446 and rewind61 pass; exact960-tick simulation retained. Restricted log/certificate failures corrected with normal Windows access. No phone attachment check/device listening/export-install/fullValidate/backend/deploy; owner tone and real-drive acceptance open. Files/commands/audio/scoped checkpoint: docs/COMPACT_AUDIO.md.
++
+ 2026-10-10 SC01-SC04/B05/B07/R01/Q01/TD06/TD08: backend scalability review consolidates health recent metrics10-to7SQL, adds arrival/worker-date indexes, coalesces routine heartbeat diagnostics (critical builds/lifecycle immediate), and restricts stored-hist invalidation to affected version/car/private reset region. OwnedPG100000attempts/10000oldworkers health median14.94-to11.37ms; one record400-to2invalidations; simulated100jobs heartbeat900-to3SQL (not total throughput). Capacity lab now prepares stored snapshots and uses service background worker. Final SQLite105(2skip)/fixture-load4/heartbeat8/Ruff pass; initial PG72pass/legacy fresh-hist fixture1failure then correctedPG1/final blocked-write shutdown4 pass; owned containers removed. Dry retention fixture selects slower overall attempt with flyingPB19 vsracePB20, no prune applied; durablelap/publicpopularity/group-revision/smaller-upload work prioritized, not implemented here. No live migration/deploy/player-write/UI/physics change, phone attachment/device test/export/fullValidate. Schema0023 depends pending0021-0022; prior broad failures remain. Files/commands/plans/receipts/scoped checkpoint/host-load acceptance: docs/BACKEND_SCALABILITY_2026_10_10.md.
+ 
+ 2026-10-10 MLOAD04/HOPT03-HOPT05/B05/B07/R01/Q01/TD06/TD08: owner explicitly approves backend deployment. Fresh backup1791631372709; exact tested d16a4a17 image/API-worker-migrate-smoke-catalog updated; additive schema0021-0023/config hashes/114 canonical files preserved. Migration job correctly left980 artificial fields pending; matching gated worker warmed all fields before API switch, no bypass/assertion change. Live27-track counts/retained frames/private404 and native44 pass; smoke12757 canonical+trajectory ticks/1.988ms/zero acceptance engine calls/2 diagnostic objects/zero player writes, servicesReady. Server comparison handler median30.32ms; external standalone292-358ms/health335ms remains variable, no established whole-HTTP speedup or instant-response claim. No PB reset/reseed/resource resize/production/device/phone check/APK/fullValidate; app-side fixes still require a client build. Actual commands/receipts/deployment-only checkpoint and remaining network/device acceptance: docs/MENU_LOADING_SPEED_2026_10_10.md (Approved development rollout).
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -160,3 +160,5 @@
+ 
+ 
+ Owner-supplied bass-enhanced thunder (2026-10-10): active `game/assets/audio/storm_thunder.wav` now derives from the explicitly supplied `freesound_community-thunder-big-wav-29190.mp3`. Filename attribution: freesound_community; licence metadata not supplied, no previous CC0 licence inherited. Source12b96eaa/decoded49115978/derivative768b2f76 pinned in shipping manifest. Original untouched; full16.056s buildup/clap/tail, mono44.1kHz PCM,+6dB bass shelf below180Hz/25Hz cleanup/soft peak control/level matching/short edge fades. Source copies/old masters and licences outside exports. Actual spectral/native output checks and scope: `docs/WET_ROAD_AUDIO.md` (owner bass). No purchase/runtime AI or new dependency.
++
++Compact engine revision 1 (2026-10-10): six compact load/coast WAVs use the existing Nox Sound Design CC0 rear-exterior masters. Engine-order calibration, low/mid warmth, restrained high detail, looping and deterministic PCM mastering; high layer now uses the same rear perspective. Other 41 vehicle WAV hashes remain exact. No new source/licence/service. Shipping NOTICE/manifest retain provenance and new derivative hashes. Actual native before/after audition, commands, tests and owner/device listening limits: `docs/COMPACT_AUDIO.md`.
+diff --git a/scripts/compact_audio_mastering.py b/scripts/compact_audio_mastering.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/compact_audio_mastering.py
+@@ -0,0 +1,21 @@
++"""Compact-only engine voicing from the existing pinned CC0 recordings."""
++
++# Strongest repeating low engine order in the selected 3.2 s source regions.
++# Match that order at every playback anchor; source filename RPM is approximate.
++LAYERS = (
++    ("Vehicle_Car_Engine_1000_RPM_Rear_Exterior_Loop_Mono.wav", 44.6875, 40.0, .18, 4800),
++    ("Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav", 52.1875, 100.0, .38, 5200),
++    ("Vehicle_Car_Engine_2000_RPM_Rear_Exterior_Loop_Mono.wav", 52.1875, 200.0, .48, 5600),
++)
++
++
++def render(read, steady, filter_audio, transpose, write):
++    for index, (source, recorded_order, target_order, warmth, high) in enumerate(LAYERS):
++        factor = target_order / recorded_order
++        # Bound source bandwidth before resampling. The rear recording supplies
++        # both moving-speed layers, avoiding the old rear/front tonal switch.
++        recorded = filter_audio(steady(read(source)), low=25, high=min(8500, 18000 / factor))
++        voiced = filter_audio(transpose(recorded, factor), low=25, high=high, warmth=warmth)
++        write(f"compact_{index}_load", voiced, [source])
++        # Preserve the same engine order on lift-off; reduce bright exhaust detail.
++        write(f"compact_{index}_coast", filter_audio(voiced, low=25, high=2400, warmth=.12), [source], rms=.11)
+diff --git a/scripts/review_compact_audio.py b/scripts/review_compact_audio.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_compact_audio.py
+@@ -0,0 +1,69 @@
++"""Review matched native engine captures, continuity and compact-only asset scope."""
++from pathlib import Path
++import hashlib
++import json
++import math
++import wave
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/compact-audio-2026-10-10"
++BANK = ROOT / "game/assets/audio/vehicles"
++
++
++def read(path):
++    with wave.open(str(path)) as handle:
++        rate, channels = handle.getframerate(), handle.getnchannels()
++        values = np.frombuffer(handle.readframes(handle.getnframes()), "<i2").astype(float) / 32768
++    return values.reshape(-1, channels), rate
++
++
++def db(value):
++    return 20 * math.log10(max(float(value), 1e-12))
++
++
++before = json.loads((OUT / "before-bank-hashes.json").read_text())
++current = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in BANK.glob("*.wav")}
++assert set(current) == set(before), "Do not add/remove unrelated clips"
++changed = [name for name in current if current[name] != before[name]]
++assert len(changed) == 6 and all(name.startswith("compact_") for name in changed), changed
++layers = []
++for path in sorted(BANK.glob("compact_*.wav")):
++    values, rate = read(path)
++    x = values[:, 0]
++    frequencies = np.fft.rfftfreq(len(x), 1 / rate)
++    power = abs(np.fft.rfft(x * np.hanning(len(x))))
++    target = (40, 100, 200)[int(path.stem.split("_")[1])]
++    band = (frequencies > target * .9) & (frequencies < target * 1.1)
++    order = float(frequencies[band][np.argmax(power[band])])
++    blocks = [np.sqrt(np.mean(block**2)) for block in np.array_split(x, max(1, len(x) // 882))]
++    assert abs(order - target) < 1.5, (path.name, order)
++    assert max(abs(x)) < .841 and min(blocks) > .001, path.name
++    layers.append({"file": path.name, "seconds": len(x) / rate, "engine_order_hz": order,
++                   "target_order_hz": target, "peak_dbfs": db(max(abs(x))), "minimum_20ms_rms": float(min(blocks))})
++
++captures = []
++for variant in ("before", "after"):
++    values, rate = read(OUT / f"compact-{variant}.wav")
++    assert len(values) / rate > 18.5
++    assert .03 < np.max(abs(values)) < .9
++    assert np.max(abs(values[-rate // 2:])) == 0, "Paused tail must be exactly silent"
++    segments = {}
++    for name, start, end in (("idle", .5, 1.7), ("acceleration", 2.5, 7.8), ("cruise", 8.5, 11.5), ("coast", 12.5, 15.5), ("rev", 16.5, 17.5)):
++        region = values[round(start * rate):round(end * rate)]
++        blocks = [np.sqrt(np.mean(block**2)) for block in np.array_split(region, max(1, len(region) // 882))]
++        assert min(blocks) > max(.0003, np.median(blocks) * .04), (variant, name, "audio dropout")
++        segments[name] = {"rms_dbfs": db(np.sqrt(np.mean(region**2))), "minimum_20ms_rms": float(min(blocks))}
++    telemetry = json.loads((OUT / f"{variant}-telemetry.json").read_text())
++    assert telemetry["failures"] == 0 and min(telemetry["wraps"]) >= 2
++    captures.append({"variant": variant, "seconds": len(values) / rate, "peak_dbfs": db(np.max(abs(values))),
++                     "paused_tail_peak": 0, "observed_wraps": telemetry["wraps"], "segments": segments})
++report = {"changed_clips": changed, "unchanged_clips": len(current) - len(changed), "layers": layers, "captures": captures}
++(OUT / "review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++cards = "".join(f'<article><h2>{variant.capitalize()}</h2><audio controls preload="metadata" src="compact-{variant}.wav"></audio></article>' for variant in ("before", "after"))
++page = '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Compact engine audition</title>
++<style>body{background:#101b27;color:#eee5d6;font:17px/1.5 system-ui;margin:0}main{max-width:760px;margin:44px auto;padding:24px}article{background:#1a2938;border:1px solid #425163;padding:22px;border-radius:12px;margin:20px 0}h2{color:#ffd667}audio{width:100%}small{color:#b4bfcc}</style>
++<main><h1>Compact engine audition</h1><p>Matched recordings from the actual Godot engine bus. Idle 0–2s; acceleration and shifts 2–8s; cruise 8–12s; lift-off 12–16s; stationary rev 16–18s; pause 18–19s.</p>'''+cards+'''<small>Engine recordings: Nox Sound Design, Essentials Series, CC0. Transposed, filtered, loop-crossfaded and mastered for a fictional compact car. These engine-only previews contain no tires, weather, impacts or music. Phone listening remains untested.</small></main>
++<script>document.querySelectorAll('audio').forEach(p=>p.addEventListener('play',()=>document.querySelectorAll('audio').forEach(q=>{if(q!==p)q.pause()})))</script></html>'''
++(OUT / "audition.html").write_text(page, encoding="utf-8")
++print(json.dumps({"changed_clips": len(changed), "unchanged_clips": len(current)-len(changed), "captures": [{"variant": c["variant"], "peak_dbfs": c["peak_dbfs"], "paused_tail_peak": c["paused_tail_peak"]} for c in captures]}, indent=2))
+diff --git a/game/tests/capture_compact_audio.gd b/game/tests/capture_compact_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_compact_audio.gd
+@@ -0,0 +1,78 @@
++extends SceneTree
++## Matched native-mixer audition; synthetic driving states, no player records.
++const OUTPUT: String = "res://../docs/evidence/compact-audio-2026-10-10"
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless":
++		push_error("Use TestScript -Graphical for the real audio mixer")
++		quit(1)
++		return
++	var variant: String = "after"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--variant="): variant = argument.trim_prefix("--variant=")
++	if variant not in ["before","after"]:
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var bus: int = AudioServer.get_bus_index("Engine")
++	var recorder := AudioEffectRecord.new()
++	recorder.format = AudioStreamWAV.FORMAT_16_BITS
++	AudioServer.add_bus_effect(bus,recorder)
++	var audio := VehicleAudio.new()
++	root.add_child(audio)
++	audio.configure("compact",VehicleCatalog.config("compact"))
++	var state := VehicleState.new()
++	var elapsed: float = 0.0
++	var previous_us: int = Time.get_ticks_usec()
++	var wraps: Array[int] = [0,0,0,0,0,0]
++	var positions: Array[float] = [0,0,0,0,0,0]
++	var telemetry: Array[Dictionary] = []
++	recorder.set_recording_active(true)
++	while elapsed<19.0:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		var dt: float = float(now-previous_us)/1000000.0
++		previous_us = now
++		elapsed += dt
++		state.tick += 1
++		# Idle 0-2; acceleration 2-8; cruise 8-12; coast 12-16;
++		# stationary rev 16-18; exact pause 18-19.
++		var speed: float = 0.0
++		if elapsed>=2.0 and elapsed<8.0: speed = 43.0*(elapsed-2.0)/6.0
++		elif elapsed>=8.0 and elapsed<12.0: speed = 43.0
++		elif elapsed>=12.0 and elapsed<16.0: speed = 43.0*(16.0-elapsed)/4.0
++		state.velocity = Vector2(0,speed)
++		var pedal: float = 0.0
++		if elapsed>=2.0 and elapsed<8.0: pedal = 1.0
++		elif elapsed>=8.0 and elapsed<12.0: pedal = 0.65
++		elif elapsed>=16.0 and elapsed<18.0: pedal = 0.55
++		var canonical: Array = state.snapshot()
++		audio.present(state,DriveFrame.sample(0,pedal,0),null,dt,elapsed>=18.0)
++		if state.snapshot()!=canonical:
++			failures += 1
++		var players: Array[AudioStreamPlayer] = audio.engine_load+audio.engine_coast
++		for index: int in range(players.size()):
++			var position: float = players[index].get_playback_position()
++			if position+0.1<positions[index]: wraps[index] += 1
++			positions[index] = position
++		if telemetry.is_empty() or elapsed-float(telemetry[-1].seconds)>=0.1:
++			telemetry.append({"seconds":elapsed,"speed":speed,"rpm":audio.model.rpm,"gear":audio.model.gear,"load":audio.model.load_amount})
++	recorder.set_recording_active(false)
++	var recording: AudioStreamWAV = recorder.get_recording()
++	if recording==null or recording.get_length()<18.5:
++		failures += 1
++	elif recording.save_to_wav(OUTPUT.path_join("compact-"+variant+".wav"))!=OK:
++		failures += 1
++	for count: int in wraps:
++		if count<2: failures += 1
++	var file := FileAccess.open(OUTPUT.path_join(variant+"-telemetry.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"samples":telemetry,"wraps":wraps,"failures":failures},"\t"))
++	file.close()
++	audio.free()
++	AudioServer.remove_bus_effect(bus,AudioServer.get_bus_effect_count(bus)-1)
++	print("COMPACT_AUDIO_CAPTURE: ",variant," wraps=",wraps," failures=",failures)
++	quit(1 if failures>0 else 0)
+diff --git a/game/tests/capture_compact_audio.gd.uid b/game/tests/capture_compact_audio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_compact_audio.gd.uid
+@@ -0,0 +1 @@
++uid://b2sw4x8uaccl0
+diff --git a/docs/COMPACT_AUDIO.md b/docs/COMPACT_AUDIO.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COMPACT_AUDIO.md
+@@ -0,0 +1,74 @@
++# Compact engine improvement — 2026-10-10
++
++Owner request: improve the compact car sounds. The first local slice addresses
++the engine's character and acceleration transitions. Owner preference and
++listening acceptance remain open; no other vehicle or surface/impact sound is
++changed. Requirements: **SND33** compact-specific coherent engine layers;
++**SND02–SND03** authored banks/presentation-only drivetrain; **SND05–SND06**
++lifecycle, headroom and provenance; **G01/R01/Q01** canonical separation and checks.
++
++The old compact bank mixes rear recordings with a front recording at high revs.
++Its strongest repeating engine order differs across playback anchors, and the
++shared 1.85 pitch cap flattens the low layer before its crossfade finishes.
++The six revised recordings use the existing pinned Nox CC0 rear-exterior masters,
++with measured engine orders of 40/100/200 Hz at 1200/3000/6000 sound-model RPM.
++Warm low/mid voicing and reduced high-frequency detail target a fuller, less harsh
++engine. Coasting retains the same order with less bright detail. Compact-only
++0.4–2.55 pitch bounds cover the full adjacent-anchor crossfade; other cars retain
++their previous bounds. Gears, response/envelopes, audio buses, controls, physics,
++timing, camera, weather, tires and collisions remain unchanged.
++
++[Listen to the matched native before/after recordings](evidence/compact-audio-2026-10-10/audition.html).
++Each 19-second engine-bus capture contains idle, acceleration through gears,
++cruise, lift-off, stationary rev and pause. These use synthetic presentation
++states rather than a completed race. They exclude tire, impact, weather and music
++voices. The actual mixer observed at least eight loop wraps per original voice
++and eleven per revised voice; no tested segment drops out. Both last half-seconds
++are exactly silent. Peak changes from -8.041 to -10.229 dBFS; cruising RMS is
++-20.43 versus -20.31 dBFS, so this does not simply raise overall engine volume.
++Numerical results: [review.json](evidence/compact-audio-2026-10-10/review.json).
++
++Changed files: `game/vehicle/vehicle_audio.gd`; six `compact_*_load/coast.wav`
++and their lossless imports; bank `manifest.json` and `NOTICE.txt`;
++`scripts/build_vehicle_audio.py`, `compact_audio_mastering.py`,
++`review_compact_audio.py`; `game/tests/capture_compact_audio.gd` and its generated
++UID; this document, `licenses/ASSETS.md`, `DEVELOPMENT_STATUS.md` and
++`docs/PHASE_0_PLAN.md`; task evidence. Six revised WAVs total 1,019,856 bytes.
++All other **41 WAV SHA-256 values match** the saved baseline. Existing source
++licences and hashes are unchanged; shipping credits describe the edits. No new
++service, download, purchase or runtime dependency is added.
++
++Actual commands (pinned `4.7.2.stable.official.ed1daf0bf` via `scripts/dev.ps1`):
++
++| Command | Actual result |
++| --- | --- |
++| `python scripts/build_vehicle_audio.py --compact-only` | Six compact loops rebuilt; manifest updated without regenerating other clips. |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import` | Exit 0 with normal Windows certificate-store access. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/capture_compact_audio.gd -Graphical -TestArgument '--variant=before'` | Native engine-bus recording, wraps `[10,8,8,10,8,8]`, zero failures. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/capture_compact_audio.gd -Graphical -TestArgument '--variant=after'` | Native engine-bus recording, wraps `[11,17,19,11,17,19]`, zero failures; state snapshots unchanged by presentation. |
++| `… dev.ps1 TestScript -ScriptPath res://tests/test_vehicle_audio.gd` | **1,446 checks, zero failures**; bank hashes/format/headroom, drivetrain/lifecycle, actual contacts and exact 960-tick simulation equivalence. |
++| `… dev.ps1 TestRewind` | **61 checks, zero failures**. |
++| `python scripts/review_compact_audio.py` | Matched captures audible/unclipped, no measured segment dropout, silent paused tails, calibrated asset orders and six-only asset scope pass. |
++| Repeat `python scripts/build_vehicle_audio.py --compact-only`, compare complete bank hashes | **47/47 WAV hashes identical** to the first revised build. |
++| `git diff --check -- scripts/build_vehicle_audio.py game/vehicle/vehicle_audio.gd game/tests/capture_compact_audio.gd scripts/compact_audio_mastering.py scripts/review_compact_audio.py` | Exit 0. |
++| `git apply --reverse --check --ignore-whitespace docs/evidence/compact-audio-2026-10-10/scoped-change.patch` | Exit 0; task-only text checkpoint applies in reverse to this workspace. |
++
++The initial restricted native capture could not open the user log and exited 1;
++the restricted import hit certificate-store access denial and exited 1. Both were
++rerun successfully with ordinary Windows audio/certificate access. Original
++failed/successful launcher logs are retained under the task evidence. The first
++permitted shell also reported an execution-policy refusal for the user's shell
++profile; the explicit `-NoProfile` launcher still completed its capture. Later
++commands disabled shell profile loading.
++
++No visible UI changed; playable audio is the presentation evidence. No phone
++attachment check, phone/tablet listening or performance test, Android export or
++install, full Validate, backend operation or deployment was performed. Remaining
++acceptance: owner engine-character preference and before/after listening;
++phone speaker/headphone balance; real prolonged driving across biomes, repeated
++shifts, focus changes, retry and rewind. Calibrated layers and automated checks
++do not establish acoustic realism or subjective sound quality.
++
++The mixed workspace is preserved. Task-only Git-format patch and artifact hashes
++live under `docs/evidence/compact-audio-2026-10-10/`; no shared-index or commit
++operation is required for this review checkpoint.

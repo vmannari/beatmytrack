@@ -1,0 +1,54 @@
+diff --git a/game/track/surface_detail.gdshaderinc b/game/track/surface_detail.gdshaderinc
+index 30f68aa9..da3d67ea 100644
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -86,14 +86,13 @@ vec3 sand_detail(vec3 base, vec2 p) {
+ 	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
+ }
+ 
+-// Coarse desert roadside gravel, distinct from both compacted road and dunes.
++// Fine mineral grain on an even sandy bank, distinct from the smooth road.
+ vec3 desert_shoulder(vec3 base, vec2 p) {
+ 	vec3 grit = texture(desert_apron,p/6.0).rgb;
+-	float deposits = texture(surface_factors,p/38.0+vec2(0.29,0.61)).g;
+-	// Quiet granular apron rather than a dark gravel outline.
+-	// Patchy pale deposits, rather than a continuous dark perimeter ribbon.
+-	float deposit_weight = mix(0.42,0.88,smoothstep(0.30,0.70,deposits));
+-	return mix(base*1.045,grit*vec3(0.69,0.70,0.72),deposit_weight)*(0.97+deposits*0.07);
++	// Remove the artwork's broad pigment patches while retaining fine grit.
++	// Mip-filtered local colour is subtracted, not painted as another deposit mask.
++	vec3 local_sand = texture(desert_apron,p/6.0,5.0).rgb;
++	return max(base*0.96+(grit-local_sand)*0.65,vec3(0.0));
+ }
+ 
+ // Shared world-space baked asphalt. Random repair/crack shapes are removed;
+diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index 55706402..87ffc0c0 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -66,15 +66,9 @@ void fragment() {
+ 		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
+ 		// Reuse the grass/sand shoulder's settled + broken fringe blend.
+ 		// Remap it across a wider band, retaining texture through the transition.
+-		float sand_edge = mix(0.46,1.06,UV.y)+(breakup-0.5)*0.25*4.0*UV.y*(1.0-UV.y);
++		float sand_edge = mix(0.48,1.04,UV.y)+(breakup-0.5)*0.12*4.0*UV.y*(1.0-UV.y);
+ 		float asphalt_coverage = packed_sand ? 1.0-shoulder_fringe(sand_edge,world_position.xz) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+ 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
+-		if (packed_sand) {
+-			// Mineral flecks survive inside the join instead of dissolving into haze.
+-			float grit = texture(surface_factors,world_position.xz/8.0).r;
+-			float edge_grit = smoothstep(0.58,0.76,grit)*asphalt_coverage*(1.0-asphalt_coverage);
+-			asphalt_coverage = clamp(asphalt_coverage-edge_grit*0.55,0.0,1.0);
+-		}
+ 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+ 		wet_coverage *= asphalt_coverage;
+ 	}
+@@ -109,7 +103,7 @@ void fragment() {
+ 			ALBEDO *= 1.0-contact*0.025;
+ 			if (UV.x < -0.5) { ALBEDO *= 1.08-smoothstep(0.02,0.5,bank_slope)*0.20; }
+ 		}
+-		float fringe = (packed_sand ? smoothstep(0.48,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.30) : (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);
++		float fringe = (packed_sand ? smoothstep(0.40,1.0,UV.y + (texture(surface_factors,world_position.xz/20.0).g-0.5)*0.06) : (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz)))*(1.0-sand);
+ 		if (packed_sand && UV.x < -0.5) { fringe = 0.0; }
+ 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
+ 		relief_weight = fringe;

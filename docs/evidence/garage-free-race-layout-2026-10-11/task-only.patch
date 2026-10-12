@@ -1,0 +1,734 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 97e03c5..8091422 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Garage Free Race layout override (2026-10-11)
++The owner rejects the first Garage carousel presentation and supplies the Free Race menu reference. Garage uses a central actual showroom, a carousel of the actual 3D car models and a bottom Select car action. Car cards preview; Select car confirms and opens the left-side Customise/Care/Tuning icon rail. Customise selects liveries and colours, Care contains optional local washing, and Tuning remains a placeholder. This supersedes illustrated Garage cards, the right-hand Garage panel, immediate confirmation on card tap and Garage race/circuit actions. Preserve local per-car paint/condition, free racing and canonical handling/scoring. See `docs/GARAGE_FREE_RACE_LAYOUT.md` for actual files, tests, captures and remaining owner/phone acceptance.
++
+ ## Persistent local car dirt and washing override (2026-10-11)
+ The owner requests that accumulated dirt remain after races, retries and track changes. Snow melts away and smears dirt already on the car. Garage must provide manual washing. The owner explicitly requires cosmetic condition to be stored only locally, with no backend interaction. Preserve per-car persistence, optional/free racing, paint separation and canonical scoring. This supersedes race-owned clean-on-retry/biome-change weathering. See `docs/CAR_WASH.md` for implementation, actual tests/captures and remaining owner/device acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index b1087e7..71c910a 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-11 GC06-GC09/GC03-GC05/CW13/CW15/CW16/V06/G01/R01/Q01: owner rejects first Garage layout; supplied Free Race composition now drives left60px rail, central actual showroom, bottom Select car and five actual 3D model cards. Cards preview without selecting; confirm opens left Customise/Care/Tuning, horizontal paint controls/free local Wash/placeholder. Static isolated 2x-MSAA card renders refresh on changes; five byte-exact freeze/change checks; interactive4x-MSAA showroom/framing only, no gameplay scale change. Native150/MobileVulkan150/livery115/wash1402/view59/menu23/swipes268/App99 pass;30 captures inspected. Cached getter fixture corrected with actual pixel proof; initial concurrent reverse-swipe failure isolated and heading rectangle used/all assertions retained. Doctor no phone; no device test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_FREE_RACE_LAYOUT.md.
++
+ 2026-10-11 WE13-WE16/WE09/WE10/V04/V05/G01/R01/Q01: owner rejects v2 road, bank seam/faceted ring, dense inside stakes and cloudy snowfield. Track-kit120 restores unchanged directional ice-v1/along-across metres plus512px original-source finish3; UV Jacobian micro-slopes/bridge span alignment, compact varied crest with buried matching-snow apron,<=240 smooth embedded piles, restored original snow detail/no cloud normals, true18m outer-28m inner spacing/40cap/18fixture poles. Native98/MobileVulkan97/wind47 each/App99/actualbridge/canonical-source byte receipt pass; opaque roof/light/lifecycle exact. Scene372978primitives vs393228 prior fixture; desktop cost is not phone proof. ADB empty/no phone test/export-install/fullValidate/backend rerun/livewrites/deploy. No further compiler/collision/rules/camera/audio change; prior compiler23 rollout limits retained. Actual captures/motion/provenance/scoped checkpoint/owner-device acceptance: docs/WINTER_DIRECTIONAL_BLEND.md.
+ 
+ 2026-10-11 GC01-GC05/CW13/CW15/CW16/GL01-GL06/V06/G01/R01/Q01: owner Garage carousel and selected-car Customise/Care/Tuning. Existing track swipe-snap with five cleared car illustrations; actual local showroom, four two-tone liveries/body-accent colours, optional manual Wash, placeholder tuning, Back/Escape/focus and cached-clean no-save fencing. Per-car local paint-dirt/race-five-lap/canonical/PB contracts preserved; existing identity-only impressions adapt to visible cards. Compatibility120/MobileVulkan120/livery115/wash1402/view59/menu23/swipes268/telemetry55/records54/App99 pass;30 captures inspected. Initial fixture/default-mode/layout/encoding issues corrected without weakening assertions. Doctor no attached devices; no phone test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_CAROUSEL.md.
+diff --git a/docs/GARAGE_CAROUSEL.md b/docs/GARAGE_CAROUSEL.md
+index 51d5086..74547c7 100644
+--- a/docs/GARAGE_CAROUSEL.md
++++ b/docs/GARAGE_CAROUSEL.md
+@@ -1,5 +1,7 @@
+ # Garage car carousel and car tools
+ 
++Owner presentation correction, 2026-10-11: the illustrated-card/right-panel/immediate-card-confirmation layout below is superseded by [the Free Race Garage layout](GARAGE_FREE_RACE_LAYOUT.md), with actual 3D cards, bottom Select car and a left tool rail. The previous work and evidence remain as history.
++
+ Owner request, 2026-10-11. Requirements: GC01 (track-style car carousel), GC02 (selected-car menu), GC03 (liveries and colours), GC04 (Care with manual washing), GC05 (Tuning placeholder), with existing CW13/CW15/CW16/GL01-GL06/V06/G01/R01/Q01 boundaries.
+ 
+ Garage now opens on the actual selected car with a bottom illustrated carousel of all five vehicles. Cards reuse the track carousel's mouse/touch drag, wheel scrolling, bounded edge response and full-card snapping. Keyboard focus reveals offscreen cards. Tapping a card selects that vehicle for racing and opens its car menu without rebuilding the menu shell. Back returns through the car menu to the carousel; Escape follows the same hierarchy.
+diff --git a/docs/GARAGE_FREE_RACE_LAYOUT.md b/docs/GARAGE_FREE_RACE_LAYOUT.md
+new file mode 100644
+index 0000000..554ae3d
+--- /dev/null
++++ b/docs/GARAGE_FREE_RACE_LAYOUT.md
+@@ -0,0 +1,39 @@
++# Garage Free Race layout correction
++
++Owner correction, 2026-10-11, using the supplied Free Race screenshot. Requirements: GC06 (Free Race composition), GC07 (bottom Select car confirmation), GC08 (actual 3D model carousel), GC09 (left Customise/Care/Tuning rail), preserving GC03-GC05/CW13/CW15/CW16/GL01-GL06/V06/G01/R01/Q01.
++
++Garage now uses the same 60-unit left rail, 12-unit body gutter, main content column, full-card carousel and 60-unit bottom action row as Free Race. The central showroom spans the main column. The right-hand Garage card and illustrated car cards are replaced by the requested layout. Garage's bottom yellow **Select car** action includes the same right-aligned arrow as Free Race.
++
++Clicking/tapping a car card previews its actual model, saved paint and dirt without changing the driving-car preference. Select car confirms the preview and opens Customise. The left rail then has icon buttons for Customise, Care and Tuning, with the active mode yellow, tooltips and a visible contextual heading where needed. Customise has livery/body/accent controls in a horizontal panel below the showroom. Care gives the showroom more room for washing, with Wash/Done beside Back to cars in the bottom action row. Tuning shows Coming later. Back to cars and Escape return to browsing. The active primary-menu shell stays alive; a background refresh preserves an unconfirmed preview.
++
++Each carousel card contains a real `CarVisual` in an isolated 3D studio viewport with its local paint and condition. The card is read-only: no orbit, washing, snow melting or save side effects. Its viewport draws on layout/visibility/paint/condition changes and otherwise retains the render. Five native pixel checks demonstrate that rotating each underlying model without a refresh leaves its image byte-exact, then an explicit refresh changes each image. Cards use 2x MSAA; the interactive showroom retains 4x MSAA, orbit/pinch/zoom/reset and hit-tested washing. Whole-menu-camera framing uses 0.76 in the showroom and 0.70 in cards; it does not change gameplay cameras, physical geometry or handling. Paint and dirt remain local, optional and per-car; no condition/paint backend field or new telemetry event is introduced. Existing car selection/impression events retain their prior semantics.
++
++## Files and actual checks
++
++Runtime changes: `game/ui/garage_page.gd`, `game/ui/car_showroom.gd`, `game/ui/menu_icon.gd` (one original outlined Care droplet). Updated integration checks: `game/tests/test_garage_carousel.gd`, `test_menu_quality.gd` and `test_menu_page_swipe.gd`. The menu-quality fixture now confirms a car and retains the current track without racing; Garage's former race/circuit actions are superseded by the owner's Select car request. The swipe fixture targets the actual Garage heading rather than estimating a coordinate beside the showroom. Documentation: this file, the supersession note in `GARAGE_CAROUSEL.md`, `AGENTS.md`, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. Concurrent client-quality, winter and other work is preserved.
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. Actual commands, with isolated test records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/garage_page.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument --mobile-evidence
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_quality.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
++python build/checkpoint_garage_free_race_layout.py
++```
++
++Passes: Garage **150 checks on Compatibility and 150 on desktop Mobile/Vulkan**, livery **115**, washing **1,402**, view controls **59**, menu quality **23**, menu swipes **268**, app **99**; zero failures in these final runs. Washing reveals original blue paint: blue channel 0.0784 to 0.2471 on the final expanded Care view. Tests retain exact local partial masks, independent five-car persistence and unchanged canonical PB keys. Thirty actual screenshots cover browsing/confirmed car/Customise/Care/Tuning at 960x540, 1280x720 and 1600x720, across both desktop renderers.
++
++Initial thumbnail checks incorrectly assumed the public update-mode getter changed to Disabled after a one-shot render; it retains the configured Once value. The check now proves actual frozen pixels and explicit refresh for all five models rather than inferring rendering from that cached getter. The renderer policy is described in the [official SubViewport documentation](https://docs.godotengine.org/en/stable/classes/class_subviewport.html); the cached getter is visible in [Godot's source](https://github.com/godotengine/godot/blob/master/scene/main/viewport.cpp). An initial concurrent graphical swipe run reported one reverse-navigation failure. An isolated diagnostic rerun passes; the final fixture uses the heading's actual rectangle and keeps all navigation assertions. Earlier failure logs are retained. No invariant is weakened to obtain a pass.
++
++Actual inspected previews: [browsing, all five cars](evidence/garage-free-race-layout-2026-10-11/cars-1600.png), [confirmed car and left rail](evidence/garage-free-race-layout-2026-10-11/car-menu-1280.png), [Customise](evidence/garage-free-race-layout-2026-10-11/customise-1280.png), [Care](evidence/garage-free-race-layout-2026-10-11/care-1280.png), [Tuning](evidence/garage-free-race-layout-2026-10-11/tuning-960.png), [Mobile/Vulkan browsing](evidence/garage-free-race-layout-2026-10-11/mobile/cars-1280.png). No reference pixels or generated illustrations are used in the new cards.
++
++The task-only two-commit Git checkpoint is in `build/garage_free_race_layout/checkpoint-repo`; scoped patch, source/evidence hashes and actual logs are in `docs/evidence/garage-free-race-layout-2026-10-11`. The main branch/index and concurrent edits are preserved.
++
++Doctor reports no attached phone. No physical-device test, Android export/install, full Validate, physics regression/merge, backend operation or deployment was performed. Five 3D card worlds consume bounded memory and refresh cost; desktop frozen-render evidence does not establish phone performance. Restart and review the composition, swipe/confirmation behavior, all car models, colour popup and washing on a physical device. Owner visual/input and phone performance acceptance remain open.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 26449ee..bd2f1af 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1750,3 +1750,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Garage car carousel and car tools, 2026-10-11
+ 
+ 2026-10-11 GC01-GC05/CW13/CW15/CW16/GL01-GL06/V06/G01/R01/Q01: owner Garage carousel and selected-car Customise/Care/Tuning. Existing track swipe-snap with five cleared car illustrations; actual local showroom, four two-tone liveries/body-accent colours, optional manual Wash, placeholder tuning, Back/Escape/focus and cached-clean no-save fencing. Per-car local paint-dirt/race-five-lap/canonical/PB contracts preserved; existing identity-only impressions adapt to visible cards. Compatibility120/MobileVulkan120/livery115/wash1402/view59/menu23/swipes268/telemetry55/records54/App99 pass;30 captures inspected. Initial fixture/default-mode/layout/encoding issues corrected without weakening assertions. Doctor no attached devices; no phone test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_CAROUSEL.md.
++
++
++## Garage Free Race layout correction, 2026-10-11
++
++2026-10-11 GC06-GC09/GC03-GC05/CW13/CW15/CW16/V06/G01/R01/Q01: owner rejects first Garage layout; supplied Free Race composition now drives left60px rail, central actual showroom, bottom Select car and five actual 3D model cards. Cards preview without selecting; confirm opens left Customise/Care/Tuning, horizontal paint controls/free local Wash/placeholder. Static isolated 2x-MSAA card renders refresh on changes; five byte-exact freeze/change checks; interactive4x-MSAA showroom/framing only, no gameplay scale change. Native150/MobileVulkan150/livery115/wash1402/view59/menu23/swipes268/App99 pass;30 captures inspected. Cached getter fixture corrected with actual pixel proof; initial concurrent reverse-swipe failure isolated and heading rectangle used/all assertions retained. Doctor no phone; no device test/Android export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device acceptance: docs/GARAGE_FREE_RACE_LAYOUT.md.
+diff --git a/game/tests/test_garage_carousel.gd b/game/tests/test_garage_carousel.gd
+index 9b62282..90fdf85 100644
+--- a/game/tests/test_garage_carousel.gd
++++ b/game/tests/test_garage_carousel.gd
+@@ -4,7 +4,7 @@ var checks: int = 0
+ var failures: int = 0
+ var app: Node
+ var page: GaragePage
+-var output: String = "res://../docs/evidence/garage-carousel-2026-10-11"
++var output: String = "res://../docs/evidence/garage-free-race-layout-2026-10-11"
+ 
+ func _initialize() -> void: _run.call_deferred()
+ 
+@@ -78,6 +78,31 @@ func _run() -> void:
+ 	page = app.root_ui.find_child("GaragePage", true, false)
+ 	var shell: Control = app.root_ui
+ 	check(page.section == "cars" and page.gallery_slot.visible, "Garage opens the car carousel")
++	check(page.select_button.text == "Select car" and page.select_button.get_global_rect().position.y >= page.gallery.get_global_rect().end.y, "Select car occupies the action row below the carousel")
++	for id: String in VehicleCatalog.IDS:
++		var model: CarShowroom = page.thumbnails[id]
++		check(model.car.vehicle_id == id and model.read_only and not model.is_processing(), id + " carousel contains actual static 3D model")
++		if DisplayServer.get_name() != "headless":
++			check(model.showroom_viewport.render_target_update_mode == SubViewport.UPDATE_ONCE, id + " thumbnail requests one render rather than continuous updates")
++	if DisplayServer.get_name() != "headless":
++		var frozen: Dictionary = {}
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			frozen[id] = model.showroom_viewport.get_texture().get_image().get_data()
++			model.car.rotation.y = 0.5
++		await settle()
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			check(model.showroom_viewport.get_texture().get_image().get_data() == frozen[id], id + " model change does not continuously redraw thumbnail")
++			model.refresh_thumbnail()
++		await settle()
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			check(model.showroom_viewport.get_texture().get_image().get_data() != frozen[id], id + " explicit refresh renders changed 3D geometry")
++			model.car.rotation.y = 0.0
++			model.refresh_thumbnail()
++		await settle()
++	check(page.rail.position.x < page.preview.get_global_rect().position.x and page.rail.size.x == 60, "Garage uses the Free Race left rail width")
+ 	check(page.cards.get_child_count() == 5 and page.find_child("VehicleSelector", true, false) == null, "all five cars replace the old dropdown")
+ 	check(page.find_child("GarageWash", true, false) == null and page.pickers.is_empty(), "overview exposes car selection before care/customise")
+ 	check(page.gallery.get_h_scroll_bar().max_value > page.gallery.size.x, "car carousel has scrollable content")
+@@ -90,7 +115,7 @@ func _run() -> void:
+ 	check(page.gallery.scroll_horizontal == 0 and app.screen == "garage", "carousel first edge retains gesture ownership")
+ 	await swipe(page.cards.get_child(0), 0, true)
+ 	check(page.section == "cars", "canceled tap cannot open a car")
+-	check(page.telemetry_exposures().size() == 4 and page.telemetry_exposures().all(func(entry: Dictionary) -> bool: return entry.car_id != "kart"), "only visible car cards count as existing car exposures")
++	check(page.telemetry_exposures().size() >= 4 and page.telemetry_exposures().all(func(entry: Dictionary) -> bool: return entry.car_id != "kart"), "only visible car cards count as existing car exposures")
+ 	(page.cards.get_child(4) as Control).grab_focus()
+ 	await settle()
+ 	check(page.gallery.get_global_rect().encloses((page.cards.get_child(4) as Control).get_global_rect()), "keyboard focus reveals the last car")
+@@ -101,9 +126,14 @@ func _run() -> void:
+ 		check(app.root_ui.get_global_rect().encloses(page.gallery.get_global_rect()), "carousel fits " + str(dimensions))
+ 		check((roundi(page.gallery.size.x) + 12) % page.tile_stride == 0, "only complete cards " + str(dimensions))
+ 		await capture("cars-" + str(dimensions.x))
++		await tap(page.cards.get_child(1))
++		check(page.section == "cars" and page.showroom.car.vehicle_id == "pickup" and VehicleCatalog.selected == "compact", "card tap previews car without confirming or leaving carousel")
++		app._refresh_cached_menu_page("garage", app.content)
++		check(page.vehicle_id == "pickup", "background refresh preserves unconfirmed car preview")
+ 		await tap(page.cards.get_child(0))
++		await tap(page.select_button)
+ 		check(page.telemetry_exposures().is_empty(), "car menus do not report hidden carousel impressions")
+-		check(page.section == "car" and not page.gallery_slot.visible and app.root_ui == shell, "car card opens menu without rebuilding shell")
++		check(page.section == "customise" and not page.gallery_slot.visible and app.root_ui == shell, "Select car confirms and opens left-rail tools without rebuilding shell")
+ 		for name: String in ["GarageCustomise", "GarageCare", "GarageTuning", "GarageBack"]:
+ 			var button: Control = page.find_child(name, true, false)
+ 			check(button != null and app.root_ui.get_global_rect().encloses(button.get_global_rect()), name + " fits " + str(dimensions))
+@@ -118,7 +148,7 @@ func _run() -> void:
+ 		check(app.root_ui.get_global_rect().encloses(page.pickers.body.get_global_rect()), "colours fit " + str(dimensions))
+ 		await capture("customise-" + str(dimensions.x))
+ 		page._preview_color(Color("417585"), "body")
+-		await tap(page.find_child("GarageBack", true, false))
++		await tap(page.find_child("GarageCare", true, false))
+ 		check(VehicleLivery.for_car(app.records.settings, "compact").colors.body == "417585", "leaving Customise saves unclosed colour preview")
+ 		await tap(page.find_child("GarageCare", true, false))
+ 		check(page.section == "care" and not page.showroom.wash_mode, "Care waits for explicit Wash action")
+@@ -129,7 +159,7 @@ func _run() -> void:
+ 		var before: PackedByteArray = page.showroom.weathering.wash_image.get_data()
+ 		page.showroom.weathering.wash(Vector3(-0.9, 0.5, 0.1), 0.8)
+ 		check(page.showroom.weathering.wash_image.get_data() != before, "Care changes a local dirt patch")
+-		await tap(page.find_child("GarageBack", true, false))
++		await tap(page.find_child("GarageTuning", true, false))
+ 		check(not page.showroom.wash_mode and not page.showroom.washing, "leaving Care stops the brush")
+ 		check(VehicleCondition.read(app.records, "compact").wash == page.showroom.weathering.snapshot().wash, "leaving Care commits exact partial wash")
+ 		await tap(page.find_child("GarageTuning", true, false))
+@@ -137,8 +167,8 @@ func _run() -> void:
+ 		check(app.records.key_for(app.selected_track, VehicleCatalog.config("compact")) == pb_key, "garage tools preserve canonical PB key")
+ 		await capture("tuning-" + str(dimensions.x))
+ 		await tap(page.find_child("GarageBack", true, false))
+-		await tap(page.find_child("GarageBack", true, false))
+-		check(page.section == "cars", "two Back actions return through car menu to carousel")
++		check(page.section == "cars", "Back returns to car browsing with Select car")
++		check(page.thumbnails.compact.car.paint_materials.body.albedo_color.to_html(false) == "417585", "3D carousel reflects locally customised paint")
+ 		# Reapply seed between independent viewport checks.
+ 		check(VehicleCondition.save(app.records, "compact", dirty) == OK, "restore independent dirty-view fixture")
+ 		await settle()
+@@ -171,10 +201,7 @@ func _run() -> void:
+ 	escape.pressed = true
+ 	root.push_input(escape, true)
+ 	await settle()
+-	check(page.section == "car", "Escape returns from Care to car menu")
+-	root.push_input(escape, true)
+-	await settle()
+-	check(page.section == "cars", "Escape returns from car menu to carousel")
++	check(page.section == "cars", "Escape returns from Care to the car carousel")
+ 	page._show_section("cars")
+ 	check(page.wash_button == null, "returning carousel has no stale Wash control")
+ 	app.queue_free()
+diff --git a/game/tests/test_menu_page_swipe.gd b/game/tests/test_menu_page_swipe.gd
+index f40f2fd..9ea3cdc 100644
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -513,8 +513,8 @@ func swipe(point: Vector2, distance: Vector2, canceled: bool = false) -> void:
+ 	await settle()
+ 
+ func garage_page_point() -> Vector2:
+-	var showroom: Control = app.menu_body.find_child("GarageShowroom",true,false)
+-	return Vector2(showroom.get_global_rect().get_center().x, showroom.get_global_rect().position.y - 20)
++	var garage: GaragePage = app.menu_body.find_child("GaragePage",true,false)
++	return garage.heading.get_global_rect().get_center()
+ 
+ func capture(title: String, dimensions: Vector2i) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+diff --git a/game/tests/test_menu_quality.gd b/game/tests/test_menu_quality.gd
+index 8bf8149..0ae1d7f 100644
+--- a/game/tests/test_menu_quality.gd
++++ b/game/tests/test_menu_quality.gd
+@@ -57,11 +57,12 @@ func run() -> void:
+ 	app.selected_track = next_track
+ 	app._commit_menu_neighbor(2)
+ 	await create_timer(0.4).timeout
+-	var garage_race: Button = _race_button(warm_garage)
++	var garage_select: Button = warm_garage.find_child("GarageSelectCar",true,false)
+ 	check(selector.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() != Control.FOCUS_NONE, "promotion restores descendant input preferences")
+-	garage_race.pressed.emit()
+-	check(app.raced_track == next_track, "cached Garage races the current selected track")
+-	check(_contains_text(warm_garage, "NEW SELECTED CIRCUIT"), "cached Garage displays the current selected circuit")
++	garage_select.pressed.emit()
++	var garage: GaragePage = warm_garage.find_child("GaragePage",true,false)
++	check(garage.section == "customise" and app.selected_track == next_track and app.raced_track == null, "cached Garage confirms its car while retaining current track without starting a race")
++	check(garage.find_child("GarageCare",true,false) != null and garage.find_child("GarageTuning",true,false) != null, "cached Garage exposes the left-side tool modes")
+ 	var shell: Control = app.root_ui
+ 	var warmed_race: Control = app.menu_neighbors[-2].body
+ 	app._open_race_area()
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index 0a4205e..c95fe85 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -12,6 +12,8 @@ var wash_pointer_valid: bool = false
+ var wash_elapsed: float = 0.0
+ var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
++var read_only: bool = false
++var framing_scale: float = 1.0
+ var livery: Dictionary = {}
+ var car: CarVisual
+ var camera: Camera3D
+@@ -31,13 +33,27 @@ const MAX_ZOOM: float = 1.80
+ 
+ func _ready() -> void:
+ 	stretch = true
+-	mouse_filter = Control.MOUSE_FILTER_STOP
++	mouse_filter = Control.MOUSE_FILTER_IGNORE if read_only else Control.MOUSE_FILTER_STOP
+ 	var viewport := SubViewport.new()
+ 	showroom_viewport = viewport
+ 	viewport.own_world_3d = true
+-	viewport.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
+-	viewport.msaa_3d = Viewport.MSAA_4X
+-	add_child(viewport)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if read_only else SubViewport.UPDATE_WHEN_VISIBLE
++	viewport.msaa_3d = Viewport.MSAA_2X if read_only else Viewport.MSAA_4X
++	if read_only:
++		# A standalone viewport avoids SubViewportContainer's continuous-update
++		# policy. Cards display a real 3D render and refresh only when needed.
++		var holder := Node.new()
++		holder.name = "ThumbnailWorld"
++		add_child(holder)
++		holder.add_child(viewport)
++		var image := TextureRect.new()
++		image.name = "ModelRender"
++		image.texture = viewport.get_texture()
++		image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		image.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		add_child(image)
++		MenuStyle.fill(image)
++	else: add_child(viewport)
+ 	var world := Node3D.new()
+ 	viewport.add_child(world)
+ 	car = CarVisual.new()
+@@ -53,13 +69,22 @@ func _ready() -> void:
+ 	camera.fov = 38.0
+ 	camera.current = true
+ 	_orbit()
+-	gui_input.connect(_drag)
++	if not read_only: gui_input.connect(_drag)
++	else:
++		set_process(false)
++		resized.connect(refresh_thumbnail)
++		visibility_changed.connect(refresh_thumbnail)
+ 	visibility_changed.connect(_clear_gesture)
+ 	# The stretched container owns viewport dimensions, including phone resizes.
+ 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+ 
++func refresh_thumbnail() -> void:
++	if not read_only or not is_instance_valid(showroom_viewport): return
++	showroom_viewport.size = Vector2i(maxi(1, roundi(size.x)), maxi(1, roundi(size.y)))
++	showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if is_visible_in_tree() else SubViewport.UPDATE_DISABLED
++
+ func _orbit() -> void:
+-	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * zoom
++	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * zoom * framing_scale
+ 	var horizontal: float = cos(elevation) * distance
+ 	camera.position = Vector3(sin(yaw)*horizontal, 0.55 + sin(elevation)*distance, -cos(yaw)*horizontal)
+ 	camera.look_at(Vector3(0, 0.55, 0))
+@@ -137,6 +162,7 @@ func apply_livery(value: Dictionary) -> void:
+ 	if is_instance_valid(car):
+ 		car.apply_livery(livery)
+ 		weathering.refresh_paint()
++		refresh_thumbnail()
+ 
+ func set_wash_mode(enabled: bool) -> void:
+ 	_clear_gesture()
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index 87f0ff1..e738fa1 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1,5 +1,5 @@
+ class_name GaragePage
+-extends VBoxContainer
++extends HBoxContainer
+ ## Car discovery and selected-car tools share one local showroom.
+ signal vehicle_selected(index: int)
+ signal race_requested
+@@ -15,6 +15,7 @@ var showroom: CarShowroom
+ var draft: Dictionary
+ var pickers: Dictionary = {}
+ var vehicle_id: String = VehicleCatalog.selected
++var _selected_vehicle_id: String = VehicleCatalog.selected
+ var circuit_title: String = ""
+ var wash_button: Button
+ var view_hint: Label
+@@ -26,7 +27,13 @@ var cards: HBoxContainer
+ var preview: VBoxContainer
+ var heading: Label
+ var tools: VBoxContainer
+-var tile_stride: int = 280
++var rail: VBoxContainer
++var main: VBoxContainer
++var tools_panel: PanelContainer
++var actions: HBoxContainer
++var select_button: Button
++var thumbnails: Dictionary = {}
++var tile_stride: int = 240
+ var _condition_saved: Dictionary = {}
+ var _condition_presented: Dictionary = {}
+ var _livery_saved: Dictionary = {}
+@@ -36,35 +43,69 @@ func _ready() -> void:
+ 	name = "GaragePage"
+ 	resized.connect(queue_redraw)
+ 	add_theme_constant_override("separation", 12)
+-	var hero := HBoxContainer.new()
+-	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	hero.add_theme_constant_override("separation", 20)
+-	add_child(hero)
++	rail = VBoxContainer.new()
++	rail.name = "GarageModes"
++	rail.custom_minimum_size.x = 60
++	rail.add_theme_constant_override("separation", 12)
++	add_child(rail)
++	main = VBoxContainer.new()
++	main.name = "GarageMain"
++	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	main.add_theme_constant_override("separation", 8)
++	add_child(main)
+ 	preview = VBoxContainer.new()
+-	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	preview.name = "GaragePreview"
++	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.add_theme_constant_override("separation", 8)
+-	hero.add_child(preview)
+-	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 32)
++	main.add_child(preview)
++	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
+ 	preview.add_child(heading)
+ 	_create_showroom()
+ 	_build_view_controls()
+-	var panel := PanelContainer.new()
+-	panel.custom_minimum_size.x = 320
+-	panel.add_theme_stylebox_override("panel", MenuStyle.card(16))
+-	hero.add_child(panel)
++	tools_panel = PanelContainer.new()
++	tools_panel.name = "GarageTools"
++	tools_panel.add_theme_stylebox_override("panel", MenuStyle.card(12))
++	main.add_child(tools_panel)
+ 	tools = VBoxContainer.new()
+-	tools.add_theme_constant_override("separation", 12)
+-	panel.add_child(tools)
++	tools.add_theme_constant_override("separation", 8)
++	tools_panel.add_child(tools)
+ 	_build_carousel()
++	actions = HBoxContainer.new()
++	actions.name = "GarageActions"
++	main.add_child(actions)
+ 	_show_section("cars")
+ 	visibility_changed.connect(_visibility_changed)
+ 
++func _build_rail() -> void:
++	for child: Node in rail.get_children():
++		rail.remove_child(child)
++		child.queue_free()
++	var destinations: Array = [["cars", "car", "Select car"]] if section == "cars" else [["customise", "edit", "Customise"], ["care", "care", "Care"], ["tuning", "settings", "Tuning"]]
++	for entry: Array in destinations:
++		var destination: String = entry[0]
++		var active: bool = destination == section
++		var button := MenuStyle.button("", _show_section.bind(destination), active)
++		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
++		button.icon = MenuIcon.texture(entry[1])
++		button.expand_icon = true
++		button.add_theme_constant_override("icon_max_width", 38)
++		button.add_theme_color_override("icon_normal_color", MenuStyle.INK if active else MenuStyle.TEXT)
++		button.add_theme_color_override("icon_focus_color", MenuStyle.INK if active else MenuStyle.TEXT)
++		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"), 10)
++		style.border_color = Color("ffe792") if active else Color("2a4655")
++		style.set_border_width_all(1)
++		button.add_theme_stylebox_override("normal", style)
++		button.custom_minimum_size = Vector2(60, 60)
++		button.tooltip_text = entry[2]
++		rail.add_child(button)
++
+ func _create_showroom() -> void:
+ 	draft = VehicleLivery.for_car(records.settings, vehicle_id)
+ 	_livery_saved = draft.duplicate(true)
+ 	showroom = CarShowroom.new()
+ 	showroom.name = "GarageShowroom"
+ 	showroom.vehicle_id = vehicle_id
++	showroom.framing_scale = 0.76
+ 	showroom.livery = draft
+ 	showroom.condition = VehicleCondition.read(records, vehicle_id)
+ 	_condition_saved = showroom.condition.duplicate(true)
+@@ -100,9 +141,9 @@ func _view_action(action: String) -> void:
+ func _build_carousel() -> void:
+ 	gallery_slot = Control.new()
+ 	gallery_slot.name = "GarageCarouselSlot"
+-	gallery_slot.custom_minimum_size.y = 156
++	gallery_slot.custom_minimum_size.y = 140
+ 	gallery_slot.resized.connect(_layout_gallery)
+-	add_child(gallery_slot)
++	main.add_child(gallery_slot)
+ 	gallery = Carousel.new()
+ 	gallery.name = "CarCarousel"
+ 	gallery.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+@@ -111,14 +152,14 @@ func _build_carousel() -> void:
+ 	gallery.follow_focus = false
+ 	gallery_slot.add_child(gallery)
+ 	gallery_content = Control.new()
+-	gallery_content.custom_minimum_size.y = 156
++	gallery_content.custom_minimum_size.y = 140
+ 	gallery.add_child(gallery_content)
+ 	cards = HBoxContainer.new()
+ 	cards.add_theme_constant_override("separation", 12)
+ 	gallery_content.add_child(cards)
+ 	for index: int in range(VehicleCatalog.IDS.size()):
+ 		var id: String = VehicleCatalog.IDS[index]
+-		var card := MenuStyle.button("", open_car.bind(index))
++		var card := MenuStyle.button("", preview_car.bind(index))
+ 		card.name = "GarageCar_" + id
+ 		card.tooltip_text = VehicleCatalog.title(id)
+ 		card.clip_contents = true
+@@ -129,16 +170,20 @@ func _build_carousel() -> void:
+ 		column.add_theme_constant_override("separation", 0)
+ 		card.add_child(column)
+ 		MenuStyle.fill(column)
+-		var art := TextureRect.new()
+-		art.texture = VehicleCatalog.artwork(id)
+-		art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-		art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-		art.custom_minimum_size.y = 116
+-		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		column.add_child(art)
++		var model := CarShowroom.new()
++		model.name = "CarModel_" + id
++		model.vehicle_id = id
++		model.livery = VehicleLivery.for_car(records.settings, id)
++		model.condition = VehicleCondition.read(records, id)
++		model.read_only = true
++		model.framing_scale = 0.70
++		model.custom_minimum_size.y = 104
++		model.size_flags_vertical = Control.SIZE_EXPAND_FILL
++		column.add_child(model)
++		thumbnails[id] = model
+ 		var caption := MenuStyle.label(VehicleCatalog.title(id), 20)
+ 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-		caption.custom_minimum_size.y = 40
++		caption.custom_minimum_size.y = 36
+ 		column.add_child(caption)
+ 	_update_cards()
+ 
+@@ -146,13 +191,13 @@ func _layout_gallery() -> void:
+ 	if not is_instance_valid(cards) or gallery_slot.size.x <= 0: return
+ 	var first: int = roundi(float(gallery.scroll_horizontal) / tile_stride)
+ 	gallery.call("_stop_snap")
+-	var slots: int = clampi(floori((gallery_slot.size.x + 12.0) / 280.0), 1, 4)
++	var slots: int = clampi(floori((gallery_slot.size.x + 12.0) / 240.0), 1, 5)
+ 	tile_stride = floori((gallery_slot.size.x + 12.0) / slots)
+ 	gallery.position.x = (gallery_slot.size.x - (slots * tile_stride - 12)) * 0.5
+-	gallery.size = Vector2(slots * tile_stride - 12, 156)
++	gallery.size = Vector2(slots * tile_stride - 12, 140)
+ 	gallery.set("snap_stride", tile_stride)
+ 	gallery_content.custom_minimum_size.x = VehicleCatalog.IDS.size() * tile_stride - 12
+-	for card: Control in cards.get_children(): card.custom_minimum_size = Vector2(tile_stride - 12, 156)
++	for card: Control in cards.get_children(): card.custom_minimum_size = Vector2(tile_stride - 12, 140)
+ 	gallery.scroll_horizontal = first * tile_stride
+ 
+ func _focus_card(index: int) -> void:
+@@ -165,7 +210,7 @@ func _focus_card(index: int) -> void:
+ func _unhandled_key_input(event: InputEvent) -> void:
+ 	if not is_visible_in_tree() or section == "cars": return
+ 	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
+-		_show_section("cars" if section == "car" else "car")
++		_show_section("cars")
+ 		get_viewport().set_input_as_handled()
+ 
+ func _update_cards() -> void:
+@@ -178,7 +223,7 @@ func _update_cards() -> void:
+ 		card.add_theme_stylebox_override("normal", style)
+ 		(card.get_child(0).get_child(1) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
+ 
+-func open_car(index: int) -> void:
++func preview_car(index: int) -> void:
+ 	if index < 0 or index >= VehicleCatalog.IDS.size(): return
+ 	_finish_tools()
+ 	var chosen: String = VehicleCatalog.IDS[index]
+@@ -188,97 +233,99 @@ func open_car(index: int) -> void:
+ 		vehicle_id = chosen
+ 		heading.text = VehicleCatalog.title(vehicle_id)
+ 		_create_showroom()
+-	_show_section("car")
+ 	_update_cards()
++
++func _confirm_car() -> void:
++	open_car(VehicleCatalog.IDS.find(vehicle_id))
++
++func open_car(index: int) -> void:
++	if index < 0 or index >= VehicleCatalog.IDS.size(): return
++	preview_car(index)
++	_selected_vehicle_id = vehicle_id
++	_show_section("customise")
+ 	vehicle_selected.emit(index)
+ 
++func _refresh_thumbnails() -> void:
++	for id: String in thumbnails:
++		var model: CarShowroom = thumbnails[id]
++		var paint: Dictionary = VehicleLivery.for_car(records.settings, id)
++		var condition: Dictionary = VehicleCondition.read(records, id)
++		if model.livery != paint: model.apply_livery(paint)
++		if model.condition != condition:
++			model.condition = condition
++			model.weathering.restore(condition)
++			model.refresh_thumbnail()
++
+ func refresh_selection() -> void:
+ 	# A warmed page may have been built before another page selected a car.
+-	if vehicle_id == VehicleCatalog.selected: return
++	if _selected_vehicle_id == VehicleCatalog.selected: return
+ 	_finish_tools()
+ 	preview.remove_child(showroom)
+ 	showroom.queue_free()
+ 	vehicle_id = VehicleCatalog.selected
++	_selected_vehicle_id = vehicle_id
+ 	heading.text = VehicleCatalog.title(vehicle_id)
+ 	_create_showroom()
+ 	_show_section("cars")
+ 	_update_cards()
+ 
+ func _show_section(next: String) -> void:
+-	if next not in ["cars", "car", "customise", "care", "tuning"]: return
++	if next == "car": next = "customise"
++	if next not in ["cars", "customise", "care", "tuning"]: return
+ 	_finish_tools()
+ 	section = next
+-	for child: Node in tools.get_children():
+-		tools.remove_child(child)
+-		child.queue_free()
++	for container: Control in [tools, actions]:
++		for child: Node in container.get_children():
++			container.remove_child(child)
++			child.queue_free()
+ 	pickers.clear()
+ 	wash_button = null
+ 	_presets = null
++	select_button = null
+ 	gallery_slot.visible = section == "cars"
+-	if section != "cars":
+-		var back := MenuStyle.button("Back to cars" if section == "car" else "Back to car", _show_section.bind("cars" if section == "car" else "car"))
+-		back.name = "GarageBack"
+-		back.custom_minimum_size.y = 48
+-		tools.add_child(back)
++	tools_panel.visible = section not in ["cars", "care"]
++	_build_rail()
+ 	if section == "cars":
+-		tools.add_child(MenuStyle.label("YOUR GARAGE", 26))
+-		_add_description()
+-		_add_specs()
+-		var spacer := Control.new()
+-		spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		tools.add_child(spacer)
+-		var circuit := MenuFeature.new()
+-		circuit.name = "GarageCircuit"
+-		circuit.heading = circuit_title
+-		circuit.description = "Choose circuit"
+-		circuit.pressed.connect(func() -> void: circuit_requested.emit())
+-		tools.add_child(circuit)
+-		tools.add_child(MenuStyle.button("RACE", func() -> void: race_requested.emit(), true))
+-	elif section == "car":
+-		_add_description()
+-		for destination: String in ["customise", "care", "tuning"]:
+-			var button := MenuStyle.button(destination.capitalize(), _show_section.bind(destination), destination == "customise")
+-			button.name = "Garage" + destination.capitalize()
+-			tools.add_child(button)
+-	elif section == "customise":
+-		tools.add_child(MenuStyle.label("CUSTOMISE", 26))
++		_refresh_thumbnails()
++		select_button = MenuStyle.button("Select car", _confirm_car, true)
++		select_button.name = "GarageSelectCar"
++		select_button.icon = MenuIcon.texture("arrow")
++		select_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++		for state: String in ["icon_normal_color", "icon_hover_color", "icon_focus_color"]:
++			select_button.add_theme_color_override(state, MenuStyle.INK)
++		select_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		select_button.custom_minimum_size.y = 60
++		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
++		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
++		actions.add_child(select_button)
++		return
++	tools.add_child(MenuStyle.label(section.to_upper(), 20))
++	var back := MenuStyle.button("Back to cars", _show_section.bind("cars"))
++	back.name = "GarageBack"
++	back.custom_minimum_size = Vector2(240, 60)
++	actions.add_child(back)
++	if section == "customise":
+ 		_build_customise()
+ 	elif section == "care":
+-		tools.add_child(MenuStyle.label("CARE", 26))
+ 		wash_button = MenuStyle.button("Wash", _toggle_wash, true)
+ 		wash_button.name = "GarageWash"
++		wash_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		wash_button.custom_minimum_size.y = 60
+ 		wash_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
+ 		wash_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
+-		tools.add_child(wash_button)
++		actions.add_child(wash_button)
+ 	else:
+-		tools.add_child(MenuStyle.label("TUNING", 26))
+ 		tools.add_child(MenuStyle.label("Coming later", 18, true))
+ 
+-func _add_description() -> void:
+-	var label := MenuStyle.label(VehicleCatalog.description(vehicle_id), 18, true)
+-	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	tools.add_child(label)
+-
+-func _add_specs() -> void:
+-	var config: HandlingConfig = VehicleCatalog.config(vehicle_id)
+-	for pair: Array in [["Mass", "%d kg" % roundi(config.mass)], ["Speed limit", "%d km/h" % roundi(config.maximum_speed * 3.6)]]:
+-		var row := HBoxContainer.new()
+-		tools.add_child(row)
+-		var label := MenuStyle.label(str(pair[0]), 17, true)
+-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		row.add_child(label)
+-		row.add_child(MenuStyle.label(str(pair[1]), 20))
+-
+ func _build_customise() -> void:
+-	var scroll := ScrollContainer.new()
+-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	tools.add_child(scroll)
+-	var controls := VBoxContainer.new()
+-	controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	controls.add_theme_constant_override("separation", 10)
+-	scroll.add_child(controls)
+-	controls.add_child(MenuStyle.label("Livery", 18))
++	var controls := HBoxContainer.new()
++	controls.add_theme_constant_override("separation", 20)
++	tools.add_child(controls)
++	var livery_column := VBoxContainer.new()
++	livery_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	livery_column.add_theme_constant_override("separation", 4)
++	controls.add_child(livery_column)
++	livery_column.add_child(MenuStyle.label("Livery", 16, true))
+ 	_presets = OptionButton.new()
+ 	_presets.name = "GarageLivery"
+ 	_presets.custom_minimum_size.y = 48
+@@ -287,13 +334,13 @@ func _build_customise() -> void:
+ 	_presets.set_item_disabled(LIVERY_NAMES.size(), true)
+ 	_presets.select(_preset_index())
+ 	_presets.item_selected.connect(_select_livery)
+-	controls.add_child(_presets)
++	livery_column.add_child(_presets)
+ 	for slot: String in VehicleLivery.SLOTS:
+-		var row := HBoxContainer.new()
+-		controls.add_child(row)
+-		var label := MenuStyle.label(slot.capitalize(), 18)
+-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		row.add_child(label)
++		var column := VBoxContainer.new()
++		column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		column.add_theme_constant_override("separation", 4)
++		controls.add_child(column)
++		column.add_child(MenuStyle.label(slot.capitalize(), 16, true))
+ 		var picker := ColorPickerButton.new()
+ 		picker.name = "Livery" + slot.capitalize()
+ 		picker.custom_minimum_size = Vector2(112, 48)
+@@ -307,9 +354,12 @@ func _build_customise() -> void:
+ 		picker.get_popup().add_theme_stylebox_override("panel", MenuStyle.card(12))
+ 		picker.color_changed.connect(_preview_color.bind(slot))
+ 		picker.popup_closed.connect(_save)
+-		row.add_child(picker)
++		column.add_child(picker)
+ 		pickers[slot] = picker
+-	controls.add_child(MenuStyle.button("Reset paint", _reset))
++	var reset := MenuStyle.button("Reset paint", _reset)
++	reset.custom_minimum_size = Vector2(180, 48)
++	reset.size_flags_vertical = Control.SIZE_SHRINK_END
++	controls.add_child(reset)
+ 
+ func _preset_value(index: int) -> Dictionary:
+ 	var value: Dictionary = VehicleLivery.defaults(vehicle_id)
+diff --git a/game/ui/menu_icon.gd b/game/ui/menu_icon.gd
+index b18e4c9..3171339 100644
+--- a/game/ui/menu_icon.gd
++++ b/game/ui/menu_icon.gd
+@@ -15,6 +15,7 @@ static func texture(kind: String) -> Texture2D:
+ 		cache[kind] = biome_texture
+ 		return biome_texture
+ 	var paths: Dictionary = {
++		"care":"<path d='M12 2C10 6 5 11 5 15a7 7 0 0 0 14 0c0-4-5-9-7-13Z'/><path d='M9 15c0 2 1 3 3 3'/>",
+ 		"car":"<path d='m4 11 2-6h12l2 6M3 11h18v7H3Zm2 7v3m14-3v3M6 14h2m8 0h2'/>",
+ 		"share":"<circle cx='18' cy='4' r='3'/><circle cx='5' cy='12' r='3'/><circle cx='18' cy='20' r='3'/><path d='m8 10 7-4m-7 8 7 4'/>",
+ 		"controller":"<path d='M7 7h10c3 0 5 12 3 13-2 1-4-4-5-4H9c-1 0-3 5-5 4C2 19 4 7 7 7Z'/><path d='M8 10v5m-2.5-2.5h5M16 11h.1M18 14h.1'/>",

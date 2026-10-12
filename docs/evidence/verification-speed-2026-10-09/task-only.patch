@@ -1,0 +1,1274 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Lightweight verification override (2026-10-09)
++The owner explicitly prioritizes computationally light and fast race verification over catching every manipulation. Ordinary races may use bounded 20 Hz movement evidence, broad car/movement plausibility, all ordered road gates and input-count timing instead of exact replay physics. Keep pinned track/car contracts, actual five laps, best-only scoring, normal results first, durable/idempotent uploads and public/artificial isolation. Missing/uncertain evidence, creator validation and rewind races retain full replay fallback. Give actual player jobs priority and let background artificial generation yield. This supersedes full canonical replay as the sole competitive verification method; do not claim lightweight proofs reproduce exact tire/collision forces or provide complete anti-cheat. Production deployment still requires explicit authorization. See `docs/VERIFICATION_SPEED.md` for contracts, measurements, commands and remaining acceptance.
+ 
+ ## Rivalry two-card track view override (2026-10-09)
+ The owner supplies a two-card track-detail reference, removes the third rival/challenger/ghost column, and moves Back to Tracks and Race to an equal-width bottom action row outside both cards. Keep the original scenic route/start-direction preview and the full eight-row scrolling standings with signed gaps and highlighted/sticky player. Retain existing ghost targets internally with a no-recording fallback, detail-only race start, overview return, completed/busy/unavailable gates, actual five laps and normal results first. This supersedes the earlier third-column and card-contained actions. See `docs/RIVALRY_TWO_COLUMN.md` for actual files, commands, captures and remaining device acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-09 VF01-VF04/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved lightweight 20Hz movement proofs check broad speed/acceleration/displacement and all ordered gates, exact input-count five-lap duration and best-only scores; creator/rewind/old/uncertain recordings retain faster canonical fallback. Warm fixture1.7022s to0.1397s/95.3% less engine CPU; Linux0.1249s. Human queue priority/250ms background yielding, durable normalized proof/poll fixes retained. Native17436/App99/rewind61/upload17/weekly1109/challenges84, replay78, SQLite93/7skip, ownedPG91/7skip, final HTTP9 and native exact-ticket49 pass. APK241155846/SHA25684D361FD882CC0F28E7D58EBA7DF8CA2C3FA1E372BE80258441AE98B2066863C exported after focused72/21/48; broad validation stopped on two storm spray assertions. Task-only Linux image280effff tested/pushed and fresh backup1791562942686 succeeds; remote deploy rejected before execution by automatic approval review pending explicit owner approval. Tablet f0ba474a offline/no install-device acceptance, no production action. Contracts/files/commands/limits/checkpoint: docs/VERIFICATION_SPEED.md.
++
+ 2026-10-09 WR02/WR07-WR10/R01/V03-V05/Q01: owner-reference track view now has preview/standings cards only; third rival/ghost column removed, equal-width64-logical-pixel Back/Race footer outside both cards. Eight complete rows/full14-20 field, signed gaps, sticky player, actual start/direction and internal ghost targets/no-recording fallback retained. Final native detail345/headless weekly1109/App99/disposable graphical HTTP40 checks pass; five legal laps/12757 ticks independently verified, normal results first/Race Again preserved. Footer arrow encoding corrected and24 final native captures refreshed; eight pre-label-fix HTTP flow captures retained. No phone attachment check/device test/export/install/full Validate/physics/backend or production deployment. Task-only checkpoint, exact files/commands/evidence and acceptance: docs/RIVALRY_TWO_COLUMN.md.
+ 
+ 2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -135,7 +135,8 @@
+             "replay_schema": "bmt-replay-v1",
+             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2"],
+             "rewind_policy": "rewind-1",
+-            "verification": "canonical-replay",
++            "verification": "movement-proof-with-replay-fallback",
++            "lightweight_race_proofs": True,
+             "track_lifecycle_version": 1,
+             "discovery_paging_version": 2,
+             "max_request_bytes": settings.max_body_bytes,
+--- a/backend/bmt_backend/automatic_test_drivers.py
++++ b/backend/bmt_backend/automatic_test_drivers.py
+@@ -13,6 +13,7 @@
+ 
+ from sqlalchemy import select, update
+ 
++from .background_work import BackgroundControl, BackgroundYielded
+ from .countries import test_country
+ from .identity_models import Identity, Player
+ from .rivalry_models import RivalryGroup, RivalryMember
+@@ -138,13 +139,14 @@
+             def generator(*args, **kwargs):
+                 if stopping(app):
+                     raise RuntimeError("Test driver worker is draining")
+-                control = getattr(app.state, "worker_control", None)
+-                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+ 
+             before = sum(job["status"] == "waiting" for job in plan["jobs"])
+             tick(api, plan, settings, path, maximum=1, generator=generator)
+             after = sum(job["status"] == "waiting" for job in plan["jobs"])
+             return before != after
++    except BackgroundYielded:
++        return False
+     except RuntimeError:
+         if not stopping(app):
+             logger.exception("automatic_test_driver_pass_failed", extra={"group_id": group_id})
+--- /dev/null
++++ b/backend/bmt_backend/background_work.py
+@@ -0,0 +1,37 @@
++"""Cooperatively yield development generation when a player submits a race."""
++import time
++
++from sqlalchemy import and_, or_, select
++
++from .identity_models import Player
++from .job_contracts import pinned_filter
++from .track_models import Board, Run, now
++
++
++class BackgroundYielded(RuntimeError):
++    """Keep the unfinished artificial attempt for the next idle period."""
++
++
++class BackgroundControl:
++    def __init__(self, app):
++        self.app = app
++        self.next_check = 0.0
++        self.manifest = app.state.verifier.manifest()
++
++    def is_set(self):
++        control = getattr(self.app.state, "worker_control", None)
++        if control and control.abort.is_set():
++            return True
++        current = time.monotonic()
++        if current < self.next_check:
++            return False
++        self.next_check = current + 0.25
++        with self.app.state.session_factory() as session:
++            pending = session.scalar(select(Run.id).join(Board).join(Player, Player.id == Run.player_id)
++                .where(Player.is_test_driver.is_(False), pinned_filter(Board.manifest, self.manifest),
++                       or_(and_(Run.status == "queued", Run.lease_until <= now()),
++                           and_(Run.status == "verifying", Run.lease_until <= now())))
++                .limit(1))
++        if pending is not None:
++            raise BackgroundYielded("Player race is ready for verification")
++        return False
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -369,8 +369,9 @@
+     available(session, challenge.code)
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "expired" if now() >= own.expires_at else "upload_pending"
++    from .runs import pending_poll_ms
+     return {"status": status, "failure_code": run.failure_code if run else None, "outcome": binding.outcome,
+-            "poll_after_ms": 2500 if status in ("queued", "verifying", "upload_pending") else 0,
++            "poll_after_ms": pending_poll_ms(run,status),
+             "challenge": snapshot(session, request, challenge, player.id)}
+ 
+ 
+--- a/backend/bmt_backend/observability.py
++++ b/backend/bmt_backend/observability.py
+@@ -15,7 +15,7 @@
+             value = {"event": message}
+         value["level"] = record.levelname.lower()
+         for field in ("run_id", "time_ticks", "failure_code", "worker_id",
+-                      "verification_seconds", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
++                      "verification_seconds", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
+             if hasattr(record, field):
+                 value[field] = getattr(record, field)
+         # Record only exception type: arbitrary exception text can include submitted data.
+--- a/backend/bmt_backend/replay_wire.py
++++ b/backend/bmt_backend/replay_wire.py
+@@ -11,7 +11,7 @@
+     if value.get("schema") != "bmt-packed-input-v1":
+         return value
+     count, controls = value.get("frame_count"), value.get("controls")
+-    if (set(value) - {"schema", "replay_schema", "frame_count", "controls", "rewinds"}
++    if (set(value) - {"schema", "replay_schema", "frame_count", "controls", "rewinds", "race_proof"}
+             or type(count) is not int or not 1 <= count <= MAX_FRAMES
+             or type(controls) is not str or len(controls) != count * 8
+             or value.get("replay_schema") not in ("bmt-replay-v1", "bmt-replay-v2")):
+@@ -32,4 +32,6 @@
+     replay = {"schema": value["replay_schema"], "frames": frames}
+     if "rewinds" in value:
+         replay["rewinds"] = value["rewinds"]
++    if "race_proof" in value:
++        replay["race_proof"] = value["race_proof"]
+     return replay
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -449,7 +449,8 @@
+     require_member(session, binding.group_id, player.id, request)
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "verified" if binding.outcome else "expired" if now() >= own.expires_at else "upload_pending"
+-    return {"status": status, "poll_after_ms": 2500 if status in ("queued", "verifying", "upload_pending") else 0,
++    from .runs import pending_poll_ms
++    return {"status": status, "poll_after_ms": pending_poll_ms(run,status),
+             "failure_code": run.failure_code if run else None,
+             "outcome": binding.outcome, "slot": binding.slot}
+ 
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -120,8 +120,14 @@
+         "lap_ticks": run.lap_ticks,
+         "failure_code": run.failure_code,
+         "retryable": run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"),
+-        "poll_after_ms": 2500 if run.status in ("queued", "verifying") else 0,
+-    }
++        "poll_after_ms": pending_poll_ms(run),
++    }
++
++
++def pending_poll_ms(run, status=None):
++    if (status or (run.status if run else "upload_pending")) not in ("queued", "verifying", "upload_pending"):
++        return 0
++    return 1000 if run is not None and now()-run.created_at < 10 else 2500
+ 
+ 
+ @router.get("/manifest")
+--- a/backend/bmt_backend/test_population_batch.py
++++ b/backend/bmt_backend/test_population_batch.py
+@@ -12,6 +12,7 @@
+ from sqlalchemy.orm import aliased
+ 
+ from .contracts import build_contract, current_manifest
++from .background_work import BackgroundControl, BackgroundYielded
+ from .identity_models import Player
+ from .rivalry_models import RivalryBest
+ from .test_driver_generator import CONTROLLER_VERSION
+@@ -256,15 +257,16 @@
+         if recovered.get("run"):
+             result = recovered["run"]
+         else:
+-            control = getattr(app.state, "worker_control", None)
+             def generator(*args, **kwargs):
+-                return generate(*args, **kwargs, stop_event=control.abort if control else None)
++                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+             replay = recording(api, plan, job, {"traits": traits}, settings, path, generator=generator)
+             ticket = api.call("POST", "/run-tickets", {"version_id": job["version_id"],
+                 "vehicle_id": data["vehicle_id"], "test_population": True}, job["subject"], job["id"]+"-ticket")
+             result = api.call("POST", "/runs", {"ticket_id": ticket["ticket_id"], "replay": replay["replay"]},
+                               job["subject"], job["id"]+"-upload")
+         outcome = {"status": "submitted", "run_id": result["run_id"], "lease_until": 0}
++    except BackgroundYielded:
++        outcome = {"status": "waiting", "due": now()+3, "lease_until": 0}
+     except DriverDidNotFinish as error:
+         outcome = {"status": "waiting" if job["attempt"] < 4 else "uncompleted",
+                    "attempt": job["attempt"]+1, "due": now()+10, "lease_until": 0,
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -71,6 +71,12 @@
+ 
+ 
+ def validate_replay(replay: dict) -> None:
++    proof = None
++    if type(replay) is dict and "race_proof" in replay:
++        proof = replay["race_proof"]
++        if proof is None:
++            raise VerificationError("Malformed race movement proof")
++        replay = {key: value for key, value in replay.items() if key != "race_proof"}
+     if type(replay) is not dict or not (
+         (set(replay) == {"schema", "frames"} and replay.get("schema") == REPLAY_SCHEMA)
+         or (set(replay) == {"schema", "frames", "rewinds"} and replay.get("schema") == "bmt-replay-v2")
+@@ -87,6 +93,9 @@
+ 
+         if len(frame) == 5 and (frame_index != 0 or frame[4] not in (1, 2)):
+             raise VerificationError("Invalid launch marker")
++
++    if proof is not None:
++        validate_race_proof(proof, len(frames))
+ 
+     events = replay.get("rewinds", [])
+     if type(events) is not list or len(events) > 3 or (replay["schema"] == "bmt-replay-v2" and not events):
+@@ -352,7 +361,9 @@
+         if type(vehicle_id) is not str or vehicle_id not in self.manifest()["vehicles"]:
+             raise VerificationError("Unsupported vehicle")
+         result = self._invoke(
+-            {"operation": "creator_test" if creator_test else "run", "document": document, "replay": replay, "vehicle_id": vehicle_id, "capture_ghost":capture_ghost}
++            {"operation": "creator_test" if creator_test else "run", "document": document,
++             "replay": {key: value for key, value in replay.items() if key != "race_proof"},
++             "race_proof": replay.get("race_proof"), "vehicle_id": vehicle_id, "capture_ghost":capture_ghost}
+         )
+         ticks, laps, milliseconds = result.get("time_ticks"), result.get("lap_ticks"), result.get("time_ms")
+         if (
+@@ -369,6 +380,25 @@
+         if not creator_test and capture_ghost:
+             validate_ghost(result.get("ghost"), ticks)
+         return result
++
++
++def validate_race_proof(proof, frames):
++    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
++            or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
++            or not 2 <= len(proof["samples"]) <= MAX_FRAMES // 6 + 12):
++        raise VerificationError("Malformed race movement proof")
++    previous = -1
++    for sample in proof["samples"]:
++        if (type(sample) is not list or len(sample) != 8
++                or any(type(value) not in (int, float) or not math.isfinite(value) for value in sample)
++                or type(sample[0]) is not int or not previous < sample[0] <= frames
++                or type(sample[6]) is not int or sample[6] not in (0, 1)
++                or not 0 <= sample[7] <= 32
++                or any(abs(value) > 100000 for value in sample[1:6])):
++            raise VerificationError("Malformed race movement sample")
++        previous = sample[0]
++    if proof["samples"][0][0] != 0:
++        raise VerificationError("Movement proof must begin at the race start")
+ 
+ 
+ def validate_ghost(recording, race_ticks):
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -69,6 +69,7 @@
+         run = session.scalar(
+             select(Run)
+             .join(Board, Board.id == Run.board_id)
++            .join(Player, Player.id == Run.player_id)
+             .outerjoin(QueuePlayer, QueuePlayer.player_id == Run.player_id)
+             .where(
+                 pinned_filter(Board.manifest, manifest),
+@@ -77,7 +78,7 @@
+                     and_(Run.status == "verifying", Run.lease_until <= now()),
+                 )
+             )
+-            .order_by(func.coalesce(QueuePlayer.last_claim_at, 0), Run.created_at, Run.id)
++            .order_by(Player.is_test_driver, func.coalesce(QueuePlayer.last_claim_at, 0), Run.created_at, Run.id)
+             .with_for_update(skip_locked=True, of=Run)
+             .limit(1)
+         )
+@@ -280,6 +281,7 @@
+         session.commit()
+         logger.info("verification_complete", extra={"run_id": run_id, "time_ticks": result["time_ticks"],
+             "worker_id": worker_id, "queue_wait_seconds": queue_wait,
++            "verification_method":result.get("verification_method","canonical-replay"),
+             "verification_seconds":round(time.monotonic()-started,4)})
+     heartbeat(app,worker_id,phase="idle",last_verification_seconds=round(time.monotonic()-started,4))
+     app.state.pending_finalization = None
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -67,7 +67,7 @@
+     if destination.exists() and any(destination.iterdir()):
+         raise ValueError("Destination must be absent or empty; existing files are never removed")
+     files = [source / folder / (name + ".gd") for folder, names in SCRIPTS.items() for name in names]
+-    runners = [source / "backend" / name for name in ("runner.gd", "generate_fixture.gd", "generate_test_driver.gd")]
++    runners = [source / "backend" / name for name in ("runner.gd", "verification_track.gd", "lightweight_verifier.gd", "race_proof.gd", "generate_fixture.gd", "generate_test_driver.gd")]
+     files.extend(runners)
+     # TrackTheme preloads this resource even in the headless canonical project.
+     files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))
+--- a/backend/schemas/packed-input-v1.schema.json
++++ b/backend/schemas/packed-input-v1.schema.json
+@@ -10,7 +10,8 @@
+     "replay_schema": {"enum": ["bmt-replay-v1", "bmt-replay-v2"]},
+     "frame_count": {"type": "integer", "minimum": 1, "maximum": 216000},
+     "controls": {"type": "string", "contentEncoding": "base64", "minLength": 8, "maxLength": 1728000},
+-    "rewinds": {"$ref": "replay-v2.schema.json#/properties/rewinds"}
++    "rewinds": {"$ref": "replay-v2.schema.json#/properties/rewinds"},
++    "race_proof": {"$ref": "race-proof-v1.schema.json"}
+   },
+   "$comment": "Decoded length must be frame_count*6. Each tick: width (3/4/5), steer+127 (0..254), throttle, brake, handbrake, launch. Omitted channels are zero. Launch 1/2 is allowed in tick zero only. Unpacked canonical schema and rewind timeline checks always run. Transport never resamples inputs."
+ }
+--- /dev/null
++++ b/backend/schemas/race-proof-v1.schema.json
+@@ -0,0 +1,29 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "bmt-race-proof-v1",
++  "title": "Sparse race movement evidence",
++  "type": "object",
++  "additionalProperties": false,
++  "required": ["schema", "samples"],
++  "properties": {
++    "schema": {"const": "bmt-race-proof-v1"},
++    "samples": {
++      "type": "array", "minItems": 2, "maxItems": 36012,
++      "items": {
++        "type": "array", "minItems": 8, "maxItems": 8,
++        "prefixItems": [
++          {"type": "integer", "minimum": 0, "maximum": 216000},
++          {"type": "number", "minimum": -100000, "maximum": 100000},
++          {"type": "number", "minimum": -100000, "maximum": 100000},
++          {"type": "number", "minimum": -100000, "maximum": 100000},
++          {"type": "number", "minimum": -100000, "maximum": 100000},
++          {"type": "number", "minimum": -100000, "maximum": 100000},
++          {"type": "integer", "enum": [0, 1]},
++          {"type": "number", "minimum": 0, "maximum": 32}
++        ],
++        "items": false
++      }
++    }
++  },
++  "$comment": "Rows are tick,x,y,heading,vx,vy,elevated,jump_height. Tick zero is required; ticks strictly increase. Fast checks require <=6 tick gaps, exact input-count finish, car speed/acceleration/displacement plausibility and every ordered road gate. Ambiguous movement, old recordings, rewinds and creator tests use full replay verification. This is intentionally not exact anti-cheat physics validation. Normal inputs and receipt envelopes are unchanged. Capture forces lap-end samples. Negotiated by bootstrap.lightweight_race_proofs; evidence is immutable with the saved upload."
++}
+--- a/backend/tests/test_cloud_client.py
++++ b/backend/tests/test_cloud_client.py
+@@ -19,7 +19,18 @@
+ 
+ @pytest.mark.godot
+ def test_cloud_library_against_http(tmp_path):
+-    run_client(tmp_path, "res://tests/test_cloud_tracks.gd")
++    methods = []
++    def observe(app):
++        original = app.state.verifier.verify_run
++        def verify(*args, **kwargs):
++            result = original(*args, **kwargs)
++            methods.append(result.get("verification_method", "canonical-replay"))
++            if args[1].get("race_proof"):
++                print("NATIVE_PROOF_RECEIVED", len(args[1]["race_proof"]["samples"]))
++            return result
++        app.state.verifier.verify_run = verify
++    run_client(tmp_path, "res://tests/test_cloud_tracks.gd", prepare=observe)
++    assert "movement-proof-v1" in methods, "The actual completed app race must take the lightweight path"
+ 
+ 
+ @pytest.mark.godot
+--- /dev/null
++++ b/backend/tests/test_lightweight_verifier.py
+@@ -0,0 +1,170 @@
++import copy
++import json
++import subprocess
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import select
++from test_test_drivers import auth, bot_login, fleet
++from test_test_drivers import drivers as drivers_fixture
++from test_verifier import race_fixture as race_fixture_source
++from test_verifier import real_verifier as real_verifier_source
++
++from bmt_backend.background_work import BackgroundControl, BackgroundYielded
++from bmt_backend.replay_wire import unpack_replay
++from bmt_backend.track_models import Run
++from bmt_backend.verifier import GodotVerifier, VerificationError, validate_replay
++from bmt_backend.worker import process_one
++
++drivers = drivers_fixture
++race_fixture = race_fixture_source
++real_verifier = real_verifier_source
++
++@pytest.fixture(scope="module")
++def proof(real_verifier, tmp_path_factory):
++    folder = tmp_path_factory.mktemp("lightweight-proof")
++    output = folder / "proof.json"
++    root = Path(__file__).resolve().parents[2]
++    command = [real_verifier.binary, "--headless", "--path", str(root / "game"), "--script",
++        "res://tests/test_lightweight_verifier.gd", "--", f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
++        f"--proof-output={output}"]
++    result = subprocess.run(command, capture_output=True, timeout=90, check=False)
++    assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
++    return json.loads(output.read_text())
++
++
++@pytest.mark.godot
++def test_light_proof_fast_finish_bad_evidence_fallback_and_replay_rejection(real_verifier, race_fixture, proof):
++    verifier = GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary,
++        game_project=real_verifier.project, verifier_timeout_seconds=90, persistent_verifier=True))
++    try:
++        replay = {**race_fixture["replay"], "race_proof": proof}
++        baseline = verifier.verify_run(race_fixture["document"], replay, "compact")
++        assert baseline["verification_method"] == "movement-proof-v1"
++        assert baseline["time_ticks"] == race_fixture["time_ticks"]
++        assert baseline["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]
++        assert baseline["manifest"] == race_fixture["expected_manifest"]
++        altered = copy.deepcopy(replay)
++        altered["race_proof"]["samples"][1][1] += 40
++        fallback = verifier.verify_run(race_fixture["document"], altered, "compact")
++        assert "verification_method" not in fallback
++        assert fallback["time_ticks"] == baseline["time_ticks"]
++        assert fallback["lap_ticks"] == baseline["lap_ticks"]
++        altered["frames"] = [[0, 0, 0]] * len(altered["frames"])
++        with pytest.raises(VerificationError, match="required laps"):
++            verifier.verify_run(race_fixture["document"], altered, "compact")
++        # No recording is trusted just because it includes a well-shaped proof.
++        incomplete = copy.deepcopy(replay)
++        incomplete["frames"] = incomplete["frames"][:-1]
++        with pytest.raises(VerificationError):
++            verifier.verify_run(race_fixture["document"], incomplete, "compact")
++        no_ghost = verifier.verify_run(race_fixture["document"], replay, "compact", capture_ghost=False)
++        assert no_ghost["verification_method"] == "movement-proof-v1" and no_ghost["ghost"] == {}
++    finally:
++        verifier.close()
++
++
++@pytest.mark.parametrize("bad", [None, {}, {"schema": "bmt-race-proof-v1", "samples": []},
++    {"schema": "bmt-race-proof-v1", "samples": [[0, 0, 0, 0, 0, 0, True, 0], [6, 0, 0, 0, 0, 0, 0, 0]]},
++    {"schema": "bmt-race-proof-v1", "samples": [[0, 0, 0, 0, 0, 0, 0, 0], [6, float("nan"), 0, 0, 0, 0, 0, 0]]}])
++def test_malformed_proof_fails_closed(bad):
++    with pytest.raises(VerificationError):
++        validate_replay({"schema": "bmt-replay-v1", "frames": [[0, 0, 0]] * 6, "race_proof": bad})
++
++
++def test_packed_transport_preserves_evidence_and_pending_poll_budget():
++    import base64
++
++    from bmt_backend.runs import pending_poll_ms
++    from bmt_backend.track_models import now
++    evidence = {"schema": "bmt-race-proof-v1", "samples": [[0, 0., 0., 0., 0., 0., 0, 0.], [6, 0., 0., 0., 0., 0., 0, 0.]]}
++    wire = {"schema": "bmt-packed-input-v1", "replay_schema": "bmt-replay-v1", "frame_count": 6,
++        "controls": base64.b64encode(bytes([3, 127, 0, 0, 0, 0]) * 6).decode(), "race_proof": evidence}
++    replay = unpack_replay(wire)
++    validate_replay(replay)
++    assert replay["race_proof"] == evidence and len(replay["frames"]) == 6
++    run = SimpleNamespace(status="queued", created_at=now())
++    assert pending_poll_ms(run) == 1000
++    run.created_at -= 11
++    assert pending_poll_ms(run) == 2500
++    run.status = "verified"
++    assert pending_poll_ms(run) == 0
++
++
++@pytest.mark.godot
++def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app, auth_client, sign_in, real_verifier, race_fixture, proof):
++    import base64
++    import uuid
++    from dataclasses import replace
++    auth_app.state.settings = replace(auth_app.state.settings, environment="test", allow_sync_track_validation=True)
++    verifier = GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary,
++        game_project=real_verifier.project, verifier_timeout_seconds=90, persistent_verifier=True))
++    auth_app.state.verifier = verifier
++    methods = []
++    original = verifier.verify_run
++    def observed(*args, **kwargs):
++        result = original(*args, **kwargs)
++        methods.append(result.get("verification_method", "canonical-replay"))
++        return result
++    verifier.verify_run = observed
++    try:
++        login = sign_in("Light proof driver")
++        headers = {"Authorization": "Bearer " + login["access_token"]}
++        def write(path, body, key=None):
++            return auth_client.post("/v1" + path, json=body,
++                headers={**headers, "Idempotency-Key": key or str(uuid.uuid4())})
++        track = write("/tracks", {"name": "Light proof oval", "document": race_fixture["document"]})
++        assert track.status_code == 201, track.text
++        ticket = write("/run-tickets", {"version_id": track.json()["version_id"], "vehicle_id": "compact"})
++        assert ticket.status_code == 201, ticket.text
++        raw = b"".join(bytes([3, row[0]+127, row[1], row[2], 0, 0]) for row in race_fixture["replay"]["frames"])
++        wire = {"schema": "bmt-packed-input-v1", "replay_schema": "bmt-replay-v1", "frame_count": race_fixture["time_ticks"],
++            "controls": base64.b64encode(raw).decode(), "race_proof": proof}
++        body = {"ticket_id": ticket.json()["ticket_id"], "replay": wire}
++        key = str(uuid.uuid4())
++        submitted = write("/runs", body, key)
++        assert submitted.status_code == 202, submitted.text
++        run_id = submitted.json()["run_id"]
++        assert write("/runs", body, key).json()["run_id"] == run_id
++        assert process_one(auth_app)
++        assert methods == ["movement-proof-v1"]
++        result = auth_client.get("/v1/runs/" + run_id, headers=headers).json()
++        assert result["status"] == "verified" and result["time_ticks"] == 12757
++        assert result["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]
++        assert write("/runs", body, key).json()["run_id"] == run_id
++        with auth_app.state.session_factory() as session:
++            run = session.get(Run, run_id)
++            assert auth_app.state.blobs.get_json(run.replay_hash)["race_proof"] == proof
++            assert run.ghost_hash
++    finally:
++        verifier.close()
++
++
++def test_player_run_preempts_background_and_bypasses_older_artificial_jobs(drivers):
++    population = fleet(drivers, count=1)
++    bot = bot_login(drivers, population["profiles"][0])
++    with drivers.factory() as session:
++        from bmt_backend.track_models import TrackVersion
++        version = session.scalar(select(TrackVersion.id).where(TrackVersion.state == "published"))
++    def submit(login, artificial):
++        ticket = drivers.client.post("/v1/run-tickets", json={"version_id": version, "vehicle_id": "compact",
++            "test_population": artificial}, headers=auth(login)).json()
++        response = drivers.client.post("/v1/runs", json={"ticket_id": ticket["ticket_id"],
++            "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}, headers=auth(login))
++        assert response.status_code == 202, response.text
++        return response.json()["run_id"]
++    bot_run = submit(bot, True)
++    control = BackgroundControl(drivers.app)
++    assert not control.is_set()  # Artificial backlog never interrupts generation.
++    human_run = submit(drivers.login, False)
++    control.next_check = 0
++    with pytest.raises(BackgroundYielded):
++        control.is_set()
++    assert process_one(drivers.app)
++    with drivers.factory() as session:
++        assert session.get(Run, human_run).status == "verified"
++        assert session.get(Run, bot_run).status == "queued"
++    assert process_one(drivers.app)
++    control.next_check = 0
++    assert not control.is_set()
+--- /dev/null
++++ b/backend/tools/benchmark_verification.py
+@@ -0,0 +1,86 @@
++"""Compare real pinned-engine replay/proof costs without an API or player data."""
++import argparse
++import ctypes
++import json
++import os
++import statistics
++import sys
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from bmt_backend.loadtest import rss_bytes
++from bmt_backend.verifier import GodotVerifier
++
++
++def cpu_seconds(pid):
++    if os.name == "nt":
++        from ctypes import wintypes
++        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
++        kernel.OpenProcess.restype = wintypes.HANDLE
++        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
++        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
++        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
++        handle = kernel.OpenProcess(0x1000, False, pid)
++        if not handle:
++            raise OSError(ctypes.get_last_error())
++        try:
++            values = [wintypes.FILETIME() for _ in range(4)]
++            if not kernel.GetProcessTimes(handle, *[ctypes.byref(value) for value in values]):
++                raise OSError(ctypes.get_last_error())
++            return sum((value.dwHighDateTime << 32) + value.dwLowDateTime for value in values[2:]) / 10_000_000
++        finally:
++            kernel.CloseHandle(handle)
++    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
++    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
++
++
++def measure(binary, project, fixture, proof, repeats):
++    verifier = GodotVerifier(SimpleNamespace(godot_bin=binary, game_project=project,
++        verifier_timeout_seconds=90, persistent_verifier=True, verifier_recycle_jobs=100))
++    result = {}
++    try:
++        for mode in ["canonical", "movement-proof"]:
++            replay = fixture["replay"] if mode == "canonical" else {**fixture["replay"], "race_proof": proof}
++            started = time.perf_counter()
++            verifier.verify_run(fixture["document"], replay, fixture["vehicle_id"])
++            warmup = time.perf_counter() - started
++            samples = []
++            for _ in range(repeats):
++                cpu = cpu_seconds(verifier.engine_pid)
++                python_cpu = time.process_time()
++                started = time.perf_counter()
++                response = verifier.verify_run(fixture["document"], replay, fixture["vehicle_id"])
++                elapsed = time.perf_counter() - started
++                assert response["time_ticks"] == fixture["time_ticks"]
++                assert response["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]
++                assert response["manifest"] == fixture["expected_manifest"]
++                samples.append({"wall_seconds": elapsed, "engine_cpu_seconds": cpu_seconds(verifier.engine_pid)-cpu,
++                    "python_cpu_seconds": time.process_time()-python_cpu, "engine_rss_bytes": rss_bytes(verifier.engine_pid),
++                    "method": response.get("verification_method", "canonical-replay")})
++            result[mode] = {"warmup_seconds": warmup, "samples": samples,
++                "median_wall_seconds": statistics.median(row["wall_seconds"] for row in samples),
++                "median_engine_cpu_seconds": statistics.median(row["engine_cpu_seconds"] for row in samples)}
++    finally:
++        verifier.close()
++    return result
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--godot", required=True)
++    parser.add_argument("--project", type=Path, required=True)
++    parser.add_argument("--fixture", type=Path, required=True)
++    parser.add_argument("--proof", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    parser.add_argument("--repeats", type=int, default=5)
++    args = parser.parse_args()
++    if not 1 <= args.repeats <= 50:
++        parser.error("Use 1 to 50 repeats")
++    report = measure(args.godot, args.project, json.loads(args.fixture.read_text()),
++                     json.loads(args.proof.read_text()), args.repeats)
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_text(json.dumps(report, indent=2))
++    for mode, data in report.items():
++        print(f"{mode}: wall {data['median_wall_seconds']:.4f}s, engine CPU {data['median_engine_cpu_seconds']:.4f}s")
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-09 VF01-VF04/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved lightweight 20Hz movement proofs check broad speed/acceleration/displacement and all ordered gates, exact input-count five-lap duration and best-only scores; creator/rewind/old/uncertain recordings retain faster canonical fallback. Warm fixture1.7022s to0.1397s/95.3% less engine CPU; Linux0.1249s. Human queue priority/250ms background yielding, durable normalized proof/poll fixes retained. Native17436/App99/rewind61/upload17/weekly1109/challenges84, replay78, SQLite93/7skip, ownedPG91/7skip, final HTTP9 and native exact-ticket49 pass. APK241155846/SHA25684D361FD882CC0F28E7D58EBA7DF8CA2C3FA1E372BE80258441AE98B2066863C exported after focused72/21/48; broad validation stopped on two storm spray assertions. Task-only Linux image280effff tested/pushed and fresh backup1791562942686 succeeds; remote deploy rejected before execution by automatic approval review pending explicit owner approval. Tablet f0ba474a offline/no install-device acceptance, no production action. Contracts/files/commands/limits/checkpoint: docs/VERIFICATION_SPEED.md.
++
+ 2026-10-09 WR02/WR07-WR10/R01/V03-V05/Q01: owner-reference track view now has preview/standings cards only; third rival/ghost column removed, equal-width64-logical-pixel Back/Race footer outside both cards. Eight complete rows/full14-20 field, signed gaps, sticky player, actual start/direction and internal ghost targets/no-recording fallback retained. Final native detail345/headless weekly1109/App99/disposable graphical HTTP40 checks pass; five legal laps/12757 ticks independently verified, normal results first/Race Again preserved. Footer arrow encoding corrected and24 final native captures refreshed; eight pre-label-fix HTTP flow captures retained. No phone attachment check/device test/export/install/full Validate/physics/backend or production deployment. Task-only checkpoint, exact files/commands/evidence and acceptance: docs/RIVALRY_TWO_COLUMN.md.
+ 
+ 2026-10-09 WR08/R01/V03-V05/Q01: fatal Rivalry results Continue reproduced as a freed content control passed into typed standings-scroll helper. Guarded navigation and retired replaced menu references after saving scroll; summary-first, pending/failed feedback, Race Again context and Back-to-overview cleanup retained. Native mouse/touch78/results105/App99/feedback18/entry66/carousel42/challenges84/parser396 pass;18 new captures retained/three inspected. Broad normal-results headless11 failures/out-of-bounds reproduced identically with pre-fix app; fixture scope/focus-overlay failures retained and corrected. No phone attachment/device test/export/install/full Validate/live race/backend/deployment. Task-only patch and requirements/files/commands/evidence/acceptance: docs/RIVALRY_CONTINUE_FIX.md.
+--- /dev/null
++++ b/docs/VERIFICATION_SPEED.md
+@@ -0,0 +1,65 @@
++# Lightweight race verification — 2026-10-09
++
++The owner explicitly prioritizes low server computation and fast results over catching every handling/collision manipulation. This authorizes sparse movement plausibility checks for ordinary completed races. Requirement IDs: task-local **VF01** (lightweight proof), **VF02** (player priority/background yielding), **VF03** (compatible fallback and durable evidence), **VF04** (prompt result polling), plus **B05/B07/Q01/R01/WR07–WR08/CH09**. This supersedes exact replay execution as the only permitted competitive validation method. The live game simulation, pinned track/car contracts, five laps, normal results first, best-only scoring, resume receipts and public/artificial population isolation remain.
++
++## Measured result
++
++Five repeated warm verifications of the same original 12,757-tick, five-lap oval on the pinned Windows engine, including ghost capture:
++
++| Path | Median wall time | Median engine CPU time |
++|---|---:|---:|
++| Before this task, full replay | 1.7022 s | 1.6563 s |
++| Optimized full replay fallback | 1.0609 s | 1.0156 s |
++| Sparse movement proof | 0.1397 s | 0.0781 s |
++
++The fast path is about **12.2× faster** and uses **95.3% less engine CPU** in this fixture. Both Python and engine CPU/RSS samples are retained in [benchmark evidence](evidence/verification-speed-2026-10-09/optimized-benchmark.json); [original measurements](evidence/verification-speed-2026-10-09/baseline-benchmark.json) use the captured before-task runner. The frozen Linux development image independently accepts both paths with the same manifest and lap ticks; its lightweight call measured **0.1249 s**. These are local fixture measurements, not promised cloud end-to-end or worst-case performance. Track compilation, queue pickup, storage/network latency and UI polling remain outside that warm engine cost.
++
++Initial instrumentation identified approximately 0.43–0.51 s of ghost water-depth sampling on a dry track and 1.0–1.13 s of physics work. The optimized immutable track uses conservative occupancy tiles, dry-water exclusion, preserved route candidate/tie order, empty kerb-region exclusion and prefiltered prop/hazard lists. Positive/uncertain regions use the original arithmetic. Canonical simulation and mutable editor tracks are unchanged.
++
++## Runtime contract and deliberate limits
++
++The app records `bmt-race-proof-v1` samples at 20 Hz and forces lap-end samples: tick, position, heading, velocity, elevation layer and jump height. It sends this evidence only after the backend advertises `lightweight_race_proofs`; existing clients/outboxes remain compatible. Evidence is included in the durable recording/hash and survives app restart, packed transport and its legacy-wire fallback. The encoder restores integer tick/layer types after Godot JSON parsing.
++
++The server validates bounded finite data and unchanged quantized inputs, pins the actual immutable track/car, checks the standing start, movement/velocity consistency, broad speed/acceleration limits, input-count duration and **every ordered track gate**, requiring all five laps and a finish at the exact input count. It derives race/lap ticks from the checked sample timeline, rather than accepting a claimed `time_ms` or PB. The fixture retains lap ticks `[2634,2532,2531,2530,2530]` and ghosts. Between forced boundaries, checking a chord instead of all intermediate 120 Hz states may miss fine trajectory detail; fractional finish interpolation can differ by roughly one sample interval. This is the owner-approved accuracy tradeoff.
++
++The proof does **not** establish that all motion follows the submitted pedals/steering or reproduce exact tire forces, kerb losses and collisions. A deliberately fabricated but plausible trajectory can evade these checks. Uncertain/implausible proofs fall back to full replay rather than rejecting a legal race; missing proof, older clients, creator validation and rewind races use full replay. Invalid input/envelope/receipt/build checks still fail closed. Detailed anti-cheat accuracy is intentionally outside this faster policy.
++
++Player jobs precede artificial-driver jobs while preserving fairness among actual players. Long development driver generation checks for compatible ready player work every 250 ms, terminates only its own generator process and leaves the unfinished artificial attempt resumable without spending a retry or inventing a result. Banked/daily resume behavior and artificial/public isolation are unchanged. Initial result polling can run at one second for ten seconds, then returns to existing longer intervals/backoff; a pending cache no longer masks completed results for three seconds.
++
++## Changed files
++
++- Engine boundary: `game/backend/{runner,verification_track,lightweight_verifier,race_proof}.gd`; standalone packaging in `backend/deploy/stage_verifier.py`.
++- App recording/durable uploads/polling: `game/core/{game,app}.gd`, `game/backend/{cloud_tracks,backend_client,weekly_rivalry_client,challenges_client}.gd`.
++- Backend acceptance/queue/polling: `backend/bmt_backend/{verifier,replay_wire,app,worker,background_work,automatic_test_drivers,test_population_batch,runs,rivalry,challenges,observability}.py`.
++- Contracts: `backend/schemas/{race-proof-v1,packed-input-v1}.schema.json`; no database migration or rules/physics/handling version change.
++- Diagnostics/tests: `backend/tools/benchmark_verification.py`, `backend/tests/{test_lightweight_verifier,test_cloud_client}.py`, `game/tests/{test_lightweight_verifier,test_backend_scalability,test_cloud_tracks}.gd`.
++- Owner override/status: `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this report and `docs/evidence/verification-speed-2026-10-09`.
++
++## Actual commands and outcomes
++
++All engine commands use the exact `godot-version.txt` build through `scripts/dev.ps1` or existing real-engine pytest adapters. Windows certificate-store access required normal execution after the initial sandbox import failed; no certificate/trust configuration was changed.
++
++| Actual command/workflow | Outcome |
++|---|---|
++| `dev.ps1 Import`; `CheckScript` for the two new verifier scripts | Import/parser passed after normal certificate access; initial sandbox certificate error retained. |
++| `dev.ps1 TestScript -ScriptPath res://tests/test_lightweight_verifier.gd -TestArgument @('--fixture=…/verified_oval.json','--proof-output=…/proof.json')` | **17,436 checks, zero failures**: every canonical fixture state exact, five laps/light proof, invalid movement fallback, water shore/tile/exterior collision equivalence and route tie order. Initial CLI argument/PowerShell policy errors corrected. |
++| `pytest backend/tests/test_lightweight_verifier.py backend/tests/test_persistent_verifier.py backend/tests/test_verifier.py -q` | **78 passed**: real replay, launch, rewind, invalid/truncated/trailing inputs, persistent engine/recycle/recovery, bounded caches and maximum replay. |
++| `pytest` lightweight/auth/scalability/lifecycle/population/automatic-driver/challenge files `-k 'not postgres'` | **93 passed, 7 skipped, 34 deselected**. |
++| Owned disposable PostgreSQL wrapper over lightweight/scalability/lifecycle/population/challenges | **91 passed, 7 skipped**; only its own container removed after ownership check. Initial default localhost PostgreSQL was unavailable: **63 passed, 6 skipped, 17 connection errors**; no tests were relabeled as passed. |
++| Final `pytest backend/tests/test_lightweight_verifier.py -q` | **9 passed**, including packed proof shape, poll budgets, actual authenticated HTTP/worker/idempotency/ghost storage and human preemption. Initial test-environment configuration error corrected without relaxing the gate. |
++| `pytest backend/tests/test_cloud_client.py::test_cloud_library_against_http -q` | Final pass; **49 native checks**, exact completed-ticket upload and observed `movement-proof-v1`. The old fixture checked an earlier done upload before asynchronous save; it now waits for this race's save. The obsolete `RANK` expectation now checks the existing actual `POSITION`/`TOP` display. Both initial failures are retained in work logs. The separate durable lifecycle HTTP test passed on the initial run. |
++| `dev.ps1 TestScript …test_backend_scalability.gd`; `TestApp`; `TestRewind`; weekly-rivalry/challenges scripts | **17 / 99 / 61 / 1109 / 84 checks**, zero failures. Initial proof dictionary int/float equality fixture corrected by asserting normalized wire evidence. |
++| Benchmark tool on before/optimized standalone projects, five repeats each | Timings/engine CPU/RSS and invariant checks saved as JSON. |
++| Frozen development-image operator `prepare`, `build`, `test` | Task-only 15-file overlay; all unrelated 110 original packaged game files exact. Linux canonical and sparse five-lap checks pass with networking disabled. |
++| `dev.ps1 ExportAndroid` | Broad validation stopped at **two storm spray-render assertions** (`front spray stays quieter…`, `water fan travels farther…`); earlier replay/checkpoint/editor gates passed. These assertions were not changed or claimed green. |
++| `dev.ps1 ExportAndroid -QuickValidation` | Focused startup/driving72/catalog21/menus48 passed and matching-template APK exported. |
++| `dev.ps1 Doctor` | Tablet `f0ba474a` **offline**; no install, device run or physical-device acceptance. |
++| Ruff on new Python modules/tool/test | Passed. |
++
++## Deployment and acceptance
++
++The tested task-only image is prepared and pushed for the existing **development** API/worker and related acceptance jobs, with an explicit environment/ownership/image guard. Fresh SQL backup **1791562942686** succeeded. Image digest **280effff11c02dcebb08d0334db8e0c3d012091004ed72f2acdf02979f2cc2ef** passed Linux checks. No database migration or player-record rewrite is needed; resource settings and production remain outside this update. The [receipt](evidence/verification-speed-2026-10-09/development-rollout.json) records preparation, build, push and backup.
++
++Automatic approval review rejected the attempted `image_operator.py deploy` command **before execution**: replacing a shared cloud API/worker is a consequential mutation and optimization authorization did not explicitly authorize this exact remote deployment. Explicit owner approval was requested. The remote API/worker have not been replaced and remote post-deployment smoke has not run. The prepared image/backup/local Linux checks remain available; deployment awaits that approval.
++
++The APK at `build/android/circuit01-debug.apk` is **241,155,846 bytes**, SHA256 **84D361FD882CC0F28E7D58EBA7DF8CA2C3FA1E372BE80258441AE98B2066863C**. Android clients need this update to send proofs. After approved server rollout, older installed versions will benefit from faster full replay and queue priority, while their ordinary races continue through the fallback. The attached tablet remains offline, so installation and on-device completion latency remain outstanding. Also outstanding: representative live tracks/cars/bridges/hazards and fallback-rate/queue-latency monitoring under sustained cloud load. No visual layout/art change or new UI label was made; no UI screenshot is required for this server/transport slice.
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -280,7 +280,8 @@
+ 
+ func recent_run(ticket_id: String) -> Dictionary:
+ 	var cached: Dictionary = _race_status_cache.get(ticket_id,{})
+-	return cached.get("data",{}) if Time.get_ticks_msec()-int(cached.get("at",-10000)) < 3000 else {}
++	var duration: int = 250 if cached.get("data",{}).get("status","") in ["queued","verifying"] else 3000
++	return cached.get("data",{}) if Time.get_ticks_msec()-int(cached.get("at",-10000)) < duration else {}
+ 
+ func _background(work: Callable) -> Variant:
+ 	var thread := Thread.new()
+@@ -505,7 +506,7 @@
+ func race_ticket(version_id: String, vehicle_id: String, key: String, purpose: String = "race") -> Dictionary:
+ 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id,"purpose":purpose},key,true)
+ 
+-static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true) -> Dictionary:
++static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}) -> Dictionary:
+ 	# Godot's JSON parser returns floats, including integers restored from the outbox.
+ 	# Preserve the strict wire schema without accepting fractional/corrupt controls.
+ 	var packed: Array = []
+@@ -517,6 +518,18 @@
+ 			values.append(int(value))
+ 		packed.append(values)
+ 	var replay: Dictionary = {"schema":"bmt-replay-v1","frames":packed}
++	if not race_proof.is_empty():
++		if race_proof.get("schema","") != "bmt-race-proof-v1" or not race_proof.get("samples") is Array: return {}
++		var samples: Array = []
++		for row: Variant in race_proof.samples:
++			if not row is Array or row.size() != 8: return {}
++			for value: Variant in row:
++				if not (value is int or value is float) or not is_finite(float(value)): return {}
++			if float(row[0]) != float(int(row[0])) or float(row[6]) != float(int(row[6])): return {}
++			var sample: Array = row.duplicate()
++			sample[0] = int(row[0]); sample[6] = int(row[6])
++			samples.append(sample)
++		replay.race_proof = {"schema":"bmt-race-proof-v1","samples":samples}
+ 	if not rewinds.is_empty():
+ 		replay.schema = "bmt-replay-v2"
+ 		replay.rewinds = []
+@@ -542,19 +555,20 @@
+ 	if not compact: return replay
+ 	var wire: Dictionary = {"schema":"bmt-packed-input-v1","replay_schema":replay.schema,"frame_count":packed.size(),"controls":Marshalls.raw_to_base64(controls)}
+ 	if replay.has("rewinds"): wire.rewinds = replay.rewinds
++	if replay.has("race_proof"): wire.race_proof = replay.race_proof
+ 	return wire
+ 
+-func submit_run(ticket_id: String, frames: Array, key: String, rewinds: Array = []) -> Dictionary:
++func submit_run(ticket_id: String, frames: Array, key: String, rewinds: Array = [], race_proof: Dictionary = {}) -> Dictionary:
+ 	var generation: int = _session_generation
+ 	var origin: String = _base_url
+ 	var compact: bool = not _disable_packed and _capabilities.get("replay_wire_schema","") == "bmt-packed-input-v1"
+-	var replay: Variant = await _background(_pack_replay.bind(frames,rewinds,compact))
++	var replay: Variant = await _background(_pack_replay.bind(frames,rewinds,compact,race_proof))
+ 	if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
+ 	if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
+ 	var response: Dictionary = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
+ 	if compact and int(response.status) == 422 and (str(response.error).to_lower().contains("replay envelope") or str(response.error) in ["INVALID_PACKED_REPLAY","UNSUPPORTED_REPLAY_SCHEMA"]):
+ 		_disable_packed = true
+-		replay = await _background(_pack_replay.bind(frames,rewinds,false))
++		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof))
+ 		if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
+ 		if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
+ 		response = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -210,7 +210,7 @@
+ 	var response: Dictionary = await _request("/challenge-results/"+expected)
+ 	_polling = false
+ 	if expected != result_ticket or original != scope(): return
+-	_next_poll = Time.get_ticks_msec()+2500
++	_next_poll = Time.get_ticks_msec()+maxi(1000,int(response.get("data",{}).get("poll_after_ms",2500)))
+ 	if not response.get("ok",false):
+ 		_failures = mini(_failures+1,5)
+ 		_next_poll = Time.get_ticks_msec()+mini(60000,2500*int(pow(2,_failures)))
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -564,14 +564,16 @@
+ 	var name: String = str(ticket_data.ticket_id).sha256_text()
+ 	var path: String = directory.path_join(name+".job.json")
+ 	var existing: Dictionary = _read_file(path)
+-	var replay_hash: String = JSON.stringify({"frames":frames,"rewinds":rewinds}).sha256_text()
++	var recording: Dictionary = {"frames":frames,"rewinds":rewinds}
++	if ticket_data.has("_race_proof"): recording.race_proof = ticket_data._race_proof
++	var replay_hash: String = JSON.stringify(recording).sha256_text()
+ 	if existing.has("_read_error"):
+ 		return false
+ 	if not existing.is_empty():
+ 		if str(existing.get("replay_hash","")) != replay_hash: return false
+ 		if existing.has("run_id"): return true
+ 		return _replay_integrity(directory.path_join(name+".replay.json"),replay_hash)
+-	var saved: bool = _write_file(directory.path_join(name+".replay.json"),{"frames":frames,"rewinds":rewinds})
++	var saved: bool = _write_file(directory.path_join(name+".replay.json"),recording)
+ 	if saved:
+ 		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":publish_version,"publish_key":ticket_data.get("_publish_key",Client.new_idempotency_key())})
+ 	return saved
+@@ -800,7 +802,7 @@
+ 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
+ 	if not loaded is Dictionary or not loaded.get("frames") is Array:
+ 		return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+-	return await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]))
++	return await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]),loaded.get("race_proof",{}))
+ 
+ func flush_outbox() -> void:
+ 	if flushing or not client.signed_in(): return
+@@ -908,7 +910,7 @@
+ 			_delay_job(job,30,true)
+ 			status = _upload_failure_message(str(job.failure))
+ 		else:
+-			_delay_job(job,3)
++			_delay_job(job,1 if int(response.data.get("poll_after_ms",2500)) <= 1000 else 3)
+ 			status = "Race uploaded ? awaiting server verification"
+ 		_save_job(path,job)
+ 		if job.get("done",false) and _read(path).get("done",false): _retire_replay(job)
+--- /dev/null
++++ b/game/backend/lightweight_verifier.gd
+@@ -0,0 +1,61 @@
++extends RefCounted
++## Plausibility + every ordered road gate. Does not reproduce tire/collision forces.
++## Uncertain trajectories return to the canonical replay, never reject a legal race.
++
++static func check(track: NativeTrack, proof: Dictionary, initial: VehicleState, config: HandlingConfig, frames: int, info: Dictionary, capture_ghost: bool) -> Dictionary:
++	var samples: Array = proof.get("samples",[])
++	if samples.size() < 2: return {}
++	var first: Array = samples[0]
++	if int(first[0]) != 0 or Vector2(first[1],first[2]).distance_to(initial.position) > 0.05: return {}
++	if Vector2(first[4],first[5]).length() > 0.05 or int(first[6]) != int(initial.track_elevated): return {}
++	var state := VehicleState.new()
++	var session := TrackSession.new()
++	session._configure(track)
++	var ghost := PersonalGhostRun.new()
++	var bridge: BridgeElevation = BridgeElevation.new(track) if capture_ghost else null
++	var previous: Vector2 = initial.position
++	var previous_tick: int = 0
++	var previous_layer: int = int(initial.track_elevated)
++	var previous_speed: float = 0.0
++	var previous_velocity := Vector2.ZERO
++	var lap_ticks: Array[int] = []
++	var last_lap: int = 0
++	var hint: int = initial.route_index
++	for index: int in range(samples.size()):
++		var sample: Array = samples[index]
++		var tick: int = int(sample[0])
++		var position := Vector2(sample[1],sample[2])
++		var velocity := Vector2(sample[4],sample[5])
++		var layer: int = int(sample[6])
++		if index > 0:
++			var elapsed: float = float(tick-previous_tick)/VehicleSimulation.TICK_RATE
++			var speed: float = velocity.length()
++			# Broad tolerance for launch, impacts and sampling. Never accept a
++			# teleport or sustained overspeed through this fast path.
++			if tick <= previous_tick or tick-previous_tick > 6 or session.finished: return {}
++			if speed > config.maximum_speed+0.1 or previous.distance_to(position) > config.maximum_speed*elapsed+0.05: return {}
++			if (position-previous-(velocity+previous_velocity)*elapsed*0.5).length() > 0.15: return {}
++			if speed-previous_speed > config.engine_force/config.mass*1.5*elapsed+0.15: return {}
++			if position.abs().x > track.half_extent.x or position.abs().y > track.half_extent.y: return {}
++			hint = track.nearest_route(position,hint)
++			session.elapsed_ticks = tick-1
++			session.advance(track,previous,position,hint,layer == 1,previous_layer)
++			if session.completed_laps > lap_ticks.size():
++				lap_ticks.append(tick-last_lap)
++				last_lap = tick
++			previous_speed = speed
++		state.tick = tick
++		state.position = position
++		state.heading = float(sample[3])
++		state.velocity = velocity
++		state.track_elevated = layer == 1
++		state.route_index = hint
++		state.jump_height = float(sample[7])
++		if capture_ghost: ghost.capture(state,session,track,bridge,config,true)
++		previous = position
++		previous_tick = tick
++		previous_layer = layer
++		previous_velocity = velocity
++	if not session.finished or session.completed_laps != RaceRules.LAPS or previous_tick != frames: return {}
++	return {"time_ticks":frames,"time_ms":roundi(session.race_time_seconds()*1000.0),
++		"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if capture_ghost else {},"verification_method":"movement-proof-v1"}
+--- /dev/null
++++ b/game/backend/lightweight_verifier.gd.uid
+@@ -0,0 +1 @@
++uid://4rbqyeyf8pbm
+--- /dev/null
++++ b/game/backend/race_proof.gd
+@@ -0,0 +1,17 @@
++extends RefCounted
++## Small movement evidence for the owner-approved lightweight server check.
++const STRIDE: int = 6
++var samples: Array = []
++var _laps: int = 0
++
++func capture(state: VehicleState, session: TrackSession, force: bool = false) -> void:
++	var boundary: bool = session.completed_laps > _laps
++	_laps = session.completed_laps
++	if not force and not boundary and not session.finished and state.tick % STRIDE != 0: return
++	if not samples.is_empty() and int(samples[-1][0]) == state.tick: return
++	samples.append([state.tick,state.position.x,state.position.y,state.heading,
++		state.velocity.x,state.velocity.y,int(state.track_elevated),state.jump_height])
++
++func recording(session: TrackSession) -> Dictionary:
++	if not session.finished or samples.is_empty(): return {}
++	return {"schema":"bmt-race-proof-v1","samples":samples.duplicate()}
+--- /dev/null
++++ b/game/backend/race_proof.gd.uid
+@@ -0,0 +1 @@
++uid://bxl3cx1sqilww
+--- a/game/backend/runner.gd
++++ b/game/backend/runner.gd
+@@ -2,6 +2,8 @@
+ ## Data-only process boundary around unchanged game simulation and compiler.
+ const MAX_FRAMES: int = 216000
+ const REPLAY_SCHEMA: String = "bmt-replay-v1"
++const VerificationTrack = preload("res://backend/verification_track.gd")
++const LightweightVerifier = preload("res://backend/lightweight_verifier.gd")
+ var output_path: String = ""
+ var service_dir: String = ""
+ var job_token: String = ""
+@@ -127,6 +129,7 @@
+ 	# trig results changes JSON identity across operating systems (even tiny zeros).
+ 	var track: NativeTrack = TrackCompiler.compile(doc)
+ 	if track == null: return {"error":"Track compilation failed"}
++	track = VerificationTrack.frozen(track)
+ 	var info: Dictionary = manifest()
+ 	info.track_content_hash = track.content_hash
+ 	info.route_length = track.route_length
+@@ -199,6 +202,7 @@
+ 	var saved: Dictionary = {}
+ 	var next_event: int = 0
+ 	var offset: int = 0
++	var frame := DriveFrame.new()
+ 	for values: Array in replay.frames:
+ 		if offset == 0 and values.size() == 5: LaunchStart.initialize(sim.state,int(values[4]))
+ 		if sim.state.tick in targets:
+@@ -220,7 +224,6 @@
+ 		if session.finished:
+ 			respond({},"Replay contains frames after the race finished")
+ 			return
+-		var frame := DriveFrame.new()
+ 		frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
+ 		frame.handbrake = int(values[3]) if values.size() >= 4 else 0
+ 		frame.launch_start = int(values[4]) if values.size() == 5 else 0
+@@ -288,4 +291,8 @@
+ 	var compiled: Dictionary = compile_track(request.document)
+ 	if compiled.has("error"): respond({},compiled.error); return
+ 	if request.operation == "track": respond(compiled.manifest); return
++	if request.operation == "run" and request.get("race_proof") is Dictionary and request.replay.get("rewinds",[]).is_empty():
++		var initial: VehicleSimulation = initial_simulation(compiled.track,request.vehicle_id)
++		var quick: Dictionary = LightweightVerifier.check(compiled.track,request.race_proof,initial.state,initial.config,request.replay.frames.size(),compiled.manifest,bool(request.get("capture_ghost",true)))
++		if not quick.is_empty(): respond(quick); return
+ 	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest,request.operation == "creator_test",request.document,bool(request.get("capture_ghost",true)))
+--- /dev/null
++++ b/game/backend/verification_track.gd
+@@ -0,0 +1,110 @@
++extends NativeTrack
++## Exact read-only query acceleration for server-owned immutable compiled tracks.
++## Editor/playable tracks keep NativeTrack's live-cell implementation.
++
++const TILE: int = 16
++var _tile_width: int = 0
++var _tile_height: int = 0
++var _solid_ground := PackedByteArray()
++var _solid_deck := PackedByteArray()
++var _water := PackedByteArray()
++var _local_route := PackedVector2Array()
++var _kerb_near: Dictionary = {}
++var _kerb_margin: float = 0.0
++var _soft_props: Array = []
++var _jump_objects: Array = []
++var _fluid_objects: Array = []
++
++static func frozen(source: NativeTrack) -> NativeTrack:
++	var track := new()
++	for property: Dictionary in source.get_property_list():
++		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
++			track.set(property.name,source.get(property.name))
++	track._build_query_index()
++	return track
++
++func _build_query_index() -> void:
++	_tile_width = ceili(float(grid_width)/TILE)
++	_tile_height = ceili(float(grid_height)/TILE)
++	_solid_ground.resize(_tile_width*_tile_height)
++	_solid_deck.resize(_solid_ground.size())
++	_water.resize(_solid_ground.size())
++	for y: int in range(grid_height):
++		var tile_row: int = (y/TILE)*_tile_width
++		for x: int in range(grid_width):
++			var index: int = y*grid_width+x
++			var tile: int = tile_row+x/TILE
++			if cells[index] == 4: _solid_ground[tile] = 1
++			if deck_cells[index] == 4: _solid_deck[tile] = 1
++			if cells[index] in [3,6]: _water[tile] = 1
++	# Same 25 candidates and tie order as NativeTrack, with modulo moved to setup.
++	_local_route.resize(route.size()+24)
++	for index: int in range(_local_route.size()):
++		_local_route[index] = route[posmod(index-8,route.size())]
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		_kerb_margin = maxf(_kerb_margin,(config.wheelbase+config.track_width)*0.5)
++	var reach: int = ceili(_kerb_margin/RoadKerbs.BUCKET)
++	for key: Vector2i in kerbs.buckets:
++		for y: int in range(-reach,reach+1):
++			for x: int in range(-reach,reach+1): _kerb_near[key+Vector2i(x,y)] = true
++	for object: Dictionary in hazard_objects:
++		if object.kind in CreatorCatalog.SOFT: _soft_props.append(object)
++		if object.kind == "jump": _jump_objects.append(object)
++		if object.kind in ["oil","puddle"]: _fluid_objects.append(object)
++
++func nearest_route(point: Vector2, previous: int = -1) -> int:
++	if previous < 0: return super.nearest_route(point,previous)
++	var best: int = 0
++	var distance: float = INF
++	for offset: int in range(25):
++		var d: float = _local_route[previous+offset].distance_squared_to(point)
++		if d < distance:
++			distance = d
++			best = offset
++	return posmod(previous+best-8,route.size())
++
++func _clear_tiles(mask: PackedByteArray, first_x: int, first_y: int, end_x: int, end_y: int) -> bool:
++	for y: int in range(maxi(0,first_y)/TILE,mini(grid_height-1,end_y)/TILE+1):
++		for x: int in range(maxi(0,first_x)/TILE,mini(grid_width-1,end_x)/TILE+1):
++			if mask[y*_tile_width+x] != 0: return false
++	return true
++
++func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
++	var cx: int = floori((point.x+half_extent.x)/cell_size)
++	var cy: int = floori((half_extent.y-point.y)/cell_size)
++	var reach: int = ceili(radius/cell_size)+1
++	# Out-of-grid cells are solid. A positive tile uses the original exact sweep.
++	if cx-reach >= 0 and cy-reach >= 0 and cx+reach < grid_width and cy+reach < grid_height:
++		if _clear_tiles(_solid_deck if elevated else _solid_ground,cx-reach,cy-reach,cx+reach,cy+reach):
++			return Vector3.ZERO
++	return super._contact(point,radius,elevated)
++
++func water_depth(point: Vector2) -> float:
++	# All 81 bilinear footprints fit inside this conservative box. Exterior
++	# cells are solid, never water; any wet tile falls back to identical arithmetic.
++	var radius: float = 1.4+2.0*cell_size
++	var first_x: int = floori((point.x-radius+half_extent.x)/cell_size)
++	var end_x: int = floori((point.x+radius+half_extent.x)/cell_size)
++	var first_y: int = floori((half_extent.y-point.y-radius)/cell_size)
++	var end_y: int = floori((half_extent.y-point.y+radius)/cell_size)
++	if _clear_tiles(_water,first_x,first_y,end_x,end_y): return 0.0
++	return super.water_depth(point)
++
++func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
++	if (config.wheelbase+config.track_width)*0.5 <= _kerb_margin:
++		if not _kerb_near.has(Vector2i((state.position/RoadKerbs.BUCKET).floor())): return Vector4.ZERO
++	return super.kerb_heights(state,config)
++
++func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
++	if not tyre_origins.is_empty(): LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)
++	if not _soft_props.is_empty(): LightProps.step(state,_soft_props,_contact,from,step_seconds,config.mass,config.collision_radius)
++
++func launch_jump(state: VehicleState, previous: Vector2) -> void:
++	if not _jump_objects.is_empty(): TrackHazards.launch(state,previous,_jump_objects)
++
++func surface_factors(state: VehicleState) -> Vector2:
++	var base: Vector2 = _native_surface_factors(state)
++	if _fluid_objects.is_empty(): return base
++	var hazard: Vector2 = TrackHazards.factors(state,_fluid_objects)
++	return Vector2(base.x*hazard.x,base.y+hazard.y)
+--- /dev/null
++++ b/game/backend/verification_track.gd.uid
+@@ -0,0 +1 @@
++uid://opfuo0n6r216
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -207,7 +207,7 @@
+ 	result_polling = false
+ 	if original != scope() or result_ticket != ticket_id: return
+ 	var elapsed: int = Time.get_ticks_msec()-_poll_started_msec
+-	var delay: int = maxi(int(response.data.get("poll_after_ms",2500)),2500 if elapsed < 60000 else 5000)
++	var delay: int = maxi(int(response.data.get("poll_after_ms",2500)),1000 if elapsed < 10000 else 2500 if elapsed < 60000 else 5000)
+ 	_next_poll_msec = Time.get_ticks_msec()+delay+int(Crypto.new().generate_random_bytes(1)[0])
+ 	if not response.ok:
+ 		_poll_failures = mini(6,_poll_failures+1)
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -241,7 +241,7 @@
+ 	add_child(lifecycle)
+ 	lifecycle.changed.connect(_lifecycle_changed)
+ 	var sync_timer := Timer.new()
+-	sync_timer.wait_time = 2.0
++	sync_timer.wait_time = 1.0
+ 	sync_timer.autostart = true
+ 	sync_timer.timeout.connect(func() -> void:
+ 		if not online.busy and not cloud_starting:
+@@ -2943,6 +2943,9 @@
+ 	if online_queued: _save_result_upload(game,cloud_ticket,game.get("online_frames"),cloud_publish_version,game.get("online_rewinds"))
+ 
+ func _save_result_upload(completed_game: Node, ticket_data: Dictionary, frames: Array, publish_version: String, rewinds: Array) -> void:
++	if is_instance_valid(completed_game) and completed_game.get("race_proof") != null and bool(cloud.client.get("_capabilities").get("lightweight_race_proofs",false)) and rewinds.is_empty() and publish_version.is_empty():
++		var proof: Dictionary = completed_game.race_proof.recording(completed_game.track_session)
++		if not proof.is_empty(): ticket_data["_race_proof"] = proof
+ 	if not cloud.enqueue_completed(ticket_data,frames,publish_version,rewinds):
+ 		_notice("This recorded result could not enter the save queue. Keep this race open and free storage.")
+ 		return
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -30,6 +30,7 @@
+ var preference_records: LocalRecords
+ var online_frames: Array = []
+ var online_rewinds: Array = []
++var race_proof = preload("res://backend/race_proof.gd").new()
+ var resume_client: Node
+ var resume_ticket_id: String = ""
+ var resume_credits: Node
+@@ -320,6 +321,7 @@
+ 		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index,layer_before_step)
+ 	if native_track != null and not editor_test:
+ 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index,sim.state.track_elevated,layer_before_step)
++		if production_mode: race_proof.capture(sim.state,track_session)
+ 		if profile_enabled:
+ 			profile_rules_us += Time.get_ticks_usec() - profile_start
+ 			profile_start = Time.get_ticks_usec()
+@@ -536,6 +538,8 @@
+ 		track_session._configure(native_track)
+ 		rewind_history.capture(sim.state,track_session,true,lap_telemetry)
+ 	ghost_run = PersonalGhostRun.new()
++	race_proof = preload("res://backend/race_proof.gd").new()
++	if production_mode and not editor_test and native_track != null: race_proof.capture(sim.state,track_session,true)
+ 	ghost_store = null
+ 	ghost_bests = {}
+ 	music_personal_ghosts = {}
+--- a/game/tests/test_backend_scalability.gd
++++ b/game/tests/test_backend_scalability.gd
+@@ -52,6 +52,17 @@
+ 	check(jobs.size() == 1,"durable metadata names one outbox job")
+ 	var restored: Variant = await client._background(Cloud._load_replay.bind(cloud.outbox_path().get_base_dir().path_join("runs").path_join(jobs[0].replay),jobs[0].replay_hash))
+ 	check(restored is Dictionary and restored.has("frames") and restored.frames.size() == large.size(),"background read validates the full durable replay hash")
++	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0.0,0.0,0.0,0.0,0.0,0,0.0],[3,0.0,0.0,0.0,0.0,0.0,0,0.0]]}
++	check(await cloud.queue_run_async({"ticket_id":"proof-fixture","_race_proof":proof},controls),"sparse movement proof persists with the completed result")
++	var proof_job: Dictionary = cloud.upload_job("proof-fixture")
++	var proof_saved: Variant = Cloud._load_replay(cloud.outbox_path().get_base_dir().path_join("runs").path_join(proof_job.replay),proof_job.replay_hash)
++	var proof_wire: Dictionary = Client._pack_replay(proof_saved.frames,[],true,proof_saved.race_proof)
++	check(proof_wire.get("race_proof",{}) == proof,"saved movement evidence survives the durable round trip after restoring integer wire fields")
++	check(proof_wire.race_proof.samples[0][0] is int and proof_wire.race_proof.samples[0][6] is int,"restored float ticks and layer markers regain integer wire types")
++	check(Client._pack_replay(proof_saved.frames,[],false,proof_saved.race_proof).race_proof == proof_wire.race_proof,"legacy wire fallback retains the same movement evidence")
++	client.remember_run({"ticket_id":"proof-fixture","status":"queued"})
++	await create_timer(0.3).timeout
++	check(client.recent_run("proof-fixture").is_empty(),"pending result cache cannot hide a newly verified finish for three seconds")
+ 	var rivalry := Rivalry.new()
+ 	rivalry.client = client
+ 	root.add_child(rivalry)
+--- a/game/tests/test_cloud_tracks.gd
++++ b/game/tests/test_cloud_tracks.gd
+@@ -225,6 +225,8 @@
+ 	app.library = TrackLibrary.new(cloud.root_override.path_join("app/tracks"))
+ 	root.add_child(app)
+ 	while not app.startup_complete: await process_frame
++	var capabilities: Dictionary = await app.online.client.request_api("/bootstrap")
++	check(capabilities.ok and bool(capabilities.data.get("lightweight_race_proofs",false)),"native client negotiates lightweight movement evidence")
+ 	await app.online.client.development_login("cloud-racer","Cloud Racer",OS.get_environment("BMT_DEV_AUTH_KEY"))
+ 	app._account_changed()
+ 	app.cloud.root_override = cloud.root_override
+@@ -243,6 +245,7 @@
+ 	check(integrated.race_button.get_global_rect().end.y <= root.get_visible_rect().end.y+1,"Race action fits compact viewport: button="+str(integrated.race_button.get_global_rect())+" viewport="+str(root.get_visible_rect()))
+ 	await capture("cloud-menu-960")
+ 	await app._start_race(track,false)
++	check(not app.cloud_ticket.is_empty(),"actual app race owns a server ticket before fixture driving")
+ 	game = app.game
+ 	game.set_physics_process(false)
+ 	input = ReplayInput.new()
+@@ -251,15 +254,18 @@
+ 	game.countdown_ticks = 0
+ 	game.launch_countdown_seen = false
+ 	for tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
++	check(not game.race_proof.recording(game.track_session).is_empty(),"actual game captures the completed sparse movement proof")
++	var completed_ticket: String = str(app.cloud_ticket.ticket_id)
+ 	app._results()
++	while app.cloud.result_saves.jobs.has(completed_ticket): await process_frame
+ 	await settle(app.cloud)
+-	check(app.cloud.upload_jobs()[-1].get("done",false),"actual app results queues and verifies completed race")
++	check(app.cloud.upload_job(completed_ticket).get("done",false),"actual app results queues and verifies that exact completed race")
+ 	var results: RaceResults = app.root_ui.find_child("RaceResults",true,false)
+ 	app._results_continue(results,results.get_parent())
+ 	await process_frame
+ 	var completion: RaceComplete = app.root_ui.find_child("RaceComplete",true,false)
+ 	while completion.standings_busy or app.online.client._busy: await process_frame
+-	check(completion.global_rank.text.begins_with("RANK"),"results continuation displays server rank")
++	check(completion.global_rank.text.begins_with("POSITION ") or completion.global_rank.text.begins_with("TOP "),"results continuation displays the actual server comparison position")
+ 	await capture("cloud-results-960")
+ 	app.queue_free()
+ 	await process_frame
+--- /dev/null
++++ b/game/tests/test_lightweight_verifier.gd
+@@ -0,0 +1,78 @@
++extends "res://backend/runner.gd"
++const RaceProof = preload("res://backend/race_proof.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("test_all")
++
++func expect(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++
++func test_all() -> void:
++	var fixture_path: String = ""
++	var proof_path: String = ""
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--fixture="): fixture_path = arg.trim_prefix("--fixture=")
++		if arg.begins_with("--proof-output="): proof_path = arg.trim_prefix("--proof-output=")
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(fixture_path))
++	var original: NativeTrack = TrackCompiler.compile(fixture.document)
++	var fast: NativeTrack = VerificationTrack.frozen(original)
++	var sim: VehicleSimulation = initial_simulation(original,"compact")
++	var accelerated: VehicleSimulation = initial_simulation(fast,"compact")
++	var session := TrackSession.new()
++	var trace = RaceProof.new()
++	session._configure(original)
++	trace.capture(sim.state,session,true)
++	var frame := DriveFrame.new()
++	for values: Array in fixture.replay.frames:
++		frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
++		frame.handbrake = int(values[3]) if values.size() >= 4 else 0
++		var previous: Vector2 = sim.state.position
++		var layer: int = int(sim.state.track_elevated)
++		sim.step(frame,original)
++		accelerated.step(frame,fast)
++		expect(RewindHistory.properties(sim.state) == RewindHistory.properties(accelerated.state),"Immutable query acceleration changed canonical state at %d" % sim.state.tick)
++		session.advance(original,previous,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++		trace.capture(sim.state,session)
++	var proof: Dictionary = trace.recording(session)
++	expect(not proof.is_empty(),"Five-lap fixture must produce sparse evidence")
++	var initial: VehicleSimulation = initial_simulation(fast,"compact")
++	var result: Dictionary = LightweightVerifier.check(fast,proof,initial.state,initial.config,fixture.replay.frames.size(),manifest(),true)
++	expect(not result.is_empty(),"Ordinary five-lap fixture must use lightweight validation")
++	if not result.is_empty():
++		expect(result.time_ticks == fixture.time_ticks,"Race ticks must be derived from the input count")
++		expect(result.lap_ticks == [2634,2532,2531,2530,2530],"Forced lap samples preserve exact fixture lap ticks")
++		expect(result.ghost.poses.size() > 2000,"Lightweight result retains the race ghost")
++	var teleport: Dictionary = proof.duplicate(true)
++	teleport.samples[1][1] += 30.0
++	expect(LightweightVerifier.check(fast,teleport,initial.state,initial.config,fixture.time_ticks,manifest(),false).is_empty(),"Teleport must fall back to canonical verification")
++	var missing: Dictionary = proof.duplicate(true)
++	missing.samples = missing.samples.slice(0,missing.samples.size()-1)
++	expect(LightweightVerifier.check(fast,missing,initial.state,initial.config,fixture.time_ticks,manifest(),false).is_empty(),"Incomplete finish proof must fall back")
++	var reversed: Dictionary = proof.duplicate(true)
++	reversed.samples.reverse()
++	expect(LightweightVerifier.check(fast,reversed,initial.state,initial.config,fixture.time_ticks,manifest(),false).is_empty(),"Reversed evidence must fall back")
++	# Tile boundaries, exterior cells, wet shores, variable radii and both layers.
++	original.cells[10*original.grid_width+10] = 3
++	original.cells[11*original.grid_width+11] = 6
++	original.cells[15*original.grid_width+15] = 4
++	original.deck_cells[16*original.grid_width+16] = 4
++	fast = VerificationTrack.frozen(original)
++	for y: int in range(-1,24):
++		for x: int in range(-1,24):
++			var point := Vector2((x+0.51)*original.cell_size-original.half_extent.x,original.half_extent.y-(y+0.49)*original.cell_size)
++			expect(original.water_depth(point) == fast.water_depth(point),"Dry/wet shoreline acceleration must remain exact")
++			for radius: float in [0.1,0.88,2.5]:
++				for elevated: bool in [false,true]:
++					expect(original._contact(point,radius,elevated) == fast._contact(point,radius,elevated),"Collision occupancy shortcut must remain exact")
++	for hint: int in range(original.route.size()):
++		expect(original.nearest_route(original.route[hint],hint) == fast.nearest_route(original.route[hint],hint),"Route tie order must remain exact")
++	if not proof_path.is_empty():
++		var file := FileAccess.open(proof_path,FileAccess.WRITE)
++		file.store_string(JSON.stringify(proof)); file.close()
++	print("LIGHTWEIGHT_VERIFIER: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/game/tests/test_lightweight_verifier.gd.uid
+@@ -0,0 +1 @@
++uid://bdm1cgtixvt4h

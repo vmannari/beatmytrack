@@ -1,0 +1,574 @@
+--- a/game/camera/camera_profile.gd
++++ b/game/camera/camera_profile.gd
+@@ -2,6 +2,8 @@
+ extends Resource
+ 
+ const MODES: Array[String] = ["overhead", "follow_car", "look_ahead"]
++const DEFAULT_SPEED_ZOOM_STRENGTH: float = 0.30
++const MAX_SPEED_ZOOM_STRENGTH: float = 0.50
+ const TITLES: Array[String] = ["Overhead", "Follow car", "Look ahead"]
+ const DESCRIPTIONS: Array[String] = [
+ 	"The original fixed-angle overhead view.",
+@@ -26,7 +28,6 @@
+ @export_range(5.0, 180.0, 1.0) var maximum_yaw_speed_degrees: float = 60.0
+ @export var speed_zoom_start_kmh: float = 30.0
+ @export var speed_zoom_full_kmh: float = 160.0
+-@export_range(0.0, 0.2, 0.01) var maximum_speed_zoom: float = 0.12
+ @export var speed_zoom_smoothing: float = 1.5 # response/s; gentle acceleration/braking changes
+ 
+ 
+--- a/game/camera/follow_camera.gd
++++ b/game/camera/follow_camera.gd
+@@ -8,6 +8,9 @@
+ var smoothed_yaw: float = 0.0
+ var look_ahead_offset: Vector2 = Vector2.ZERO
+ var speed_zoom_enabled: bool = true
++var speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH:
++	set(value):
++		speed_zoom_strength = clampf(value, 0.0, CameraProfile.MAX_SPEED_ZOOM_STRENGTH) if is_finite(value) else CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+ var zoom_multiplier: float = 1.0
+ var trauma: float = 0.0
+ var impact_offset: Vector2 = Vector2.ZERO
+@@ -83,7 +86,7 @@
+ 	var desired_zoom: float = 1.0
+ 	if speed_zoom_enabled:
+ 		var amount: float = smoothstep(profile.speed_zoom_start_kmh, profile.speed_zoom_full_kmh, velocity.length() * 3.6)
+-		desired_zoom += profile.maximum_speed_zoom * amount
++		desired_zoom += speed_zoom_strength * amount
+ 	zoom_multiplier = desired_zoom if snap or not initialized else lerpf(zoom_multiplier, desired_zoom, 1.0 - exp(-profile.speed_zoom_smoothing * step))
+ 	projection = PROJECTION_ORTHOGONAL if profile.orthographic else PROJECTION_PERSPECTIVE
+ 	keep_aspect = KEEP_HEIGHT
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -180,6 +180,7 @@
+ 	if preference_records != null:
+ 		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
+ 		camera.speed_zoom_enabled = bool(preference_records.settings.get("camera_speed_zoom", true))
++		camera.speed_zoom_strength = float(preference_records.settings.get("camera_speed_zoom_strength", CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH))
+ 	world.add_child(camera)
+ 	camera.current = true
+ 	_update_cloud_shadows()
+@@ -693,6 +694,13 @@
+ 	return preference_records.save_records()
+ 
+ 
++func set_camera_speed_zoom_strength(value: float, save_preference: bool = true) -> Error:
++	camera.speed_zoom_strength = value
++	if preference_records == null or not save_preference: return OK
++	preference_records.settings.camera_speed_zoom_strength = camera.speed_zoom_strength
++	return preference_records.save_records()
++
++
+ func _unhandled_input(event: InputEvent) -> void:
+ 	if race_cues != null and race_cues.rating_confirming: return
+ 	if finish_sim == null or paused or finish_ticks < 30: return
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -149,6 +149,8 @@
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+ 		elif field == "camera_mode":
+ 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
++		elif field == "camera_speed_zoom_strength":
++			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > CameraProfile.MAX_SPEED_ZOOM_STRENGTH: return {}
+ 		elif field == "ghost_mode":
+ 			if not preferences[field] is String or preferences[field] not in PersonalGhostRun.MODES: return {}
+ 		elif field == "track_ratings":
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -13,6 +13,7 @@
+ var draft_haptics: float = 0.2
+ var draft_camera: String = "overhead"
+ var draft_speed_zoom: bool = true
++var draft_speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+ var draft_labels: bool = true
+ var draft_ghost: String = "lap"
+ var draft_show_ads: bool = false
+@@ -48,6 +49,7 @@
+ 	draft_haptics = float(records.settings.get("steering_haptics", 0.2))
+ 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
+ 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
++	draft_speed_zoom_strength = float(records.settings.get("camera_speed_zoom_strength", CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH))
+ 	draft_labels = bool(records.settings.get("control_labels", true))
+ 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
+ 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
+@@ -341,7 +343,7 @@
+ 		choice.custom_minimum_size.x = 150
+ 		row.add_child(choice)
+ 	var zoom_row: HBoxContainer = _row("SpeedZoomSettings", 14)
+-	zoom_row.add_child(_copy("Speed zoom", "Pull back slightly as speed increases."))
++	zoom_row.add_child(_copy("Speed zoom", "Show more road as speed increases."))
+ 	var zoom := CheckButton.new()
+ 	zoom.name = "CameraSpeedZoom"
+ 	zoom.text = "On" if draft_speed_zoom else "Off"
+@@ -353,6 +355,32 @@
+ 		zoom.text = "On" if on else "Off"
+ 		_changed())
+ 	zoom_row.add_child(zoom)
++	var strength_row: HBoxContainer = _row("SpeedZoomStrengthSettings", 14)
++	strength_row.add_child(_copy("Zoom strength", "Maximum extra view at high speed."))
++	var strength_column := VBoxContainer.new()
++	strength_column.custom_minimum_size.x = 220
++	strength_column.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	strength_row.add_child(strength_column)
++	var value: Label = _label("%d%%" % roundi(draft_speed_zoom_strength * 100.0), 18)
++	value.name = "CameraSpeedZoomStrengthValue"
++	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	strength_column.add_child(value)
++	var strength := HSlider.new()
++	strength.name = "CameraSpeedZoomStrength"
++	strength.max_value = CameraProfile.MAX_SPEED_ZOOM_STRENGTH * 100.0
++	strength.step = 1.0
++	strength.value = draft_speed_zoom_strength * 100.0
++	strength.custom_minimum_size = Vector2(220, 52)
++	strength.editable = draft_speed_zoom
++	strength.modulate.a = 1.0 if draft_speed_zoom else 0.45
++	strength.value_changed.connect(func(amount: float) -> void:
++		draft_speed_zoom_strength = amount / 100.0
++		value.text = "%d%%" % roundi(amount)
++		_changed())
++	zoom.toggled.connect(func(on: bool) -> void:
++		strength.editable = on
++		strength.modulate.a = 1.0 if on else 0.45)
++	strength_column.add_child(strength)
+ 	body.add_child(_label("You can also change the view in Pause > Settings, or press C while driving.", 16, true))
+ 
+ func _ghosts() -> void:
+@@ -452,6 +480,7 @@
+ 	elif section == "camera":
+ 		draft_camera = "overhead"
+ 		draft_speed_zoom = true
++		draft_speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+ 	else:
+ 		draft_layout = ControlLayout.preset()
+ 		draft_haptics = 0.2
+@@ -464,6 +493,7 @@
+ 	records.settings.steering_haptics = draft_haptics
+ 	records.settings.camera_mode = draft_camera
+ 	records.settings.camera_speed_zoom = draft_speed_zoom
++	records.settings.camera_speed_zoom_strength = draft_speed_zoom_strength
+ 	records.settings.control_labels = draft_labels
+ 	records.settings.ghost_mode = draft_ghost
+ 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
+--- a/game/ui/race_pause_menu.gd
++++ b/game/ui/race_pause_menu.gd
+@@ -175,6 +175,38 @@
+ 		status.text = "Speed zoom changed" if error == OK else "Zoom changed for this race. Could not save preference."
+ 	)
+ 	column.add_child(speed_zoom)
++	var strength_row := HBoxContainer.new()
++	column.add_child(strength_row)
++	var strength_value: Label = MenuStyle.label("Zoom strength", 18)
++	strength_value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	strength_row.add_child(strength_value)
++	var strength_amount: Label = MenuStyle.label("%d%%" % roundi(game.camera.speed_zoom_strength * 100.0), 18, true)
++	strength_amount.name = "RaceSpeedZoomStrengthValue"
++	strength_row.add_child(strength_amount)
++	var strength := HSlider.new()
++	strength.name = "RaceSpeedZoomStrength"
++	strength.max_value = CameraProfile.MAX_SPEED_ZOOM_STRENGTH * 100.0
++	strength.step = 1.0
++	strength.value = game.camera.speed_zoom_strength * 100.0
++	strength.custom_minimum_size.y = 52
++	strength.editable = game.camera.speed_zoom_enabled
++	strength.modulate.a = 1.0 if game.camera.speed_zoom_enabled else 0.45
++	strength.drag_started.connect(func() -> void: strength.set_meta("dragging", true))
++	strength.value_changed.connect(func(amount: float) -> void:
++		strength_amount.text = "%d%%" % roundi(amount)
++		var error: Error = game.set_camera_speed_zoom_strength(amount / 100.0, not bool(strength.get_meta("dragging", false)))
++		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
++	)
++	strength.drag_ended.connect(func(changed: bool) -> void:
++		strength.set_meta("dragging", false)
++		if not changed: return
++		var error: Error = game.set_camera_speed_zoom_strength(strength.value / 100.0)
++		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
++	)
++	speed_zoom.toggled.connect(func(on: bool) -> void:
++		strength.editable = on
++		strength.modulate.a = 1.0 if on else 0.45)
++	column.add_child(strength)
+ 	if game.personal_ghost != null:
+ 		column.add_child(MenuStyle.label("Ghost",22))
+ 		var ghost_choice := OptionButton.new()
+--- a/game/tests/test_camera_modes.gd
++++ b/game/tests/test_camera_modes.gd
+@@ -68,6 +68,7 @@
+ 	var store := LocalRecords.new(directory.path_join("records.json"))
+ 	store.settings.favorites = ["starter_circuit"]
+ 	store.settings.camera_speed_zoom = false
++	store.settings.camera_speed_zoom_strength = 0.41
+ 	for mode: String in CameraProfile.MODES:
+ 		store.settings.camera_mode = mode
+ 		check(store.save_records() == OK, "camera preference commits " + mode)
+@@ -75,10 +76,14 @@
+ 		reload.load_records()
+ 		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["starter_circuit"], "reload preserves camera and unrelated preferences " + mode)
+ 		check(reload.settings.camera_speed_zoom == false, "reload preserves disabled speed zoom " + mode)
++		check(is_equal_approx(float(reload.settings.camera_speed_zoom_strength), 0.41), "reload preserves zoom strength independently of mode and toggle " + mode)
+ 	store.settings.camera_mode = "unknown"
+ 	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_mode == "look_ahead", "invalid camera preference rejected without losing committed settings")
+ 	store.settings.camera_speed_zoom = "yes"
+ 	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_speed_zoom == false, "speed zoom rejects non-boolean preferences without losing saved settings")
++	for invalid: Variant in [-0.01, 0.51, "strong", true, NAN, INF]:
++		store.settings.camera_speed_zoom_strength = invalid
++		check(store.save_records() == ERR_INVALID_DATA and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.41), "invalid zoom strength rejects without losing saved settings: " + str(invalid))
+ 	var valid_path: String = store.path
+ 	store.path = directory.path_join("missing/records.json")
+ 	store.settings.camera_mode = "follow_car"
+@@ -94,6 +99,7 @@
+ 	game.set_process(false)
+ 	check(game.rating_records == null and game.camera.mode == "look_ahead", "race loads preferences independently of local rating records")
+ 	check(not game.camera.speed_zoom_enabled, "race loads saved speed zoom independently of ratings")
++	check(is_equal_approx(game.camera.speed_zoom_strength, 0.41), "race loads saved zoom strength independently of ratings")
+ 	var state: Array = game.sim.state.snapshot()
+ 	var rules: Dictionary = RewindHistory.properties(game.track_session, true)
+ 	var key: String = store.key_for(game.native_track, game.handling)
+@@ -106,6 +112,22 @@
+ 	var zoom_reload := LocalRecords.new(store.path)
+ 	zoom_reload.load_records()
+ 	check(zoom_reload.settings.camera_speed_zoom == true, "pause zoom preference persists for next race")
++	var strength: HSlider = game.hud.pause_menu.find_child("RaceSpeedZoomStrength", true, false)
++	check(strength.editable, "enabling speed zoom enables pause strength adjustment")
++	strength.value = 47.0
++	check(game.paused and is_equal_approx(game.camera.speed_zoom_strength, 0.47), "pause strength adjustment applies immediately without unpausing")
++	zoom_reload.load_records()
++	check(is_equal_approx(float(zoom_reload.settings.camera_speed_zoom_strength), 0.47), "pause strength persists for next race")
++	strength.drag_started.emit()
++	strength.value = 39.0
++	check(is_equal_approx(game.camera.speed_zoom_strength, 0.39) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47), "pause drag previews without writing on every movement")
++	strength.drag_ended.emit(true)
++	zoom_reload.load_records()
++	check(is_equal_approx(float(zoom_reload.settings.camera_speed_zoom_strength), 0.39), "pause drag commits on release")
++	strength.value = 47.0
++	game.set_camera_speed_zoom_strength(0.36, false)
++	check(is_equal_approx(game.camera.speed_zoom_strength, 0.36) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47), "drag preview applies without writing preferences")
++	game.set_camera_speed_zoom_strength(0.47)
+ 	var picker: OptionButton = game.hud.pause_menu.find_child("RaceCameraMode", true, false)
+ 	picker.select(1)
+ 	picker.item_selected.emit(1)
+@@ -121,6 +143,11 @@
+ 	zoom_choice.set_pressed_no_signal(false)
+ 	zoom_choice.toggled.emit(false)
+ 	check(not game.camera.speed_zoom_enabled and store.settings.camera_speed_zoom == true and game.hud.pause_menu.status.text.contains("Could not save"), "failed zoom save retains previous preference and permits session testing")
++	check(not strength.editable and is_equal_approx(game.camera.speed_zoom_strength, 0.47), "disabling zoom retains strength and disables slider")
++	zoom_choice.set_pressed_no_signal(true)
++	zoom_choice.toggled.emit(true)
++	strength.value = 24.0
++	check(is_equal_approx(game.camera.speed_zoom_strength, 0.24) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47) and game.hud.pause_menu.status.text.contains("Could not save"), "failed strength save retains prior preference and permits session testing")
+ 	store.path = valid_path
+ 	game.set_camera_mode("follow_car")
+ 	game.toggle_pause()
+@@ -131,6 +158,7 @@
+ 	check(game.camera.mode == "look_ahead", "C cycles the race camera")
+ 	game.restart()
+ 	check(game.camera.mode == "look_ahead", "retry keeps chosen camera")
++	check(is_equal_approx(game.camera.speed_zoom_strength, 0.24), "mode changes and retry keep session zoom strength")
+ 	check(game.sim.state.snapshot() == state and RewindHistory.properties(game.track_session, true) == rules, "camera switching leaves canonical state and race gates unchanged")
+ 	check(store.key_for(game.native_track, game.handling) == key, "camera choice leaves record partition unchanged")
+ 	game.queue_free()
+@@ -204,38 +232,51 @@
+ 
+ func _check_speed_zoom(camera: FollowCamera) -> void:
+ 	var base_size: float = camera.profile.baseline_extent / camera.profile.magnification
++	check(is_equal_approx(camera.speed_zoom_strength, 0.30), "new and existing profiles without a strength use the stronger 30 percent default")
+ 	for mode: String in CameraProfile.MODES:
+ 		camera.set_mode(mode)
+ 		camera.speed_zoom_enabled = true
+-		var previous_size: float = base_size
+-		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
+-		var slow_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
+-		for speed: float in [0.0, 5.0, 30.0 / 3.6, 20.0, 30.0, 160.0 / 3.6, 90.0]:
+-			camera.follow(Vector2.ZERO, Vector2(0, speed), 0.0, 0.0, true)
+-			check(camera.size >= previous_size - 0.00001 and camera.size <= base_size * 1.12 + 0.00001, "speed zoom grows monotonically with a slight bounded pullback " + mode)
+-			if speed <= 30.0 / 3.6: check(is_equal_approx(camera.size, base_size), "standing/slow driving preserves calibrated extent " + mode)
+-			previous_size = camera.size
+-		var fast_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
+-		check(is_equal_approx(camera.size, base_size * 1.12) and fast_width / slow_width > 0.89, "maximum speed still preserves car readability " + mode)
++		for amount: float in [0.0, 0.12, 0.30, 0.50]:
++			camera.speed_zoom_strength = amount
++			var previous_size: float = base_size
++			camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
++			var slow_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
++			for speed: float in [0.0, 5.0, 30.0 / 3.6, 20.0, 30.0, 160.0 / 3.6, 90.0]:
++				camera.follow(Vector2.ZERO, Vector2(0, speed), 0.0, 0.0, true)
++				check(camera.size >= previous_size - 0.00001 and camera.size <= base_size * (1.0 + amount) + 0.00001, "speed zoom grows monotonically within selected strength " + mode)
++				if speed <= 30.0 / 3.6: check(is_equal_approx(camera.size, base_size), "standing/slow driving preserves calibrated extent " + mode)
++				previous_size = camera.size
++			var fast_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
++			check(is_equal_approx(camera.size, base_size * (1.0 + amount)) and is_equal_approx(fast_width / slow_width, 1.0 / (1.0 + amount)) and fast_width / slow_width > 0.66, "selected strength scales the entire world with bounded car projection " + mode)
++			if amount == 0.30:
++				check(camera.size - base_size > (base_size * 0.12) * 2.0, "default pullback is more than twice the old effect " + mode)
++		# The strongest option must keep the car visible on bridges in every heading.
++		for heading: float in [0.0, PI * 0.5, PI, PI * 1.5]:
++			camera.follow(Vector2.ZERO, Vector2(sin(heading), cos(heading)) * 90.0, heading, 0.0, true)
++			for height: float in [0.0, 4.0]:
++				var car_pixel: Vector2 = camera.unproject_position(Vector3(0, height, 0))
++				check(Rect2(40, 70, root.size.x - 80, root.size.y - 140).has_point(car_pixel) and not camera.is_position_behind(Vector3(0, height, 0)), "maximum strength keeps car clear of edges on ground and bridge " + mode)
++			check(camera.global_basis.z.y > 0.7, "stronger zoom retains overhead pitch and no horizon " + mode)
+ 		var forward_size: float = camera.size
+ 		camera.follow(Vector2.ZERO, Vector2(0, -90), 0.0, 0.0, true)
+ 		check(is_equal_approx(camera.size, forward_size), "speed zoom also handles reverse travel " + mode)
+ 		camera.speed_zoom_enabled = false
+ 		camera.follow(Vector2.ZERO, Vector2(0, 90), 0.0, 0.0, true)
+ 		check(is_equal_approx(camera.size, base_size), "speed zoom off retains fixed framing at full speed " + mode)
++	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+ 	var results: Array[float] = []
+ 	for fps: int in [30, 60, 120]:
+ 		camera.speed_zoom_enabled = true
+ 		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
+ 		camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / fps)
+-		check(camera.zoom_multiplier > 1.0 and camera.zoom_multiplier < 1.01, "acceleration starts a gentle zoom at %d fps" % fps)
++		check(camera.zoom_multiplier > 1.0 and camera.zoom_multiplier < 1.015, "acceleration starts a gentle zoom at %d fps" % fps)
+ 		for frame: int in range(fps - 1): camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / fps)
+ 		results.append(camera.zoom_multiplier)
+-		check(camera.zoom_multiplier > 1.08 and camera.zoom_multiplier < 1.11, "zoom eases gradually toward full extent at %d fps" % fps)
++		check(camera.zoom_multiplier > 1.225 and camera.zoom_multiplier < 1.24, "zoom eases gradually toward full extent at %d fps" % fps)
+ 		var high: float = camera.zoom_multiplier
+ 		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
+-		check(camera.zoom_multiplier < high and camera.zoom_multiplier > 1.08, "braking returns toward the car gently at %d fps" % fps)
+-		for frame: int in range(fps * 4): camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
++		check(camera.zoom_multiplier < high and camera.zoom_multiplier > 1.22, "braking returns toward the car gently at %d fps" % fps)
++		for frame: int in range(fps * 5): camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
+ 		check(absf(camera.zoom_multiplier - 1.0) < 0.0005, "zoom settles back to baseline after stopping")
+ 	check(absf(results[0] - results[1]) < 0.000001 and absf(results[1] - results[2]) < 0.000001, "zoom easing is independent of display rate")
+ 	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 0.0, true)
+@@ -243,8 +284,21 @@
+ 	camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0)
+ 	camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, -0.1)
+ 	check(camera.zoom_multiplier == previous_zoom, "zero/negative elapsed time cannot change zoom")
++	camera.speed_zoom_strength = 0.12
++	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / 60.0)
++	check(camera.zoom_multiplier < previous_zoom and camera.zoom_multiplier > 1.29, "changing strength eases from the existing view")
++	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+ 	camera.speed_zoom_enabled = false
+ 	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / 60.0)
+-	check(camera.zoom_multiplier > 1.1 and camera.zoom_multiplier < previous_zoom, "disabling zoom while driving eases back smoothly")
++	check(camera.zoom_multiplier > 1.28 and camera.zoom_multiplier < previous_zoom, "disabling zoom while driving eases back smoothly")
+ 	camera.follow(Vector2(40, -20), Vector2.ZERO, 0.0, 0.0, true)
+ 	check(camera.zoom_multiplier == 1.0 and is_equal_approx(camera.size, base_size), "restart/rewind snap restores appropriate zoom without stale state")
++	for value: float in [-1.0, 3.0, NAN, INF]:
++		camera.speed_zoom_strength = value
++		var expected: float = clampf(value, 0.0, 0.5) if is_finite(value) else 0.30
++		check(is_equal_approx(camera.speed_zoom_strength, expected), "invalid runtime strength is clamped or restored to default")
++		camera.speed_zoom_enabled = true
++		camera.follow(Vector2.ZERO, Vector2(0, 90), 0.0, 0.0, true)
++		check(is_finite(camera.size) and camera.size >= base_size - 0.00001 and camera.size <= base_size * 1.5 + 0.00001, "runtime invalid strength cannot escape finite camera bounds")
++	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
++	camera.speed_zoom_enabled = false
+--- a/game/tests/capture_camera_modes.gd
++++ b/game/tests/capture_camera_modes.gd
+@@ -5,6 +5,7 @@
+ 
+ func run() -> void:
+ 	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/camera-options-2026-10-03/speed-zoom")
++	if not OS.get_environment("BMT_CAMERA_EVIDENCE").is_empty(): output = OS.get_environment("BMT_CAMERA_EVIDENCE")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+ 	var game: Node = load("res://core/game.tscn").instantiate()
+@@ -56,14 +57,16 @@
+ 		for mode: String in CameraProfile.MODES:
+ 			if dimensions.x == 960 and mode != "look_ahead": continue
+ 			game.sim.state.velocity = game.sim.state.forward() * 55.0
+-			for enabled: bool in [false, true]:
+-				game.set_camera_speed_zoom(enabled)
++			for amount: float in [0.0, 0.12, 0.30, 0.50]:
++				game.set_camera_speed_zoom(true)
++				game.set_camera_speed_zoom_strength(amount)
+ 				game.set_camera_mode(mode)
+ 				for frame: int in range(45): game._process(1.0 / 60.0)
+-				await capture(output.path_join("%s-fast-%s-%dx%d.png" % [mode, "on" if enabled else "off", dimensions.x, dimensions.y]))
++				await capture(output.path_join("%s-fast-%02d-percent-%dx%d.png" % [mode, roundi(amount * 100.0), dimensions.x, dimensions.y]))
+ 	root.size = Vector2i(1280, 720)
+ 	root.content_scale_size = Vector2i(1280, 720)
+ 	game.set_camera_speed_zoom(false)
++	game.set_camera_speed_zoom_strength(CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH)
+ 	game.set_camera_mode("look_ahead")
+ 	game.set_camera_speed_zoom(true)
+ 	for frame: int in range(121):
+@@ -71,7 +74,7 @@
+ 		if frame in [0, 29, 119]: await capture(output.path_join("zoom-ease-%03d.png" % (frame + 1)))
+ 	game.queue_free()
+ 	await process_frame
+-	print("CAMERA_CAPTURE: %d captures saved, including same-pose speed-zoom pairs and easing frames" % captures)
++	print("CAMERA_CAPTURE: %d captures saved, including same-pose 0/12/30/50 percent zoom comparisons and easing frames" % captures)
+ 	quit()
+ 
+ func capture(path: String) -> void:
+--- a/game/tests/capture_settings.gd
++++ b/game/tests/capture_settings.gd
+@@ -57,6 +57,12 @@
+ 			check(choice != null and choice.is_visible_in_tree() and choice.size.y >= 52, "reachable camera choice " + mode)
+ 		var zoom_choice: CheckButton = page.find_child("CameraSpeedZoom", true, false)
+ 		check(zoom_choice != null and zoom_choice.is_visible_in_tree() and zoom_choice.size.y >= 52, "reachable speed zoom toggle")
++		var zoom_strength: HSlider = page.find_child("CameraSpeedZoomStrength", true, false)
++		var camera_scroll: ScrollContainer = page.find_child("SettingsScroll", true, false)
++		camera_scroll.ensure_control_visible(zoom_strength)
++		await _settle()
++		check(zoom_strength.size.y >= 52 and camera_scroll.get_global_rect().encloses(zoom_strength.get_global_rect()), "zoom strength has a reachable touch target at every size")
++		check(zoom_strength.max_value == 50.0 and zoom_strength.step == 1.0 and is_equal_approx(zoom_strength.value, page.draft_speed_zoom_strength * 100.0), "strength slider exposes 0-50 percent and the current preference")
+ 		await _capture("camera", dimensions)
+ 		await _press("SettingsCategory_ghosts")
+ 		check(page.section == "ghosts" and panel.get_global_rect().is_equal_approx(panel_rect), "ghosts keep panel geometry")
+@@ -109,10 +115,29 @@
+ 	await _press("SettingsCategory_camera")
+ 	await _press("Camera_follow_car")
+ 	check(_page().draft_camera == "follow_car" and store.settings.get("camera_mode", "overhead") == "overhead", "camera stages until Apply")
++	var zoom_strength: HSlider = _page().find_child("CameraSpeedZoomStrength", true, false)
++	var camera_scroll: ScrollContainer = _page().find_child("SettingsScroll", true, false)
++	camera_scroll.ensure_control_visible(zoom_strength)
++	await _settle()
++	var slider_rect: Rect2 = zoom_strength.get_global_rect()
++	var slider_touch := InputEventScreenTouch.new()
++	slider_touch.index = 0
++	slider_touch.position = Vector2(slider_rect.position.x + slider_rect.size.x * 0.85, slider_rect.get_center().y)
++	slider_touch.pressed = true
++	Input.parse_input_event(slider_touch)
++	await process_frame
++	slider_touch = slider_touch.duplicate() as InputEventScreenTouch
++	slider_touch.pressed = false
++	Input.parse_input_event(slider_touch)
++	await _settle()
++	var staged_strength: float = _page().draft_speed_zoom_strength
++	check(staged_strength > 0.35 and staged_strength <= 0.50 and is_equal_approx(float(store.settings.get("camera_speed_zoom_strength", 0.30)), 0.30), "touch strength adjustment stages until Apply")
+ 	await _press("CameraSpeedZoom")
+ 	check(not _page().draft_speed_zoom and store.settings.get("camera_speed_zoom", true) == true, "speed zoom stages until Apply")
++	check(not zoom_strength.editable and is_equal_approx(_page().draft_speed_zoom_strength, staged_strength), "turning speed zoom off preserves strength and disables adjustment")
+ 	await _press("SettingsCategory_controls")
+ 	check(_page().draft_camera == "follow_car", "camera draft survives section switching")
++	check(is_equal_approx(_page().draft_speed_zoom_strength, staged_strength), "zoom strength draft survives section switching")
+ 	check(_page().draft_labels, "existing profiles show control labels by default")
+ 	await _press("ShowControlLabels")
+ 	check(not _page().draft_labels and store.settings.get("control_labels", true), "control labels stage until Apply")
+@@ -125,6 +150,7 @@
+ 	check(reloaded.settings.camera_mode == "follow_car", "apply persists camera after reload")
+ 	check(reloaded.settings.ghost_mode == "race", "apply persists ghost choice after reload")
+ 	check(not reloaded.settings.camera_speed_zoom, "apply persists disabled speed zoom after reload")
++	check(is_equal_approx(float(reloaded.settings.camera_speed_zoom_strength), staged_strength), "apply persists staged zoom strength after reload")
+ 	check(not reloaded.settings.control_labels, "apply persists hidden labels after reload")
+ 	await _press("SettingsCategory_haptics")
+ 	await _press("HapticsMedium")
+@@ -148,15 +174,18 @@
+ 	check(reloaded.settings.favorites == ["starter_circuit"], "reset preserves favorites")
+ 	check(reloaded.settings.camera_mode == "follow_car", "reset controls preserves camera")
+ 	check(not reloaded.settings.camera_speed_zoom, "reset controls preserves disabled speed zoom")
++	check(is_equal_approx(float(reloaded.settings.camera_speed_zoom_strength), staged_strength), "reset controls preserves zoom strength")
+ 	check(reloaded.settings.control_labels, "reset controls restores visible labels")
+ 	await _press("SettingsCategory_camera")
+ 	await _press("ResetSettings")
+ 	check(_page().draft_camera == "overhead" and store.settings.camera_mode == "follow_car", "camera reset is staged")
+ 	check(_page().draft_speed_zoom and not store.settings.camera_speed_zoom, "camera zoom reset is staged")
++	check(is_equal_approx(_page().draft_speed_zoom_strength, 0.30) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), staged_strength), "camera strength reset stages stronger default")
+ 	await _press("ApplySettings")
+ 	reloaded.load_records()
+ 	check(reloaded.settings.camera_mode == "overhead" and reloaded.settings.favorites == ["starter_circuit"], "camera reset commits without changing favorites")
+ 	check(reloaded.settings.camera_speed_zoom, "camera reset restores speed zoom default")
++	check(is_equal_approx(float(reloaded.settings.camera_speed_zoom_strength), 0.30), "camera reset commits stronger default strength")
+ 	check(reloaded.settings.ghost_mode == "race", "other resets preserve ghost mode")
+ 	await _press("SettingsCategory_ghosts")
+ 	await _press("ResetSettings")
+@@ -171,6 +200,8 @@
+ 	check(_page().draft_layout.steering_type == "buttons", "leaving without apply preserves committed preferences")
+ 	await _press("Steering_horizontal")
+ 	await _press("ShowControlLabels")
++	await _press("SettingsCategory_camera")
++	(_page().find_child("CameraSpeedZoomStrength", true, false) as HSlider).value = 22.0
+ 	await _press("SettingsCategory_ghosts")
+ 	await _press("Ghost_off")
+ 	var valid_path: String = store.path
+@@ -183,6 +214,7 @@
+ 	check(_page().draft_layout.steering_type == "horizontal", "save failure retains draft for retry")
+ 	check(not _page().draft_labels and store.settings.control_labels, "failed label save retains draft and committed preference")
+ 	check(_page().draft_ghost == "off" and store.settings.ghost_mode == "lap", "failed ghost save retains draft and committed preference")
++	check(is_equal_approx(_page().draft_speed_zoom_strength, 0.22) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.30), "failed zoom strength save retains draft and committed preference")
+ 	store.path = valid_path
+ 	await _press("SettingsCategory_controls")
+ 	await _press("CustomizeControls")
+--- a/docs/CAMERA_OPTIONS.md
++++ b/docs/CAMERA_OPTIONS.md
+@@ -14,7 +14,7 @@
+ 
+ Open **Settings → Camera**, select a view and **Apply settings**. During racing or creator practice, use **Pause → Settings → Camera** to change it immediately, or press **C** to cycle Overhead → Follow car → Look ahead. Race changes retain the attempt and save the preference when a local store is available. A failed write reports that the view applies to the current race; it retains the previous committed preference. Settings selection/reset stages until Apply. Reset camera preserves controls; Reset controls preserves the camera.
+ 
+-`camera_mode` is an optional allowlisted enum in the existing local records schema 2; missing values default to Overhead. `camera_speed_zoom` is an optional boolean, defaulting to enabled. Camera preferences use a separate local-store reference from track ratings so authenticated/backend races also load/save them. Physics 0.49, rules v16, compiler 20, replay data and record partitions are unchanged by this task. The blueprint camera/reference files remain historical calibration specifications; the explicit owner overrides are recorded in AGENTS.md.
++`camera_mode` is an optional allowlisted enum in the existing local records schema 2; missing values default to Overhead. `camera_speed_zoom` is an optional boolean, defaulting to enabled. `camera_speed_zoom_strength` is an optional finite number from 0.0 to 0.5, defaulting to 0.30; the current stronger pullback is described in the 2026-10-08 section below. Camera preferences use a separate local-store reference from track ratings so authenticated/backend races also load/save them. Physics 0.49, rules v16, compiler 20, replay data and record partitions were unchanged by the original camera task. The blueprint camera/reference files remain historical calibration specifications; the explicit owner overrides are recorded in AGENTS.md.
+ 
+ ## Changed files
+ 
+@@ -81,6 +81,8 @@
+ 
+ ## Speed-dependent pullback — 2026-10-03
+ 
++The original 12% bound in this historical section is superseded by the owner's stronger, configurable pullback below.
++
+ The owner additionally requests a slight camera pullback at faster speeds. This explicitly authorizes dynamic whole-scene magnification under V01, with V03 covering the comparison controls and V04/V05/Q01 retaining visibility, presentation-only behavior and physical-device acceptance. Speed zoom defaults **On** and works with Overhead, Follow car and Look ahead. Set **Settings → Camera → Speed zoom** and Apply, or use the immediate **Pause → Settings → Speed zoom** switch. The preference survives a new race/relaunch and camera-mode changes. Reset camera restores Speed zoom On; Reset controls preserves it. Disabling while driving eases back to the baseline view.
+ 
+ Speed zoom uses actual planar speed magnitude, including reverse driving. The desired pullback is zero through **30 km/h**, follows a smoothstep curve up to **160 km/h**, and stops at **12% more linear visible world extent**. A separate **1.5/s** exponential response eases acceleration/braking changes (about 0.46 seconds halfway toward a fixed zoom target). Orthographic extent changes from about **30.43 m to 34.09 m**, while camera height/distance also increases proportionally with pitch/yaw retained. Car projected dimensions remain at least **89.3%** of the baseline, with HUD/physical dimensions unchanged. No runtime networking, physics, timing, replay or record-partition change is involved.
+@@ -106,3 +108,42 @@
+ Final desktop evidence is in [speed-zoom](evidence/camera-options-2026-10-03/speed-zoom), including three copied Camera-settings screenshots. On/Off comparisons, the compact/wide views, Settings and pause switch were visually inspected. Comparison pairs use the same car position/heading and seeded 55 m/s velocity; their only camera difference is Speed zoom. These are diagnostic presentation captures, not scored laps. A task-scoped `speed-zoom/camera-speed-zoom.patch` checkpoint is retained and checked with `git apply --reverse --check`; substantial unrelated workspace edits remain outside it. No mixed-workspace commit was made.
+ 
+ Owner feel/readability acceptance remains for zoom amount and easing during actual driving. DN2103 was attached, but no Android export/install/device driving, physical-device performance/thermal measurement, full Validate/replay gate or backend/service deployment was performed.
++
++## Stronger configurable speed zoom — 2026-10-08
++
++The owner requests a stronger speed-dependent zoom and configurable effect strength. Requirements: **V01** whole-scene camera framing, **V03** Settings/pause controls, **V05** presentation/canonical separation, and **V04/Q01** visual/device acceptance and verification. This supersedes the previous 12% maximum for enabled speed zoom; the 1.15x low-speed/disabled calibration remains available.
++
++The default maximum pullback is now **30% extra linear world coverage**, 2.5 times the previous effect. **Settings → Camera → Zoom strength** offers **0–50% in 1% steps**, staged until **Apply settings**. **Pause → Settings → Zoom strength** applies to the current race immediately and saves on drag release; keyboard changes also save. Previewing a drag does not write the records file for every movement. The numeric label updates with the slider. Turning Speed zoom off disables the slider while retaining its strength. Reset camera stages On/30%; Reset controls preserves the camera settings.
++
++The existing 30–160 km/h smoothstep and 1.5/s easing are retained for all three views, including reverse travel. The default full-speed extent is **39.57 m** rather than the old 34.09 m, from the calibrated 30.43 m baseline. At the selectable 50% bound it is 45.65 m. Projected car dimensions are approximately 76.9% of the fixed view at the default maximum and 66.7% at the strongest maximum. Changing strength eases from the current view; it does not reset camera state. Runtime values are clamped to the finite range; invalid persisted types, nonfinite numbers and out-of-range values are rejected by the schema-2 atomic store. Missing strength in existing profiles defaults to 30%, with no player-file rewrite or schema-version bump.
++
++Changed files:
++
++- `game/camera/camera_profile.gd`, `follow_camera.gd`: shared default/bound and per-camera strength, independent of the selected view.
++- `game/core/game.gd`: preference loading and session-preview/commit API.
++- `game/persistence/local_records.gd`: optional numeric preference validation in the existing schema.
++- `game/ui/settings_page.gd`, `race_pause_menu.gd`: percentage controls, staged/reset behavior and pause persistence.
++- `game/tests/test_camera_modes.gd`, `capture_settings.gd`, `capture_camera_modes.gd`: updated bounds, actual Settings touch input, persistence/failure/drag checks and four-strength captures.
++- `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, this document: owner override, commands, evidence and limits.
++
++Actual commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned **4.7.2.stable.official.ed1daf0bf**, with `APPDATA=build/camera-strength-user`. Graphical camera capture also set `BMT_CAMERA_EVIDENCE` to `docs/evidence/camera-strength-2026-10-08/camera`. Successful runtime checks used Windows certificate-store access outside the sandbox.
++
++| Action/arguments | Actual final result |
++|---|---|
++| `-Action TestCameraModes` | **1,499 checks, 0 failures**; 29 ObjectDB instances reported at shutdown |
++| `-Action CaptureSettings` | **278 checks, 0 failures**; three-size captures and real touch adjustment/staging/reload/reset/failure coverage |
++| `-Action CaptureCameraModes` | Exit 0; **39 captures**, including 0/12/30/50% comparisons, easing and pause controls |
++| `-Action TestRecords` | 54 checks, 0 failures |
++| `-Action TestRewind` | 57 checks, 0 failures |
++| `-Action TestScript -ScriptPath res://tests/test_camera_shake.gd` | 7 checks, 0 failures |
++| `-Action TestApp` | 99 checks, 0 failures |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | 360 scripts, 0 failures |
++| `git diff --check -- <task files>` | Passed; existing CRLF normalization notices only |
++
++Camera coverage retains exact disabled/slow calibration and canonical state/gate/record-key assertions. It checks monotonic zoom through the selected strength, all views, ground/bridge car visibility in four headings at maximum strength, the overhead angle, reverse travel, 30/60/120 fps easing, smooth adjustment/opt-out, zero/negative deltas, snaps, invalid runtime/persisted values, mode/restart retention and committed-preference rollback. Settings checks prove a reachable 52-pixel slider at 960×540/1280×720/1600×720 and actual input through `Input.parse_input_event`; this uses the engine's touch-to-mouse input path ([official Input documentation](https://docs.godotengine.org/en/stable/classes/class_input.html)).
++
++Initial sandbox runs failed on user-data/certificate-store access. The first implementation run exposed a nonexistent `HSlider.is_dragging` call and a float32 boundary comparison; explicit drag signals and an exact clamp assertion plus the established camera-size tolerance correct them. The first Settings run had three failures: directly pushing synthetic touch to the viewport bypassed the slider's input-emulation path, and later size fixtures incorrectly expected the untouched default after a saved preference change. The final test uses actual engine input and checks the current preference. The first simultaneous graphical capture was visually invalid because window focus loss paused the race; the final camera capture ran with one graphical window and all retained comparison/pause images were rechecked. No failed invariant was removed to hide a runtime defect.
++
++Evidence: [desktop Settings](evidence/camera-strength-2026-10-08/settings/settings-camera-1280x720.png), [compact Settings](evidence/camera-strength-2026-10-08/settings/settings-camera-960x540.png), [compact pause](evidence/camera-strength-2026-10-08/camera/pause-camera-960x540.png), and same-pose compact [old 12%](evidence/camera-strength-2026-10-08/camera/look_ahead-fast-12-percent-960x540.png), [new 30%](evidence/camera-strength-2026-10-08/camera/look_ahead-fast-30-percent-960x540.png), [maximum 50%](evidence/camera-strength-2026-10-08/camera/look_ahead-fast-50-percent-960x540.png). These use a stationary presentation pose with seeded 55 m/s speed, not scored laps. Settings size captures after the preference exercise show its saved 22% value. Selected desktop/compact and pause/comparison images were inspected. Task-start sources, logs, hashes and a reverse-checkable scoped Git patch are retained in the evidence folder; unrelated workspace changes are excluded.
++
++Physics **0.53**, rules **v20**, track/compiler data and player record partitions remain unchanged. No backend/deployment action, Android export/install, phone test, phone attachment check, full Validate or complete replay gate was performed. Owner driving acceptance remains for the default amount, maximum car readability, easing through braking/hairpins/bridges, and phone frame pacing/thermal behavior. The camera test's 29-instance shutdown warning remains a limitation; graphical Settings/camera captures and the other focused checks exit cleanly.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 V01/V03-V05/Q01: owner-requested stronger/configurable speed zoom implemented locally: default 12%→30% extra linear world coverage, 0–50% slider in staged Camera Settings and immediate race pause settings, drag-release persistence and finite schema-2 validation. Existing 30–160km/h/easing/1.15x disabled baseline retained; physics0.53/rules20/records unchanged. Final camera1499/Settings278/records54/rewind57/shake7/App99/parser360 pass; 39 camera captures plus three Settings sizes inspected. Camera fixture retains 29-instance shutdown warning; initial sandbox/API/input-fixture/focus capture failures corrected and documented. Scoped task-only checkpoint preserves unrelated work. No phone attachment check/device test/export/install/full Validate/replay gate/backend action. Requirements/files/actual commands/evidence/acceptance: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
++
+ 2026-10-08 MUS28-MUS30/MUS20-MUS27/G01/R01/Q01/V06: owner-rejected mellow clean band recomposed as original sports rock: muted/driven/chorus electric guitars, firmer acoustic/gated-room kit, bass riffs, quiet strings and original baked analog-style atmosphere. Race144/menu112 BPM, motif/five six-layer palettes/confidence/PB/breath/volume/hover contracts retained. Soundtrack1158/graphical1163/flow29/App99 and capture4/10/5/3 pass; 37 assets/160 combinations/18 real mixes unclipped, final59.964s, mono/loop/pause/hover checks pass. Equal-loudness old/new90s and browser9 previews retained; shipping audio21,664,144 bytes. Prior bank/sources preserved, no subjective/AAA approval; concurrent game changes excluded. No phone attachment/audio test/export/install/full Validate/backend/deployment. Requirements/files/actual commands/limits/checkpoint: docs/SPORTS_ROCK_SOUNDTRACK.md.
+ 
+ 2026-10-08 R01/R03/V03/V05/RR05-RR06/B05/TD06-TD08/Q01: owner-corrected results comparisons implemented locally: single atomic same-population endpoint, no public/test/local refresh switching, same-response exact positions1-10 then top percentile, compact PB/header legend and full-height bars. No four-local-lap fallback; retained100-driver lap bests/standing-start/reset/public isolation preserved. Final graphical48/App99/parser355 and SQLite/ownedPG11 pass/one skip, lint/diff pass; delayed/failed/identical/mixed packet stability and solo/ties proven. Five actual-field captures inspected/task-only patch retained. Prior broad-results/rules409 failures documented, no weakening. No phone check/device/export/install/full Validate/cloud change. Matching two-module overlay refreshed locally; prior automatic code-egress/development-upload rejection still requires explicit owner approval. Files/commands/evidence/limits: docs/STABLE_RESULTS_COMPARISON.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 V01/V03-V05/Q01: stronger configurable speed zoom follows the owner's request: 30% default maximum pullback versus12%, 0–50% Camera/pause sliders with atomic saved strength and drag-release commits. Final camera1499/graphicalSettings278/records54/rewind57/shake7/App99/parser360 checks pass; 39 camera and three Settings-size captures inspected. Fixed baseline and canonical0.53/rules20/record keys retained, camera shutdown29-instance warning documented. No attachment/device/export/install/full Validate/replay gate/backend action; owner driving/mobile acceptance remains. Scoped patch, files, exact commands and initial corrected failures: docs/CAMERA_OPTIONS.md (Stronger configurable speed zoom).
++
+ 2026-10-08 TD01-TD03/TD05-TD06/TD08-TD09/B01-B07/WR03-WR07/T01-T04/Q01: owner-confirmed artificial/test-only record reset and 100-player reseed completed on retained development backend. Fresh successful SQL backup1791437948170; 1,253 test PBs cleared, five public real PBs exact-digest preserved. All28 current tracks including Star now have the same100 distinct artificial compact drivers: 2,800 genuine five-lap verified runs and 2,800 audited PBs, with CSV/splits retained. Durable leased operation rows, inventory/image guards and committed-upload recovery retain raw histories/accounts/maps/files; no migration. Minimal controller5/.53/compiler22/rules20 overlay preserves113 packaged game files byte-for-byte and permanent resources. All16 temporary generator tasks plus read-only audit succeeded; owned temporary job removed. Affected backend44 pass/4 skip/15 deselected; final native batch3 pass with10 audited real races and restart recovery, reset fencing2 and lint pass (overlapping counts). Scoped checkpoint preserves concurrent work. No visible UI change, phone attachment check/device test/export/install/full Validate or production action; compact only. Actual files/commands/evidence/limits: docs/TEST_RECORD_RESEED_2026_10_08.md.
+ 
+ 2026-10-08 B01-B07/B19-B20/B23/R01/V03-V05/Q01: owner-authorized community discovery implemented and deployed to retained development backend. Stable global20-page query streams, 300-preview reloadable cache/12 cards, debounced independent search, Recommended/New/Popular/Top rated, exact personal collections, explicit Refresh and global random; publication locates acknowledged revision and withdrawal clears pin. Final graphical274/live15 with28 public tracks, publication22/App99/catalog21/menu48/recovery86, SQLite+ownedPG18/HTTP2 and backend58 pass/3 skip/21 deselected; native staged smoke/lint pass. Owned50k-track PG benchmark warm page p95 15-71ms, cold broad326-407ms, sequential only. Successful backup1791407633405; minimal overlay preserves98 packaged game files/physics0.52/compiler22/rules19, existing identities/data/resources; newer live-image guard, prerequisite/startup-permission/footers fixed without weakened checks. Scoped patch/captures/logs preserved concurrent work; owned PG removed. No phone attachment/device/export/install/full Validate or production action. Restart desktop app; owner/ranking/mobile/concurrency and separate .53/rules20 rollout remain. Files/commands/evidence: docs/DISCOVERY_PAGING.md.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -164,3 +164,7 @@
+ ## Weekly Rivalry reference presentation override (2026-10-07)
+ 
+ The owner supplies the corrected podium/standings reference and explicitly removes visible TEST badges, the TEST RIVALRY/debug footer and browsing lap-count labels. This supersedes earlier visible test-label requirements for this presentation; retain development-only configuration, raw server identity markers and public-population isolation. Pair Week/time beneath the title, float the tabs, emphasize the taller gold winner with fictional car art, show the player in the clean four-column standings and align the five-track panel/action. Actual rank/points/time/biome values remain data-driven; do not insert the reference examples into live scores. Actual races still use five laps. See docs/RIVALRY_REFERENCE.md for files, generated-asset provenance, commands, screenshots and remaining device/visual acceptance.
++
++## Stronger configurable speed zoom override (2026-10-08)
++
++The owner requests a stronger speed-dependent pullback and configurable effect strength. This supersedes the former 12% enabled-zoom bound: the local default is 30% extra linear world coverage, selectable from 0–50% in Camera Settings and the race pause menu. Keep the 1.15x low-speed/disabled baseline, whole-scene scaling, overhead/no-horizon view, HUD/physical scale and canonical simulation separation. See docs/CAMERA_OPTIONS.md for actual tests, screenshots and remaining owner/device acceptance.

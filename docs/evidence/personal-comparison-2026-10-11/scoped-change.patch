@@ -1,0 +1,323 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -703,7 +703,8 @@
+ 	_show_detail()
+ 
+ func _comparison_selection_key(track: NativeTrack) -> String:
+-	return "%d:%s:%d" % [track.get_instance_id(),VehicleCatalog.selected,_selection_serial]
++	var local: Dictionary = records.records.get(records.key_for(track,HandlingSelection.config()),{}) if not track.content_hash.is_empty() else {}
++	return "%d:%s:%d:%d:%d" % [track.get_instance_id(),VehicleCatalog.selected,_selection_serial,int(local.get("race_ms",0)),int(local.get("flying_ms",0))]
+ 
+ func _comparison_scope() -> String:
+ 	var origin: String = str(cloud.client.base_url()) if cloud.client.has_method("base_url") else ""
+@@ -745,17 +746,19 @@
+ 	if cloud.client.signed_in():
+ 		var path: String = "/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS
+ 		var local: Dictionary = records.records.get(key,{})
+-		if int(local.get("race_ms",0)) > 0: path += "&race_ticks=%d" % roundi(float(local.race_ms)*VehicleSimulation.TICK_RATE/1000.0)
+-		if int(local.get("flying_ms",0)) > 0: path += "&lap_ticks=%d" % roundi(float(local.flying_ms)*VehicleSimulation.TICK_RATE/1000.0)
++		var race_ms: int = _personal_best_ms(snapshot,local,"race")
++		var lap_ms: int = _personal_best_ms(snapshot,local,"lap")
++		if race_ms > 0: path += "&race_ticks=%d" % roundi(float(race_ms)*VehicleSimulation.TICK_RATE/1000.0)
++		if lap_ms > 0: path += "&lap_ticks=%d" % roundi(float(lap_ms)*VehicleSimulation.TICK_RATE/1000.0)
+ 		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
+ 		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
+ 		var comparison: Dictionary
+-		var needs_overlay: bool = int(local.get("race_ms",0)) > 0 or int(local.get("flying_ms",0)) > 0 or had_comparison
++		var needs_overlay: bool = race_ms > 0 or lap_ms > 0 or had_comparison
+ 		if not needs_overlay and (warmed.has("packet") or preloader.pending(str(track.metadata.cloud_version),vehicle)):
+ 			warmed = await preloader.fetch(str(track.metadata.cloud_version),vehicle)
+ 			comparison = {"ok":warmed.has("packet"),"data":warmed.get("packet",{})}
+ 		else: comparison = await cloud.client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+-		if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
++		if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle or request_key != _comparison_selection_key(track):
+ 			_cloud_detail_pending.erase(request_key)
+ 			return
+ 		# The leaderboard may have completed while the histogram was in flight.
+@@ -841,7 +844,28 @@
+ 	snapshot.comparison_bins = RaceComplete.COMPARISON_BINS
+ 	snapshot.erase("comparison_error")
+ 	snapshot.erase("test_population")
++	_align_personal_comparison(snapshot,local)
+ 	return true
++
++static func _personal_best_ms(snapshot: Dictionary, local: Dictionary, metric: String) -> int:
++	var cached: int = int(snapshot.get(metric+"_ms",0))
++	var own: int = int(local.get("race_ms" if metric == "race" else "flying_ms",0))
++	return mini(cached,own) if cached > 0 and own > 0 else maxi(cached,own)
++
++static func _align_personal_comparison(snapshot: Dictionary, local: Dictionary) -> void:
++	for metric: String in ["race","lap"]:
++		var own: int = _personal_best_ms(snapshot,local,metric)
++		if own <= 0: continue
++		snapshot[metric+"_ms"] = own
++		if snapshot.get(metric+"_distribution") is Dictionary:
++			snapshot[metric+"_distribution"].markers = [{"value_ms":own,"label":"YOU","color":MenuStyle.ACCENT}]
++		var comparison: Variant = snapshot.get(metric+"_comparison")
++		# Warmed/disk packets may rank an older verified PB. Never attach that
++		# placement to a faster local marker or infer an exact rank from bins.
++		if comparison is Dictionary and int(comparison.get("candidate_ticks",0)) != roundi(float(own)*VehicleSimulation.TICK_RATE/1000.0):
++			snapshot[metric+"_comparison"] = null
++			if metric == "race":
++				for field: String in ["race_rank","race_top_percent","population"]: snapshot.erase(field)
+ 
+ static func _comparison_ready(snapshot: Dictionary) -> bool:
+ 	return snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS and snapshot.get("race_distribution") is Dictionary and snapshot.get("lap_distribution") is Dictionary
+@@ -958,6 +982,7 @@
+ 	var key: String = records.key_for(selected_track,HandlingSelection.config()) if not metadata_only else "preview:"+str(preview_entry.get("version_id",""))
+ 	var pb: Dictionary = records.records.get(key,{}) if not metadata_only else records.records.get(records.key_for(selected_track,HandlingSelection.config()),{}) if not selected_track.content_hash.is_empty() else {}
+ 	var snapshot: Dictionary = discovery.record_snapshot(key) if not metadata_only else preview_snapshot
++	_align_personal_comparison(snapshot,pb)
+ 	var metadata: Dictionary = selected_track.metadata if not metadata_only else preview_entry
+ 	var cloud_version: String = str(metadata.get("cloud_version" if not metadata_only else "version_id",""))
+ 	# A restored selection can open without any tile selection event. Start its
+@@ -968,6 +993,7 @@
+ 		if _comparison_selection != request_key or unresolved:
+ 			_load_cloud_detail(selected_track)
+ 			snapshot = discovery.record_snapshot(key)
++			_align_personal_comparison(snapshot,pb)
+ 	# An old-resolution cache must not flash before the fresh grid arrives.
+ 	if int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
+ 		snapshot.erase("race_distribution")
+@@ -1030,8 +1056,9 @@
+ 		personal_body.add_child(timer)
+ 		var placement: String = RaceComplete._position_text(snapshot.get("race_comparison"))
+ 		if not placement.is_empty(): personal_body.add_child(MenuStyle.label(placement,12,true))
+-		if int(pb.get("flying_ms",0)) > 0:
+-			personal_body.add_child(MenuStyle.label("Best lap  "+MenuStyle.time_text(float(pb.flying_ms)/1000.0),16,true))
++		var lap_ms: int = int(snapshot.get("lap_ms",pb.get("flying_ms",0)))
++		if lap_ms > 0:
++			personal_body.add_child(MenuStyle.label("Best lap  "+MenuStyle.time_text(float(lap_ms)/1000.0),16,true))
+ 	row.add_child(VSeparator.new())
+ 	row.add_child(retained_distribution if retained_distribution != null else _build_comparison_view(snapshot,waiting,exceptional_wait))
+ 	_comparison_view_key = comparison_view_key
+--- a/game/tests/test_personal_comparison.gd
++++ b/game/tests/test_personal_comparison.gd
+@@ -0,0 +1,123 @@
++extends "res://tests/test_startup_histogram.gd"
++## A local PB, verified PB and warmed placement must refer to the same time.
++
++class PersonalService extends StartupService:
++	var held_ticks: Dictionary = {}
++	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		paths.append(path)
++		while hold_comparison: await get_tree().process_frame
++		for held: String in held_ticks.keys():
++			while path.contains("&"+held+"&") and held_ticks.get(held,false): await get_tree().process_frame
++		var response: Dictionary = packet.duplicate(true)
++		for metric: String in ["race","best_lap"]:
++			var prefix: String = "race" if metric == "race" else "lap"
++			var candidate: int = int(response[metric].own_best_ticks)
++			for part: String in path.split("&"):
++				if part.begins_with(prefix+"_ticks="): candidate = int(part.get_slice("=",1))
++			var faster: int = 0
++			if candidate > int(response[metric].minimum_ticks): faster = 39
++			response[metric].comparison = {"position":faster+1,"population":100,"top_percent":faster+1,"candidate_ticks":candidate}
++		return {"ok":true,"data":response,"error":""}
++
++func packet() -> Dictionary:
++	var result: Dictionary = {"board_id":"personal-fixture","population_scope":"all"}
++	for metric: String in ["race","best_lap"]:
++		var low: int = 11400 if metric == "race" else 2300
++		var step: int = 300 if metric == "race" else 60
++		var own: int = low+step*6
++		var bins: Array[Dictionary] = []
++		for index: int in range(16): bins.append({"from_ticks":low+index*step,"to_ticks_exclusive":low+(index+1)*step,"count":39 if index == 0 else 1 if index == 6 else 60 if index == 15 else 0})
++		result[metric] = {"board_id":result.board_id,"metric":metric,"population":100,"opponent_count":99,"minimum_ticks":low,"maximum_ticks":low+step*15,"own_best_ticks":own,"bins":bins,"comparison":{"position":40,"population":100,"top_percent":40,"candidate_ticks":own}}
++	return result
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../build/personal-comparison/fixture-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/personal-comparison-2026-10-11")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	root.content_scale_size = Vector2i(1280,720)
++	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
++	root.size = Vector2i(1280,720)
++	var document: Dictionary = TrackDocument.create_default()
++	document.theme = "winter"
++	var track: NativeTrack = TrackCompiler.compile(document)
++	track.metadata.cloud_version = "personal-comparison-fixture"
++	track.metadata.title = "Slippery fixture"
++	var service := PersonalService.new()
++	service.packet = packet()
++	root.add_child(service)
++	var browser: TrackBrowser = make_browser(service,track,true)
++	var key: String = browser.records.key_for(track,HandlingSelection.config())
++	browser.records.records[key] = {"race_ms":91750,"flying_ms":17789}
++	var snapshot: Dictionary = {}
++	check(browser._apply_cloud_comparison(snapshot,service.packet,track),"warmed packet with an older verified PB is accepted")
++	browser.discovery.remember_record(key,snapshot)
++	browser._show_detail()
++	await settle()
++	check(not texts(browser.detail).contains("TOP 40%"),"faster local PB never inherits the older verified PB's Top 40 percent")
++	check(snapshot.race_distribution.markers[0].value_ms == 91750,"warmed histogram retains the actual local PB marker")
++	await capture("stale-placement-hidden")
++	service.hold_comparison = false
++	await browser._load_cloud_detail(track)
++	await settle()
++	check(service.paths[-1].contains("race_ticks=11010") and service.paths[-1].contains("lap_ticks=2135"),"foreground comparison requests the displayed local race and lap PBs")
++	check(texts(browser.detail).contains("POSITION 1") and not texts(browser.detail).contains("TOP 40%"),"completed overlay aligns fastest local PB with position one")
++	var aligned: Dictionary = browser.discovery.record_snapshot(key)
++	check(aligned.lap_comparison is Dictionary and aligned.lap_comparison.candidate_ticks == 2135,"millisecond lap display retains its exact quantized-tick comparison")
++	await capture("aligned-fastest")
++	# The server has a better PB than this device: request that displayed PB.
++	service.packet.race.own_best_ticks = 10800
++	service.packet.race.comparison = {"position":1,"population":100,"top_percent":1,"candidate_ticks":10800}
++	service.packet.best_lap.own_best_ticks = 2040
++	service.packet.best_lap.comparison = {"position":1,"population":100,"top_percent":1,"candidate_ticks":2040}
++	snapshot = {}
++	browser._apply_cloud_comparison(snapshot,service.packet,track)
++	browser.discovery.remember_record(key,snapshot)
++	await browser._load_cloud_detail(track)
++	check(service.paths[-1].contains("race_ticks=10800"),"a faster verified PB is the comparison candidate rather than the slower device PB")
++	check(service.paths[-1].contains("lap_ticks=2040") and texts(browser.detail).contains("Best lap  00:17.000"),"lap caption, marker and requested comparison also use the faster verified PB")
++	check((browser.find_child("LibraryBestTime",true,false) as Label).text == "01:30.000","record caption shows the same faster verified PB")
++	await capture("aligned-verified-pb")
++	# Cached results must also react to a new local record without a reselection.
++	var old_selection: String = browser._comparison_selection_key(track)
++	browser.records.records[key].race_ms = 89000
++	check(browser._comparison_selection_key(track) != old_selection,"a newly completed local PB creates one new comparison selection")
++	service.hold_comparison = true
++	service.hold_board = false
++	browser.page_preview = false
++	var requests_before: int = service.paths.filter(func(path: String) -> bool: return path.contains("results-comparison")).size()
++	browser._show_detail()
++	await settle()
++	var chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
++	check(chart.snapshot.markers[0].value_ms == 89000 and (browser.find_child("LibraryBestTime",true,false) as Label).text == "01:29.000","cached chart marker and record caption advance together to the new local PB")
++	check(not texts(browser.detail).contains("POSITION 1"),"cached placement for the previous PB is withheld until the new candidate returns")
++	for repeat: int in range(3): browser._show_detail()
++	check(service.paths.filter(func(path: String) -> bool: return path.contains("results-comparison")).size() == requests_before+1,"a new local PB automatically starts exactly one overlay read without reselection or polling")
++	var legacy: Dictionary = snapshot.duplicate(true)
++	legacy.race_comparison.erase("candidate_ticks")
++	browser.discovery.remember_record(key,legacy)
++	browser._show_detail()
++	check(not texts(browser.detail).contains("POSITION 1"),"unbound legacy cached placements never label a different time")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		await capture("cached-new-pb-%dx%d" % [dimensions.x,dimensions.y])
++	service.hold_comparison = false
++	await settle()
++	check(texts(browser.detail).contains("POSITION 1") and (browser.find_child("RaceDistribution",true,false) as TrackDistribution).snapshot.markers[0].value_ms == 89000,"new local PB placement appears when its exact overlay read completes")
++	service.held_ticks["race_ticks=10560"] = true
++	browser.records.records[key].race_ms = 88000
++	browser._show_detail()
++	await settle()
++	browser.records.records[key].race_ms = 87000
++	browser._show_detail()
++	await settle()
++	check(browser.discovery.record_snapshot(key).race_comparison.candidate_ticks == 10440,"a later PB's comparison completes independently of an older held request")
++	service.held_ticks["race_ticks=10560"] = false
++	await settle()
++	check(browser.discovery.record_snapshot(key).race_comparison.candidate_ticks == 10440 and texts(browser.detail).contains("POSITION 1"),"late comparison for an older PB cannot erase the latest placement")
++	browser.queue_free()
++	await settle()
++	service.queue_free()
++	print("PERSONAL_COMPARISON: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
+--- a/game/tests/test_personal_comparison.gd.uid
++++ b/game/tests/test_personal_comparison.gd.uid
+@@ -0,0 +1 @@
++uid://bjh28k7fqg8lx
+--- a/docs/PERSONAL_COMPARISON_2026_10_11.md
++++ b/docs/PERSONAL_COMPARISON_2026_10_11.md
+@@ -0,0 +1,87 @@
++# Personal best placement and histogram consistency — 2026-10-11
++
++Requirements: RR06/R01/R03, TD06/TD08, B05/B07, V03/V05 and Q01.
++The owner reports Top 40% beside a fastest-looking personal marker in the
++Slippery discovery records panel. HC01 binds placement to the displayed PB;
++HC02 aligns race/lap captions and markers; HC03 handles new local PBs and late
++replies; HC04 preserves the unified population, exact counts and restrained UI.
++
++## Cause and correction
++
++`game/ui/track_browser.gd` selected the faster local/verified PB for the histogram
++marker, then copied the server comparison without checking its `candidate_ticks`.
++A warmed response could therefore rank an older verified PB while showing a
++faster local time. A second case sent the slower device PB despite displaying a
++faster server PB. Cached snapshots could also keep their previous marker after a
++new local record. These paths were reproduced using isolated fixtures; the exact
++owner account/packet was not read and the screenshot's live rank is not asserted.
++
++Discovery now uses the same minimum local/known-server PB for the record caption,
++marker and foreground request. Placement is shown only when its candidate matches
++that time at canonical tick precision. A stale or legacy unbound placement is
++withheld until the matching read returns. Existing bars remain visible, and no
++new captions or loading notices were introduced. Best lap also uses the same
++local/verified minimum as its marker. Local PB changes start one new comparison
++read without track reselection or polling; replies for older PBs cannot replace
++the newer placement. Exact rank is never inferred from histogram bins.
++
++The existing single deduplicated race/lap population, 16-bin frame, verified counts,
++account/car/rules fences, public/artificial competition isolation, normal results
++first and five-lap race contracts remain. These are presentation candidates;
++they do not insert unverified samples or alter competitive PBs. The public High
++scores list retains its existing competitive population and is separate from the
++owner-required unified comparison histogram.
++
++## Changed files
++
++- `game/ui/track_browser.gd`: candidate binding, PB-aligned request/captions/markers,
++  PB-sensitive selection key and stale reply guard.
++- `game/tests/test_personal_comparison.gd` and its `.uid`: regression using the
++  actual browser, held transport, local/server PB differences, canonical tick
++  rounding, cache updates, duplicate events and out-of-order replies.
++- This report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`, five PNG captures,
++  task-only patch and checkpoint receipt.
++
++## Actual commands and outcomes
++
++Commands used pinned Godot **4.7.2.stable.official.ed1daf0bf** through
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`.
++Tests used process-local APPDATA folders under `.tools/personal-comparison-*`,
++without owner saves or credentials. Graphical tests used Compatibility/OpenGL.
++
++| Arguments | Actual outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_personal_comparison.gd` | Initial reproduction: 11 checks, 6 failures |
++| `-Action TestScript -ScriptPath res://tests/test_personal_comparison.gd -Graphical` | Final: 22 checks, 0 failures; five captures |
++| `-Action TestScript -ScriptPath res://tests/test_startup_histogram.gd` | 22 checks, 0 failures; rerun after late-reply guard |
++| `-Action TestScript -ScriptPath res://tests/test_unified_histograms.gd` | 127 checks, 0 failures; rerun after late-reply guard |
++| `-Action TestScript -ScriptPath res://tests/test_histogram_continuity.gd` | 12 checks, 0 failures |
++| `-Action TestScript -ScriptPath res://tests/test_results_histograms.gd` | 37 checks, 0 failures |
++| `-Action TestApp` | 99 checks, 0 failures |
++| `-Action Doctor` | Prerequisites pass; ADB reports no attached devices |
++| `git diff --check -- game/ui/track_browser.gd` | Pass; existing CRLF normalization warning only |
++
++**319 final regression checks, zero failures.** Earlier intermediate passes are
++not added again. The first restricted test failed before execution because it
++could not read the Windows certificate store; normal local access allowed the
++tests to execute. Logs are under `build/logs/`.
++
++Five fixture screenshots under `docs/evidence/personal-comparison-2026-10-11/`
++show stale placement withheld, aligned fastest and faster verified PBs, and a
++cached new PB at 960×540 and 1600×720. The aligned/stale/verified/small-screen
++captures were visually inspected. They use original existing Winter artwork and
++a generated default route named Slippery fixture, not the owner's actual course
++or live standings. Task-only review ref: `refs/codex/personal-comparison-20261011`;
++its receipt and scoped patch are beside the captures. Working branch/index and
++unrelated work are preserved.
++
++## Limits and acceptance
++
++Restart the desktop client to load the correction, then inspect the affected
++Slippery/car record. A matching placement can remain absent if its read fails;
++the stale percentage is never substituted. Population snapshots retain their
++existing server refresh cadence, and histogram bins cannot establish an exact
++rank on their own. Owner acceptance of the actual account remains outstanding.
++No phone is attached; no device test, Android export/install, full Validate or
++physics regression was performed. No backend change, live player/race write,
++deployment or new asset was needed or performed.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-11 HC01-HC04/RR06/R01/R03/TD06/TD08/B05/B07/V03/V05/Q01: owner Top40%-fastest histogram mismatch. Reproduced local-fast marker/older-server placement plus slower-device candidate and stale-cache paths; exact displayed-PB tick binding, race-lap min/local-verified captions-markers-requests, one read on new PB and late-reply fence. Baseline11/6fail; final personal22/startup22/unified127/continuity12/results37/App99=319checks/0fail; five fixture captures inspected. Exact owner live packet not read; no rank inferred from bins/competitive write. Doctor no phone attached/no device test/export-install/fullValidate/physics regression/backend change/deploy. Restart/owner-account acceptance; files/actual commands/task-only checkpoint: docs/PERSONAL_COMPARISON_2026_10_11.md.
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-11 HC01-HC04/RR06/R01/R03/TD06/TD08/B05/B07/V03/V05/Q01: owner Top40%-fastest histogram mismatch. Reproduced local-fast marker/older-server placement plus slower-device candidate and stale-cache paths; exact displayed-PB tick binding, race-lap min/local-verified captions-markers-requests, one read on new PB and late-reply fence. Baseline11/6fail; final personal22/startup22/unified127/continuity12/results37/App99=319checks/0fail; five fixture captures inspected. Exact owner live packet not read; no rank inferred from bins/competitive write. Doctor no phone attached/no device test/export-install/fullValidate/physics regression/backend change/deploy. Restart/owner-account acceptance; files/actual commands/task-only checkpoint: docs/PERSONAL_COMPARISON_2026_10_11.md.
++

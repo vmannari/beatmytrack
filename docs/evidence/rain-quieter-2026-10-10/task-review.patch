@@ -1,0 +1,79 @@
+diff --git a/game/track/storm_weather.gd b/game/track/storm_weather.gd
+--- a/game/track/storm_weather.gd
++++ b/game/track/storm_weather.gd
+@@ -5,7 +5,7 @@
+ const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
+ const MIN_INTERVAL: float = 9.0
+ const MAX_INTERVAL: float = 16.0
+-const RAIN_LEVEL: float = 0.55
++const RAIN_LEVEL: float = 0.45
+ const RAIN_FADE_SECONDS: float = 0.75
+ var elapsed: float = 0.0
+ var until_lightning: float = 6.0
+diff --git a/game/assets/audio/ambience/NOTICE.txt b/game/assets/audio/ambience/NOTICE.txt
+--- a/game/assets/audio/ambience/NOTICE.txt
++++ b/game/assets/audio/ambience/NOTICE.txt
+@@ -15,7 +15,7 @@
+ 
+ Only20-41s is decoded from the467.827-second MP3. Mono44.1kHz16-bit PCM,
+ DC removal, gentle rare-peak control, level matching and one-second cyclic
+-crossfade produce a20-second loop. No EQ or added rain layers. Existing0.55
++crossfade produce a20-second loop. No EQ or added rain layers. Existing0.45
+ Vehicle playback and pause/finish lifecycle retained. Rebuild:
+ scripts/build_storm_rain.py; bounded decoder: tests/decode_storm_rain_source.gd.
+ No runtime download, AI or external audio service. Earlier source assets and
+diff --git a/docs/WET_ROAD_AUDIO.md b/docs/WET_ROAD_AUDIO.md
+--- a/docs/WET_ROAD_AUDIO.md
++++ b/docs/WET_ROAD_AUDIO.md
+@@ -2,7 +2,7 @@
+ 
+ Current state: the owner rejected wet rolling and moved it to the wishlist.
+ Storm asphalt rolling is disabled; the owner-supplied rain now plays as a
+-20-second loop at 0.55 gain. The
++20-second loop at 0.45 gain. The
+ implementation history below is superseded by the final deferral section.
+ 
+ The follow-up correction below raises wet rolling and adds quiet recorded rain
+@@ -381,3 +381,21 @@
+ No phone attachment check, physical-device listening, APK export/install,
+ full Validate, backend or deployment. Owner listening and device acceptance
+ remain; previous storm visual spray failures are outside this audio asset change.
++
++
++## Slightly quieter rain, 2026-10-10
++
++SND27: owner requests slightly quieter rain. `StormWeather.RAIN_LEVEL` changes
++from0.55 to0.45:18.18% lower linear gain (-1.743dB). The supplied20-second WAV
++remains byte-identical, and wet tires remain deferred. Existing fades, vehicle
++volume/mute and pause/focus/finish behavior remain.
++
++Changed files: `game/track/storm_weather.gd`, ambience `NOTICE.txt`, this page,
++`DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. Actual command:
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript
++-ScriptPath res://tests/test_wet_road_audio.gd`:39 checks, zero failures, exit0;
++117 ObjectDB shutdown warnings retained. Source hash check confirms unchanged
++WAV. Updated level preview and scoped source patch are in
++`docs/evidence/rain-quieter-2026-10-10/`. No phone attachment check/device
++listening/native acoustic capture/Android export-install/full Validate/backend
++or deployment. Owner final volume acceptance remains.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-10 SND27/SND26/SND24/SND05/G01/R01/Q01/V06: owner requests slightly quieter rain; existing loop playback gain0.55-to0.45 (-1.743dB/18.18% reduction). Supplied20s WAV/hash exact, wet tires deferred, lifecycle/mute retained. Pinned focused39 checks/exit0;117 shutdown references retained. Source/preview/scoped checkpoint documented; no phone attachment/device listening/native acoustic capture/export-install/full Validate/backend/deploy. Files/commands/owner acceptance: docs/WET_ROAD_AUDIO.md (quieter rain).
++
+ 2026-10-10 HOPT01-HOPT02/RR06/TD06/TD08/R01/Q01: histogram review removes results outbox-driven timer/requeue and same-selected-track discovery refresh; initial selection hydrates once, results initialize once per opened view. Real empty-outbox probe6idle/3hidden GETs becomes0/0, both snapshots fixed even with changed offered packets/pending events. Native graphical148/results37/App99 and backendSQLite5(1skip)/driver2 pass; owned analyzed PG17 endpoint11queries/4lap-history reads, 1000drivers median44.22ms at1000attempts vs291.26ms at50000. Lap-only improvement leaves existing board revision unchanged; naive revision cache unsafe, durable lap projection recommended. Owned DB removed/no server runtime-schema-deploy/player-record changes. Captures inspected; no phone attachment/device test/export-install/full Validate. Owner confirms results load once when opened. Files, commands, receipts, scoped checkpoint and acceptance: docs/HISTOGRAM_OPTIMIZATION_2026_10_10.md.
+ 
+ 2026-10-10 SND26/SND24-SND25/SND05/G01/R01/Q01/V06: owner-provided Dragon Studio rain MP3 now supplies storm background; only20-41s of467.827s decoded,1s cyclic crossfade gives20s/1764044bytes/3bed8b7e loop. Gentle rare-peak control matches prior RMS/0.55 gain, no EQ/added layers; original untouched/source-excerpt/old assets retained, filename attribution/licence metadata explicit. Final offline rebuild/import/focused39/native33/source+native loop/mix reviews pass; one actual wrap/no gaps/paused zero/default music present, rain10.061dB below engine. First quiet peak-capped candidate retained; rejected same-path patch changed no files. All47 vehicle WAVs/wet mixer/gain/wishlist hashes exact. No phone attachment/device listening/APK export-install/full Validate/backend/deploy. Files/commands/audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (owner loop).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1442,3 +1442,8 @@
+ ## Owner-supplied storm rain loop, 2026-10-10
+ 
+ 2026-10-10 SND26/SND24-SND25/SND05/G01/R01/Q01/V06: owner-provided Dragon Studio rain MP3 now supplies storm background; only20-41s of467.827s decoded,1s cyclic crossfade gives20s/1764044bytes/3bed8b7e loop. Gentle rare-peak control matches prior RMS/0.55 gain, no EQ/added layers; original untouched/source-excerpt/old assets retained, filename attribution/licence metadata explicit. Final offline rebuild/import/focused39/native33/source+native loop/mix reviews pass; one actual wrap/no gaps/paused zero/default music present, rain10.061dB below engine. First quiet peak-capped candidate retained; rejected same-path patch changed no files. All47 vehicle WAVs/wet mixer/gain/wishlist hashes exact. No phone attachment/device listening/APK export-install/full Validate/backend/deploy. Files/commands/audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md (owner loop).
++
++
++## Slightly quieter rain, 2026-10-10
++
++2026-10-10 SND27/SND26/SND24/SND05/G01/R01/Q01/V06: owner requests slightly quieter rain; existing loop playback gain0.55-to0.45 (-1.743dB/18.18% reduction). Supplied20s WAV/hash exact, wet tires deferred, lifecycle/mute retained. Pinned focused39 checks/exit0;117 shutdown references retained. Source/preview/scoped checkpoint documented; no phone attachment/device listening/native acoustic capture/export-install/full Validate/backend/deploy. Files/commands/owner acceptance: docs/WET_ROAD_AUDIO.md (quieter rain).

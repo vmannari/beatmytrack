@@ -1,0 +1,1229 @@
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -3,7 +3,6 @@
+ from fastapi import FastAPI, HTTPException, Request
+ from fastapi.exceptions import RequestValidationError
+ from fastapi.responses import JSONResponse
+-from sqlalchemy import text
+ from sqlalchemy.exc import SQLAlchemyError
+ from starlette.concurrency import run_in_threadpool
+ from starlette.middleware.gzip import GZipMiddleware
+@@ -12,8 +11,8 @@
+ from .config import Settings
+ from .db import make_engine, make_session_factory
+ from .middleware import IdentityBudgets, RequestBoundary
+-from .migrate import SCHEMA_HEAD
+ from .observability import configure_logging
++from .readiness import DependencyFailure, ReadinessProbe
+ from .security import GoogleIdentityVerifier
+ from .storage import make_blob_store
+ 
+@@ -26,6 +25,7 @@
+     configure_logging()
+     @asynccontextmanager
+     async def lifespan(application):
++        application.state.readiness.open()
+         # Warm the pinned, immutable contract before accepting concurrent races.
+         # Auth-only isolated tests may omit an engine; deployed APIs configure it.
+         adapter = application.state.verifier
+@@ -34,6 +34,7 @@
+         try:
+             yield
+         finally:
++            await application.state.readiness.close()
+             if hasattr(adapter, "close"):
+                 await run_in_threadpool(adapter.close)
+ 
+@@ -45,6 +46,7 @@
+     app.state.blobs = make_blob_store(settings, app.state.session_factory)
+     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
+     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
++    app.state.readiness = ReadinessProbe(app)
+     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3)
+     app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory)
+     app.include_router(admin.router)
+@@ -65,29 +67,26 @@
+ 
+     @app.exception_handler(SQLAlchemyError)
+     async def unavailable(request: Request, _error):
++        app.state.readiness.invalidate()
+         return JSONResponse(
+             {"detail": "DATABASE_UNAVAILABLE", "request_id": request.state.request_id}, status_code=503
+         )
+ 
+     @app.exception_handler(OSError)
+     async def storage_unavailable(request: Request, _error):
++        app.state.readiness.invalidate(storage=True)
+         return JSONResponse({"detail":"STORAGE_UNAVAILABLE","request_id":request.state.request_id},status_code=503)
+ 
+     @app.get("/healthz", tags=["operations"])
+-    def health():
++    async def health():
+         return {"status": "ok"}
+ 
+     @app.get("/readyz", tags=["operations"])
+-    def ready():
++    async def ready():
+         try:
+-            with app.state.engine.connect() as connection:
+-                revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+-                if revision != SCHEMA_HEAD:
+-                    raise HTTPException(503, "SCHEMA_NOT_READY")
+-            app.state.blobs.get_json(app.state.blobs.put_json({"storage_probe": "bmt-v1"}))
+-        except (SQLAlchemyError, OSError) as exc:
+-            raise HTTPException(503, "DEPENDENCY_UNAVAILABLE") from exc
+-        return {"status": "ready", "schema": revision}
++            return await app.state.readiness.check()
++        except DependencyFailure as error:
++            raise HTTPException(503, error.code) from None
+ 
+     @app.get("/v1/bootstrap", tags=["compatibility"])
+     def bootstrap():
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -30,6 +30,9 @@
+     max_queued_runs: int = 128
+     worker_stale_seconds: int = 300
+     worker_shutdown_grace_seconds: int = 5
++    readiness_cache_seconds: int = 2
++    readiness_storage_cache_seconds: int = 30
++    readiness_timeout_seconds: int = 2
+     retention_days: int = 90
+     backup_marker_path: str = ""
+     database_pool_size: int = 4
+@@ -73,6 +76,7 @@
+             "max_queued_runs",
+             "worker_stale_seconds",
+             "worker_shutdown_grace_seconds",
++            "readiness_cache_seconds", "readiness_storage_cache_seconds", "readiness_timeout_seconds",
+             "retention_days",
+             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
+             "upload_concurrency", "edge_limit_per_minute", "verifier_recycle_jobs",
+@@ -82,6 +86,8 @@
+                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
+         if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
+             raise ValueError("Invalid pool overflow or upload concurrency")
++        if self.readiness_cache_seconds > 5 or self.readiness_storage_cache_seconds > 60 or self.readiness_timeout_seconds > 5:
++            raise ValueError("Readiness cache/deadline exceeds the bounded probe allowance")
+         if self.max_body_bytes > 8 * 1024 * 1024:
+             raise ValueError("BMT_MAX_BODY_BYTES cannot exceed the 8 MiB storage/verifier limit")
+         # A cold worker can run an engine version probe (10s), manifest process
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -39,6 +39,12 @@
+ equivalent service command is `python -m bmt_backend.worker`.
+ The API's `/docs` and `/openapi.json` describe the exact request/response contract;
+ `/healthz` is process liveness and `/readyz` checks database/schema/storage readiness.
++Liveness performs no dependency IO. Readiness coalesces concurrent requests,
++has a two-second response deadline, caches schema/dependency success for two
++seconds and performs deeper object write/read checks every 30 seconds on demand.
++Observed API storage failures invalidate both caches immediately. An expired or
++late probe returns 503; at most one dependency IO job runs per API instance.
++See [readiness bounds and separate-process failure tests](../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
+ Readiness does not prove that Google login or the external verifier is configured.
+ Workers handle SIGTERM/SIGINT, stop claiming jobs, allow five seconds to finish
+ (`BMT_WORKER_SHUTDOWN_GRACE_SECONDS`), then cooperatively cancel verification.
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-05 readiness/replica failures: `/healthz` performs no dependency IO; `/readyz` coalesces requests with a two-second HTTP deadline, two-second success cache and 30-second on-demand deep-storage interval. API storage errors invalidate caches immediately. `BMT_READINESS_CACHE_SECONDS`, `BMT_READINESS_STORAGE_CACHE_SECONDS` and `BMT_READINESS_TIMEOUT_SECONDS` configure these bounded defaults. Keep external probe timeouts above the application's deadline. Synthetic separate-process tests cover shared sessions, concurrent retries/resource consumption, storage faults, killed/stale workers and SQL finalization recovery. No existing services were restarted/migrated. [Actual checks and limits](../../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
++
+ 2026-10-05 worker lifecycle: SIGTERM/SIGINT stop claims and mark draining, with a configurable five-second canonical finish grace, cooperative cancellation and verifier/pool cleanup including `--once`. Set `BMT_WORKER_SHUTDOWN_GRACE_SECONDS` below the platform termination allowance, reserving time for existing bounded database/object IO and cleanup. PC Compose grants 30 seconds; the NAS template retains 210 seconds. An unavailable heartbeat DB or SIGKILL relies on stale-heartbeat/lease expiry. This source change did not restart existing services. [Actual checks and acceptance](../../docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md).
+ 
+ 2026-10-05 scalability repairs: current head is `0014_storage_lifecycle`. Online retention uses publication/read pins; the default backup pauses only GC and streams immutable objects while writers continue. Explicit `BMT_BACKUP_MODE=offline` retains the stopped-writer path. Role pool budgets and optional S3 configuration are documented in [the repair report](../../docs/BACKEND_SCALABILITY_FIXES_2026_10_05.md) and [load tooling](../LOAD_TESTING.md). No existing service was migrated or deployed.
+--- a/backend/deploy/compose.yaml
++++ b/backend/deploy/compose.yaml
+@@ -41,6 +41,9 @@
+     BMT_DATABASE_POOL_SIZE: ${BMT_DATABASE_POOL_SIZE:-4}
+     BMT_DATABASE_POOL_OVERFLOW: "0"
+     BMT_DATABASE_POOL_TIMEOUT_SECONDS: "3"
++    BMT_READINESS_CACHE_SECONDS: ${BMT_READINESS_CACHE_SECONDS:-2}
++    BMT_READINESS_STORAGE_CACHE_SECONDS: ${BMT_READINESS_STORAGE_CACHE_SECONDS:-30}
++    BMT_READINESS_TIMEOUT_SECONDS: ${BMT_READINESS_TIMEOUT_SECONDS:-2}
+     BMT_UPLOAD_CONCURRENCY: "2"
+     BMT_PERSISTENT_VERIFIER: "true"
+ 
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -12,6 +12,9 @@
+     BMT_DEV_AUTH_KEY: ${BMT_DEV_AUTH_KEY:?Run BackendStart to generate local configuration}
+     BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD}@db:5432/bmt
+     BMT_PUBLIC_BASE_URL: http://127.0.0.1:18181
++    BMT_READINESS_CACHE_SECONDS: ${BMT_READINESS_CACHE_SECONDS:-2}
++    BMT_READINESS_STORAGE_CACHE_SECONDS: ${BMT_READINESS_STORAGE_CACHE_SECONDS:-30}
++    BMT_READINESS_TIMEOUT_SECONDS: ${BMT_READINESS_TIMEOUT_SECONDS:-2}
+     BMT_ADMIN_OWNER_KEY: ${BMT_ADMIN_OWNER_KEY:-}
+     BMT_ADMIN_ANALYST_KEY: ${BMT_ADMIN_ANALYST_KEY:-}
+     BMT_GOOGLE_CLIENT_IDS: ${BMT_GOOGLE_CLIENT_IDS:-}
+--- a/backend/deploy/.env.example
++++ b/backend/deploy/.env.example
+@@ -16,6 +16,9 @@
+ BMT_MAX_QUEUED_RUNS=128
+ BMT_WORKER_STALE_SECONDS=300
+ BMT_WORKER_SHUTDOWN_GRACE_SECONDS=5
++BMT_READINESS_CACHE_SECONDS=2
++BMT_READINESS_STORAGE_CACHE_SECONDS=30
++BMT_READINESS_TIMEOUT_SECONDS=2
+ BMT_RETENTION_DAYS=90
+ # Optional: BMT_BACKUP_MARKER_PATH must point to a read-only mounted COMPLETE
+ # marker from the latest successful backup. A Compose override must add the mount.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-05 B01-B07/B19-B20/B23/RW05-RW07/Q01: owner-authorized backend backlog items 4-5 implemented. Async IO-free liveness; coalesced readiness with per-job/per-request deadlines, 2-second success/30-second storage freshness, generation fences, failure invalidation and one IO slot; PostgreSQL probe timeout stays transaction-local. Separate API/worker processes test alternating auth/browser/restart, retry/admission/resource races, object failures, hard-kill/stale output and SQL finalization recovery. Affected regression 176 passed/6 skipped; final readiness/auth 50 passed; initial process matrix 21/3, strengthened faults 7/1 and forced concurrent admission 1/1 (overlapping). Initial short fixture key corrected without relaxing validation; synthetic diagnostic tokens redacted. Temporary PostgreSQL removed; original WSL services still running. No schema/simulation change, service rollout, NAS/cloud credits/resources, Android/device test; device attachment not checked. Actual commands/files/checkpoint and real-provider/rollout acceptance: docs/BACKEND_READINESS_REPLICAS_2026_10_05.md. Concurrent work preserved.
++
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized backend backlog items 1-3 implemented: SIGTERM/SIGINT drain/cancel, verifier/pool cleanup including --once, retained fenced race/validation leases, allowed worker/duration logs and accurate lifecycle/progress health. Concurrent first heartbeats preserve draining/build state. Final affected SQLite/PostgreSQL batch 212 passed/12 skipped; final lifecycle/verifier 57/4 and isolated Linux SIGTERM/SIGINT/SIGKILL recovery 4 passed. Native batch 57 pass/two old injection-hook failures corrected in final checks. Temporary PostgreSQL removed; existing WSL API/worker/DB remain running. No schema/simulation change, service rollout, NAS/cloud resources or device test; device attachment not checked. Grace excludes existing bounded IO/cleanup, hard-kill/DB outage use stale/lease expiry, attempt limits remain. Changed files, exact commands, outcomes, limitations and scoped review checkpoint: docs/BACKEND_WORKER_LIFECYCLE_2026_10_05.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-requested backend exception and recovery review completed for future load-balanced cloud production. Three P1 gaps: asynchronous Results-save lifetime, mixed API protocol rollout and incompatible worker claiming. Nine P2 recovery/abuse/observability items include malformed success, refresh outage sign-out, non-durable uncertain resumes, missing-Run polling, restart leases/manual exhaustion, fake Authorization public budgets, clock-bound keys and infrastructure error classification. Current automatic/manual/operator recovery and preserved evidence documented. Existing SQLite recovery/auth/receipt/lease tests 117 passed/3 PG-only skips/126 deselected; 9 observation probes passed with 6 PG parametrizations deselected. Five native observation scenarios exit 0; separate malformed-success injection intentionally exits 1 with a real Script Error, not a passing test. No runtime/schema fix, service restart, cloud/NAS/phone test or deployment; phone attachment not checked. Exact commands, limitations, probes, hashes and scoped review checkpoint: docs/BACKEND_EXCEPTION_REVIEW_2026_10_05.md. Concurrent implementation/menu changes preserved.
+--- /dev/null
++++ b/backend/bmt_backend/readiness.py
+@@ -0,0 +1,122 @@
++"""Coalesced dependency probes with bounded HTTP waits and one IO thread per API."""
++import asyncio
++import threading
++import time
++
++from sqlalchemy import text
++from sqlalchemy.exc import SQLAlchemyError
++
++from .migrate import SCHEMA_HEAD
++
++
++class DependencyFailure(Exception):
++    def __init__(self, code):
++        self.code = code
++
++
++class ReadinessProbe:
++    def __init__(self, app, *, clock=time.monotonic):
++        self.app = app
++        self.clock = clock
++        self.lock = threading.Lock()
++        self.pending = None
++        self.result = None
++        self.expires_at = 0
++        self.storage_expires_at = 0
++        self.generation = 0
++        self.closed = False
++
++    def open(self):
++        with self.lock:
++            self.closed = False
++            self.generation += 1
++            self.expires_at = self.storage_expires_at = 0
++
++    def invalidate(self, *, storage=False):
++        with self.lock:
++            self.generation += 1
++            self.expires_at = 0
++            if storage:
++                self.storage_expires_at = 0
++
++    def _dependencies(self, storage_needed):
++        with self.app.state.engine.connect() as connection:
++            if connection.dialect.name == "postgresql":
++                # Transaction-local; never weaken the application's normal SQL limits.
++                connection.execute(text("SELECT set_config('statement_timeout', :timeout, true)"),
++                    {"timeout": str(self.app.state.settings.readiness_timeout_seconds * 1000)})
++            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
++            if revision != SCHEMA_HEAD:
++                raise DependencyFailure("SCHEMA_NOT_READY")
++        if storage_needed:
++            blobs = self.app.state.blobs
++            expected = {"storage_probe": "bmt-v1"}
++            if blobs.get_json(blobs.put_json(expected)) != expected:
++                raise DependencyFailure("DEPENDENCY_UNAVAILABLE")
++        return {"status": "ready", "schema": revision}
++
++    def _run(self, job, storage_needed):
++        try:
++            result, code = self._dependencies(storage_needed), None
++        except DependencyFailure as error:
++            result, code = None, error.code
++        except (SQLAlchemyError, OSError, ValueError):
++            result, code = None, "DEPENDENCY_UNAVAILABLE"
++        except Exception:  # noqa: BLE001 - probes fail closed without exposing provider/credential details
++            result, code = None, "DEPENDENCY_UNAVAILABLE"
++        with self.lock:
++            current = self.clock()
++            if job["generation"] == self.generation and not self.closed:
++                if current >= job["deadline"]:
++                    result, code = None, "DEPENDENCY_TIMEOUT"
++                self.result = (result, code)
++                # Failures have a short retry interval; late success never turns a timeout green.
++                self.expires_at = current + (1 if code else self.app.state.settings.readiness_cache_seconds)
++                if result and storage_needed:
++                    self.storage_expires_at = current + self.app.state.settings.readiness_storage_cache_seconds
++                if not code:
++                    # Schema-only refreshes must never extend the deep-storage freshness window.
++                    self.expires_at = min(self.expires_at, self.storage_expires_at)
++            self.pending = None
++
++    async def check(self):
++        request_deadline = self.clock() + self.app.state.settings.readiness_timeout_seconds
++        while True:
++            with self.lock:
++                current = self.clock()
++                if self.closed:
++                    raise DependencyFailure("DEPENDENCY_UNAVAILABLE")
++                if current >= request_deadline:
++                    raise DependencyFailure("DEPENDENCY_TIMEOUT")
++                if current < self.expires_at and self.result is not None:
++                    result, code = self.result
++                    if code:
++                        raise DependencyFailure(code)
++                    return dict(result)
++                if self.pending is None:
++                    job = {"generation": self.generation,
++                        "deadline": current + self.app.state.settings.readiness_timeout_seconds}
++                    self.pending = job
++                    storage_needed = current >= self.storage_expires_at
++                    thread = threading.Thread(target=self._run, args=(job, storage_needed),
++                        name="bmt-readiness", daemon=True)
++                    try:
++                        thread.start()
++                    except RuntimeError:
++                        self.pending = None
++                        raise DependencyFailure("DEPENDENCY_UNAVAILABLE") from None
++                if current >= self.pending["deadline"]:
++                    raise DependencyFailure("DEPENDENCY_TIMEOUT")
++            # Async handlers do not occupy the server's request-thread pool while waiting.
++            await asyncio.sleep(0.01)
++
++    async def close(self):
++        with self.lock:
++            self.closed = True
++            self.generation += 1
++            deadline = self.clock() + self.app.state.settings.readiness_timeout_seconds
++        while True:
++            with self.lock:
++                if self.pending is None or self.clock() >= deadline:
++                    return
++            await asyncio.sleep(0.01)
+--- /dev/null
++++ b/backend/tests/test_readiness.py
+@@ -0,0 +1,229 @@
++"""Cheap liveness and fail-closed dependency checks without probe amplification."""
++import asyncio
++import threading
++import time
++from dataclasses import replace
++
++import httpx
++import pytest
++from sqlalchemy import event, text
++from sqlalchemy.exc import OperationalError
++
++from bmt_backend.config import Settings
++from bmt_backend.migrate import SCHEMA_HEAD
++from bmt_backend.readiness import DependencyFailure, ReadinessProbe
++
++
++def test_coalesced_checks_reuse_ready_and_storage_success(auth_app, monkeypatch):
++    clock = [100.0]
++    probe = auth_app.state.readiness = ReadinessProbe(auth_app, clock=lambda: clock[0])
++    counts = {"schema": 0, "put": 0, "get": 0}
++    def sql(_conn, _cursor, statement, _params, _context, _many):
++        if statement == "SELECT version_num FROM alembic_version":
++            counts["schema"] += 1
++    event.listen(auth_app.state.engine, "before_cursor_execute", sql)
++    for name in ("put", "get"):
++        original = getattr(auth_app.state.blobs, name + "_json")
++        def wrapped(*args, _name=name, _original=original):
++            counts[_name] += 1
++            return _original(*args)
++        monkeypatch.setattr(auth_app.state.blobs, name + "_json", wrapped)
++    async def exercise():
++        replies = await asyncio.gather(*(probe.check() for _ in range(80)))
++        assert all(reply == {"status": "ready", "schema": SCHEMA_HEAD} for reply in replies)
++        replies[0]["schema"] = "caller-mutated"
++        assert (await probe.check())["schema"] == SCHEMA_HEAD
++        assert counts == {"schema": 1, "put": 1, "get": 1}
++        clock[0] += 3
++        await probe.check()
++        assert counts == {"schema": 2, "put": 1, "get": 1}
++        clock[0] += 31
++        await probe.check()
++        assert counts == {"schema": 3, "put": 2, "get": 2}
++    try:
++        asyncio.run(exercise())
++    finally:
++        event.remove(auth_app.state.engine, "before_cursor_execute", sql)
++
++
++def test_liveness_does_not_touch_dependencies(auth_app, monkeypatch):
++    def forbidden(*args, **kwargs):
++        pytest.fail("Liveness accessed a dependency")
++    monkeypatch.setattr(auth_app.state.engine, "connect", forbidden)
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", forbidden)
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            result = await client.get("/healthz")
++            assert result.status_code == 200 and result.json() == {"status": "ok"}
++    asyncio.run(exercise())
++
++
++def test_ready_cache_cannot_extend_expired_storage_success(auth_app, monkeypatch):
++    clock = [100.0]
++    probe = auth_app.state.readiness = ReadinessProbe(auth_app, clock=lambda: clock[0])
++    async def exercise():
++        await probe.check()
++        clock[0] = 129.5
++        await probe.check()  # Schema-only refresh just before the storage interval expires.
++        def unavailable(value):
++            raise OSError("Storage is now unavailable")
++        monkeypatch.setattr(auth_app.state.blobs, "put_json", unavailable)
++        clock[0] = 130.1
++        with pytest.raises(DependencyFailure) as error:
++            await probe.check()
++        assert error.value.code == "DEPENDENCY_UNAVAILABLE"
++    asyncio.run(exercise())
++
++
++def test_probe_stall_has_bounded_wait_and_one_thread(auth_app, monkeypatch):
++    auth_app.state.settings = replace(auth_app.state.settings, readiness_timeout_seconds=1)
++    probe = auth_app.state.readiness
++    entered, release, exited = threading.Event(), threading.Event(), threading.Event()
++    calls = []
++    def stuck(storage_needed):
++        calls.append(storage_needed)
++        entered.set()
++        try:
++            assert release.wait(5)
++            return {"status": "ready", "schema": SCHEMA_HEAD}
++        finally:
++            exited.set()
++    monkeypatch.setattr(probe, "_dependencies", stuck)
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            started = time.monotonic()
++            tasks = [asyncio.create_task(client.get("/readyz")) for _ in range(40)]
++            while not entered.is_set():
++                await asyncio.sleep(0.01)
++            health = await client.get("/healthz")
++            assert health.status_code == 200 and time.monotonic() - started < 0.5
++            responses = await asyncio.gather(*tasks)
++            assert all(r.status_code == 503 and r.json()["detail"] == "DEPENDENCY_TIMEOUT" for r in responses)
++            assert 0.9 <= time.monotonic() - started < 2
++            responses = await asyncio.gather(*(client.get("/readyz") for _ in range(40)))
++            assert all(r.status_code == 503 for r in responses) and len(calls) == 1
++            release.set()
++            while probe.pending is not None:
++                await asyncio.sleep(0.01)
++            # A late result remains unavailable rather than publishing stale success.
++            assert (await client.get("/readyz")).status_code == 503
++            probe.invalidate(storage=True)
++            monkeypatch.setattr(probe, "_dependencies", lambda needed: {"status": "ready", "schema": SCHEMA_HEAD})
++            assert (await client.get("/readyz")).status_code == 200
++    try:
++        asyncio.run(exercise())
++    finally:
++        release.set()
++        assert exited.wait(3)
++
++
++def test_schema_mismatch_does_not_probe_storage(auth_app, monkeypatch):
++    with auth_app.state.engine.begin() as connection:
++        connection.execute(text("UPDATE alembic_version SET version_num = 'outdated'"))
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", lambda value: pytest.fail("Outdated schema wrote a blob"))
++    with pytest.raises(DependencyFailure) as error:
++        asyncio.run(auth_app.state.readiness.check())
++    assert error.value.code == "SCHEMA_NOT_READY"
++
++
++@pytest.mark.parametrize("failure", [OSError("private-provider-detail"), ValueError("private-corruption-detail"),
++    OperationalError("private-query", {}, Exception("private-credentials"))])
++def test_dependency_failures_are_unavailable_and_do_not_leak(auth_app, monkeypatch, failure):
++    def fail(value):
++        raise failure
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", fail)
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            result = await client.get("/readyz")
++            assert result.status_code == 503 and result.json()["detail"] == "DEPENDENCY_UNAVAILABLE"
++            assert "private" not in result.text
++    asyncio.run(exercise())
++
++
++def test_api_storage_failure_invalidates_a_successful_probe(auth_app, monkeypatch):
++    failed = [False]
++    original = auth_app.state.blobs.put_json
++    def store(value):
++        if failed[0]:
++            raise OSError("private provider failure")
++        return original(value)
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", store)
++    @auth_app.get("/__test/storage-failure")
++    def failure():
++        return auth_app.state.blobs.put_json({"data": "synthetic"})
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            assert (await client.get("/readyz")).status_code == 200
++            failed[0] = True
++            assert (await client.get("/__test/storage-failure")).status_code == 503
++            assert (await client.get("/readyz")).status_code == 503
++            failed[0] = False
++            auth_app.state.readiness.invalidate(storage=True)
++            assert (await client.get("/readyz")).status_code == 200
++    asyncio.run(exercise())
++
++
++def test_invalidation_during_probe_cannot_restore_stale_success(auth_app, monkeypatch):
++    probe = auth_app.state.readiness
++    entered, release = threading.Event(), threading.Event()
++    calls = []
++    def dependencies(needed):
++        calls.append(needed)
++        if len(calls) == 1:
++            entered.set()
++            assert release.wait(3)
++            return {"status": "ready", "schema": SCHEMA_HEAD}
++        raise OSError("Current dependency is unavailable")
++    monkeypatch.setattr(probe, "_dependencies", dependencies)
++    async def exercise():
++        request = asyncio.create_task(probe.check())
++        while not entered.is_set():
++            await asyncio.sleep(0.01)
++        probe.invalidate(storage=True)
++        release.set()
++        with pytest.raises(DependencyFailure) as error:
++            await request
++        assert error.value.code == "DEPENDENCY_UNAVAILABLE" and calls == [True, True]
++    try:
++        asyncio.run(exercise())
++    finally:
++        release.set()
++
++
++def test_shutdown_invalidates_probe_and_reopen_refreshes_dependencies(auth_app):
++    probe = auth_app.state.readiness
++    async def exercise():
++        await probe.check()
++        await probe.close()
++        with pytest.raises(DependencyFailure):
++            await probe.check()
++        probe.open()
++        assert (await probe.check())["schema"] == SCHEMA_HEAD
++    asyncio.run(exercise())
++
++
++def test_repeated_invalidation_does_not_extend_request_deadline(auth_app, monkeypatch):
++    auth_app.state.settings = replace(auth_app.state.settings, readiness_timeout_seconds=1)
++    probe = auth_app.state.readiness
++    calls = []
++    def invalidated(needed):
++        calls.append(needed)
++        time.sleep(0.04)
++        probe.invalidate(storage=True)
++        return {"status": "ready", "schema": SCHEMA_HEAD}
++    monkeypatch.setattr(probe, "_dependencies", invalidated)
++    async def exercise():
++        started = time.monotonic()
++        with pytest.raises(DependencyFailure) as error:
++            await probe.check()
++        assert error.value.code == "DEPENDENCY_TIMEOUT"
++        assert 0.9 <= time.monotonic() - started < 2 and len(calls) > 1
++        await probe.close()
++    asyncio.run(exercise())
++
++
++@pytest.mark.parametrize("field,value", [("readiness_timeout_seconds", 0), ("readiness_timeout_seconds", 6),
++    ("readiness_cache_seconds", 6), ("readiness_storage_cache_seconds", 61)])
++def test_readiness_configuration_is_bounded(field, value):
++    with pytest.raises(ValueError):
++        Settings(**{field: value})
+--- /dev/null
++++ b/backend/tests/test_replica_failures.py
+@@ -0,0 +1,416 @@
++"""Separate API/worker processes sharing only disposable DB and immutable objects."""
++import json
++import os
++import socket
++import subprocess
++import sys
++import threading
++import time
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import asdict
++from pathlib import Path
++from types import SimpleNamespace
++
++import httpx
++import pytest
++from sqlalchemy import create_engine, select
++
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine, make_session_factory
++from bmt_backend.identity_models import SessionFamily, SessionToken
++from bmt_backend.migrate import upgrade
++from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
++from bmt_backend.resumes import grant_verified
++from bmt_backend.track_models import PersonalBest, QueueCapacity, Run
++from bmt_backend.verifier import GodotVerifier
++
++
++def port():
++    with socket.socket() as listener:
++        listener.bind(("127.0.0.1", 0))
++        return listener.getsockname()[1]
++
++
++class Processes:
++    def __init__(self, root, settings, schema):
++        self.root, self.settings, self.schema = root, settings, schema
++        self.children = []
++
++    def start(self, role, *, api_port=None, pause=False, fault="", finalize_failure=False):
++        prefix = self.root / (role + "-" + uuid.uuid4().hex)
++        config = {"role": role, "settings": asdict(self.settings), "schema": self.schema,
++            "prefix": str(prefix), "pause": pause, "finalize_failure": finalize_failure}
++        if api_port:
++            config["port"] = api_port
++        config_path = Path(str(prefix) + ".json")
++        config_path.write_text(json.dumps(config))
++        fault_path = Path(str(prefix) + ".fault")
++        if fault:
++            fault_path.write_text(fault)
++        with Path(str(prefix) + ".log").open("wb") as log:
++            process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("replica_process_probe.py")),
++                str(config_path)], stdout=log, stderr=log,
++                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
++        child = SimpleNamespace(process=process, prefix=prefix, fault=fault_path)
++        self.children.append(child)
++        if api_port:
++            deadline = time.monotonic() + 15
++            origin = f"http://127.0.0.1:{api_port}"
++            while time.monotonic() < deadline and process.poll() is None:
++                try:
++                    response = httpx.get(origin + "/readyz", timeout=3)
++                    if response.status_code == 200:
++                        child.client = httpx.Client(base_url=origin, timeout=5)
++                        return child
++                except httpx.HTTPError:
++                    pass
++                time.sleep(0.05)
++            raise AssertionError("Disposable API did not become ready")
++        return child
++
++    def stop(self, child, *, kill=False):
++        if hasattr(child, "client"):
++            child.client.close()
++        if child.process.poll() is None:
++            if os.name == "nt":
++                GodotVerifier._kill_process(child.process)  # Include the venv launcher's child server.
++            else:
++                child.process.kill() if kill else child.process.terminate()
++            try:
++                child.process.wait(timeout=8)
++            except subprocess.TimeoutExpired:
++                child.process.kill()
++                child.process.wait(timeout=5)
++
++    def close(self):
++        for child in reversed(self.children):
++            self.stop(child)
++
++
++@pytest.fixture(params=["sqlite", "postgres"])
++def replicas(tmp_path, request):
++    schema, admin = "", None
++    if request.param == "postgres":
++        url = os.environ.get("BMT_TEST_DATABASE_URL")
++        if not url:
++            pytest.skip("Set BMT_TEST_DATABASE_URL to an explicit disposable PostgreSQL test database")
++        schema = "bmt_load_" + uuid.uuid4().hex
++        admin = create_engine(url, connect_args={"connect_timeout": 3}, hide_parameters=True)
++        with admin.begin() as connection:
++            connection.exec_driver_sql(f"CREATE SCHEMA {schema}")
++    else:
++        url = f"sqlite:///{(tmp_path / 'replicas.sqlite').as_posix()}"
++    settings = Settings(environment="test", allow_sync_track_validation=True, database_url=url,
++        object_dir=str(tmp_path / "objects"), google_client_ids=("fixture-client",),
++        google_web_client_id="fixture-client", public_base_url="https://game.example",
++        auth_limit_per_minute=10000, rate_limit_per_minute=10000, write_limit_per_minute=10000)
++    engine = make_engine(url, settings, schema=schema)
++    processes = Processes(tmp_path, settings, schema)
++    try:
++        upgrade(engine)
++        a, b = processes.start("api", api_port=port()), processes.start("api", api_port=port())
++        yield SimpleNamespace(a=a, b=b, processes=processes, engine=engine,
++            factory=make_session_factory(engine), postgres=request.param == "postgres")
++    finally:
++        processes.close()
++        engine.dispose()
++        if admin:
++            with admin.begin() as connection:
++                connection.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
++            admin.dispose()
++
++
++def auth(token, key=None):
++    headers = {"Authorization": "Bearer " + token["access_token"]}
++    if key is not None:
++        headers["Idempotency-Key"] = key
++    return headers
++
++
++def sign_in(replicas, name):
++    challenge = replicas.a.client.post("/v1/auth/google/challenge")
++    assert challenge.status_code == 201
++    credential = json.dumps({"iss": "isolated-test-fixture", "sub": name,
++        "nonce": challenge.json()["nonce"], "aud": "fixture-client"})
++    response = replicas.b.client.post("/v1/auth/google", json={"id_token": credential,
++        "challenge_id": challenge.json()["challenge_id"], "display_name": name})
++    assert response.status_code == 200
++    return response.json()
++
++
++def worker(replicas, **options):
++    child = replicas.processes.start("worker", **options)
++    if not options.get("pause"):
++        assert child.process.wait(timeout=10) == (1 if options.get("finalize_failure") else 0)
++    return child
++
++
++def published(replicas):
++    creator = sign_in(replicas, "Creator")
++    uploaded = replicas.a.client.post("/v1/tracks", json={"name": "Fixture loop", "document": {"shape": "oval"}},
++        headers=auth(creator, "creator-upload"))
++    assert uploaded.status_code == 201
++    version = uploaded.json()
++    issued = race_ticket(replicas, version, creator)
++    result = replicas.b.client.post("/v1/runs", json=payload(issued), headers=auth(creator, "creator-proof"))
++    assert result.status_code == 202
++    worker(replicas)
++    assert replicas.a.client.get(f"/v1/runs/{result.json()['run_id']}", headers=auth(creator)).json()["status"] == "verified"
++    assert replicas.b.client.post(f"/v1/track-versions/{version['version_id']}/publish",
++        headers=auth(creator, "fixture-publish")).status_code == 200
++    return version
++
++
++def race_ticket(replicas, version, token):
++    response = replicas.a.client.post("/v1/run-tickets", json={"version_id": version["version_id"], "vehicle_id": "compact"},
++        headers=auth(token, uuid.uuid4().hex))
++    assert response.status_code == 201
++    return response.json()
++
++
++def payload(issued):
++    return {"ticket_id": issued["ticket_id"], "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
++
++
++def expire_lease(replicas, run_id):
++    with replicas.factory() as session:
++        session.get(Run, run_id).lease_until = 0  # Explicitly simulate expiry in a disposable fixture.
++        session.commit()
++
++
++def one_pb(replicas, token, run_id):
++    with replicas.factory() as session:
++        row = session.get(Run, run_id)
++        assert row.status == "verified"
++        records = session.scalars(select(PersonalBest).where(PersonalBest.player_id == token["player"]["id"])).all()
++        assert len(records) == 1 and records[0].run_id == run_id
++        assert records[0].time_ticks == row.time_ticks == 100
++        assert session.get(QueueCapacity, 1).pending == 0
++
++
++def test_authentication_rotation_logout_and_api_restart_cross_processes(replicas):
++    token = sign_in(replicas, "Alternating driver")
++    assert replicas.a.process.pid != replicas.b.process.pid
++    for child in (replicas.a, replicas.b, replicas.a):
++        assert child.client.get("/v1/me", headers=auth(token)).json()["id"] == token["player"]["id"]
++    rotated = replicas.a.client.post("/v1/auth/refresh", json={"refresh_token": token["refresh_token"]})
++    assert rotated.status_code == 200
++    replacement = rotated.json()
++    assert replicas.b.client.get("/v1/me", headers=auth(replacement)).status_code == 200
++    replicas.processes.stop(replicas.a)
++    new = replicas.processes.start("api", api_port=port())
++    assert new.client.get("/v1/me", headers=auth(replacement)).status_code == 200
++    assert replicas.b.client.post("/v1/auth/logout", headers=auth(replacement)).status_code == 204
++    assert new.client.get("/v1/me", headers=auth(replacement)).status_code == 401
++
++
++def test_browser_handoff_and_consumption_work_across_processes(replicas):
++    started = replicas.a.client.post("/v1/auth/google/browser/start", json={"display_name": "Browser fixture"})
++    assert started.status_code == 201
++    browser_token = started.json()["browser_url"].split("#")[1]
++    prepared = replicas.b.client.post("/v1/auth/google/browser/prepare", json={"token": browser_token}).json()
++    credential = json.dumps({"iss": "isolated-test-fixture", "sub": "browser-driver",
++        "nonce": prepared["nonce"], "aud": "fixture-client"})
++    assert replicas.a.client.post("/v1/auth/google/browser/complete",
++        json={"token": browser_token, "id_token": credential}).status_code == 200
++    response = replicas.b.client.post("/v1/auth/google/browser/poll", json={"token": started.json()["poll_token"]})
++    assert response.status_code == 200
++    assert replicas.a.client.get("/v1/me", headers=auth(response.json())).status_code == 200
++    assert replicas.a.client.post("/v1/auth/google/browser/poll", json={"token": started.json()["poll_token"]}).status_code == 401
++
++
++def test_same_submission_retries_across_replicas_create_one_run(replicas):
++    version = published(replicas)
++    token = sign_in(replicas, "Retry driver")
++    issued = race_ticket(replicas, version, token)
++    responses = [child.client.post("/v1/runs", json=payload(issued), headers=auth(token, "shared-submit"))
++        for child in (replicas.a, replicas.b, replicas.a)]
++    assert all(r.status_code == 202 for r in responses)
++    run_id = responses[0].json()["run_id"]
++    assert all(r.json()["run_id"] == run_id for r in responses)
++    with replicas.factory() as session:
++        assert len(session.scalars(select(Run).where(Run.ticket_id == issued["ticket_id"])).all()) == 1
++        assert session.get(QueueCapacity, 1).pending == 1
++    worker(replicas)
++    one_pb(replicas, token, run_id)
++
++
++@pytest.mark.parametrize("mode", ["write", "write_after"])
++def test_object_publication_failure_retries_on_other_replica_without_duplicate(replicas, mode):
++    version = published(replicas)
++    token = sign_in(replicas, "Object retry driver")
++    issued = race_ticket(replicas, version, token)
++    assert replicas.a.client.get("/readyz").status_code == 200
++    replicas.a.fault.write_text(mode)
++    failed = replicas.a.client.post("/v1/runs", json=payload(issued), headers=auth(token, "object-retry"))
++    assert failed.status_code == 503 and failed.json()["detail"] == "STORAGE_UNAVAILABLE"
++    assert replicas.a.client.get("/healthz").status_code == 200
++    assert replicas.a.client.get("/readyz").status_code == 503
++    with replicas.factory() as session:
++        assert session.scalar(select(Run).where(Run.ticket_id == issued["ticket_id"])) is None
++        assert session.get(QueueCapacity, 1).pending == 0
++    retry = replicas.b.client.post("/v1/runs", json=payload(issued), headers=auth(token, "object-retry"))
++    assert retry.status_code == 202
++    worker(replicas)
++    one_pb(replicas, token, retry.json()["run_id"])
++
++
++@pytest.mark.parametrize("mode", ["read", "finalize"])
++def test_failed_worker_is_recovered_by_another_process(replicas, mode):
++    version = published(replicas)
++    token = sign_in(replicas, "Worker retry driver")
++    issued = race_ticket(replicas, version, token)
++    response = replicas.a.client.post("/v1/runs", json=payload(issued), headers=auth(token, "worker-retry"))
++    assert response.status_code == 202
++    run_id = response.json()["run_id"]
++    worker(replicas, fault="read" if mode == "read" else "", finalize_failure=mode == "finalize")
++    with replicas.factory() as session:
++        row = session.get(Run, run_id)
++        assert row.status == ("queued" if mode == "read" else "verifying")
++        assert session.scalar(select(PersonalBest).where(PersonalBest.player_id == token["player"]["id"])) is None
++        assert session.get(QueueCapacity, 1).pending == 1
++    expire_lease(replicas, run_id)
++    worker(replicas)
++    assert replicas.b.client.get(f"/v1/runs/{run_id}", headers=auth(token)).json()["status"] == "verified"
++    one_pb(replicas, token, run_id)
++
++
++@pytest.mark.parametrize("mode", ["kill", "stale"])
++def test_dead_or_stale_worker_cannot_duplicate_or_overwrite_verified_result(replicas, mode):
++    version = published(replicas)
++    token = sign_in(replicas, "Fenced driver")
++    issued = race_ticket(replicas, version, token)
++    response = replicas.b.client.post("/v1/runs", json=payload(issued), headers=auth(token, "fenced-submit"))
++    assert response.status_code == 202
++    run_id = response.json()["run_id"]
++    old = worker(replicas, pause=True)
++    try:
++        deadline = time.monotonic() + 10
++        while not Path(str(old.prefix) + ".claimed").exists() and time.monotonic() < deadline and old.process.poll() is None:
++            time.sleep(0.02)
++        assert Path(str(old.prefix) + ".claimed").exists()
++        with replicas.factory() as session:
++            row = session.get(Run, run_id)
++            assert row.status == "verifying" and row.lease_token
++        if mode == "kill":
++            replicas.processes.stop(old, kill=True)
++        expire_lease(replicas, run_id)
++        new = worker(replicas)
++        assert new.process.pid != old.process.pid
++        one_pb(replicas, token, run_id)
++        if mode == "stale":
++            Path(str(old.prefix) + ".release").touch()
++            assert old.process.wait(timeout=5) == 0
++            one_pb(replicas, token, run_id)
++    finally:
++        replicas.processes.stop(old, kill=True)
++
++
++def test_concurrent_submission_and_resume_retries_are_idempotent_across_replicas(replicas):
++    if not replicas.postgres:
++        pytest.skip("Concurrent production write serialization requires PostgreSQL row locks")
++    version = published(replicas)
++    token = sign_in(replicas, "Concurrent driver")
++    with replicas.factory() as session:
++        grant_verified(session, token["player"]["id"], "award", "fixture-award", quantity=2)
++        session.commit()
++    race = replicas.a.client.post("/v1/resume-races", json={}, headers=auth(token, "resume-race"))
++    assert race.status_code == 201
++    barrier = threading.Barrier(2)
++    def consume(child):
++        barrier.wait(timeout=5)
++        return child.client.post(f"/v1/resume-races/{race.json()['race_id']}/resumes",
++            json={"ordinal": 1, "input_offset": 100, "from_tick": 100, "to_tick": 50}, headers=auth(token, "consume-once"))
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        receipts = list(pool.map(consume, (replicas.a, replicas.b)))
++    assert all(r.status_code == 200 for r in receipts)
++    assert receipts[0].json() == receipts[1].json()
++    with replicas.factory() as session:
++        assert session.get(ResumeWallet, token["player"]["id"]).balance == 1
++        assert len(session.scalars(select(ResumeReceipt)).all()) == 1
++    issued = race_ticket(replicas, version, token)
++    barrier = threading.Barrier(2)
++    for child in (replicas.a, replicas.b):
++        child.fault.write_text("publication_barrier")
++    def submit(child):
++        barrier.wait(timeout=5)
++        return child.client.post("/v1/runs", json=payload(issued), headers=auth(token, "concurrent-submit"))
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        futures = [pool.submit(submit, child) for child in (replicas.a, replicas.b)]
++        try:
++            deadline = time.monotonic() + 4
++            while not all(Path(str(child.fault) + ".arrived").exists() for child in (replicas.a, replicas.b)) and time.monotonic() < deadline:
++                time.sleep(0.01)
++            assert all(Path(str(child.fault) + ".arrived").exists() for child in (replicas.a, replicas.b))
++        finally:
++            for child in (replicas.a, replicas.b):
++                Path(str(child.fault) + ".release").touch()
++        replies = [future.result(timeout=5) for future in futures]
++    for child in (replicas.a, replicas.b):
++        child.fault.unlink()
++    assert all(r.status_code == 202 for r in replies)
++    assert replies[0].json()["run_id"] == replies[1].json()["run_id"]
++    worker(replicas)
++    one_pb(replicas, token, replies[0].json()["run_id"])
++
++
++def test_concurrent_refresh_reuse_revokes_replacement_on_both_replicas(replicas):
++    if not replicas.postgres:
++        pytest.skip("Refresh serialization requires PostgreSQL row locks")
++    token = sign_in(replicas, "Refresh reuse fixture")
++    barrier = threading.Barrier(2)
++    def refresh(child):
++        barrier.wait(timeout=5)
++        return child.client.post("/v1/auth/refresh", json={"refresh_token": token["refresh_token"]})
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        replies = list(pool.map(refresh, (replicas.a, replicas.b)))
++    assert sorted(r.status_code for r in replies) == [200, 401]
++    replacement = next(r.json() for r in replies if r.status_code == 200)
++    for child in (replicas.a, replicas.b):
++        assert child.client.get("/v1/me", headers=auth(replacement)).status_code == 401
++    with replicas.factory() as session:
++        assert session.scalar(select(SessionFamily)).revoked
++        assert len(session.scalars(select(SessionToken)).all()) == 2
++
++
++def test_postgres_probe_timeout_is_transaction_local(replicas):
++    if not replicas.postgres:
++        pytest.skip("PostgreSQL statement timeout is a production adapter contract")
++    assert replicas.a.client.get("/readyz").status_code == 200
++    # Inspect every connection in the API's own pool, rather than an unrelated parent engine.
++    result = replicas.a.client.get("/__fixture/pool-timeouts")
++    assert result.status_code == 200
++    assert result.json() == [replicas.processes.settings.database_statement_timeout_ms] * replicas.processes.settings.database_pool_size
++
++
++def test_stalled_storage_probe_keeps_liveness_and_other_replica_responsive(replicas):
++    replicas.a.fault.write_text("stall")
++    try:
++        assert replicas.a.client.get("/__fixture/invalidate-readiness").status_code == 200
++        with ThreadPoolExecutor(max_workers=20) as pool:
++            started = time.monotonic()
++            futures = [pool.submit(replicas.a.client.get, "/readyz") for _ in range(20)]
++            marker = Path(str(replicas.a.fault) + ".stalled")
++            deadline = time.monotonic() + 3
++            while not marker.exists() and time.monotonic() < deadline:
++                time.sleep(0.02)
++            assert marker.exists()
++            health_start = time.monotonic()
++            assert replicas.a.client.get("/healthz").status_code == 200
++            assert time.monotonic() - health_start < 1
++            assert replicas.b.client.get("/readyz").status_code == 200
++            responses = [future.result(timeout=4) for future in futures]
++            assert all(r.status_code == 503 and r.json()["detail"] == "DEPENDENCY_TIMEOUT" for r in responses)
++            assert time.monotonic() - started < 4
++        assert replicas.a.client.get("/__fixture/probe-threads").json() == {"count": 1}
++        assert replicas.a.client.get("/readyz").status_code == 503
++    finally:
++        replicas.a.fault.unlink(missing_ok=True)
++    deadline = time.monotonic() + 5
++    while time.monotonic() < deadline:
++        if replicas.a.client.get("/readyz").status_code == 200:
++            break
++        time.sleep(0.05)
++    else:
++        pytest.fail("Readiness did not recover after storage became available")
+--- /dev/null
++++ b/backend/tests/replica_process_probe.py
+@@ -0,0 +1,123 @@
++"""Test-only API/worker processes; never copied into the deployment image."""
++import json
++import sys
++import threading
++import time
++from contextlib import ExitStack
++from pathlib import Path
++
++import uvicorn
++from fastapi import HTTPException
++from sqlalchemy import event, text
++from sqlalchemy.exc import OperationalError
++from test_domains import FakeVerifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++from bmt_backend.worker import process_one
++from bmt_backend.worker_lifecycle import run_worker
++
++
++class FixtureIdentity:
++    def verify(self, token):
++        try:
++            claims = json.loads(token)
++            if claims["iss"] == "isolated-test-fixture" and isinstance(claims["sub"], str):
++                return claims
++        except (ValueError, KeyError, TypeError):
++            pass
++        raise HTTPException(401, "INVALID_FIXTURE_IDENTITY")
++
++
++class FaultStore:
++    def __init__(self, delegate, marker):
++        self.delegate, self.marker = delegate, Path(marker)
++
++    def __getattr__(self, name):
++        return getattr(self.delegate, name)
++
++    def mode(self):
++        try:
++            mode = self.marker.read_text()
++        except FileNotFoundError:
++            return ""
++        while mode == "stall":
++            Path(str(self.marker) + ".stalled").touch()
++            threading.Event().wait(0.02)
++            try:
++                mode = self.marker.read_text()
++            except FileNotFoundError:
++                return ""
++        return mode
++
++    def put_json(self, value):
++        mode = self.mode()
++        if mode == "publication_barrier":
++            Path(str(self.marker) + ".arrived").touch()
++            deadline = time.monotonic() + 5
++            while not Path(str(self.marker) + ".release").exists():
++                if time.monotonic() >= deadline:
++                    raise OSError("Fixture publication barrier timed out")
++                threading.Event().wait(0.01)
++        if mode in ("write", "all"):
++            raise OSError("Injected object publication failure")
++        digest = self.delegate.put_json(value)
++        if mode == "write_after":
++            raise OSError("Injected lost object publication acknowledgement")
++        return digest
++
++    def get_json(self, digest):
++        if self.mode() in ("read", "all"):
++            raise OSError("Injected object read failure")
++        return self.delegate.get_json(digest)
++
++
++def main(config_path):
++    config = json.loads(Path(config_path).read_text())
++    settings = Settings(**config["settings"])
++    prefix = Path(config["prefix"])
++    class ControlledVerifier(FakeVerifier):
++        def verify_run(self, *args, **kwargs):
++            if config.get("pause"):
++                Path(str(prefix) + ".claimed").touch()
++                while not Path(str(prefix) + ".release").exists():
++                    threading.Event().wait(0.02)
++            result = super().verify_run(*args, **kwargs)
++            if config.get("pause"):
++                # Make stale output observably different so PB upsert alone cannot hide a broken fence.
++                result = {**result, "time_ticks": 5, "lap_ticks": [1] * 5}
++            return result
++    engine = make_engine(settings.database_url, settings, schema=config.get("schema", ""))
++    app = create_app(settings, engine=engine, verifier=ControlledVerifier(), identity_verifier=FixtureIdentity())
++    app.state.blobs = FaultStore(app.state.blobs, str(prefix) + ".fault")
++    if config["role"] == "api":
++        @app.get("/__fixture/pool-timeouts")
++        def pool_timeouts():
++            with ExitStack() as stack:
++                connections = [stack.enter_context(engine.connect()) for _ in range(settings.database_pool_size)]
++                return [int(c.execute(text("SELECT extract(epoch from current_setting('statement_timeout')::interval) * 1000")).scalar())
++                    for c in connections]
++        @app.get("/__fixture/invalidate-readiness")
++        def invalidate_readiness():
++            app.state.readiness.invalidate(storage=True)
++            return {"invalidated": True}
++        @app.get("/__fixture/probe-threads")
++        def probe_threads():
++            return {"count": sum(t.name == "bmt-readiness" for t in threading.enumerate())}
++        try:
++            uvicorn.run(app, host="127.0.0.1", port=config["port"], log_level="warning",
++                access_log=False, timeout_graceful_shutdown=5)
++        finally:
++            engine.dispose()
++        return
++    if config.get("finalize_failure"):
++        def fault(_conn, _cursor, statement, parameters, _context, _many):
++            if statement.startswith("UPDATE runs SET") and "verified" in str(parameters):
++                raise OperationalError("Injected finalization failure", {}, Exception("disposable fault"))
++        event.listen(engine, "before_cursor_execute", fault)
++    run_worker(app, process_one, once=True)
++
++
++if __name__ == "__main__":
++    main(sys.argv[1])
+--- /dev/null
++++ b/docs/BACKEND_READINESS_REPLICAS_2026_10_05.md
+@@ -0,0 +1,88 @@
++# Bounded readiness and replica failure tests — 2026-10-05
++
++Owner authorized backlog items 4–5: inexpensive bounded health probes and multi-instance failure tests. Requirements: B01–B07/B19/B20/B23, RW05–RW07 and Q01. This source/test checkpoint preserves earlier worker-lifecycle/scalability repairs and unrelated dirty work. No existing WSL API/worker/database was restarted or migrated; no NAS/cloud resources or live player data were changed.
++
++## Readiness behavior
++
++`/healthz` is an asynchronous liveness response with no database, storage or verifier IO. `/readyz` retains its successful `{status: ready, schema: ...}` contract and schema/storage checks, but coalesces concurrent callers into one dependency IO job per API instance. Waiting callers yield to the event loop rather than consuming request-pool threads.
++
++Defaults are a two-second HTTP deadline, two-second successful schema/readiness cache and 30-second deep-storage freshness window. Deeper storage checks still exercise immutable write/read and validate the returned probe document. They run on demand when storage freshness expires. Schema-only refreshes cannot extend the storage freshness window. Failures cache for one second. Schema mismatch returns `503/SCHEMA_NOT_READY`; dependency faults return `503/DEPENDENCY_UNAVAILABLE`; stalls return `503/DEPENDENCY_TIMEOUT`.
++
++The deadline applies both to the shared job and each caller, so repeated invalidation cannot extend a request indefinitely. A late successful job remains a timeout rather than restoring readiness. Cache invalidation uses a generation fence, preventing an older in-flight success from masking a newly observed failure. API storage errors invalidate schema/readiness and storage freshness immediately; ordinary database exception handlers invalidate readiness. Existing middleware handling remains unchanged.
++
++The background job is a single daemon IO thread. A blocked job occupies that one slot; further probes fail within their response deadline without creating more IO jobs. Underlying SQL/provider/filesystem operations retain their own bounded settings or OS behavior; an HTTP deadline does not forcibly kill an IO thread. API shutdown invalidates the probe and waits at most its configured deadline. A new lifespan refreshes caches and keeps any outstanding old job fenced.
++
++PostgreSQL schema probing sets a transaction-local statement timeout through a bound `set_config` call. Returning the connection rolls this back; the ordinary application statement limit is unchanged. Tests inspect every connection in the API's own pool. Existing schema/DB pool, blob pin/publication, object integrity and canonical-verifier rules are preserved. No new public diagnostic endpoint, provider SDK, dependency, schema migration or simulation change was introduced.
++
++Configuration is exposed in both Compose templates and `.env.example`:
++
++| Setting | Default | Allowed maximum |
++| --- | --- | --- |
++| `BMT_READINESS_CACHE_SECONDS` | 2 | 5 |
++| `BMT_READINESS_STORAGE_CACHE_SECONDS` | 30 | 60 |
++| `BMT_READINESS_TIMEOUT_SECONDS` | 2 | 5 |
++
++Values must be positive integers. Keep infrastructure probe timeouts above the application deadline; current Compose's probe timeout already exceeds the default. Cached readiness deliberately allows a short detection delay. With continuing requests, defaults can retain unobserved DB/schema success for up to two seconds and unobserved storage success for up to 30 seconds before a fresh check, plus its two-second response wait. Probe cadence adds its own detection delay. This is not a replacement for ongoing competition-health/queue monitoring.
++
++## Separate-process failure harness
++
++`replica_process_probe.py` is test-only, outside the runtime package and Docker image. Tests launch two distinct Uvicorn API processes plus separate worker processes. Each has its own engine, pool, caches and memory. They share only a disposable database and immutable-object directory. SQLite uses a temporary file; PostgreSQL uses generated `bmt_load_<uuid>` schemas in an explicitly supplied disposable database. Configs/logs live under pytest temporary directories.
++
++Tests exercise ordinary HTTP routes, session tokens and transactional idempotency with an explicitly labeled fixture identity verifier and controlled canonical-verifier double. These prove protocol/state/failure handling; they do not validate real Google signatures, real canonical handling, capacity or provider integration. Test diagnostic routes, pause/fault controls and fake identity verification are never added to production `create_app`.
++
++Covered cases:
++
++- Challenge on one API, sign-in on the other, alternating authenticated requests, refresh across instances, fresh API restart and logout observed across instances.
++- Browser start/prepare/complete/poll crossing instances, with single-use handoff preserved.
++- Repeated submissions with the same identity/key producing exactly one Run, one pending admission and one PB.
++- Concurrent PostgreSQL submissions with a publication barrier: both APIs must pass the initial no-existing-Run check before either completes publication/admission. Concurrent resume retries consume exactly one banked credit and create one receipt. PostgreSQL refresh reuse still revokes the replacement session on both instances; reuse detection is not relaxed.
++- Object write failure and lost acknowledgement after durable object publication: a retry on the other API completes without duplicate admissions/results. The affected API becomes unavailable for readiness while liveness remains healthy.
++- Object reads unavailable in a worker and SQL failure during finalization: another worker recovers the retained Run/evidence after explicitly simulated lease/backoff expiry.
++- Actual forced worker termination and stale worker finalization. The stale worker returns an intentionally different, faster controlled result; it must not replace the verified Run/PB. Assertions check exact final timing and uniqueness, rather than relying on PB upsert alone to hide a broken lease fence.
++- A stalled storage probe under 20 real HTTP callers: one probe thread remains occupied, all callers return timeout/503, liveness and the other API remain responsive, and readiness recovers after storage is released.
++- PostgreSQL readiness timeout remains transaction-local across every connection in the API's pool.
++
++Concurrent-write cases requiring PostgreSQL row locks are skipped for SQLite rather than weakening serialization assertions. Lease expiry/backoff is deliberately advanced in disposable test data instead of waiting four minutes. No player records, artifacts, reward grants or memberships are seeded into the live backend.
++
++## Changed files
++
++Runtime: `backend/bmt_backend/{app.py,config.py,readiness.py}`. Tests: `backend/tests/{test_readiness.py,test_replica_failures.py,replica_process_probe.py}`. Deployment/docs: `backend/deploy/{compose.yaml,compose.pc.yaml,.env.example,README.md}`, `backend/README.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and this report. Evidence and a slice-only review patch are under [backend-readiness-replicas-2026-10-05](evidence/backend-readiness-replicas-2026-10-05/README.md).
++
++## Actual verification
++
++Batches overlap and must not be summed.
++
++- Initial readiness batch **14 passed**. Additional per-request deadline and storage-expiry tests bring the final readiness cases to **16**. The final readiness/auth batch is **50 passed**, after clipping successful readiness to storage expiry.
++- Separate-process matrix: initial full batch **21 passed, 3 skipped**. Additional/strengthened stale-result, killed-worker, HTTP storage-stall and timeout-isolation batch **7 passed, 1 skipped**. Forced concurrent publication/admission after the barrier refinement **1 passed, 1 skipped**. All final cases have been exercised; these overlapping batches are not one combined total. SQLite skips are production PostgreSQL row-lock or statement-timeout contracts.
++- Affected readiness/authentication/browser/queue/worker/scalability regression batch **176 passed, 6 skipped**. Four skips are POSIX signal cases on Windows; two are existing inapplicable database cases. This ran before the final storage-expiry clipping refinement; the final 50 readiness/auth tests verify that refinement.
++- Coalescing test uses 80 concurrent async callers and asserts one schema query and one blob write/read. Deadline tests use 40 concurrent stalled callers, a one-second configured test deadline and no second IO job while the first is blocked. Repeated invalidation also cannot extend the one-second request deadline. Schema mismatch, corruption/SQL/provider errors, generation fencing, lifecycle reopening, cache bounds and response-data isolation pass.
++- Both Compose files parse with inherited DB settings and all readiness settings intact. Ruff and scoped whitespace checks pass. The review patch is reverse-checked against the final working tree.
++- Initial smoke test: one pass/one fixture failure. Its publishing retry key was seven characters, below the existing required minimum; it now uses a valid fixture key. The invariant was retained. The initial failed XML remains evidence with synthetic bearer/refresh values redacted. Windows harness cleanup now handles the venv launcher and child process tree; a restricted orphan check found none.
++
++No phone/device test or Android export/install was performed; device attachment was not checked. There are no visual/UI changes requiring screenshots. No new full physics replay regression or long capacity benchmark was run because simulation, verifier and scoring source did not change.
++
++## Actual commands
++
++Representative successful commands ran from the repository root with the existing backend virtual environment. Process/database tests used approved normal desktop process access. The PostgreSQL URL was temporary process configuration; private existing test settings were not modified.
++
++```powershell
++$env:BMT_TEST_DATABASE_URL = 'postgresql+psycopg://postgres@127.0.0.1:32769/bmt_tests'
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_replica_failures.py -q --tb=short --junitxml=docs/evidence/backend-readiness-replicas-2026-10-05/replicas.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_replica_failures.py -q -k 'dead_or_stale or stalled_storage or postgres_probe_timeout' --tb=short --junitxml=docs/evidence/backend-readiness-replicas-2026-10-05/replicas-final-faults.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_replica_failures.py -q -k concurrent_submission --tb=short --junitxml=docs/evidence/backend-readiness-replicas-2026-10-05/concurrent-admission.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_readiness.py backend/tests/test_auth.py backend/tests/test_auth_postgres.py backend/tests/test_browser_auth.py backend/tests/test_worker_lifecycle.py backend/tests/test_review_reliability.py backend/tests/test_scalability.py -q --tb=short --junitxml=docs/evidence/backend-readiness-replicas-2026-10-05/regression.xml
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_readiness.py backend/tests/test_auth.py -q --tb=short --junitxml=docs/evidence/backend-readiness-replicas-2026-10-05/final-readiness.xml
++& .tools/backend-venv/Scripts/python.exe -m ruff check backend/bmt_backend/readiness.py backend/bmt_backend/app.py backend/bmt_backend/config.py backend/tests/test_readiness.py backend/tests/test_replica_failures.py backend/tests/replica_process_probe.py
++wsl.exe -d Ubuntu -- docker run --detach --rm --name bmt-readiness-replicas-pg-20261005 --network bridge -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=bmt_tests -p 127.0.0.1::5432 postgres:17-bookworm
++wsl.exe -d Ubuntu -- docker port bmt-readiness-replicas-pg-20261005 5432/tcp
++wsl.exe -d Ubuntu -- docker stop bmt-readiness-replicas-pg-20261005
++wsl.exe -d Ubuntu -- docker ps --filter label=com.docker.compose.project=bmt-pc-dev --format '{{.Names}} | {{.Status}}'
++```
++
++The disposable PostgreSQL container was removed after checks. Original WSL status remained API healthy/up 13 hours, worker up 13 hours and DB healthy/up 30 hours. No Google Cloud credits were used.
++
++## Remaining acceptance
++
++Measure real Cloud SQL/object-provider latency, TLS/proxy routing, probe cadence and graceful shutdown on the target deployment before choosing final settings. A provider or filesystem operation may outlive the response deadline; one occupied daemon IO slot stays unavailable until it finishes or the process is replaced. Ordinary API faults do not all invalidate readiness immediately (middleware still has its own handling), so documented cache/cadence bounds apply. A hung/stale worker still follows established heartbeat/lease expiry and attempt limits.
++
++This does not implement Google Cloud Storage/staging deployment (items 6–7), restore mixed-protocol rollout compatibility, route incompatible worker builds or repair other exception-review findings. The process harness uses uniform compatible builds and controlled verifier outputs. Production capacity, real Google sign-in, native verifier crash testing against a real provider, NAS/cloud deployment and phone acceptance remain separate checks.
+--- /dev/null
++++ b/docs/evidence/backend-readiness-replicas-2026-10-05/README.md
+@@ -0,0 +1,15 @@
++# Readiness and replica checkpoint evidence
++
++See [requirements, behavior, actual commands and limitations](../../BACKEND_READINESS_REPLICAS_2026_10_05.md).
++
++- `regression.xml`: affected regression batch, 176 passed/6 skipped.
++- `final-readiness.xml`: final readiness/auth batch, 50 passed.
++- `readiness.xml`: earlier readiness batch, 15 passed; the storage-expiry case is included in the final batch.
++- `replicas.xml`: initial full process matrix, 21 passed/3 skipped.
++- `replicas-final-faults.xml`: strengthened stale/killed-worker, storage-stall and timeout checks, 7 passed/1 skipped.
++- `concurrent-admission.xml`: forced simultaneous publication/admission, 1 passed/1 SQLite skip.
++- `replicas-smoke.xml`: initial fixture failure retained; synthetic credential values redacted, validation failure preserved.
++- `scoped-change.patch` and `source-hashes.json`: slice-only checkpoint against saved task baselines, preserving earlier dirty changes.
++- `checkpoint.py`: recreates the patch/hashes from the retained task baselines; no Git index/staging changes.
++
++Test batches overlap; do not sum them. Tests use disposable data, explicitly labeled identity/verifier doubles and private loopback processes. No live player credentials or records belong in this evidence. No presentation or device capture is part of this backend slice.
+--- /dev/null
++++ b/docs/evidence/backend-readiness-replicas-2026-10-05/checkpoint.py
+@@ -0,0 +1,30 @@
++"""Record only this slice's source/docs changes without changing the Git index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++files = {}
++for name in ("backend/bmt_backend/app.py", "backend/bmt_backend/config.py", "backend/README.md",
++             "backend/deploy/README.md", "backend/deploy/compose.yaml", "backend/deploy/compose.pc.yaml",
++             "backend/deploy/.env.example", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"):
++    files[name] = evidence / ("before-" + name.replace("/", "__"))
++for name in ("backend/bmt_backend/readiness.py", "backend/tests/test_readiness.py",
++             "backend/tests/test_replica_failures.py", "backend/tests/replica_process_probe.py",
++             "docs/BACKEND_READINESS_REPLICAS_2026_10_05.md",
++             "docs/evidence/backend-readiness-replicas-2026-10-05/README.md",
++             "docs/evidence/backend-readiness-replicas-2026-10-05/checkpoint.py"):
++    files[name] = None
++patch, hashes = [], {}
++for name, baseline in files.items():
++    old = baseline.read_bytes() if baseline else b""
++    new = (root / name).read_bytes()
++    hashes[name] = {"before": hashlib.sha256(old).hexdigest() if baseline else None,
++                   "after": hashlib.sha256(new).hexdigest()}
++    patch.extend(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
++        new.decode("utf-8").splitlines(keepends=True),
++        fromfile="a/" + name if baseline else "/dev/null", tofile="b/" + name))
++(evidence / "scoped-change.patch").write_text("".join(patch), encoding="utf-8", newline="")
++(evidence / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")

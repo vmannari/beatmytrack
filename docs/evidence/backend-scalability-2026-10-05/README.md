@@ -1,0 +1,17 @@
+# Backend scalability evidence ? 2026-10-05
+
+Requirements B01?B07, B19?B20, B23, WR03?WR08, RW05?RW07 and Q01. See [repairs and limits](../../BACKEND_SCALABILITY_FIXES_2026_10_05.md) and [reproducible load commands](../../../backend/LOAD_TESTING.md).
+
+All reports use generated isolated accounts, PBs, tracks and schemas. No existing service, player database or NAS was changed. Reports exclude database/bearer credentials and HTTP/TLS headers. Seed PBs are synthetic; only the 15 new submitted attempts in `canonical-queue.json` were canonically verified. Registered population is distinct from concurrent clients.
+
+`postgres-1k/10k/100k.json` contain read-scale measurements, endpoint percentiles, compressed body bytes, pool/SQL/RSS telemetry and PostgreSQL plans. `tied-board.json`, `monday-joins.json`, `postgres-replicas*.json` and `overload.json` retain strict-gate failures. `preset-joins.json` and `preset-ghosts.json` pass explicitly provisional per-kind gates; they do not redefine production acceptance. Earlier Windows reports used a coarse monotonic clock; the final joins report and future tool use the high-resolution performance clock. Some short profiles overlapped other regression activity; compare on a controlled target host before drawing a capacity conclusion.
+
+JUnit batches overlap and must not be added together. Broad batches precede the final targeted fixes; final affected/projection/client/protocol batches cover those changes. `verification-summary.json` identifies actual outcomes and commands. Parser/client frame-yield and persistent-worker checks are recorded there. Normal Windows certificate-store access was required by pinned Godot; sandbox failures were not counted as passes.
+
+`online-backup.json` and `online_backup_probe.py` record a real disposable PostgreSQL dump/object archive/restore while synthetic writes continued. The restored PB is the pre-replacement value and its object hash survives subsequent source GC. Dumps/archives and private configuration remain ignored. `backup-wrapper.txt` records POSIX fault tests using mock Docker only; actual Compose/provider deployment acceptance remains outstanding.
+
+`source-hashes.json` lists owned changed files and their saved starting/final hashes. `scoped-change.patch` compares saved task baselines to final files; status/phase comparisons use a later saved baseline to exclude concurrent menu notes. Unrelated session-lock whitespace, menu evidence, IDE files and temporary audits are excluded. The patch is a source/documentation companion to the separately saved evidence files, so it does not embed itself or raw reports.
+
+A separate local Git checkpoint is saved on `backend-scalability-2026-10-05`. It contains only this task's changes and evidence; the active branch, shared working files and real Git index are preserved. No merge or deployment is performed. Its parent history already includes some early scalability hunks captured by a concurrent open-change commit; the saved task-baseline patch records the full repair delta. Git checkpoint status notes prepend this task's record to the parent version, while unrelated concurrent notes remain in the shared working tree.
+
+A physical DN2103 was attached, but no change-specific phone build/install/performance test was performed. Longer NAS/open-loop tests, proxy/cellular paths, Google/provider and real backup-wrapper/crash recovery acceptance remain.

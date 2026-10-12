@@ -1,0 +1,548 @@
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -459,8 +459,20 @@
+         return results
+ 
+     def cleanup(self):
++        if self.c.get("retain_data") is True:
++            raise RuntimeError("Owner requested data retention; disposable cleanup is disabled")
+         # Check ALL ownership first; a mismatch must cause no partial deletion.
+-        present = [item for item in removal_commands(self.c) if self.describe(item["kind"], item["name"]) is not None]
++        present = []
++        for item in removal_commands(self.c):
++            resource = self.describe(item["kind"], item["name"])
++            if resource is None:
++                continue
++            resource_labels = resource.get("labels") or resource.get("metadata", {}).get("labels", {})
++            if item["kind"] == "sql":
++                resource_labels = resource.get("settings", {}).get("userLabels", {})
++            if resource_labels.get("bmt-retain-data") == "true":
++                raise RuntimeError("Remote owner data-retention guard forbids disposable cleanup")
++            present.append(item)
+         deleted = []
+         for item in present:
+             kind, name = item["kind"], item["name"]
+--- a/backend/tests/test_gcp_staging.py
++++ b/backend/tests/test_gcp_staging.py
+@@ -324,3 +324,23 @@
+     with pytest.raises(RuntimeError, match="complete provisioning"):
+         staging.Staging(c, tmp_path, runner).build()
+     assert not any("fixture-docker" in argv or "print-access-token" in argv for argv in runner.calls)
++
++
++def test_owner_retention_disables_cleanup_before_cloud_calls(tmp_path):
++    c = config()
++    c["retain_data"] = True
++    runner = Runner(c)
++    with pytest.raises(RuntimeError, match="data retention"):
++        staging.Staging(c, tmp_path, runner).cleanup()
++    assert runner.calls == []
++
++
++def test_remote_retention_refuses_all_deletes_with_stale_local_config(tmp_path):
++    c = config()
++    runner = Runner(c)
++    names = staging.names(c)
++    runner.resources[names["api"]] = {"labels": staging.labels(c)}
++    runner.resources[names["sql"]] = {"settings": {"userLabels": {**staging.labels(c), "bmt-retain-data": "true"}}}
++    with pytest.raises(RuntimeError, match="Remote owner data-retention"):
++        staging.Staging(c, tmp_path, runner).cleanup()
++    assert not any("delete" in argv or "rm" in argv for argv in runner.calls)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-06 B01-B07/B19-B20/B23/R01/Q01: owner-requested previous tracks retained in cloud after successful Google sign-in. 27 official logical tracks preserve IDs/names/authoring/content; all 34 original published links hash-match. Real native validator adds 26 immutable current-build revisions for old 0.49/v14 heads; 60 total revisions/34 documents, no original rewrites. Live 27/60 insert then 0/0 retry. Google account/session data retained; no development identities, fake drivers, times/ratings/resources copied. Automatic deletion disabled, local/remote retention guards, SQL deletion protection/seven daily backups, successful before/after manual backups and seven-day GCS recovery. Final unit34/ruff pass; graphical real cloud catalog167 checks pass with all downloads/compilations/geometry/rules and Race enabled; screenshot inspected. Existing WSL data/services unchanged; source snapshot retained. Current image/schema/simulation unchanged; no Android export/device test or attachment check, full races, old-score mapping, capacity/restore/NAS/production acceptance. Retained hosting uses credits (rough EUR2.4/day baseline before credits/variable extras); EUR10 alert is not a cap. Actual commands, corrected launch/lint failures, files, protection/receipts and scoped checkpoint: docs/GCP_TRACK_RETENTION_2026_10_06.md. Concurrent work preserved.
++
+ 2026-10-06 B01-B07/B19-B20/B23/Q01: owner-added exact Avast exception verified; installed Windows app backend.cfg now targets the Google Cloud staging origin using normal TLS/Google Trust Services certificate. Private atomic config backup retained, cloud config development key removed; no custom CA applied. Pinned native Windows live API 21 checks and real account-controller config 8 checks pass; post-renew repeat 8 pass (overlap). API/worker Ready, SQL RUNNABLE, all compute retain same digest. Original overnight cleanup did not run; same-owner lease/9 remote expiry labels renewed to 15:36:57 Helsinki, watcher restarted and actual desktop-user scheduled fallback at 15:41:57 exercised read-only (result0, ownership/authentication passed) then restored to expiry-guarded cleanup. EUR10 alert persists, local cleanup/estimates are not spending caps. No WSL data/service import/delete, unsafe TLS, backend image/schema/physics change, Android export/device test or phone attachment check. Real interactive Google and OAuth origin registration remain unverified. Files, actual commands/results, limitation and scoped source/docs checkpoint: docs/GCP_PC_CONNECTION_2026_10_06.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized GCP staging applied to beat-my-track/europe-west1 after CLI login. Linked existing EUR billing, created EUR10 project budget alert, pinned API/worker/Cloud SQL/private GCS/registry/secrets, restricted DB role and real native/storage smoke (12757 ticks/two deleted objects/zero player writes). Fresh matching worker and empty queue confirmed. Cloud Run reserved health path fixed with IO-free /health and /ready aliases; current CLI missing-worker response and missing-registry guard corrected. Actual client cancel-204 contract fixed. Final Linux game HTTPS diagnostic 21 checks and native recovery 28 pass; local affected batches 41/24/44/20 pass (overlap, six unavailable local provider/PG skips). First stage removed (12 resources). Cleanup watcher/fallback target Oct6 02:15/02:20 Helsinki; alert/estimates are not spending caps. PC game remains on WSL pending exact-host Avast approval/exclusion; OAuth origin registration and real Google/device login unverified. No Android export/device test or attachment check, data import, NAS/production rollout or capacity/restore acceptance. Actual commands, failures, files, receipts and scoped patch: docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-06 B01-B07/B19-B20/B23/R01/Q01: owner-requested previous tracks retained in cloud after successful Google sign-in. 27 official logical tracks preserve IDs/names/authoring/content; all 34 original published links hash-match. Real native validator adds 26 immutable current-build revisions for old 0.49/v14 heads; 60 total revisions/34 documents, no original rewrites. Live 27/60 insert then 0/0 retry. Google account/session data retained; no development identities, fake drivers, times/ratings/resources copied. Automatic deletion disabled, local/remote retention guards, SQL deletion protection/seven daily backups, successful before/after manual backups and seven-day GCS recovery. Final unit34/ruff pass; graphical real cloud catalog167 checks pass with all downloads/compilations/geometry/rules and Race enabled; screenshot inspected. Existing WSL data/services unchanged; source snapshot retained. Current image/schema/simulation unchanged; no Android export/device test or attachment check, full races, old-score mapping, capacity/restore/NAS/production acceptance. Retained hosting uses credits (rough EUR2.4/day baseline before credits/variable extras); EUR10 alert is not a cap. Actual commands, corrected launch/lint failures, files, protection/receipts and scoped checkpoint: docs/GCP_TRACK_RETENTION_2026_10_06.md. Concurrent work preserved.
++
+ 2026-10-06 B01-B07/B19-B20/B23/Q01: owner-added exact Avast exception verified; installed Windows app backend.cfg now targets the Google Cloud staging origin using normal TLS/Google Trust Services certificate. Private atomic config backup retained, cloud config development key removed; no custom CA applied. Pinned native Windows live API 21 checks and real account-controller config 8 checks pass; post-renew repeat 8 pass (overlap). API/worker Ready, SQL RUNNABLE, all compute retain same digest. Original overnight cleanup did not run; same-owner lease/9 remote expiry labels renewed to 15:36:57 Helsinki, watcher restarted and actual desktop-user scheduled fallback at 15:41:57 exercised read-only (result0, ownership/authentication passed) then restored to expiry-guarded cleanup. EUR10 alert persists, local cleanup/estimates are not spending caps. No WSL data/service import/delete, unsafe TLS, backend image/schema/physics change, Android export/device test or phone attachment check. Real interactive Google and OAuth origin registration remain unverified. Files, actual commands/results, limitation and scoped source/docs checkpoint: docs/GCP_PC_CONNECTION_2026_10_06.md. Concurrent work preserved.
+ 
+ 2026-10-05 B01-B07/B19-B20/B23/WR03-WR08/RW05-RW07/Q01: owner-authorized GCP staging applied to beat-my-track/europe-west1 after CLI login. Linked existing EUR billing, created EUR10 project budget alert, pinned API/worker/Cloud SQL/private GCS/registry/secrets, restricted DB role and real native/storage smoke (12757 ticks/two deleted objects/zero player writes). Fresh matching worker and empty queue confirmed. Cloud Run reserved health path fixed with IO-free /health and /ready aliases; current CLI missing-worker response and missing-registry guard corrected. Actual client cancel-204 contract fixed. Final Linux game HTTPS diagnostic 21 checks and native recovery 28 pass; local affected batches 41/24/44/20 pass (overlap, six unavailable local provider/PG skips). First stage removed (12 resources). Cleanup watcher/fallback target Oct6 02:15/02:20 Helsinki; alert/estimates are not spending caps. PC game remains on WSL pending exact-host Avast approval/exclusion; OAuth origin registration and real Google/device login unverified. No Android export/device test or attachment check, data import, NAS/production rollout or capacity/restore acceptance. Actual commands, failures, files, receipts and scoped patch: docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md. Concurrent work preserved.
+--- a/backend/deploy/gcp/README.md
++++ b/backend/deploy/gcp/README.md
+@@ -1,4 +1,6 @@
+ # Google Cloud staging
++
++October 6 retention override: the owner requested keeping the previous tracks. All 27 official tracks and 34 original published links were copied with stable IDs/content; 26 current-build revisions preserve older rules snapshots. [Actual migration, retention and continuing costs](../../../docs/GCP_TRACK_RETENTION_2026_10_06.md). Automatic deletion is disabled, and local/remote retention guards reject cleanup. SQL deletion protection/seven daily backups and seven-day GCS recovery are enabled. The earlier testing deadline no longer authorizes deleting this data. The server remains retained staging.
+ 
+ Owner target: `beat-my-track`; owner reports credits expire in about 80 days from October 5, 2026. The owner-authorized staging deployment is now live in `europe-west1`; see [actual deployment, checks and remaining PC/Google acceptance](../../../docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md). The live configuration is ignored at `.tools/gcp-staging/config.json`. Exact remaining credit balance/expiry is still owner-reported, not verified through billing APIs.
+ 
+--- a/docs/GCP_PC_CONNECTION_2026_10_06.md
++++ b/docs/GCP_PC_CONNECTION_2026_10_06.md
+@@ -1,4 +1,6 @@
+ # PC app connected to Google Cloud — 2026-10-06
++
++Later owner request: Google login works; keep the previous tracks. [All 27 previous tracks are now restored and retained in cloud](GCP_TRACK_RETENTION_2026_10_06.md). Automatic deletion is disabled, with provider protection/backups enabled. This supersedes the temporary deadline below.
+ 
+ Requirements B01–B07/B19/B20/B23/Q01. The owner added the exact staging hostname to Avast exceptions and requested switching the app to Google Cloud. The installed Windows configuration now points to `https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app` in project `beat-my-track`, region `europe-west1`.
+ 
+--- a/docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md
++++ b/docs/BACKEND_GCP_DEPLOYMENT_2026_10_05.md
+@@ -1,4 +1,6 @@
+ # Google Cloud staging deployment — 2026-10-05
++
++October 6 retention override: [the owner’s 27 previous tracks and original links are now retained in cloud](GCP_TRACK_RETENTION_2026_10_06.md), with compatible current-build revisions. Automatic deletion is disabled; the historical disposable deadlines below no longer authorize removal of this dataset.
+ 
+ October 6 follow-up: the owner added the Avast exception. The Windows PC app now uses this cloud origin with normal TLS verification; live client 21/configuration-controller 8 checks pass. The test lease was renewed to October 6 15:36:57 Helsinki, with an actually exercised cleanup-task fallback at 15:41:57. [Current PC connection and remaining Google/device acceptance](GCP_PC_CONNECTION_2026_10_06.md) supersede the pending-PC/old-deadline status in this historical record.
+ 
+--- /dev/null
++++ b/backend/deploy/gcp/catalog_transfer.py
+@@ -0,0 +1,147 @@
++"""Operator-only immutable official catalog transfer; never import login identities.
++
++The owner confirms an exported source. This adds catalog rows to an existing
++database and preserves its accounts/sessions. It is not a database restore or
++a player-facing publication bypass.
++"""
++from __future__ import annotations
++
++import hashlib
++from uuid import UUID, uuid5
++
++from sqlalchemy import select
++
++from bmt_backend.identity_models import Identity, Player
++from bmt_backend.storage import canonical_json
++from bmt_backend.track_models import Track, TrackVersion
++from bmt_backend.usernames import username_key
++
++TRACK_FIELDS = ("id", "owner_id", "authoring_id", "hidden", "archived", "official", "created_at")
++VERSION_FIELDS = ("id", "track_id", "number", "name", "content_hash", "revision_key", "manifest",
++                  "discovery", "state", "created_at", "published_at")
++
++
++def validate_catalog(payload, verifier, *, confirm_source):
++    if (type(payload) is not dict or payload.get("format") != "bmt-catalog-transfer-v1"
++            or payload.get("source_origin") != confirm_source or not confirm_source):
++        raise ValueError("Explicit source catalog confirmation is required")
++    owners, tracks, versions, objects = (payload.get(k) for k in ("owners", "tracks", "versions", "objects"))
++    if (not all(type(v) is list for v in (owners, tracks, versions)) or type(objects) is not dict
++            or not tracks or len(tracks) > 100 or len(versions) > 500):
++        raise ValueError("Invalid or unbounded official catalog")
++    by_owner, by_track, by_version, heads, revision_keys, numbers = {}, {}, {}, {}, set(), set()
++    for owner in owners:
++        UUID(owner["id"])
++        if owner["id"] in by_owner or not 1 <= len(owner["display_name"]) <= 40:
++            raise ValueError("Duplicate or invalid catalog attribution")
++        by_owner[owner["id"]] = owner
++    for track in tracks:
++        UUID(track["id"])
++        if (track["id"] in by_track or track["owner_id"] not in by_owner
++                or track.get("official") is not True or track.get("hidden") is not False):
++            raise ValueError("Only explicitly exported visible official tracks may be transferred")
++        by_track[track["id"]] = track
++    for version in versions:
++        UUID(version["id"])
++        if (version["id"] in by_version or version["track_id"] not in by_track
++                or version["state"] != "published" or type(version["number"]) is not int or version["number"] < 1
++                or not 1 <= len(version["name"]) <= 80 or not version.get("published_at")):
++            raise ValueError("Invalid published revision")
++        position = (version["track_id"], version["number"])
++        revision = (version["track_id"], version.get("revision_key"))
++        if position in numbers or (revision[1] is not None and revision in revision_keys):
++            raise ValueError("Duplicate revision numbering/key")
++        numbers.add(position)
++        revision_keys.add(revision)
++        value = objects.get(version["content_hash"])
++        if type(value) is not dict or hashlib.sha256(canonical_json(value)).hexdigest() != version["content_hash"]:
++            raise ValueError("Immutable source document hash mismatch")
++        by_version[version["id"]] = version
++        previous = heads.get(version["track_id"])
++        if previous is None or previous["number"] < version["number"]:
++            heads[version["track_id"]] = version
++    if set(heads) != set(by_track) or set(objects) != {v["content_hash"] for v in versions}:
++        raise ValueError("Catalog contains missing heads or unrelated objects")
++    # Older share links remain byte-identical with their historical rules.
++    # A new deterministically identified revision pins a validated document to
++    # the current build; existing immutable manifests are never rewritten.
++    for head in heads.values():
++        manifest = verifier.validate_track(objects[head["content_hash"]])
++        if manifest.get("laps") != 5 or manifest.get("tick_rate") != 120 or not manifest.get("track_content_hash"):
++            raise ValueError("Destination canonical build returned an unsupported race contract")
++        if canonical_json(manifest) != canonical_json(head["manifest"]):
++            timestamp = payload.get("transfer_created_at")
++            if type(timestamp) is not int or timestamp < max(head["created_at"], head["published_at"]):
++                raise ValueError("A fixed migration timestamp is required for a new canonical revision")
++            contract_hash = hashlib.sha256(canonical_json(manifest)).hexdigest()
++            revision = {**head, "id": str(uuid5(UUID(head["id"]), "canonical-transfer-v1:" + contract_hash)),
++                "number": head["number"] + 1, "manifest": manifest,
++                "revision_key": hashlib.sha256(canonical_json({"source_version": head["id"], "manifest": manifest})).hexdigest(),
++                "created_at": timestamp, "published_at": timestamp}
++            by_version[revision["id"]] = revision
++    return by_owner, by_track, by_version
++
++
++def _preflight(session, owners, tracks, versions):
++    for source in owners.values():
++        existing = session.get(Player, source["id"])
++        if existing is not None and (
++                existing.display_name != source["display_name"] or existing.disabled or existing.is_test_driver
++                or session.scalar(select(Identity.id).where(Identity.player_id == existing.id).limit(1))):
++            raise RuntimeError("Catalog attribution conflicts with an existing authenticated account")
++        other = session.scalar(select(Player.id).where(Player.username_key == username_key(source["display_name"]), Player.id != source["id"]))
++        if other is not None:
++            raise RuntimeError("Catalog name already belongs to another account")
++    for source in tracks.values():
++        existing = session.get(Track, source["id"])
++        if existing is not None and any(getattr(existing, key) != source[key] for key in TRACK_FIELDS):
++            raise RuntimeError("Destination logical track conflicts with source")
++        other = session.scalar(select(Track.id).where(Track.owner_id == source["owner_id"], Track.authoring_id == source["authoring_id"], Track.id != source["id"]))
++        if source["authoring_id"] is not None and other is not None:
++            raise RuntimeError("Destination authoring identity conflicts with source")
++    for source in versions.values():
++        existing = session.get(TrackVersion, source["id"])
++        if existing is not None and any(getattr(existing, key) != source[key] for key in VERSION_FIELDS):
++            raise RuntimeError("Destination immutable revision conflicts with source")
++        other = session.scalar(select(TrackVersion.id).where(TrackVersion.track_id == source["track_id"], TrackVersion.number == source["number"], TrackVersion.id != source["id"]))
++        if other is not None:
++            raise RuntimeError("Destination revision number conflicts with source")
++
++
++def import_catalog(payload, factory, blobs, verifier, *, confirm_source, apply=False):
++    owners, tracks, versions = validate_catalog(payload, verifier, confirm_source=confirm_source)
++    with factory() as session:
++        _preflight(session, owners, tracks, versions)
++    result = {"status": "validated", "tracks": len(tracks), "versions": len(versions),
++              "objects": len(payload["objects"]), "current_heads_validated": len(tracks),
++              "compatible_revisions": len(versions) - len(payload["versions"]),
++              "login_identities_imported": 0, "scores_imported": 0, "ratings_imported": 0}
++    if not apply:
++        return result
++    # Immutable IO and canonical validation never hold database locks.
++    for digest, document in payload["objects"].items():
++        if blobs.put_json(document) != digest or blobs.get_json(digest) != document:
++            raise RuntimeError("Destination object integrity check failed")
++    with factory() as session:
++        _preflight(session, owners, tracks, versions)
++        inserted_tracks = inserted_versions = 0
++        for source in owners.values():
++            if session.get(Player, source["id"]) is None:
++                # Catalog attribution has no login provider, credentials,
++                # memberships, times or rewards. Google accounts stay separate.
++                session.add(Player(id=source["id"], display_name=source["display_name"], created_at=source["created_at"],
++                                   disabled=False, is_test_driver=False, needs_username=False))
++        session.flush()
++        for source in tracks.values():
++            if session.get(Track, source["id"]) is None:
++                session.add(Track(**{key: source[key] for key in TRACK_FIELDS}))
++                inserted_tracks += 1
++        session.flush()
++        for source in versions.values():
++            if session.get(TrackVersion, source["id"]) is None:
++                session.add(TrackVersion(**{key: source[key] for key in VERSION_FIELDS},
++                    creator_test_run_id=None, rating_sum=0, rating_count=0, verified_finishers=0))
++                inserted_versions += 1
++        session.commit()
++    return {**result, "status": "imported", "inserted_tracks": inserted_tracks,
++            "inserted_versions": inserted_versions}
+--- /dev/null
++++ b/backend/tests/test_catalog_transfer.py
+@@ -0,0 +1,142 @@
++"""Official track retention without account impersonation or invented results."""
++import importlib.util
++from copy import deepcopy
++from pathlib import Path
++
++import pytest
++from sqlalchemy import func, select
++
++from bmt_backend.identity_models import Identity, Player, SessionFamily
++from bmt_backend.storage import canonical_json
++from bmt_backend.track_models import Track, TrackVersion, digest
++
++spec = importlib.util.spec_from_file_location("catalog_transfer_tests", Path(__file__).parents[1] / "deploy/gcp/catalog_transfer.py")
++transfer = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(transfer)
++OWNER = "10000000-0000-4000-8000-000000000001"
++TRACK = "20000000-0000-4000-8000-000000000001"
++OLD = "30000000-0000-4000-8000-000000000001"
++HEAD = "30000000-0000-4000-8000-000000000002"
++SOURCE = "http://127.0.0.1:18181"
++MANIFEST = {"laps": 5, "tick_rate": 120, "rules_key": "fixture-current", "track_content_hash": "fixture-physical-contract"}
++
++
++class Verifier:
++    def __init__(self):
++        self.calls = []
++
++    def validate_track(self, document):
++        self.calls.append(document)
++        return MANIFEST
++
++
++def payload():
++    old = {"id": "retained", "name": "Old name", "creator": "Beat My Track"}
++    head = {"id": "retained", "name": "Kept circuit", "creator": "Beat my track"}
++    def version(id, number, doc, manifest):
++        return {"id": id, "track_id": TRACK, "number": number, "name": doc["name"],
++                "content_hash": digest(doc), "revision_key": digest({"revision": number}),
++                "manifest": manifest, "discovery": {"points": [], "theme": "pine"},
++                "state": "published", "created_at": number, "published_at": number}
++    return {"format": "bmt-catalog-transfer-v1", "source_origin": SOURCE, "transfer_created_at": 1700000000,
++            "owners": [{"id": OWNER, "display_name": "Beat my track", "created_at": 1}],
++            "tracks": [{"id": TRACK, "owner_id": OWNER, "authoring_id": "retained", "hidden": False,
++                        "archived": False, "official": True, "created_at": 1}],
++            "versions": [version(OLD, 1, old, {"rules_key": "historical"}), version(HEAD, 2, head, MANIFEST)],
++            "objects": {digest(old): old, digest(head): head}}
++
++
++def run(app, data=None, verifier=None, apply=True):
++    return transfer.import_catalog(data or payload(), app.state.session_factory, app.state.blobs,
++                                   verifier or Verifier(), confirm_source=SOURCE, apply=apply)
++
++
++def test_dry_run_validates_only_current_head_without_writing(auth_app, monkeypatch):
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", lambda _: pytest.fail("Dry run wrote an object"))
++    verifier = Verifier()
++    assert run(auth_app, verifier=verifier, apply=False)["status"] == "validated"
++    assert len(verifier.calls) == 1 and verifier.calls[0]["name"] == "Kept circuit"
++    with auth_app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(Player)) == 0
++
++
++def test_import_preserves_ids_old_bytes_and_is_idempotent(auth_app):
++    first, retry = run(auth_app), run(auth_app)
++    assert first["inserted_tracks"] == 1 and first["inserted_versions"] == 2
++    assert retry["inserted_tracks"] == retry["inserted_versions"] == 0
++    with auth_app.state.session_factory() as session:
++        assert session.get(Track, TRACK).owner_id == OWNER
++        assert session.scalar(select(func.count()).select_from(Identity)) == 0
++        for id in (OLD, HEAD):
++            row = session.get(TrackVersion, id)
++            assert row.creator_test_run_id is None and row.rating_count == row.verified_finishers == 0
++            assert canonical_json(auth_app.state.blobs.get_json(row.content_hash)) == canonical_json(payload()["objects"][row.content_hash])
++
++
++def test_hash_mismatch_is_rejected_before_mutation(auth_app):
++    data = payload()
++    key = next(iter(data["objects"]))
++    data["objects"][key]["name"] = "Altered immutable source"
++    with pytest.raises(ValueError, match="hash mismatch"):
++        run(auth_app, data)
++    with auth_app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(Track)) == 0
++
++
++def test_authenticated_owner_is_never_adopted(auth_app, monkeypatch):
++    with auth_app.state.session_factory() as session:
++        session.add(Player(id=OWNER, display_name="Beat my track"))
++        session.flush()
++        session.add(Identity(player_id=OWNER, provider="google", subject="isolated-fixture-subject"))
++        session.commit()
++    monkeypatch.setattr(auth_app.state.blobs, "put_json", lambda _: pytest.fail("Conflict wrote an object"))
++    with pytest.raises(RuntimeError, match="authenticated account"):
++        run(auth_app)
++
++
++def test_new_build_adds_a_deterministic_revision_without_changing_original(auth_app):
++    data = payload()
++    data["versions"][-1]["manifest"] = {**MANIFEST, "rules_key": "fixture-previous"}
++    first, retry = run(auth_app, data), run(auth_app, data)
++    assert first["compatible_revisions"] == 1 and first["inserted_versions"] == 3
++    assert retry["inserted_versions"] == 0
++    with auth_app.state.session_factory() as session:
++        assert session.get(TrackVersion, HEAD).manifest["rules_key"] == "fixture-previous"
++        newest = session.scalar(select(TrackVersion).where(TrackVersion.track_id == TRACK, TrackVersion.number == 3))
++        assert newest.manifest == MANIFEST and newest.content_hash == data["versions"][-1]["content_hash"]
++
++
++def test_unsupported_native_contract_cannot_publish(auth_app):
++    class InvalidVerifier(Verifier):
++        def validate_track(self, document):
++            return {**MANIFEST, "laps": 3}
++    with pytest.raises(ValueError, match="unsupported race contract"):
++        run(auth_app, verifier=InvalidVerifier())
++
++
++def test_existing_revision_cannot_be_overwritten(auth_app):
++    run(auth_app)
++    data = deepcopy(payload())
++    data["versions"][-1]["name"] = "Changed published metadata"
++    with pytest.raises(RuntimeError, match="immutable revision"):
++        run(auth_app, data)
++    with auth_app.state.session_factory() as session:
++        assert session.get(TrackVersion, HEAD).name == "Kept circuit"
++
++
++def test_existing_google_account_and_session_survive(auth_app):
++    player = "40000000-0000-4000-8000-000000000001"
++    with auth_app.state.session_factory() as session:
++        session.add(Player(id=player, display_name="Existing cloud racer"))
++        session.flush()
++        session.add(Identity(player_id=player, provider="google", subject="existing-isolated-subject"))
++        family = SessionFamily(player_id=player, expires_at=1900000000, revoked=False)
++        session.add(family)
++        session.flush()
++        family_id = family.id
++        session.commit()
++    run(auth_app)
++    with auth_app.state.session_factory() as session:
++        assert session.get(Player, player).display_name == "Existing cloud racer"
++        assert not session.get(SessionFamily, family_id).revoked
++        assert session.scalar(select(func.count()).select_from(Identity)) == 1
+--- /dev/null
++++ b/game/tests/test_retained_cloud_catalog.gd
+@@ -0,0 +1,72 @@
++extends SceneTree
++## Read-only live catalog acceptance in isolated records/cache, no saved login.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		push_error(label)
++
++func run() -> void:
++	var expected_path: String = ProjectSettings.globalize_path("res://../docs/evidence/gcp-track-retention-2026-10-06/expected-catalog.json")
++	if not FileAccess.file_exists(expected_path):
++		push_error("Prepare the live migration integrity receipt before this opt-in check.")
++		quit(1)
++		return
++	var expected: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(expected_path))
++	var folder: String = ProjectSettings.globalize_path("res://../build/cloud-retention-check-" + str(Time.get_ticks_usec()))
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(app.online.client.base_url() == "https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app", "installed app reaches retained cloud origin")
++	check(not app.online.client.signed_in(), "diagnostic has no saved account")
++	await app.cloud.refresh(true)
++	for page: int in range(5):
++		if app.cloud.next_cursor.is_empty(): break
++		await app.cloud.refresh(true)
++	check(app.cloud.entries.size() == expected.tracks.size(), "all retained logical tracks load through normal pagination")
++	var by_id: Dictionary = {}
++	for row: Dictionary in app.cloud.entries: by_id[str(row.track_id)] = row
++	for old: Dictionary in expected.tracks:
++		var found: bool = by_id.has(str(old.track_id))
++		check(found, "retained logical ID is discoverable")
++		if not found: continue
++		var metadata: Dictionary = by_id[str(old.track_id)]
++		check(metadata.name == old.name and metadata.creator == "Beat my track" and metadata.content_hash == old.content_hash, "original name, attribution and immutable document retained")
++		var entry: Dictionary = app.cloud.entry_from_metadata(metadata)
++		var downloaded: bool = await app.cloud.download(entry)
++		check(downloaded, "retained document downloads with hash validation")
++		if not downloaded: continue
++		var track: NativeTrack = app.cloud.compile_entry(entry)
++		check(track != null, "retained document compiles in installed Windows game")
++		if track == null: continue
++		var version: Dictionary = await app.online.client.request_api("/track-versions/" + str(metadata.version_id))
++		check(version.ok and str(version.data.manifest.track_content_hash) == track.content_hash, "compiled geometry matches the cloud canonical head")
++		check(version.ok and version.data.manifest.physics_version == VehicleSimulation.PHYSICS_VERSION and version.data.manifest.rules_key == RaceRules.KEY, "cloud head matches current physics and lap rules")
++		await process_frame
++	if DisplayServer.get_name() != "headless":
++		root.size = Vector2i(1280, 720)
++		app._show_screen("tracks")
++		var browser: Node = app.root_ui.find_child("TrackBrowser", true, false)
++		while browser != null and browser.loading: await process_frame
++		if browser != null and not browser.catalog.entries.is_empty():
++			browser._select(browser.catalog.entries[0])
++			while browser.selecting: await process_frame
++			check(browser.selected_track != null and not browser.race_button.disabled, "restored cloud track can be selected for racing")
++		await create_timer(1.0).timeout
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(expected_path.get_base_dir().path_join("race-catalog.png")) == OK, "actual restored cloud Race screenshot saved")
++	print("Retained cloud catalog: %d checks, %d failures; %d tracks" % [checks, failures, app.cloud.entries.size()])
++	app.queue_free()
++	await process_frame
++	await process_frame
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/docs/GCP_TRACK_RETENTION_2026_10_06.md
+@@ -0,0 +1,62 @@
++# Previous tracks retained in Google Cloud — 2026-10-06
++
++Requirements B01–B07/B19/B20/B23/R01/Q01. The owner confirmed Google sign-in works and requested keeping the previous tracks. **All 27 previous official tracks are now in the cloud catalog**, with their existing “Beat my track” attribution. The original WSL services and data remain intact.
++
++Every logical track UUID, name, authoring ID and current document hash is preserved. All **34 original published version UUIDs/share links** still return their original hash-checked bytes. Twenty-six old heads used physics arcade-planar-0.49 / rules standing-5-road-gates-v14; the current deployed build uses arcade-planar-0.50 / standing-5-road-gates-v18. Those heads received **26 additional immutable revisions**, using the same document bytes and manifests generated by the real deployed native validator. Old manifests/links were not rewritten. Cloud now has 27 logical tracks, 60 published revisions and 34 unique documents.
++
++Restored: Ajorata, Blind spot, Curvy, Dust cloud, Dusty, Easy night, Ellipse, Infinity, Knit, Knot, Lonkero, Looper, My way, Narrow night, Over and under, Ringroad, Saw, Sightseeing, Silmukka, Slippery, Speedy, Spiral, Starter Circuit, Stormy slalom, The Wall, To the trees and Underpass.
++
++## Transfer and account boundaries
++
++The operator importer adds to the existing destination and preserves the Google account/session data. Catalog attribution has no login identities, credentials, races, rivalry membership or rewards. No development identity/session, artificial driver, personal best, rating, ghost, wallet or entitlement was copied. All 27 source tracks were already official; that flag is preserved. No invented creator run or time was created. Player-facing publishing retains its normal verified creator test.
++
++The importer checks the confirmed source, bounded unique IDs/revision numbers, canonical object hashes, official attribution, collisions and every current head. It refuses adoption of an authenticated destination account. Compatible revision UUIDs/keys are deterministic from source version plus manifest, with one fixed migration timestamp. The actual retry inserted **zero tracks and zero versions**. Native validation and immutable object IO hold no DB locks; metadata inserts commit as one transaction.
++
++The read-only local export contains only public catalog data: 27 tracks, 34 versions and 34 documents. The ignored snapshot is .tools/gcp-track-transfer/source-catalog.json, SHA256 f3040a3cc045100b8ecc742836d6a8e978b3613042f63d3bf0e37ba7f03e1e63. It contains no login credentials/subjects; originals were not deleted or rewritten.
++
++An owned one-off job, bmt-stg-e7a444ab-catalog, used the existing pinned image sha256:bec69858e2a6d2494d96a0169076f8e2f497c84f9d36e0ebb5dd02a8c0fdbca0, restricted app DB role and attached diagnostic ADC. The private GCS transfer artifact and operator-authored program are hash-checked before execution; user documents supply JSON data only. API/worker images, schemas, canonical simulation, dependencies and HTTP authentication are unchanged.
++
++## Retention replaces temporary deletion
++
++The owner’s request supersedes the disposable cleanup deadline. Windows task BMT-staging-cleanup-e7a444ab is **disabled**. The first process match missed Windows backslash paths; the final normalized-path check verified and stopped both Python processes for this exact owned watcher. The main/frozen configurations set retain_data=true. Cleanup refuses that local hold before cloud calls and also checks the remote bmt-retain-data=true label during the all-resource preflight, before any deletion. SQL has that label and provider deletion protection.
++
++Daily standard SQL backups run at **02:00 UTC**, retaining seven daily backups. Manual backups immediately **before and after migration both completed SUCCESSFUL**. GCS recovery for accidentally deleted objects is enabled for **seven days**, verified as 604800 seconds. Original WSL data and the immutable export are independent track copies. Full backup-restore/production DR acceptance remains unperformed; point-in-time recovery was not enabled.
++
++This is retained staging, not an approved production rollout. Historical lease labels no longer authorize deletion while the retention hold is active. Future deployment/pricing reviews still need current configuration. Keeping it running uses credits: recorded regional EUR rates imply roughly **€2.4/day baseline before credits/free tier**, plus API use, backups, object/registry storage and network. [Calculation](evidence/gcp-track-retention-2026-10-06/retained-cost-estimate.json), [Cloud Run pricing](https://cloud.google.com/run/pricing). The existing €10 monthly project alert remains an alert rather than a cap. Exact remaining credits/expiry and actual bill were not checked; the owner’s approximate €300/80-day report remains the source. No paid-account upgrade or commitment was made.
++
++## Actual commands and outcomes
++
++Project beat-my-track and region europe-west1 were explicit in all SDK operations. Commands from repository root used .tools/backend-venv/Scripts/python.exe with the ignored helpers:
++
++~~~text
++.tools/gcp-staging/export-local-catalog.py
++.tools/gcp-staging/run-catalog-transfer.py retain
++.tools/gcp-staging/run-catalog-transfer.py prepare
++.tools/gcp-staging/run-catalog-transfer.py validate
++.tools/gcp-staging/run-catalog-transfer.py import
++# Same import repeated to prove zero-insert retry.
++.tools/gcp-staging/verify-retained-catalog.py
++~~~
++
++Additional actual commands:
++
++~~~powershell
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_catalog_transfer.py backend/tests/test_gcp_staging.py -q
++& .tools/backend-venv/Scripts/ruff.exe check backend/deploy/gcp/catalog_transfer.py backend/tests/test_catalog_transfer.py backend/deploy/gcp/staging.py backend/tests/test_gcp_staging.py
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_retained_cloud_catalog.gd -Graphical -CommandTimeoutSeconds 300
++~~~
++
++- Final unit regression: **34 passed**. Tests cover dry-run purity, corrupt hashes, authenticated-owner protection, existing-account/session preservation, immutable collisions, historical bytes, deterministic compatible revisions and local/remote retention holds.
++- The first cloud dry run failed before catalog reads/writes: broad placeholder substitution altered the BMT_STAGING_OWNER environment-key name. Explicit delimited placeholders fixed the launcher. Corrected native validation passed: 27 current heads, 34 objects, 60 planned versions and 26 compatible revisions.
++- First live import: **27 tracks/60 versions inserted**. Live retry: **0/0 inserted**, same IDs. Public HTTP verification checked **27 current entries and all 34 original share links** against original SHA256 documents.
++- Initial real Windows graphical app check: 166 checks pass. Final strengthened check: **167 checks, zero failures**, including normal pagination, 27 downloads/compilations, native/server geometry hashes, current physics/rules and selection with Race enabled. Runs overlap. Isolated guest records/cache avoid reading the owner’s saved Google session.
++- [Actual restored Race screenshot with Spiral selected](evidence/gcp-track-retention-2026-10-06/race-catalog.png) saved and inspected.
++- Provider state: SQL RUNNABLE, deletion/retention protection true, daily backups/seven-day object recovery configured, and both manual backups SUCCESSFUL.
++- Ruff initially requested combining a nested conditional. The equivalent combined guard passes lint and the final 34 tests. The exact live executed program is retained in evidence; this final lint-only edit did not change runtime images or imported data.
++- Final task-state/path-normalized process check confirms automatic deletion remains disabled; the original WSL API/worker/database remain running. Affected whitespace and scoped-patch reverse checks exit zero, with existing CRLF normalization warnings only.
++
++## Files and remaining acceptance
++
++Changed source: backend/deploy/gcp/catalog_transfer.py, backend/deploy/gcp/staging.py, backend/tests/test_catalog_transfer.py, backend/tests/test_gcp_staging.py and game/tests/test_retained_cloud_catalog.gd. The game check is opt-in and excluded by the existing tests/* export filter. Documentation: this report, staging runbook/prior connection/deployment notes, development/phase status and [evidence/checkpoint](evidence/gcp-track-retention-2026-10-06/README.md). Ignored .tools helpers/config/artifacts contain applied operator state and the source export; credentials are excluded from Git.
++
++No phone attachment check, Android export/install or physical-device test was performed. No complete race on every circuit, old PB/ratings identity migration, measured capacity, NAS rollout or production acceptance is claimed. Google login success is owner-reported; the operator did not obtain a Google ID token. Local scores remain local. Reopen Race or restart the app to refresh its public catalog; no player file is deleted to force refresh.
+--- /dev/null
++++ b/docs/evidence/gcp-track-retention-2026-10-06/README.md
+@@ -0,0 +1,17 @@
++# Retained cloud catalog evidence
++
++See [requirements, data/source changes, actual commands, costs and acceptance](../../GCP_TRACK_RETENTION_2026_10_06.md).
++
++- source-summary.json: read-only local export, names/SHA256, 27 official tracks/34 versions/34 documents.
++- migration-jobs.json: validated plan, first 27/60 insert and 0/0 retry; no login identities/scores/ratings.
++- live-integrity.json: real public discovery and all original link/hash checks.
++- expected-catalog.json: exact public IDs/names/hashes used by the Windows check.
++- native-catalog.log and race-catalog.png: final real app 167 checks and inspected selected-track screenshot, isolated guest records.
++- operator-regression.xml: final 34 passing operator/retention tests; previous batches overlap.
++- protection.json: SQL state/protection, daily backups, seven-day bucket recovery and successful before/after manual backups.
++- cleanup-disabled.json: actual disabled task and final same-owner watcher check with normalized Windows paths; original WSL services remain running.
++- retained-cost-estimate.json: approximate continuing baseline from reviewed regional EUR SKUs, excluding credits/free tier and variable costs.
++- executed-catalog_transfer.py: exact live approved operator program before the equivalent final lint-only conditional merge.
++- before-* files, scoped-change.patch and source-hashes.json: task-only checkpoint preserving shared dirty work.
++
++Automatic cleanup is disabled under the owner’s retention request. Cloud resources continue using credits; an alert is not a cap. Account credentials are outside this evidence. Originals/immutable links remain intact; fake races/scores and development authentication were not migrated.

@@ -1,0 +1,573 @@
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -13,6 +13,12 @@
+ var initial_attempt_limit: int = 0
+ var attempt_limit: int = 0
+ var _attempt_buttons: Array[Button] = []
++var _track_art: TextureRect
++var _track_creator: Label
++var _preview_biome: Label
++var _time_caption: Label
++var _target_panel: PanelContainer
++var _status: HBoxContainer
+ var _preview_art: TextureRect
+ var _preview_route: LapRouteView
+ var _preview_title: Label
+@@ -63,42 +69,59 @@
+ 	duration = initial_duration
+ 	attempt_limit = initial_attempt_limit
+ 	_base_entries = entries.duplicate(true)
++	var columns := HBoxContainer.new()
++	columns.name = "ChallengeCreateColumns"
++	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	columns.add_theme_constant_override("separation",20)
++	add_child(columns)
++	var settings := VBoxContainer.new()
++	settings.name = "ChallengeCreateSettings"
++	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	settings.size_flags_stretch_ratio = 1.45
++	settings.add_theme_constant_override("separation",10)
++	columns.add_child(settings)
+ 	var header := HBoxContainer.new()
+-	add_child(header)
++	header.name = "ChallengeCreateHeader"
++	header.custom_minimum_size.y = 52
++	header.add_theme_constant_override("separation",14)
++	settings.add_child(header)
+ 	_close_button = MenuStyle.button("Back",close)
+ 	_close_button.name = "CloseChallengeCreate"
+ 	_close_button.custom_minimum_size = Vector2(90,52)
++	_close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
+ 	header.add_child(_close_button)
+-	var glyph := _icon("target",32)
++	var glyph := _icon("target",36)
+ 	glyph.modulate = MenuStyle.ACCENT
+ 	header.add_child(glyph)
+ 	header.add_child(MenuStyle.label("CREATE CHALLENGE",34))
+-	var columns := HBoxContainer.new()
+-	columns.name = "ChallengeCreateColumns"
+-	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	columns.add_theme_constant_override("separation",18)
+-	add_child(columns)
+ 	var scroll := ScrollContainer.new()
+ 	scroll.name = "ChallengeSettingsScroll"
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	scroll.size_flags_stretch_ratio = 1.35
+-	columns.add_child(scroll)
+-	var gutter := MarginContainer.new()
+-	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	gutter.add_theme_constant_override("margin_right",10)
+-	scroll.add_child(gutter)
++	settings.add_child(scroll)
+ 	var fields := VBoxContainer.new()
+-	fields.add_theme_constant_override("separation",8)
+-	gutter.add_child(fields)
++	fields.name = "ChallengeCreateFields"
++	fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	fields.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	fields.add_theme_constant_override("separation",4)
++	scroll.add_child(fields)
+ 	var track_row := _field(fields,"TRACK","compass")
++	_track_art = _icon("tracks")
++	_track_art.name = "ChallengeTrackThumbnail"
++	_track_art.custom_minimum_size = Vector2(90,56)
++	_track_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	track_row.add_child(_track_art)
+ 	if locked_result():
+ 		var identity := VBoxContainer.new()
+ 		identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		track_row.add_child(identity)
+-		identity.add_child(MenuStyle.label(str(_entry().get("name","")),24))
+-		identity.add_child(MenuStyle.label(str(_entry().get("creator","")),16,true))
++		var track_title := MenuStyle.label(str(_entry().get("name","")),24)
++		track_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		identity.add_child(track_title)
++		_track_creator = MenuStyle.label("",16,true)
++		_track_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		identity.add_child(_track_creator)
+ 	else:
+ 		var choices := VBoxContainer.new()
+ 		choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -106,7 +129,16 @@
+ 		_track = OptionButton.new()
+ 		_track.name = "ChallengeTrackChoice"
+ 		_track.custom_minimum_size.y = 52
++		_track.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		_track.add_theme_font_override("font",MenuStyle.DISPLAY)
++		_track.add_theme_font_size_override("font_size",23)
++		_track.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		_track.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++		choices.add_theme_constant_override("separation",0)
+ 		choices.add_child(_track)
++		_track_creator = MenuStyle.label("",16,true)
++		_track_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		choices.add_child(_track_creator)
+ 		for index: int in range(entries.size()):
+ 			_track.add_item(str(entries[index].name),index)
+ 			if str(entries[index].version_id) == initial_version: _track.select(index)
+@@ -116,10 +148,12 @@
+ 		_search.custom_minimum_size.y = 48
+ 		_search.hide()
+ 		choices.add_child(_search)
+-		var find := MenuStyle.button("",func() -> void:
++		var find := MenuStyle.button("Change track",func() -> void:
+ 			_search.visible = not _search.visible
+ 			if _search.visible: _search.grab_focus())
+-		find.icon = MenuIcon.texture("search")
++		find.name = "ChallengeChangeTrack"
++		find.add_theme_font_size_override("font_size",19)
++		_outline(find)
+ 		find.tooltip_text = "Find a track or creator"
+ 		find.custom_minimum_size = Vector2(52,52)
+ 		track_row.add_child(find)
+@@ -135,37 +169,57 @@
+ 			_update()
+ 			_search_timer.start())
+ 		_track.item_selected.connect(func(_i: int) -> void: _check_source())
+-	var modes := _field(fields,"TYPE","friends")
++	var modes := _field(fields,"CHALLENGE\nTYPE","friends")
+ 	for index: int in range(2):
+ 		var choice := _segment(modes,["Beat my time","Group challenge"][index],_choose_mode.bind(index))
++		_choice_content(choice,["Beat my time","Group challenge"][index],["Set a time to beat","Compare with friends"][index],["clock","friends"][index])
+ 		choice.name = ["ChallengeBeat","ChallengeGroup"][index]
+ 		_mode_buttons.append(choice)
+ 	var car := _field(fields,"CAR","car")
+ 	_car_art = TextureRect.new()
+ 	_car_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	_car_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-	_car_art.custom_minimum_size = Vector2(96,52)
++	_car_art.custom_minimum_size = Vector2(90,52)
+ 	car.add_child(_car_art)
+ 	if locked_result():
+ 		car.add_child(MenuStyle.label(VehicleCatalog.title(initial_vehicle),22))
+ 	else:
+ 		_vehicle = OptionButton.new()
+ 		_vehicle.custom_minimum_size.y = 52
++		_vehicle.name = "ChallengeCarChoice"
++		_vehicle.add_theme_font_override("font",MenuStyle.DISPLAY)
++		_vehicle.add_theme_font_size_override("font_size",22)
++		_vehicle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		_outline(_vehicle)
+ 		_vehicle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		car.add_child(_vehicle)
+ 		for title: String in VehicleCatalog.NAMES: _vehicle.add_item(title)
+ 		_vehicle.select(VehicleCatalog.IDS.find(VehicleCatalog.valid_id(initial_vehicle)))
+ 		_vehicle.item_selected.connect(func(_i: int) -> void: _check_source())
+-	var target := _field(fields,"TARGET","target")
++	var target := _field(fields,"TARGET TIME","target")
++	_target_panel = PanelContainer.new()
++	_target_panel.name = "ChallengeTargetChoice"
++	_target_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_target_panel.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.ACCENT,4))
++	target.add_child(_target_panel)
++	var target_content := HBoxContainer.new()
++	target_content.alignment = BoxContainer.ALIGNMENT_CENTER
++	_target_panel.add_child(target_content)
++	var target_icon := _icon("clock",26)
++	target_icon.modulate = MenuStyle.INK
++	target_content.add_child(target_icon)
+ 	var time_box := VBoxContainer.new()
+ 	time_box.add_theme_constant_override("separation",0)
+-	target.add_child(time_box)
+-	_time = MenuStyle.label("",28)
++	target_content.add_child(time_box)
++	_time_caption = MenuStyle.label("",18)
++	_time_caption.add_theme_font_override("font",MenuStyle.DISPLAY)
++	_time_caption.add_theme_color_override("font_color",MenuStyle.INK)
++	time_box.add_child(_time_caption)
++	_time = MenuStyle.label("",24)
+ 	_time.name = "ChallengeFinishedTime"
+-	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	_time.add_theme_color_override("font_color",MenuStyle.INK)
+ 	time_box.add_child(_time)
+-	time_box.add_child(MenuStyle.label("This finish" if locked_result() else "My best time",15,true))
+-	var tries := _field(fields,"TRIES","restart")
++	var tries := _field(fields,"NUMBER OF\nTRIES","restart")
+ 	tries.tooltip_text = "Each started race uses one try, including abandoned races. Upload retries do not use another."
+ 	for value: int in [1,3,5,0]:
+ 		var choice := _segment(tries,"Unlimited" if value == 0 else str(value),_choose_attempt_limit.bind(value))
+@@ -180,7 +234,10 @@
+ 	help.icon = MenuIcon.texture("help")
+ 	help.tooltip_text = "How tries are counted"
+ 	help.custom_minimum_size = Vector2(52,52)
+-	tries.add_child(help)
++	var tries_label: HBoxContainer = tries.get_parent().get_child(0)
++	help.custom_minimum_size = Vector2(52,52)
++	help.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++	tries_label.add_child(help)
+ 	var durations := _field(fields,"DURATION","clock")
+ 	for index: int in range(3):
+ 		var seconds: int = [86400,259200,604800][index]
+@@ -190,70 +247,99 @@
+ 	_panel = PanelContainer.new()
+ 	_panel.name = "ChallengeCreatePanel"
+ 	_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	_panel.add_theme_stylebox_override("panel",MenuStyle.card(12))
++	_panel.add_theme_stylebox_override("panel",MenuStyle.card(10))
+ 	columns.add_child(_panel)
+ 	var preview := VBoxContainer.new()
+-	preview.add_theme_constant_override("separation",8)
++	preview.add_theme_constant_override("separation",12)
+ 	_panel.add_child(preview)
+ 	var hero := PanelContainer.new()
+ 	hero.name = "ChallengeFinishedRace"
+ 	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	hero.custom_minimum_size.y = 110
+ 	hero.clip_contents = true
+-	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),12))
++	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),0))
+ 	preview.add_child(hero)
+ 	_preview_art = TextureRect.new()
+ 	_preview_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	_preview_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	hero.add_child(_preview_art)
++	var overlay := VBoxContainer.new()
++	overlay.add_theme_constant_override("separation",12)
++	hero.add_child(overlay)
++	var top := HBoxContainer.new()
++	top.add_theme_constant_override("separation",8)
++	overlay.add_child(top)
++	var badge := PanelContainer.new()
++	badge.custom_minimum_size.x = 220
++	badge.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
++	badge.add_theme_stylebox_override("panel",MenuStyle.box(Color("081720ee"),10))
++	top.add_child(badge)
+ 	var identity := VBoxContainer.new()
+-	hero.add_child(identity)
++	identity.add_theme_constant_override("separation",0)
++	badge.add_child(identity)
+ 	_preview_title = MenuStyle.label("",28)
+ 	_preview_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	_preview_title.add_theme_color_override("font_shadow_color",Color.BLACK)
+-	_preview_title.add_theme_constant_override("shadow_offset_x",2)
+-	_preview_title.add_theme_constant_override("shadow_offset_y",2)
+ 	identity.add_child(_preview_title)
+-	_preview_creator = MenuStyle.label("",16)
++	_preview_creator = MenuStyle.label("",16,true)
++	_preview_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	identity.add_child(_preview_creator)
++	var hero_space := Control.new()
++	hero_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	top.add_child(hero_space)
++	var biome := PanelContainer.new()
++	biome.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
++	biome.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632ee"),10))
++	top.add_child(biome)
++	_preview_biome = MenuStyle.label("",18)
++	biome.add_child(_preview_biome)
+ 	_preview_route = LapRouteView.new()
+ 	_preview_route.name = "ChallengeFinishedRoute"
+ 	_preview_route.miniature = true
+ 	_preview_route.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	identity.add_child(_preview_route)
+-	_summary_car = _summary(preview,"Car","car")
+-	_summary_time = _summary(preview,"Target","target")
+-	_summary_tries = _summary(preview,"Tries per driver","restart")
+-	_summary_duration = _summary(preview,"Duration","clock")
+-	var status := HBoxContainer.new()
+-	add_child(status)
++	overlay.add_child(_preview_route)
++	var summary := PanelContainer.new()
++	summary.name = "ChallengePreviewSummary"
++	_outline(summary)
++	preview.add_child(summary)
++	var summary_rows := VBoxContainer.new()
++	summary_rows.add_theme_constant_override("separation",0)
++	summary.add_child(summary_rows)
++	_summary_car = _summary(summary_rows,"Car","car")
++	_summary_time = _summary(summary_rows,"Target time","clock")
++	_summary_tries = _summary(summary_rows,"Number of tries","restart")
++	_summary_duration = _summary(summary_rows,"Duration","clock")
++	_status = HBoxContainer.new()
++	add_child(_status)
+ 	_notice = MenuStyle.label("",17,true)
+ 	_notice.name = "ChallengeSourceStatus"
+ 	_notice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	status.add_child(_notice)
++	_status.add_child(_notice)
+ 	_retry = MenuStyle.button("Retry",_check_source)
+ 	_retry.name = "RetryChallengeSource"
+ 	_retry.custom_minimum_size.y = 52
+-	status.add_child(_retry)
++	_status.add_child(_retry)
+ 	var actions := HBoxContainer.new()
+ 	actions.name = "ChallengeCreateActions"
+ 	add_child(actions)
+ 	var cancel := MenuStyle.button("Cancel",close)
+-	cancel.custom_minimum_size = Vector2(140,56)
++	cancel.custom_minimum_size = Vector2(180,56)
++	_outline(cancel)
+ 	actions.add_child(cancel)
+ 	var space := Control.new()
+ 	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	actions.add_child(space)
+ 	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
+ 	_race.name = "RaceToSetChallenge"
+-	_race.custom_minimum_size = Vector2(260,56)
++	_race.custom_minimum_size = Vector2(310,56)
+ 	actions.add_child(_race)
+ 	_create_button = MenuStyle.button("Create & share",func() -> void: confirmed.emit(),true)
+ 	_create_button.icon = MenuIcon.texture("share")
+ 	_create_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
++	_create_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
++	_create_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
+ 	_create_button.name = "ConfirmChallengeCreate"
+-	_create_button.custom_minimum_size = Vector2(260,56)
++	_create_button.custom_minimum_size = Vector2(310,56)
+ 	actions.add_child(_create_button)
+ 	confirmed.connect(_create)
+ 	_check_source()
+@@ -267,23 +353,66 @@
+ 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	return icon
+ 
++func _outline(control: Control) -> void:
++	var style := MenuStyle.box(Color("102632"),8)
++	style.border_color = MenuStyle.BORDER
++	style.set_border_width_all(1)
++	control.add_theme_stylebox_override("panel" if control is PanelContainer else "normal",style)
++
+ func _field(parent: Control, caption: String, glyph: String) -> HBoxContainer:
+ 	var panel := PanelContainer.new()
+-	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1e2bee"),6))
++	panel.name = "ChallengeField_"+caption.replace("\n","").replace(" ","")
++	panel.custom_minimum_size.y = 68
++	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1e2bf2"),8))
+ 	parent.add_child(panel)
+ 	var row := HBoxContainer.new()
+-	row.add_theme_constant_override("separation",8)
++	row.add_theme_constant_override("separation",12)
+ 	panel.add_child(row)
+-	row.add_child(_icon(glyph))
+-	var label := MenuStyle.label(caption,16,true)
+-	label.custom_minimum_size.x = 68
++	var title := HBoxContainer.new()
++	title.custom_minimum_size.x = 168
++	title.add_theme_constant_override("separation",10)
++	row.add_child(title)
++	title.add_child(_icon(glyph))
++	var label := MenuStyle.label(caption,17,true)
++	label.add_theme_font_override("font",MenuStyle.DISPLAY)
++	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	row.add_child(label)
++	title.add_child(label)
+ 	var choices := HBoxContainer.new()
+-	choices.add_theme_constant_override("separation",6)
++	choices.name = "ChallengeChoices_"+caption.replace("\n","").replace(" ","")
++	choices.add_theme_constant_override("separation",8)
+ 	choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(choices)
+ 	return choices
++
++func _choice_content(button: Button, caption: String, detail: String, glyph: String) -> void:
++	button.text = caption
++	for state: String in ["font_color","font_focus_color","font_hover_color","font_pressed_color","font_disabled_color"]:
++		button.add_theme_color_override(state,Color.TRANSPARENT)
++	var center := CenterContainer.new()
++	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	MenuStyle.fill(center)
++	button.add_child(center)
++	var group := HBoxContainer.new()
++	group.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	group.add_theme_constant_override("separation",10)
++	center.add_child(group)
++	group.add_child(_icon(glyph,26))
++	var text := VBoxContainer.new()
++	text.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	text.add_theme_constant_override("separation",0)
++	group.add_child(text)
++	var title := MenuStyle.label(caption,21)
++	title.add_theme_font_override("font",MenuStyle.DISPLAY)
++	text.add_child(title)
++	var subtitle := MenuStyle.label(detail,14,true)
++	subtitle.add_theme_font_override("font",MenuStyle.DISPLAY)
++	text.add_child(subtitle)
++	button.set_meta("choice_title",title)
++	button.set_meta("choice_detail",subtitle)
++	button.set_meta("choice_icon",group.get_child(0))
++	button.custom_minimum_size.x = maxf(button.custom_minimum_size.x,group.get_combined_minimum_size().x+16)
+ 
+ func _segment(parent: Control, caption: String, action: Callable) -> Button:
+ 	var button := MenuStyle.button(caption,action)
+@@ -294,14 +423,22 @@
+ 	return button
+ 
+ func _summary(parent: Control, caption: String, glyph: String) -> Label:
++	var panel := PanelContainer.new()
++	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("172c3866") if parent.get_child_count()%2 == 0 else Color.TRANSPARENT,6))
++	parent.add_child(panel)
+ 	var row := HBoxContainer.new()
+-	row.add_theme_constant_override("separation",8)
+-	parent.add_child(row)
++	row.custom_minimum_size.y = 28
++	row.add_theme_constant_override("separation",12)
++	panel.add_child(row)
+ 	row.add_child(_icon(glyph,22))
+-	var label := MenuStyle.label(caption,16,true)
+-	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	var label := MenuStyle.label(caption,17,true)
++	label.add_theme_font_override("font",MenuStyle.DISPLAY)
++	label.custom_minimum_size.x = 148
+ 	row.add_child(label)
+ 	var value := MenuStyle.label("",18)
++	value.add_theme_font_override("font",MenuStyle.DISPLAY)
++	value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	value.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	value.name = "ChallengeSummary_"+caption.replace(" ","")
+ 	row.add_child(value)
+ 	return value
+@@ -314,9 +451,12 @@
+ 	if _preview_art == null: return
+ 	var entry: Dictionary = _entry()
+ 	_preview_art.texture = TrackTile.scenery_texture(str(entry.get("theme","pine")))
+-	_preview_art.modulate = Color(0.72,0.78,0.82)
++	_preview_art.modulate = Color(0.94,0.97,1.0)
++	_track_art.texture = _preview_art.texture
++	_track_creator.text = "By "+str(entry.get("creator","")) if not entry.get("creator","").is_empty() else ""
++	_preview_biome.text = TrackTheme.title(str(entry.get("theme","pine")))
+ 	_preview_title.text = str(entry.get("name","Choose a track"))
+-	_preview_creator.text = str(entry.get("creator",""))
++	_preview_creator.text = _track_creator.text
+ 	_preview_route.route.clear()
+ 	for point: Array in entry.get("points",[]): _preview_route.route.append(Vector2(point[0],point[1]))
+ 	_preview_route._fit()
+@@ -325,8 +465,10 @@
+ 	var total: float = float(result_context.get("total",0.0)) if locked_result() else 0.0
+ 	if _source.get("status") == "verified": total = float(_source.get("ms",0))/1000.0
+ 	_time.text = MenuStyle.time_text(total) if total > 0.0 else "?"
+-	_time.get_parent().get_child(1).text = "This finish" if locked_result() else "My best time" if mode == 0 else "Fastest time wins"
+-	_summary_time.text = _time.text if mode == 0 else "Fastest time wins"
++	_time_caption.text = "Use this finish" if locked_result() and mode == 0 else "Use my best time" if mode == 0 else "No target"
++	_time.visible = mode == 0
++	_time_caption.text = "Fastest time wins" if mode == 1 else _time_caption.text
++	_summary_time.text = ("This finish" if locked_result() else "My best")+" ("+_time.text+")" if mode == 0 else "Fastest time wins"
+ 	_summary_tries.text = "Unlimited" if attempt_limit == 0 else str(attempt_limit)
+ 	_summary_duration.text = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
+ 
+@@ -406,6 +548,7 @@
+ 	_retry.visible = _source.get("status") == "unavailable" and not _checking and not _submitting
+ 	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Verifying result…" if locked_result() and (_checking or pending) else "Checking time…" if _checking else str(_source.get("error","")) if _source.has("error") else "This result was not verified." if locked_result() and not verified else "Choose a published track." if not has_entry else ""
+ 	_notice.visible = not _notice.text.is_empty()
++	_status.visible = _notice.visible or _retry.visible
+ 	_refresh_preview()
+ 	if _track != null: _track.disabled = _submitting
+ 	if _vehicle != null: _vehicle.disabled = _submitting
+@@ -419,7 +562,11 @@
+ 	style.border_color = MenuStyle.ACCENT if chosen else Color("2b4657")
+ 	style.set_border_width_all(1)
+ 	button.add_theme_stylebox_override("normal",style)
+-	for key: String in ["font_color","font_focus_color","font_hover_color"]: button.add_theme_color_override(key,MenuStyle.INK if chosen else MenuStyle.TEXT)
++	for key: String in ["font_color","font_focus_color","font_hover_color"]: button.add_theme_color_override(key,Color.TRANSPARENT if button.has_meta("choice_title") else MenuStyle.INK if chosen else MenuStyle.TEXT)
++	if button.has_meta("choice_title"):
++		(button.get_meta("choice_title") as Label).add_theme_color_override("font_color",MenuStyle.INK if chosen else MenuStyle.TEXT)
++		(button.get_meta("choice_detail") as Label).add_theme_color_override("font_color",MenuStyle.INK if chosen else MenuStyle.MUTED)
++		(button.get_meta("choice_icon") as TextureRect).modulate = MenuStyle.INK if chosen else MenuStyle.TEXT
+ 	button.disabled = _submitting
+ 
+ func _create() -> void:
+@@ -447,6 +594,7 @@
+ 		_update()
+ 		_notice.text = adapter.error
+ 		_notice.show()
++		_status.show()
+ 
+ func _race_to_set() -> void:
+ 	if locked_result() or _entry().is_empty(): return
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -180,6 +180,9 @@
+ 		sheet._choose_attempt_limit(3)
+ 		check(sheet._summary_tries.text == "3","summary reflects selected tries")
+ 		await _capture("finished-page",dimensions)
++		client.answer = {"ok":false,"error":"NETWORK_ERROR"}
++		await sheet._create()
++		check(sheet._notice.is_visible_in_tree() and not sheet._notice.text.is_empty(),"failed creation keeps its actionable error visible")
+ 		client.answer = {"ok":true,"data":sample}
+ 		await sheet._create()
+ 		check(client.last_payload.get("source_ticket_id") == ticket and not client.last_payload.has("source_run_id"),"creation submits the exact finished ticket and never a PB fallback")
+@@ -259,6 +262,22 @@
+ 		_bounds(create,"ChallengeCreatePanel",dimensions)
+ 		var choices_scroll: ScrollContainer = create.find_child("ChallengeSettingsScroll",true,false)
+ 		check(choices_scroll.get_v_scroll_bar().max_value <= choices_scroll.size.y+1,"all default setting rows are immediately visible")
++		var aligned_x: float = -1.0
++		for caption: String in ["TRACK","CHALLENGETYPE","CAR","TARGETTIME","NUMBEROFTRIES","DURATION"]:
++			var choices: Control = create.find_child("ChallengeChoices_"+caption,true,false)
++			if aligned_x < 0.0: aligned_x = choices.global_position.x
++			check(absf(choices.global_position.x-aligned_x) <= 1.0,"creation control column aligns: "+caption)
++		var summary_x: float = create._summary_car.global_position.x
++		for value: Label in [create._summary_time,create._summary_tries,create._summary_duration]:
++			check(absf(value.global_position.x-summary_x) <= 1.0,"preview values share one left edge")
++		var header: Control = create.find_child("ChallengeCreateHeader",true,false)
++		check(absf(header.global_position.y-create._panel.global_position.y) <= 1.0,"preview starts alongside the heading")
++		check(absf(choices_scroll.get_global_rect().end.y-create._panel.get_global_rect().end.y) <= 1.0,"settings and preview share a bottom edge")
++		create._choose_mode(1)
++		check(create._summary_time.text == "Fastest time wins" and not create._time.visible,"group preview has no timed target")
++		await _capture("menu-create-group",dimensions)
++		create._choose_mode(0)
++		await process_frame
+ 		await _capture("menu-create",dimensions)
+ 		create.close()
+ 		await process_frame
+--- a/docs/CHALLENGE_LAYOUT.md
++++ b/docs/CHALLENGE_LAYOUT.md
+@@ -0,0 +1,45 @@
++# Challenge creation alignment — 2026-10-11
++
++The owner supplied a Create challenge reference and requested closer layout and alignment. The existing creation page now uses a 1.45:1 settings/preview split. The heading occupies the left column; the preview begins at the heading's top edge and ends at the settings' bottom edge. Cancel and Create & share remain in the separate bottom action row.
++
++Requirement IDs: **CH14, V03, V05, R01, Q01** for presentation and verification; **CH09–CH11, CH02–CH04, CH15** for preserved exact-result, target, duration and tries behavior.
++
++All six form rows share one fixed icon/label width and one aligned control column. Track selection has the existing scenic thumbnail, selected name, creator and Change track search action. Challenge types have centered icon/title/detail groups and consistent selected colors. Car artwork aligns with the other controls. The supported verified target is emphasized in yellow. Tries help belongs to the label column, so it cannot shift the choices. All ordinary selection targets retain a logical minimum height of 52.
++
++The brighter original scenic preview keeps the actual route outline, with a compact name/creator plaque and biome label. Its four summary values share one left edge, with alternating quiet row fills. Empty status space collapses; pending, retry and submission-error states remain visible when needed. All default settings remain immediately visible at the tested landscape sizes; opening search or help uses the existing bounded settings scroll.
++
++This pass uses the reference's composition with the existing feature contract: verified PB/exact completed finish for Beat my time, untargeted Group, 1/3/5/unlimited tries and 24-hour/3-day/7-day durations. Custom unverified target times, community visibility, 14 days, a new preview flow and friend delivery were not implemented. The reference image is not a shipping asset. Original scenery, fictional car art, fonts and vector icons are reused; there are no new assets or dependencies.
++
++## Changed files
++
++- `game/ui/challenge_create.gd`: aligned two-column page, field/summary geometry, thumbnail/plaque/biome presentation, selected option content and status visibility.
++- `game/tests/test_challenges.gd`: existing layout suite now checks all six control edges, all summary value edges, panel top/bottom alignment, Group target presentation and visible creation errors.
++- `docs/CHALLENGE_LAYOUT.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`: scope, actual outcomes and remaining acceptance.
++
++## Actual verification
++
++Commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned **4.7.2.stable.official.ed1daf0bf**, and workspace-local `APPDATA` directories under `.tools/challenge-layout-20261011/`. `BMT_CHALLENGE_CAPTURE_DIR` points to the screenshots below. This isolates checks from player records and account caches.
++
++| Actual command | Outcome |
++| --- | --- |
++| `CheckScript -ScriptPath res://ui/challenge_create.gd` | Passed with isolated local user data. The preceding default-user-data attempt could not open the Windows user log; it is not claimed as successful verification. |
++| `TestScript -ScriptPath res://tests/test_challenges.gd -Graphical` | Final **182 checks, zero failures**, 21 captures at 1280×720, 960×540 and 1600×720. Exact finished-ticket creation, pending/error gates, target modes, tries submission, cancellation and existing challenge pages remain covered. |
++| `TestApp` | **99 checks, zero failures** with a separate workspace-local user directory. |
++| Scoped checkpoint `git diff --check` | Passed for changed source/document files; task-only before/after patch and Git review ref saved. |
++
++The initial restricted graphical run produced all 140 then-existing passing checks but emitted a Windows certificate-store access error. Final graphical and application commands ran with normal local access and clean logs. No failing acceptance assertion was relaxed. Adding collapsed status exposed a submission-error parent-visibility issue during review; this was fixed and is checked by the final suite.
++
++[Final challenge log](evidence/challenge-layout-2026-10-11/menus-final.log), [application log](evidence/challenge-layout-2026-10-11/app.log), [initial restricted log](evidence/challenge-layout-2026-10-11/menus-first.log).
++
++## Screenshots and remaining acceptance
++
++Inspected actual Godot captures:
++
++- [Standard creation](evidence/challenge-layout-2026-10-11/screenshots/menu-create-1280x720.png)
++- [Compact creation](evidence/challenge-layout-2026-10-11/screenshots/menu-create-960x540.png)
++- [Wide Group creation](evidence/challenge-layout-2026-10-11/screenshots/menu-create-group-1600x720.png)
++- [Exact completed-result creation](evidence/challenge-layout-2026-10-11/screenshots/finished-page-960x540.png)
++
++Captures use isolated presentation fixtures; their displayed name and time are not inserted into live records. Owner visual acceptance, phone touch/search/help/keyboard and safe-area checks remain. No Android device test or attachment check, APK export/install, backend test/deployment, physics change, full Validate or production deployment was performed.
++
++Review checkpoint: `refs/codex/challenge-layout-2026-10-11`. Inspect `git diff refs/codex/challenge-layout-2026-10-11^ refs/codex/challenge-layout-2026-10-11`. The snapshot parent contains the pre-change task files; HEAD, the existing index and unrelated work remain intact. Receipt: [checkpoint.json](evidence/challenge-layout-2026-10-11/checkpoint.json).
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-11 CH14/CH09-CH11/CH02-CH04/CH15/V03/V05/R01/Q01: owner challenge-creation reference alignment correction. Shared six-row label/control grid, 1.45:1 settings/preview, heading/preview top and settings/preview bottom aligned; brighter original scenic route/plaque/biome, four left-aligned summary values, separate bottom actions, logical52px selections. Existing verified PB/exact-ticket, Group, tries/durations/search/error gates retained; no new feature/assets/backend/physics. Final graphical182/App99 pass/21captures; initial restricted certificate-store error retained, final normal-access clean. No Android device-or-attachment check/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/owner-phone acceptance: docs/CHALLENGE_LAYOUT.md.
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-11 CH14/CH09-CH11/CH02-CH04/CH15/V03/V05/R01/Q01: owner challenge-creation reference alignment correction. Shared six-row label/control grid, 1.45:1 settings/preview, heading/preview top and settings/preview bottom aligned; brighter original scenic route/plaque/biome, four left-aligned summary values, separate bottom actions, logical52px selections. Existing verified PB/exact-ticket, Group, tries/durations/search/error gates retained; no new feature/assets/backend/physics. Final graphical182/App99 pass/21captures; initial restricted certificate-store error retained, final normal-access clean. No Android device-or-attachment check/export-install/fullValidate/deploy. Files/actual commands/scoped checkpoint/owner-phone acceptance: docs/CHALLENGE_LAYOUT.md.
++

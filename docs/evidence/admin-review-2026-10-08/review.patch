@@ -1,0 +1,325 @@
+--- a/docs/BACKEND_UI.md
++++ b/docs/BACKEND_UI.md
+@@ -140,3 +140,133 @@
+ Ruff checks for the new API/models/migration/settings/test/capture files pass.
+ The final browser capture passes with live PostgreSQL data and enforced CSP;
+ overview, track inspector, confirmation and mobile captures were visually inspected.
++
++## Staging feature review, 2026-10-08
++
++The owner requested investigation of the retained staging management UI for
++analytics, troubleshooting and development data manipulation. This is a review
++and proposed implementation sequence. No runtime feature, cloud setting, player
++record, purchase or entitlement was changed.
++
++Requirement mapping: **B01-B07, B14, B16-B17, B21-B24, B28, STORE04-STORE07,
++PUR01-PUR08, RW05-RW07, Q01**. AR01-AR10 below identify proposed review items;
++they do not establish new accepted product or payment rules.
++
++### What was actually inspected
++
++Authenticated, read-only inspection of
++[the owner's staging console](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/admin#overview),
++its API responses, current Cloud Run configuration and the matching workspace
++implementation. The configured owner credential was resolved through its existing
++Secret Manager binding and used in memory; no credential payload was printed or
++saved. Existing Edge and Playwright were used without installing dependencies or
++disabling TLS/CSP. Public HTML, both scripts and CSS matched workspace bytes.
++
++At the final observation (2026-10-08 18:09 UTC / 21:09 Europe/Helsinki), staging
++reported 343 accounts, 337 distinct submitting accounts in the rolling seven-day
++window, 4,216 verified submissions, 36 track identities and 243 versions. These
++figures include artificial accounts/attempts and are operational workload counts,
++not real-player engagement. They changed during inspection as the existing worker
++continued ordinary races. Separate endpoint reads are not an atomic snapshot.
++
++Staging uses development configuration, GCS objects, one compatible available
++worker and schema `0019_discovery_snapshots`. Owner admin access is configured;
++analyst access is absent. The public bootstrap explicitly reports purchase
++simulation disabled. All five product controls are enabled/editable, but the
++purchase-history endpoint returned an empty first page with no continuation.
++Nothing was toggled, purchased, granted, reset or settled during the review.
++
++### Confirmed gaps and proposed work
++
++| Item | Finding and implication | Proposed behavior / priority |
++|---|---|---|
++| AR01 | Overview groups all `Run` rows and counts all players without excluding artificial drivers. Player list/detail projections omit the existing `is_test_driver` and country fields. The current screen cannot explain how much activity represents human players. | First: expose account classification in this diagnostic console and add explicit analytics population scopes. Default product analytics to real-player activity; retain all-population workload views. Count distinct player UUIDs without multiplication from linked identities. Preserve public competition isolation and the unified in-game histogram. |
++| AR02 | The 30/90-day chart always renders at most 14 daily bars. Overview drilldowns drop the reporting-window boundary and open all-time lists. | First: a shared UTC date range propagated to chart, totals, lists and export. Display all selected days or clearly selected weekly aggregation. Link a chart day to exactly its attempts. |
++| AR03 | GCS returns `storage_free_bytes: null`; JavaScript converts this to **0 GiB**. The backend supplies latency, infrastructure-failure rate, expected/available builds, lifecycle counts and worker durations which the console omits. A filesystem backup marker reports `not_configured` and does not observe Cloud SQL backups. | First: render missing measurements as unavailable, show compatible-worker readiness and useful existing health fields with observation age, and add provider-specific backup/object-storage observations. Report backup completion and restore-test evidence separately. |
++| AR04 | Player support is a generic record plus 20 recent races, current balances and a separate purchase list. There is no coherent history of access changes, slot consumption, resume receipts, administrative actions or related verification failures. | First development slice: a player workspace with current access, linked purchases/slot consumption/resume receipts, paginated activity and audit history. Search by player, purchase, race, version, command and correlation identifiers. Add named saved filters and bounded CSV/JSON exports. Display unknown history honestly. |
++| AR05 | Admin purchases are read-only; the only commerce command toggles product availability. Existing simulated pending settlement and ad-free adjustments are player-authenticated development endpoints, not administrator commands. Staging has simulation disabled. | First development slice: separately configured owner-only simulated purchase creation, pending approval/decline/cancellation, monthly expiry, simulated ad-free reset and slot adjustments. Add domain services and audited commands rather than calling player endpoints with impersonated sessions. Each action previews exact consequences and uses stable idempotency plus expected-state checks. Enabling staging simulation is a separate configured rollout. |
++| AR06 | Race inspection provides pinned manifests, outcomes, attempts, ticks and hashes, but not a linked ticket/upload/lease/verification timeline, replay inspection, compatibility explanation or recovery actions. Track validations are included in health but the jobs list is only `Run` rows. | Next: race and track-validation troubleshooting with failure explanations, lease/attempt/worker history where retained, log links, exact build comparison and protected evidence retrieval. Retry only recoverable infrastructure failures against the original pinned contract; never silently rescore or edit a verified time. Record invalidation/rebuild needs its own domain workflow. |
++| AR07 | Analytics contains submission counts and status distribution. There are no track/car/biome breakdowns, returner cohorts, creator trends, rivalry participation or time-to-verification distributions. | After population/date correctness: analytics computed from authoritative stored records, with explicit definitions, pinned-version grouping and drilldowns. Use indexed aggregates or bounded reporting jobs as volume grows. Distinguish submitted, verified and distinct-player measures. |
++| AR08 | Foreground sessions, menu/race abandonment, offline attempts, crashes, ANRs, device model/performance and client build are not captured by this console's data source. Server records cannot reconstruct them. | Later telemetry slice: define a small first-party event/diagnostic contract, queue/retry/deduplication, privacy and retention, then instrumentation and dashboard coverage. No third-party analytics dependency is implied by this review. Mark event start dates so earlier missing data cannot appear as zero. |
++| AR09 | `Purchase` stores provider, product, state and create/fulfillment timestamps, but no paid amount/currency snapshot, provider notification history, refund/revocation lifecycle or complete entitlement change ledger. Catalog EUR test prices cannot establish revenue. | Real billing slice: verified provider lifecycle, immutable delivery/adjustment evidence, reconciliation and receipt-time financial fields before any revenue/refund dashboard. Keep simulation and real fulfillment distinct. Real refund/revocation policies remain an owner decision. |
++| AR10 | Owner/analyst authorization and transactional audits exist, but actors are shared credential roles. Staging has no analyst credential. There is no individual administrator identity, support/operator role, command permission matrix or audited batch-job workflow. | Alongside expanded mutations: separate read/support/development capabilities and preserve append-only before/after/reason/command records. Before production operational use: individual admin authentication and appropriate MFA. Large actions need scoped previews, durable progress and recovery; no generic table editor. |
++
++Administrative population filters and simulation distinctions above belong in
++this explicitly requested diagnostic UI. They do not reintroduce Player/Test
++views, TEST badges, counts or source explanations into normal game screens.
++
++### Recommended first vertical slice
++
++Implement **player support and development purchase controls** (AR04-AR05), with
++the population/date/null-value correctness work from AR01-AR03 needed to trust
++the same records. Preserve the established visual shell; focus on completing
++workflows. A useful first acceptance scenario is:
++
++1. Find a development player by name and inspect current real/simulated access,
++   slot consumption, purchases and relevant history in one workspace.
++2. Preview and create a pending simulated slot purchase; show that pending grants
++   no capacity. Approve it and observe one fulfillment despite retries.
++3. Preview a simulated ad-free expiry/reset or slot adjustment and record the
++   administrator, reason, exact before/after and stable command identity.
++4. Reject analyst writes, disabled-simulation commands, ineligible identities,
++   changed-state confirmations and attempts to alter real provider evidence.
++5. Navigate from a related failed race to its pinned verification diagnosis and
++   export the bounded selected evidence. No raw identity subjects, session keys
++   or provider receipt tokens enter the view or export.
++
++Simulated controls must retain the existing explicit development and identity
++gates. Resetting purchased capacity must account for irrevocably consumed
++publication slots rather than deleting publications or rewriting their evidence.
++Resetting simulated ad-free access must preserve real purchased access. Real
++Google Play purchases, provider refunds and production deployment remain outside
++this proposed development slice. Broader analytics (AR07) and new client telemetry
++(AR08) follow as separate reviewable slices.
++
++### Actual verification, evidence and limitations
++
++- Authenticated Edge reads covered Overview, Analytics, Economy, System health
++  and Access: all loaded without a console error or JavaScript exception. Lock
++  cleared the credential input. Unauthenticated overview returned 401. This
++  exercised read access, not live mutation denial or purchase fulfillment.
++- A 90-day selection produced exactly 14 bars. Health JSON returned null local
++  capacity with `storage_backend: gcs`; the inspected browser displayed 0 GiB.
++- Existing local admin/store/commerce regression with PostgreSQL parametrizations
++  deselected: **35 passed, 3 skipped, 1 failed, 27 deselected**. The failure is
++  `test_existing_publications_are_grandfathered_without_new_initial_reward`:
++  its historical-schema fixture lacks `players.country_code` required by the
++  current ORM. No backend or assertion was changed to conceal it.
++- A targeted existing PostgreSQL fixture could not connect to the configured
++  disposable database at localhost:55439; **one setup error, 11 deselected**.
++  PostgreSQL concurrency was therefore not validated in this task. The initial
++  combined run was interrupted after repeated setup errors.
++- Initial diagnostic attempts encountered the sandbox's socket restriction,
++  terminal encoding, a relative gcloud trust-bundle path, CSP string-evaluation
++  and chart-render timing issues. The read-only probe was corrected; TLS/CSP,
++  authentication and runtime code were preserved.
++
++Commands from project root, except pytest from `backend/`:
++
++```powershell
++.\.tools\backend-venv\Scripts\python.exe docs/evidence/admin-review-2026-10-08/review_staging.py
++..\.tools\backend-venv\Scripts\python.exe -m pytest tests/test_admin.py tests/test_store_admin.py tests/test_commerce.py -q -k 'not postgres' --disable-warnings --tb=short
++..\.tools\backend-venv\Scripts\python.exe -m pytest tests/test_store_admin.py -q -k 'test_public_catalog_and_admin_authentication and postgres' --disable-warnings --tb=short --maxfail=1
++```
++
++Evidence: [redacted observations](evidence/admin-review-2026-10-08/review.json),
++[read-only probe](evidence/admin-review-2026-10-08/review_staging.py),
++[Overview](evidence/admin-review-2026-10-08/overview.png),
++[90-day Analytics](evidence/admin-review-2026-10-08/analytics-90-days.png),
++[Economy](evidence/admin-review-2026-10-08/economy.png),
++[System](evidence/admin-review-2026-10-08/system.png),
++[SQLite results](evidence/admin-review-2026-10-08/sqlite-regression.log),
++[PostgreSQL attempt](evidence/admin-review-2026-10-08/postgres-attempt.log).
++
++Changed files are this document, development/phase status entries and the
++read-only probe/evidence under `docs/evidence/admin-review-2026-10-08/`. The
++task-only review patch and documentation snapshots preserve the already modified
++workspace. No runtime code, schema, competitive contract or cloud data changed.
++No deployment, database migration, provider transaction, mobile export or physical
++phone test was performed; phone attachment was not checked. Remaining acceptance:
++owner priority/workflow review, followed by separately implemented command and
++analytics contracts, SQLite/PostgreSQL concurrency, live rollout and device work
++appropriate to each accepted slice. This review is not feature acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-08 B01-B07/B14/B16-B17/B21-B24/B28/STORE04-STORE07/PUR01-PUR08/RW05-RW07/Q01: owner-linked staging admin review completed with authenticated read-only Edge/API/cloud inspection; four public assets match workspace, five routes load without JS errors. Confirmed mixed real/artificial workload metrics, 90-day chart showing14 days, null GCS capacity displayed0GiB, omitted existing worker health and read-only purchases; staging simulation off/analyst unconfigured. Proposed player support/audited development purchases then analytics/telemetry, no runtime or live-data change. Existing local checks35 pass/3 skip/one historical-schema country_code failure; disposable PG setup times out. Screenshots/redacted observations/logs/task-only review patch retained. No cloud write/deploy/migration/provider transaction/phone attachment check/device test/export. Requirements, commands, limitations and next acceptance: docs/BACKEND_UI.md (Staging feature review).
++
+ 2026-10-08 MUS33/MUS20-MUS32/Q01: owner rejects performed-flow music as horrible/random notes; manifest/state record artistic rejection, audio/runtime/preferences preserved. Code diagnosis finds theme filtered out of bass-only opening and unverified generated note adherence. One directly written48s/160BPM melodic study replaces blind generation as the review step: explicit eight-bar phrase/bridge/return/tonic ending, recorded instruments, melody-only/full cue, no AI/spectral extraction. Recording-level imbalance corrected per role; earlier takes retained. Two outputs/source/event/hash/headroom and browser playback checks pass, zero clipping; no ear/AAA claim or further game-bank installation. Task-only checkpoint and sources retained; musical fit remains unfulfilled pending feedback. No phone attachment/audio test/export/install/full Validate/backend/deployment. Files/commands/evidence/limits: docs/CLEAR_THEME_STUDY.md.
+ 
+ 2026-10-08 SND11/SND05/SND08/G01/R01/Q01/V06: owner-reported collision delay corrected locally. Body playback starts in the post-step observer instead of queued render presentation; same cooldown/pause/countdown/rewind guards and 21-voice bound. Controlled30ms presentation workload, five native PCM trials: median raw/reference delay32.042-to0.042ms; WASAPI output estimate10ms remains separate, no acoustic-zero claim. Chassis peak103.673-to3.991ms; only that asset changes, all44 other hashes exact, 45 clips/9,394,258 bytes. Final timing40/vehicle1438/surface67/desert25/shallow20268/App99/rewind57/parser366/loops38 checks pass; shallow46 shutdown warnings retained, timing test cleanup is clean. Initial invalid cooldown trials/shell quoting/shutdown failures corrected and retained; physics/rules/track identities/bus protection unchanged. DN2103 attached; no phone acoustic/driver-path test, Android export/install/full Validate/backend/production action. Native device/owner listening remains. Exact files/commands/PCM/limits/scoped checkpoint: docs/EFFECT_TIMING.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-08 B01-B07/B14/B16-B17/B21-B24/B28/STORE04-STORE07/PUR01-PUR08/RW05-RW07/Q01: owner-linked staging admin review completed with authenticated read-only Edge/API/cloud inspection; four public assets match workspace, five routes load without JS errors. Confirmed mixed real/artificial workload metrics, 90-day chart showing14 days, null GCS capacity displayed0GiB, omitted existing worker health and read-only purchases; staging simulation off/analyst unconfigured. Proposed player support/audited development purchases then analytics/telemetry, no runtime or live-data change. Existing local checks35 pass/3 skip/one historical-schema country_code failure; disposable PG setup times out. Screenshots/redacted observations/logs/task-only review patch retained. No cloud write/deploy/migration/provider transaction/phone attachment check/device test/export. Requirements, commands, limitations and next acceptance: docs/BACKEND_UI.md (Staging feature review).
++
+ 2026-10-08 R01/V03/V05/Q01: owner-reported race-settings scrollbar overlap fixed with 16px inner right gutter throughout the shared pause drawer. Existing pause17 checks/zero failures and native top/bottom captures at1280x720/960x540/1600x720 pass; measured gap16.2/16/16px with Ghost present. Task-only patch/source/logs/evidence retained; no new UI text. No phone attachment check/device test/Android export/install/full regression/deployment. Actual files/commands/limitations/remaining review: docs/RACE_SETTINGS_PADDING.md.
+ 
+ 2026-10-08 R01/T01-T04/V03-V05/Q01/RB03: owner-marked Ajorata perpendicular seam reproduced at curve9/S-bend11 with63 cross-lane marking triangles. Simultaneous inset mouth constraints/shared intersections and complete paired fillets restore strict internal-cap recognition; all16 joins now have zero marking/apron triangles. Kit117 refreshes baked presentation; compiler22 identity, exact physical kerbs/surfaces and authored files preserved. Final graphical44/preceding-bends91/shoulder71+18/cache66/pieces377/joins124/borders1107/parser365 pass; Import exits0. Inspected desktop/compact/before captures, actual logs and task-only patch retained; intermediate diagnostic shutdown timing corrected without weakened geometry checks. No phone attachment check/device test/export/install/full Validate/backend action. Owner/in-motion/mobile acceptance remains. Actual requirements/files/commands/evidence/limits: docs/AJORATA_ROAD_SEAM.md.
+--- /dev/null
++++ b/docs/evidence/admin-review-2026-10-08/review_staging.py
+@@ -0,0 +1,170 @@
++"""Read-only review of the owner-linked staging console; never log credentials."""
++
++import hashlib
++import json
++import os
++import subprocess
++import sys
++import urllib.error
++import urllib.request
++from datetime import datetime, timezone
++from pathlib import Path
++
++from playwright.sync_api import sync_playwright
++
++ROOT = Path(__file__).resolve().parents[3]
++OUTPUT = Path(__file__).resolve().parent
++URL = "https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app"
++CONFIG_DIR = ROOT / ".tools/gcp-staging"
++
++
++def main():
++    sys.stdout.reconfigure(encoding="utf-8")
++    config = json.loads((CONFIG_DIR / "config.json").read_text())
++    os.environ["CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE"] = str(CONFIG_DIR / "windows-trust.pem")
++
++    def cloud(*args):
++        result = subprocess.run(
++            [*config["gcloud"], "--project=" + config["project"], *args],
++            capture_output=True, text=True, check=False,
++        )
++        if result.returncode:
++            raise RuntimeError("Read-only cloud command failed; exit " + str(result.returncode))
++        return result.stdout
++
++    service = json.loads(cloud(
++        "run", "services", "describe", "bmt-stg-" + config["owner"][:8] + "-api",
++        "--region=" + config["region"], "--format=json",
++    ))
++    assert service["status"]["url"] == URL, "Linked service ownership differs"
++    env = {
++        row["name"]: row
++        for row in service["spec"]["template"]["spec"]["containers"][0]["env"]
++    }
++    binding = env["BMT_ADMIN_OWNER_KEY"]["valueFrom"]["secretKeyRef"]
++    credential = cloud(
++        "secrets", "versions", "access", binding["key"], "--secret=" + binding["name"],
++    ).strip()
++    assert len(credential) >= 32, "Configured credential is unavailable"
++
++    def get(path, authenticated=False):
++        headers = {"Authorization": "Bearer " + credential} if authenticated else {}
++        request = urllib.request.Request(URL + path, headers=headers, method="GET")
++        try:
++            with urllib.request.urlopen(request, timeout=30) as response:
++                return response.status, response.read(), response.headers.get("X-Request-ID")
++        except urllib.error.HTTPError as error:
++            return error.code, error.read(), error.headers.get("X-Request-ID")
++
++    def api(path):
++        status, raw, _request_id = get("/v1/admin/" + path, True)
++        assert status == 200, (path, status)
++        return json.loads(raw)
++
++    report = {
++        "observed_at": datetime.now(timezone.utc).isoformat(),
++        "url": URL,
++        "read_only": True,
++        "service_settings": {
++            name: env.get(name, {}).get("value", "absent")
++            for name in ("BMT_ENVIRONMENT", "BMT_OBJECT_BACKEND", "BMT_PURCHASE_SIMULATION_ENABLED")
++        },
++        "admin_access": {
++            "owner_configured": bool(env.get("BMT_ADMIN_OWNER_KEY")),
++            "analyst_configured": bool(env.get("BMT_ADMIN_ANALYST_KEY")),
++            "unauthenticated_overview_status": get("/v1/admin/overview")[0],
++        },
++        "assets": {},
++    }
++    for name in ("index.html", "app.js", "commerce.js", "style.css"):
++        path = "/admin" if name == "index.html" else "/admin/assets/" + name
++        status, raw, _request_id = get(path)
++        assert status == 200
++        report["assets"][name] = {
++            "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
++            "matches_workspace": raw == (ROOT / "backend/bmt_backend/admin_ui" / name).read_bytes(),
++        }
++    bootstrap_status, bootstrap, _request_id = get("/v1/bootstrap")
++    assert bootstrap_status == 200
++    bootstrap = json.loads(bootstrap)
++    report["bootstrap"] = {
++        key: bootstrap.get(key)
++        for key in ("purchase_simulation", "admin_console_configured", "test_drivers", "discovery_paging_version")
++    }
++    report["overview"] = api("overview?days=7")
++    health = api("competition-health")
++    report["health"] = {
++        key: health.get(key) for key in (
++            "status", "active_workers", "available_workers", "draining_workers", "stopped_workers",
++            "queue_depth", "pending_races", "pending_track_validations", "oldest_age_seconds",
++            "failed_last_5_minutes", "rejected_last_5_minutes",
++            "infrastructure_failure_rate_last_5_minutes", "completion_latency_seconds_last_5_minutes",
++            "storage_backend", "storage_free_bytes", "backup",
++        )
++    }
++    products = api("products")
++    report["products"] = {"editable": products["editable"], "items": products["items"]}
++    purchases = api("purchases?limit=1")
++    report["purchases"] = {
++        "page_count": len(purchases["items"]), "has_next_page": bool(purchases["next_cursor"]),
++    }
++    report["player_projection_fields"] = []
++    players = api("entities/players?limit=1")
++    if players["items"]:
++        report["player_projection_fields"] = sorted(players["items"][0])
++
++    (OUTPUT / "review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++    with sync_playwright() as playwright:
++        browser = playwright.chromium.launch(
++            executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless=True,
++        )
++        page = browser.new_page(viewport={"width": 1600, "height": 1100}, device_scale_factor=1)
++        errors = []
++        page.on("pageerror", lambda error: errors.append(str(error)))
++        page.goto(URL + "/admin#overview", wait_until="networkidle")
++        page.locator("#key").fill(credential)
++        page.get_by_role("button", name="Connect", exact=True).click()
++        page.get_by_role("heading", name="The game, at a glance.").wait_for()
++        observations = {}
++        titles = {
++            "overview": "The game, at a glance.",
++            "analytics": "Driving analytics",
++            "economy": "Purchases & catalog",
++            "system": "System & access",
++            "system/access": "System & access",
++        }
++        for route, title in titles.items():
++            if route != "overview":
++                with page.expect_response(lambda response: "/v1/admin/overview?" in response.url):
++                    page.evaluate("route => location.hash = route", route)
++            page.get_by_role("heading", name=title, exact=True).wait_for()
++            page.wait_for_load_state("networkidle")
++            text = page.locator("#main").inner_text()
++            observations[route] = {
++                "title": page.locator("#main h1").inner_text(),
++                "error": page.locator("#main .console-error").count() > 0,
++                "gcs_free_capacity_rendered_as_zero": "storage free gib\n0" in text.lower(),
++            }
++            page.screenshot(path=str(OUTPUT / (route.replace("/", "-") + ".png")), full_page=True)
++        page.evaluate("location.hash='analytics'")
++        page.get_by_role("heading", name="Driving analytics", exact=True).wait_for()
++        with page.expect_response(lambda response: "/v1/admin/overview?days=90" in response.url):
++            page.locator("#days").select_option("90")
++        page.get_by_role("heading", name="Driving analytics", exact=True).wait_for()
++        page.wait_for_load_state("networkidle")
++        observations["analytics_90_days"] = {
++            "rendered_bars": page.locator(".console-bar").count(),
++            "caption": page.locator(".console-chart + .console-note").inner_text(),
++        }
++        page.screenshot(path=str(OUTPUT / "analytics-90-days.png"), full_page=True)
++        page.locator("#logout").click()
++        assert page.locator("#key").input_value() == ""
++        browser.close()
++        report["browser"] = {"routes": observations, "javascript_errors": errors, "lock_clears_key": True}
++
++    (OUTPUT / "review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(report, indent=2))
++
++
++if __name__ == "__main__":
++    main()

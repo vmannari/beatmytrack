@@ -1,0 +1,211 @@
+--- a/backend/bmt_backend/cloud_smoke.py
++++ b/backend/bmt_backend/cloud_smoke.py
+@@ -17,6 +17,15 @@
+ from .verifier import GodotVerifier
+ 
+ 
++def check_comparison_route(app):
++    """Reject a client/backend mismatch even when canonical replay still passes."""
++    path = "/v1/track-versions/{version_id}/results-comparison"
++    operation = app.openapi().get("paths", {}).get(path, {}).get("get", {})
++    parameters = {item["name"] for item in operation.get("parameters", [])}
++    if not {"version_id", "vehicle_id", "bins", "race_ticks", "lap_ticks"} <= parameters:
++        raise RuntimeError("Results comparison API is missing or incompatible")
++
++
+ def check(settings, owner, fixture_path=Path("/opt/bmt/acceptance/verified_oval.json")):
+     if settings.object_backend != "gcs" or not re.fullmatch(r"[0-9a-f]{32}", owner):
+         raise ValueError("This diagnostic is restricted to explicitly owned GCS staging")
+@@ -25,6 +34,13 @@
+     store = GCSBlobStore(replace(settings, gcs_prefix="bmt-contract/" + owner + "/" + uuid.uuid4().hex))
+     keys = []
+     try:
++        from .app import create_app
++
++        app = create_app(settings, verifier=verifier)
++        try:
++            check_comparison_route(app)
++        finally:
++            app.state.engine.dispose()
+         with engine.connect() as connection:
+             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == SCHEMA_HEAD
+             role = connection.execute(text("SELECT rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=current_user")).one()
+@@ -51,6 +67,7 @@
+         if cursor or {row["digest"] for row in rows} != set(keys):
+             raise RuntimeError("Staging object listing differs from publications")
+         return {"status": "passed", "schema": SCHEMA_HEAD, "storage_objects": len(keys),
++            "results_comparison_route": True,
+             "canonical_ticks": result["time_ticks"], "player_writes": 0}
+     finally:
+         try:
+--- /dev/null
++++ b/backend/tests/test_results_deployment.py
+@@ -0,0 +1,25 @@
++"""A replay-compatible server must also expose the results API used by clients."""
++import pytest
++from fastapi import FastAPI
++
++from bmt_backend.cloud_smoke import check_comparison_route
++
++
++def test_current_app_exposes_comparison_contract(auth_app):
++    check_comparison_route(auth_app)
++
++
++def test_missing_comparison_route_fails_deployment_check():
++    with pytest.raises(RuntimeError, match="Results comparison API"):
++        check_comparison_route(FastAPI())
++
++
++def test_old_comparison_contract_fails_deployment_check():
++    app = FastAPI()
++
++    @app.get("/v1/track-versions/{version_id}/results-comparison")
++    def old_comparison(version_id: str):
++        return {}
++
++    with pytest.raises(RuntimeError, match="Results comparison API"):
++        check_comparison_route(app)
+--- a/game/tests/test_results_histograms.gd
++++ b/game/tests/test_results_histograms.gd
+@@ -6,10 +6,43 @@
+ 	capture = false
+ 	await test_completion_distributions()
+ 	await test_histogram_tails()
++	var live_path: String = OS.get_environment("BMT_LIVE_RESULTS_PACKET")
++	if not live_path.is_empty(): await test_live_comparison(live_path)
+ 	capture = requested_capture
+ 	if capture: await capture_comparisons()
+ 	print("RESULTS_HISTOGRAMS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures > 0 else 0)
++
++func test_live_comparison(path: String) -> void:
++	var response: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
++	check(response is Dictionary and response.get("comparison_status") == 200,"live results endpoint returned a complete packet")
++	if not response is Dictionary or not response.get("packet") is Dictionary: return
++	# The owner-supplied result times are display fixtures, never submitted races.
++	# Zero lap placeholders supply only the five-lap heading; no lap analysis runs.
++	var source := RaceResults.new()
++	source.circuit = str(response.track)
++	source.vehicle_name = "Compact / 01"
++	source.total = 66.377
++	source.best = source.total
++	source.clean = true
++	source.laps.resize(5)
++	var page := RaceComplete.new()
++	page.theme = MenuStyle.theme()
++	page.results = source
++	page.facts = {"complete":true,"flying":12.699}
++	root.add_child(page)
++	check(page._apply_comparison(response.packet),"native results accepts the actual deployed unified packet")
++	for metric: String in ["race","best_lap"]:
++		var chart: TrackDistribution = page.race_chart if metric == "race" else page.lap_chart
++		var count: int = 0
++		for amount: int in chart.snapshot.get("bins",[]): count += amount
++		check(count == int(response.packet[metric].population) and count >= 100,"live "+metric+" chart retains every driver")
++		var expected: int = 66377 if metric == "race" else 12699
++		check(int(chart.snapshot.markers[0].value_ms) == expected,"live "+metric+" chart retains the completed-result marker")
++	var before: Dictionary = page.race_chart.snapshot.duplicate(true)
++	check(page._apply_comparison(response.packet) and page.race_chart.snapshot == before,"identical live packet leaves the histogram stable")
++	page.free()
++	source.free()
+ 
+ func capture_comparisons() -> void:
+ 	root.content_scale_size = Vector2i(1280,720)
+--- /dev/null
++++ b/docs/RESULTS_ENDPOINT_2026_10_09.md
+@@ -0,0 +1,41 @@
++# Missing results histograms — 2026-10-09
++
++Requirements: R01/R03, RR06, TD06/TD08, B05/B07 and Q01. The owner reports that the normal race-complete page shows “Comparison unavailable” despite artificial drivers having created comparison records.
++
++The owner-authorized development rollout is complete. Both live Underpass histograms now return **200** with 101 distinct drivers; all 27 eligible tracks, native packet acceptance and the deployment smoke pass.
++
++The initial live development API lacked `GET /v1/track-versions/{version_id}/results-comparison`. Its public OpenAPI document omitted that route and the authenticated Underpass request returned **404**. Artificial drivers were enabled. The existing private histogram for Underpass, Compact, already contained **100 verified driver PBs** and eight bins. The cause was the missing backend rollout, not a lack of data. [Sanitized initial observation](evidence/results-endpoint-2026-10-09/live-underpass.json).
++
++## Prepared correction
++
++A local image, `bmt-results-endpoint:20261009`, derives from the exact live parent `925c6b2606395012a8d9c85a01ac46918fc1f8b44b4b9a88927f111ee7a3ca50`. Exact function/import replacements modify only `runs.py`, `test_drivers.py` and `cloud_smoke.py`. The image contains the existing reviewed unified histogram implementation: one driver contribution across compatible real/development boards, verified race PBs, best verified flying laps, exact bins and current-result placement. Existing public competitive/rating/eligibility isolation remains. No population selector or diagnostic caption is added to the game.
++
++All **112 packaged canonical-game files are byte-identical** to the parent; schema remains unchanged and no migration/reseed is required. The image imports the actual patched `/app/bmt_backend` modules and verifies that the results endpoint exposes the parameters the client uses. [Packaged game hashes/proof](evidence/results-endpoint-2026-10-09/packaged-game-proof.json), [preparation receipt](evidence/results-endpoint-2026-10-09/preparation.json).
++
++`backend/bmt_backend/cloud_smoke.py` now rejects missing/incompatible comparison routes, so native replay/storage/schema success alone cannot conceal this client/server mismatch. `backend/tests/test_results_deployment.py` covers the actual app, a missing endpoint and an older endpoint lacking the required parameters. The existing development smoke job must use the derived image for this check to take effect.
++
++The reviewed runtime histogram implementations are already present in the workspace; no additional client or canonical simulation change was needed. Private preparation/extraction helpers and the exact replacement context are under `.tools/results-endpoint-20261009`, outside the export root. The prepared overlay cherry-picks the histogram and smoke changes onto the live backend; it excludes other pending backend work.
++
++## Actual commands and outcomes
++
++- HTTPS `GET /v1/bootstrap`, `/openapi.json` and `/v1/track-versions/.../results-comparison?vehicle_id=compact`: bootstrap 200/artificial drivers enabled; OpenAPI 200/route absent; comparison 404. Requests use the established local TLS trust file.
++- `.tools/backend-venv/Scripts/python.exe .tools/results-endpoint-20261009/inspect_live.py`: authenticated existing artificial-profile session; Underpass private histogram **100 PBs**, result comparison **404**. No races, track uploads, new driver profiles or player-record changes. The first fixed-developer diagnostic login returned `USERNAME_TAKEN`; the existing artificial profile avoided changing that account.
++- `.tools/backend-venv/Scripts/python.exe .tools/results-endpoint-20261009/prepare.py`: exact live-base replacements and Python compilation pass; three files, no schema/canonical change.
++- `wsl.exe -d Ubuntu --cd '/mnt/c/Codes/Godot/Beat my track/.tools/results-endpoint-20261009' -- docker build --pull=false --network=none --platform=linux/amd64 --tag bmt-results-endpoint:20261009 .`: local build passes. Initial build imported the unpatched installed package; explicitly selecting `/app` corrected the build-time verification. The successful check imports `/app/bmt_backend/runs.py`. This preparation step performed no registry upload; the later authorized upload is recorded below.
++- `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_results_deployment.py backend/tests/test_domains.py backend/tests/test_test_drivers.py -q -k '(histogram or results_comparison or deployment_check or comparison_contract) and not postgres' --tb=short --show-capture=no`: **9 passed, 65 deselected** against SQLite. Same command against the three exact packaged modules in an isolated package copy: **9 passed, 65 deselected**. [Workspace results](evidence/results-endpoint-2026-10-09/backend-tests.xml), [packaged-module results](evidence/results-endpoint-2026-10-09/packaged-backend-tests.xml). PostgreSQL was explicitly excluded; remaining supporting modules in the isolated package copy use current workspace sources.
++- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_results_histograms.gd -Graphical`, isolated `APPDATA=build/results-endpoint-user` and dated `BMT_RESULTS_EVIDENCE`: **49 checks, zero failures**. Uses pinned Godot 4.7.2 ed1daf0bf. Earlier sandbox-only attempt failed to read Windows root certificates; the permitted runtime rerun passed.
++- Ruff on `cloud_smoke.py` and `test_results_deployment.py`, scoped `git diff --check`: pass.
++
++Native captures show both histograms, current race/PB markers and usable charts at 1280×720, 960×540 and 1600×720. [Compact capture, inspected](evidence/results-endpoint-2026-10-09/comparison-960x540.png). The capture uses retained canonical Silmukka driver data and illustrative player times from the existing fixture; it is not a new live Underpass finish. [Fixture provenance](evidence/results-endpoint-2026-10-09/verified-silmukka-histograms.json).
++
++## Completed development deployment
++
++The owner explicitly authorized updating the backend after reviewing the prepared correction. The tested image was uploaded to the existing retained `beat-my-track` development Artifact Registry repository `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend`. The API, worker and smoke/migrate/catalog job images now use immutable digest `a00d8aede0a2e73e8f3d9ca2377e134b1dcdd0bc756e820173e4a13750c4ad18`. Live ownership/parent guards passed, and fresh Cloud SQL backup **1791570217827** completed successfully before upload/rollout. No migration or reseed was run. Existing data, development gates and canonical files remain intact. [Deployment receipt](evidence/results-endpoint-2026-10-09/deployment.json), [exact backend image patch](evidence/results-endpoint-2026-10-09/backend-image.patch).
++
++Actual authorized commands: `.tools/backend-venv/Scripts/python.exe .tools/results-endpoint-20261009/deploy.py backup`, then `publish`, `deploy`, `smoke`; `verify_live.py`; and `audit.py`. All completed successfully. The API and worker report **Ready** on the intended image. The smoke job's actual logged result includes `results_comparison_route: true`, schema `0020_challenges`, **12,757 canonical ticks**, two temporary diagnostic storage objects and **zero player writes**. [Actual readiness/smoke result](evidence/results-endpoint-2026-10-09/final-readiness.json).
++
++Live combined race/lap responses pass across **all 27 tracks** in the current eligible development catalog. Underpass returns HTTP **200**, **101 distinct drivers** for each metric, including the retained **100 artificial PBs**, and eight bins for each metric. The private board remains inaccessible through the public histogram route (404). Candidate race/lap placement, metric/board consistency and exact bin totals pass. No races were generated/submitted or player records changed. [Underpass response](evidence/results-endpoint-2026-10-09/live-underpass-after.json), [all-track checks](evidence/results-endpoint-2026-10-09/live-catalog-checks.json).
++
++`game/tests/test_results_histograms.gd` now accepts optional `BMT_LIVE_RESULTS_PACKET` evidence, exercising the actual deployed packet through `RaceComplete._apply_comparison`, every driver count, the owner's displayed result markers and stable repeated reads. The owner's screenshot times are explicitly UI fixtures; no lap splits or verified race are invented/submitted. Pinned `scripts/dev.ps1 TestScript -ScriptPath res://tests/test_results_histograms.gd` with `BMT_LIVE_RESULTS_PACKET=.../live-underpass-after.json` and isolated `APPDATA`: **43 checks, zero failures**, headless. [Native log](evidence/results-endpoint-2026-10-09/native-live-packet.log).
++
++The earlier upload approval rejection was resolved by the owner's explicit authorization; no further permission was requested. No production deployment, schema migration, reseed or player-record mutation was performed. No phone attachment check or physical-device test was performed. No Android export/install, PostgreSQL/full regression or full `Validate` was run. Remaining acceptance: owner/device visual review while reopening the normal race-complete page; the live backend and native packet acceptance are verified. [Task-only review patch](evidence/results-endpoint-2026-10-09/scoped-change.patch) preserves unrelated workspace work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,17 @@
++2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: owner explicitly authorized histogram backend update; fresh backup1791570217827 succeeds before upload, exact-parent three-module imagea00d8aed deployed to development API/worker/migrate-smoke-catalog (no migration). API/workerReady, actual smoke logs12757 canonical ticks/schema0020/results API true/zero player writes. Unified race/lap metrics pass all27 eligible tracks; Underpass200/101 distinct drivers including100 artificial PBs/eight bins/public private-board404. Native actual-packet acceptance43 checks passes; same112 canonical files byte-identical. Diagnostic sessions only/no races generated-submitted/reseed/player-record mutation/production action. No phone attachment/device test/export-install/PG/full Validate. Commands/receipts/live packets/scoped checkpoint/remaining owner-device review: docs/RESULTS_ENDPOINT_2026_10_09.md.
++
++2026-10-09 SND20/SND05/SND14-SND18/G01/R01/Q01/V06: owner asks other collision-delay causes. Reproduced soft-touch/acceleration observer latch: compact/pickup/formula extra200/225/183.33ms after audible threshold; classic/kart missed cue. Per-episode meaningful-attempt latch fixes all5 at first eligible tick; existing1.2 tiny-contact gate/current trusted face/cooldown and canonical response retained. New60 checks cover5 cars/2 speeds, exact per-step snapshots, dedup and no stale retry; wall167/timing43/nativeWindows16/App99/rewind61/changed-script/fullparser406 pass. Timing31 shutdown-reference warning retained. Initial parser failure from concurrent missing night_cicadas asset cleared when other task supplied it; no unrelated source edits. No WAV/DLL/volume/collider/simulation/backend changes; no phone attachment/physical Android/new acoustic test/export-install/full Validate/physics merge/deploy. Restart/current observer/owner listening and downstream buffering-fallback-device acceptance remain. Files/actual commands/repro/logs/scoped checkpoint: docs/CONTACT_ESCALATION_AUDIO.md.
++
++2026-10-09 SND19/SND05/G01/R01/Q01/V06: owner-requested night cicada ambience implemented as one race-owned CC0 field-recorded 18s mono PCM loop/1,587,644 bytes. Soft 0.75s fades, Vehicle/master volume, pause/background, finish/retry, theme-switch and exit ownership retained. Final headless25/native31/PCM17/App99/parser406 checks pass; native two wraps/36.992s have no clipping or silent100ms gaps; pause/mute/finish captures digitally silent. Exact offline rebuild/asset provenance/task-only Git patch retained; initial socket/certificate/download/QOA/headless-getter/queued-cleanup/PowerShell failures corrected and documented. No phone attachment check/device listening/Android export-install/full Validate/backend or production action; owner/device mix and performance acceptance remain. Files/actual commands/evidence/limits: docs/NIGHT_CICADAS.md.
++
++2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; owned SQLite/PG58(two skips) and final Import/headless122 pass; receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
++
++2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
++
++2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: missing results histograms diagnosed live: Underpass compact has100 verified artificial PBs, but client results-comparison endpoint404/absent OpenAPI. Exact-live-parent local three-module overlay built/imported; all112 canonical files byte-identical/no migration. Smoke API-contract guard plus tests added; SQLite9 and exact-packaged-module9/graphicalhist49/Ruff/scoped whitespace pass. Initial socket/certificate/WSL access, developer USERNAME_TAKEN and build import-path failures recorded/corrected. Earlier automatic approval rejection requires explicit development upload/rollout approval; no retry/cloud-service-image-schema/reseed/player-record/production change. Existing artificial diagnostic session only; no phone attachment/device test/export-install/PG/full Validate. Files/commands/evidence/scoped checkpoint/acceptance: docs/RESULTS_ENDPOINT_2026_10_09.md.
++
++2026-10-09 RW15-RW18/RW05-RW07/V03-V05/Q01: owner-requested disabled rewind polish: toolbar resume has no square/focus backing, uses a neutral grey play circle and suppresses resource badges while disabled; race HUD mirrors grey/no-badge/no-square disabled styling. Final pinned graphical CaptureRewind71 checks pass; current/ad/banked/compact/HUD evidence retained and inspected. Restricted attempt stopped after Windows certificate-store access errors; approved local-access rerun passed. No phone attachment check/physical-device test/Android export-install/full Validate/backend deployment. Task-only review patch and requirements/files/commands/acceptance: docs/REWIND.md (Disabled rewind presentation correction).
++
+ 2026-10-09 SND18/SND14-SND17/SND05/G01/R01/Q01/V06: owner questions delayed onset inside collision effects. All three source clips have zero leading silence, full first sample and strongest sustained10ms at0ms; first1ms RMS0.436/0.295/0.289. Godot imported PCM byte-exact; Python9/native18 checks pass cleanly. Current visible workspace Godot PID4968 has v2 Windows audio library loaded; separator-normalized read-only metadata only. No audio/runtime/canonical changes; earlier Windows39-46ms output delay and owner remaining perception stay unresolved, no zero-acoustic claim. No phone attachment check/physical Android or new acoustic test/export-install/full Validate/backend/deploy. Scoped audit checkpoint, files/commands/actual outcomes/remaining listening: docs/COLLISION_ONSET_AUDIT.md.
+ 
+ 2026-10-09 VF01-VF04/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved lightweight 20Hz movement proofs check broad speed/acceleration/displacement and all ordered gates, exact input-count five-lap duration and best-only scores; creator/rewind/old/uncertain recordings retain faster canonical fallback. Warm fixture1.7022s to0.1397s/95.3% less engine CPU; Linux0.1249s. Human queue priority/250ms background yielding, durable normalized proof/poll fixes retained. Native17436/App99/rewind61/upload17/weekly1109/challenges84, replay78, SQLite93/7skip, ownedPG91/7skip, final HTTP9 and native exact-ticket49 pass. APK241155846/SHA25684D361FD882CC0F28E7D58EBA7DF8CA2C3FA1E372BE80258441AE98B2066863C exported after focused72/21/48; broad validation stopped on two storm spray assertions. Task-only Linux image280effff tested/pushed and fresh backup1791562942686 succeeds; remote deploy rejected before execution by automatic approval review pending explicit owner approval. Tablet f0ba474a offline/no install-device acceptance, no production action. Contracts/files/commands/limits/checkpoint: docs/VERIFICATION_SPEED.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,11 @@
++2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: owner explicitly authorized histogram backend update; fresh backup1791570217827 succeeds before upload, exact-parent three-module imagea00d8aed deployed to development API/worker/migrate-smoke-catalog (no migration). API/workerReady, actual smoke logs12757 canonical ticks/schema0020/results API true/zero player writes. Unified race/lap metrics pass all27 eligible tracks; Underpass200/101 distinct drivers including100 artificial PBs/eight bins/public private-board404. Native actual-packet acceptance43 checks passes; same112 canonical files byte-identical. Diagnostic sessions only/no races generated-submitted/reseed/player-record mutation/production action. No phone attachment/device test/export-install/PG/full Validate. Commands/receipts/live packets/scoped checkpoint/remaining owner-device review: docs/RESULTS_ENDPOINT_2026_10_09.md.
++
++2026-10-09 SND20/SND05/SND14-SND18/G01/R01/Q01/V06: owner asks other collision-delay causes. Reproduced soft-touch/acceleration observer latch: compact/pickup/formula extra200/225/183.33ms after audible threshold; classic/kart missed cue. Per-episode meaningful-attempt latch fixes all5 at first eligible tick; existing1.2 tiny-contact gate/current trusted face/cooldown and canonical response retained. New60 checks cover5 cars/2 speeds, exact per-step snapshots, dedup and no stale retry; wall167/timing43/nativeWindows16/App99/rewind61/changed-script/fullparser406 pass. Timing31 shutdown-reference warning retained. Initial parser failure from concurrent missing night_cicadas asset cleared when other task supplied it; no unrelated source edits. No WAV/DLL/volume/collider/simulation/backend changes; no phone attachment/physical Android/new acoustic test/export-install/full Validate/physics merge/deploy. Restart/current observer/owner listening and downstream buffering-fallback-device acceptance remain. Files/actual commands/repro/logs/scoped checkpoint: docs/CONTACT_ESCALATION_AUDIO.md.
++
++2026-10-09 RR06/TD06/TD08/B05/B07/R01/R03/Q01: missing results histograms diagnosed live: Underpass compact has100 verified artificial PBs, but client results-comparison endpoint404/absent OpenAPI. Exact-live-parent local three-module overlay built/imported; all112 canonical files byte-identical/no migration. Smoke API-contract guard plus tests added; SQLite9 and exact-packaged-module9/graphicalhist49/Ruff/scoped whitespace pass. Initial socket/certificate/WSL access, developer USERNAME_TAKEN and build import-path failures recorded/corrected. Earlier automatic approval rejection requires explicit development upload/rollout approval; no retry/cloud-service-image-schema/reseed/player-record/production change. Existing artificial diagnostic session only; no phone attachment/device test/export-install/PG/full Validate. Files/commands/evidence/scoped checkpoint/acceptance: docs/RESULTS_ENDPOINT_2026_10_09.md.
++
++2026-10-09 RW15-RW18/RW05-RW07/V03-V05/Q01: owner-requested disabled rewind polish: toolbar resume has no square/focus backing, uses a neutral grey play circle and suppresses resource badges while disabled; race HUD mirrors grey/no-badge/no-square disabled styling. Final pinned graphical CaptureRewind71 checks pass; current/ad/banked/compact/HUD evidence retained and inspected. Restricted attempt stopped after Windows certificate-store access errors; approved local-access rerun passed. No phone attachment check/physical-device test/Android export-install/full Validate/backend deployment. Task-only review patch and requirements/files/commands/acceptance: docs/REWIND.md (Disabled rewind presentation correction).
++
+ 2026-10-09 SND18/SND14-SND17/SND05/G01/R01/Q01/V06: owner questions delayed onset inside collision effects. All three source clips have zero leading silence, full first sample and strongest sustained10ms at0ms; first1ms RMS0.436/0.295/0.289. Godot imported PCM byte-exact; Python9/native18 checks pass cleanly. Current visible workspace Godot PID4968 has v2 Windows audio library loaded; separator-normalized read-only metadata only. No audio/runtime/canonical changes; earlier Windows39-46ms output delay and owner remaining perception stay unresolved, no zero-acoustic claim. No phone attachment check/physical Android or new acoustic test/export-install/full Validate/backend/deploy. Scoped audit checkpoint, files/commands/actual outcomes/remaining listening: docs/COLLISION_ONSET_AUDIT.md.
+ 
+ 2026-10-09 VF01-VF04/B05/B07/Q01/R01/WR07-WR08/CH09: owner-approved lightweight 20Hz movement proofs check broad speed/acceleration/displacement and all ordered gates, exact input-count five-lap duration and best-only scores; creator/rewind/old/uncertain recordings retain faster canonical fallback. Warm fixture1.7022s to0.1397s/95.3% less engine CPU; Linux0.1249s. Human queue priority/250ms background yielding, durable normalized proof/poll fixes retained. Native17436/App99/rewind61/upload17/weekly1109/challenges84, replay78, SQLite93/7skip, ownedPG91/7skip, final HTTP9 and native exact-ticket49 pass. APK241155846/SHA25684D361FD882CC0F28E7D58EBA7DF8CA2C3FA1E372BE80258441AE98B2066863C exported after focused72/21/48; broad validation stopped on two storm spray assertions. Task-only Linux image280effff tested/pushed and fresh backup1791562942686 succeeds; remote deploy rejected before execution by automatic approval review pending explicit owner approval. Tablet f0ba474a offline/no install-device acceptance, no production action. Contracts/files/commands/limits/checkpoint: docs/VERIFICATION_SPEED.md.
+@@ -1370,3 +1378,18 @@
+ 
+ 2026-10-09 WR06/WR09-WR10/R01/V03-V05/Q01: owner-reference rivalry track detail implemented locally: compact Back to Tracks, retained original outline/art with verified start/direction markers, eight complete full-board rows, signed millisecond gaps, top/bottom sticky player, continuation action and closest challenger/default matching ghost. Final native detail333/weekly1256/App99/parser390 pass;24 isolated fixture captures and task-only review patch retained. Scroll-layout and marker-fixture failures corrected without weakened contracts. Tablet f0ba474a offline; no physical-device test/export/install/live-backend race/full Validate/backend or production rollout. Owner/device/live cache-ghost acceptance remains. Files/actual commands/logs/evidence/limits: docs/RIVALRY_TRACK_DETAIL.md.
+ 2026-10-09 RW05-RW07/V03-V05/Q01: rewind resource correction shows banked count or ad icon for ordinary accounts and no resource badge for ad-free accounts, in both HUD and confirmation toolbar. Every race restart refreshes the wallet. Pinned graphical CaptureRewind70/zero failures; three HUD captures inspected. Restricted log/certificate attempts failed before successful local-access run with disposable workspace saves. No phone attachment/device test/export/install/live-account/full Validate/backend deployment. Files, commands, evidence and remaining acceptance: docs/REWIND.md (Rewind resource badge correction).
++
++
++## Storm wet-asphalt tire rolling, 2026-10-09
++
++2026-10-09 SND19/SND04-SND05/G01/R01/Q01/V06: owner-requested storm rain removed; existing road voice now plays wet-asphalt rolling with bounded speed gain/pitch and four-wheel pavement contact. Puddles retain actual water spray; pause/countdown/airborne/stop/reset guards and22-voice bound retained. New47-clip bank10786852bytes/all46 earlier WAV hashes exact; native slow/medium/fast RMS -37.42/-32.58/-27.44dBFS and stopped/airborne/paused PCM zero. Focused33/native40/vehicle1446/surface67/desert28/loop40 checks pass; storm94 retains two pre-existing visual spray failures. Initial backup/CLI/restricted import/inactive-thunder assertion attempts corrected and documented. No phone attachment/device listening/export-install/full Validate/physics/backend/deployment. Files/commands/review audio/scoped checkpoint/acceptance: docs/WET_ROAD_AUDIO.md.
++
++
++## Challenge creation page and attempt limits, 2026-10-09
++
++2026-10-09 CH14?CH16/CH09?CH11/R01/R05/V03?V05/B01?B07/Q01: owner-reference Create challenge now fills the main menu below existing navigation, with settings/scenic route-summary columns and outer actions. Optional1/3/5/unlimited server-reserved tries, exhausted gates, atomic/idempotent tickets, seeded-source counting and additive0021/backfill retain actual five laps, exact completed source, normal results first and public isolation. Graphical140/App99/nativeHTTP48+49 pass; owned SQLite/PG58(two skips) and final Import/headless122 pass; receipts: docs/CHALLENGE_PAGE.md. Tablet f0ba474a authorized; no physical-device challenge test/APK export-install/full Validate/retained backend or production deployment. Owner/device/development rollout acceptance remains; task-only checkpoint preserves concurrent work.
++
++
++## Night cicada ambience, 2026-10-09
++
++2026-10-09 SND19/SND05/G01/R01/Q01/V06: owner-requested night cicada ambience implemented as one race-owned CC0 field-recorded 18s mono PCM loop/1,587,644 bytes. Soft 0.75s fades, Vehicle/master volume, pause/background, finish/retry, theme-switch and exit ownership retained. Final headless25/native31/PCM17/App99/parser406 checks pass; native two wraps/36.992s have no clipping or silent100ms gaps; pause/mute/finish captures digitally silent. Exact offline rebuild/asset provenance/task-only Git patch retained; initial socket/certificate/download/QOA/headless-getter/queued-cleanup/PowerShell failures corrected and documented. No phone attachment check/device listening/Android export-install/full Validate/backend or production action; owner/device mix and performance acceptance remain. Files/actual commands/evidence/limits: docs/NIGHT_CICADAS.md.

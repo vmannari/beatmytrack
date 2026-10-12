@@ -1,0 +1,940 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -17,6 +17,7 @@
+ var error: String = ""
+ var signed_in: bool = false
+ var pending_result: bool = false
++var race_details: Dictionary = {}
+ var ghost_choice: int = 0
+ var clock_label: Label
+ var track_rows: Array[Button] = []
+@@ -42,7 +43,8 @@
+ 	rail.mode_requested.connect(func(mode: String) -> void:
+ 		if mode == "free": free_race_requested.emit()
+ 		elif mode == "rivalry": section_requested.emit("overview"))
+-	row.add_child(rail)
++	if section != "result": row.add_child(rail)
++	else: rail.free()
+ 	var main := VBoxContainer.new()
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(main)
+@@ -51,6 +53,18 @@
+ 	header.name = "RivalrySectionNavigation"
+ 	header.add_theme_constant_override("separation",24)
+ 	main.add_child(header)
++	if section == "result":
++		var trophy := PanelContainer.new()
++		trophy.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.ACCENT,12))
++		trophy.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
++		header.add_child(trophy)
++		var glyph := TextureRect.new()
++		glyph.texture = MenuIcon.texture("trophy")
++		glyph.modulate = MenuStyle.INK
++		glyph.custom_minimum_size = Vector2(34,34)
++		glyph.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		trophy.add_child(glyph)
+ 	var identity := VBoxContainer.new()
+ 	identity.name = "RivalryIdentity"
+ 	identity.add_theme_constant_override("separation",4)
+@@ -713,39 +727,16 @@
+ 	_action(context,"CHOOSE YOUR NEXT TRACK","RivalryStandingsTracks",func() -> void: section_requested.emit("overview"),true)
+ 
+ func _result(parent: Control) -> void:
+-	var index: int = clampi(selected,0,model.tracks.size()-1)
+-	var result: Dictionary = model.last_result
+-	var preview: bool = pending_result and bool(result.get("provisional",false))
+-	var scene: VBoxContainer = _card(parent,str(model.tracks[index].theme),26)
+-	scene.get_parent().size_flags_stretch_ratio = 1.3
+-	scene.add_child(Badge.view(str(model.tracks[index].theme),16))
+-	_copy(scene,str(model.tracks[index].name).to_upper(),36)
+-	_space(scene)
+-	_copy(scene,"PROVISIONAL RESULT" if preview else "VERIFYING YOUR RACE" if pending_result else "NEW WEEKLY BEST" if result.get("improved",false) else "RACE COMPLETE",23,MenuStyle.MUTED if pending_result else MenuStyle.POSITIVE)
+-	if result.has("ms"): _copy(scene,MenuStyle.time_text(int(result.ms)/1000.0),76)
+-	_copy(scene,"Based on current standings · verification pending." if preview else "Your weekly result updates after replay verification." if pending_result else "Your best result counts. Race again anytime.",19,MenuStyle.MUTED)
+-	var feedback: VBoxContainer = _card(parent,"",24)
+-	if pending_result and not preview:
+-		_copy(feedback,"RESULT SAVED",32)
+-		_copy(feedback,"Checking your race…",24,MenuStyle.ACCENT)
+-		_copy(feedback,"Your standings will update automatically.",18,MenuStyle.MUTED)
+-	elif result.has_all(["before","after","overall_before","overall_after"]):
+-		_copy(feedback,"EXPECTED TRACK POSITION" if preview else "POSITION IMPROVED" if result.get("improved",false) and result.before.get("rank") != result.after.get("rank") else "YOUR TRACK POSITION",18,MenuStyle.ACCENT if preview else MenuStyle.POSITIVE)
+-		_copy(feedback,rank_text(result.before)+"  →  "+rank_text(result.after),64,MenuStyle.ACCENT)
+-		var beaten: Array = result.get("beaten",[])
+-		if not beaten.is_empty():
+-			var nearest: Dictionary = beaten[-1]
+-			_copy(feedback,("Ahead of %s by %.3f s" if preview else "You beat %s by %.3f s") % [str(nearest.name),(int(nearest.ms)-int(result.ms))/1000.0],21)
+-		_copy(feedback,"Weekly points  +%d" % int(result.get("points_delta",0)),28,MenuStyle.ACCENT)
+-		_copy(feedback,"Overall "+rank_text(result.overall_before)+"  →  "+rank_text(result.overall_after),20,MenuStyle.MUTED)
+-		if preview: _copy(feedback,"Final standings update after verification.",18,MenuStyle.MUTED)
+-	else:
+-		_copy(feedback,"WEEKLY BEST UNCHANGED",32)
+-		_copy(feedback,"This attempt has no verified rivalry result.",20,MenuStyle.MUTED)
+-	if not error.is_empty(): _copy(feedback,error,18,MenuStyle.MUTED)
+-	_space(feedback)
+-	_action(feedback,"RACE AGAIN","RivalryRaceAgain",func() -> void: retry_requested.emit()).disabled = busy or model.status != "active"
+-	_action(feedback,"BACK TO RIVALRY  →","RivalryResultHome",func() -> void: section_requested.emit("overview"),true)
++	var result_view := WeeklyRivalryResult.new()
++	result_view.model = model
++	result_view.index = clampi(selected,0,model.tracks.size()-1)
++	result_view.details = race_details
++	result_view.pending = pending_result
++	result_view.busy = busy
++	result_view.error = error
++	result_view.retry_requested.connect(func() -> void: retry_requested.emit())
++	result_view.home_requested.connect(func() -> void: section_requested.emit("overview"))
++	parent.add_child(result_view)
+ 
+ func _finale(parent: Control) -> void:
+ 	_championship(parent,true)
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -77,6 +77,34 @@
+ 	for key: String in ["before","after","overall_before","overall_after"]: last_result[key] = _map_row(value[key])
+ 	last_result.beaten = []
+ 	for row: Dictionary in value.get("beaten",[]): last_result.beaten.append(_map_row(row))
++
++func result_board(index: int) -> Array[Dictionary]:
++	# Project the confirmed/provisional PB over the latest board while its refresh
++	# is in flight. This never writes the verified entries or weekly standings.
++	var rows: Array[Dictionary] = board(index)
++	if int(last_result.get("index",-1)) != index or not last_result.get("after") is Dictionary: return rows
++	var after: Dictionary = last_result.after
++	if after.get("ms") == null: return rows
++	for row: Dictionary in rows:
++		if row.id == SELF and (row.get("ms") == null or int(after.ms) < int(row.ms)):
++			row.merge(after,true)
++	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
++		if a.get("ms") == null: return false
++		if b.get("ms") == null: return true
++		return _result_order(a) < _result_order(b))
++	var rank: int = 0
++	var previous: int = -1
++	for position: int in range(rows.size()):
++		var row: Dictionary = rows[position]
++		if row.get("ms") == null: continue
++		var order: int = _result_order(row)
++		if order != previous: rank = position+1
++		previous = order
++		row.rank = rank
++	return rows
++
++static func _result_order(row: Dictionary) -> int:
++	return int(row.ticks)*1000 if row.get("ticks") != null else int(row.ms)*120
+ 
+ func preview_result(index: int, ticks: int, seconds: float) -> Dictionary:
+ 	# Presentation only: the verified boards/PBs remain untouched. Use canonical
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -107,6 +107,7 @@
+ var rivalry_racing: bool = false
+ var rivalry_recording: Dictionary = {}
+ var rivalry_result_pending: bool = false
++var rivalry_race_details: Dictionary = {}
+ var rivalry_refresh_ticks: int = 0
+ 
+ func _exit_tree() -> void:
+@@ -1017,6 +1018,7 @@
+ 	page.error = rivalry.error
+ 	page.signed_in = online.client.signed_in()
+ 	page.pending_result = rivalry_result_pending
++	page.race_details = rivalry_race_details
+ 	page.section_requested.connect(func(section: String) -> void:
+ 		if is_instance_valid(game):
+ 			remove_child(game)
+@@ -1124,6 +1126,7 @@
+ 	rivalry_ghost_choice = choice
+ 	rivalry_recording = recording
+ 	rivalry_result_pending = false
++	rivalry_race_details = {}
+ 	rivalry.result_ticket = ""
+ 	rivalry.result_state = ""
+ 	selected_track = track
+@@ -2405,6 +2408,10 @@
+ 		else: rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+ 		if online_queued: rivalry.poll_result()
+ 	var previous: float = result_records.best_for(track, game.get("handling"))
++	if rivalry_racing:
++		rivalry_race_details = {"previous":previous,"clean":clean and session.finished,
++			"laps":session.completed_laps,"distance_m":track.route_length*session.completed_laps,
++			"theme":str(track.metadata.get("theme","pine")),"route":track.route.duplicate()}
+ 	GameSoundtrack.instance().results_feedback(previous - total if previous > 0.0 else 0.0, clean and session.finished)
+ 	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,game.get("handling")),{}).get("flying_ms",0))/1000.0
+ 	var saved: bool = not clean
+--- a/game/tests/test_rivalry_feedback.gd
++++ b/game/tests/test_rivalry_feedback.gd
+@@ -14,6 +14,7 @@
+ 	var requests: int = 0
+ 	func base_url() -> String: return "http://fixture"
+ 	func signed_in() -> bool: return true
++	func recent_run(_ticket: String) -> Dictionary: return {}
+ 	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _auth: bool) -> Dictionary:
+ 		requests += 1
+ 		var board: bool = not path.ends_with("/result")
+@@ -114,7 +115,7 @@
+ 	adapter.result_ticket = "new"
+ 	await create_timer(0.15).timeout
+ 	check(model.last_result.get("provisional",false) and not adapter.result_polling,"a replaced race fences stale verification without stranding polling")
+-	client.response = {"ok":false,"retry_after":10}
++	client.response = {"ok":false,"retry_after":10,"data":{}}
+ 	adapter.result_ticket = "offline"
+ 	await adapter.poll_result()
+ 	var requests: int = client.requests
+@@ -156,7 +157,7 @@
+ 		app._rivalry()
+ 		for _frame: int in range(5): await process_frame
+ 		var page: Control = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+-		check(has_text(page,"EXPECTED TRACK POSITION") and not has_text(page,"Checking your race…"),"pending screen displays the projected result immediately")
++		check(has_text(page,"TRACK STANDINGS") and page.find_child("RivalryResultProvisional",true,false) != null,"pending screen displays standings and a compact provisional status immediately")
+ 		var race: Button = page.find_child("RivalryRaceAgain",true,false)
+ 		check(race != null and not race.disabled and root.get_visible_rect().encloses(race.get_global_rect()),"Race Again remains available inside the compact screen")
+ 		await RenderingServer.frame_post_draw
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Rivalry track result reference override (2026-10-08)
++The owner requests competition-first rivalry feedback after the normal race summary: roughly 37% race details and 63% full track standings, eight visible scrollable rows, a yellow player row, signed time gaps, brighter original preview/actual route outline, personal PB improvement/previous time and actual lap/distance/weather/surface facts. Compact track rank/weekly points and overall movement replace the large expected-position display. Use a small provisional status and horizontal bottom-right Race Again/Back to Rivalry actions. Preserve normal PB/lap/histogram results first, best-only competitive scoring, actual five-lap races, internal development gates and public-population isolation. Reference example identities, times, three laps and sunset are not live values. See `docs/RIVALRY_TRACK_RESULTS.md` for files, commands, evidence and remaining acceptance.
+ 
+ ## Unified histograms and restrained UI override (2026-10-08)
+ The owner requires one histogram view containing every available comparable real and artificial driver, with the player's time marked in that same view. Do not offer Player data/Test data views, source selectors, TEST badges, simulated-driver descriptions or sample-count captions in discovery or results. Deduplicate each driver across the compatible public/development boards; keep artificial identities out of public competitive rankings, ratings and eligibility, and retain development configuration/session gates internally.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-08 R01/G01/V03/V05/Q01: owner-requested new-tablet deployment prepared with pinned Godot 4.7.2/matching Gradle template. Import/APP_READY, driving72/catalog21/menus48 checks pass; fresh debug APK241,058,546 bytes/SHA25658D29AD6F0AD626058EAC266099BB1246BC565C5E9405EEC9EB8F1FB8D6171FA, API24-36/ARM64+x86_64. Initial sandbox ADB directory failure resolved by installed-toolchain access; repeated authorized-tool ADB scans list no devices. Installation remains pending tablet USB debugging/authorization; no install/launch/device screenshot or physical test performed. Existing driving31-instance shutdown warning retained; no full Validate, source/player-file/backend/cloud change. Actual commands, logs, metadata, scoped checkpoint and remaining acceptance: docs/TABLET_DEPLOYMENT_2026_10_08.md.
++
++2026-10-08 WR06/WR08-WR10/R01/V03-V05/Q01/RRF01-RRF12: owner-reference rivalry feedback implemented locally with 37/63 details/standings, eight complete scroll rows, yellow revealed player, signed weekly-PB gaps, bright original art/native outline, pre-save personal PB feedback and actual lap/distance/theme facts. Compact rank/points/overall change and provisional status; horizontal bottom-right actions. Presentation projection leaves verified boards/points untouched, normal results/histograms remain first. Final graphical105/weekly1046/feedback18/App99/parser370 checks pass; twenty native captures with desktop/compact/scrolling/flow review and task-only review checkpoint retained. Pixel-rounding/touch handling and outdated mock failures corrected without weakened checks. No phone attachment check/device test/export/install/live-backend race/full Validate/physics gate/deployment. Files, actual commands, evidence and remaining acceptance: docs/RIVALRY_TRACK_RESULTS.md.
++
+ 2026-10-08 SND12/SND05/SND07/SND10-SND11/G01/R01/Q01/V06: owner-rejected periodic desert pebble hits replaced with continuous granular underside noise. Dense irregular short stone grains/recorded driving are baked into one9.9s loop; speed/load/acceleration/slip and four-wheel sand contact drive gain/pitch. Desert one-shot scheduling/tails stop, old spray quieter; non-desert behavior/immediate collision feedback retained. 46 clips/10,267,482 bytes/22 bounded voices; all45 prior master hashes exact, no new source/API/runtime synthesis. Native steady/driving18s captures12 checks pass with real loop wraps, zero separate grit events/quiet20ms windows/dry tire-bus peak/pause tails; source/native envelopeCV0.136/0.143. Continuous26/desert25/surface67/vehicle1442/timing40/App99/rewind57/parser368/loops39 checks pass; exact960-tick equivalence retained. No phone attached in Doctor; no phone listening/performance/Android export/install/full Validate/backend/production action. Owner noise character/mix and device acceptance remain; scoped checkpoint preserves concurrent work. Actual files/commands/audio/provenance/limits: docs/DESERT_CONTINUOUS_AUDIO.md.
+ 
+ 2026-10-08 B01-B07/B14/B16-B17/B21-B24/B28/STORE04-STORE07/PUR01-PUR08/RW05-RW07/Q01: owner-linked staging admin review completed with authenticated read-only Edge/API/cloud inspection; four public assets match workspace, five routes load without JS errors. Confirmed mixed real/artificial workload metrics, 90-day chart showing14 days, null GCS capacity displayed0GiB, omitted existing worker health and read-only purchases; staging simulation off/analyst unconfigured. Proposed player support/audited development purchases then analytics/telemetry, no runtime or live-data change. Existing local checks35 pass/3 skip/one historical-schema country_code failure; disposable PG setup times out. Screenshots/redacted observations/logs/task-only review patch retained. No cloud write/deploy/migration/provider transaction/phone attachment check/device test/export. Requirements, commands, limitations and next acceptance: docs/BACKEND_UI.md (Staging feature review).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++2026-10-08 R01/G01/V03/V05/Q01: owner-requested new-tablet deployment prepared with pinned Godot 4.7.2/matching Gradle template. Import/APP_READY, driving72/catalog21/menus48 checks pass; fresh debug APK241,058,546 bytes/SHA25658D29AD6F0AD626058EAC266099BB1246BC565C5E9405EEC9EB8F1FB8D6171FA, API24-36/ARM64+x86_64. Initial sandbox ADB directory failure resolved by installed-toolchain access; repeated authorized-tool ADB scans list no devices. Installation remains pending tablet USB debugging/authorization; no install/launch/device screenshot or physical test performed. Existing driving31-instance shutdown warning retained; no full Validate, source/player-file/backend/cloud change. Actual commands, logs, metadata, scoped checkpoint and remaining acceptance: docs/TABLET_DEPLOYMENT_2026_10_08.md.
++
++2026-10-08 WR06/WR08-WR10/R01/V03-V05/Q01/RRF01-RRF12: owner-reference rivalry feedback implemented locally with 37/63 details/standings, eight complete scroll rows, yellow revealed player, signed weekly-PB gaps, bright original art/native outline, pre-save personal PB feedback and actual lap/distance/theme facts. Compact rank/points/overall change and provisional status; horizontal bottom-right actions. Presentation projection leaves verified boards/points untouched, normal results/histograms remain first. Final graphical105/weekly1046/feedback18/App99/parser370 checks pass; twenty native captures with desktop/compact/scrolling/flow review and task-only review checkpoint retained. Pixel-rounding/touch handling and outdated mock failures corrected without weakened checks. No phone attachment check/device test/export/install/live-backend race/full Validate/physics gate/deployment. Files, actual commands, evidence and remaining acceptance: docs/RIVALRY_TRACK_RESULTS.md.
++
+ 2026-10-08 B01-B07/B14/B16-B17/B21-B24/B28/STORE04-STORE07/PUR01-PUR08/RW05-RW07/Q01: owner-linked staging admin review completed with authenticated read-only Edge/API/cloud inspection; four public assets match workspace, five routes load without JS errors. Confirmed mixed real/artificial workload metrics, 90-day chart showing14 days, null GCS capacity displayed0GiB, omitted existing worker health and read-only purchases; staging simulation off/analyst unconfigured. Proposed player support/audited development purchases then analytics/telemetry, no runtime or live-data change. Existing local checks35 pass/3 skip/one historical-schema country_code failure; disposable PG setup times out. Screenshots/redacted observations/logs/task-only review patch retained. No cloud write/deploy/migration/provider transaction/phone attachment check/device test/export. Requirements, commands, limitations and next acceptance: docs/BACKEND_UI.md (Staging feature review).
+ 
+ 2026-10-08 R01/V03/V05/Q01: owner-reported race-settings scrollbar overlap fixed with 16px inner right gutter throughout the shared pause drawer. Existing pause17 checks/zero failures and native top/bottom captures at1280x720/960x540/1600x720 pass; measured gap16.2/16/16px with Ghost present. Task-only patch/source/logs/evidence retained; no new UI text. No phone attachment check/device test/Android export/install/full regression/deployment. Actual files/commands/limitations/remaining review: docs/RACE_SETTINGS_PADDING.md.
+--- a/docs/RIVALRY_REFERENCE.md
++++ b/docs/RIVALRY_REFERENCE.md
+@@ -1,3 +1,5 @@
++2026-10-08 follow-up: the owner's competition-first post-race reference is implemented in [Rivalry track results](RIVALRY_TRACK_RESULTS.md), replacing the former large position-feedback panel.
++
+ # Weekly Rivalry reference correction - 2026-10-07
+ 
+ Requirements: WR01-WR02/WR09-WR10, TD09, R01, V03-V05, Q01. The owner's supplied reference and explicit correction replace the earlier text-heavy podium, detached clock, debug badges/footer, separate player summary footer and browsing lap labels.
+--- /dev/null
++++ b/game/ui/weekly_rivalry_result.gd
+@@ -0,0 +1,368 @@
++class_name WeeklyRivalryResult
++extends HBoxContainer
++## Competition-first rivalry feedback. All scores remain model projections.
++signal retry_requested
++signal home_requested
++var model: WeeklyRivalry
++var index: int = 0
++var details: Dictionary = {}
++var pending: bool = false
++var busy: bool = false
++var error: String = ""
++var scroll: ScrollContainer
++var rows: VBoxContainer
++const VISIBLE_ROWS: int = 8
++const GUTTER: int = 12
++const GREEN := Color("49e781")
++const Badge = preload("res://ui/biome_badge.gd")
++const ModeIcons = preload("res://ui/race_mode_icons.gd")
++
++class PlayerList extends ScrollContainer:
++	var pointer: int = -1
++	var origin := Vector2.ZERO
++	var initial_scroll: int = 0
++	func _input(event: InputEvent) -> void:
++		if not is_visible_in_tree(): return
++		if event is InputEventScreenTouch:
++			if event.pressed and pointer == -1 and get_global_rect().has_point(event.position):
++				if get_v_scroll_bar().get_global_rect().has_point(event.position): return
++				pointer = event.index
++				origin = event.position
++				initial_scroll = scroll_vertical
++			elif not event.pressed and event.index == pointer: pointer = -1
++			else: return
++			get_viewport().set_input_as_handled()
++		elif event is InputEventScreenDrag and event.index == pointer:
++			scroll_vertical = roundi(initial_scroll+origin.y-event.position.y)
++			get_viewport().set_input_as_handled()
++		elif event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION and pointer != -1:
++			get_viewport().set_input_as_handled()
++
++class TrackPreview extends Control:
++	var artwork: Texture2D
++	var route := PackedVector2Array()
++	func _ready() -> void:
++		mouse_filter = Control.MOUSE_FILTER_IGNORE
++		clip_contents = true
++		resized.connect(queue_redraw)
++	func _draw() -> void:
++		var factor: float = maxf(size.x/artwork.get_width(),size.y/artwork.get_height())
++		var visible: Vector2 = size/factor
++		draw_texture_rect_region(artwork,Rect2(Vector2.ZERO,size),Rect2((artwork.get_size()-visible)*0.5,visible))
++		# Local title shade keeps the rest of the existing original art bright.
++		draw_rect(Rect2(Vector2.ZERO,Vector2(size.x,size.y*0.43)),Color("06131b40"))
++		if route.size() < 2: return
++		var bounds := Rect2(Vector2(route[0].x,-route[0].y),Vector2.ZERO)
++		for point: Vector2 in route: bounds = bounds.expand(Vector2(point.x,-point.y))
++		var area := Rect2(Vector2(size.x*0.62,size.y*0.32),Vector2(size.x*0.33,size.y*0.60))
++		var scale: float = minf(area.size.x/maxf(bounds.size.x,0.1),area.size.y/maxf(bounds.size.y,0.1))
++		var origin: Vector2 = area.position+(area.size-bounds.size*scale)*0.5
++		var fitted := PackedVector2Array()
++		for point: Vector2 in route: fitted.append(origin+(Vector2(point.x,-point.y)-bounds.position)*scale)
++		if fitted[0].distance_to(fitted[-1]) > 0.01: fitted.append(fitted[0])
++		draw_polyline(fitted,Color("07151ab0"),6.5,true)
++		draw_polyline(fitted,Color("f1f4f3"),3.5,true)
++
++func _ready() -> void:
++	name = "RivalryRaceResult"
++	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",12)
++	_race_details()
++	_standings()
++
++func _card(id: String, ratio: float) -> VBoxContainer:
++	var panel := PanelContainer.new()
++	panel.name = id
++	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	panel.size_flags_stretch_ratio = ratio
++	var style: StyleBoxFlat = MenuStyle.card(16)
++	style.border_color = Color("2e495a88")
++	style.shadow_size = 3
++	panel.add_theme_stylebox_override("panel",style)
++	add_child(panel)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",8)
++	panel.add_child(column)
++	return column
++
++func _label(parent: Control, text: String, font_size: int, color: Color = MenuStyle.TEXT, id: String = "") -> Label:
++	var label: Label = MenuStyle.label(text,font_size)
++	if not id.is_empty(): label.name = id
++	label.add_theme_color_override("font_color",color)
++	parent.add_child(label)
++	return label
++
++func _icon(parent: Control, texture: Texture2D, width: float, color: Color = MenuStyle.MUTED) -> void:
++	var icon := TextureRect.new()
++	icon.texture = texture
++	icon.custom_minimum_size = Vector2(width,width)
++	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	icon.modulate = color
++	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	parent.add_child(icon)
++
++func _race_details() -> void:
++	var column: VBoxContainer = _card("RivalryResultDetails",0.37)
++	var track: Dictionary = model.tracks[index]
++	var preview := TrackPreview.new()
++	preview.name = "RivalryResultPreview"
++	preview.artwork = TrackTile.scenery_texture(str(track.theme))
++	preview.custom_minimum_size.y = 148
++	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	if details.get("route") is PackedVector2Array: preview.route = details.route
++	else:
++		for point: Array in track.document.get("points",[]): preview.route.append(Vector2(point[0],point[1]))
++	column.add_child(preview)
++	var inset := MarginContainer.new()
++	preview.add_child(inset)
++	inset.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	for side: String in ["left","top","right"]: inset.add_theme_constant_override("margin_"+side,12)
++	var identity := VBoxContainer.new()
++	identity.add_theme_constant_override("separation",6)
++	inset.add_child(identity)
++	identity.add_child(Badge.view(str(track.theme),16))
++	var title: Label = _label(identity,str(track.name).to_upper(),31)
++	title.add_theme_color_override("font_shadow_color",Color("061320"))
++	title.add_theme_constant_override("shadow_offset_y",2)
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	title.clip_text = true
++	var result_heading := HBoxContainer.new()
++	column.add_child(result_heading)
++	_label(result_heading,"YOUR RESULT",19).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	if pending:
++		var status := HBoxContainer.new()
++		status.name = "RivalryResultProvisional"
++		status.add_theme_constant_override("separation",5)
++		result_heading.add_child(status)
++		_icon(status,MenuIcon.texture("clock"),16)
++		_label(status,"PROVISIONAL",14,MenuStyle.MUTED)
++	var result: Dictionary = model.last_result
++	var time: Label = _label(column,MenuStyle.time_text(int(result.ms)/1000.0) if result.has("ms") else "—",68,MenuStyle.TEXT,"RivalryResultTime")
++	time.add_theme_font_override("font",MenuStyle.DISPLAY)
++	var previous: float = float(details.get("previous",0.0))
++	if not details.has("previous") and result.get("before",{}).get("ms") != null:
++		previous = int(result.before.ms)/1000.0
++	var improved: bool = bool(details.get("clean",result.get("improved",false))) and result.has("ms") and (previous <= 0.0 or int(result.ms) < roundi(previous*1000.0))
++	if improved:
++		var personal := HBoxContainer.new()
++		personal.add_theme_constant_override("separation",14)
++		column.add_child(personal)
++		var badge := PanelContainer.new()
++		badge.name = "RivalryResultNewPB"
++		badge.add_theme_stylebox_override("panel",MenuStyle.box(GREEN,5))
++		personal.add_child(badge)
++		_label(badge,"NEW PB",19,MenuStyle.INK).add_theme_font_override("font",MenuStyle.DISPLAY)
++		if previous > 0.0:
++			_label(personal,"-%.3f s" % (previous-int(result.ms)/1000.0),25,GREEN,"RivalryResultImprovement")
++	if previous > 0.0:
++		_label(column,"Previous best: "+MenuStyle.time_text(previous),17,MenuStyle.MUTED,"RivalryResultPrevious")
++	var spacer := Control.new()
++	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	spacer.size_flags_stretch_ratio = 0.10
++	column.add_child(spacer)
++	column.add_child(HSeparator.new())
++	_track_facts(column,str(details.get("theme",track.theme)))
++
++func _track_facts(parent: Control, theme_id: String) -> void:
++	var facts := HBoxContainer.new()
++	facts.name = "RivalryResultTrackFacts"
++	facts.add_theme_constant_override("separation",12)
++	parent.add_child(facts)
++	var laps: int = int(details.get("laps",RaceRules.LAPS))
++	_fact(facts,MenuIcon.texture("resume"),"%d LAPS" % laps)
++	if float(details.get("distance_m",0)) > 0.0:
++		_fact(facts,_fact_texture("road"),"%.2f KM" % (float(details.distance_m)/1000.0))
++	var weather: String = {"night_city":"NIGHT","storm":"RAIN","winter":"SNOW"}.get(theme_id,"DAYLIGHT")
++	_fact(facts,MenuIcon.texture(Badge.icon(theme_id)) if theme_id in ["night_city","storm","winter"] else _fact_texture("sun"),weather)
++	var surface: String = {"winter":"ICY","storm":"WET","desert":"PACKED SAND"}.get(theme_id,"DRY")
++	_fact(facts,_fact_texture("surface"),surface)
++
++func _fact(parent: Control, texture: Texture2D, text: String) -> void:
++	var group := VBoxContainer.new()
++	group.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	group.add_theme_constant_override("separation",3)
++	parent.add_child(group)
++	_icon(group,texture,24)
++	var icon: Control = group.get_child(0)
++	icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++	var label: Label = _label(group,text,14,MenuStyle.MUTED)
++	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	label.add_theme_font_override("font",MenuStyle.DISPLAY)
++
++static func _fact_texture(kind: String) -> Texture2D:
++	# Original code-native glyphs on the same grid as the established UI icons.
++	var paths: String = {"road":"<path d='M3 22 8 2m13 20L16 2M12 3v3m0 4v4m0 4v4'/>",
++		"sun":"<circle cx='12' cy='12' r='5'/><path d='M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2'/>",
++		"surface":"<path d='M3 8h14c6 0 6-6 2-6m-16 10h18M3 16h12c6 0 6 6 2 6'/>"}[kind]
++	var image := Image.new()
++	image.load_svg_from_string("<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24'><g fill='none' stroke='white' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>"+paths+"</g></svg>")
++	return ImageTexture.create_from_image(image)
++
++func _standings() -> void:
++	var column: VBoxContainer = _card("RivalryResultStandings",0.63)
++	var heading := HBoxContainer.new()
++	heading.add_theme_constant_override("separation",10)
++	column.add_child(heading)
++	_icon(heading,ModeIcons.texture("flag"),28,MenuStyle.TEXT)
++	_label(heading,"TRACK STANDINGS",27)
++	scroll = PlayerList.new()
++	scroll.name = "RivalryResultStandingsScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	var legend_margin := MarginContainer.new()
++	legend_margin.add_theme_constant_override("margin_left",8)
++	legend_margin.add_theme_constant_override("margin_right",8+GUTTER+ceili(scroll.get_v_scroll_bar().get_combined_minimum_size().x))
++	column.add_child(legend_margin)
++	var legend := HBoxContainer.new()
++	legend.add_theme_constant_override("separation",10)
++	legend_margin.add_child(legend)
++	_label(legend,"#",14,MenuStyle.MUTED).custom_minimum_size.x = 28
++	_label(legend,"PLAYER",14,MenuStyle.MUTED).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	for field: Array in [["TIME",112],["GAP",84]]:
++		var label: Label = _label(legend,str(field[0]),14,MenuStyle.MUTED,"RivalryResultColumn_"+str(field[0]))
++		label.custom_minimum_size.x = float(field[1])
++		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	column.add_child(scroll)
++	var margin := MarginContainer.new()
++	margin.add_theme_constant_override("margin_right",GUTTER)
++	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	scroll.add_child(margin)
++	rows = VBoxContainer.new()
++	rows.add_theme_constant_override("separation",2)
++	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	margin.add_child(rows)
++	var board: Array[Dictionary] = model.result_board(index)
++	var own: Dictionary = WeeklyRivalry.self_row(board)
++	for driver: Dictionary in board: _driver_row(driver,own)
++	scroll.resized.connect(_resize_rows)
++	_resize_rows.call_deferred()
++	_reveal_player.call_deferred()
++	column.add_child(HSeparator.new())
++	if not error.is_empty():
++		var message: Label = _label(column,error,15,MenuStyle.MUTED,"RivalryResultError")
++		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	var footer := HBoxContainer.new()
++	footer.add_theme_constant_override("separation",16)
++	column.add_child(footer)
++	var summary := VBoxContainer.new()
++	summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	summary.add_theme_constant_override("separation",4)
++	footer.add_child(summary)
++	_summary(summary,board.size())
++	var actions := HBoxContainer.new()
++	actions.name = "RivalryResultActions"
++	actions.add_theme_constant_override("separation",10)
++	actions.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	actions.size_flags_vertical = Control.SIZE_SHRINK_END
++	footer.add_child(actions)
++	var again: Button = MenuStyle.button("RACE AGAIN",func() -> void: retry_requested.emit())
++	again.name = "RivalryRaceAgain"
++	again.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	again.size_flags_stretch_ratio = 0.42
++	again.disabled = busy or model.status != "active"
++	again.add_theme_font_size_override("font_size",20)
++	actions.add_child(again)
++	var back: Button = MenuStyle.button("BACK TO RIVALRY  →",func() -> void: home_requested.emit(),true)
++	back.name = "RivalryResultHome"
++	back.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	back.size_flags_stretch_ratio = 0.58
++	back.add_theme_font_size_override("font_size",20)
++	back.add_theme_color_override("font_focus_color",MenuStyle.INK)
++	actions.add_child(back)
++
++func _driver_row(driver: Dictionary, own: Dictionary) -> void:
++	var panel := PanelContainer.new()
++	panel.name = "RivalryResultDriver_"+str(driver.id)
++	var player: bool = driver.id == WeeklyRivalry.SELF
++	var style: StyleBoxFlat = MenuStyle.box(Color("ffd34826") if player else Color("20354380") if rows.get_child_count()%2 == 0 else Color("14283366"),0)
++	style.content_margin_left = 8
++	style.content_margin_right = 8
++	style.border_color = MenuStyle.ACCENT
++	if player: style.set_border_width_all(1)
++	panel.add_theme_stylebox_override("panel",style)
++	rows.add_child(panel)
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",10)
++	panel.add_child(line)
++	var color: Color = MenuStyle.ACCENT if player else MenuStyle.TEXT
++	var rank: Label = _label(line,str(int(driver.rank)) if driver.get("rank") != null else "—",19,color)
++	rank.custom_minimum_size.x = 28
++	rank.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var identity := HBoxContainer.new()
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	identity.add_theme_constant_override("separation",8)
++	line.add_child(identity)
++	_icon(identity,MenuIcon.texture("avatar"),23,color)
++	identity.add_child(PlayerCountry.flag(str(driver.get("country_code","")),22))
++	var display_name: String = str(driver.name)
++	if bool(driver.get("is_test_driver",false)):
++		var marker: int = display_name.find(" T")
++		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
++	var name_label: Label = _label(identity,display_name,18,color,"RivalryResultName_"+str(driver.id))
++	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	name_label.clip_text = true
++	var time: Label = _label(line,MenuStyle.time_text(int(driver.ms)/1000.0) if driver.get("ms") != null else "—",20,color,"RivalryResultTime_"+str(driver.id))
++	time.add_theme_font_override("font",MenuStyle.DISPLAY)
++	time.custom_minimum_size.x = 112
++	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	time.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var gap_text: String = "—"
++	if not player and driver.get("ms") != null and own.get("ms") != null:
++		gap_text = "%+.3f" % ((int(driver.ms)-int(own.ms))/1000.0)
++	var gap: Label = _label(line,gap_text,18,color if player else MenuStyle.MUTED,"RivalryResultGap_"+str(driver.id))
++	gap.custom_minimum_size.x = 84
++	gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	gap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++
++func _resize_rows() -> void:
++	if not is_instance_valid(scroll) or not is_instance_valid(rows): return
++	# Containers round each child to whole logical pixels. Distribute the
++	# remainder so the eighth row ends exactly at the viewport, without clipping.
++	var available: int = maxi(27*VISIBLE_ROWS,floori(scroll.size.y)-2*(VISIBLE_ROWS-1))
++	var height: int = available/VISIBLE_ROWS
++	var remainder: int = available%VISIBLE_ROWS
++	for position: int in range(rows.get_child_count()):
++		var row: Control = rows.get_child(position)
++		row.custom_minimum_size.y = height+(1 if position%VISIBLE_ROWS < remainder else 0)
++
++func _reveal_player() -> void:
++	if is_inside_tree(): get_tree().process_frame.connect(_reveal_after_sort,CONNECT_ONE_SHOT)
++
++func _reveal_after_sort() -> void:
++	if is_inside_tree(): get_tree().process_frame.connect(_reveal_after_layout,CONNECT_ONE_SHOT)
++
++func _reveal_after_layout() -> void:
++	if not is_inside_tree(): return
++	var player: Control = rows.get_node_or_null("RivalryResultDriver_you")
++	if player != null: scroll.ensure_control_visible(player)
++
++func _summary(parent: Control, count: int) -> void:
++	var result: Dictionary = model.last_result
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",8)
++	parent.add_child(line)
++	_icon(line,ResultsIcons.texture("bars"),19,MenuStyle.ACCENT)
++	_label(line,"TRACK RESULT",17,MenuStyle.MUTED)
++	var score := HBoxContainer.new()
++	score.add_theme_constant_override("separation",18)
++	parent.add_child(score)
++	_label(score,WeeklyRivalryPage.rank_text(result.get("after",{})),38,MenuStyle.ACCENT,"RivalryResultPosition")
++	_label(score,"/ %d" % count,29)
++	score.add_child(VSeparator.new())
++	_label(score,"%+d pts" % int(result.points_delta) if result.has("points_delta") else "— pts",29,MenuStyle.ACCENT,"RivalryResultPoints")
++	if result.has_all(["overall_before","overall_after"]):
++		var progression := HBoxContainer.new()
++		progression.add_theme_constant_override("separation",8)
++		parent.add_child(progression)
++		_label(progression,"Overall rivalry position",14,MenuStyle.MUTED)
++		_label(progression,WeeklyRivalryPage.rank_text(result.overall_before)+"  →  "+WeeklyRivalryPage.rank_text(result.overall_after),18,MenuStyle.TEXT,"RivalryResultProgression")
++		if result.overall_before.get("rank") != null and result.overall_after.get("rank") != null:
++			var delta: int = int(result.overall_before.rank)-int(result.overall_after.rank)
++			if delta != 0: _label(progression,("▲ +%d" if delta > 0 else "▼ %d") % delta,17,GREEN if delta > 0 else Color("ed987f"))
+--- /dev/null
++++ b/game/ui/weekly_rivalry_result.gd.uid
+@@ -0,0 +1 @@
++uid://dfxijjdgtmupy
+--- /dev/null
++++ b/game/tests/test_rivalry_result.gd
+@@ -0,0 +1,279 @@
++extends SceneTree
++## Result-board coherence, scrolling and native graphical reference evidence.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-track-results-2026-10-08/ui")
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+description)
++
++func fixture() -> Dictionary:
++	var sample := WeeklyRivalry.new(true)
++	var value: Dictionary = {"state":"active","group_id":"fixture","self_id":"driver_2","week":41,
++		"ends_at":604800,"server_now":0,"vehicle_id":"compact","tracks":[],"standings":[],
++		"points_policy":[30,26,23,20,18,16,14,12,10,8,6,4,2,1,1,1,1,1,1,1]}
++	for driver: int in range(20):
++		value.standings.append({"id":"driver_%d" % driver,"name":"Driver %d" % driver,"country_code":"FI",
++			"rank":driver+1,"points":int(value.points_policy[driver])*5,"completed":5})
++	for slot: int in range(5):
++		var entries: Array = []
++		var order: Array = [[0,2,1],[0,1,2],[2,1,0],[1,2,0],[1,0,2]][slot]
++		for driver: int in range(20):
++			var place: int = order.find(driver) if driver < 3 else driver
++			entries.append({"id":"driver_%d" % driver,"name":"Driver %d" % driver,"country_code":"FI",
++				"ticks":12000+place*120,"ms":100000+place*1000,"rank":place+1,"points":value.points_policy[place]})
++		value.tracks.append({"board_id":"board_%d" % slot,"entries":entries,
++			"entry":{"name":sample.tracks[slot].name,"theme":sample.tracks[slot].theme,"creator":"Beat my track",
++			"track_id":"track_%d" % slot,"version_id":"version_%d" % slot,"content_hash":"a".repeat(64),"points":sample.tracks[slot].document.points}})
++	for driver: Dictionary in value.standings:
++		driver.points = 0
++		for track: Dictionary in value.tracks:
++			for row: Dictionary in track.entries:
++				if row.id == driver.id: driver.points += int(row.points)
++	value.standings.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.points) > int(b.points))
++	for place: int in range(value.standings.size()): value.standings[place].rank = place+1
++	return value
++
++func run() -> void:
++	var snapshot: Dictionary = fixture()
++	var model := WeeklyRivalry.new()
++	model.apply_snapshot(snapshot)
++	var original: String = JSON.stringify([model.tracks,model.server_standings])
++	model.preview_result(1,11940,99.5)
++	var board: Array[Dictionary] = model.result_board(1)
++	check(board.size() == 20 and board[0].id == WeeklyRivalry.SELF and board[0].rank == 1 and board[0].ms == 99500,"preview includes the new PB as the first of all twenty entrants")
++	check(board[1].rank == 2 and board[2].rank == 3,"every displaced competitor receives the projected rank")
++	check(model.last_result.overall_before.rank == 3 and model.last_result.overall_after.rank == 1,"weekly position change derives from all five real-shaped track boards")
++	check(JSON.stringify([model.tracks,model.server_standings]) == original,"result table never mutates verified boards or weekly totals")
++	check(model.result_board(0)[0].id != WeeklyRivalry.SELF,"a result cannot project onto a different circuit")
++	var confirmed: Dictionary = model.last_result.duplicate(true)
++	confirmed.erase("provisional")
++	model.apply_outcome(confirmed,1)
++	check(model.result_board(1)[0].ms == 99500,"confirmed result is visible before the full board refresh")
++	model.preview_result(1,12120,101.0)
++	board = model.result_board(1)
++	check(board[1].rank == 2 and board[2].rank == 2 and board[1].ticks == board[2].ticks,"canonical tied times share the displayed rank")
++	model.preview_result(1,13080,109.0)
++	check(WeeklyRivalry.self_row(model.result_board(1)).ms == 102000,"a slower attempt keeps the player's weekly best in the table")
++	model.last_result = {"ms":99000}
++	check(JSON.stringify(model.result_board(1)) == JSON.stringify(model.board(1)),"a rejected or unavailable outcome displays only existing standings")
++	var first: Dictionary = snapshot.duplicate(true)
++	for track: Dictionary in first.tracks:
++		for driver: Dictionary in track.entries:
++			if driver.id == first.self_id:
++				driver.ms = null; driver.ticks = null; driver.rank = null; driver.points = 0
++	for driver: Dictionary in first.standings:
++		if driver.id == first.self_id: driver.rank = null; driver.points = 0; driver.completed = 0
++	model.apply_snapshot(first)
++	model.preview_result(1,15000,125.0)
++	check(WeeklyRivalry.self_row(model.result_board(1)).rank == 20,"a first finish inserts an unranked player correctly")
++	if DisplayServer.get_name() != "headless": await visuals(snapshot,first)
++	print("RIVALRY_RESULT_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++
++func capture(id: String, dimensions: Vector2i) -> void:
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id+" native capture")
++
++func visuals(snapshot: Dictionary, first: Dictionary) -> void:
++	DirAccess.make_dir_recursive_absolute(evidence)
++	OS.set_environment("BMT_API_URL","")
++	var folder: String = "user://rivalry_result_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		app.rivalry.model.apply_snapshot(snapshot)
++		app.rivalry.model.preview_result(1,11940,99.5)
++		app.rivalry_track = 1
++		app.rivalry_section = "result"
++		app.rivalry_result_pending = true
++		var route := PackedVector2Array()
++		for point: Array in app.rivalry.model.tracks[1].document.points: route.append(Vector2(point[0],point[1]))
++		var distance: float = 0.0
++		for point: int in range(route.size()): distance += route[point].distance_to(route[(point+1)%route.size()])
++		app.rivalry_race_details = {"previous":102.0,"clean":true,"laps":5,"distance_m":distance*5,"theme":"desert","route":route}
++		app._show_screen("rivalry")
++		await settle()
++		var page: Control = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++		var table: ScrollContainer = page.find_child("RivalryResultStandingsScroll",true,false)
++		var right: Control = page.find_child("RivalryResultStandings",true,false)
++		var left: Control = page.find_child("RivalryResultDetails",true,false)
++		var result_view: WeeklyRivalryResult = page.find_child("RivalryRaceResult",true,false)
++		check(absf(left.size.x/(left.size.x+right.size.x)-0.37) < 0.025,"details and standings use the requested 37/63 balance")
++		var visible: int = 0
++		for row: Control in result_view.rows.get_children():
++			if table.get_global_rect().grow(0.5).encloses(row.get_global_rect()): visible += 1
++		check(visible == 8,"exactly eight complete driver rows are visible immediately")
++		if visible != 8:
++			print("ROW_LAYOUT: visible=%d scroll=%s rows=%s first=%s eighth=%s" % [visible,table.get_global_rect(),result_view.rows.get_global_rect(),result_view.rows.get_child(0).get_global_rect(),result_view.rows.get_child(7).get_global_rect()])
++		check(page.find_child("RivalryResultDriver_you",true,false) != null,"the player has a dedicated highlighted row")
++		check((page.find_child("RivalryResultGap_driver_0",true,false) as Label).text == "+0.500","competitor gap compares to the player's listed time")
++		check(page.find_child("RivalryResultNewPB",true,false) != null and (page.find_child("RivalryResultImprovement",true,false) as Label).text == "-2.500 s","PB badge and improvement use the previous personal record")
++		check(has_text(page,"5 LAPS") and has_text(page,"DAYLIGHT") and has_text(page,"PACKED SAND"),"facts show the actual five-lap daylight sand configuration")
++		check((page.find_child("RivalryResultPoints",true,false) as Label).text == "+7 pts","result summary uses the model's actual weekly points delta")
++		check(page.find_child("RivalryResultProvisional",true,false) != null,"verification appears as a small provisional status")
++		check(not has_text(page,"EXPECTED TRACK POSITION") and not has_text(page,"Your best result counts. Race again anytime."),"large position panel and redundant explanations are removed")
++		var gap: Control = page.find_child("RivalryResultGap_you",true,false)
++		var legend: Control = page.find_child("RivalryResultColumn_GAP",true,false)
++		check(gap.get_global_rect().end.x <= table.get_v_scroll_bar().get_global_rect().position.x-12.0,"gap leaves a clear scrollbar gutter")
++		check(absf(gap.get_global_rect().end.x-legend.get_global_rect().end.x) < 1.0,"gap header and values align")
++		var again: Button = page.find_child("RivalryRaceAgain",true,false)
++		var back: Button = page.find_child("RivalryResultHome",true,false)
++		check(absf(again.global_position.y-back.global_position.y) < 1 and again.get_global_rect().end.x < back.global_position.x,"actions share a horizontal bottom-right row")
++		check(root.get_visible_rect().encloses(back.get_global_rect()) and root.get_visible_rect().encloses(again.get_global_rect()) and again.size.y >= 48,"both actions remain visible touch targets")
++		var clicks: Array[String] = []
++		result_view.retry_requested.connect(func() -> void: clicks.append("retry"))
++		result_view.home_requested.connect(func() -> void: clicks.append("home"))
++		# Avoid launching a backend race: exercise native pointer dispatch through
++		# an isolated view with the app's navigation handlers disconnected.
++		for connection: Dictionary in result_view.retry_requested.get_connections():
++			if connection.callable.get_object() == page: result_view.retry_requested.disconnect(connection.callable)
++		for connection: Dictionary in result_view.home_requested.get_connections():
++			if connection.callable.get_object() == page: result_view.home_requested.disconnect(connection.callable)
++		await tap(again.get_global_rect().get_center())
++		await tap(back.get_global_rect().get_center())
++		check(clicks == ["retry","home"],"viewport touches reach both action buttons")
++		await capture("provisional",dimensions)
++		# Native touch dragging must reach the scroll content, including over rows.
++		await drag(table.get_global_rect().get_center(),Vector2(0,-160))
++		check(table.scroll_vertical > 0,"touch swiping scrolls the player list")
++		var before_wheel: int = table.scroll_vertical
++		var wheel := InputEventMouseButton.new()
++		wheel.position = table.get_global_rect().get_center()
++		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
++		wheel.pressed = true
++		root.push_input(wheel,true)
++		await settle()
++		check(table.scroll_vertical > before_wheel,"desktop wheel scrolling remains available")
++		table.scroll_vertical = 10000
++		await settle()
++		var last: Control = page.find_child("RivalryResultDriver_driver_19",true,false)
++		check(table.get_global_rect().grow(1).encloses(last.get_global_rect()),"scrolling reaches the last entrant")
++		await capture("scrolled",dimensions)
++		var outcome: Dictionary = app.rivalry.model.last_result.duplicate(true)
++		outcome.erase("provisional")
++		app.rivalry.model.apply_outcome(outcome,1)
++		app.rivalry_result_pending = false
++		app._rivalry()
++		await settle()
++		check(app.root_ui.find_child("RivalryResultProvisional",true,false) == null,"confirmation removes provisional status without a board-refresh wait")
++		await capture("confirmed",dimensions)
++		app.rivalry.model.apply_snapshot(first)
++		app.rivalry.model.preview_result(1,15000,125.0)
++		app.rivalry_race_details.previous = 0.0
++		app.rivalry_result_pending = true
++		app._rivalry()
++		await settle()
++		check(app.root_ui.find_child("RivalryResultPrevious",true,false) == null and app.root_ui.find_child("RivalryResultNewPB",true,false) != null,"first PB shows no invented previous time")
++		var first_table: ScrollContainer = app.root_ui.find_child("RivalryResultStandingsScroll",true,false)
++		var first_player: Control = app.root_ui.find_child("RivalryResultDriver_you",true,false)
++		check(first_table.get_global_rect().grow(1).encloses(first_player.get_global_rect()),"a low-ranked player is revealed inside the initial scroll viewport")
++		await capture("first-finish",dimensions)
++		app.rivalry.model.apply_snapshot(snapshot)
++		app.rivalry.model.preview_result(1,13080,109.0)
++		app.rivalry_race_details.previous = 102.0
++		app._rivalry()
++		await settle()
++		check(app.root_ui.find_child("RivalryResultNewPB",true,false) == null,"slower race never claims a new personal best")
++		check((app.root_ui.find_child("RivalryResultGap_driver_0",true,false) as Label).text == "-2.000","faster rivals have negative gaps to the player's weekly best")
++		await capture("slower",dimensions)
++		app.rivalry.model.last_result = {"ms":109000}
++		app.rivalry.error = "This race was not verified. Your weekly best is unchanged."
++		app.rivalry_result_pending = false
++		app._rivalry()
++		await settle()
++		check((app.root_ui.find_child("RivalryResultPoints",true,false) as Label).text == "— pts","rejection does not invent an awarded points value")
++		await capture("rejected",dimensions)
++		app.rivalry.error = ""
++	await result_flow(snapshot)
++	app.queue_free()
++	await process_frame
++
++func result_flow(snapshot: Dictionary) -> void:
++	root.size = Vector2i(1280,720)
++	app.rivalry.model.apply_snapshot(snapshot)
++	app.rivalry_track = 1
++	var track: NativeTrack = app.selected_track
++	# Disposable normal-game session fixture; no network ticket or upload.
++	track.metadata.cloud_version = "rivalry-result-flow-fixture"
++	await app._start_race(track,false,true,{"fixture":true})
++	var game: Node = app.game
++	game.set_physics_process(false)
++	game.paused = true
++	game.attempt_practice = false
++	var previous_laps: Array[float] = [22.0,22.0,22.0,22.0,22.0]
++	check(app.records.record(track,game.handling,110.0,previous_laps) == OK,"isolated app flow stores its previous personal best")
++	var completed := TrackSession.new()
++	completed.completed_laps = 5
++	completed.elapsed_ticks = 13080
++	completed.lap_start_time = 109.0
++	completed.lap_times.assign([22.0,22.0,22.0,22.0,21.0])
++	completed.finished = true
++	game.track_session = completed
++	game.race_completed.emit()
++	await settle()
++	var normal: RaceResults = app.root_ui.find_child("RaceResults",true,false)
++	check(normal != null and app.rivalry_section == "race_results" and app.root_ui.find_child("RivalryRaceResult",true,false) == null,"normal PB and lap summary remains first")
++	check(app.rivalry_race_details.previous == 110.0 and app.rivalry_race_details.laps == 5,"completion captures pre-save personal best and actual completed laps")
++	check(is_equal_approx(float(app.rivalry_race_details.distance_m),track.route_length*5),"completion captures the native route's actual total race distance")
++	await capture("normal-results-first",Vector2i(1280,720))
++	normal.continue_requested.emit()
++	await settle()
++	check(app.rivalry_section == "result" and app.root_ui.find_child("RivalryRaceResult",true,false) != null,"Continue opens the new competition screen")
++	check((app.root_ui.find_child("RivalryResultImprovement",true,false) as Label).text == "-1.000 s","rivalry feedback retains the real pre-save personal-best improvement")
++	await capture("app-flow",Vector2i(1280,720))
++
++func tap(position: Vector2) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = 0
++	event.position = position
++	event.pressed = true
++	root.push_input(event,true)
++	await process_frame
++	event = InputEventScreenTouch.new()
++	event.index = 0
++	event.position = position
++	event.pressed = false
++	root.push_input(event,true)
++	await process_frame
++
++func drag(position: Vector2, motion: Vector2) -> void:
++	var down := InputEventScreenTouch.new()
++	down.index = 0
++	down.position = position
++	down.pressed = true
++	root.push_input(down,true)
++	await process_frame
++	for step: int in range(1,9):
++		var move := InputEventScreenDrag.new()
++		move.index = 0
++		move.position = position+motion*step/8.0
++		move.relative = motion/8.0
++		root.push_input(move,true)
++		await process_frame
++	var up := InputEventScreenTouch.new()
++	up.index = 0
++	up.position = position+motion
++	up.pressed = false
++	root.push_input(up,true)
++	await settle()
++
++func has_text(node: Node, text: String) -> bool:
++	if node is Label and node.text == text: return true
++	for child: Node in node.get_children():
++		if has_text(child,text): return true
++	return false
+--- /dev/null
++++ b/game/tests/test_rivalry_result.gd.uid
+@@ -0,0 +1 @@
++uid://bla57frha3adl
+--- /dev/null
++++ b/docs/RIVALRY_TRACK_RESULTS.md
+@@ -0,0 +1,47 @@
++# Rivalry track results reference — 2026-10-08
++
++Requirements: WR06/WR08-WR10, R01, V03-V05, Q01; RRF01-RRF12 refer to the twelve changes in the owner's supplied result-screen reference. This is the competition screen opened by Continue after normal race results. Normal PB feedback, lap analysis and the unified comparison histograms remain first.
++
++| Owner requirement | Implemented behavior |
++|---|---|
++| RRF01-RRF03 | Full track standings replace the large expected-position panel. Eight complete rows fit the supported landscape layouts; all remaining entrants scroll. Yellow fill/border identifies the player, who is revealed after layout even below eighth place. Country flags and existing avatar/flag icons are reused. |
++| RRF04 | Signed millisecond-precision gaps compare every competitor's listed weekly best with the player's listed weekly best. Faster rivals are negative; slower rivals are positive; the player and missing times use an em dash. A slower retry keeps its current race time on the left and its weekly PB in the competitive table. |
++| RRF05-RRF06 | Details/standings occupy approximately 37%/63%, without the result screen's former full-height mode rail. The header retains its trophy and floating tabs. Existing original biome artwork is bright, with a white outline of the raced native route. No new bitmap or reference-image asset is shipped. |
++| RRF07-RRF08 | Green NEW PB, exact improvement and previous personal best use the pre-save local record captured on completion. A first PB has no invented previous time or improvement. Actual completed laps and native route length determine total distance. Theme-derived daylight/night/rain/snow and dry/wet/icy/packed-sand facts reflect the implemented conditions. Desert is daylight; ordinary races remain five laps. |
++| RRF09-RRF10 | Compact track rank/field size, actual weekly points delta and overall position change sit below the table. The direction and signed movement follow the model; slower retries never mint points. Missing or rejected outcomes do not fabricate awards. |
++| RRF11-RRF12 | Pending verification uses a small PROVISIONAL status beside YOUR RESULT. Race Again and Back to Rivalry share a horizontal row at the bottom right. Existing actionable verification errors remain available. |
++
++`WeeklyRivalry.result_board()` overlays the provisional or confirmed own PB on a duplicate of the latest track board, sorts by canonical ticks, and assigns tied ranks consistently. This prevents the table showing the old own time while a full board refresh is in flight. Verified track entries, weekly totals, identities, development gates and public-population isolation remain untouched. Canonical simulation, physics/rules/content versions, scoring policy, backend API/schema and deployment are unchanged.
++
++The native scroll container retains desktop wheel/scrollbar behavior and explicitly owns touch gestures begun in the list. List drags follow the finger, including beyond its bounds, without becoming page-navigation swipes. Logical row rounding distributes spare pixels across each eight-row group so the eighth row is fully visible. One-shot layout callbacks reveal the player and disconnect if the page is removed.
++
++Changed files:
++
++- `game/ui/weekly_rivalry_result.gd` and generated UID: result layout, preview, track facts, player list and actions.
++- `game/ui/weekly_rivalry_page.gd`: result component wiring and result-specific header/rail arrangement.
++- `game/race/weekly_rivalry.gd`: presentation-only result board.
++- `game/core/app.gd`: captured pre-save PB, actual race details and component wiring.
++- `game/tests/test_rivalry_result.gd` and UID: result-board, native input/layout and completed-session flow checks.
++- `game/tests/test_rivalry_feedback.gd`: replacement visual assertion and mock alignment with the adapter's existing recent-run/error-response contract.
++- `AGENTS.md`, status/phase entries, reference follow-up link and this report.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and the pinned **4.7.2.stable.official.ed1daf0bf** build:
++
++| Command | Actual final outcome |
++|---|---|
++| `Import` | Exit 0; new runtime UID registered. |
++| `CheckScript -ScriptPath res://ui/weekly_rivalry_result.gd` | Exit 0. |
++| `TestScript -ScriptPath res://tests/test_rivalry_result.gd -Graphical` | **105 checks, zero failures**. 1280×720, 960×540 and 1600×720; eight visible rows, 37/63 balance, PB/points/gap values, touch and wheel scrolling, last entrant, low-ranked player reveal, aligned scrollbar gutter, actual button touches, pending/confirmed/first/slower/rejected states and normal-results-first flow. |
++| `TestScript -ScriptPath res://tests/test_weekly_rivalry.gd` | **1,046 checks, zero failures**, headless. |
++| `TestScript -ScriptPath res://tests/test_rivalry_feedback.gd` | **18 checks, zero failures**, headless; preview/confirmation delay, rejection, stale-ticket/account fencing and connection backoff. Final preview measured 1,013 μs in this fixture. |
++| `TestApp` | **99 checks, zero failures**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | **370 scripts, zero failures**. The subsequently extended result test also compiled and passed its graphical run. |
++| `git diff --check` on existing changed runtime/test files | Exit 0; existing CRLF-normalization notices retained. |
++
++Initial attempts are retained in the evidence logs. Windows script execution policy required the process-local Bypass flag; sandboxed Godot could not read the root certificate store/cache, so the pinned local engine ran with reviewed elevated access. No automatic approval rejection occurred. The initial test looked up an unnamed generated container incorrectly; it now reads the component's actual rows. The first layout exposed whole-pixel rounding that clipped the eighth row; the fix distributes the remainder rather than relaxing the check. Raw injected touch did not scroll the native list; explicit list-owned touch handling now passes actual viewport input. The existing verification mock lacked `recent_run()` and the real client's always-present error `data` dictionary; those fixtures were brought into agreement with the existing client contract. No runtime verification invariant was weakened.
++
++Twenty native screenshots are retained; the linked desktop, compact, player-reveal, scrolling and app-flow captures were inspected. The twenty-entrant, five-track fixture has internally summed weekly points and a computed overall #3 → #1 change; its times and identities are controlled presentation examples, never inserted into live accounts. The separate app-flow capture uses a disposable real game scene with a programmatically completed five-lap session and a 110.000 s prior local PB, proving the 109.000 s result retains its pre-save improvement. It is not a driven or backend-verified race. No account credentials or owner save files are used.
++
++Evidence: [desktop result](evidence/rivalry-track-results-2026-10-08/ui/provisional-1280x720.png), [compact confirmed](evidence/rivalry-track-results-2026-10-08/ui/confirmed-960x540.png), [low-ranked highlighted player](evidence/rivalry-track-results-2026-10-08/ui/first-finish-960x540.png), [scrolled last entrants](evidence/rivalry-track-results-2026-10-08/ui/scrolled-1280x720.png), [normal summary first](evidence/rivalry-track-results-2026-10-08/ui/normal-results-first-1280x720.png). Task-only before sources, logs, hashes and the [review patch](evidence/rivalry-track-results-2026-10-08/scoped-source.patch) preserve the checkpoint without including unrelated working-tree changes.
++
++Remaining acceptance: owner visual review and physical-phone legibility, gestures and performance. Phone attachment was not checked and no physical-device test, Android export/install, live-backend race, full Validate/physics regression or deployment was performed. Desktop captures use the project's canvas stretch; they are not phone evidence. Backend endpoint behavior and live scoring need no deployment change for this presentation slice. Track conditions are derived from the currently implemented theme, not a new weather system.
